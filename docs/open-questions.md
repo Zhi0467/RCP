@@ -34,12 +34,15 @@ around it.
 
 ### Evidence gathered so far
 
-**One real instance exists.** `examples/demo-project/state-repo` contains
+**One real instance exists, and it is deliberate.**
+`examples/demo-project/state-repo` contains
 `ev/external-path-match-study --supports--> blk/missing-optimizer-state`,
 authored at patch revision 5 and carrying a permanent `relation-type-mismatch`
 flag. The project never customized its ontology (`config_revisions: {}`), so the
-edge was flagged the moment it was written. It is an instance of the second
-candidate, not ontology drift.
+edge was flagged the moment it was written — not ontology drift. Its own
+`explanation` field says why it is there: *"This deliberately provisional edge
+demonstrates a visible endpoint-type flag."* So it is both a demonstration of
+flag rendering and a specimen of the second widening candidate.
 
 **A layer-based objection was investigated and does not hold.** The concern was
 that an epistemic relation reaching an action-layer node would break the

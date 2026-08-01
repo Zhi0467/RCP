@@ -26,7 +26,14 @@ There is no backend fact to fall back on.
 
 ## Setup
 
-A temporary copy of the demo project. No agent.
+A temporary copy of the demo project, opened against a data directory that
+already holds run history: at least one failed run, one paused run, one blocked
+run, and one retry with its parent. Runs are rows in the app database, not files
+in the state repository, so a fresh copy of the demo project has none of them and
+step 2 below would have nothing to sort — produce them beforehand with a fake
+agent.
+
+No agent runs during the drive itself.
 
 ## Drive
 

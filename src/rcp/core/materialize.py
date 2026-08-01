@@ -21,7 +21,7 @@ from rcp.core.models import (
     ReplayFailure,
     Standing,
 )
-from rcp.core.ontology import custom_relation
+from rcp.core.ontology import custom_relation, edge_layer
 from rcp.core.validation import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     ValidationReport,
@@ -196,6 +196,9 @@ def _apply_patch(
                     data["layer"] = relation.layer
                 data["created_rev"] = revision
                 edge = Edge.model_validate(data)
+                derived = edge_layer(state, edge.source, edge.target, edge.layer)
+                if derived != edge.layer:
+                    edge = edge.model_copy(update={"layer": derived})
                 state.edges[edge.id] = edge
         elif name == "remove_edges":
             for edge_id in op.get("edge_ids", []):

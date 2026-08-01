@@ -281,8 +281,10 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
 
 
 class Edge(BaseModel):
-    # Base-relation layers are overwritten during parsing. Custom relation
-    # layers are resolved from the materialized ontology before an Edge is built.
+    # Layer is backend-owned; a supplied one is always discarded. What lands here
+    # is the relation's *declared* layer. Materialization then narrows it to the
+    # edge's real layer via `ontology.edge_layer`, which needs the endpoint types
+    # and so cannot run inside this validator.
     model_config = ConfigDict(extra="forbid")
 
     id: str

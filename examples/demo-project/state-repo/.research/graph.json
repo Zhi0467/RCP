@@ -58,7 +58,7 @@
       "created_rev": 5,
       "explanation": "This deliberately provisional edge demonstrates a visible endpoint-type flag.",
       "id": "ev/external-path-match-study::supports::blk/missing-optimizer-state",
-      "layer": "epistemic",
+      "layer": "seam",
       "relation": "supports",
       "source": "ev/external-path-match-study",
       "target": "blk/missing-optimizer-state"
@@ -94,7 +94,7 @@
       "created_rev": 1,
       "explanation": "",
       "id": "rq/plasticity-under-shift::has_decision::dec/match-endpoint-or-training-path",
-      "layer": "action",
+      "layer": "seam",
       "relation": "has_decision",
       "source": "rq/plasticity-under-shift",
       "target": "dec/match-endpoint-or-training-path"
@@ -129,6 +129,8 @@
       "blocker_type": "implementation",
       "created_rev": 1,
       "description": "The second smoke could not preserve the intended update history after resume.",
+      "extension_fields": {},
+      "extension_type": null,
       "id": "blk/missing-optimizer-state",
       "recommended_action": "Keep the repaired resume assertion in the smoke test.",
       "resolution_condition": "Checkpoint and reload optimizer plus scheduler state.",
@@ -144,6 +146,8 @@
         "Determines whether retention and future plasticity can be separated"
       ],
       "created_rev": 1,
+      "extension_fields": {},
+      "extension_type": null,
       "id": "dec/match-endpoint-or-training-path",
       "options": [
         "Match endpoint performance",
@@ -164,6 +168,8 @@
         "runs/two-update-smoke/metrics.json"
       ],
       "created_rev": 1,
+      "extension_fields": {},
+      "extension_type": null,
       "id": "ev/endpoint-match-is-insufficient",
       "interpretation": "Endpoint equality alone does not isolate the mechanism responsible for later learning.",
       "observation": "Two arms reached similar endpoint return while their update-wise KL and gradient norms diverged.",
@@ -181,6 +187,8 @@
         "papers/matched-path-comparison"
       ],
       "created_rev": 5,
+      "extension_fields": {},
+      "extension_type": null,
       "id": "ev/external-path-match-study",
       "interpretation": "Endpoint matching alone is not enough to attribute future plasticity to replanning.",
       "observation": "A published matched-path comparison found that endpoint agreement did not imply the same later learning curve.",
@@ -252,6 +260,8 @@
         "Search changes the second-shift learning curve",
         "Endpoint-only gains disappear under path matching"
       ],
+      "extension_fields": {},
+      "extension_type": null,
       "id": "exp/two-update-matched-trajectory",
       "interpretation_rules": [
         "Current performance is not future plasticity",
@@ -268,6 +278,8 @@
     },
     "hyp/search-restores-future-learning": {
       "created_rev": 1,
+      "extension_fields": {},
+      "extension_type": null,
       "id": "hyp/search-restores-future-learning",
       "predictions": [
         "Post-shift learning recovers faster",
@@ -285,6 +297,8 @@
     },
     "rq/plasticity-under-shift": {
       "created_rev": 1,
+      "extension_fields": {},
+      "extension_type": null,
       "id": "rq/plasticity-under-shift",
       "motivation": "Persistent learners must keep adapting after repeated distribution shifts.",
       "question": "Does search-time replanning restore the learning ability a value network loses after the task changes, or only postpone its decay?",
@@ -296,6 +310,11 @@
       "type": "research_question",
       "updated_rev": 2
     }
+  },
+  "ontology": {
+    "fields": [],
+    "relations": [],
+    "types": []
   },
   "project_truth_scope": [
     "crlp-demo-state",

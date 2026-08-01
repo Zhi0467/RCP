@@ -737,3 +737,47 @@ def test_research_md_renders_hypothesis_scope() -> None:
     )
     rendered = render_research_md(GraphState(revision=1, nodes={hypothesis.id: hypothesis}))
     assert "Scope: On datasets A and B." in rendered
+
+
+def _layer_of(source: dict[str, object], target: dict[str, object], relation: str) -> str:
+    patch = _patch(
+        1,
+        [
+            {"op": "create_nodes", "nodes": [source, target]},
+            {
+                "op": "create_edges",
+                "edges": [{"source": source["id"], "target": target["id"], "relation": relation}],
+            },
+        ],
+    )
+    state = materialize_patches([patch], ["repo"]).state
+    return state.edges[f"{source['id']}::{relation}::{target['id']}"].layer
+
+
+_RQ = {"id": "rq/q", "type": "research_question", "title": "Q", "question": "Why?"}
+_DEC = {"id": "dec/d", "type": "decision", "title": "D", "question": "Which target?"}
+_EXP = {"id": "exp/e", "type": "experiment", "title": "E", "objective": "Measure it."}
+_BLK = {"id": "blk/b", "type": "blocker", "title": "B", "description": "State is missing."}
+
+
+def test_edge_layer_is_derived_from_the_endpoints_not_the_relation_name() -> None:
+    # has_decision and blocked_by both declare "action" in RELATION_SPEC, but a
+    # research_question is epistemic, so from that source they cross and are seams.
+    assert _layer_of(_RQ, _DEC, "has_decision") == "seam"
+    assert _layer_of(_RQ, _BLK, "blocked_by") == "seam"
+
+    # The same relation stays inside the action layer from an action-layer source.
+    assert _layer_of(_EXP, _DEC, "governed_by") == "action"
+    assert _layer_of(_EXP, _BLK, "blocked_by") == "action"
+
+
+def test_declared_seam_relations_still_resolve_to_seam() -> None:
+    assert _layer_of(_EXP, _hypothesis().model_dump(mode="json"), "tests") == "seam"
+
+
+def test_meta_relations_keep_their_layer_regardless_of_endpoints() -> None:
+    # supersedes joins two same-type nodes, so endpoint derivation would call it
+    # epistemic. Meta describes what the edge says about the graph, not where its
+    # endpoints sit, so it is preserved.
+    other = dict(_RQ) | {"id": "rq/older"}
+    assert _layer_of(other, _RQ, "supersedes") == "meta"

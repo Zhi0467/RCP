@@ -360,6 +360,40 @@ def custom_relation(ontology: OntologyState, name: Any) -> OntologyRelationDefin
     return next((item for item in ontology.relations if item.name == name), None)
 
 
+def edge_layer(
+    state: GraphState,
+    source_id: Any,
+    target_id: Any,
+    declared: str,
+) -> str:
+    """Resolve the layer of one edge from the nodes it actually connects.
+
+    A layer describes an edge, not a relation name. `blocked_by` is the proof:
+    from an experiment or a decision it stays inside the action layer, but from
+    a research question it crosses into it, and a single declared value on the
+    relation cannot be right for both. So the layer is derived per edge — same
+    layer at both ends keeps that layer, different ends are a `seam`.
+
+    `meta` is the exception. `supersedes` and `duplicate_of` are meta because of
+    what they say about the graph, not because of where their endpoints sit, so
+    a declared `meta` is preserved.
+
+    `declared` is the fallback for an endpoint whose type is not resolvable yet
+    — an edge naming a node created later in the same patch, for instance.
+    """
+    if declared == "meta":
+        return declared
+    layers: list[str] = []
+    for node_id in (source_id, target_id):
+        node = state.nodes.get(node_id) if isinstance(node_id, str) else None
+        base_type = getattr(node, "type", None)
+        layer = BASE_TYPE_LAYERS.get(base_type) if isinstance(base_type, str) else None
+        if layer is None:
+            return declared
+        layers.append(layer)
+    return layers[0] if layers[0] == layers[1] else "seam"
+
+
 def semantic_type(node: ProjectNode | dict[str, Any]) -> str | None:
     if isinstance(node, dict):
         extension = node.get("extension_type")

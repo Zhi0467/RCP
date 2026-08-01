@@ -298,7 +298,7 @@ def test_standalone_human_new_node_is_exactly_one_asserted_custom_node() -> None
     assert "invalid-direct-node-create" in _codes(report)
 
 
-def test_custom_relation_uses_semantic_types_and_materializes_declared_layer() -> None:
+def test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as_seam() -> None:
     state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
     create = _agent(
         2,
@@ -319,7 +319,12 @@ def test_custom_relation_uses_semantic_types_and_materializes_declared_layer() -
     assert not validate_patch(state, create, ["repo"]).rejected
     applied = materialize_patches([_set_ontology(1, _ontology()), create], ["repo"])
     edge = applied.state.edges["training_run/baseline::evaluates::hyp/adapts"]
-    assert edge.layer == "action"
+    # 'evaluates' declares layer "action", but this edge runs from a training_run
+    # (an experiment, action) to a hypothesis (epistemic), so it is a seam. A
+    # custom relation cannot declare "seam" for itself — OntologyRelationDefinition
+    # only accepts epistemic or action — which is why the layer is derived here
+    # from the endpoints rather than copied from the declaration.
+    assert edge.layer == "seam"
 
     reversed_edge = _agent(
         2,
