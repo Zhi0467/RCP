@@ -71,6 +71,7 @@ def validate_new_node(
         agent_authored=False,
     )
 
+
 def validate_new_node_authoring(
     state: GraphState, patch: Patch, raw: dict[str, Any], report: ValidationReport
 ) -> None:

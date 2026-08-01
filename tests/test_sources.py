@@ -39,9 +39,7 @@ from rcp.transport import SSHStateWorkspace
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
-def test_matching_local_histories_are_fully_normalized(
-    manifest, monkeypatch, provider
-) -> None:
+def test_matching_local_histories_are_fully_normalized(manifest, monkeypatch, provider) -> None:
     root = Path(
         next(
             iter(
@@ -90,9 +88,7 @@ def test_matching_local_histories_are_fully_normalized(
             ],
         ]
     source = root / f"matching-{provider}.jsonl"
-    source.write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
     normalized: list[int] = []
     original_normalize = source_indexer._normalize_record
 
@@ -158,9 +154,7 @@ def test_second_index_build_reuses_unchanged_matching_and_unmatched_metadata(
 
     second = indexer.build()
 
-    assert first.model_dump(exclude={"generated_at"}) == second.model_dump(
-        exclude={"generated_at"}
-    )
+    assert first.model_dump(exclude={"generated_at"}) == second.model_dump(exclude={"generated_at"})
     assert second.unmatched_files == 1
     assert [session.session_id for session in second.sessions] == ["matching"]
 
@@ -259,9 +253,7 @@ def test_deleted_source_is_evicted_from_metadata_cache(manifest) -> None:
     assert indexer._local_metadata_cache == {}
 
 
-def test_unchanged_terminal_cursor_does_not_reopen_local_source(
-    manifest, monkeypatch
-) -> None:
+def test_unchanged_terminal_cursor_does_not_reopen_local_source(manifest, monkeypatch) -> None:
     source = Path(next(iter(manifest.sources.codex_roots))) / "terminal.jsonl"
     source.write_text(
         json.dumps(
@@ -311,9 +303,7 @@ def test_changed_local_source_identity_disables_terminal_cursor_shortcut(
             },
         },
     ]
-    source.write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
     indexer = ConversationIndexer(manifest)
     session = indexer.build().sessions[0]
     source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
@@ -346,9 +336,7 @@ def test_indexes_codex_and_claude_by_embedded_cwd(manifest) -> None:
                         "thread_source": "subagent",
                         "originator": "Codex Desktop",
                         "source": {
-                            "subagent": {
-                                "thread_spawn": {"parent_thread_id": "parent-session"}
-                            }
+                            "subagent": {"thread_spawn": {"parent_thread_id": "parent-session"}}
                         },
                     },
                 }
@@ -467,7 +455,9 @@ def test_app_chat_sessions_are_normalized_as_human_led_roots(manifest) -> None:
     )
 
     session = next(
-        item for item in ConversationIndexer(manifest).build().sessions if item.provider == "app_chat"
+        item
+        for item in ConversationIndexer(manifest).build().sessions
+        if item.provider == "app_chat"
     )
 
     assert session.thread_source == "user"
@@ -822,9 +812,7 @@ def test_cursor_survives_a_rewritten_source_file(manifest, tmp_path) -> None:
     raw_path.write_text("\n".join([meta, *turns]) + "\n", encoding="utf-8")
 
     indexer = ConversationIndexer(manifest, tmp_path / "source-cache")
-    session = next(
-        item for item in indexer.build().sessions if item.session_id == "rewritten"
-    )
+    session = next(item for item in indexer.build().sessions if item.session_id == "rewritten")
     cursor = next(
         record.uuid for record in indexer.read_records(session) if record.text == "second"
     )
@@ -832,9 +820,7 @@ def test_cursor_survives_a_rewritten_source_file(manifest, tmp_path) -> None:
     # The provider rewrites the file with the leading records dropped; the record
     # the cursor names is still present, one line earlier than it was.
     raw_path.write_text("\n".join([meta, *turns[1:]]) + "\n", encoding="utf-8")
-    rewritten = next(
-        item for item in indexer.build().sessions if item.session_id == "rewritten"
-    )
+    rewritten = next(item for item in indexer.build().sessions if item.session_id == "rewritten")
     assert cursor not in {record.uuid for record in indexer.read_records(rewritten)}
 
     resumed = list(indexer.read_records(rewritten, from_uuid=cursor))
@@ -953,9 +939,7 @@ def test_session_evidence_validation_couples_coverage_and_cursor_advancement(
     )
 
 
-def test_session_cursors_are_derived_for_previously_accounted_sessions(
-    manifest, tmp_path
-) -> None:
+def test_session_cursors_are_derived_for_previously_accounted_sessions(manifest, tmp_path) -> None:
     raw_path = Path(next(iter(manifest.sources.codex_roots))) / "cursor-repair.jsonl"
     raw_path.write_text(
         json.dumps(
@@ -976,9 +960,7 @@ def test_session_cursors_are_derived_for_previously_accounted_sessions(
         indexer.build(),
     )
     session = context.sessions[0]
-    previous = GraphState().coverage.model_copy(
-        update={"sessions_read": [session.key]}
-    )
+    previous = GraphState().coverage.model_copy(update={"sessions_read": [session.key]})
     patch = Patch(
         kind="refresh",
         author="agent",
@@ -1022,9 +1004,7 @@ def test_refresh_run_rebuilds_cached_conversation_index(manifest, tmp_path) -> N
         surface="refresh",
     )
 
-    assert [session.key for session in context.sessions] == [
-        "repo-a/laptop/codex/new-session"
-    ]
+    assert [session.key for session in context.sessions] == ["repo-a/laptop/codex/new-session"]
 
 
 def test_out_of_scope_run_is_rejected_before_index(manifest, tmp_path, monkeypatch) -> None:
@@ -1066,9 +1046,7 @@ def test_remote_index_script_filters_by_embedded_cwd(tmp_path) -> None:
                     "thread_source": "subagent",
                     "originator": "Codex Desktop",
                     "source": {
-                        "subagent": {
-                            "thread_spawn": {"parent_thread_id": "parent-session"}
-                        }
+                        "subagent": {"thread_spawn": {"parent_thread_id": "parent-session"}}
                     },
                 }
             )
@@ -1147,9 +1125,7 @@ def test_remote_index_counts_claude_records_before_first_cwd(tmp_path) -> None:
             "message": {"content": "answer"},
         },
     ]
-    source.write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
     index_payload = json.dumps(
         {
             "root": str(root),
@@ -1493,9 +1469,7 @@ def test_remote_slice_program_normalizes_exactly_like_the_local_path(
     """
 
     source = tmp_path / "conversation.jsonl"
-    source.write_text(
-        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
-    )
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
     expected = [
         _normalize_record(record, provider, line_number)
         for line_number, record in enumerate(records, start=1)
@@ -1518,8 +1492,6 @@ def test_remote_slice_program_normalizes_exactly_like_the_local_path(
         check=True,
     )
 
-    emitted = [
-        ConversationRecord.model_validate_json(line) for line in result.stdout.splitlines()
-    ]
+    emitted = [ConversationRecord.model_validate_json(line) for line in result.stdout.splitlines()]
     assert emitted == expected
     assert [record.uuid for record in emitted if record.uuid.startswith("line-")]

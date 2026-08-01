@@ -61,7 +61,9 @@ class RemoteRunStage:
         lost, which means nothing else ever deletes it. Best effort: a stage that
         cannot be swept is not worth failing a run over.
         """
-        script = _REMOTE_TREE_HELPERS + """
+        script = (
+            _REMOTE_TREE_HELPERS
+            + """
 import glob,sys,time
 cutoff=time.time()-(int(sys.argv[1])*86400)
 for target in glob.glob('/tmp/rcp-run.*'):
@@ -71,6 +73,7 @@ for target in glob.glob('/tmp/rcp-run.*'):
     except OSError:
         pass
 """
+        )
         self._ssh(["python3", "-c", script, str(int(retain_days))])
 
     def open(self, operation_id: str | None = None, *, reuse: bool = False) -> RemoteRunStage:
@@ -173,7 +176,9 @@ for target in glob.glob('/tmp/rcp-run.*'):
             return
 
         batch = self.root / f".input-batch-{uuid.uuid4().hex}"
-        script = _REMOTE_TREE_HELPERS + """
+        script = (
+            _REMOTE_TREE_HELPERS
+            + """
 import json,stat,sys
 root,batch=map(os.path.abspath,sys.argv[1:3])
 labels=json.loads(sys.argv[3]); transferred=sys.argv[4]=='1'
@@ -215,6 +220,7 @@ except BaseException:
     remove_tree(batch)
     raise
 """
+        )
         try:
             try:
                 result = subprocess.run(
@@ -348,9 +354,7 @@ finally:
             raise StateUnavailable("native transcript projection returned invalid paths")
         return values
 
-    def replace_conversation_inputs(
-        self, sources: list[tuple[str, str]]
-    ) -> list[str]:
+    def replace_conversation_inputs(self, sources: list[tuple[str, str]]) -> list[str]:
         """Project exact on-machine conversation files into this remote stage.
 
         The copy runs on the execution host. This deliberately does not rsync the
@@ -501,7 +505,9 @@ finally:
         if _safe_label(scope_id) != scope_id:
             raise ValueError("artifact scope contains unsupported characters")
         target = self.workspace / "turns" / scope_id / "artifacts"
-        script = _REMOTE_TREE_HELPERS + """
+        script = (
+            _REMOTE_TREE_HELPERS
+            + """
 import stat,sys
 workspace,scope,reuse=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
 if os.path.islink(workspace) or not os.path.isdir(workspace):
@@ -520,6 +526,7 @@ else:
     remove_tree(scope_path)
     os.makedirs(target,mode=0o700,exist_ok=False)
 """
+        )
         result = self._ssh(
             ["python3", "-c", script, str(self.workspace), scope_id, "1" if reuse else "0"]
         )

@@ -14,12 +14,18 @@ export function projectNodes(nodes: GraphNode[], trustView: TrustView): GraphNod
   return nodes;
 }
 
-export function buildDagProjection(graph: GraphState, trustView: TrustView, relationFocusNodeId?: string | null) {
+export function buildDagProjection(
+  graph: GraphState,
+  trustView: TrustView,
+  relationFocusNodeId?: string | null,
+) {
   const nodes = relationFocusNodeId
     ? Object.values(graph.nodes)
     : projectNodes(Object.values(graph.nodes), trustView);
   const visible = new Set(nodes.map((node) => node.id));
-  const edges = Object.values(graph.edges).filter((edge) => visible.has(edge.source) && visible.has(edge.target));
+  const edges = Object.values(graph.edges).filter(
+    (edge) => visible.has(edge.source) && visible.has(edge.target),
+  );
   return { nodes, edges };
 }
 

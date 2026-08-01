@@ -72,14 +72,18 @@ test("automatic readiness reads cached state while explicit refresh bypasses it"
 
 test("API errors retain status for stale and active-task handling", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ detail: "Agent task is active" }), {
-    status: 409,
-    headers: { "Content-Type": "application/json" },
-  });
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "Agent task is active" }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
   try {
     await assert.rejects(
       clearProjectCaches("/api/projects/demo"),
-      (error) => error instanceof ApiError && error.status === 409 && error.message === "Agent task is active",
+      (error) =>
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.message === "Agent task is active",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -89,11 +93,14 @@ test("API errors retain status for stale and active-task handling", async () => 
 test("a failed mutation runs the registered identity verifier once", async () => {
   const originalFetch = globalThis.fetch;
   let checkedPath = null;
-  globalThis.fetch = async () => new Response(JSON.stringify({ detail: "Conflict" }), {
-    status: 409,
-    headers: { "Content-Type": "application/json" },
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "Conflict" }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+  registerMutationFailureHandler(async (path) => {
+    checkedPath = path;
   });
-  registerMutationFailureHandler(async (path) => { checkedPath = path; });
   try {
     await assert.rejects(
       api("/api/projects/demo/sync", { method: "POST", body: "{}" }),

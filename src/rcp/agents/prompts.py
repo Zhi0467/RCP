@@ -53,8 +53,7 @@ def _pointer(label: str, path: str | None) -> str:
 
 def _repository_pointers(repositories: list[dict[str, str]]) -> str:
     return "".join(
-        f"- {item['alias']}: host=`{item['host']}` path=`{item['path']}`\n"
-        for item in repositories
+        f"- {item['alias']}: host=`{item['host']}` path=`{item['path']}`\n" for item in repositories
     )
 
 

@@ -25,9 +25,14 @@ export function buildRunTaskProjection(tasks: AgentTask[]): RunTaskProjection {
   };
 }
 
-export function latestRunObservation(lastRefreshAt: string | null | undefined, tasks: AgentTask[]): string | null {
+export function latestRunObservation(
+  lastRefreshAt: string | null | undefined,
+  tasks: AgentTask[],
+): string | null {
   const timestamps = [lastRefreshAt, ...tasks.map((task) => task.updated_at)]
-    .filter((value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)))
+    .filter(
+      (value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)),
+    )
     .sort((left, right) => Date.parse(right) - Date.parse(left));
   return timestamps[0] ?? null;
 }
@@ -57,7 +62,11 @@ export function groupAgentTasks(tasks: AgentTask[]): AgentTaskGroup[] {
 function logicalRootId(task: AgentTask, byId: Map<string, AgentTask>): string {
   const seen = new Set([task.operation_id]);
   let current = task;
-  while (current.parent_operation_id && byId.has(current.parent_operation_id) && !seen.has(current.parent_operation_id)) {
+  while (
+    current.parent_operation_id &&
+    byId.has(current.parent_operation_id) &&
+    !seen.has(current.parent_operation_id)
+  ) {
     seen.add(current.parent_operation_id);
     current = byId.get(current.parent_operation_id) as AgentTask;
   }
@@ -65,5 +74,8 @@ function logicalRootId(task: AgentTask, byId: Map<string, AgentTask>): string {
 }
 
 function compareTaskAscending(left: AgentTask, right: AgentTask): number {
-  return left.created_at.localeCompare(right.created_at) || left.operation_id.localeCompare(right.operation_id);
+  return (
+    left.created_at.localeCompare(right.created_at) ||
+    left.operation_id.localeCompare(right.operation_id)
+  );
 }

@@ -357,20 +357,14 @@ class ClaudeProfile(ProviderProfile):
         event_type = str(value.get("type") or "")
         subtype = str(value.get("subtype") or "")
         if event_type == "system" and value.get("session_id"):
-            return ProviderStreamEvent(
-                event="session", session_id=str(value["session_id"])
-            )
+            return ProviderStreamEvent(event="session", session_id=str(value["session_id"]))
         result = value.get("result")
         detail = _provider_error_text(value)
         terminal_error = (
-            value.get("is_error") is True
-            or event_type == "error"
-            or "error" in subtype.casefold()
+            value.get("is_error") is True or event_type == "error" or "error" in subtype.casefold()
         )
         if terminal_error:
-            return ProviderStreamEvent(
-                event="error", text=detail or "Claude task failed."
-            )
+            return ProviderStreamEvent(event="error", text=detail or "Claude task failed.")
         if isinstance(result, str) and result:
             return ProviderStreamEvent(event="answer", text=result)
         return ProviderStreamEvent(event="raw", text=raw)

@@ -21,22 +21,46 @@ test("research paths ignore edge direction and assign each record once", () => {
   ];
 
   const forward = buildResearchPaths(nodes, edges);
-  const reversed = buildResearchPaths(nodes, edges.map((edge) => ({ ...edge, source: edge.target, target: edge.source })));
-  const assigned = forward.paths.flatMap((path) => [...path.ideas, ...path.experiments, ...path.evidence]);
+  const reversed = buildResearchPaths(
+    nodes,
+    edges.map((edge) => ({ ...edge, source: edge.target, target: edge.source })),
+  );
+  const assigned = forward.paths.flatMap((path) => [
+    ...path.ideas,
+    ...path.experiments,
+    ...path.evidence,
+  ]);
 
   assert.deepEqual(forward, reversed);
   assert.equal(new Set(assigned.map((item) => item.id)).size, assigned.length);
-  assert.deepEqual(forward.paths.find((path) => path.question.id === "question/a")?.ideas.map((item) => item.id), ["idea"]);
-  assert.deepEqual(forward.paths.find((path) => path.question.id === "question/b")?.evidence.map((item) => item.id), ["evidence"]);
+  assert.deepEqual(
+    forward.paths.find((path) => path.question.id === "question/a")?.ideas.map((item) => item.id),
+    ["idea"],
+  );
+  assert.deepEqual(
+    forward.paths
+      .find((path) => path.question.id === "question/b")
+      ?.evidence.map((item) => item.id),
+    ["evidence"],
+  );
 });
 
 test("unconnected records stay explicit and implementation blockers are excluded", () => {
-  const projection = buildResearchPaths([
-    node("question", "research_question"),
-    node("orphan", "decision"),
-    { ...node("implementation", "blocker"), blocker_type: "implementation" },
-  ], []);
+  const projection = buildResearchPaths(
+    [
+      node("question", "research_question"),
+      node("orphan", "decision"),
+      { ...node("implementation", "blocker"), blocker_type: "implementation" },
+    ],
+    [],
+  );
 
-  assert.deepEqual(projection.paths.map((path) => path.question.id), ["question"]);
-  assert.deepEqual(projection.unconnected.map((item) => item.id), ["orphan"]);
+  assert.deepEqual(
+    projection.paths.map((path) => path.question.id),
+    ["question"],
+  );
+  assert.deepEqual(
+    projection.unconnected.map((item) => item.id),
+    ["orphan"],
+  );
 });

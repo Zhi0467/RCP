@@ -51,20 +51,35 @@ export function RunDialog({
   const hostlessRepositories = crossMachineRepositories.filter(
     (repository) => !machinesByAlias.get(repository.machine)?.host.trim(),
   );
-  const sshRepositories = crossMachineRepositories.filter(
-    (repository) => Boolean(machinesByAlias.get(repository.machine)?.host.trim()),
+  const sshRepositories = crossMachineRepositories.filter((repository) =>
+    Boolean(machinesByAlias.get(repository.machine)?.host.trim()),
   );
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget && !busy) onClose();
-    }}>
-      <section className="run-dialog" role="dialog" aria-modal="true" aria-labelledby="run-dialog-title">
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose();
+      }}
+    >
+      <section
+        className="run-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="run-dialog-title"
+      >
         <header>
-          <h2 id="run-dialog-title">{mode === "retry"
-            ? `Retry ${kind === "seed" ? "seed" : "refresh"}`
-            : kind === "seed" ? "Seed the project graph" : "Refresh project understanding"}</h2>
-          <button className="icon-button" onClick={onClose} disabled={busy} aria-label="Close"><X size={17} /></button>
+          <h2 id="run-dialog-title">
+            {mode === "retry"
+              ? `Retry ${kind === "seed" ? "seed" : "refresh"}`
+              : kind === "seed"
+                ? "Seed the project graph"
+                : "Refresh project understanding"}
+          </h2>
+          <button className="icon-button" onClick={onClose} disabled={busy} aria-label="Close">
+            <X size={17} />
+          </button>
         </header>
         {mode === "start" && (
           <>
@@ -103,7 +118,8 @@ export function RunDialog({
             <AlertTriangle size={15} />
             <span>
               <strong>
-                {hostlessRepositories.map((repository) => repository.alias).join(", ")} cannot be read from {config.run_on}.
+                {hostlessRepositories.map((repository) => repository.alias).join(", ")} cannot be
+                read from {config.run_on}.
               </strong>
               {" Their machines have no SSH host; remove them from this run."}
             </span>
@@ -114,22 +130,36 @@ export function RunDialog({
             <AlertTriangle size={15} />
             <span>
               <strong>
-                {sshRepositories.map((repository) => repository.alias).join(", ")} will be read over SSH at their declared paths.
+                {sshRepositories.map((repository) => repository.alias).join(", ")} will be read over
+                SSH at their declared paths.
               </strong>
               {" Repositories are never copied."}
             </span>
           </div>
         )}
         <footer>
-          <button className="button secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="button secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
           <button
             className="button primary"
-            disabled={busy || scope.length === 0 || !providerReady || hostlessRepositories.length > 0}
+            disabled={
+              busy || scope.length === 0 || !providerReady || hostlessRepositories.length > 0
+            }
             onClick={() => onRun(config, scope, message.trim() || null)}
           >
-            <Play size={14} /> {mode === "retry"
-              ? busy ? "Retrying…" : "Retry"
-              : busy ? (kind === "seed" ? "Seeding…" : "Refreshing…") : (kind === "seed" ? "Start seed" : "Start refresh")}
+            <Play size={14} />{" "}
+            {mode === "retry"
+              ? busy
+                ? "Retrying…"
+                : "Retry"
+              : busy
+                ? kind === "seed"
+                  ? "Seeding…"
+                  : "Refreshing…"
+                : kind === "seed"
+                  ? "Start seed"
+                  : "Start refresh"}
           </button>
         </footer>
       </section>

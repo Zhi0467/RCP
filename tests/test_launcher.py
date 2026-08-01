@@ -148,7 +148,9 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
 
     events = [
         event
-        async for event in launcher.stream("codex", "prompt", cwd=Path("/tmp"), capability="scratch_patch")
+        async for event in launcher.stream(
+            "codex", "prompt", cwd=Path("/tmp"), capability="scratch_patch"
+        )
     ]
 
     assert captured["limit"] == AgentLauncher._STREAM_LIMIT
@@ -159,7 +161,9 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
         for event in events
     )
     assert events[-1].event == "done"
-    exit_evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    exit_evidence = json.loads(
+        next(event.text for event in events if event.event == "provider_exit")
+    )
     assert exit_evidence == {
         "event_counts": {"raw": 1},
         "explicit_terminal_event": False,
@@ -210,7 +214,9 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
     assert len(messages[0]) == 2 * 1024 * 1024
     assert messages[-1] == f"received={len(prompt.encode())}"
     assert events[-1].event == "done"
-    exit_evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    exit_evidence = json.loads(
+        next(event.text for event in events if event.event == "provider_exit")
+    )
     assert exit_evidence["event_counts"] == {"message": 2}
     assert exit_evidence["explicit_terminal_event"] is False
     assert exit_evidence["return_code"] == 0
@@ -222,8 +228,7 @@ async def test_stream_records_explicit_terminal_provider_event(
     tmp_path: Path,
 ) -> None:
     provider_script = (
-        "import json\n"
-        'print(json.dumps({"type": "result", "result": "Finished."}), flush=True)\n'
+        'import json\nprint(json.dumps({"type": "result", "result": "Finished."}), flush=True)\n'
     )
     launcher = AgentLauncher()
     launcher.readiness = lambda provider, host="": type(
@@ -237,7 +242,9 @@ async def test_stream_records_explicit_terminal_provider_event(
 
     events = [
         event
-        async for event in launcher.stream("claude", "prompt", cwd=tmp_path, capability="scratch_patch")
+        async for event in launcher.stream(
+            "claude", "prompt", cwd=tmp_path, capability="scratch_patch"
+        )
     ]
 
     evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
@@ -270,7 +277,9 @@ async def test_stream_records_nonzero_provider_exit_before_error(
 
     events = [
         event
-        async for event in launcher.stream("codex", "prompt", cwd=tmp_path, capability="scratch_patch")
+        async for event in launcher.stream(
+            "codex", "prompt", cwd=tmp_path, capability="scratch_patch"
+        )
     ]
 
     exit_index = next(index for index, event in enumerate(events) if event.event == "provider_exit")
@@ -346,7 +355,9 @@ async def test_cold_readiness_does_not_block_stream_event_loop(tmp_path: Path) -
         )
 
     launcher.readiness = readiness
-    stream = launcher.stream("codex", "prompt", cwd=tmp_path, host="slow.example", capability="scratch_patch")
+    stream = launcher.stream(
+        "codex", "prompt", cwd=tmp_path, host="slow.example", capability="scratch_patch"
+    )
     first_event = asyncio.create_task(anext(stream))
     try:
         assert await asyncio.to_thread(entered.wait, 1)
@@ -417,8 +428,6 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
             await AgentProcessControl._terminate(process)
 
 
-
-
 def test_codex_failure_event_surfaces_provider_error() -> None:
     event = AgentLauncher._normalize_event(
         "codex",
@@ -450,9 +459,7 @@ def test_only_the_final_assistant_message_is_an_answer() -> None:
         assert trace.event == "message", item_type
 
     # A partial message still in flight is not the reply yet.
-    partial = codex(
-        {"type": "item.started", "item": {"type": "agent_message", "text": "Bec"}}
-    )
+    partial = codex({"type": "item.started", "item": {"type": "agent_message", "text": "Bec"}})
     assert partial.event == "message"
 
     claude = AgentLauncher._normalize_event(

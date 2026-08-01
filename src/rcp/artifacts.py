@@ -271,12 +271,11 @@ window.addEventListener('message',(event)=>{{
 }});
 </script>"""
     document = (
-        "<!doctype html><meta charset=\"utf-8\">"
+        '<!doctype html><meta charset="utf-8">'
         "<title>Artifact preview</title>"
         "<style>html,body,iframe{border:0;margin:0;width:100%;height:100%;display:block}</style>"
         f'<iframe id="artifact" sandbox="allow-scripts" srcdoc="{html.escape(artifact, quote=True)}">'
-        "</iframe>"
-        + wrapper_script
+        "</iframe>" + wrapper_script
     )
     wrapper_csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "

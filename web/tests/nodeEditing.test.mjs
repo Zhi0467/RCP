@@ -24,18 +24,64 @@ test("editable fields mirror the human-editable allowlist for every node type", 
   assert.deepEqual(keys("research_question"), ["title", "question", "motivation", "scope"]);
   assert.deepEqual(keys("hypothesis"), ["title", "statement", "rationale", "predictions", "scope"]);
   assert.deepEqual(keys("decision"), ["title", "question", "options", "rationale", "consequences"]);
-  assert.deepEqual(keys("experiment"), ["title", "objective", "design", "expected_outcomes", "interpretation_rules", "completion_criteria", "current_summary", "next_action"]);
+  assert.deepEqual(keys("experiment"), [
+    "title",
+    "objective",
+    "design",
+    "expected_outcomes",
+    "interpretation_rules",
+    "completion_criteria",
+    "current_summary",
+    "next_action",
+  ]);
   assert.deepEqual(keys("evidence"), ["title", "observation", "interpretation"]);
-  assert.deepEqual(keys("blocker"), ["title", "description", "resolution_condition", "recommended_action"]);
+  assert.deepEqual(keys("blocker"), [
+    "title",
+    "description",
+    "resolution_condition",
+    "recommended_action",
+  ]);
 });
 
 test("active base and custom extension fields are editable as one complete object", () => {
   const ontology = {
-    types: [{ name: "mechanism_hypothesis", definition: "Mechanism claim", base_type: "hypothesis", layer: "epistemic", deprecated: false }],
+    types: [
+      {
+        name: "mechanism_hypothesis",
+        definition: "Mechanism claim",
+        base_type: "hypothesis",
+        layer: "epistemic",
+        deprecated: false,
+      },
+    ],
     fields: [
-      { owner_type: "hypothesis", name: "prior", definition: "Prior", kind: "number", required: false, agent_writable: false, deprecated: false },
-      { owner_type: "mechanism_hypothesis", name: "mechanism", definition: "Mechanism", kind: "text", required: true, agent_writable: true, deprecated: false },
-      { owner_type: "mechanism_hypothesis", name: "old_note", definition: "Old note", kind: "text", required: false, agent_writable: true, deprecated: true },
+      {
+        owner_type: "hypothesis",
+        name: "prior",
+        definition: "Prior",
+        kind: "number",
+        required: false,
+        agent_writable: false,
+        deprecated: false,
+      },
+      {
+        owner_type: "mechanism_hypothesis",
+        name: "mechanism",
+        definition: "Mechanism",
+        kind: "text",
+        required: true,
+        agent_writable: true,
+        deprecated: false,
+      },
+      {
+        owner_type: "mechanism_hypothesis",
+        name: "old_note",
+        definition: "Old note",
+        kind: "text",
+        required: false,
+        agent_writable: true,
+        deprecated: true,
+      },
     ],
     relations: [],
   };
@@ -45,8 +91,14 @@ test("active base and custom extension fields are editable as one complete objec
     extension_fields: { prior: 0.4, mechanism: "Old mechanism", old_note: "Still readable" },
   };
   const fields = editableNodeFields(node, ontology);
-  assert.deepEqual(fields.slice(-2).map((field) => field.key), ["extension_fields.prior", "extension_fields.mechanism"]);
-  assert.equal(fields.some((field) => field.key === "extension_fields.old_note"), false);
+  assert.deepEqual(
+    fields.slice(-2).map((field) => field.key),
+    ["extension_fields.prior", "extension_fields.mechanism"],
+  );
+  assert.equal(
+    fields.some((field) => field.key === "extension_fields.old_note"),
+    false,
+  );
   const draft = nodeEditDraft(node, ontology);
   draft["extension_fields.mechanism"] = "Updated mechanism";
   assert.deepEqual(changedNodeFields(node, draft, ontology), {

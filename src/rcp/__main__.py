@@ -223,9 +223,7 @@ def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
                 args,
                 metadata,
                 server_fd=server_socket.fileno(),
-                on_ready=lambda: _emit_launch_outcome(
-                    args, "owned", metadata=metadata, owned=True
-                ),
+                on_ready=lambda: _emit_launch_outcome(args, "owned", metadata=metadata, owned=True),
             )
     except OSError as exc:
         if getattr(args, "machine_readable", False):
@@ -278,9 +276,7 @@ def _run_server(
             app = create_app(args.project, instance_metadata=metadata)
             if args.command == "open":
                 url = _project_url(args.host, args.port, app.state.default_project_id)
-                threading.Timer(
-                    BROWSER_OPEN_DELAY_SECONDS, lambda: webbrowser.open(url)
-                ).start()
+                threading.Timer(BROWSER_OPEN_DELAY_SECONDS, lambda: webbrowser.open(url)).start()
             if on_ready:
                 on_ready()
             uvicorn.run(app, **uvicorn_options)
@@ -404,9 +400,7 @@ def _open_existing_server(
     try:
         health = _request_json(f"{base_url}/api/health")
     except ExistingServerError as exc:
-        raise ExistingServerUnavailable(
-            f"no healthy server answered at {base_url}: {exc}"
-        ) from exc
+        raise ExistingServerUnavailable(f"no healthy server answered at {base_url}: {exc}") from exc
     if health.get("status") != "ok":
         raise ExistingServerUnavailable(
             f"the server at {base_url} returned an invalid health response"
@@ -534,9 +528,7 @@ def _exit_refused(args: argparse.Namespace, refusal: LaunchRefused) -> None:
                 {
                     "outcome": refusal.outcome,
                     "base_url": (
-                        metadata.base_url
-                        if metadata
-                        else _base_url(args.host, args.port)
+                        metadata.base_url if metadata else _base_url(args.host, args.port)
                     ),
                     "instance_id": metadata.instance_id if metadata else None,
                     "version": __version__,

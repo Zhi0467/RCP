@@ -13,12 +13,8 @@ const moduleHooks = registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const {
-  DAG_NODE_WIDTH,
-  forceCanvasMetrics,
-  forceLaneX,
-  forceTuning,
-} = await import("../src/hooks/useForceDag.ts");
+const { DAG_NODE_WIDTH, forceCanvasMetrics, forceLaneX, forceTuning } =
+  await import("../src/hooks/useForceDag.ts");
 moduleHooks.deregister();
 
 test("repulsion endpoints tune the whole force model from compact to wide", () => {
@@ -59,27 +55,50 @@ test("maximum repulsion materially increases settled node separation", () => {
   const compact = settledMeanSeparation(350);
   const wide = settledMeanSeparation(1900);
 
-  assert.ok(wide > compact * 1.25, `expected ${wide.toFixed(1)} to exceed ${compact.toFixed(1)} by 25%`);
+  assert.ok(
+    wide > compact * 1.25,
+    `expected ${wide.toFixed(1)} to exceed ${compact.toFixed(1)} by 25%`,
+  );
 });
 
 function settledMeanSeparation(repulsion) {
   const width = 2400;
   const height = 1300;
   const tuning = forceTuning(repulsion);
-  const nodes = [0, 1, 2, 3].flatMap((lane) => [0, 1].map((row) => ({
-    id: `${lane}:${row}`,
-    lane,
-    x: forceLaneX(lane, width),
-    y: 540 + row * 220,
-  })));
+  const nodes = [0, 1, 2, 3].flatMap((lane) =>
+    [0, 1].map((row) => ({
+      id: `${lane}:${row}`,
+      lane,
+      x: forceLaneX(lane, width),
+      y: 540 + row * 220,
+    })),
+  );
   const edges = [
-    ["0:0", "1:0"], ["1:0", "2:0"], ["2:0", "3:0"],
-    ["0:1", "1:1"], ["1:1", "2:1"], ["2:1", "3:1"],
-    ["0:0", "1:1"], ["1:0", "2:1"], ["2:0", "3:1"],
+    ["0:0", "1:0"],
+    ["1:0", "2:0"],
+    ["2:0", "3:0"],
+    ["0:1", "1:1"],
+    ["1:1", "2:1"],
+    ["2:1", "3:1"],
+    ["0:0", "1:1"],
+    ["1:0", "2:1"],
+    ["2:0", "3:1"],
   ].map(([source, target]) => ({ source, target }));
   const simulation = forceSimulation(nodes)
-    .force("links", forceLink(edges).id((node) => node.id).distance(tuning.linkDistance).strength(tuning.linkStrength))
-    .force("repulsion", forceManyBody().strength(tuning.chargeStrength).distanceMin(90).distanceMax(tuning.chargeDistanceMax))
+    .force(
+      "links",
+      forceLink(edges)
+        .id((node) => node.id)
+        .distance(tuning.linkDistance)
+        .strength(tuning.linkStrength),
+    )
+    .force(
+      "repulsion",
+      forceManyBody()
+        .strength(tuning.chargeStrength)
+        .distanceMin(90)
+        .distanceMax(tuning.chargeDistanceMax),
+    )
     .force("lanes", forceX((node) => forceLaneX(node.lane, width)).strength(tuning.laneStrength))
     .force("centerline", forceY(height / 2).strength(tuning.centerlineStrength))
     .force("collision", rectangleCollision(tuning.collisionPadding))

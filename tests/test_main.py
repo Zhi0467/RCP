@@ -88,9 +88,7 @@ def test_instance_lock_rejects_a_second_server_for_the_same_data(tmp_path) -> No
         pass
 
 
-def test_open_reuses_the_server_that_holds_the_instance_lock(
-    tmp_path, monkeypatch
-) -> None:
+def test_open_reuses_the_server_that_holds_the_instance_lock(tmp_path, monkeypatch) -> None:
     opened = []
     metadata = _metadata(tmp_path)
     monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: tmp_path)
@@ -104,9 +102,7 @@ def test_open_reuses_the_server_that_holds_the_instance_lock(
     with instance_lock(tmp_path):
         main()
 
-    assert opened == [
-        (("127.0.0.1", 8421, None), {"expected": metadata})
-    ]
+    assert opened == [(("127.0.0.1", 8421, None), {"expected": metadata})]
 
 
 def test_open_replaces_an_unavailable_lock_owner(tmp_path, monkeypatch) -> None:
@@ -179,9 +175,7 @@ def test_replace_existing_server_requests_shutdown_then_runs_under_lock(
     assert calls[2] == ("serve", tmp_path)
 
 
-def test_replace_refuses_noninteractive_interruption_without_force(
-    tmp_path, monkeypatch
-) -> None:
+def test_replace_refuses_noninteractive_interruption_without_force(tmp_path, monkeypatch) -> None:
     (tmp_path / "rcp.lock").write_text("4321\n", encoding="utf-8")
     monkeypatch.setattr("rcp.__main__._replacement_warning", lambda _: "active work")
     monkeypatch.setattr("rcp.__main__.os.kill", lambda *_: pytest.fail("sent a signal"))
@@ -190,9 +184,7 @@ def test_replace_refuses_noninteractive_interruption_without_force(
         _replace_existing_server(_serve_args(reuse_existing=False), tmp_path)
 
 
-def test_reload_prepares_watched_frontend_before_starting_uvicorn(
-    tmp_path, monkeypatch
-) -> None:
+def test_reload_prepares_watched_frontend_before_starting_uvicorn(tmp_path, monkeypatch) -> None:
     calls = []
 
     @contextmanager
@@ -342,9 +334,7 @@ def test_probe_rejects_a_stranger_on_the_recorded_port(tmp_path, monkeypatch) ->
     metadata = _metadata(tmp_path)
     tmp_path.mkdir(exist_ok=True)
     (tmp_path / "rcp.lock").write_text(f"{metadata.pid}\n", encoding="utf-8")
-    (tmp_path / "rcp-server.json").write_text(
-        json.dumps(metadata.as_dict()), encoding="utf-8"
-    )
+    (tmp_path / "rcp-server.json").write_text(json.dumps(metadata.as_dict()), encoding="utf-8")
     monkeypatch.setattr(
         "rcp.__main__._request_json",
         lambda _: {

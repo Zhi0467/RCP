@@ -1,11 +1,20 @@
-import { CheckCircle2, ChevronDown, LoaderCircle, LockKeyhole, RefreshCw, TriangleAlert } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  LoaderCircle,
+  LockKeyhole,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { modelChange, modelOptions, providerChange, providerOptions, reasoningOptions } from "../providers";
-import type {
-  AgentProfile,
-  AgentRunConfig,
-  ProjectSnapshot,
-} from "../types";
+import {
+  modelChange,
+  modelOptions,
+  providerChange,
+  providerOptions,
+  reasoningOptions,
+} from "../providers";
+import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "../types";
 
 interface Props {
   project: ProjectSnapshot;
@@ -68,11 +77,19 @@ export function AgentConfigControls({
             value={value.provider}
             disabled={locked}
             onChange={(event) =>
-              update(providerChange(onMachine[event.target.value]?.models ?? [], event.target.value, value.reasoning))
+              update(
+                providerChange(
+                  onMachine[event.target.value]?.models ?? [],
+                  event.target.value,
+                  value.reasoning,
+                ),
+              )
             }
           >
             {providers.map(({ id, label }) => (
-              <option value={id} key={id}>{label}</option>
+              <option value={id} key={id}>
+                {label}
+              </option>
             ))}
           </select>
         </label>
@@ -84,7 +101,9 @@ export function AgentConfigControls({
             onChange={(event) => update(modelChange(models, event.target.value, value.reasoning))}
           >
             {modelChoices.map(({ id, label }) => (
-              <option value={id} key={id}>{label}</option>
+              <option value={id} key={id}>
+                {label}
+              </option>
             ))}
           </select>
         </label>
@@ -97,7 +116,9 @@ export function AgentConfigControls({
               onChange={(event) => update({ reasoning: event.target.value })}
             >
               {reasoningChoices.map(({ id, label }) => (
-                <option value={id} key={id}>{label}</option>
+                <option value={id} key={id}>
+                  {label}
+                </option>
               ))}
             </select>
           </label>
@@ -111,7 +132,8 @@ export function AgentConfigControls({
           >
             {project.machines.map((item) => (
               <option value={item.alias} key={item.alias}>
-                {item.alias}{item.host ? ` · ${item.host}` : " · local"}
+                {item.alias}
+                {item.host ? ` · ${item.host}` : " · local"}
               </option>
             ))}
           </select>
@@ -119,12 +141,17 @@ export function AgentConfigControls({
       </div>
       {!compact && (
         <>
-          <div className={readiness?.authenticated ? "agent-readiness ready" : "agent-readiness warning"}>
+          <div
+            className={
+              readiness?.authenticated ? "agent-readiness ready" : "agent-readiness warning"
+            }
+          >
             {readiness?.authenticated ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />}
             <span>
               {readiness?.authenticated
                 ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
-                : readiness?.reason || `${value.provider} is not ready on ${machine?.host || "this machine"}`}
+                : readiness?.reason ||
+                  `${value.provider} is not ready on ${machine?.host || "this machine"}`}
             </span>
             {onRefreshReadiness && (
               <button

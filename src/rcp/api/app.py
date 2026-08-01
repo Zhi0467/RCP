@@ -197,9 +197,7 @@ def create_app(
         catalog.state_host(default_project_id) if default_project_id is not None else ""
     )
     default_service = (
-        _LazyProjectService(catalog, default_project_id)
-        if default_project_id is not None
-        else None
+        _LazyProjectService(catalog, default_project_id) if default_project_id is not None else None
     )
 
     async def background_task_stream(
@@ -297,9 +295,7 @@ def create_app(
             ).sweep()
             # Scheduling happens before the app becomes available, but the task
             # itself cannot run until control returns to the server after yield.
-            startup_maintenance.append(
-                asyncio.create_task(warm_local_provider_capabilities())
-            )
+            startup_maintenance.append(asyncio.create_task(warm_local_provider_capabilities()))
             if default_state_host:
                 startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
             yield
@@ -352,11 +348,7 @@ def create_app(
 
     @app.exception_handler(PatchRejected)
     async def patch_rejected(_: Request, exc: PatchRejected) -> JSONResponse:
-        status = (
-            409
-            if any(item.code == "stale-node-edit" for item in exc.report.messages)
-            else 422
-        )
+        status = 409 if any(item.code == "stale-node-edit" for item in exc.report.messages) else 422
         return JSONResponse(
             status_code=status,
             content={"detail": [item.model_dump(mode="json") for item in exc.report.messages]},
@@ -505,9 +497,7 @@ def create_app(
         snapshot["id"] = project_id
         return snapshot
 
-    @app.post(
-        "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve"
-    )
+    @app.post("/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve")
     def resolve_project_provider_path(
         project_id: str,
         machine_alias: str,
@@ -541,7 +531,9 @@ def create_app(
         try:
             return service.sync_graph(body).model_dump(mode="json")
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=f"Missing graph object: {exc.args[0]}") from exc
+            raise HTTPException(
+                status_code=404, detail=f"Missing graph object: {exc.args[0]}"
+            ) from exc
         except NodeEditConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
@@ -633,17 +625,12 @@ def create_app(
             event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
         ]
         detail["debug_receipts"] = [
-            receipt.model_dump(mode="json")
-            for receipt in store.agent_task_receipts(operation_id)
+            receipt.model_dump(mode="json") for receipt in store.agent_task_receipts(operation_id)
         ]
         return detail
 
-    @app.get(
-        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview"
-    )
-    @app.head(
-        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview"
-    )
+    @app.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
+    @app.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
     async def preview_agent_artifact(
         project_id: str,
         operation_id: str,
@@ -681,12 +668,8 @@ def create_app(
             headers=headers,
         )
 
-    @app.get(
-        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"
-    )
-    @app.head(
-        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"
-    )
+    @app.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
+    @app.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
     async def download_agent_artifact(
         project_id: str,
         operation_id: str,
@@ -744,9 +727,7 @@ def create_app(
         "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update",
         status_code=202,
     )
-    def repair_agent_task_graph_update(
-        project_id: str, operation_id: str
-    ) -> dict[str, object]:
+    def repair_agent_task_graph_update(project_id: str, operation_id: str) -> dict[str, object]:
         service = _project_service(catalog, project_id)
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id:
@@ -782,9 +763,7 @@ def create_app(
             candidate = request_type.model_validate(
                 {**previous.request, **overrides, "session_id": None}
             )
-            _validate_stored_task_request(
-                service, previous.kind, candidate.model_dump(mode="json")
-            )
+            _validate_stored_task_request(service, previous.kind, candidate.model_dump(mode="json"))
             return background_tasks.retry(operation_id, **overrides).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -856,18 +835,14 @@ def _load_agent_artifact(
         if expected_descriptor != descriptor:
             raise ValueError("artifact descriptor does not match its task scope")
         if record.stage_host:
-            stage = RemoteRunStage(record.stage_host).attach_artifact_source(
-                record.stage_root
-            )
+            stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
             data = stage.read_artifact_bytes(
                 scope_id,
                 descriptor.name,
                 max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
             )
         else:
-            directory = (
-                Path(record.stage_root) / "turns" / scope_id / "artifacts"
-            )
+            directory = Path(record.stage_root) / "turns" / scope_id / "artifacts"
             data = read_local_regular_file(
                 directory,
                 descriptor.name,
@@ -919,9 +894,7 @@ def _validated_task_request(
             )
         return _resolved_graph_request(service, kind, request)
 
-    chat_scope: Literal["node", "project"] = (
-        "node" if kind == "node_chat" else "project"
-    )
+    chat_scope: Literal["node", "project"] = "node" if kind == "node_chat" else "project"
     request = request.model_copy(
         update={
             "chat_scope": chat_scope,
@@ -986,9 +959,7 @@ def _resolved_coach_request(
             raise ValueError("That native session was not created by this Paper workspace.")
         if request.provider is not None and request.provider != existing.provider:
             raise ValueError("A resumed session cannot change provider.")
-        if request.model is not None and (
-            request.model or "provider-default"
-        ) != existing.model:
+        if request.model is not None and (request.model or "provider-default") != existing.model:
             raise ValueError("A resumed session cannot change model.")
         if request.reasoning is not None and request.reasoning != existing.reasoning:
             raise ValueError("A resumed session cannot change reasoning.")
@@ -1337,11 +1308,7 @@ def _retry_lineage(execution: AgentTaskExecution | None) -> list[AgentTaskRecord
     while parent_id and parent_id not in seen:
         seen.add(parent_id)
         parent = execution.store.agent_task(parent_id)
-        if (
-            parent is None
-            or parent.project_id != current.project_id
-            or parent.kind != current.kind
-        ):
+        if parent is None or parent.project_id != current.project_id or parent.kind != current.kind:
             break
         lineage.append(parent)
         parent_id = parent.parent_operation_id
@@ -1389,9 +1356,7 @@ def _continuation_graph_context(
         problems.append("task kind changed")
     if sorted(prepared.run_truth_scope) != expected_scope:
         problems.append("run truth scope changed")
-    if prepared.execution_host != execution_host or record.stage_host != (
-        execution_host or None
-    ):
+    if prepared.execution_host != execution_host or record.stage_host != (execution_host or None):
         problems.append("execution host changed")
     if prepared.graph_revision != current_revision:
         problems.append(
@@ -1405,7 +1370,9 @@ def _continuation_graph_context(
             {"reason": reason, "retry_required": True},
             tier="diagnostic",
         )
-        raise ValueError(f"The saved prepared context no longer matches ({reason}). Retry this task.")
+        raise ValueError(
+            f"The saved prepared context no longer matches ({reason}). Retry this task."
+        )
     return prepared
 
 
@@ -1458,9 +1425,11 @@ def _legacy_base_contract(execution: AgentTaskExecution, record: AgentTaskRecord
                 candidate = PurePosixPath(value)
                 if candidate.parent != PurePosixPath(record.stage_root) / "inputs":
                     continue
-                content = RemoteRunStage(record.stage_host).attach(
-                    record.stage_root
-                ).read_input_text(candidate.name)
+                content = (
+                    RemoteRunStage(record.stage_host)
+                    .attach(record.stage_root)
+                    .read_input_text(candidate.name)
+                )
             else:
                 candidate = Path(value).resolve()
                 if candidate.parent != (Path(record.stage_root) / "inputs").resolve():
@@ -1478,9 +1447,7 @@ def _legacy_base_contract(execution: AgentTaskExecution, record: AgentTaskRecord
     return None
 
 
-def _read_prior_progress(
-    execution: AgentTaskExecution, parent: AgentTaskRecord
-) -> str | None:
+def _read_prior_progress(execution: AgentTaskExecution, parent: AgentTaskRecord) -> str | None:
     messages = (parent.result or {}).get("messages", [])
     if isinstance(messages, list) and messages:
         return "\n\n".join(str(item) for item in messages[:16])
@@ -1500,8 +1467,10 @@ def _read_prior_progress(
             candidate = PurePosixPath(path)
             if candidate.parent != PurePosixPath(parent.stage_root) / "inputs":
                 return None
-            return RemoteRunStage(parent.stage_host).attach(parent.stage_root).read_input_text(
-                candidate.name
+            return (
+                RemoteRunStage(parent.stage_host)
+                .attach(parent.stage_root)
+                .read_input_text(candidate.name)
             )
         candidate = Path(path).resolve()
         if candidate.parent != (Path(parent.stage_root) / "inputs").resolve():
@@ -1551,11 +1520,14 @@ def _try_reuse_graph_context(
                 raise ValueError("execution host changed")
             if value.graph_revision != graph_revision:
                 raise ValueError("graph revision changed")
-            if _source_snapshot_digest(
-                index,
-                value.run_truth_scope,
-                exclude_native_sessions=excluded_sessions,
-            ) != value.source_snapshot_digest:
+            if (
+                _source_snapshot_digest(
+                    index,
+                    value.run_truth_scope,
+                    exclude_native_sessions=excluded_sessions,
+                )
+                != value.source_snapshot_digest
+            ):
                 raise ValueError("source snapshot changed")
             prepared = value
             prepared_parent = candidate
@@ -1937,9 +1909,9 @@ async def _stream_agent_events(
                     evidence = json.loads(event.text)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     evidence = {"unparsed": event.text[:400]}
-                outcome.exit_evidence = evidence if isinstance(evidence, dict) else {
-                    "unparsed": event.text[:400]
-                }
+                outcome.exit_evidence = (
+                    evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
+                )
                 _record_provider_exit(
                     execution,
                     outcome,
@@ -2005,9 +1977,7 @@ async def _stream_graph_run(
     execution: AgentTaskExecution | None = None,
 ) -> AsyncIterator[str]:
     continuation = execution.continuation if execution is not None else "fresh"
-    reuses_native_checkpoint = bool(
-        execution is not None and execution.reuses_native_checkpoint
-    )
+    reuses_native_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     if request.session_id and not reuses_native_checkpoint:
         yield _sse(
             AgentEvent(
@@ -2400,9 +2370,7 @@ async def _stream_graph_run(
         rounds = 0
         last_problem = (
             execution.retry_feedback[0]
-            if execution is not None
-            and continuation == "correction"
-            and execution.retry_feedback
+            if execution is not None and continuation == "correction" and execution.retry_feedback
             else None
         )
         while True:
@@ -2424,18 +2392,12 @@ async def _stream_graph_run(
                 contract_path=contract_path,
                 remote=bool(execution_host),
                 resumed=reuses_native_checkpoint,
-                continuation=(
-                    "correction" if rounds else continuation
-                ),
+                continuation=("correction" if rounds else continuation),
                 extra={
                     "surface": surface,
                     "capability": "scratch_patch",
                     "network_access": True,
-                    "launch_kind": (
-                        "correction"
-                        if rounds
-                        else continuation
-                    ),
+                    "launch_kind": ("correction" if rounds else continuation),
                     "correction_round": rounds,
                 },
             )
@@ -2466,9 +2428,7 @@ async def _stream_graph_run(
                         streamed = AgentEvent.model_validate_json(
                             frame.removeprefix("data: ").strip()
                         )
-                        execution_record = execution.store.agent_task(
-                            execution.operation_id
-                        )
+                        execution_record = execution.store.agent_task(execution.operation_id)
                         if streamed.event == "error" and execution_record is not None:
                             if outcome.trace_messages:
                                 progress_path = _stage_task_input(
@@ -2618,8 +2578,7 @@ async def _stream_graph_run(
                                 {
                                     "round": rounds,
                                     "messages": [
-                                        item.model_dump(mode="json")
-                                        for item in exc.report.messages
+                                        item.model_dump(mode="json") for item in exc.report.messages
                                     ],
                                 },
                                 tier="diagnostic",
@@ -2954,9 +2913,7 @@ async def _stream_work_run(
                 "launch_kind": "resume" if resuming else "initial",
                 "write_directory_count": len(write_dirs),
                 "canonical_state_boundary": (
-                    "prompt_only"
-                    if profile.provider == "claude"
-                    else "sandbox_enforced"
+                    "prompt_only" if profile.provider == "claude" else "sandbox_enforced"
                 ),
             },
         )
@@ -3146,9 +3103,7 @@ async def _stream_work_run(
                     )
                 ) as stream:
                     async for frame in stream:
-                        event = AgentEvent.model_validate_json(
-                            frame.removeprefix("data: ").strip()
-                        )
+                        event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                         if event.event == "error":
                             correction_error = event.text or "Patch correction failed."
                             continue
@@ -3157,7 +3112,9 @@ async def _stream_work_run(
                 if correction_outcome.paused:
                     return
                 if correction_error or not correction_outcome.completed:
-                    detail = correction_error or f"{request.provider} produced no correction result."
+                    detail = (
+                        correction_error or f"{request.provider} produced no correction result."
+                    )
                     failure = _WorkPatchFailure(
                         detail,
                         correctable=True,
@@ -3188,8 +3145,7 @@ async def _stream_work_run(
                     continue
                 if (
                     pre_launch_digest is not None
-                    and hashlib.sha256(corrected.encode("utf-8")).hexdigest()
-                    == pre_launch_digest
+                    and hashlib.sha256(corrected.encode("utf-8")).hexdigest() == pre_launch_digest
                 ):
                     failure = _WorkPatchFailure(
                         f"{failure.message} The correction left patch.json byte-identical; "
@@ -3227,9 +3183,7 @@ async def _stream_work_run(
         }
         if graph_update.applied_revision is not None:
             payload["applied_revision"] = graph_update.applied_revision
-        yield _sse(
-            AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":")))
-        )
+        yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
         yield _sse(AgentEvent(event="done"))
     finally:
         retain_projection = (
@@ -3269,9 +3223,7 @@ async def _stream_work_graph_repair(
         local_stage: Path | None = None
         remote_stage: RemoteRunStage | None = None
         if execution_host:
-            stage_root = _validated_remote_chat_resume_stage(
-                execution, execution_host, stage_name
-            )
+            stage_root = _validated_remote_chat_resume_stage(execution, execution_host, stage_name)
             remote_stage = RemoteRunStage(execution_host).attach(stage_root)
             workspace = Path(str(remote_stage.workspace))
             patch_path = str(remote_stage.workspace / "patch.json")
@@ -3286,7 +3238,9 @@ async def _stream_work_graph_repair(
         if parent is None or parent.parent_operation_id is None:
             raise ValueError("The graph repair has no rejected Work parent.")
         rejected = execution.store.agent_task(parent.parent_operation_id)
-        raw_graph_update = rejected.result.get("graph_update") if rejected and rejected.result else None
+        raw_graph_update = (
+            rejected.result.get("graph_update") if rejected and rejected.result else None
+        )
         previous = GraphUpdateResult.model_validate(raw_graph_update)
         if previous.status != "rejected":
             raise ValueError("Only a rejected Work graph update can be repaired.")
@@ -3318,9 +3272,7 @@ async def _stream_work_graph_repair(
             )
             yield _sse(AgentEvent(event="done"))
             return
-        original_contract_path = _parent_task_contract_path(
-            execution, local_stage, remote_stage
-        )
+        original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
         token = _task_token(execution)
         diagnostics_path = _stage_json_task_input(
             local_stage,
@@ -3417,8 +3369,7 @@ async def _stream_work_graph_repair(
         execution,
         patch_text,
         base_revision=base_revision,
-        run_truth_scope=request.run_truth_scope
-        or service.manifest.agent.default_run_truth_scope,
+        run_truth_scope=request.run_truth_scope or service.manifest.agent.default_run_truth_scope,
     )
     if graph_update is None:
         assert failure is not None
@@ -3534,9 +3485,7 @@ async def _stream_discuss_run(
                 stage_root = _swept_stage_root(data_dir)
                 expected_stage = stage_root / stage_name
                 if resuming:
-                    local_stage = _validated_local_chat_resume_stage(
-                        execution, expected_stage
-                    )
+                    local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
                 else:
                     local_stage = expected_stage
                     local_stage.mkdir(parents=True, exist_ok=True)
@@ -3547,9 +3496,7 @@ async def _stream_discuss_run(
                 # A reused folder must not hand this turn the previous turn's patch.
                 _clear_stale_patch(workspace, remote_stage)
             artifact_scope_id = (
-                _logical_chat_turn_operation_id(
-                    execution.store, execution.operation_id
-                )
+                _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
                 else execution.operation_id
                 if execution is not None
@@ -3848,12 +3795,7 @@ def _prepare_local_artifact_directory(
     scope = turns / scope_id
     target = scope / "artifacts"
     if reuse:
-        if (
-            scope.is_symlink()
-            or not scope.is_dir()
-            or target.is_symlink()
-            or not target.is_dir()
-        ):
+        if scope.is_symlink() or not scope.is_dir() or target.is_symlink() or not target.is_dir():
             raise ValueError(
                 "The saved artifact directory is unavailable; retry this chat turn instead."
             )
@@ -4042,11 +3984,7 @@ def _apply_work_patch(
             execution.store.record_agent_task_receipt(
                 execution.operation_id,
                 "patch_rejected",
-                {
-                    "messages": [
-                        item.model_dump(mode="json") for item in exc.report.messages[:16]
-                    ]
-                },
+                {"messages": [item.model_dump(mode="json") for item in exc.report.messages[:16]]},
                 tier="diagnostic",
             )
         return None, _WorkPatchFailure(
@@ -4078,9 +4016,7 @@ def _apply_work_patch(
             applied_revision=result.state.revision,
             change_summary=list(change_summary),
             proposal_ids=list(proposal_ids),
-            validation_messages=_bounded_graph_messages(
-                *(item.message for item in report.flags)
-            ),
+            validation_messages=_bounded_graph_messages(*(item.message for item in report.flags)),
         ),
         None,
     )
@@ -4117,10 +4053,7 @@ def _work_graph_repairable(
     failure: _WorkPatchFailure,
 ) -> bool:
     return bool(
-        failure.correctable
-        and native_session_id
-        and execution is not None
-        and execution.stage_root
+        failure.correctable and native_session_id and execution is not None and execution.stage_root
     )
 
 
@@ -4162,11 +4095,7 @@ async def _stream_coach(
             None,
         )
     try:
-        if not (
-            execution is not None
-            and execution.reuses_native_checkpoint
-            and existing is None
-        ):
+        if not (execution is not None and execution.reuses_native_checkpoint and existing is None):
             request = _resolved_coach_request(service, request)
         profile = service.resolve_agent_profile(
             "paper_coach",
@@ -4339,9 +4268,7 @@ async def _stream_coach(
                 except (json.JSONDecodeError, TypeError, ValueError):
                     evidence = {"unparsed": event.text[:400]}
                 provider_outcome.exit_evidence = (
-                    evidence
-                    if isinstance(evidence, dict)
-                    else {"unparsed": event.text[:400]}
+                    evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
                 )
                 _record_provider_exit(
                     execution,
@@ -4384,9 +4311,7 @@ def _record_context_receipt(
 ) -> None:
     if execution is None:
         return
-    slice_hashes = {
-        session.slice_sha256 for session in context.sessions if session.slice_sha256
-    }
+    slice_hashes = {session.slice_sha256 for session in context.sessions if session.slice_sha256}
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "context_assembled",
@@ -4394,9 +4319,7 @@ def _record_context_receipt(
             "surface": surface,
             "repository_count": len(context.repositories),
             "session_count": len(context.sessions),
-            "session_record_count": sum(
-                session.slice_record_count for session in context.sessions
-            ),
+            "session_record_count": sum(session.slice_record_count for session in context.sessions),
             "unique_slice_count": len(slice_hashes),
             "source_error_count": len(context.source_errors),
             "graph_revision": context.graph_revision,
@@ -4460,9 +4383,7 @@ def _first_chat_base_revision(execution: AgentTaskExecution | None, fallback: in
                 f"task {operation_id!r} crosses a project or task-kind boundary"
             )
         if expected_attempt is not None and record.attempt != expected_attempt:
-            raise _resume_lineage_error(
-                f"task {operation_id!r} has inconsistent attempt ancestry"
-            )
+            raise _resume_lineage_error(f"task {operation_id!r} has inconsistent attempt ancestry")
         receipts = store.agent_task_receipts(operation_id)
         resumed = _attempt_was_resumed(receipts, record)
         if first and not resumed:
@@ -4496,9 +4417,7 @@ def _logical_chat_turn_operation_id(store: AppStore, operation_id: str) -> str:
             kind = record.kind
         elif record.project_id != project_id or record.kind != kind:
             raise ValueError("chat task provenance crosses a task boundary")
-        resumed = _attempt_was_resumed(
-            store.agent_task_receipts(current_id), record
-        )
+        resumed = _attempt_was_resumed(store.agent_task_receipts(current_id), record)
         if not resumed:
             return current_id
         if record.parent_operation_id is None:
@@ -4514,9 +4433,7 @@ def _resume_lineage_error(detail: str) -> ValueError:
     )
 
 
-def _attempt_was_resumed(
-    receipts: list[AgentTaskReceiptRecord], record: AgentTaskRecord
-) -> bool:
+def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTaskRecord) -> bool:
     created = [receipt for receipt in receipts if receipt.category == "operation_created"]
     if len(created) != 1:
         raise _resume_lineage_error(
@@ -4546,12 +4463,8 @@ def _attempt_was_resumed(
     return resumed
 
 
-def _assembled_graph_revision(
-    receipts: list[AgentTaskReceiptRecord], operation_id: str
-) -> int:
-    assembled = [
-        receipt for receipt in receipts if receipt.category == "chat_context_assembled"
-    ]
+def _assembled_graph_revision(receipts: list[AgentTaskReceiptRecord], operation_id: str) -> int:
+    assembled = [receipt for receipt in receipts if receipt.category == "chat_context_assembled"]
     if not assembled:
         raise _resume_lineage_error(
             f"the original attempt {operation_id!r} has no assembled chat context"
@@ -4609,9 +4522,7 @@ def _record_patch_receipt(
     for operation in patch.ops:
         raw_kind = operation.get("op")
         operation_kind = (
-            raw_kind
-            if isinstance(raw_kind, str) and raw_kind in known_operations
-            else "unknown"
+            raw_kind if isinstance(raw_kind, str) and raw_kind in known_operations else "unknown"
         )
         operation_counts[operation_kind] = operation_counts.get(operation_kind, 0) + 1
         if operation_kind == "create_nodes" and isinstance(operation.get("nodes"), list):
@@ -4682,8 +4593,7 @@ def _chat_stage_name(
         task = execution.store.agent_task(execution.operation_id)
         if task is None or not task.project_id:
             raise ValueError(
-                "Cannot identify this chat's project workspace; retry the turn from the "
-                "beginning."
+                "Cannot identify this chat's project workspace; retry the turn from the beginning."
             )
         project_identity = f"task-project\0{task.project_id}"
     else:
@@ -4733,11 +4643,7 @@ def _validated_local_chat_resume_stage(
             "the execution machine. Retry the turn from the beginning."
         )
     stored = Path(execution.stage_root)
-    if (
-        stored.absolute() != expected.absolute()
-        or stored.is_symlink()
-        or not stored.is_dir()
-    ):
+    if stored.absolute() != expected.absolute() or stored.is_symlink() or not stored.is_dir():
         raise ValueError(
             "Cannot safely resume this chat because its saved stage belongs to a different "
             "project or conversation, or is unavailable. Retry the turn from the beginning."
@@ -4768,9 +4674,7 @@ def _agent_read_dirs(
     those are reached over ssh from the pointers in the prompt, never copied.
     """
     read_dirs = [
-        Path(item.path)
-        for item in context.repositories
-        if item.machine == execution_machine
+        Path(item.path) for item in context.repositories if item.machine == execution_machine
     ]
     if remote_stage is not None:
         # Derived from the manifest, not from the context: on a resumed run the
@@ -4838,9 +4742,7 @@ def _work_write_dirs(
     """Exact on-machine repository roots authorized by this Work turn."""
 
     pointers = [
-        item
-        for item in context.repositories
-        if item.machine == execution_machine and not item.host
+        item for item in context.repositories if item.machine == execution_machine and not item.host
     ]
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
     if state_repository.machine == execution_machine:
@@ -4874,8 +4776,7 @@ def _work_write_dirs(
     missing = [str(path) for path in roots if not path.is_dir()]
     if missing:
         raise StateUnavailable(
-            "Work repository roots are unavailable on the execution machine: "
-            f"{missing}"
+            f"Work repository roots are unavailable on the execution machine: {missing}"
         )
     return list(dict.fromkeys(roots))
 
@@ -4885,9 +4786,7 @@ def _overlaps_canonical_state(
     canonical_root: Path | PurePosixPath,
     canonical_research: Path | PurePosixPath,
 ) -> bool:
-    inside_research = (
-        candidate == canonical_research or canonical_research in candidate.parents
-    )
+    inside_research = candidate == canonical_research or canonical_research in candidate.parents
     ancestor_of_state = candidate != canonical_root and candidate in canonical_root.parents
     return inside_research or ancestor_of_state
 
@@ -4901,8 +4800,7 @@ def _project_chat_conversations(
     on_machine = [pointer for pointer in context.conversations if not pointer.host]
     unavailable = context.conversations_unreachable + len(context.conversations) - len(on_machine)
     entries = [
-        (pointer.path, _session_bundle_relative_path(pointer).as_posix())
-        for pointer in on_machine
+        (pointer.path, _session_bundle_relative_path(pointer).as_posix()) for pointer in on_machine
     ]
     if remote_stage is not None:
         projected_paths = remote_stage.replace_conversation_inputs(entries)
@@ -4924,9 +4822,7 @@ def _project_chat_conversations(
     ), projection
 
 
-def _replace_local_conversation_inputs(
-    stage: Path, sources: list[tuple[str, str]]
-) -> Path:
+def _replace_local_conversation_inputs(stage: Path, sources: list[tuple[str, str]]) -> Path:
     """Replace ``inputs/conversations`` with real copies, failing before launch."""
     parent = stage / "inputs"
     parent.mkdir(parents=True, exist_ok=True)
@@ -4978,9 +4874,7 @@ def _rebind_chat_conversations(
         update={
             "conversations": rebound,
             "conversations_unreachable": (
-                context.conversations_unreachable
-                + len(context.conversations)
-                - len(available)
+                context.conversations_unreachable + len(context.conversations) - len(available)
             ),
         }
     )

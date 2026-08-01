@@ -25,7 +25,9 @@ test("semantic stages stay left-to-right across reverse-reading relations", () =
 
   const layout = buildSemanticLaneLayout(nodes, edges);
   const reordered = buildSemanticLaneLayout([...nodes].reverse(), [...edges].reverse());
-  const laneById = Object.fromEntries(layout.lanes.flatMap((lane, index) => lane.map((id) => [id, index])));
+  const laneById = Object.fromEntries(
+    layout.lanes.flatMap((lane, index) => lane.map((id) => [id, index])),
+  );
 
   assert.deepEqual(layout, reordered);
   assert.equal(laneById.question, 0);
@@ -68,9 +70,21 @@ test("parent and child barycenters remove a simple avoidable crossing", () => {
 
   const layout = buildTopologyLayout(nodes, edges);
 
-  assert.deepEqual(layout.layers, [["a", "b"], ["d", "c"]]);
+  assert.deepEqual(layout.layers, [
+    ["a", "b"],
+    ["d", "c"],
+  ]);
   assert.equal(countCrossings(layout.layers, edges), 0);
-  assert.equal(countCrossings([["a", "b"], ["c", "d"]], edges), 1);
+  assert.equal(
+    countCrossings(
+      [
+        ["a", "b"],
+        ["c", "d"],
+      ],
+      edges,
+    ),
+    1,
+  );
 });
 
 test("spatial hash retains every overlap while pruning a 400-node candidate set", () => {
@@ -125,10 +139,12 @@ function countCrossings(layers, edges) {
       const rightSource = positions.get(edges[right].source);
       const rightTarget = positions.get(edges[right].target);
       if (
-        leftSource?.rank === rightSource?.rank
-        && leftTarget?.rank === rightTarget?.rank
-        && Math.sign(leftSource.order - rightSource.order) !== Math.sign(leftTarget.order - rightTarget.order)
-      ) crossings += 1;
+        leftSource?.rank === rightSource?.rank &&
+        leftTarget?.rank === rightTarget?.rank &&
+        Math.sign(leftSource.order - rightSource.order) !==
+          Math.sign(leftTarget.order - rightTarget.order)
+      )
+        crossings += 1;
     }
   }
   return crossings;

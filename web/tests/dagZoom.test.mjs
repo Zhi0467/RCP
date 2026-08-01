@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  DAG_ZOOM_MAX,
-  DAG_ZOOM_MIN,
-  zoomDagAtPoint,
-} from "../src/hooks/dagZoom.ts";
+import { DAG_ZOOM_MAX, DAG_ZOOM_MIN, zoomDagAtPoint } from "../src/hooks/dagZoom.ts";
 
 const base = {
   zoom: 1,

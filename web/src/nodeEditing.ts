@@ -56,30 +56,44 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
 
 export function editableNodeFields(node: GraphNode, ontology?: OntologyState): NodeEditField[] {
   const ownerTypes = new Set([node.type, ...(node.extension_type ? [node.extension_type] : [])]);
-  const extensionFields = ontology ? ontology.fields
-    .filter((field) => ownerTypes.has(field.owner_type) && !field.deprecated)
-    .map(toEditField) : [];
+  const extensionFields = ontology
+    ? ontology.fields
+        .filter((field) => ownerTypes.has(field.owner_type) && !field.deprecated)
+        .map(toEditField)
+    : [];
   return [...fieldsByType[node.type], ...extensionFields];
 }
 
 export function nodeEditDraft(node: GraphNode, ontology?: OntologyState): Record<string, string> {
-  return Object.fromEntries(editableNodeFields(node, ontology).map((field) => [
-    field.key,
-    draftValue(field, field.extensionName ? node.extension_fields[field.extensionName] : node[field.key]),
-  ]));
+  return Object.fromEntries(
+    editableNodeFields(node, ontology).map((field) => [
+      field.key,
+      draftValue(
+        field,
+        field.extensionName ? node.extension_fields[field.extensionName] : node[field.key],
+      ),
+    ]),
+  );
 }
 
 export function changedNodeFields(
   node: GraphNode,
   draft: Record<string, string>,
   ontology?: OntologyState,
-): Record<string, string | number | boolean | string[] | Record<string, string | number | boolean | string[]> | null> {
+): Record<
+  string,
+  string | number | boolean | string[] | Record<string, string | number | boolean | string[]> | null
+> {
   const fields = editableNodeFields(node, ontology);
-  const baseChanges = Object.fromEntries(fields.filter((field) => !field.extensionName).flatMap((field) => {
-    const next = normalizeField(field, draft[field.key] ?? "");
-    const current = normalizeCurrent(field, node[field.key]);
-    return equalValues(current, next) ? [] : [[field.key, next]];
-  }));
+  const baseChanges = Object.fromEntries(
+    fields
+      .filter((field) => !field.extensionName)
+      .flatMap((field) => {
+        const next = normalizeField(field, draft[field.key] ?? "");
+        const current = normalizeCurrent(field, node[field.key]);
+        return equalValues(current, next) ? [] : [[field.key, next]];
+      }),
+  );
   const extensionDefinitions = fields.filter((field) => field.extensionName);
   const extensionChanged = extensionDefinitions.some((field) => {
     const next = normalizeField(field, draft[field.key] ?? "");
@@ -98,16 +112,28 @@ export function changedNodeFields(
   return { ...baseChanges, extension_fields };
 }
 
-function normalizeCurrent(field: NodeEditField, value: unknown): string | number | boolean | string[] | null {
-  if (field.kind === "list") return arrayValue(value).map((item) => item.trim()).filter(Boolean);
+function normalizeCurrent(
+  field: NodeEditField,
+  value: unknown,
+): string | number | boolean | string[] | null {
+  if (field.kind === "list")
+    return arrayValue(value)
+      .map((item) => item.trim())
+      .filter(Boolean);
   if (field.kind === "number") return typeof value === "number" ? value : null;
   if (field.kind === "boolean") return typeof value === "boolean" ? value : null;
   return normalizeField(field, stringValue(value));
 }
 
-function normalizeField(field: NodeEditField, value: string): string | number | boolean | string[] | null {
+function normalizeField(
+  field: NodeEditField,
+  value: string,
+): string | number | boolean | string[] | null {
   if (field.kind === "list") {
-    return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    return value
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
   if (field.nullable && value.trim() === "") return null;
   if (field.kind === "number") return Number(value);
@@ -124,7 +150,10 @@ function stringValue(value: unknown): string {
   return value === null || value === undefined ? "" : String(value);
 }
 
-function equalValues(left: string | number | boolean | string[] | null, right: string | number | boolean | string[] | null): boolean {
+function equalValues(
+  left: string | number | boolean | string[] | null,
+  right: string | number | boolean | string[] | null,
+): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 

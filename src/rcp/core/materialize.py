@@ -178,11 +178,7 @@ def _apply_patch(
                 data = node.model_dump(mode="python")
                 data.update(changes)
                 data["updated_rev"] = revision
-                data["standing"] = (
-                    node.standing
-                    if patch.kind == "approval"
-                    else "asserted"
-                )
+                data["standing"] = node.standing if patch.kind == "approval" else "asserted"
                 updated = NODE_ADAPTER.validate_python(data)
                 _record_belief_transition(
                     state,

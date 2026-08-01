@@ -15,14 +15,17 @@ test("machine provider paths preserve recorded values and emit only edits", () =
     { alias: "cluster", host: "cluster", provider_paths: {} },
   ]);
   assert.deepEqual(machineProviderPathUpdates(saved, saved), undefined);
-  assert.deepEqual(machineProviderPathUpdates(saved, {
-    ...saved,
-    local: { ...saved.local, codex: "" },
-    cluster: { codex: "/usr/local/bin/codex" },
-  }), {
-    local: { codex: "" },
-    cluster: { codex: "/usr/local/bin/codex" },
-  });
+  assert.deepEqual(
+    machineProviderPathUpdates(saved, {
+      ...saved,
+      local: { ...saved.local, codex: "" },
+      cluster: { codex: "/usr/local/bin/codex" },
+    }),
+    {
+      local: { codex: "" },
+      cluster: { codex: "/usr/local/bin/codex" },
+    },
+  );
 });
 
 test("an older staged path set keeps provider records added since it was written", () => {

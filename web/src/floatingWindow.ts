@@ -1,5 +1,11 @@
-export interface Point { x: number; y: number }
-export interface Size { width: number; height: number }
+export interface Point {
+  x: number;
+  y: number;
+}
+export interface Size {
+  width: number;
+  height: number;
+}
 
 export const FLOATING_WINDOW_MARGIN = 12;
 export const FLOATING_WINDOW_GAP = 12;
@@ -11,8 +17,14 @@ export function clampFloatingPosition(
   viewport: Size,
   margin = FLOATING_WINDOW_MARGIN,
 ): Point {
-  const maxX = Math.max(margin, viewport.width - Math.min(windowSize.width, viewport.width) - margin);
-  const maxY = Math.max(margin, viewport.height - Math.min(windowSize.height, viewport.height) - margin);
+  const maxX = Math.max(
+    margin,
+    viewport.width - Math.min(windowSize.width, viewport.width) - margin,
+  );
+  const maxY = Math.max(
+    margin,
+    viewport.height - Math.min(windowSize.height, viewport.height) - margin,
+  );
   return {
     x: Math.min(maxX, Math.max(margin, position.x)),
     y: Math.min(maxY, Math.max(margin, position.y)),
@@ -34,7 +46,10 @@ export function floatingWindowSize(kind: "detail" | "chat", viewport: Size): Siz
   );
   return {
     width: Math.min(maximumWidth, sharedWidth),
-    height: Math.min(720, Math.max(240, viewport.height - FLOATING_WINDOW_TOP - FLOATING_WINDOW_MARGIN)),
+    height: Math.min(
+      720,
+      Math.max(240, viewport.height - FLOATING_WINDOW_TOP - FLOATING_WINDOW_MARGIN),
+    ),
   };
 }
 

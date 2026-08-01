@@ -128,9 +128,9 @@ def validate_ontology_structure(
                 f"Custom relation {item.name!r} collides with an immutable base relation.",
                 revision,
             )
-        if len(item.source_types) != len(set(item.source_types)) or len(
-            item.target_types
-        ) != len(set(item.target_types)):
+        if len(item.source_types) != len(set(item.source_types)) or len(item.target_types) != len(
+            set(item.target_types)
+        ):
             report.reject(
                 "duplicate-relation-endpoint-type",
                 f"Custom relation {item.name!r} repeats an endpoint type.",
@@ -160,9 +160,7 @@ def validate_ontology_change(
 
     _require_deprecation_before_removal("type", old_types, new_types, report, revision)
     _require_deprecation_before_removal("field", old_fields, new_fields, report, revision)
-    _require_deprecation_before_removal(
-        "relation", old_relations, new_relations, report, revision
-    )
+    _require_deprecation_before_removal("relation", old_relations, new_relations, report, revision)
 
     for name, previous in old_types.items():
         current = new_types.get(name)
@@ -182,7 +180,9 @@ def validate_ontology_change(
         previous = old_fields.get(key)
         applicable = [node for node in state.nodes.values() if field_applies(node, current)]
         if current.required and (previous is None or not previous.required):
-            blockers = sorted(node.id for node in applicable if current.name not in node.extension_fields)
+            blockers = sorted(
+                node.id for node in applicable if current.name not in node.extension_fields
+            )
             if blockers:
                 report.reject(
                     "required-field-breaks-existing-nodes",
@@ -214,7 +214,9 @@ def validate_ontology_change(
         if previous.layer != current.layer:
             blockers = [edge for edge in state.edges.values() if edge.relation == name]
             if blockers:
-                node_ids = sorted({node for edge in blockers for node in (edge.source, edge.target)})
+                node_ids = sorted(
+                    {node for edge in blockers for node in (edge.source, edge.target)}
+                )
                 report.reject(
                     "relation-layer-breaks-existing-edges",
                     f"Relation {name!r} cannot change layer while used by edges: "
@@ -226,7 +228,8 @@ def validate_ontology_change(
         blockers = [
             edge
             for edge in state.edges.values()
-            if edge.relation == name and not edge_matches_relation(state, edge.source, edge.target, current)
+            if edge.relation == name
+            and not edge_matches_relation(state, edge.source, edge.target, current)
         ]
         if blockers:
             node_ids = sorted({node for edge in blockers for node in (edge.source, edge.target)})
@@ -261,7 +264,9 @@ def validate_new_node_extensions(
                 f"Node {raw.get('id')!r} uses unknown custom type {extension_type!r}.",
                 revision,
             )
-        elif not authoring and type_definition is not None and type_definition.base_type != base_type:
+        elif (
+            not authoring and type_definition is not None and type_definition.base_type != base_type
+        ):
             report.reject(
                 "invalid-extension-base",
                 f"Custom type {extension_type!r} maps to {type_definition.base_type!r}, not "
@@ -349,9 +354,7 @@ def validate_updated_extension_fields(
         )
 
 
-def custom_relation(
-    ontology: OntologyState, name: Any
-) -> OntologyRelationDefinition | None:
+def custom_relation(ontology: OntologyState, name: Any) -> OntologyRelationDefinition | None:
     if not isinstance(name, str):
         return None
     return next((item for item in ontology.relations if item.name == name), None)
@@ -449,7 +452,9 @@ def _validate_extension_fields(
                 check_kind=structural,
             )
     if structural:
-        missing = sorted(item.name for item in definitions if item.required and item.name not in fields)
+        missing = sorted(
+            item.name for item in definitions if item.required and item.name not in fields
+        )
         if missing:
             report.reject(
                 "missing-required-extension-field",

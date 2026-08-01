@@ -159,9 +159,7 @@ HUMAN_EDITABLE_NODE_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "evidence": frozenset({"title", "observation", "interpretation"}),
-    "blocker": frozenset(
-        {"title", "description", "resolution_condition", "recommended_action"}
-    ),
+    "blocker": frozenset({"title", "description", "resolution_condition", "recommended_action"}),
 }
 
 
@@ -258,18 +256,10 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
     "has_hypothesis": RelationSpec(
         frozenset({"research_question"}), frozenset({"hypothesis"}), "epistemic"
     ),
-    "supports": RelationSpec(
-        frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"
-    ),
-    "weakens": RelationSpec(
-        frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"
-    ),
-    "refutes": RelationSpec(
-        frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"
-    ),
-    "inconclusive": RelationSpec(
-        frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"
-    ),
+    "supports": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
+    "weakens": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
+    "refutes": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
+    "inconclusive": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
     "contradicts": RelationSpec(
         frozenset({"evidence", "hypothesis"}), frozenset({"hypothesis"}), "epistemic"
     ),
@@ -278,17 +268,13 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
     "has_decision": RelationSpec(
         frozenset({"research_question"}), frozenset({"decision"}), "action"
     ),
-    "governed_by": RelationSpec(
-        frozenset({"experiment"}), frozenset({"decision"}), "action"
-    ),
+    "governed_by": RelationSpec(frozenset({"experiment"}), frozenset({"decision"}), "action"),
     "blocked_by": RelationSpec(
         frozenset({"experiment", "decision", "research_question"}),
         frozenset({"blocker"}),
         "action",
     ),
-    "requires_decision": RelationSpec(
-        frozenset({"blocker"}), frozenset({"decision"}), "action"
-    ),
+    "requires_decision": RelationSpec(frozenset({"blocker"}), frozenset({"decision"}), "action"),
     "supersedes": RelationSpec(ALL_NODE_TYPES, ALL_NODE_TYPES, "meta", same_type=True),
     "duplicate_of": RelationSpec(ALL_NODE_TYPES, ALL_NODE_TYPES, "meta", same_type=True),
 }

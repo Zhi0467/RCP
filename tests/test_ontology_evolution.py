@@ -226,9 +226,7 @@ def test_new_nodes_validate_required_fields_kinds_and_custom_prefix() -> None:
         validate_patch(state, _agent(2, [{"op": "create_nodes", "nodes": [missing]}]), ["repo"])
     )
     assert "invalid-extension-field-kind" in _codes(
-        validate_patch(
-            state, _agent(2, [{"op": "create_nodes", "nodes": [wrong_kind]}]), ["repo"]
-        )
+        validate_patch(state, _agent(2, [{"op": "create_nodes", "nodes": [wrong_kind]}]), ["repo"])
     )
     assert "wrong-slug-prefix" in _codes(
         validate_patch(
@@ -247,7 +245,10 @@ def test_agent_writable_is_admission_only_and_human_may_write_project_field() ->
     )
 
     state = materialize_patches(
-        [_set_ontology(1, _ontology()), _agent(2, [{"op": "create_nodes", "nodes": [_hypothesis()]}])],
+        [
+            _set_ontology(1, _ontology()),
+            _agent(2, [{"op": "create_nodes", "nodes": [_hypothesis()]}]),
+        ],
         ["repo"],
     ).state
     human_patch = _approval(
@@ -336,9 +337,7 @@ def test_custom_relation_uses_semantic_types_and_materializes_declared_layer() -
             },
         ],
     )
-    assert "custom-relation-type-mismatch" in _codes(
-        validate_patch(state, reversed_edge, ["repo"])
-    )
+    assert "custom-relation-type-mismatch" in _codes(validate_patch(state, reversed_edge, ["repo"]))
 
 
 def test_relation_narrowing_names_the_edges_and_nodes_that_block_it() -> None:

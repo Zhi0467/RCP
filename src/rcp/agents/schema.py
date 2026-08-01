@@ -311,9 +311,7 @@ def validate_agent_patch_shape(patch: Patch) -> None:
                 break
         suffix = "" if len(exc.errors()) <= len(details) else " Additional shape errors omitted."
         raise ValueError(
-            "Agent patch does not match the graph operation schema: "
-            + "; ".join(details)
-            + suffix
+            "Agent patch does not match the graph operation schema: " + "; ".join(details) + suffix
         ) from exc
 
 

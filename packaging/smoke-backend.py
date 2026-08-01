@@ -41,9 +41,7 @@ def _unused_port() -> int:
 
 
 def _environment(data_dir: Path) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("RCP_")
-    }
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("RCP_")}
     environment["RCP_DATA_DIR"] = str(data_dir)
     # The release may see ordinary macOS utilities, but none of RCP's build or
     # language toolchains. A hidden npm/Python/uv dependency therefore fails.
@@ -175,7 +173,9 @@ def main() -> None:
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                raise RuntimeError("The packaged backend did not publish ownership metadata.") from exc
+                raise RuntimeError(
+                    "The packaged backend did not publish ownership metadata."
+                ) from exc
             owner_pid = metadata.get("pid")
             if (
                 not isinstance(owner_pid, int)
@@ -184,9 +184,8 @@ def main() -> None:
                 or metadata.get("instance_id") != instance_id
             ):
                 raise RuntimeError(f"The packaged backend published invalid ownership: {metadata}")
-            if (
-                health.get("pid") != owner_pid
-                or health.get("data_dir_id") != metadata.get("data_dir_id")
+            if health.get("pid") != owner_pid or health.get("data_dir_id") != metadata.get(
+                "data_dir_id"
             ):
                 raise RuntimeError(
                     f"Health does not identify the metadata-owning process: {health}"
@@ -216,8 +215,7 @@ def main() -> None:
                 ) from exc
             if reused_outcome != {**outcome, "outcome": "reused", "owned": False}:
                 raise RuntimeError(
-                    "Second launch did not reuse the exact running backend: "
-                    f"{reused_outcome}"
+                    f"Second launch did not reuse the exact running backend: {reused_outcome}"
                 )
 
             # A PyInstaller one-file executable has a supervising bootloader
@@ -232,8 +230,7 @@ def main() -> None:
             if (data_dir / "rcp-server.json").exists():
                 raise RuntimeError("The packaged backend left stale ownership metadata.")
             expected_termination = return_code == 0 or (
-                return_code == -signal.SIGTERM
-                and "Application shutdown complete." in shutdown_log
+                return_code == -signal.SIGTERM and "Application shutdown complete." in shutdown_log
             )
             if not expected_termination:
                 raise RuntimeError(

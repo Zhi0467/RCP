@@ -210,9 +210,7 @@ class RebuildableCache:
             return {
                 path
                 for path in self.root.iterdir()
-                if path.is_dir()
-                and not path.is_symlink()
-                and not path.name.startswith(".slice-")
+                if path.is_dir() and not path.is_symlink() and not path.name.startswith(".slice-")
             }
         return {
             path
@@ -247,9 +245,7 @@ class RebuildableCache:
             for entry in sorted(entries, key=self._key)
             if self._key(entry) in accesses
         }
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f"{_ACCESS_FILE}.", dir=self.root
-        )
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f"{_ACCESS_FILE}.", dir=self.root)
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -267,11 +263,7 @@ class RebuildableCache:
         if self.layout == "files":
             return next((entry for entry in entries if _same_path(entry, path)), None)
         return next(
-            (
-                entry
-                for entry in entries
-                if _same_path(entry, path) or _is_within(path, entry)
-            ),
+            (entry for entry in entries if _same_path(entry, path) or _is_within(path, entry)),
             None,
         )
 

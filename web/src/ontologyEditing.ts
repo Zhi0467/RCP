@@ -14,18 +14,57 @@ export const baseOntologyTypes: Array<{
   primaryField: string;
   primaryLabel: string;
 }> = [
-  { name: "research_question", label: "Research question", layer: "epistemic", primaryField: "question", primaryLabel: "Question" },
-  { name: "hypothesis", label: "Hypothesis", layer: "epistemic", primaryField: "statement", primaryLabel: "Statement" },
-  { name: "decision", label: "Decision", layer: "action", primaryField: "question", primaryLabel: "Question" },
-  { name: "experiment", label: "Experiment", layer: "action", primaryField: "objective", primaryLabel: "Objective" },
-  { name: "evidence", label: "Evidence", layer: "epistemic", primaryField: "observation", primaryLabel: "Observation" },
-  { name: "blocker", label: "Blocker", layer: "action", primaryField: "description", primaryLabel: "Description" },
+  {
+    name: "research_question",
+    label: "Research question",
+    layer: "epistemic",
+    primaryField: "question",
+    primaryLabel: "Question",
+  },
+  {
+    name: "hypothesis",
+    label: "Hypothesis",
+    layer: "epistemic",
+    primaryField: "statement",
+    primaryLabel: "Statement",
+  },
+  {
+    name: "decision",
+    label: "Decision",
+    layer: "action",
+    primaryField: "question",
+    primaryLabel: "Question",
+  },
+  {
+    name: "experiment",
+    label: "Experiment",
+    layer: "action",
+    primaryField: "objective",
+    primaryLabel: "Objective",
+  },
+  {
+    name: "evidence",
+    label: "Evidence",
+    layer: "epistemic",
+    primaryField: "observation",
+    primaryLabel: "Observation",
+  },
+  {
+    name: "blocker",
+    label: "Blocker",
+    layer: "action",
+    primaryField: "description",
+    primaryLabel: "Description",
+  },
 ];
 
 export const ontologyNamePattern = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 
 export function ontologyTypeNames(ontology: OntologyState): string[] {
-  return [...baseOntologyTypes.map((item) => item.name), ...ontology.types.map((item) => item.name)];
+  return [
+    ...baseOntologyTypes.map((item) => item.name),
+    ...ontology.types.map((item) => item.name),
+  ];
 }
 
 export function activeCustomTypes(ontology: OntologyState): OntologyTypeDefinition[] {
@@ -38,7 +77,9 @@ export function activeFieldsForNode(
   extensionType?: string | null,
 ): OntologyFieldDefinition[] {
   const owners = new Set([baseType, ...(extensionType ? [extensionType] : [])]);
-  return ontology.fields.filter((item) => owners.has(item.owner_type as BaseNodeType) && !item.deprecated);
+  return ontology.fields.filter(
+    (item) => owners.has(item.owner_type as BaseNodeType) && !item.deprecated,
+  );
 }
 
 export function upsertOntologyType(
@@ -47,16 +88,24 @@ export function upsertOntologyType(
   previousName?: string,
 ): OntologyState {
   const replaced = ontology.types.filter((item) => item.name !== (previousName ?? definition.name));
-  const fields = previousName && previousName !== definition.name
-    ? ontology.fields.map((item) => item.owner_type === previousName ? { ...item, owner_type: definition.name } : item)
-    : ontology.fields;
-  const relations = previousName && previousName !== definition.name
-    ? ontology.relations.map((item) => ({
-      ...item,
-      source_types: item.source_types.map((name) => name === previousName ? definition.name : name),
-      target_types: item.target_types.map((name) => name === previousName ? definition.name : name),
-    }))
-    : ontology.relations;
+  const fields =
+    previousName && previousName !== definition.name
+      ? ontology.fields.map((item) =>
+          item.owner_type === previousName ? { ...item, owner_type: definition.name } : item,
+        )
+      : ontology.fields;
+  const relations =
+    previousName && previousName !== definition.name
+      ? ontology.relations.map((item) => ({
+          ...item,
+          source_types: item.source_types.map((name) =>
+            name === previousName ? definition.name : name,
+          ),
+          target_types: item.target_types.map((name) =>
+            name === previousName ? definition.name : name,
+          ),
+        }))
+      : ontology.relations;
   return { types: [...replaced, definition], fields, relations };
 }
 
@@ -90,12 +139,22 @@ export function upsertOntologyField(
   const key = previousKey ?? `${definition.owner_type}.${definition.name}`;
   return {
     ...ontology,
-    fields: [...ontology.fields.filter((item) => `${item.owner_type}.${item.name}` !== key), definition],
+    fields: [
+      ...ontology.fields.filter((item) => `${item.owner_type}.${item.name}` !== key),
+      definition,
+    ],
   };
 }
 
-export function removeOntologyField(ontology: OntologyState, ownerType: string, name: string): OntologyState {
-  return { ...ontology, fields: ontology.fields.filter((item) => item.owner_type !== ownerType || item.name !== name) };
+export function removeOntologyField(
+  ontology: OntologyState,
+  ownerType: string,
+  name: string,
+): OntologyState {
+  return {
+    ...ontology,
+    fields: ontology.fields.filter((item) => item.owner_type !== ownerType || item.name !== name),
+  };
 }
 
 export function upsertOntologyRelation(
@@ -105,7 +164,10 @@ export function upsertOntologyRelation(
 ): OntologyState {
   return {
     ...ontology,
-    relations: [...ontology.relations.filter((item) => item.name !== (previousName ?? definition.name)), definition],
+    relations: [
+      ...ontology.relations.filter((item) => item.name !== (previousName ?? definition.name)),
+      definition,
+    ],
   };
 }
 
@@ -126,7 +188,11 @@ export function makeCustomNode(
   if (!definition) throw new Error(`Ontology type ${extensionType} is not active.`);
   const base = baseOntologyTypes.find((item) => item.name === definition.base_type)!;
   const node: GraphNode = {
-    id: `${extensionType}/${slug.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+    id: `${extensionType}/${slug
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")}`,
     type: definition.base_type,
     extension_type: extensionType,
     extension_fields: extensionFields,
@@ -140,17 +206,35 @@ export function makeCustomNode(
   const defaults: Record<BaseNodeType, Record<string, unknown>> = {
     research_question: { motivation: "", scope: "", status: "open" },
     hypothesis: { rationale: "", predictions: [], scope: "", status: "proposed" },
-    decision: { options: [], selected_option: null, rationale: null, consequences: [], status: "open" },
+    decision: {
+      options: [],
+      selected_option: null,
+      rationale: null,
+      consequences: [],
+      status: "open",
+    },
     experiment: {
-      design: "", expected_outcomes: [], interpretation_rules: [], completion_criteria: [],
-      status: "proposed", attempts: [], current_summary: "", next_action: null,
+      design: "",
+      expected_outcomes: [],
+      interpretation_rules: [],
+      completion_criteria: [],
+      status: "proposed",
+      attempts: [],
+      current_summary: "",
+      next_action: null,
     },
     evidence: {
-      interpretation: "", strength: "preliminary", validity: "valid",
-      origin: origin ?? "unknown", artifact_refs: [],
+      interpretation: "",
+      strength: "preliminary",
+      validity: "valid",
+      origin: origin ?? "unknown",
+      artifact_refs: [],
     },
     blocker: {
-      blocker_type: "unknown", status: "open", resolution_condition: "", recommended_action: null,
+      blocker_type: "unknown",
+      status: "open",
+      resolution_condition: "",
+      recommended_action: null,
     },
   };
   return { ...node, ...defaults[definition.base_type] };

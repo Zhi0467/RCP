@@ -85,16 +85,22 @@ def test_remote_source_is_pinned_before_rsync_makes_it_visible(
 
 
 def test_cache_limits_match_the_rebuildable_storage_contract() -> None:
-    assert CacheLimits(
-        ttl_seconds=30 * 24 * 60 * 60,
-        max_count=256,
-        max_bytes=1024 * 1024 * 1024,
-    ) == REMOTE_SOURCE_CACHE_LIMITS
-    assert CacheLimits(
-        ttl_seconds=14 * 24 * 60 * 60,
-        max_count=512,
-        max_bytes=512 * 1024 * 1024,
-    ) == SESSION_SLICE_CACHE_LIMITS
+    assert (
+        CacheLimits(
+            ttl_seconds=30 * 24 * 60 * 60,
+            max_count=256,
+            max_bytes=1024 * 1024 * 1024,
+        )
+        == REMOTE_SOURCE_CACHE_LIMITS
+    )
+    assert (
+        CacheLimits(
+            ttl_seconds=14 * 24 * 60 * 60,
+            max_count=512,
+            max_bytes=512 * 1024 * 1024,
+        )
+        == SESSION_SLICE_CACHE_LIMITS
+    )
 
 
 def test_file_cache_expires_then_uses_deterministic_lru_and_ignores_mtime(

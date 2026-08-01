@@ -72,6 +72,7 @@ AgentTaskStatus = Literal[
 ]
 AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 
+
 class AgentTaskEventRecord(BaseModel):
     event_id: int
     operation_id: str
@@ -257,9 +258,7 @@ class AppStore:
             self._ensure_column(
                 connection, "graph_runs", "estimate_samples", "INTEGER NOT NULL DEFAULT 0"
             )
-            self._ensure_column(
-                connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'"
-            )
+            self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
             self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
             self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
@@ -310,21 +309,25 @@ class AppStore:
     def project_deletion_stages(self, project_id: str) -> list[ProjectStageRecord]:
         """Return the saved scratch stages after proving deletion is currently safe."""
         with self.connection() as connection:
-            if connection.execute(
-                "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
-            ).fetchone() is None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone()
+                is None
+            ):
                 raise KeyError(project_id)
-            if connection.execute(
-                """
+            if (
+                connection.execute(
+                    """
                 SELECT 1 FROM graph_runs
                 WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
                 LIMIT 1
                 """,
-                (project_id,),
-            ).fetchone() is not None:
-                raise ValueError(
-                    "Pause the active agent task before deleting this project."
-                )
+                    (project_id,),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("Pause the active agent task before deleting this project.")
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
@@ -344,21 +347,25 @@ class AppStore:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                if connection.execute(
-                    "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
-                ).fetchone() is None:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+                    ).fetchone()
+                    is None
+                ):
                     raise KeyError(project_id)
-                if connection.execute(
-                    """
+                if (
+                    connection.execute(
+                        """
                     SELECT 1 FROM graph_runs
                     WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
                     LIMIT 1
                     """,
-                    (project_id,),
-                ).fetchone() is not None:
-                    raise ValueError(
-                        "Pause the active agent task before deleting this project."
-                    )
+                        (project_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("Pause the active agent task before deleting this project.")
 
                 operation_ids = connection.execute(
                     "SELECT operation_id FROM graph_runs WHERE project_id = ?",
@@ -581,9 +588,7 @@ class AppStore:
                 (data["project_id"],),
             ).fetchone()
             if active is not None:
-                raise ValueError(
-                    "Another agent task is already running for this project."
-                )
+                raise ValueError("Another agent task is already running for this project.")
             if not eligible:
                 raise ValueError(
                     "This task has no repairable graph update. Start a new Work turn instead."
@@ -954,9 +959,7 @@ class AppStore:
                 "change_summary": [
                     item[:1600]
                     for item in (
-                        raw_change_summary[:32]
-                        if isinstance(raw_change_summary, list)
-                        else []
+                        raw_change_summary[:32] if isinstance(raw_change_summary, list) else []
                     )
                     if isinstance(item, str)
                 ],
@@ -1210,13 +1213,9 @@ class AppStore:
         now = self.now()
         result_json = self._bounded_result_json(result)
         graph_update = result.get("graph_update")
-        graph_rejected = (
-            isinstance(graph_update, dict) and graph_update.get("status") == "rejected"
-        )
+        graph_rejected = isinstance(graph_update, dict) and graph_update.get("status") == "rejected"
         status_message = (
-            "Completed; graph update rejected."
-            if graph_rejected
-            else "Agent task completed."
+            "Completed; graph update rejected." if graph_rejected else "Agent task completed."
         )
         message = (
             f"Project graph updated to revision {applied_revision}."

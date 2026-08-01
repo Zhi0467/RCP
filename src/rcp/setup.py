@@ -463,11 +463,8 @@ def render_manifest(
     document.add("name", request.name)
 
     host_aliases: dict[str, str] = {}
-    needs_local = any(
-        repository.location == "local" for repository in request.repositories
-    ) or any(
-        request.agents.profile(surface).location == "local"
-        for surface in _SETUP_AGENT_SURFACES
+    needs_local = any(repository.location == "local" for repository in request.repositories) or any(
+        request.agents.profile(surface).location == "local" for surface in _SETUP_AGENT_SURFACES
     )
     machines = tomlkit.aot()
     if needs_local:

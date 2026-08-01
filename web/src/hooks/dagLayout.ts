@@ -61,7 +61,9 @@ export function buildTopologyLayout(nodes: TopologyNode[], edges: TopologyEdge[]
 
   const components = stronglyConnectedComponents(nodeIds, outgoing);
   const componentById = new Map<string, number>();
-  components.forEach((members, component) => members.forEach((id) => componentById.set(id, component)));
+  components.forEach((members, component) =>
+    members.forEach((id) => componentById.set(id, component)),
+  );
 
   const componentChildren = components.map(() => new Set<number>());
   const componentParents = components.map(() => new Set<number>());
@@ -109,11 +111,13 @@ export function buildSemanticLaneLayout(
   nodes.forEach((node) => {
     lanes[RESEARCH_STAGE_BY_NODE_TYPE[node.type]].push(node.id);
   });
-  lanes.forEach((lane) => lane.sort((left, right) => (
-    (topologyOrder.get(left) ?? Number.MAX_SAFE_INTEGER)
-      - (topologyOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
-    || compareIds(left, right)
-  )));
+  lanes.forEach((lane) =>
+    lane.sort(
+      (left, right) =>
+        (topologyOrder.get(left) ?? Number.MAX_SAFE_INTEGER) -
+          (topologyOrder.get(right) ?? Number.MAX_SAFE_INTEGER) || compareIds(left, right),
+    ),
+  );
   return { lanes };
 }
 
@@ -160,36 +164,41 @@ export function resolveRectangleCollisions(
   iterations: number,
 ): void {
   for (let iteration = 0; iteration < iterations; iteration += 1) {
-    rectangleCollisionCandidates(nodes, collisionWidth, collisionHeight).forEach(([leftIndex, rightIndex]) => {
-      const left = nodes[leftIndex];
-      const right = nodes[rightIndex];
-      const dx = ((right.x ?? 0) + (right.vx ?? 0)) - ((left.x ?? 0) + (left.vx ?? 0));
-      const dy = ((right.y ?? 0) + (right.vy ?? 0)) - ((left.y ?? 0) + (left.vy ?? 0));
-      const overlapX = collisionWidth - Math.abs(dx);
-      const overlapY = collisionHeight - Math.abs(dy);
-      if (overlapX <= 0 || overlapY <= 0) return;
+    rectangleCollisionCandidates(nodes, collisionWidth, collisionHeight).forEach(
+      ([leftIndex, rightIndex]) => {
+        const left = nodes[leftIndex];
+        const right = nodes[rightIndex];
+        const dx = (right.x ?? 0) + (right.vx ?? 0) - ((left.x ?? 0) + (left.vx ?? 0));
+        const dy = (right.y ?? 0) + (right.vy ?? 0) - ((left.y ?? 0) + (left.vy ?? 0));
+        const overlapX = collisionWidth - Math.abs(dx);
+        const overlapY = collisionHeight - Math.abs(dy);
+        if (overlapX <= 0 || overlapY <= 0) return;
 
-      const leftPinned = left.fx !== null && left.fx !== undefined;
-      const rightPinned = right.fx !== null && right.fx !== undefined;
-      if (leftPinned && rightPinned) return;
-      const split = leftPinned || rightPinned ? 1 : 0.5;
+        const leftPinned = left.fx !== null && left.fx !== undefined;
+        const rightPinned = right.fx !== null && right.fx !== undefined;
+        if (leftPinned && rightPinned) return;
+        const split = leftPinned || rightPinned ? 1 : 0.5;
 
-      if (overlapX < overlapY) {
-        const direction = dx === 0 ? (leftIndex % 2 === 0 ? 1 : -1) : Math.sign(dx);
-        const displacement = overlapX * strength * split;
-        if (!leftPinned) left.vx = (left.vx ?? 0) - direction * displacement;
-        if (!rightPinned) right.vx = (right.vx ?? 0) + direction * displacement;
-      } else {
-        const direction = dy === 0 ? (leftIndex % 2 === 0 ? 1 : -1) : Math.sign(dy);
-        const displacement = overlapY * strength * split;
-        if (!leftPinned) left.vy = (left.vy ?? 0) - direction * displacement;
-        if (!rightPinned) right.vy = (right.vy ?? 0) + direction * displacement;
-      }
-    });
+        if (overlapX < overlapY) {
+          const direction = dx === 0 ? (leftIndex % 2 === 0 ? 1 : -1) : Math.sign(dx);
+          const displacement = overlapX * strength * split;
+          if (!leftPinned) left.vx = (left.vx ?? 0) - direction * displacement;
+          if (!rightPinned) right.vx = (right.vx ?? 0) + direction * displacement;
+        } else {
+          const direction = dy === 0 ? (leftIndex % 2 === 0 ? 1 : -1) : Math.sign(dy);
+          const displacement = overlapY * strength * split;
+          if (!leftPinned) left.vy = (left.vy ?? 0) - direction * displacement;
+          if (!rightPinned) right.vy = (right.vy ?? 0) + direction * displacement;
+        }
+      },
+    );
   }
 }
 
-function stronglyConnectedComponents(nodeIds: string[], outgoing: Map<string, string[]>): string[][] {
+function stronglyConnectedComponents(
+  nodeIds: string[],
+  outgoing: Map<string, string[]>,
+): string[][] {
   let nextIndex = 0;
   const indices = new Map<string, number>();
   const lowLinks = new Map<string, number>();
@@ -290,19 +299,28 @@ function reorderLayer(
 ): void {
   const previousIndex = new Map(layer.map((id, index) => [id, index]));
   const scored = layer.map((id) => {
-    const neighbors = (neighborsById.get(id) ?? []).filter((neighbor) => rankById[neighbor] !== rank);
+    const neighbors = (neighborsById.get(id) ?? []).filter(
+      (neighbor) => rankById[neighbor] !== rank,
+    );
     const fallback = verticalPosition.get(id) ?? 0.5;
-    const score = neighbors.length === 0
-      ? fallback
-      : neighbors.reduce((sum, neighbor) => sum + (verticalPosition.get(neighbor) ?? fallback), 0) / neighbors.length;
+    const score =
+      neighbors.length === 0
+        ? fallback
+        : neighbors.reduce(
+            (sum, neighbor) => sum + (verticalPosition.get(neighbor) ?? fallback),
+            0,
+          ) / neighbors.length;
     return { id, score };
   });
-  scored.sort((left, right) => (
-    left.score - right.score
-    || (previousIndex.get(left.id) ?? 0) - (previousIndex.get(right.id) ?? 0)
-    || compareIds(left.id, right.id)
-  ));
-  scored.forEach((item, index) => { layer[index] = item.id; });
+  scored.sort(
+    (left, right) =>
+      left.score - right.score ||
+      (previousIndex.get(left.id) ?? 0) - (previousIndex.get(right.id) ?? 0) ||
+      compareIds(left.id, right.id),
+  );
+  scored.forEach((item, index) => {
+    layer[index] = item.id;
+  });
   updateVerticalPositions(layer, verticalPosition);
 }
 

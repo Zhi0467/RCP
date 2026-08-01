@@ -11,8 +11,13 @@ import {
 test("chat summary loading fetches exactly the requested page", async () => {
   const calls = [];
   const items = Array.from({ length: 205 }, (_, index) => ({
-    chat_id: `chat-${index}`, kind: "project_chat", node_id: null, title: `Chat ${index}`,
-    updated_at: "2026-07-31T00:00:00Z", message_count: 2, last_message_preview: "Answer",
+    chat_id: `chat-${index}`,
+    kind: "project_chat",
+    node_id: null,
+    title: `Chat ${index}`,
+    updated_at: "2026-07-31T00:00:00Z",
+    message_count: 2,
+    last_message_preview: "Answer",
   }));
   const result = await loadChatSummaryPage("/api/projects/project", 200, async (path) => {
     calls.push(path);
@@ -33,7 +38,10 @@ test("chat pages append without duplicating ids", () => {
     { chat_id: "c", title: "C" },
   ];
   assert.deepEqual(
-    mergeChatSummaryPage(existing, next, "append").map(({ chat_id, title }) => ({ chat_id, title })),
+    mergeChatSummaryPage(existing, next, "append").map(({ chat_id, title }) => ({
+      chat_id,
+      title,
+    })),
     [
       { chat_id: "a", title: "A" },
       { chat_id: "b", title: "B" },
@@ -53,7 +61,10 @@ test("refreshing page zero replaces loaded pages and resets the pagination offse
     { chat_id: "a", title: "A fresh" },
   ];
   assert.deepEqual(
-    mergeChatSummaryPage(existing, refreshed, "refresh").map(({ chat_id, title }) => ({ chat_id, title })),
+    mergeChatSummaryPage(existing, refreshed, "refresh").map(({ chat_id, title }) => ({
+      chat_id,
+      title,
+    })),
     [
       { chat_id: "new", title: "New" },
       { chat_id: "a", title: "A fresh" },
@@ -75,10 +86,22 @@ test("a selected chat outside refreshed page zero is retained only after exact v
   const transcript = {
     chat_id: "selected",
     title: "Current title",
-    messages: [{ message_id: "message", role: "assistant", text: "Current", timestamp: "2026-08-01T00:00:00Z" }],
+    messages: [
+      {
+        message_id: "message",
+        role: "assistant",
+        text: "Current",
+        timestamp: "2026-08-01T00:00:00Z",
+      },
+    ],
   };
   assert.deepEqual(
-    reconcileChatSelectionAfterRefresh("selected", previous, [{ chat_id: "first-page" }], transcript),
+    reconcileChatSelectionAfterRefresh(
+      "selected",
+      previous,
+      [{ chat_id: "first-page" }],
+      transcript,
+    ),
     { selectedChatId: "selected", retainedSummary: transcript, deleteTranscript: false },
   );
 });
@@ -100,7 +123,10 @@ test("load more resumes from the refreshed cursor and preserves a valid selectio
   });
   const loaded = mergeChatSummaryPage(refreshed, page.items, "append");
 
-  assert.deepEqual(loaded.map((item) => item.chat_id), ["new", "selected", "last"]);
+  assert.deepEqual(
+    loaded.map((item) => item.chat_id),
+    ["new", "selected", "last"],
+  );
   assert.deepEqual(
     reconcileChatSelectionAfterRefresh("selected", firstPage[1], firstPage, undefined),
     { selectedChatId: "selected", retainedSummary: null, deleteTranscript: false },

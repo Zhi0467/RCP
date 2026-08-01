@@ -16,10 +16,12 @@ interface Props {
 
 export function DraggableWindow({ children, className, kind }: Props) {
   const root = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<Point>(() => defaultFloatingPosition(kind, {
-    width: window.innerWidth,
-    height: window.innerHeight,
-  }));
+  const [position, setPosition] = useState<Point>(() =>
+    defaultFloatingPosition(kind, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }),
+  );
   const [zIndex, setZIndex] = useState(() => ++topFloatingZIndex);
   const drag = useRef<{ origin: Point; pointer: Point } | null>(null);
 
@@ -55,11 +57,14 @@ export function DraggableWindow({ children, className, kind }: Props) {
       }}
       onPointerMove={(event) => {
         if (!drag.current) return;
-        setPosition(clamp(movedPosition(
-          drag.current.origin,
-          drag.current.pointer,
-          { x: event.clientX, y: event.clientY },
-        )));
+        setPosition(
+          clamp(
+            movedPosition(drag.current.origin, drag.current.pointer, {
+              x: event.clientX,
+              y: event.clientY,
+            }),
+          ),
+        );
       }}
       onPointerUp={(event) => {
         drag.current = null;

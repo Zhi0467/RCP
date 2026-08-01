@@ -79,9 +79,9 @@ def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path)
     assert response.json()["nodes"][node.id]["standing"] == "accepted"
     assert response.json()["nodes"][node.id]["title"] == "Learning after a task shift"
     assert len(service.history.load_patches()) == 2
-    assert "Learning after a task shift" in (
-        manifest.research_dir / "research.md"
-    ).read_text(encoding="utf-8")
+    assert "Learning after a task shift" in (manifest.research_dir / "research.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_graph_sync_builds_from_the_single_in_lock_current_replay(
@@ -120,9 +120,7 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
     assert calls == [(False, False), (False, True)]
 
 
-def test_project_service_coalesces_concurrent_index_builds(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_project_service_coalesces_concurrent_index_builds(manifest, tmp_path, monkeypatch) -> None:
     service = create_app(str(manifest.path), data_dir=tmp_path / "data").state.service
     builds = 0
     rendezvous = threading.Barrier(2)
@@ -225,10 +223,13 @@ def test_graph_sync_unchanged_ontology_writes_no_patch(manifest, tmp_path) -> No
     service.history.append(seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 1, "ontology": ontology_payload()},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 1, "ontology": ontology_payload()},
+        ).status_code
+        == 200
+    )
 
     response = client.post(
         f"/api/projects/{project_id}/sync",
@@ -256,9 +257,7 @@ def test_graph_sync_refuses_stale_ontology_draft(manifest, tmp_path) -> None:
     assert "graph changed" in response.json()["detail"].lower()
 
 
-def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(
-    manifest, tmp_path
-) -> None:
+def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
@@ -305,18 +304,19 @@ def test_graph_sync_does_not_offer_direct_base_node_authoring(manifest, tmp_path
     assert service.history.state().revision == 1
 
 
-def test_graph_sync_creates_an_asserted_node_of_an_active_custom_type(
-    manifest, tmp_path
-) -> None:
+def test_graph_sync_creates_an_asserted_node_of_an_active_custom_type(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 1, "ontology": ontology_payload()},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 1, "ontology": ontology_payload()},
+        ).status_code
+        == 200
+    )
 
     node = custom_hypothesis_payload()
     node["standing"] = "accepted"
@@ -345,14 +345,20 @@ def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
     service.history.append(seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 1, "ontology": ontology_payload()},
-    ).status_code == 200
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 2, "custom_nodes": [custom_hypothesis_payload()]},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 1, "ontology": ontology_payload()},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 2, "custom_nodes": [custom_hypothesis_payload()]},
+        ).status_code
+        == 200
+    )
 
     response = client.post(
         f"/api/projects/{project_id}/sync",
@@ -363,9 +369,7 @@ def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
                     "node_id": "mechanism_hypothesis/custom-mechanism",
                     "base_updated_rev": 3,
                     "changes": {
-                        "extension_fields": {
-                            "mechanism": "Replanning refreshes update directions."
-                        }
+                        "extension_fields": {"mechanism": "Replanning refreshes update directions."}
                     },
                 }
             ],
@@ -375,14 +379,10 @@ def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
     assert response.status_code == 200
     assert response.json()["nodes"]["mechanism_hypothesis/custom-mechanism"][
         "extension_fields"
-    ] == {
-        "mechanism": "Replanning refreshes update directions."
-    }
+    ] == {"mechanism": "Replanning refreshes update directions."}
 
 
-def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(
-    manifest, tmp_path
-) -> None:
+def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
@@ -400,21 +400,30 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(
             "deprecated": False,
         }
     )
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 1, "ontology": ontology},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 1, "ontology": ontology},
+        ).status_code
+        == 200
+    )
     node = custom_hypothesis_payload()
     node["extension_fields"]["legacy_note"] = "Keep this old value."
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 2, "custom_nodes": [node]},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 2, "custom_nodes": [node]},
+        ).status_code
+        == 200
+    )
     ontology["fields"][1]["deprecated"] = True
-    assert client.post(
-        f"/api/projects/{project_id}/sync",
-        json={"base_revision": 3, "ontology": ontology},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/sync",
+            json={"base_revision": 3, "ontology": ontology},
+        ).status_code
+        == 200
+    )
 
     omitted = client.post(
         f"/api/projects/{project_id}/sync",
@@ -425,9 +434,7 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(
                     "node_id": "mechanism_hypothesis/custom-mechanism",
                     "base_updated_rev": 3,
                     "changes": {
-                        "extension_fields": {
-                            "mechanism": "Replanning refreshes update directions."
-                        }
+                        "extension_fields": {"mechanism": "Replanning refreshes update directions."}
                     },
                 }
             ],

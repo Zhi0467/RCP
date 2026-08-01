@@ -98,9 +98,7 @@ def _wait_for_initial_build(
     while time.monotonic() < deadline:
         return_code = watcher.poll()
         if return_code is not None:
-            raise WebBuildError(
-                f"The RCP frontend build watcher exited with status {return_code}."
-            )
+            raise WebBuildError(f"The RCP frontend build watcher exited with status {return_code}.")
         current_stamp = _file_stamp(index_path)
         if current_stamp is not None and current_stamp != original_stamp:
             return

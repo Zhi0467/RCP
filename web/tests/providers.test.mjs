@@ -18,7 +18,12 @@ const CODEX = {
   installed: true,
   authenticated: true,
   models: [
-    { id: "gpt-5.6-sol", label: "GPT-5.6-Sol", reasoning: ["low", "high", "ultra"], default_reasoning: "low" },
+    {
+      id: "gpt-5.6-sol",
+      label: "GPT-5.6-Sol",
+      reasoning: ["low", "high", "ultra"],
+      default_reasoning: "low",
+    },
     { id: "gpt-5.5", label: "GPT-5.5", reasoning: ["low", "high"], default_reasoning: "medium" },
   ],
 };

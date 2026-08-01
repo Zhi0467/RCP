@@ -94,7 +94,8 @@ export async function desktopStatus(): Promise<DesktopStatus | null> {
 }
 
 export async function desktopReconnectBackend(): Promise<DesktopStatus> {
-  if (!isDesktopRuntime()) throw new Error("Desktop backend recovery is unavailable in this browser.");
+  if (!isDesktopRuntime())
+    throw new Error("Desktop backend recovery is unavailable in this browser.");
   return invokeDesktop<DesktopStatus>("desktop_reconnect_backend");
 }
 
@@ -108,7 +109,7 @@ export function needsDesktopFolderAccessAcknowledgement(
 ): boolean {
   if (!desktop) return false;
   try {
-    const parsed = storedValue ? JSON.parse(storedValue) as { version?: unknown } : null;
+    const parsed = storedValue ? (JSON.parse(storedValue) as { version?: unknown }) : null;
     return parsed?.version !== DESKTOP_FOLDER_ACCESS_ACK_VERSION;
   } catch {
     return true;
@@ -131,22 +132,33 @@ export async function setDesktopWebviewZoom(scale: number): Promise<void> {
 }
 
 export async function openDesktopArtifactPreview(command: ArtifactCommand): Promise<void> {
-  if (!isDesktopRuntime()) throw new Error("Desktop artifact preview is unavailable in this browser.");
-  const result = await invokeDesktop<{ opened: boolean; error?: string }>("open_artifact_preview", command);
-  if (!result.opened) throw new Error(result.error || "The desktop host could not open this artifact.");
+  if (!isDesktopRuntime())
+    throw new Error("Desktop artifact preview is unavailable in this browser.");
+  const result = await invokeDesktop<{ opened: boolean; error?: string }>(
+    "open_artifact_preview",
+    command,
+  );
+  if (!result.opened)
+    throw new Error(result.error || "The desktop host could not open this artifact.");
 }
 
 export async function downloadDesktopArtifact(
   command: ArtifactCommand & { suggestedName: string },
 ): Promise<string | null> {
-  if (!isDesktopRuntime()) throw new Error("Desktop artifact download is unavailable in this browser.");
-  const result = await invokeDesktop<{ saved: boolean; path?: string | null; error?: string }>("download_artifact", command);
+  if (!isDesktopRuntime())
+    throw new Error("Desktop artifact download is unavailable in this browser.");
+  const result = await invokeDesktop<{ saved: boolean; path?: string | null; error?: string }>(
+    "download_artifact",
+    command,
+  );
   return desktopDownloadPath(result);
 }
 
-export function desktopDownloadPath(
-  result: { saved: boolean; path?: string | null; error?: string },
-): string | null {
+export function desktopDownloadPath(result: {
+  saved: boolean;
+  path?: string | null;
+  error?: string;
+}): string | null {
   if (result.saved) return result.path ?? null;
   if (result.path === null && !result.error) return null;
   throw new Error(result.error || "The desktop host could not save this artifact.");
@@ -164,7 +176,9 @@ export async function checkDesktopUpdate(): Promise<DesktopUpdate | null> {
 
 export async function applyDesktopUpdate(confirmActiveWork: boolean): Promise<void> {
   if (!isDesktopRuntime()) return;
-  const result = await invokeDesktop<{ started: boolean; error?: string }>("apply_update", { confirmActiveWork });
+  const result = await invokeDesktop<{ started: boolean; error?: string }>("apply_update", {
+    confirmActiveWork,
+  });
   if (!result.started) throw new Error(result.error || "The desktop update could not be started.");
 }
 
@@ -177,7 +191,10 @@ export async function listenDesktopEvent<T>(
   return listen<T>(name, (event) => void handler(event.payload));
 }
 
-async function runIdentityCheck(reason: string, replaceExpected: boolean): Promise<BackendIdentityResult> {
+async function runIdentityCheck(
+  reason: string,
+  replaceExpected: boolean,
+): Promise<BackendIdentityResult> {
   if (identityCheck) {
     if (!replaceExpected || identityCheckAcceptsCurrent) return identityCheck;
     await identityCheck;
@@ -238,9 +255,7 @@ async function checkBackendIdentity(replaceExpected: boolean): Promise<BackendId
     return { ok: false, health, message: "RCP has not accepted this backend identity." };
   }
   const mismatch = identityMismatch(expectedIdentity, observed);
-  return mismatch
-    ? { ok: false, health, message: mismatch }
-    : { ok: true, health, message: null };
+  return mismatch ? { ok: false, health, message: mismatch } : { ok: true, health, message: null };
 }
 
 async function fetchHealth(): Promise<Health> {
@@ -259,7 +274,9 @@ function toIdentity(value: BackendIdentity): BackendIdentity {
 
 function dispatchIdentityResult(detail: BackendIdentityEventDetail): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<BackendIdentityEventDetail>(BACKEND_IDENTITY_EVENT, { detail }));
+  window.dispatchEvent(
+    new CustomEvent<BackendIdentityEventDetail>(BACKEND_IDENTITY_EVENT, { detail }),
+  );
 }
 
 async function invokeDesktop<T>(command: string, args?: object): Promise<T> {

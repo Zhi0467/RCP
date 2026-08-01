@@ -110,12 +110,8 @@ def test_operational_prune_keeps_an_ancient_resume_chain_walkable(tmp_path) -> N
     store = AppStore(tmp_path / "lineage.sqlite3")
     now = datetime(2026, 7, 29, tzinfo=UTC)
     _chat_attempt(store, "original", parent=None, resumed=False, attempt=1, graph_revision=1)
-    _chat_attempt(
-        store, "resumed", parent="original", resumed=True, attempt=2, graph_revision=91
-    )
-    _chat_attempt(
-        store, "retry", parent="resumed", resumed=False, attempt=3, graph_revision=3
-    )
+    _chat_attempt(store, "resumed", parent="original", resumed=True, attempt=2, graph_revision=91)
+    _chat_attempt(store, "retry", parent="resumed", resumed=False, attempt=3, graph_revision=3)
     _chat_attempt(
         store,
         "resumed-retry",
@@ -193,9 +189,7 @@ def test_operational_prune_leaves_active_work_alone(tmp_path) -> None:
 def test_operational_prune_bounds_recovery_outputs_and_writing_sessions(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = datetime(2026, 7, 29, tzinfo=UTC)
-    failed = _task("failed", now - timedelta(days=8)).model_copy(
-        update={"status": "failed"}
-    )
+    failed = _task("failed", now - timedelta(days=8)).model_copy(update={"status": "failed"})
     store.create_agent_task(failed)
     store.record_agent_task_patch_output("failed", '{"kind":"refresh"}')
     with store.connection() as connection:

@@ -44,17 +44,35 @@ export function AgentTaskActivity({
       aria-label={`Agent task: ${taskKindLabel(task.kind)}`}
     >
       <div className="run-activity-icon">
-        {active ? <LoaderCircle className="spin" size={18} /> : succeeded ? <CheckCircle2 size={19} /> : paused ? <CirclePause size={18} /> : <AlertTriangle size={19} />}
+        {active ? (
+          <LoaderCircle className="spin" size={18} />
+        ) : succeeded ? (
+          <CheckCircle2 size={19} />
+        ) : paused ? (
+          <CirclePause size={18} />
+        ) : (
+          <AlertTriangle size={19} />
+        )}
       </div>
       <div className="run-activity-copy">
         <div className="run-activity-heading">
-          <strong>{succeeded ? "Done — " : ""}{taskKindLabel(task.kind)}</strong>
+          <strong>
+            {succeeded ? "Done — " : ""}
+            {taskKindLabel(task.kind)}
+          </strong>
           <span>{taskStatusLabel(task)}</span>
         </div>
         <p>{task.error || task.status_message}</p>
         {active && (
           <div className="run-progress-row">
-            <div className="run-progress-track" role="progressbar" aria-label="Estimated agent progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+            <div
+              className="run-progress-track"
+              role="progressbar"
+              aria-label="Estimated agent progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+            >
               <span style={{ width: `${percent}%` }} />
             </div>
             <span className="mono">{percent}%</span>
@@ -63,11 +81,42 @@ export function AgentTaskActivity({
         )}
       </div>
       <div className="run-activity-actions">
-        {task.can_pause && <button className="button compact secondary" disabled={actionBusy} onClick={onPause}><CirclePause size={13} /> Pause</button>}
-        {task.can_resume && <button className="button compact primary" disabled={actionBusy || mutatingActionsDisabled} onClick={onResume}><Play size={13} /> Resume</button>}
-        {task.can_retry && <button className="button compact secondary" disabled={actionBusy || mutatingActionsDisabled} onClick={onRetry}><RotateCcw size={13} /> {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}</button>}
-        <button className="button compact ghost" onClick={onInspect}><Eye size={13} /> Inspect</button>
-        {!active && <button className="icon-button compact" aria-label="Dismiss agent task notification" onClick={onDismiss}><X size={14} /></button>}
+        {task.can_pause && (
+          <button className="button compact secondary" disabled={actionBusy} onClick={onPause}>
+            <CirclePause size={13} /> Pause
+          </button>
+        )}
+        {task.can_resume && (
+          <button
+            className="button compact primary"
+            disabled={actionBusy || mutatingActionsDisabled}
+            onClick={onResume}
+          >
+            <Play size={13} /> Resume
+          </button>
+        )}
+        {task.can_retry && (
+          <button
+            className="button compact secondary"
+            disabled={actionBusy || mutatingActionsDisabled}
+            onClick={onRetry}
+          >
+            <RotateCcw size={13} />{" "}
+            {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}
+          </button>
+        )}
+        <button className="button compact ghost" onClick={onInspect}>
+          <Eye size={13} /> Inspect
+        </button>
+        {!active && (
+          <button
+            className="icon-button compact"
+            aria-label="Dismiss agent task notification"
+            onClick={onDismiss}
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
     </section>
   );
@@ -75,13 +124,20 @@ export function AgentTaskActivity({
 
 export function taskStatusLabel(task: AgentTask): string {
   switch (task.status) {
-    case "queued": return "Queued";
-    case "running": return "Running in the background";
-    case "pausing": return "Pausing";
-    case "paused": return "Paused at checkpoint";
-    case "succeeded": return task.applied_revision ? `Completed at revision ${task.applied_revision}` : "Completed";
-    case "interrupted": return "Interrupted";
-    default: return "Failed";
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running in the background";
+    case "pausing":
+      return "Pausing";
+    case "paused":
+      return "Paused at checkpoint";
+    case "succeeded":
+      return task.applied_revision ? `Completed at revision ${task.applied_revision}` : "Completed";
+    case "interrupted":
+      return "Interrupted";
+    default:
+      return "Failed";
   }
 }
 

@@ -1,9 +1,19 @@
 export type Standing = "asserted" | "accepted" | "contested";
 export type TrustView = "working" | "accepted" | "review";
-export type AppView = "overview" | "attention" | "scientific" | "dag" | "execution" | "glossary" | "paper" | "settings" | "chats";
+export type AppView =
+  | "overview"
+  | "attention"
+  | "scientific"
+  | "dag"
+  | "execution"
+  | "glossary"
+  | "paper"
+  | "settings"
+  | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentTaskKind = AgentSurface;
-export type AgentTaskStatus = "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
+export type AgentTaskStatus =
+  "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
 export type ConversationMode = "discuss" | "work";
 export type AgentCapability = "discuss" | "work_auto" | "scratch_patch" | "paper_readonly";
 
@@ -278,11 +288,7 @@ export interface AgentTaskResult {
 }
 
 export type AgentArtifactMediaType =
-  | "text/html"
-  | "image/png"
-  | "image/jpeg"
-  | "image/gif"
-  | "image/webp";
+  "text/html" | "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 
 export interface AgentArtifactDescriptor {
   artifact_id: string;

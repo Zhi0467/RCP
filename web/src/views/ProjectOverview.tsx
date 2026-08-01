@@ -10,14 +10,19 @@ interface Props {
 export function ProjectOverview({ project, graph, onNavigate }: Props) {
   const nodes = Object.values(graph.nodes);
   const activeExperiments = nodes.filter(
-    (node) => node.type === "experiment" && !["completed", "abandoned", "superseded"].includes(String(node.status)),
+    (node) =>
+      node.type === "experiment" &&
+      !["completed", "abandoned", "superseded"].includes(String(node.status)),
   );
   const latestNode = [...nodes].sort((left, right) => right.updated_rev - left.updated_rev)[0];
   const blockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
   const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
   const ambiguities = Object.values(graph.ambiguities).filter((item) => item.status === "open");
   const nextExperiment = activeExperiments.find((node) => node.next_action);
-  const question = project.primary_question?.question || project.primary_question?.title || "No primary research question has been seeded.";
+  const question =
+    project.primary_question?.question ||
+    project.primary_question?.title ||
+    "No primary research question has been seeded.";
 
   const rows: Array<{
     number: string;
@@ -39,7 +44,9 @@ export function ProjectOverview({ project, graph, onNavigate }: Props) {
       prompt: "Where are we?",
       answer: activeExperiments.length
         ? `${activeExperiments.length} active experiment${activeExperiments.length === 1 ? "" : "s"}`
-        : graph.revision === 0 ? "The project has not been seeded yet." : "Understanding and review",
+        : graph.revision === 0
+          ? "The project has not been seeded yet."
+          : "Understanding and review",
       detail: `Graph revision ${graph.revision}`,
       view: "execution",
     },
@@ -47,27 +54,39 @@ export function ProjectOverview({ project, graph, onNavigate }: Props) {
       number: "03",
       prompt: "What changed?",
       answer: latestNode ? latestNode.title : "No graph changes yet.",
-      detail: project.last_refresh_at ? `Last refresh ${new Date(project.last_refresh_at).toLocaleString()}` : "Never refreshed",
+      detail: project.last_refresh_at
+        ? `Last refresh ${new Date(project.last_refresh_at).toLocaleString()}`
+        : "Never refreshed",
       view: "scientific",
     },
     {
       number: "04",
       prompt: "What is blocked?",
       answer: blockers[0]?.title || "No open blocker is recorded.",
-      detail: blockers.length ? `${blockers.length} open blocker${blockers.length === 1 ? "" : "s"}` : "No open blocker in the graph",
+      detail: blockers.length
+        ? `${blockers.length} open blocker${blockers.length === 1 ? "" : "s"}`
+        : "No open blocker in the graph",
       view: "dag",
     },
     {
       number: "05",
       prompt: "What needs you?",
-      answer: proposals[0]?.title || ambiguities[0]?.question || "Nothing currently requires human judgment.",
+      answer:
+        proposals[0]?.title ||
+        ambiguities[0]?.question ||
+        "Nothing currently requires human judgment.",
       detail: `${proposals.length} proposals · ${ambiguities.length} ambiguities`,
       view: "attention",
     },
     {
       number: "06",
       prompt: "What happens next?",
-      answer: String(nextExperiment?.next_action || (graph.revision === 0 ? "Seed the graph from the selected truth repositories." : "Refresh when new research work lands.")),
+      answer: String(
+        nextExperiment?.next_action ||
+          (graph.revision === 0
+            ? "Seed the graph from the selected truth repositories."
+            : "Refresh when new research work lands."),
+      ),
       detail: nextExperiment ? nextExperiment.title : "Project-level next action",
       view: nextExperiment ? "execution" : "attention",
     },

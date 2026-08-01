@@ -37,27 +37,59 @@ function task(overrides) {
 
 test("node chat reconstruction follows the latest chat id for that node", () => {
   const tasks = [
-    task({ operation_id: "old", request: { node_id: "node/a", chat_id: "old-chat", message: "Old question" } }),
-    task({ operation_id: "first", created_at: "2026-07-28T00:01:00Z", request: { node_id: "node/a", chat_id: "new-chat", message: "What does this mean?" }, result: { messages: ["First answer"] }, native_session_id: "native-1" }),
-    task({ operation_id: "other", created_at: "2026-07-28T00:02:00Z", request: { node_id: "node/b", chat_id: "other-chat", message: "Different node" } }),
-    task({ operation_id: "followup", created_at: "2026-07-28T00:03:00Z", request: { node_id: "node/a", chat_id: "new-chat", message: "Clarify it" }, result: { messages: ["Clearer answer"] }, native_session_id: "native-1" }),
+    task({
+      operation_id: "old",
+      request: { node_id: "node/a", chat_id: "old-chat", message: "Old question" },
+    }),
+    task({
+      operation_id: "first",
+      created_at: "2026-07-28T00:01:00Z",
+      request: { node_id: "node/a", chat_id: "new-chat", message: "What does this mean?" },
+      result: { messages: ["First answer"] },
+      native_session_id: "native-1",
+    }),
+    task({
+      operation_id: "other",
+      created_at: "2026-07-28T00:02:00Z",
+      request: { node_id: "node/b", chat_id: "other-chat", message: "Different node" },
+    }),
+    task({
+      operation_id: "followup",
+      created_at: "2026-07-28T00:03:00Z",
+      request: { node_id: "node/a", chat_id: "new-chat", message: "Clarify it" },
+      result: { messages: ["Clearer answer"] },
+      native_session_id: "native-1",
+    }),
   ];
 
   const related = relatedChatTasks(tasks, "node_chat", "node/a");
-  assert.deepEqual(related.map((item) => item.operation_id), ["first", "followup"]);
-  assert.deepEqual(reconstructTaskTranscript(related).map(({ role, text }) => ({ role, text })), [
-    { role: "human", text: "What does this mean?" },
-    { role: "agent", text: "First answer" },
-    { role: "human", text: "Clarify it" },
-    { role: "agent", text: "Clearer answer" },
-  ]);
+  assert.deepEqual(
+    related.map((item) => item.operation_id),
+    ["first", "followup"],
+  );
+  assert.deepEqual(
+    reconstructTaskTranscript(related).map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "What does this mean?" },
+      { role: "agent", text: "First answer" },
+      { role: "human", text: "Clarify it" },
+      { role: "agent", text: "Clearer answer" },
+    ],
+  );
   assert.equal(latestNativeSessionId(related), "native-1");
 });
 
 test("node chat reconstruction can select an older explicit chat id", () => {
   const tasks = [
-    task({ operation_id: "old", request: { node_id: "node/a", chat_id: "old-chat", message: "Old question" } }),
-    task({ operation_id: "new", created_at: "2026-07-28T00:01:00Z", request: { node_id: "node/a", chat_id: "new-chat", message: "New question" } }),
+    task({
+      operation_id: "old",
+      request: { node_id: "node/a", chat_id: "old-chat", message: "Old question" },
+    }),
+    task({
+      operation_id: "new",
+      created_at: "2026-07-28T00:01:00Z",
+      request: { node_id: "node/a", chat_id: "new-chat", message: "New question" },
+    }),
   ];
   assert.deepEqual(
     relatedChatTasks(tasks, "node_chat", "node/a", "old-chat").map((item) => item.operation_id),
@@ -72,13 +104,35 @@ test("paused resumable attempts block a new chat turn", () => {
 });
 
 test("a newer identical prompt is not hidden by older durable history", () => {
-  const older = task({ operation_id: "older", created_at: "2026-07-28T00:00:00Z", request: { message: "Same prompt" } });
-  const active = task({ operation_id: "active", status: "running", created_at: "2026-07-28T01:00:00Z", request: { message: "Same prompt" } });
-  const messages = [{
-    message_id: "message", role: "user", text: "Same prompt", timestamp: "2026-07-28T00:00:01Z",
-    native_session_id: null, provider: null, model: null, reasoning: null, execution_machine: null, applied_revision: null,
-  }];
-  assert.deepEqual(chatTasksMissingFromHistory([older, active], messages).map((item) => item.operation_id), ["active"]);
+  const older = task({
+    operation_id: "older",
+    created_at: "2026-07-28T00:00:00Z",
+    request: { message: "Same prompt" },
+  });
+  const active = task({
+    operation_id: "active",
+    status: "running",
+    created_at: "2026-07-28T01:00:00Z",
+    request: { message: "Same prompt" },
+  });
+  const messages = [
+    {
+      message_id: "message",
+      role: "user",
+      text: "Same prompt",
+      timestamp: "2026-07-28T00:00:01Z",
+      native_session_id: null,
+      provider: null,
+      model: null,
+      reasoning: null,
+      execution_machine: null,
+      applied_revision: null,
+    },
+  ];
+  assert.deepEqual(
+    chatTasksMissingFromHistory([older, active], messages).map((item) => item.operation_id),
+    ["active"],
+  );
 });
 
 test("an assistant-only repair receipt suppresses reconstruction of its child task", () => {
@@ -87,15 +141,17 @@ test("an assistant-only repair receipt suppresses reconstruction of its child ta
     parent_operation_id: "original",
     request: { message: "Original work", mode: "work" },
   });
-  const messages = [{
-    message_id: "receipt",
-    operation_id: "repair",
-    role: "assistant",
-    text: "",
-    timestamp: "2026-07-28T00:01:00Z",
-    mode: "work",
-    graph_update: null,
-  }];
+  const messages = [
+    {
+      message_id: "receipt",
+      operation_id: "repair",
+      role: "assistant",
+      text: "",
+      timestamp: "2026-07-28T00:01:00Z",
+      mode: "work",
+      graph_update: null,
+    },
+  ];
   assert.deepEqual(chatTasksMissingFromHistory([repair], messages), []);
 });
 
@@ -108,10 +164,13 @@ test("failed tasks preserve the human prompt and surfaced error", () => {
     error: "Provider exited",
   });
 
-  assert.deepEqual(reconstructTaskTranscript([failed]).map(({ role, text }) => ({ role, text })), [
-    { role: "human", text: "Rewrite this" },
-    { role: "error", text: "Provider exited" },
-  ]);
+  assert.deepEqual(
+    reconstructTaskTranscript([failed]).map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Rewrite this" },
+      { role: "error", text: "Provider exited" },
+    ],
+  );
 });
 
 test("failed chat tasks render a preserved answer before the error", () => {
@@ -127,11 +186,14 @@ test("failed chat tasks render a preserved answer before the error", () => {
     error: "The graph moved while this patch was being written",
   });
 
-  assert.deepEqual(reconstructTaskTranscript([failed]).map(({ role, text }) => ({ role, text })), [
-    { role: "human", text: "Explain this and update the graph" },
-    { role: "agent", text: "Here is the explanation that completed before the edit failed." },
-    { role: "error", text: "The graph moved while this patch was being written" },
-  ]);
+  assert.deepEqual(
+    reconstructTaskTranscript([failed]).map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Explain this and update the graph" },
+      { role: "agent", text: "Here is the explanation that completed before the edit failed." },
+      { role: "error", text: "The graph moved while this patch was being written" },
+    ],
+  );
 });
 
 test("artifacts stay attached to the answer when a later task error is present", () => {
@@ -145,11 +207,14 @@ test("artifacts stay attached to the answer when a later task error is present",
   });
 
   const transcript = reconstructTaskTranscript([failed]);
-  assert.deepEqual(transcript.map(({ role, text }) => ({ role, text })), [
-    { role: "human", text: "Show it and update the graph" },
-    { role: "agent", text: "The result is **ready**." },
-    { role: "error", text: "Graph change rejected" },
-  ]);
+  assert.deepEqual(
+    transcript.map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Show it and update the graph" },
+      { role: "agent", text: "The result is **ready**." },
+      { role: "error", text: "Graph change rejected" },
+    ],
+  );
   assert.deepEqual(transcript[1].artifacts, artifacts);
 });
 
@@ -197,10 +262,13 @@ test("legacy turns remain unlabelled and graph-only rejection is not an operatio
 
   const transcript = reconstructTaskTranscript([completed]);
   assert.equal(transcript[0].mode, null);
-  assert.deepEqual(transcript.map(({ role, text }) => ({ role, text })), [
-    { role: "human", text: "Run it" },
-    { role: "agent", text: "The experiment completed." },
-  ]);
+  assert.deepEqual(
+    transcript.map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Run it" },
+      { role: "agent", text: "The experiment completed." },
+    ],
+  );
   assert.equal(transcript[1].graphUpdate.status, "rejected");
 });
 

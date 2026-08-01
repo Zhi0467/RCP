@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  changeTextScale,
-  normalizeTextScale,
-  textScaleShortcut,
-} from "../src/textScale.ts";
+import { changeTextScale, normalizeTextScale, textScaleShortcut } from "../src/textScale.ts";
 
 test("text scale is stepped and bounded", () => {
   assert.equal(normalizeTextScale(null), 100);
@@ -19,7 +15,14 @@ test("text scale is stepped and bounded", () => {
 });
 
 test("desktop shortcuts map command plus, minus, and zero exactly once", () => {
-  const key = (value, extra = {}) => ({ key: value, metaKey: true, altKey: false, ctrlKey: false, shiftKey: false, ...extra });
+  const key = (value, extra = {}) => ({
+    key: value,
+    metaKey: true,
+    altKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    ...extra,
+  });
   assert.equal(textScaleShortcut(key("+")), "increase");
   assert.equal(textScaleShortcut(key("=")), "increase");
   assert.equal(textScaleShortcut(key("-")), "decrease");

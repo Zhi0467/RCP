@@ -49,13 +49,16 @@ def test_ingest_sessions_use_complete_immutable_index_and_bounded_inline_rows(
     assert index.sessions == sessions
     assert len(inline) <= 40
     assert omitted == 200 - len(inline)
-    assert len(
-        json.dumps(
-            [item.model_dump(mode="json") for item in inline],
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ) <= 12 * 1024
+    assert (
+        len(
+            json.dumps(
+                [item.model_dump(mode="json") for item in inline],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        <= 12 * 1024
+    )
     assert path.stat().st_mode & 0o222 == 0
 
 

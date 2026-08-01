@@ -259,9 +259,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
         ops = [
             {
                 "op": "update_nodes",
-                "nodes": [
-                    {"id": "hyp/main", "changes": {"status": "active"}, "cause": cause}
-                ],
+                "nodes": [{"id": "hyp/main", "changes": {"status": "active"}, "cause": cause}],
             }
         ]
         assert "invalid-belief-cause" not in _codes(
@@ -416,7 +414,10 @@ def test_every_belief_changing_operation_requires_a_cause(
 ) -> None:
     state = GraphState(
         project_truth_scope=["repo"],
-        nodes={"hyp/main": _hypothesis(), "hyp/other": _hypothesis().model_copy(update={"id": "hyp/other"})},
+        nodes={
+            "hyp/main": _hypothesis(),
+            "hyp/other": _hypothesis().model_copy(update={"id": "hyp/other"}),
+        },
     )
     report = validate_patch(state, _patch(1, [operation]), ["repo"])
     assert "missing-belief-cause" in _codes(report)
@@ -427,7 +428,12 @@ def test_every_belief_changing_operation_requires_a_cause(
 
 def test_relation_spec_covers_every_relation_flags_mismatches_and_serializes_layer() -> None:
     assert set(RELATION_SPEC) == set(BaseRelation.__args__)
-    assert {spec.layer for spec in RELATION_SPEC.values()} == {"epistemic", "action", "seam", "meta"}
+    assert {spec.layer for spec in RELATION_SPEC.values()} == {
+        "epistemic",
+        "action",
+        "seam",
+        "meta",
+    }
     assert RELATION_SPEC["supersedes"].same_type
     assert RELATION_SPEC["duplicate_of"].same_type
 

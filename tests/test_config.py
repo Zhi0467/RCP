@@ -30,9 +30,9 @@ def test_surface_permissions_default_conversations_to_discuss(manifest) -> None:
 
 def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> None:
     payload = manifest.model_dump(mode="python")
-    payload["agent"]["node_chat"]["permissions"] = permissions_for(
-        "scratch_patch"
-    ).model_dump(mode="python")
+    payload["agent"]["node_chat"]["permissions"] = permissions_for("scratch_patch").model_dump(
+        mode="python"
+    )
 
     migrated = Manifest.model_validate(payload)
 
@@ -43,9 +43,7 @@ def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> N
     ("field", "message"),
     [("machines", "machine aliases"), ("repositories", "repository aliases")],
 )
-def test_manifest_rejects_duplicate_authority_aliases(
-    manifest, field: str, message: str
-) -> None:
+def test_manifest_rejects_duplicate_authority_aliases(manifest, field: str, message: str) -> None:
     payload = manifest.model_dump(mode="python")
     payload[field].append(dict(payload[field][0]))
 

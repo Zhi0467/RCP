@@ -478,10 +478,7 @@ def _validated_batch_directory(value: Path | str) -> Path:
 
 def _validated_patch_path(value: Path | str) -> Path:
     relative = _validated_relative_path(value)
-    if (
-        relative.parent != Path("patches")
-        or not re.fullmatch(r"[0-9]{6}\.json", relative.name)
-    ):
+    if relative.parent != Path("patches") or not re.fullmatch(r"[0-9]{6}\.json", relative.name):
         raise ValueError(f"invalid committed patch path: {relative}")
     return relative
 

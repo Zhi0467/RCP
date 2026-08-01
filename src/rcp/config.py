@@ -25,9 +25,7 @@ class MachineConfig(BaseModel):
             absolute = PurePosixPath(path).is_absolute() if self.host else Path(path).is_absolute()
             if not absolute:
                 target = self.host or "the local machine"
-                raise ValueError(
-                    f"provider path for {provider!r} on {target} must be absolute"
-                )
+                raise ValueError(f"provider path for {provider!r} on {target} must be absolute")
             normalized[provider] = path
         self.provider_paths = normalized
         return self
@@ -173,10 +171,10 @@ class Manifest(BaseModel):
             expected = permissions_for(surface)
             if profile.permissions is None:
                 profile.permissions = expected
-            elif (
-                surface in {"node_chat", "project_chat"}
-                and profile.permissions == permissions_for("scratch_patch")
-            ):
+            elif surface in {
+                "node_chat",
+                "project_chat",
+            } and profile.permissions == permissions_for("scratch_patch"):
                 # Before conversation modes, chat surfaces carried the same
                 # patch permission as ingestion. Accept that one exact legacy
                 # contract, but normalize it to Discuss in memory so a saved

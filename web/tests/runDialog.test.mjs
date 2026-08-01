@@ -46,31 +46,38 @@ const project = {
 };
 
 test("seed and refresh runs offer one empty, labelled additional-message field", () => {
-  const html = renderToStaticMarkup(React.createElement(RunDialog, {
-    open: true,
-    kind: "seed",
-    project,
-    initialScope: ["repo"],
-    busy: false,
-    onClose() {},
-    onRun() {},
-  }));
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: true,
+      kind: "seed",
+      project,
+      initialScope: ["repo"],
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
 
-  assert.match(html, /<label[^>]*>\s*<span>Additional message \(optional\)<\/span>\s*<textarea rows="4"><\/textarea>/);
+  assert.match(
+    html,
+    /<label[^>]*>\s*<span>Additional message \(optional\)<\/span>\s*<textarea rows="4"><\/textarea>/,
+  );
   assert.equal(html.match(/<textarea/g)?.length, 1);
   assert.doesNotMatch(html, /placeholder=/);
 });
 
 test("a closed run dialog renders no message field", () => {
-  const html = renderToStaticMarkup(React.createElement(RunDialog, {
-    open: false,
-    kind: "seed",
-    project,
-    initialScope: ["repo"],
-    busy: false,
-    onClose() {},
-    onRun() {},
-  }));
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: false,
+      kind: "seed",
+      project,
+      initialScope: ["repo"],
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
 
   assert.equal(html, "");
 });
@@ -91,37 +98,43 @@ test("chat history exposes one explicit end-of-list page control", () => {
     onLoadMore() {},
     onStartTask() {},
   };
-  const ready = renderToStaticMarkup(React.createElement(ChatsWorkspace, {
-    ...common,
-    hasMore: true,
-    loadingMore: false,
-  }));
-  const complete = renderToStaticMarkup(React.createElement(ChatsWorkspace, {
-    ...common,
-    hasMore: false,
-    loadingMore: false,
-  }));
+  const ready = renderToStaticMarkup(
+    React.createElement(ChatsWorkspace, {
+      ...common,
+      hasMore: true,
+      loadingMore: false,
+    }),
+  );
+  const complete = renderToStaticMarkup(
+    React.createElement(ChatsWorkspace, {
+      ...common,
+      hasMore: false,
+      loadingMore: false,
+    }),
+  );
   assert.match(ready, /<button class="button primary compact" type="button">Load more<\/button>/);
   assert.doesNotMatch(complete, /Load more/);
 });
 
 test("retry keeps the original task boundary and exposes provider configuration", () => {
-  const html = renderToStaticMarkup(React.createElement(RunDialog, {
-    open: true,
-    kind: "seed",
-    mode: "retry",
-    project,
-    initialScope: ["repo"],
-    initialConfig: {
-      provider: "codex",
-      model: "",
-      reasoning: "medium",
-      run_on: "local",
-    },
-    busy: false,
-    onClose() {},
-    onRun() {},
-  }));
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: true,
+      kind: "seed",
+      mode: "retry",
+      project,
+      initialScope: ["repo"],
+      initialConfig: {
+        provider: "codex",
+        model: "",
+        reasoning: "medium",
+        run_on: "local",
+      },
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
 
   assert.match(html, /Retry seed/);
   assert.doesNotMatch(html, /Truth input subset/);
@@ -165,17 +178,19 @@ test("task inspector names every provider launch by its continuation cause", () 
     ],
     events: [],
   };
-  const html = renderToStaticMarkup(React.createElement(AgentTaskInspector, {
-    tasks: [task],
-    task,
-    loading: false,
-    actionBusy: false,
-    onSelect() {},
-    onPause() {},
-    onResume() {},
-    onRetry() {},
-    onClose() {},
-  }));
+  const html = renderToStaticMarkup(
+    React.createElement(AgentTaskInspector, {
+      tasks: [task],
+      task,
+      loading: false,
+      actionBusy: false,
+      onSelect() {},
+      onPause() {},
+      onResume() {},
+      onRetry() {},
+      onClose() {},
+    }),
+  );
 
   assert.match(html, /First attempt · 1/);
   assert.match(html, /Correcting prior failure · 2/);

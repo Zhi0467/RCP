@@ -142,9 +142,7 @@ class ConversationIndexer:
         malformed = 0
         local_machines = [item.alias for item in self.manifest.machines if not item.host]
         source_machine = (
-            local_machines[0]
-            if local_machines
-            else self.manifest.agent_profile("refresh").run_on
+            local_machines[0] if local_machines else self.manifest.agent_profile("refresh").run_on
         )
         source_errors: list[str] = []
 
@@ -243,8 +241,7 @@ class ConversationIndexer:
                     # materialization runs the normalizer there and transfers only
                     # the cursor-bounded derived records.
                     source_paths = {
-                        metadata["path"]: Path(metadata["path"])
-                        for metadata, _ in matched
+                        metadata["path"]: Path(metadata["path"]) for metadata, _ in matched
                     }
                 else:
                     try:
@@ -296,10 +293,7 @@ class ConversationIndexer:
                 )
                 sessions.append(
                     ConversationSession(
-                        key=(
-                            f"{state_alias}/{self.app_chat_origin.machine}/"
-                            f"app_chat/{session_id}"
-                        ),
+                        key=(f"{state_alias}/{self.app_chat_origin.machine}/app_chat/{session_id}"),
                         provider="app_chat",
                         source_machine=self.app_chat_origin.machine,
                         truth_repository=state_alias,
@@ -338,9 +332,7 @@ class ConversationIndexer:
     ) -> Iterator[ConversationRecord]:
         if session.record_count == 0:
             if session.last_uuid is not None:
-                raise ValueError(
-                    f"Session {session.key!r} has an inconsistent empty source index."
-                )
+                raise ValueError(f"Session {session.key!r} has an inconsistent empty source index.")
             if from_uuid is not None:
                 raise ValueError(_missing_cursor_message(session, from_uuid))
             return
@@ -355,9 +347,10 @@ class ConversationIndexer:
 
         seen_cursor = from_uuid is None
         indexed_records = 0
-        with self._source_path(session) as source_path, source_path.open(
-            encoding="utf-8"
-        ) as handle:
+        with (
+            self._source_path(session) as source_path,
+            source_path.open(encoding="utf-8") as handle,
+        ):
             for line_number, line in enumerate(handle, start=1):
                 if not line.strip():
                     continue
@@ -412,9 +405,10 @@ class ConversationIndexer:
             return None
         match: str | None = None
         try:
-            with self._source_path(session) as source_path, source_path.open(
-                encoding="utf-8"
-            ) as handle:
+            with (
+                self._source_path(session) as source_path,
+                source_path.open(encoding="utf-8") as handle,
+            ):
                 for line_number, line in enumerate(handle, start=1):
                     if not line.strip():
                         continue
@@ -509,13 +503,9 @@ class ConversationIndexer:
                     raise
                 _remove_temporary_slice(temporary)
             if not final_path.is_file() or _file_sha256(final_path) != content_sha256:
-                raise ValueError(
-                    f"Immutable session slice cache is corrupt for {session.key!r}."
-                )
+                raise ValueError(f"Immutable session slice cache is corrupt for {session.key!r}.")
             self._session_slice_cache.touch(final_path)
-            self._session_slice_cache.sweep(
-                active_paths=(*declared_active, final_path)
-            )
+            self._session_slice_cache.sweep(active_paths=(*declared_active, final_path))
             return ConversationSlice(
                 path=str(final_path),
                 record_count=record_count,
@@ -549,13 +539,9 @@ class ConversationIndexer:
         artifact = Path(path)
         active = (*active_paths, artifact)
         self._session_slice_cache.touch(artifact)
-        self._session_slice_cache.sweep(
-            active_paths=tuple(Path(item) for item in active)
-        )
+        self._session_slice_cache.sweep(active_paths=tuple(Path(item) for item in active))
 
-    def cache_metrics(
-        self, *, active_paths: Iterable[str | Path] = ()
-    ) -> RebuildableCacheMetrics:
+    def cache_metrics(self, *, active_paths: Iterable[str | Path] = ()) -> RebuildableCacheMetrics:
         paths = tuple(Path(path) for path in active_paths)
         return RebuildableCacheMetrics(
             remote_sources=self._remote_source_cache.metrics(active_paths=paths),
@@ -590,18 +576,17 @@ class ConversationIndexer:
         """Protect files used by one active task from every cache instance."""
 
         resolved = tuple(Path(path) for path in paths)
-        with self._remote_source_cache.pin(resolved), self._session_slice_cache.pin(
-            resolved
-        ):
+        with self._remote_source_cache.pin(resolved), self._session_slice_cache.pin(resolved):
             yield
 
     @contextmanager
     def pin_rebuildable_scope(self) -> Iterator[Callable[[Path], None]]:
         """Protect task artifacts as their final paths become known."""
 
-        with self._remote_source_cache.pin_scope() as pin_remote, (
-            self._session_slice_cache.pin_scope()
-        ) as pin_session:
+        with (
+            self._remote_source_cache.pin_scope() as pin_remote,
+            self._session_slice_cache.pin_scope() as pin_session,
+        ):
 
             def add(path: Path) -> None:
                 pin_remote(path)
@@ -651,8 +636,7 @@ class ConversationIndexer:
             ) from exc
         if result.returncode or not destination.is_file():
             raise OSError(
-                result.stderr.strip()
-                or f"remote conversation source is unavailable: {remote_path}"
+                result.stderr.strip() or f"remote conversation source is unavailable: {remote_path}"
             )
 
     @staticmethod
@@ -750,9 +734,7 @@ class ConversationIndexer:
                         subagent = source.get("subagent")
                         spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
                         if isinstance(spawn, dict):
-                            parent_session_id = (
-                                spawn.get("parent_thread_id") or parent_session_id
-                            )
+                            parent_session_id = spawn.get("parent_thread_id") or parent_session_id
                 else:
                     cwd = raw.get("cwd", cwd)
                     session_id = raw.get("sessionId", session_id)

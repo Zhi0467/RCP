@@ -326,9 +326,7 @@ def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
         },
     )
     assert reviewed.status_code == 200
-    assert reviewed.json()["nodes"]["hyp/replanning-restores-plasticity"][
-        "standing"
-    ] == "accepted"
+    assert reviewed.json()["nodes"]["hyp/replanning-restores-plasticity"]["standing"] == "accepted"
 
 
 def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
@@ -376,9 +374,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
 
     project = client.get(f"/api/projects/{project_id}").json()
     profiles = {
-        surface: {
-            key: profile[key] for key in ("provider", "model", "reasoning", "run_on")
-        }
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in project["agent_profiles"].items()
     }
     settings = client.put(
@@ -698,9 +694,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
 
     assert response.status_code == 200
     assert refreshed.status_code == 200
-    assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == (
-        "codex-ready"
-    )
+    assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == ("codex-ready")
     assert response.json()["providers"] == response.json()["provider_readiness"]["laptop"]
     assert set(calls) == {
         ("codex", False),
@@ -958,9 +952,7 @@ def test_legacy_direct_human_write_endpoints_are_not_exposed(manifest, tmp_path)
     assert app.state.service.history.current_materialization().state.revision == 1
 
 
-def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(
-    manifest, tmp_path
-) -> None:
+def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     client = TestClient(app)
@@ -1006,9 +998,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     profiles = {
-        surface: {
-            key: profile[key] for key in ("provider", "model", "reasoning", "run_on")
-        }
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in before["agent_profiles"].items()
     }
     profiles["seed"]["provider"] = "claude"
@@ -1042,9 +1032,7 @@ def test_project_settings_merge_partial_provider_paths_and_preserve_omitted_valu
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     profiles = {
-        surface: {
-            key: profile[key] for key in ("provider", "model", "reasoning", "run_on")
-        }
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in before["agent_profiles"].items()
     }
     base = {
@@ -1055,9 +1043,7 @@ def test_project_settings_merge_partial_provider_paths_and_preserve_omitted_valu
     monkeypatch.setattr(
         app.state.catalog.launcher,
         "invalidate_readiness",
-        lambda provider, *, host="", binary=None: invalidated.append(
-            (provider, host, binary)
-        ),
+        lambda provider, *, host="", binary=None: invalidated.append((provider, host, binary)),
     )
 
     first = client.put(
@@ -1098,9 +1084,7 @@ def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:
     before = client.get(f"/api/projects/{project_id}").json()
     content = manifest.path.read_text(encoding="utf-8")
     profiles = {
-        surface: {
-            key: profile[key] for key in ("provider", "model", "reasoning", "run_on")
-        }
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in before["agent_profiles"].items()
     }
 
@@ -1145,9 +1129,7 @@ def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -
 
     app.state.catalog.launcher.readiness = readiness
 
-    response = client.post(
-        f"/api/projects/{project_id}/machines/laptop/providers/codex/resolve"
-    )
+    response = client.post(f"/api/projects/{project_id}/machines/laptop/providers/codex/resolve")
 
     assert response.status_code == 200
     assert calls == [None, "/opt/new-agent/codex"]
@@ -1170,9 +1152,7 @@ def test_project_settings_reject_invalid_scope_without_changing_manifest(
     before = client.get(f"/api/projects/{project_id}").json()
     content = manifest.path.read_text(encoding="utf-8")
     profiles = {
-        surface: {
-            key: profile[key] for key in ("provider", "model", "reasoning", "run_on")
-        }
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in before["agent_profiles"].items()
     }
 
@@ -1353,14 +1333,10 @@ def test_background_seed_persists_exact_failure(manifest, tmp_path) -> None:
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert failed["status"] == "failed"
     assert failed["error"] == ("Local execution would copy 3.8 GiB. Choose remote-1 in Run on.")
-    receipt_categories = {
-        receipt["category"] for receipt in failed["debug_receipts"]
-    }
+    receipt_categories = {receipt["category"] for receipt in failed["debug_receipts"]}
     assert {"operation_created", "operation_failed"}.issubset(receipt_categories)
     failure_receipt = next(
-        receipt
-        for receipt in failed["debug_receipts"]
-        if receipt["category"] == "operation_failed"
+        receipt for receipt in failed["debug_receipts"] if receipt["category"] == "operation_failed"
     )
     assert failure_receipt["payload"] == {
         "status": "failed",
@@ -1415,16 +1391,12 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     assert len(launcher.prompts[0].splitlines()) < 200
     assert "Specialists remain\n  read-only" not in launcher.prompts[0]
     contract = next(
-        value
-        for name, value in launcher.input_snapshots[0].items()
-        if name.endswith("initial.md")
+        value for name, value in launcher.input_snapshots[0].items() if name.endswith("initial.md")
     )
     assert "fan-out into bounded read-only specialists when it helps" in contract
     assert "sole writer of the final Patch" in contract
     assert "`refresh` Patch object" in contract
-    authorized_keys = json.loads(
-        launcher.input_snapshots[0]["authorized-session-keys.json"]
-    )
+    authorized_keys = json.loads(launcher.input_snapshots[0]["authorized-session-keys.json"])
     assert all(set(item) == {"key", "path"} for item in authorized_keys)
     assert [item["key"] for item in authorized_keys] == [
         session.key for session in expected_context.sessions
@@ -1439,9 +1411,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     assert "requires a Proposal and human approval" in rejection_diagnostic
     assert service.history.state().revision == 2
     assert "rq/transfer-after-shift" in service.history.state().nodes
-    receipt_categories = {
-        receipt["category"] for receipt in completed["debug_receipts"]
-    }
+    receipt_categories = {receipt["category"] for receipt in completed["debug_receipts"]}
     assert {
         "context_assembled",
         "stage_checkpoint",
@@ -1463,16 +1433,15 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     assert context_receipt["payload"]["repository_count"] == 1
     assert "source_errors" not in context_receipt["payload"]
     prompt_receipt = next(
-        receipt
-        for receipt in completed["debug_receipts"]
-        if receipt["category"] == "agent_prompt"
+        receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_prompt"
     )
     exact_prompt = launcher.prompts[0]
     assert prompt_receipt["payload"]["prompt"] == exact_prompt
     assert prompt_receipt["payload"]["line_count"] == len(exact_prompt.splitlines())
-    assert prompt_receipt["payload"]["sha256"] == hashlib.sha256(
-        exact_prompt.encode("utf-8")
-    ).hexdigest()
+    assert (
+        prompt_receipt["payload"]["sha256"]
+        == hashlib.sha256(exact_prompt.encode("utf-8")).hexdigest()
+    )
 
 
 @pytest.mark.asyncio
@@ -1480,9 +1449,7 @@ async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_pa
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
-    service.history.update_machine_provider_paths(
-        {"laptop": {"codex": "/opt/agents/codex"}}
-    )
+    service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
     launcher = ScriptedLauncher([{"patch.json": refresh_patch().model_dump_json()}])
 
     _ = [
@@ -1562,14 +1529,10 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
     assert "invent_nodes" not in correction
     correction_inputs = launcher.input_snapshots[1]
     diagnostic = next(
-        value
-        for name, value in correction_inputs.items()
-        if name.endswith("correction-1.json")
+        value for name, value in correction_inputs.items() if name.endswith("correction-1.json")
     )
     contract = next(
-        value
-        for name, value in correction_inputs.items()
-        if name.endswith("correction-1.md")
+        value for name, value in correction_inputs.items() if name.endswith("correction-1.md")
     )
     assert "does not match the graph operation schema" in diagnostic
     assert "invent_nodes" in diagnostic
@@ -1827,9 +1790,7 @@ def test_remote_stage_uploads_local_slice_even_when_source_machine_matches(
                 repository.model_copy(update={"host": "laptop.example"})
                 for repository in context.repositories
             ],
-            "sessions": [
-                context.sessions[0].model_copy(update={"machine": "remote-1"})
-            ]
+            "sessions": [context.sessions[0].model_copy(update={"machine": "remote-1"})],
         }
     )
 
@@ -1851,17 +1812,13 @@ def test_remote_stage_uploads_local_slice_even_when_source_machine_matches(
     service.history.manifest.machines.append(
         MachineConfig(alias="remote-1", host="research.example")
     )
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = (
-        "remote-1"
-    )
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
     staged = _stage_graph_context(context, service, stage, "remote-1")
 
     assert local_slice != raw_path
     assert "conversations" in stage.directories
     assert staged.sessions[0].machine == "remote-1"
-    assert staged.sessions[0].path.startswith(
-        "/tmp/rcp-run.test/inputs/conversations/"
-    )
+    assert staged.sessions[0].path.startswith("/tmp/rcp-run.test/inputs/conversations/")
 
 
 def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
@@ -1887,12 +1844,8 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
         update={"machine": "remote-1", "host": "remote.example"}
     )
     remote_context = context.model_copy(update={"repositories": [remote_repository]})
-    service.history.manifest.machines.append(
-        MachineConfig(alias="remote-1", host="remote.example")
-    )
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = (
-        "remote-1"
-    )
+    service.history.manifest.machines.append(MachineConfig(alias="remote-1", host="remote.example"))
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
 
     staged = _stage_graph_context(remote_context, service, RecordingStage(), "remote-1")
 
@@ -1924,9 +1877,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     service.history.manifest.machines.append(
         MachineConfig(alias="remote-1", host="research.example")
     )
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = (
-        "remote-1"
-    )
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
     service.history.manifest.agent.refresh.run_on = "remote-1"
     monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
     monkeypatch.setattr(service, "assemble_run", lambda *_args, **_kwargs: context)
@@ -2081,9 +2032,7 @@ def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> Non
 
     async def resumed_stream(_project_id, _kind, request, _execution):
         resumed_requests.append(request)
-        yield _event_frame(
-            AgentEvent(event="message", text=json.dumps({"applied_revision": 1}))
-        )
+        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = resumed_stream
@@ -2099,9 +2048,7 @@ def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> Non
     assert resumed_requests[0].session_id == native_session_id
 
 
-def test_background_shutdown_records_reload_provenance_not_human_pause(
-    manifest, tmp_path
-) -> None:
+def test_background_shutdown_records_reload_provenance_not_human_pause(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
@@ -2224,9 +2171,7 @@ def test_failed_background_seed_can_retry_without_native_session(manifest, tmp_p
         assert _execution.retry_feedback == (
             "Attempt 1 (failed) failed with: provider connection dropped",
         )
-        yield _event_frame(
-            AgentEvent(event="message", text=json.dumps({"applied_revision": 1}))
-        )
+        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = retry_stream
@@ -2243,12 +2188,8 @@ def test_failed_background_seed_can_retry_without_native_session(manifest, tmp_p
     completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
     assert completed["status"] == "succeeded"
     assert completed["parent_operation_id"] == failed["operation_id"]
-    assert "native_resume_unavailable" in {
-        item["category"] for item in completed["debug_receipts"]
-    }
-    assert any(
-        "starting a clean retry" in item["message"] for item in completed["events"]
-    )
+    assert "native_resume_unavailable" in {item["category"] for item in completed["debug_receipts"]}
+    assert any("starting a clean retry" in item["message"] for item in completed["events"])
 
 
 def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> None:
@@ -2264,9 +2205,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> Non
 
     app.state.background_tasks.stream = failed_stream
     client = TestClient(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed", json={"provider": "codex"}
-    )
+    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "codex"})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
     async def resumed_stream(_project_id, _kind, request, execution):
@@ -2277,9 +2216,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> Non
             "Attempt 1 (failed) failed with: provider connection dropped",
         )
         assert execution.stage_root == str(stage)
-        yield _event_frame(
-            AgentEvent(event="message", text=json.dumps({"applied_revision": 1}))
-        )
+        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = resumed_stream
@@ -2305,9 +2242,7 @@ def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> N
 
     app.state.background_tasks.stream = failed_stream
     client = TestClient(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed", json={"provider": "claude"}
-    )
+    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "claude"})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
     async def clean_stream(_project_id, _kind, request, execution):
@@ -2315,9 +2250,7 @@ def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> N
         assert execution.continuation == "handoff"
         assert execution.reuses_native_checkpoint is False
         assert execution.stage_root is None
-        yield _event_frame(
-            AgentEvent(event="message", text=json.dumps({"applied_revision": 1}))
-        )
+        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = clean_stream
@@ -2327,13 +2260,8 @@ def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> N
     completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
 
     assert completed["status"] == "succeeded"
-    assert "native_resume_skipped" in {
-        item["category"] for item in completed["debug_receipts"]
-    }
-    assert any(
-        "session limit was exhausted" in item["message"]
-        for item in completed["events"]
-    )
+    assert "native_resume_skipped" in {item["category"] for item in completed["debug_receipts"]}
+    assert any("session limit was exhausted" in item["message"] for item in completed["events"])
 
 
 def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_path) -> None:
@@ -2351,9 +2279,7 @@ def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_pa
             status_message="running",
         )
     )
-    execution = AgentTaskExecution(
-        operation_id="retry", store=store, control=AgentProcessControl()
-    )
+    execution = AgentTaskExecution(operation_id="retry", store=store, control=AgentProcessControl())
 
     _record_context_reuse(
         execution, reused=False, reason="attempt 2 has no prepared context metadata"
@@ -2426,9 +2352,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
                 }
             )
             if len(self.calls) == 1:
-                transcript = (
-                    Path(manifest.sources.claude_roots[0]) / "claude-native-session.jsonl"
-                )
+                transcript = Path(manifest.sources.claude_roots[0]) / "claude-native-session.jsonl"
                 transcript.write_text(
                     json.dumps(
                         {
@@ -2460,9 +2384,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
             self.opened_transcript = Path(handoff["native_transcript_paths"][0]).read_text(
                 encoding="utf-8"
             )
-            (workspace / "patch.json").write_text(
-                seed_patch().model_dump_json(), encoding="utf-8"
-            )
+            (workspace / "patch.json").write_text(seed_patch().model_dump_json(), encoding="utf-8")
             yield AgentEvent(event="session", session_id="codex-native-session")
             yield AgentEvent(event="done")
 
@@ -2598,9 +2520,7 @@ def test_same_provider_correction_uses_saved_context_and_prior_diagnostic(
                 yield AgentEvent(event="session", session_id="owned-seed-session")
                 yield AgentEvent(event="error", text="provider connection dropped")
                 return
-            (workspace / "patch.json").write_text(
-                seed_patch().model_dump_json(), encoding="utf-8"
-            )
+            (workspace / "patch.json").write_text(seed_patch().model_dump_json(), encoding="utf-8")
             yield AgentEvent(event="session", session_id="owned-seed-session")
             yield AgentEvent(event="done")
 
@@ -2639,11 +2559,7 @@ def test_same_provider_correction_uses_saved_context_and_prior_diagnostic(
         if name.endswith("retry-correction.json")
     )
     assert "provider connection dropped" in correction
-    launches = [
-        item
-        for item in completed["debug_receipts"]
-        if item["category"] == "agent_launch"
-    ]
+    launches = [item for item in completed["debug_receipts"] if item["category"] == "agent_launch"]
     assert launches[0]["payload"]["continuation_cause"] == "correction"
 
 
@@ -2704,14 +2620,13 @@ def test_correction_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) 
     assert completed["applied_revision"] is None
     assert "provider connection dropped" in completed["error"]
     assert "no corrected patch was written" in completed["error"]
-    assert completed["error"].index("provider connection dropped") < completed[
-        "error"
-    ].index("no corrected patch was written")
+    assert completed["error"].index("provider connection dropped") < completed["error"].index(
+        "no corrected patch was written"
+    )
     assert service.history.state().revision == 0
     assert not service.history.state().nodes
     assert any(
-        receipt["category"] == "patch_predates_launch"
-        and receipt["payload"]["accepted"] is False
+        receipt["category"] == "patch_predates_launch" and receipt["payload"]["accepted"] is False
         for receipt in completed["debug_receipts"]
     )
 
@@ -2745,9 +2660,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
                 yield AgentEvent(event="session", session_id="paused-seed-session")
                 yield AgentEvent(event="paused", text="Provider process paused.")
                 return
-            (workspace / "patch.json").write_text(
-                seed_patch().model_dump_json(), encoding="utf-8"
-            )
+            (workspace / "patch.json").write_text(seed_patch().model_dump_json(), encoding="utf-8")
             yield AgentEvent(event="session", session_id="paused-seed-session")
             yield AgentEvent(event="done")
 
@@ -2770,9 +2683,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
     paused = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert paused["status"] == "paused"
 
-    resumed = client.post(
-        f"/api/projects/{project_id}/tasks/{paused['operation_id']}/resume"
-    )
+    resumed = client.post(f"/api/projects/{project_id}/tasks/{paused['operation_id']}/resume")
     completed = _wait_for_run(client, project_id, resumed.json()["operation_id"])
 
     assert completed["status"] == "succeeded"
@@ -2780,9 +2691,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
     assert launcher.sessions == [None, "paused-seed-session"]
     assert launcher.prompts[1] == "Continue the interrupted task."
     launch = next(
-        item
-        for item in completed["debug_receipts"]
-        if item["category"] == "agent_launch"
+        item for item in completed["debug_receipts"] if item["category"] == "agent_launch"
     )
     assert launch["payload"]["continuation_cause"] == "resume"
 
@@ -2824,11 +2733,7 @@ def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> No
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
     assert failed["status"] == "failed"
-    receipt = next(
-        item
-        for item in failed["debug_receipts"]
-        if item["category"] == "provider_exit"
-    )
+    receipt = next(item for item in failed["debug_receipts"] if item["category"] == "provider_exit")
     assert receipt["payload"] == {
         "event_counts": {"session": 1},
         "explicit_terminal_event": False,
@@ -2837,9 +2742,7 @@ def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> No
     }
 
 
-def test_retry_escapes_a_moved_saved_context_instead_of_looping(
-    manifest, tmp_path
-) -> None:
+def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
@@ -2881,17 +2784,14 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(
     assert "Retry this task" in moved["error"]
     assert launcher.calls == 1
     assert any(
-        item["category"] == "continuation_context_unavailable"
-        for item in moved["debug_receipts"]
+        item["category"] == "continuation_context_unavailable" for item in moved["debug_receipts"]
     )
 
     async def clean_stream(_project_id, _kind, request, execution):
         assert request.session_id is None
         assert execution.continuation == "handoff"
         assert execution.stage_root is None
-        yield _event_frame(
-            AgentEvent(event="message", text=json.dumps({"applied_revision": 2}))
-        )
+        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 2})))
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = clean_stream
@@ -2958,14 +2858,10 @@ def test_server_shutdown_pauses_live_background_seed(manifest, tmp_path) -> None
     assert persisted.can_resume is True
 
 
-def test_node_chat_returns_as_task_then_persists_result_and_transcript(
-    manifest, tmp_path
-) -> None:
+def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.update_machine_provider_paths(
-        {"laptop": {"codex": "/opt/agents/codex"}}
-    )
+    service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
     service.history.append(seed_patch())
     chat_id = str(uuid.uuid4())
     answer = "The node remains proposed because the matched forward test has not run."
@@ -3010,9 +2906,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
     assert started.status_code == 202
     assert worker_started.wait(timeout=1)
     operation_id = started.json()["operation_id"]
-    active = client.get(
-        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}"
-    ).json()
+    active = client.get(f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}").json()
     assert active["status"] in {"queued", "running"}
     assert client.get("/api/health").status_code == 200
 
@@ -3114,9 +3008,7 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
 
     discovered: list[str] = []
     for offset in range(0, 28, 7):
-        page = client.get(
-            f"/api/projects/{project_id}/chats?offset={offset}&limit=7"
-        ).json()
+        page = client.get(f"/api/projects/{project_id}/chats?offset={offset}&limit=7").json()
         discovered.extend(item["chat_id"] for item in page["items"])
     assert set(discovered) == set(chat_ids)
     assert len(discovered) == 23
@@ -3134,10 +3026,7 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     assert parsed_paths == [chat_dir / f"project-{chat_ids[0]}.jsonl"]
 
     assert client.get(f"/api/projects/{project_id}/chats/not-a-uuid").status_code == 422
-    assert (
-        client.get(f"/api/projects/{project_id}/chats/{uuid.uuid4()}").status_code
-        == 404
-    )
+    assert client.get(f"/api/projects/{project_id}/chats/{uuid.uuid4()}").status_code == 404
 
 
 def test_chat_history_reports_remote_refresh_failure_as_unavailable(
@@ -3221,10 +3110,7 @@ def test_remote_artifact_read_does_not_stall_health(
 
     monkeypatch.setattr("rcp.api.app._load_agent_artifact", blocked_load)
     project_id = app.state.default_project_id
-    url = (
-        f"/api/projects/{project_id}/tasks/operation/artifacts/"
-        f"{descriptor.artifact_id}/{action}"
-    )
+    url = f"/api/projects/{project_id}/tasks/operation/artifacts/{descriptor.artifact_id}/{action}"
 
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
@@ -3278,9 +3164,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             async for event in super().stream(*args, **kwargs):
                 yield event
 
-    launcher = ArtifactLauncher(
-        [AgentEvent(event="answer", text=answer), AgentEvent(event="done")]
-    )
+    launcher = ArtifactLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
 
     async def stream(_project_id, _kind, request, execution):
         async for frame in _stream_chat_run(
@@ -3315,7 +3199,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     html_preview = client.get(html_url)
     assert html_head.status_code == 200 and html_head.content == b""
     assert html_preview.status_code == 200
-    assert "sandbox=\"allow-scripts\"" in html_preview.text
+    assert 'sandbox="allow-scripts"' in html_preview.text
     assert "allow-top-navigation" not in html_preview.text
     assert "data-rcp-href=&quot;https://google.com&quot;" in html_preview.text
     assert "&lt;a href=&quot;" not in html_preview.text
@@ -3379,9 +3263,7 @@ def test_resumed_artifact_directory_rejects_a_symlinked_scope(tmp_path) -> None:
         )
 
 
-def test_chat_artifact_discovery_enforces_every_central_bound(
-    tmp_path, monkeypatch
-) -> None:
+def test_chat_artifact_discovery_enforces_every_central_bound(tmp_path, monkeypatch) -> None:
     directory = tmp_path / "artifacts"
     directory.mkdir()
     directory.joinpath("a.html").write_text("a")
@@ -3391,24 +3273,23 @@ def test_chat_artifact_discovery_enforces_every_central_bound(
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_COUNT", 2)
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_FILE_BYTES", 10)
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_TOTAL_BYTES", 10)
-    assert [
-        item.name
-        for item in _discover_chat_artifacts(None, "turn", directory, None)
-    ] == ["a.html", "b.html"]
+    assert [item.name for item in _discover_chat_artifacts(None, "turn", directory, None)] == [
+        "a.html",
+        "b.html",
+    ]
 
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_COUNT", 8)
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_FILE_BYTES", 2)
-    assert [
-        item.name
-        for item in _discover_chat_artifacts(None, "turn", directory, None)
-    ] == ["a.html", "b.html"]
+    assert [item.name for item in _discover_chat_artifacts(None, "turn", directory, None)] == [
+        "a.html",
+        "b.html",
+    ]
 
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_FILE_BYTES", 10)
     monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_TOTAL_BYTES", 2)
-    assert [
-        item.name
-        for item in _discover_chat_artifacts(None, "turn", directory, None)
-    ] == ["a.html"]
+    assert [item.name for item in _discover_chat_artifacts(None, "turn", directory, None)] == [
+        "a.html"
+    ]
 
 
 @pytest.mark.asyncio
@@ -3419,9 +3300,7 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     service = app.state.service
     service.history.append(seed_patch())
     answer = "The reply remains available."
-    launcher = FakeLauncher(
-        [AgentEvent(event="answer", text=answer), AgentEvent(event="done")]
-    )
+    launcher = FakeLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
     monkeypatch.setattr(
         "rcp.api.app._discover_chat_artifacts",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("previewer bug")),
@@ -3434,8 +3313,7 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -3491,20 +3369,20 @@ async def test_claude_chat_projects_exact_conversation_files(manifest, tmp_path)
                 yield event
 
     launcher = InspectingLauncher(
-        [AgentEvent(event="answer", text="We kept the original boundary."), AgentEvent(event="done")]
+        [
+            AgentEvent(event="answer", text="We kept the original boundary."),
+            AgentEvent(event="done"),
+        ]
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
     projection = Path(launcher.last_kwargs["cwd"]) / "inputs" / "conversations"
     projected_path = projection / "codex" / "repo-a" / "laptop" / "codex-session.jsonl"
-    assert launcher.projected_names == [
-        "codex/repo-a/laptop/codex-session.jsonl"
-    ]
+    assert launcher.projected_names == ["codex/repo-a/laptop/codex-session.jsonl"]
     assert launcher.projected_text == source_text
     assert launcher.projected_inode != source.stat().st_ino
     assert projection in launcher.last_kwargs["read_dirs"]
@@ -3541,8 +3419,7 @@ async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
     monkeypatch.setattr("rcp.api.app._append_chat_exchange", reject_path)
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert [event.text for event in _events(frames) if event.event == "answer"] == [
@@ -3553,9 +3430,7 @@ async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
 
 
 @pytest.mark.asyncio
-async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(
-    manifest, tmp_path
-) -> None:
+async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest, tmp_path) -> None:
     shared_data = tmp_path / "data"
     first_app = create_app(str(manifest.path), data_dir=shared_data)
     first_service = first_app.state.service
@@ -3738,10 +3613,7 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        )
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -3789,9 +3661,7 @@ async def test_claude_launch_exception_reclaims_projection_but_keeps_workspace(
     )
 
     with pytest.raises(OSError, match="provider launch failed"):
-        async for _frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        ):
+        async for _frame in _stream_chat_run(service, launcher, request, tmp_path / "data"):
             pass
 
     assert not launcher.projection.exists()
@@ -3844,9 +3714,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
     )
 
     assert started.status_code == 202
-    record = _wait_for_run(
-        client, app.state.default_project_id, started.json()["operation_id"]
-    )
+    record = _wait_for_run(client, app.state.default_project_id, started.json()["operation_id"])
     assert record["status"] == "failed"
     assert record["result"] == {"messages": [answer]}
     assert "could not be staged" in record["error"]
@@ -4035,9 +3903,7 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_node_chat_streams_answer_and_persists_transcript(
-    manifest, tmp_path
-) -> None:
+async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
@@ -4057,8 +3923,7 @@ async def test_node_chat_streams_answer_and_persists_transcript(
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert answer in [event.text for event in _events(frames) if event.event == "answer"]
@@ -4086,8 +3951,7 @@ async def test_node_chat_answers_without_writing_a_patch(manifest, tmp_path) -> 
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     events = _events(frames)
@@ -4122,7 +3986,8 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
         encoding="utf-8",
     )
     session = next(
-        item for item in service.index_snapshot(refresh=True).sessions
+        item
+        for item in service.index_snapshot(refresh=True).sessions
         if item.session_id == "stale-session"
     )
     (manifest.research_dir / "cursors.json").write_text(
@@ -4138,8 +4003,7 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -4147,9 +4011,7 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
 
 
 @pytest.mark.asyncio
-async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(
-    manifest, tmp_path
-) -> None:
+async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
@@ -4168,13 +4030,9 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(
     assert len(prompt.splitlines()) < 200
     assert "Search-time replanning restores future learning ability." not in prompt
     assert "rq/learning-after-shift" not in prompt
-    assert not any(
-        name.endswith("context.json") for name in launcher.input_snapshots[0]
-    )
+    assert not any(name.endswith("context.json") for name in launcher.input_snapshots[0])
     contract = next(
-        value
-        for name, value in launcher.input_snapshots[0].items()
-        if name.endswith("initial.md")
+        value for name, value in launcher.input_snapshots[0].items() if name.endswith("initial.md")
     )
     assert "hyp/replanning-restores-plasticity" in contract
     assert str(manifest.research_dir / "graph.json") in contract
@@ -4218,8 +4076,7 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     # The answer still reaches the human; only the graph change is refused.
@@ -4229,16 +4086,13 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
     assert graph_update is not None
     assert graph_update["status"] == "rejected"
     assert any(
-        "must not set coverage" in message
-        for message in graph_update["validation_messages"]
+        "must not set coverage" in message for message in graph_update["validation_messages"]
     )
     assert service.history.state().revision == revision_before
 
 
 @pytest.mark.asyncio
-async def test_project_chat_persists_project_scoped_transcript(
-    manifest, tmp_path
-) -> None:
+async def test_project_chat_persists_project_scoped_transcript(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
@@ -4264,8 +4118,7 @@ async def test_project_chat_persists_project_scoped_transcript(
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert answer in [event.text for event in _events(frames) if event.event == "answer"]
@@ -4296,8 +4149,7 @@ async def test_unauthorized_chat_patch_is_discarded_not_applied(manifest, tmp_pa
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
@@ -4347,7 +4199,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
                 update={
                     "message": "Thanks — what does that node mean?",
                     "session_id": first.native_session_id,
-                        }
+                }
             ),
             tmp_path / "data",
         )
@@ -4386,8 +4238,7 @@ async def test_chat_patch_is_refused_when_the_graph_moved_under_it(manifest, tmp
     )
 
     frames = [
-        item
-        async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -4402,9 +4253,7 @@ async def test_chat_patch_is_refused_when_the_graph_moved_under_it(manifest, tmp
     assert "rq/late-arrival" not in service.history.state().nodes
 
 
-def test_resumed_chat_is_judged_against_the_revision_it_started_from(
-    manifest, tmp_path
-) -> None:
+def test_resumed_chat_is_judged_against_the_revision_it_started_from(manifest, tmp_path) -> None:
     """A resumed turn re-assembles its context but not its reasoning.
 
     Resume is a new task whose parent holds the attempt that was interrupted, so
@@ -4493,9 +4342,7 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(
     client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
     _wait_for_status(client, project_id, operation_id, {"paused"})
     assert launcher.projections[0].is_dir()
-    assert [item.name for item in (launcher.workspaces[0] / "turns").iterdir()] == [
-        operation_id
-    ]
+    assert [item.name for item in (launcher.workspaces[0] / "turns").iterdir()] == [operation_id]
     assert (
         next(launcher.projections[0].rglob("*.jsonl")).read_text(encoding="utf-8")
         == original_source_text
@@ -4516,9 +4363,7 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(
     assert launcher.projected_text == [original_source_text, original_source_text]
     assert not launcher.projections[1].exists()
     assert launcher.workspaces[1].is_dir()
-    assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [
-        operation_id
-    ]
+    assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [operation_id]
     # The operational turn completed; only its stale graph reflection is refused.
     assert resumed["status"] == "succeeded"
     assert "from revision 1 to 2" in " ".join(
@@ -4571,9 +4416,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
     retried_response = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry"
     )
-    retried = _wait_for_run(
-        client, project_id, retried_response.json()["operation_id"]
-    )
+    retried = _wait_for_run(client, project_id, retried_response.json()["operation_id"])
 
     assert retried["status"] == "succeeded"
     assert launcher.workspaces[0] == launcher.workspaces[1]
@@ -4620,12 +4463,7 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
         control=AgentProcessControl(),
         continuation="resume",
     )
-    expected = (
-        tmp_path
-        / "data"
-        / "run-stage"
-        / _chat_stage_name(service, request, execution)
-    )
+    expected = tmp_path / "data" / "run-stage" / _chat_stage_name(service, request, execution)
     expected.mkdir(parents=True)
     stored_root = (
         str(expected.with_name("chat-from-another-project"))
@@ -4676,12 +4514,8 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         run_on="remote-1",
     )
     context = service.assemble_chat(request.model_copy(update={"run_on": "laptop"}))
-    service.history.manifest.machines.append(
-        MachineConfig(alias="remote-1", host="remote.example")
-    )
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = (
-        "remote-1"
-    )
+    service.history.manifest.machines.append(MachineConfig(alias="remote-1", host="remote.example"))
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
     service.history.manifest.agent.node_chat.run_on = "remote-1"
     assert "remote-1" in service.manifest.machine_map
     monkeypatch.setattr(service, "assemble_chat", lambda _request: context)
@@ -4796,9 +4630,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
 
 def test_resumed_chat_stops_at_the_retry_reasoning_boundary(tmp_path) -> None:
     store = AppStore(tmp_path / "lineage.sqlite3")
-    _record_lineage_task(
-        store, "original", parent=None, resumed=False, graph_revision=1
-    )
+    _record_lineage_task(store, "original", parent=None, resumed=False, graph_revision=1)
     _record_lineage_task(
         store, "retry", parent="original", resumed=False, graph_revision=2, attempt=2
     )
@@ -4821,9 +4653,7 @@ def test_resumed_chat_stops_at_the_retry_reasoning_boundary(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("broken", ["missing-parent", "missing-created", "missing-context"])
-def test_resumed_chat_fails_closed_when_lineage_proof_is_missing(
-    tmp_path, broken: str
-) -> None:
+def test_resumed_chat_fails_closed_when_lineage_proof_is_missing(tmp_path, broken: str) -> None:
     store = AppStore(tmp_path / f"{broken}.sqlite3")
     if broken == "missing-parent":
         _record_lineage_task(
@@ -4867,12 +4697,8 @@ def test_resumed_chat_fails_closed_when_lineage_proof_is_missing(
 
 def test_resumed_chat_fails_closed_on_lineage_cycle(tmp_path) -> None:
     store = AppStore(tmp_path / "cycle.sqlite3")
-    _record_lineage_task(
-        store, "a", parent="b", resumed=True, graph_revision=1, attempt=3
-    )
-    _record_lineage_task(
-        store, "b", parent="a", resumed=True, graph_revision=2, attempt=2
-    )
+    _record_lineage_task(store, "a", parent="b", resumed=True, graph_revision=1, attempt=3)
+    _record_lineage_task(store, "b", parent="a", resumed=True, graph_revision=2, attempt=2)
     execution = AgentTaskExecution(
         operation_id="a",
         store=store,
@@ -5001,9 +4827,7 @@ def _wait_for_status(
 
 
 @pytest.mark.asyncio
-async def test_work_without_patch_succeeds_without_spending_a_revision(
-    manifest, tmp_path
-) -> None:
+async def test_work_without_patch_succeeds_without_spending_a_revision(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
@@ -5017,10 +4841,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        )
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5035,9 +4856,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(
     }
     assert service.history.state().revision == 1
     assert launcher.launch_kwargs[0]["capability"] == "work_auto"
-    assert launcher.launch_kwargs[0]["write_dirs"] == [
-        Path(manifest.repository_map["repo-a"].path)
-    ]
+    assert launcher.launch_kwargs[0]["write_dirs"] == [Path(manifest.repository_map["repo-a"].path)]
     transcript = service.chat_transcript(request.chat_id)
     assert transcript is not None
     assert [message.mode for message in transcript.messages] == ["work", "work"]
@@ -5078,9 +4897,7 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
 
     assert completed["status"] == "succeeded"
     launch = next(
-        receipt
-        for receipt in completed["debug_receipts"]
-        if receipt["category"] == "agent_launch"
+        receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
     )
     assert launch["payload"]["canonical_state_boundary"] == boundary
     assert launch["payload"]["network_access"] is True
@@ -5199,7 +5016,9 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
 
     class WorkLauncher(ScriptedLauncher):
         def __init__(self) -> None:
-            super().__init__([{"patch.json": invalid.model_dump_json()}, {"patch.json": valid.model_dump_json()}])
+            super().__init__(
+                [{"patch.json": invalid.model_dump_json()}, {"patch.json": valid.model_dump_json()}]
+            )
             self.operational_effects = 0
 
         async def stream(self, provider, prompt, **kwargs):
@@ -5221,10 +5040,7 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        )
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5261,10 +5077,7 @@ async def test_exhausted_work_patch_correction_preserves_successful_answer(
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        )
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5312,10 +5125,7 @@ async def test_stale_work_patch_is_rejected_without_correction_or_rebase(
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        )
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5389,10 +5199,7 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
     )
 
     frames = [
-        frame
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data"
-        )
+        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
     graph_update = _graph_update(frames)
@@ -5452,14 +5259,12 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert parent["result"]["messages"] == ["The operational work completed."]
     assert parent["result"]["graph_update"]["status"] == "rejected"
     assert parent["result"]["graph_update"]["repairable"] is True
-    assert app.state.background_tasks.store.agent_task_patch_output(
-        parent["operation_id"]
-    ) == invalid
+    assert (
+        app.state.background_tasks.store.agent_task_patch_output(parent["operation_id"]) == invalid
+    )
     transcript = service.chat_transcript(chat_id)
     assert transcript is not None
-    assert {message.operation_id for message in transcript.messages} == {
-        parent["operation_id"]
-    }
+    assert {message.operation_id for message in transcript.messages} == {parent["operation_id"]}
 
     ownership_check = app.state.background_tasks._session_is_rcp_owned
     monkeypatch.setattr(
@@ -5489,9 +5294,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
         f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update"
     )
     assert duplicate.status_code == 409
-    repaired = _wait_for_run(
-        client, project_id, repaired_response.json()["operation_id"]
-    )
+    repaired = _wait_for_run(client, project_id, repaired_response.json()["operation_id"])
 
     assert repaired["status"] == "succeeded"
     assert repaired["parent_operation_id"] == parent["operation_id"]
@@ -5499,9 +5302,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert repaired["result"]["messages"] == []
     assert repaired["result"]["graph_update"]["status"] == "applied"
     assert "rq/manually-repaired-work" in service.history.state().nodes
-    parent_after = client.get(
-        f"/api/projects/{project_id}/tasks/{parent['operation_id']}"
-    ).json()
+    parent_after = client.get(f"/api/projects/{project_id}/tasks/{parent['operation_id']}").json()
     assert parent_after["result"]["graph_update"]["repairable"] is False
     transcript = service.chat_transcript(chat_id)
     assert transcript is not None

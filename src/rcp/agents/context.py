@@ -115,9 +115,7 @@ class RunContext(BaseModel):
         """Return the bounded, evidence-complete representation shown to an agent."""
 
         payload = self.model_dump(mode="json", exclude={"sessions", "sessions_inline"})
-        payload["sessions"] = [
-            session.model_dump(mode="json") for session in self.sessions_inline
-        ]
+        payload["sessions"] = [session.model_dump(mode="json") for session in self.sessions_inline]
         return payload
 
 
@@ -367,7 +365,7 @@ class ContextAssembler:
             return [], 0, 0
         ordered = sorted(
             index.for_scope(selected),
-            key=lambda item: (item.last_timestamp or datetime.min.replace(tzinfo=UTC)),
+            key=lambda item: item.last_timestamp or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
         pointers: list[ConversationPointer] = []
@@ -565,9 +563,7 @@ def with_session_routing_pointer(
     )
 
 
-def _default_session_routing_root(
-    manifest: Manifest, indexer: ConversationIndexer
-) -> Path:
+def _default_session_routing_root(manifest: Manifest, indexer: ConversationIndexer) -> Path:
     del manifest
     return indexer.session_artifact_root()
 
@@ -582,8 +578,7 @@ def validate_work_patch(patch: Patch) -> None:
         )
     if any(operation.get("op") == "set_coverage" for operation in patch.ops):
         raise ValueError(
-            "A Work patch must not set coverage; only seed and refresh move the coverage "
-            "boundary."
+            "A Work patch must not set coverage; only seed and refresh move the coverage boundary."
         )
 
 
@@ -591,10 +586,7 @@ def validate_processed_cursors(context: RunContext, cursors: dict[str, str]) -> 
     expected = {session.key: session.last_uuid for session in context.sessions}
     unknown = sorted(set(cursors) - set(expected))
     if unknown:
-        raise ValueError(
-            "processed_cursors contains sessions outside this run context: "
-            f"{unknown}"
-        )
+        raise ValueError(f"processed_cursors contains sessions outside this run context: {unknown}")
     for key, cursor in cursors.items():
         terminal_record = expected[key]
         if terminal_record is None:
@@ -616,10 +608,7 @@ def normalize_processed_cursors(
     context_sessions = {session.key: session for session in context.sessions}
     unknown = sorted(set(patch.processed_cursors) - set(context_sessions))
     if unknown:
-        raise ValueError(
-            "processed_cursors contains sessions outside this run context: "
-            f"{unknown}"
-        )
+        raise ValueError(f"processed_cursors contains sessions outside this run context: {unknown}")
 
     final_read = set(previous_coverage.sessions_read)
     final_skipped = set(previous_coverage.sessions_skipped)
@@ -684,15 +673,12 @@ def validate_session_evidence(
     lost_skipped = sorted(previous_skipped - final_read - final_skipped)
     if lost_skipped:
         raise ValueError(
-            "Coverage cannot silently remove previously accounted sessions: "
-            f"{lost_skipped}."
+            f"Coverage cannot silently remove previously accounted sessions: {lost_skipped}."
         )
 
     context_sessions = {session.key: session for session in context.sessions}
     previous_sessions = previous_read | previous_skipped
-    promoted_outside_context = sorted(
-        (previous_skipped & final_read) - set(context_sessions)
-    )
+    promoted_outside_context = sorted((previous_skipped & final_read) - set(context_sessions))
     if promoted_outside_context:
         raise ValueError(
             "Previously skipped sessions can be promoted to read only when their immutable "

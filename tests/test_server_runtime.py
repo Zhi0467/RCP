@@ -16,9 +16,7 @@ from rcp.server_runtime import (
 from rcp.sources import indexer
 
 
-def test_metadata_is_published_atomically_and_removed_by_its_owner(
-    tmp_path, monkeypatch
-) -> None:
+def test_metadata_is_published_atomically_and_removed_by_its_owner(tmp_path, monkeypatch) -> None:
     metadata = ServerMetadata.create(
         tmp_path,
         host="127.0.0.1",

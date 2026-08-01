@@ -470,12 +470,10 @@ class HistoryManager:
         expected_json = {
             "graph.json": result.state.model_dump(mode="json"),
             "glossary.json": {
-                key: value.model_dump(mode="json")
-                for key, value in result.state.glossary.items()
+                key: value.model_dump(mode="json") for key, value in result.state.glossary.items()
             },
             "proposals.json": {
-                key: value.model_dump(mode="json")
-                for key, value in result.state.proposals.items()
+                key: value.model_dump(mode="json") for key, value in result.state.proposals.items()
             },
             "coverage.json": result.state.coverage.model_dump(mode="json"),
             "cursors.json": result.processed_cursors,
@@ -515,17 +513,11 @@ class HistoryManager:
         self._atomic_json(self.root / "graph.json", result.state.model_dump(mode="json"))
         self._atomic_json(
             self.root / "glossary.json",
-            {
-                key: value.model_dump(mode="json")
-                for key, value in result.state.glossary.items()
-            },
+            {key: value.model_dump(mode="json") for key, value in result.state.glossary.items()},
         )
         self._atomic_json(
             self.root / "proposals.json",
-            {
-                key: value.model_dump(mode="json")
-                for key, value in result.state.proposals.items()
-            },
+            {key: value.model_dump(mode="json") for key, value in result.state.proposals.items()},
         )
         self._atomic_json(
             self.root / "coverage.json", result.state.coverage.model_dump(mode="json")

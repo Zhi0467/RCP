@@ -10,10 +10,17 @@ interface Props {
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
-type CoverStyle = typeof COVER_STYLES[number];
+type CoverStyle = (typeof COVER_STYLES)[number];
 
 const COVER_TONES = [
-  "oxblood", "teal", "mustard", "coral", "indigo", "plum", "moss", "slate",
+  "oxblood",
+  "teal",
+  "mustard",
+  "coral",
+  "indigo",
+  "plum",
+  "moss",
+  "slate",
 ] as const;
 
 const COVER_LABELS: Record<CoverStyle, string> = {
@@ -38,7 +45,8 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
 
   useEffect(() => {
     const closeOnPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Element) || event.target.closest(".project-cover-shell")) return;
+      if (!(event.target instanceof Element) || event.target.closest(".project-cover-shell"))
+        return;
       setOpenMenuProject(null);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -88,7 +96,9 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
     <div className="landing-shell">
       <header className="landing-header">
         <a className="rcp-mark" href="#" aria-label="RCP project index">
-          <span className="rcp-wordmark" aria-hidden="true">RCP</span>
+          <span className="rcp-wordmark" aria-hidden="true">
+            RCP
+          </span>
         </a>
       </header>
 
@@ -107,19 +117,21 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
                   onClick={() => onOpen(project.id)}
                 >
                   <span className="project-cover-spine" aria-hidden="true" />
-                  <span className={unavailable ? "project-cover-state offline" : "project-cover-state"}>
+                  <span
+                    className={unavailable ? "project-cover-state offline" : "project-cover-state"}
+                  >
                     {unavailable ? <WifiOff size={12} /> : <Server size={12} />}
                     {unavailable ? "Cached" : project.remote ? "Remote" : "Local"}
                   </span>
                   <strong>{project.name}</strong>
                   <span className="project-cover-meta">
                     {project.revision == null ? "Not opened" : `Revision ${project.revision}`}
-                    {project.attention_count > 0 && (
-                      <> · {project.attention_count} waiting</>
-                    )}
+                    {project.attention_count > 0 && <> · {project.attention_count} waiting</>}
                     {project.last_opened_at && <> · {formatReturn(project.last_opened_at)}</>}
                   </span>
-                  <span className="project-cover-open" aria-hidden="true">Open →</span>
+                  <span className="project-cover-open" aria-hidden="true">
+                    Open →
+                  </span>
                 </button>
                 <button
                   className="project-cover-trigger"
@@ -128,13 +140,21 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
                   aria-expanded={openMenuProject === project.id}
                   aria-label={`Project actions for ${project.name}`}
                   title="Project actions"
-                  onClick={() => setOpenMenuProject((current) => current === project.id ? null : project.id)}
+                  onClick={() =>
+                    setOpenMenuProject((current) => (current === project.id ? null : project.id))
+                  }
                 >
                   <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
                 {openMenuProject === project.id && (
-                  <div className="project-cover-menu" role="menu" aria-label={`Actions for ${project.name}`}>
-                    <span className="project-cover-menu-label" role="presentation">Cover</span>
+                  <div
+                    className="project-cover-menu"
+                    role="menu"
+                    aria-label={`Actions for ${project.name}`}
+                  >
+                    <span className="project-cover-menu-label" role="presentation">
+                      Cover
+                    </span>
                     <div className="project-cover-options" role="presentation">
                       {COVER_STYLES.map((style) => (
                         <button
@@ -178,17 +198,24 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
           })}
 
           <button className="project-cover new-project-cover" onClick={onCreate}>
-            <span className="new-project-plus" aria-hidden="true">+</span>
+            <span className="new-project-plus" aria-hidden="true">
+              +
+            </span>
             <strong>New project</strong>
-            <span className="project-cover-open" aria-hidden="true">Create →</span>
+            <span className="project-cover-open" aria-hidden="true">
+              Create →
+            </span>
           </button>
         </section>
       </main>
 
       {deleteProject && (
-        <div className="modal-backdrop" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) closeDeleteConfirmation();
-        }}>
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDeleteConfirmation();
+          }}
+        >
           <section
             className="project-delete-dialog"
             role="alertdialog"
@@ -202,11 +229,14 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
             </header>
             <p id="project-delete-warning">
               RCP records, task history, and staged run data for {deleteProject.name} will be
-              permanently erased. Repositories and their <code>.research</code> directories
-              remain untouched. Paused, interrupted, failed, and completed history will become
-              unreachable.
+              permanently erased. Repositories and their <code>.research</code> directories remain
+              untouched. Paused, interrupted, failed, and completed history will become unreachable.
             </p>
-            {deleteError && <div className="project-delete-error" role="alert">{deleteError}</div>}
+            {deleteError && (
+              <div className="project-delete-error" role="alert">
+                {deleteError}
+              </div>
+            )}
             <footer>
               <button
                 className="button secondary"
@@ -217,7 +247,12 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
               >
                 Cancel
               </button>
-              <button className="button danger" type="button" disabled={deleteBusy} onClick={confirmDelete}>
+              <button
+                className="button danger"
+                type="button"
+                disabled={deleteBusy}
+                onClick={confirmDelete}
+              >
                 {deleteBusy ? "Deleting…" : "Delete project"}
               </button>
             </footer>

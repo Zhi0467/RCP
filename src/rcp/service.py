@@ -370,9 +370,7 @@ class ProjectService:
                     if cached is None or cached.fingerprint != fingerprint:
                         transcript = self._read_chat_transcript(path)
                         summary = (
-                            ChatSummary.model_validate(
-                                transcript.model_dump(exclude={"messages"})
-                            )
+                            ChatSummary.model_validate(transcript.model_dump(exclude={"messages"}))
                             if transcript is not None
                             else None
                         )
@@ -684,9 +682,7 @@ class ProjectService:
             )
             for surface in _SETTINGS_SURFACES
         }
-        provider_path_updates = self._validate_provider_path_updates(
-            request.machine_provider_paths
-        )
+        provider_path_updates = self._validate_provider_path_updates(request.machine_provider_paths)
         prior_paths = {
             (alias, provider): self.manifest.machine_map[alias].provider_paths.get(provider)
             for alias, updates in (provider_path_updates or {}).items()
@@ -791,9 +787,10 @@ class ProjectService:
     def sync_graph(self, request: GraphSyncRequest) -> GraphState:
         """Commit one project-wide human draft in one canonical transaction."""
 
-        has_staged_work = any(
-            (request.nodes, request.proposals, request.ambiguities, request.custom_nodes)
-        ) or request.ontology is not None
+        has_staged_work = (
+            any((request.nodes, request.proposals, request.ambiguities, request.custom_nodes))
+            or request.ontology is not None
+        )
         if not has_staged_work:
             return self.history.current_materialization().state
         try:
@@ -811,9 +808,10 @@ class ProjectService:
         """Build one Sync from the same fresh state that history will append against."""
 
         ontology_changed = request.ontology is not None and request.ontology != state.ontology
-        if not any(
-            (request.nodes, request.proposals, request.ambiguities, request.custom_nodes)
-        ) and not ontology_changed:
+        if (
+            not any((request.nodes, request.proposals, request.ambiguities, request.custom_nodes))
+            and not ontology_changed
+        ):
             return []
 
         patches: list[Patch] = []
@@ -852,9 +850,7 @@ class ProjectService:
                 )
             )
 
-        active_types = {
-            item.name: item for item in effective_ontology.types if not item.deprecated
-        }
+        active_types = {item.name: item for item in effective_ontology.types if not item.deprecated}
         for node in request.custom_nodes:
             extension_type = node.extension_type
             if extension_type is None:
@@ -1031,9 +1027,7 @@ class ProjectService:
         if "extension_fields" in request.changes:
             self._validate_human_extension_fields(state, node, request.changes)
         if disallowed:
-            raise ValueError(
-                f"Direct edits to {node_id} cannot change: {', '.join(disallowed)}."
-            )
+            raise ValueError(f"Direct edits to {node_id} cannot change: {', '.join(disallowed)}.")
         current = node.model_dump(mode="python")
         if all(current[field] == value for field, value in request.changes.items()):
             raise ValueError("The submitted node wording is unchanged.")
@@ -1076,9 +1070,7 @@ class ProjectService:
         if node.extension_type is not None:
             owner_types.add(node.extension_type)
         definitions = {
-            field.name: field
-            for field in state.ontology.fields
-            if field.owner_type in owner_types
+            field.name: field for field in state.ontology.fields if field.owner_type in owner_types
         }
         missing = object()
         protected = sorted(
@@ -1164,9 +1156,7 @@ class ProjectService:
         if run_on is not None:
             if run_on not in self.manifest.machine_map:
                 raise ValueError(f"unknown execution machine: {run_on}")
-            state_machine = self.manifest.repository_map[
-                self.manifest.state.repository
-            ].machine
+            state_machine = self.manifest.repository_map[self.manifest.state.repository].machine
             if surface != "paper_coach" and run_on != state_machine:
                 raise ValueError(
                     f"{surface.replace('_', ' ')} must run on canonical state machine "
@@ -1216,9 +1206,7 @@ class ProjectService:
             request.run_truth_scope,
             repository_access=repository_access,
             refresh_delta=(
-                self.history.refresh_delta(materialization)
-                if surface == "refresh"
-                else None
+                self.history.refresh_delta(materialization) if surface == "refresh" else None
             ),
             pin_artifact=pin_artifact,
         )
@@ -1269,9 +1257,7 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        surface: AgentSurface = (
-            "project_chat" if request.chat_scope == "project" else "node_chat"
-        )
+        surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
         profile = self.resolve_agent_profile(
             surface,
             provider=request.provider,

@@ -132,9 +132,7 @@ class AgentProcessControl:
                 daemon=True,
             ).start()
         if loop is not None and process is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._terminate(process))
-            )
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(self._terminate(process)))
 
     def attach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
@@ -210,9 +208,7 @@ class AgentLauncher:
     def __init__(self) -> None:
         self._readiness_lock = threading.Lock()
         self._readiness_cache: dict[tuple[str, str, str | None], ProviderReadiness] = {}
-        self._readiness_probes: dict[
-            tuple[str, str, str | None, bool], _ReadinessProbe
-        ] = {}
+        self._readiness_probes: dict[tuple[str, str, str | None, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None], int] = {}
 
     def readiness(
@@ -246,9 +242,7 @@ class AgentLauncher:
                 probe = _ReadinessProbe()
                 if refresh:
                     self._readiness_cache.pop(key, None)
-                    self._readiness_generations[key] = (
-                        self._readiness_generations.get(key, 0) + 1
-                    )
+                    self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
                 self._readiness_probes[probe_key] = probe
             generation = self._readiness_generations.get(key, 0)
 
@@ -271,9 +265,8 @@ class AgentLauncher:
             raise
 
         with self._readiness_lock:
-            if (
-                self._readiness_generations.get(key, 0) == generation
-                and self._cacheable_readiness(result, discovery=binary is None)
+            if self._readiness_generations.get(key, 0) == generation and self._cacheable_readiness(
+                result, discovery=binary is None
             ):
                 self._readiness_cache[key] = result.model_copy(deep=True)
             elif self._readiness_generations.get(key, 0) == generation:
@@ -527,9 +520,7 @@ class AgentLauncher:
         try:
             assert process.stdin is not None
             assert process.stdout is not None
-            stdin_task = asyncio.create_task(
-                _feed_stdin(process.stdin, prompt.encode("utf-8"))
-            )
+            stdin_task = asyncio.create_task(_feed_stdin(process.stdin, prompt.encode("utf-8")))
             stderr_task = (
                 asyncio.create_task(
                     _read_bounded_text(

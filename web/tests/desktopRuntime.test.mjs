@@ -38,13 +38,17 @@ test("prepare-show bootstraps after the frontend outruns the desktop host", asyn
   const originalFetch = globalThis.fetch;
   const originalWindow = globalThis.window;
   let statusCalls = 0;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    status: "ok",
-    ...identity,
-    pid: 42,
-    owner_kind: "desktop",
-    active_agent_tasks: 0,
-  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        status: "ok",
+        ...identity,
+        pid: 42,
+        owner_kind: "desktop",
+        active_agent_tasks: 0,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   const desktopWindow = new EventTarget();
   desktopWindow.__TAURI_INTERNALS__ = {
     invoke: async (command) => {
@@ -80,16 +84,21 @@ test("startup acceptance is not lost to an in-flight prepare-show verification",
     data_dir_id: "data-b",
   };
   let releaseHealth;
-  const healthReady = new Promise((resolve) => { releaseHealth = resolve; });
+  const healthReady = new Promise((resolve) => {
+    releaseHealth = resolve;
+  });
   globalThis.fetch = async () => {
     await healthReady;
-    return new Response(JSON.stringify({
-      status: "ok",
-      ...replacementIdentity,
-      pid: 42,
-      owner_kind: "desktop",
-      active_agent_tasks: 0,
-    }), { status: 200, headers: { "Content-Type": "application/json" } });
+    return new Response(
+      JSON.stringify({
+        status: "ok",
+        ...replacementIdentity,
+        pid: 42,
+        owner_kind: "desktop",
+        active_agent_tasks: 0,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   };
   try {
     const prepareShow = reverifyBackendIdentity("prepare-show");
@@ -109,13 +118,17 @@ test("a desktop host that disagrees with health stops the window, however famili
   const originalWindow = globalThis.window;
   const served = { version: "0.3.0", instance_id: "instance-b", data_dir_id: "data-b" };
   let shell = served;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    status: "ok",
-    ...served,
-    pid: 42,
-    owner_kind: "desktop",
-    active_agent_tasks: 0,
-  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        status: "ok",
+        ...served,
+        pid: 42,
+        owner_kind: "desktop",
+        active_agent_tasks: 0,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
   const desktopWindow = new EventTarget();
   desktopWindow.__TAURI_INTERNALS__ = {
     invoke: async () => ({
@@ -152,10 +165,7 @@ test("only requests that can mutate state trigger failure verification", () => {
 test("closing the desktop save dialog is a normal artifact download cancel", () => {
   assert.equal(desktopDownloadPath({ saved: false, path: null }), null);
   assert.equal(desktopDownloadPath({ saved: true, path: "/tmp/report.png" }), "/tmp/report.png");
-  assert.throws(
-    () => desktopDownloadPath({ saved: false, error: "write failed" }),
-    /write failed/,
-  );
+  assert.throws(() => desktopDownloadPath({ saved: false, error: "write failed" }), /write failed/);
 });
 
 test("desktop backend recovery uses a truthful native action label", () => {
@@ -167,10 +177,7 @@ test("folder access acknowledgement gates only desktop and is versioned", () => 
   assert.equal(needsDesktopFolderAccessAcknowledgement(false, null), false);
   assert.equal(needsDesktopFolderAccessAcknowledgement(true, null), true);
   assert.equal(needsDesktopFolderAccessAcknowledgement(true, "not json"), true);
-  assert.equal(
-    needsDesktopFolderAccessAcknowledgement(true, JSON.stringify({ version: 0 })),
-    true,
-  );
+  assert.equal(needsDesktopFolderAccessAcknowledgement(true, JSON.stringify({ version: 0 })), true);
   assert.equal(
     needsDesktopFolderAccessAcknowledgement(true, desktopFolderAccessAcknowledgementValue()),
     false,

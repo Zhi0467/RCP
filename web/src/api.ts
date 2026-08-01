@@ -43,9 +43,7 @@ export function isMutationRequest(init?: RequestInit): boolean {
   return !["GET", "HEAD", "OPTIONS"].includes((init?.method ?? "GET").toUpperCase());
 }
 
-export function registerMutationFailureHandler(
-  handler: MutationFailureHandler | null,
-): void {
+export function registerMutationFailureHandler(handler: MutationFailureHandler | null): void {
   mutationFailureHandler = handler;
 }
 

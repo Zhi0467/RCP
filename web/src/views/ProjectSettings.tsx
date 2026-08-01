@@ -66,9 +66,9 @@ const surfaces: Array<{ id: AgentSurface; label: string }> = [
 ];
 
 function profilesFrom(project: ProjectSnapshot): Record<AgentSurface, AgentRunConfig> {
-  const canonicalMachine = project.repositories.find(
-    (repository) => repository.alias === project.state_repository,
-  )?.machine ?? project.run_on;
+  const canonicalMachine =
+    project.repositories.find((repository) => repository.alias === project.state_repository)
+      ?.machine ?? project.run_on;
   return Object.fromEntries(
     surfaces.map(({ id }) => {
       const profile = profileRunConfig(project.agent_profiles[id]);
@@ -84,7 +84,9 @@ function stagedOrSaved(project: ProjectSnapshot) {
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
   };
-  const staged = deserializeSettingsDraft(localStorage.getItem(settingsDraftStorageKey(project.id)));
+  const staged = deserializeSettingsDraft(
+    localStorage.getItem(settingsDraftStorageKey(project.id)),
+  );
   if (!staged) return saved;
   // Merge over the manifest's profiles so a surface added since the draft was
   // written is still present.
@@ -141,11 +143,12 @@ export function ProjectSettings({
   }, [project.cache_metrics]);
 
   const baseline = useMemo(
-    () => JSON.stringify({
-      scope: project.default_run_truth_scope,
-      profiles: profilesFrom(project),
-      providerPaths: machineProviderPathsFrom(project.machines),
-    }),
+    () =>
+      JSON.stringify({
+        scope: project.default_run_truth_scope,
+        profiles: profilesFrom(project),
+        providerPaths: machineProviderPathsFrom(project.machines),
+      }),
     [project],
   );
   const current = JSON.stringify({ scope, profiles, providerPaths });
@@ -156,15 +159,20 @@ export function ProjectSettings({
   useEffect(() => {
     const key = settingsDraftStorageKey(project.id);
     if (dirty) {
-      localStorage.setItem(key, serializeSettingsDraft({ version: 1, scope, profiles, providerPaths }));
+      localStorage.setItem(
+        key,
+        serializeSettingsDraft({ version: 1, scope, profiles, providerPaths }),
+      );
     } else {
       localStorage.removeItem(key);
     }
   }, [dirty, current, project.id]);
-  const machineByAlias = Object.fromEntries(project.machines.map((machine) => [machine.alias, machine]));
-  const providerCatalog = Object.values(project.providers).sort((left, right) => (
-    (left.label || left.provider).localeCompare(right.label || right.provider)
-  ));
+  const machineByAlias = Object.fromEntries(
+    project.machines.map((machine) => [machine.alias, machine]),
+  );
+  const providerCatalog = Object.values(project.providers).sort((left, right) =>
+    (left.label || left.provider).localeCompare(right.label || right.provider),
+  );
 
   const toggleRepository = (alias: string) => {
     setStatus(null);
@@ -248,12 +256,16 @@ export function ProjectSettings({
             [result.provider]: result.readiness,
           },
         },
-        providers: coachMachine === result.machine
-          ? { ...project.providers, [result.provider]: result.readiness }
-          : project.providers,
+        providers:
+          coachMachine === result.machine
+            ? { ...project.providers, [result.provider]: result.readiness }
+            : project.providers,
       };
       onSaved(resolvedProject, false);
-      setStatus({ kind: "saved", text: `${result.readiness.label || result.provider} resolved on ${result.machine}.` });
+      setStatus({
+        kind: "saved",
+        text: `${result.readiness.label || result.provider} resolved on ${result.machine}.`,
+      });
     } catch (caught) {
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
@@ -279,20 +291,49 @@ export function ProjectSettings({
 
   return (
     <section className="settings-page">
-      {showDisplaySettings && <section className="settings-section display-settings">
-        <header>
-          <span><Type size={16} /></span>
-          <h2>Display</h2>
-          <div className="text-scale-controls" role="group" aria-label="Interface text size">
-            <button className="icon-button" type="button" disabled={textScale <= TEXT_SCALE_MIN} onClick={() => onTextScaleChange("decrease")} aria-label="Decrease text size"><Minus size={15} /></button>
-            <button className="text-scale-value" type="button" onClick={() => onTextScaleChange("reset")} aria-label="Reset text size to 100 percent">{textScale}%</button>
-            <button className="icon-button" type="button" disabled={textScale >= TEXT_SCALE_MAX} onClick={() => onTextScaleChange("increase")} aria-label="Increase text size"><Plus size={15} /></button>
-          </div>
-        </header>
-      </section>}
+      {showDisplaySettings && (
+        <section className="settings-section display-settings">
+          <header>
+            <span>
+              <Type size={16} />
+            </span>
+            <h2>Display</h2>
+            <div className="text-scale-controls" role="group" aria-label="Interface text size">
+              <button
+                className="icon-button"
+                type="button"
+                disabled={textScale <= TEXT_SCALE_MIN}
+                onClick={() => onTextScaleChange("decrease")}
+                aria-label="Decrease text size"
+              >
+                <Minus size={15} />
+              </button>
+              <button
+                className="text-scale-value"
+                type="button"
+                onClick={() => onTextScaleChange("reset")}
+                aria-label="Reset text size to 100 percent"
+              >
+                {textScale}%
+              </button>
+              <button
+                className="icon-button"
+                type="button"
+                disabled={textScale >= TEXT_SCALE_MAX}
+                onClick={() => onTextScaleChange("increase")}
+                aria-label="Increase text size"
+              >
+                <Plus size={15} />
+              </button>
+            </div>
+          </header>
+        </section>
+      )}
       <article className="settings-section boundary-settings">
         <header>
-          <span><GitBranch size={16} /></span>
+          <span>
+            <GitBranch size={16} />
+          </span>
           <h2>Project boundary</h2>
         </header>
         <div className="settings-repositories">
@@ -301,7 +342,10 @@ export function ProjectSettings({
             const selected = scope.includes(repository.alias);
             const canonical = repository.alias === project.state_repository;
             return (
-              <label className={selected ? "settings-repository selected" : "settings-repository"} key={repository.alias}>
+              <label
+                className={selected ? "settings-repository selected" : "settings-repository"}
+                key={repository.alias}
+              >
                 <input
                   type="checkbox"
                   checked={selected}
@@ -311,7 +355,9 @@ export function ProjectSettings({
                 <span className="settings-check">{selected && <Check size={12} />}</span>
                 <span className="settings-repository-copy">
                   <strong>{repository.alias}</strong>
-                  <span className="settings-repository-path">{machine?.host ? `${machine.host}:${repository.path}` : repository.path}</span>
+                  <span className="settings-repository-path">
+                    {machine?.host ? `${machine.host}:${repository.path}` : repository.path}
+                  </span>
                 </span>
                 <span className="settings-repository-meta">
                   <Server size={12} /> {machine?.host ? repository.machine : "local"}
@@ -325,7 +371,9 @@ export function ProjectSettings({
 
       <section className="settings-section provider-path-settings">
         <header>
-          <span><Server size={16} /></span>
+          <span>
+            <Server size={16} />
+          </span>
           <h2>Provider executables</h2>
         </header>
         <div className="provider-machine-list">
@@ -369,9 +417,11 @@ export function ProjectSettings({
                         disabled={writesDisabled || Boolean(resolvingProvider)}
                         onClick={() => void resolveProviderPath(machine.alias, provider.provider)}
                       >
-                        {resolvingProvider === resolveKey
-                          ? <LoaderCircle className="spin" size={13} />
-                          : <ScanSearch size={13} />}
+                        {resolvingProvider === resolveKey ? (
+                          <LoaderCircle className="spin" size={13} />
+                        ) : (
+                          <ScanSearch size={13} />
+                        )}
                         Resolve
                       </button>
                     </div>
@@ -393,7 +443,9 @@ export function ProjectSettings({
           {surfaces.map(({ id, label }) => (
             <article className="settings-agent" key={id}>
               <header>
-                <span><strong>{label}</strong></span>
+                <span>
+                  <strong>{label}</strong>
+                </span>
                 <span>{id === "paper_coach" ? "read-only coach" : "graph patch only"}</span>
               </header>
               <AgentConfigControls
@@ -414,7 +466,9 @@ export function ProjectSettings({
 
       <section className="settings-section cache-settings">
         <header>
-          <span><HardDrive size={16} /></span>
+          <span>
+            <HardDrive size={16} />
+          </span>
           <h2>Storage</h2>
           <button
             className="button secondary compact"
@@ -436,18 +490,31 @@ export function ProjectSettings({
         <div className={status ? `settings-save-status ${status.kind}` : "settings-save-status"}>
           {status?.kind === "error" && <TriangleAlert size={15} />}
           {status?.kind === "saved" && <Check size={15} />}
-          <span>{status?.text || (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}</span>
+          <span>
+            {status?.text ||
+              (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}
+          </span>
         </div>
         <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
           <RotateCcw size={14} /> Reset
         </button>
-        <button className="button primary" disabled={writesDisabled || !dirty || saving} onClick={() => void save()}>
+        <button
+          className="button primary"
+          disabled={writesDisabled || !dirty || saving}
+          onClick={() => void save()}
+        >
           {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
           {saving ? "Saving" : "Save"}
         </button>
       </footer>
 
-      <OntologyEditor ontology={ontology} canonicalOntology={canonicalOntology} disabled={writesDisabled} staged={ontologyStaged} onChange={onOntologyChange} />
+      <OntologyEditor
+        ontology={ontology}
+        canonicalOntology={canonicalOntology}
+        disabled={writesDisabled}
+        staged={ontologyStaged}
+        onChange={onOntologyChange}
+      />
     </section>
   );
 }
@@ -458,7 +525,8 @@ export function providerPathPresentation(
   recorded: string,
 ): { label: string; kind: "ready" | "warning" | "error" | "pending" } {
   if (value !== recorded) return { label: "Unsaved", kind: "pending" };
-  if (readiness?.path_state === "unreachable") return { label: "Machine unreachable", kind: "error" };
+  if (readiness?.path_state === "unreachable")
+    return { label: "Machine unreachable", kind: "error" };
   if (readiness?.path_state === "denied") return { label: "Recorded path unusable", kind: "error" };
   if (readiness?.path_state === "missing") {
     return { label: value ? "Recorded path missing" : "Executable missing", kind: "error" };
@@ -475,7 +543,9 @@ function CacheMeter({ label, metric }: { label: string; metric: CacheMetric }) {
     <div className="cache-meter">
       <div className="cache-meter-heading">
         <strong>{label}</strong>
-        <span>{formatBytes(metric.bytes)} / {formatBytes(metric.limits.max_bytes)}</span>
+        <span>
+          {formatBytes(metric.bytes)} / {formatBytes(metric.limits.max_bytes)}
+        </span>
       </div>
       <div
         className="cache-meter-track"
@@ -488,10 +558,24 @@ function CacheMeter({ label, metric }: { label: string; metric: CacheMetric }) {
         <span style={{ width: `${ratio * 100}%` }} />
       </div>
       <div className="cache-meter-meta">
-        <span><em>Items</em>{metric.count} / {metric.limits.max_count}</span>
-        <span><em>TTL</em>{formatDuration(metric.limits.ttl_seconds)}</span>
-        <span><em>Reclaim</em>{metric.reclaimable_count} · {formatBytes(metric.reclaimable_bytes)}</span>
-        <span><em>Oldest</em>{metric.oldest_accessed_at ? new Date(metric.oldest_accessed_at).toLocaleDateString() : "—"}</span>
+        <span>
+          <em>Items</em>
+          {metric.count} / {metric.limits.max_count}
+        </span>
+        <span>
+          <em>TTL</em>
+          {formatDuration(metric.limits.ttl_seconds)}
+        </span>
+        <span>
+          <em>Reclaim</em>
+          {metric.reclaimable_count} · {formatBytes(metric.reclaimable_bytes)}
+        </span>
+        <span>
+          <em>Oldest</em>
+          {metric.oldest_accessed_at
+            ? new Date(metric.oldest_accessed_at).toLocaleDateString()
+            : "—"}
+        </span>
       </div>
     </div>
   );

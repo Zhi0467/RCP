@@ -30,10 +30,10 @@ export function buildResearchPaths(nodes: GraphNode[], edges: Edge[]): ResearchP
     adjacency.get(edge.target)?.add(edge.source);
   });
 
-  const questions = eligible
-    .filter((node) => node.type === "research_question")
-    .sort(compareNodes);
-  const distances = new Map(questions.map((question) => [question.id, distancesFrom(question.id, adjacency)]));
+  const questions = eligible.filter((node) => node.type === "research_question").sort(compareNodes);
+  const distances = new Map(
+    questions.map((question) => [question.id, distancesFrom(question.id, adjacency)]),
+  );
   const assignments = new Map<string, string>();
 
   eligible.forEach((node) => {
@@ -43,7 +43,10 @@ export function buildResearchPaths(nodes: GraphNode[], edges: Edge[]): ResearchP
     questions.forEach((question) => {
       const distance = distances.get(question.id)?.get(node.id);
       if (distance === undefined) return;
-      if (distance < closestDistance || (distance === closestDistance && question.id < String(closestQuestion))) {
+      if (
+        distance < closestDistance ||
+        (distance === closestDistance && question.id < String(closestQuestion))
+      ) {
         closestQuestion = question.id;
         closestDistance = distance;
       }
@@ -55,7 +58,9 @@ export function buildResearchPaths(nodes: GraphNode[], edges: Edge[]): ResearchP
     const assigned = eligible.filter((node) => assignments.get(node.id) === question.id);
     return {
       question,
-      ideas: assigned.filter((node) => node.type === "hypothesis" || node.type === "decision").sort(compareNodes),
+      ideas: assigned
+        .filter((node) => node.type === "hypothesis" || node.type === "decision")
+        .sort(compareNodes),
       experiments: assigned.filter((node) => node.type === "experiment").sort(compareNodes),
       evidence: assigned.filter((node) => node.type === "evidence").sort(compareNodes),
     };

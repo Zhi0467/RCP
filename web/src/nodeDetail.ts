@@ -14,7 +14,8 @@ export function edgeValidationFlags(
   messages: ValidationMessage[],
 ): ValidationMessage[] {
   return messages.filter(
-    (message) => message.code === "relation-type-mismatch" && message.related_edge_ids.includes(edgeId),
+    (message) =>
+      message.code === "relation-type-mismatch" && message.related_edge_ids.includes(edgeId),
   );
 }
 
@@ -32,12 +33,17 @@ export function beliefCausePresentation(
       ? [edge.source, edge.target].find((nodeId) => nodes[nodeId]?.type === "evidence")
       : undefined;
     return {
-      label: evidenceId ? `Evidence: ${nodes[evidenceId]?.title ?? evidenceId}` : `Evidence relation: ${refId}`,
+      label: evidenceId
+        ? `Evidence: ${nodes[evidenceId]?.title ?? evidenceId}`
+        : `Evidence relation: ${refId}`,
       nodeId: evidenceId,
     };
   }
   if (kind === "decision") {
-    return { label: `Decision: ${nodes[refId]?.title ?? refId}`, nodeId: nodes[refId] ? refId : undefined };
+    return {
+      label: `Decision: ${nodes[refId]?.title ?? refId}`,
+      nodeId: nodes[refId] ? refId : undefined,
+    };
   }
   return { label: `Proposal resolution: ${refId}` };
 }

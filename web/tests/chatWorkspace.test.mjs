@@ -43,8 +43,19 @@ function task(overrides) {
 test("conversations group by chat id rather than latest node", () => {
   const tasks = [
     task({ operation_id: "a1", request: { chat_id: "chat-a", node_id: "node/a" } }),
-    task({ operation_id: "b1", created_at: "2026-07-28T00:01:00Z", updated_at: "2026-07-28T00:01:00Z", request: { chat_id: "chat-b", node_id: "node/a" } }),
-    task({ operation_id: "p1", kind: "project_chat", created_at: "2026-07-28T00:02:00Z", updated_at: "2026-07-28T00:02:00Z", request: { chat_id: "chat-p" } }),
+    task({
+      operation_id: "b1",
+      created_at: "2026-07-28T00:01:00Z",
+      updated_at: "2026-07-28T00:01:00Z",
+      request: { chat_id: "chat-b", node_id: "node/a" },
+    }),
+    task({
+      operation_id: "p1",
+      kind: "project_chat",
+      created_at: "2026-07-28T00:02:00Z",
+      updated_at: "2026-07-28T00:02:00Z",
+      request: { chat_id: "chat-p" },
+    }),
   ];
   const summaries = tasks.map((item) => ({
     chat_id: item.request.chat_id,
@@ -56,7 +67,10 @@ test("conversations group by chat id rather than latest node", () => {
     last_message_preview: "Answer",
   }));
   const conversations = groupChatConversations(summaries, tasks, { "node/a": "Node A" }, "Project");
-  assert.deepEqual(conversations.map((item) => item.chatId), ["chat-p", "chat-b", "chat-a"]);
+  assert.deepEqual(
+    conversations.map((item) => item.chatId),
+    ["chat-p", "chat-b", "chat-a"],
+  );
   assert.equal(latestConversation(conversations, "node_chat", "node/a")?.chatId, "chat-b");
   assert.equal(chatIdForTask(tasks[2]), "chat-p");
 });
@@ -64,7 +78,11 @@ test("conversations group by chat id rather than latest node", () => {
 test("draft conversations survive without tasks and indicators distinguish active and unread", () => {
   const draft = { chatId: "empty", kind: "project_chat", nodeId: null, title: "Project" };
   assert.equal(groupChatConversations([], [], {}, "Project", [draft])[0].chatId, "empty");
-  const running = task({ operation_id: "running", status: "running", request: { chat_id: "live", node_id: "node/a" } });
+  const running = task({
+    operation_id: "running",
+    status: "running",
+    request: { chat_id: "live", node_id: "node/a" },
+  });
   const done = task({ operation_id: "done", request: { chat_id: "done", node_id: "node/a" } });
   assert.equal(chatIndicator([done, running], new Set(["done"])), "active");
   assert.equal(chatIndicator([done], new Set(["done"])), "unread");
@@ -84,29 +102,93 @@ test("a terminal task stays reachable when durable transcript persistence failed
 });
 
 test("entry routes active then unread and never a read terminal activity task", () => {
-  const active = task({ operation_id: "active", status: "running", request: { chat_id: "active-chat", node_id: "node/a" } });
-  const terminal = task({ operation_id: "terminal", request: { chat_id: "read-chat", node_id: "node/a" } });
+  const active = task({
+    operation_id: "active",
+    status: "running",
+    request: { chat_id: "active-chat", node_id: "node/a" },
+  });
+  const terminal = task({
+    operation_id: "terminal",
+    request: { chat_id: "read-chat", node_id: "node/a" },
+  });
   const summaries = [
-    { chat_id: "active-chat", kind: "node_chat", node_id: "node/a", title: "Active", updated_at: "2026-07-28T00:03:00Z", message_count: 1, last_message_preview: "" },
-    { chat_id: "unread-chat", kind: "project_chat", node_id: null, title: "Unread", updated_at: "2026-07-28T00:02:00Z", message_count: 2, last_message_preview: "" },
-    { chat_id: "read-chat", kind: "node_chat", node_id: "node/a", title: "Read", updated_at: "2026-07-28T00:01:00Z", message_count: 2, last_message_preview: "" },
+    {
+      chat_id: "active-chat",
+      kind: "node_chat",
+      node_id: "node/a",
+      title: "Active",
+      updated_at: "2026-07-28T00:03:00Z",
+      message_count: 1,
+      last_message_preview: "",
+    },
+    {
+      chat_id: "unread-chat",
+      kind: "project_chat",
+      node_id: null,
+      title: "Unread",
+      updated_at: "2026-07-28T00:02:00Z",
+      message_count: 2,
+      last_message_preview: "",
+    },
+    {
+      chat_id: "read-chat",
+      kind: "node_chat",
+      node_id: "node/a",
+      title: "Read",
+      updated_at: "2026-07-28T00:01:00Z",
+      message_count: 2,
+      last_message_preview: "",
+    },
   ];
-  const unreadTask = task({ operation_id: "unread", kind: "project_chat", request: { chat_id: "unread-chat" } });
-  const conversations = groupChatConversations(summaries, [active, unreadTask, terminal], {}, "Project");
-  assert.equal(chatEntryConversationId(conversations, active, new Set(["unread"]), "read-chat"), "active-chat");
-  assert.equal(chatEntryConversationId(conversations, terminal, new Set(["unread"]), "read-chat"), "unread-chat");
-  assert.equal(chatEntryConversationId(conversations, terminal, new Set(), "read-chat"), "read-chat");
+  const unreadTask = task({
+    operation_id: "unread",
+    kind: "project_chat",
+    request: { chat_id: "unread-chat" },
+  });
+  const conversations = groupChatConversations(
+    summaries,
+    [active, unreadTask, terminal],
+    {},
+    "Project",
+  );
+  assert.equal(
+    chatEntryConversationId(conversations, active, new Set(["unread"]), "read-chat"),
+    "active-chat",
+  );
+  assert.equal(
+    chatEntryConversationId(conversations, terminal, new Set(["unread"]), "read-chat"),
+    "unread-chat",
+  );
+  assert.equal(
+    chatEntryConversationId(conversations, terminal, new Set(), "read-chat"),
+    "read-chat",
+  );
 });
 
 test("a completion is unread unless its exact conversation is selected and visible", () => {
-  const completed = task({ operation_id: "done", request: { chat_id: "chat-b", node_id: "node/b" } });
+  const completed = task({
+    operation_id: "done",
+    request: { chat_id: "chat-b", node_id: "node/b" },
+  });
   const previous = new Map([["done", "running"]]);
   assert.deepEqual(newlyUnreadChatTaskIds([completed], previous, "chat-a"), ["done"]);
   assert.deepEqual(newlyUnreadChatTaskIds([completed], previous, "chat-b"), []);
-  const conversations = groupChatConversations([{
-    chat_id: "chat-b", kind: "node_chat", node_id: "node/b", title: "B",
-    updated_at: completed.updated_at, message_count: 2, last_message_preview: "done",
-  }], [completed], {}, "Project");
+  const conversations = groupChatConversations(
+    [
+      {
+        chat_id: "chat-b",
+        kind: "node_chat",
+        node_id: "node/b",
+        title: "B",
+        updated_at: completed.updated_at,
+        message_count: 2,
+        last_message_preview: "done",
+      },
+    ],
+    [completed],
+    {},
+    "Project",
+  );
   assert.equal(conversationHasUnread(conversations[0], new Set(["done"])), true);
 });
 
@@ -133,5 +215,8 @@ test("the next turn derives from the latest explicit mode without relabelling le
     request: { chat_id: "chat", mode: "discuss" },
   });
   assert.equal(latestPersistedConversationMode(messages, [laterDiscuss]), "discuss");
-  assert.equal(latestPersistedConversationMode([{ mode: null, timestamp: "invalid" }], []), "discuss");
+  assert.equal(
+    latestPersistedConversationMode([{ mode: null, timestamp: "invalid" }], []),
+    "discuss",
+  );
 });

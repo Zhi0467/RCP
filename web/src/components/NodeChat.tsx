@@ -90,11 +90,16 @@ export function NodeChat({
     () => relatedChatTasks(tasks, surface, node?.id, chatId),
     [chatId, node?.id, surface, tasks],
   );
-  const transcript = useMemo(() => [
-    ...historyMessages.map(chatMessageTranscriptLine),
-    ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, historyMessages)),
-  ], [historyMessages, relatedTasks]);
-  const [config, setConfig] = useState<AgentRunConfig>(() => profileRunConfig(project.agent_profiles[surface]));
+  const transcript = useMemo(
+    () => [
+      ...historyMessages.map(chatMessageTranscriptLine),
+      ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, historyMessages)),
+    ],
+    [historyMessages, relatedTasks],
+  );
+  const [config, setConfig] = useState<AgentRunConfig>(() =>
+    profileRunConfig(project.agent_profiles[surface]),
+  );
   const [scope, setScope] = useState(runScope);
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
@@ -112,26 +117,37 @@ export function NodeChat({
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
   const [unavailableArtifacts, setUnavailableArtifacts] = useState<Set<string>>(() => new Set());
-  const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(() => new Map());
+  const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
   const continuedTaskIds = useMemo(
-    () => new Set(relatedTasks.flatMap((task) => task.parent_operation_id ? [task.parent_operation_id] : [])),
+    () =>
+      new Set(
+        relatedTasks.flatMap((task) =>
+          task.parent_operation_id ? [task.parent_operation_id] : [],
+        ),
+      ),
     [relatedTasks],
   );
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const locked = transcript.some((line) => line.role === "human");
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady = Boolean(readiness?.installed && readiness?.authenticated);
-  const sessionId = latestNativeSessionId(relatedTasks)
-    ?? [...historyMessages].reverse().find((message) => message.native_session_id)?.native_session_id
-    ?? null;
+  const sessionId =
+    latestNativeSessionId(relatedTasks) ??
+    [...historyMessages].reverse().find((message) => message.native_session_id)
+      ?.native_session_id ??
+    null;
   const mode = modeState.value;
 
   useEffect(() => {
-    setModeState((current) => current.pinned || current.value === derivedMode
-      ? current
-      : { ...current, value: derivedMode });
+    setModeState((current) =>
+      current.pinned || current.value === derivedMode
+        ? current
+        : { ...current, value: derivedMode },
+    );
   }, [derivedMode]);
 
   useEffect(() => {
@@ -155,7 +171,8 @@ export function NodeChat({
 
   const send = async () => {
     const text = message.trim();
-    if (!text || activeTask || pausedAttempt || submitting || repairingTaskId || reviewPending) return;
+    if (!text || activeTask || pausedAttempt || submitting || repairingTaskId || reviewPending)
+      return;
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -185,11 +202,9 @@ export function NodeChat({
     try {
       await onRepairGraphUpdate(taskId);
     } catch (error) {
-      setRepairErrors((current) => withMapValue(
-        current,
-        taskId,
-        error instanceof Error ? error.message : String(error),
-      ));
+      setRepairErrors((current) =>
+        withMapValue(current, taskId, error instanceof Error ? error.message : String(error)),
+      );
     } finally {
       setRepairingTaskId(null);
     }
@@ -209,7 +224,7 @@ export function NodeChat({
     action: "preview" | "download",
   ) => {
     const url = artifactUrl(project.id, taskId, artifact.artifact_id, action);
-    if (!await artifactIsAvailable(url)) {
+    if (!(await artifactIsAvailable(url))) {
       markArtifactUnavailable(taskId, artifact.artifact_id);
     }
   };
@@ -225,11 +240,13 @@ export function NodeChat({
           artifactId: artifact.artifact_id,
         });
       } catch (error) {
-        setArtifactShellErrors((current) => withMapValue(
-          current,
-          key,
-          `Open failed: ${error instanceof Error ? error.message : String(error)}`,
-        ));
+        setArtifactShellErrors((current) =>
+          withMapValue(
+            current,
+            key,
+            `Open failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
       }
       return;
     }
@@ -240,7 +257,7 @@ export function NodeChat({
     }
     target.opener = null;
     const url = artifactUrl(project.id, taskId, artifact.artifact_id, "preview");
-    if (!await artifactIsAvailable(url)) {
+    if (!(await artifactIsAvailable(url))) {
       target.close();
       markArtifactUnavailable(taskId, artifact.artifact_id);
       return;
@@ -264,11 +281,13 @@ export function NodeChat({
         suggestedName: artifact.name,
       });
     } catch (error) {
-      setArtifactShellErrors((current) => withMapValue(
-        current,
-        key,
-        `Download failed: ${error instanceof Error ? error.message : String(error)}`,
-      ));
+      setArtifactShellErrors((current) =>
+        withMapValue(
+          current,
+          key,
+          `Download failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
     }
   };
 
@@ -283,7 +302,15 @@ export function NodeChat({
       <header data-drag-handle={presentation === "floating" ? "true" : undefined}>
         <MessageCircle size={17} />
         <strong>{node?.title || project.name}</strong>
-        {presentation === "floating" && <button className="icon-button" onClick={onClose} aria-label="Minimize chat; background work will continue"><X size={17} /></button>}
+        {presentation === "floating" && (
+          <button
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Minimize chat; background work will continue"
+          >
+            <X size={17} />
+          </button>
+        )}
       </header>
       <AgentConfigControls
         project={project}
@@ -312,33 +339,65 @@ export function NodeChat({
             {line.role === "human" && line.mode && (
               <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
             )}
-            {line.role === "agent"
-              ? line.text && <div className="chat-markdown"><MarkdownAnswer text={line.text} /></div>
-              : <span className="node-chat-text">{line.text}</span>}
+            {line.role === "agent" ? (
+              line.text && (
+                <div className="chat-markdown">
+                  <MarkdownAnswer text={line.text} />
+                </div>
+              )
+            ) : (
+              <span className="node-chat-text">{line.text}</span>
+            )}
             {line.artifacts?.map((artifact) => {
-              const unavailable = unavailableArtifacts.has(`${line.taskId}:${artifact.artifact_id}`);
+              const unavailable = unavailableArtifacts.has(
+                `${line.taskId}:${artifact.artifact_id}`,
+              );
               const shellError = artifactShellErrors.get(`${line.taskId}:${artifact.artifact_id}`);
               return (
-                <div className={`chat-artifact${unavailable ? " unavailable" : ""}`} key={artifact.artifact_id}>
+                <div
+                  className={`chat-artifact${unavailable ? " unavailable" : ""}`}
+                  key={artifact.artifact_id}
+                >
                   <File size={14} />
                   <span>{artifact.name}</span>
                   {unavailable ? (
                     <strong>Preview unavailable</strong>
                   ) : (
                     <div className="chat-artifact-actions">
-                      <button type="button" onClick={() => void openArtifact(line.taskId, artifact)}><ExternalLink size={12} /> Open</button>
+                      <button
+                        type="button"
+                        onClick={() => void openArtifact(line.taskId, artifact)}
+                      >
+                        <ExternalLink size={12} /> Open
+                      </button>
                       {desktop ? (
-                        <button type="button" onClick={() => void downloadArtifact(line.taskId, artifact)}><Download size={12} /> Download</button>
+                        <button
+                          type="button"
+                          onClick={() => void downloadArtifact(line.taskId, artifact)}
+                        >
+                          <Download size={12} /> Download
+                        </button>
                       ) : (
                         <a
-                          href={artifactUrl(project.id, line.taskId, artifact.artifact_id, "download")}
+                          href={artifactUrl(
+                            project.id,
+                            line.taskId,
+                            artifact.artifact_id,
+                            "download",
+                          )}
                           download={artifact.name}
                           onClick={() => void checkArtifact(line.taskId, artifact, "download")}
-                        ><Download size={12} /> Download</a>
+                        >
+                          <Download size={12} /> Download
+                        </a>
                       )}
                     </div>
                   )}
-                  {shellError && <strong className="chat-artifact-shell-error" role="alert">{shellError}</strong>}
+                  {shellError && (
+                    <strong className="chat-artifact-shell-error" role="alert">
+                      {shellError}
+                    </strong>
+                  )}
                 </div>
               );
             })}
@@ -347,7 +406,9 @@ export function NodeChat({
                 update={line.graphUpdate}
                 taskId={line.taskId}
                 repairBusy={repairingTaskId === line.taskId}
-                repairDisabled={graphChangesDisabled || Boolean(activeTask) || submitting || reviewPending}
+                repairDisabled={
+                  graphChangesDisabled || Boolean(activeTask) || submitting || reviewPending
+                }
                 repairContinued={continuedTaskIds.has(line.taskId)}
                 repairError={repairErrors.get(line.taskId) ?? null}
                 onInspectTask={onInspectTask}
@@ -358,9 +419,25 @@ export function NodeChat({
           </div>
         ))}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
-        {relatedActive && <div className="thinking"><i /><i /><i /> {activeTask?.status_message || `${taskKindLabel(surface)} is running`}</div>}
-        {pausedAttempt && <div className="chat-task-blocked">This conversation has a paused attempt. Resume it from the task banner, or use Retry before sending another turn.</div>}
-        {activeTask && !relatedActive && <div className="chat-task-blocked">Another agent task is active. This conversation remains usable and can continue when that task finishes.</div>}
+        {relatedActive && (
+          <div className="thinking">
+            <i />
+            <i />
+            <i /> {activeTask?.status_message || `${taskKindLabel(surface)} is running`}
+          </div>
+        )}
+        {pausedAttempt && (
+          <div className="chat-task-blocked">
+            This conversation has a paused attempt. Resume it from the task banner, or use Retry
+            before sending another turn.
+          </div>
+        )}
+        {activeTask && !relatedActive && (
+          <div className="chat-task-blocked">
+            Another agent task is active. This conversation remains usable and can continue when
+            that task finishes.
+          </div>
+        )}
       </div>
       <div className="chat-composer" data-mode={mode}>
         <textarea
@@ -374,7 +451,10 @@ export function NodeChat({
               selectMode(toggleConversationMode(mode));
               return;
             }
-            if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void send();
+            }
           }}
         />
         <div className="chat-send">
@@ -394,7 +474,16 @@ export function NodeChat({
           </div>
           <button
             className="icon-button primary chat-send-button"
-            disabled={!message.trim() || Boolean(activeTask) || Boolean(pausedAttempt) || submitting || Boolean(repairingTaskId) || reviewPending || scope.length === 0 || !providerReady}
+            disabled={
+              !message.trim() ||
+              Boolean(activeTask) ||
+              Boolean(pausedAttempt) ||
+              submitting ||
+              Boolean(repairingTaskId) ||
+              reviewPending ||
+              scope.length === 0 ||
+              !providerReady
+            }
             onClick={() => void send()}
             aria-label={`Start ${modeLabel(mode)} turn`}
           >
@@ -441,7 +530,9 @@ function GraphUpdateReceipt({
           </button>
         )}
         {update.status === "rejected" && (
-          <strong><AlertTriangle size={12} /> Graph update rejected</strong>
+          <strong>
+            <AlertTriangle size={12} /> Graph update rejected
+          </strong>
         )}
         {proposalCount > 0 && (
           <button type="button" onClick={onOpenInbox}>
@@ -450,11 +541,7 @@ function GraphUpdateReceipt({
           </button>
         )}
         {update.status === "rejected" && update.repairable && !repairContinued && (
-          <button
-            type="button"
-            disabled={repairBusy || repairDisabled}
-            onClick={onRepair}
-          >
+          <button type="button" disabled={repairBusy || repairDisabled} onClick={onRepair}>
             <RotateCcw className={repairBusy ? "spin" : undefined} size={12} />
             Repair graph update
           </button>
@@ -462,15 +549,23 @@ function GraphUpdateReceipt({
       </div>
       {update.change_summary.length > 0 && (
         <ul className="chat-graph-change-summary">
-          {update.change_summary.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}
+          {update.change_summary.map((item, index) => (
+            <li key={`${index}:${item}`}>{item}</li>
+          ))}
         </ul>
       )}
       {update.status === "rejected" && update.validation_messages.length > 0 && (
         <ul className="chat-graph-validation">
-          {update.validation_messages.map((item, index) => <li key={`${index}:${item}`}>{item}</li>)}
+          {update.validation_messages.map((item, index) => (
+            <li key={`${index}:${item}`}>{item}</li>
+          ))}
         </ul>
       )}
-      {repairError && <strong className="chat-graph-repair-error" role="alert">{repairError}</strong>}
+      {repairError && (
+        <strong className="chat-graph-repair-error" role="alert">
+          {repairError}
+        </strong>
+      )}
     </div>
   );
 }

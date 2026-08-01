@@ -101,11 +101,7 @@ class ServerMetadata:
 
     @property
     def base_url(self) -> str:
-        host = (
-            f"[{self.host}]"
-            if ":" in self.host and not self.host.startswith("[")
-            else self.host
-        )
+        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
         return f"http://{host}:{self.port}"
 
 
@@ -140,9 +136,7 @@ def remove_server_metadata(data_dir: Path, *, instance_id: str) -> bool:
 
 
 @contextmanager
-def published_server_metadata(
-    data_dir: Path, metadata: ServerMetadata
-) -> Iterator[None]:
+def published_server_metadata(data_dir: Path, metadata: ServerMetadata) -> Iterator[None]:
     """Publish discoverability while an already-held lock remains authoritative."""
     data_dir.mkdir(parents=True, exist_ok=True)
     path = metadata_path(data_dir)

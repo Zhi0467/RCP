@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "../src/graphAuthority.ts";
+import {
+  graphMutationsDisabled,
+  replayFailureLabel,
+  taskMayMutateGraph,
+} from "../src/graphAuthority.ts";
 
 test("degraded replay blocks graph authority and names the last coherent state", () => {
   const graph = {
     replay_status: "degraded",
-    replay_failure: { revision: 6, code: "invalid-edge", message: "The accepted patch no longer validates." },
+    replay_failure: {
+      revision: 6,
+      code: "invalid-edge",
+      message: "The accepted patch no longer validates.",
+    },
   };
   assert.equal(graphMutationsDisabled(graph), true);
   assert.equal(

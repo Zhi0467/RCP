@@ -125,9 +125,7 @@ def test_template_is_created_once_and_remains_freeform(manifest, tmp_path) -> No
     synchronized = service.save(created.content, created.base_hash)
     assert synchronized.sync_state == "synced"
 
-    changed = service.save(
-        "# My own structure\n\nNo enforced headings.\n", synchronized.base_hash
-    )
+    changed = service.save("# My own structure\n\nNo enforced headings.\n", synchronized.base_hash)
     assert changed.sync_state == "synced"
     assert "What question we study" not in changed.content
     recreated = service.create()

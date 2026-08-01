@@ -27,10 +27,19 @@ test("task retries group under their logical root and classify by the latest att
     task("done", "succeeded", "2026-07-28T04:00:00Z"),
   ]);
 
-  assert.deepEqual(projection.running[0].attempts.map((item) => item.operation_id), ["root", "retry-1", "retry-2"]);
+  assert.deepEqual(
+    projection.running[0].attempts.map((item) => item.operation_id),
+    ["root", "retry-1", "retry-2"],
+  );
   assert.equal(projection.running[0].latest.operation_id, "retry-2");
-  assert.deepEqual(projection.actionable.map((group) => group.rootId), ["paused"]);
-  assert.deepEqual(projection.completed.map((group) => group.rootId), ["done"]);
+  assert.deepEqual(
+    projection.actionable.map((group) => group.rootId),
+    ["paused"],
+  );
+  assert.deepEqual(
+    projection.completed.map((group) => group.rootId),
+    ["done"],
+  );
 });
 
 test("runs report the newest underlying graph or task observation", () => {

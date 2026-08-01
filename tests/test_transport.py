@@ -336,9 +336,7 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     assert len([call for call in rsync_calls if "-aR" in call]) == 1
 
 
-def test_remote_batch_publication_stages_then_commits_directory_last(
-    tmp_path, monkeypatch
-) -> None:
+def test_remote_batch_publication_stages_then_commits_directory_last(tmp_path, monkeypatch) -> None:
     root = tmp_path / ".research"
     batch = Path("patches/batch-000002-000003-test")
     for relative, content in (
@@ -419,9 +417,7 @@ def test_remote_patch_publication_commits_file_before_derived_outputs(
     )
 
 
-def test_remote_patch_publish_probes_commit_and_repairs_idempotently(
-    tmp_path, monkeypatch
-) -> None:
+def test_remote_patch_publish_probes_commit_and_repairs_idempotently(tmp_path, monkeypatch) -> None:
     root = tmp_path / ".research"
     patch = Path("patches/000001.json")
     for relative in (patch, Path("graph.json")):
@@ -663,9 +659,7 @@ def test_confirmed_remote_batch_commit_is_not_rolled_back(manifest) -> None:
     assert workspace.materialization_repair_required is False
 
 
-def test_remote_batch_retries_remaining_outputs_after_commit_point(
-    tmp_path, monkeypatch
-) -> None:
+def test_remote_batch_retries_remaining_outputs_after_commit_point(tmp_path, monkeypatch) -> None:
     root = tmp_path / ".research"
     batch = Path("patches/batch-000001-000001-test")
     for relative in (batch / "000001.json", Path("graph.json")):
@@ -768,9 +762,7 @@ def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) ->
     assert not pending.exists()
 
 
-def test_remote_stage_failed_finalize_cleans_local_pending_inputs(
-    tmp_path, monkeypatch
-) -> None:
+def test_remote_stage_failed_finalize_cleans_local_pending_inputs(tmp_path, monkeypatch) -> None:
     source = tmp_path / "contract.md"
     source.write_text("Run the task.\n", encoding="utf-8")
     stage = RemoteRunStage("research.example")
@@ -910,9 +902,7 @@ def test_remote_stage_removes_read_only_conversation_projection_only(monkeypatch
     monkeypatch.setattr(
         stage,
         "_ssh",
-        lambda arguments: subprocess.run(
-            arguments, capture_output=True, text=True, check=False
-        ),
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
     )
 
     stage.remove_conversation_inputs()
@@ -936,9 +926,7 @@ def test_remote_stage_close_removes_read_only_trees_and_verifies_absence(monkeyp
     monkeypatch.setattr(
         stage,
         "_ssh",
-        lambda arguments: subprocess.run(
-            arguments, capture_output=True, text=True, check=False
-        ),
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
     )
 
     assert stage.close() is True
@@ -989,9 +977,7 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> N
     monkeypatch.setattr(
         stage,
         "_ssh",
-        lambda arguments: subprocess.run(
-            arguments, capture_output=True, text=True, check=False
-        ),
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
     )
     monkeypatch.setattr(
         stage,
@@ -999,9 +985,7 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> N
         lambda arguments: subprocess.run(arguments, capture_output=True, check=False),
     )
     try:
-        directory = Path(
-            str(stage.prepare_artifact_directory("logical-turn", reuse=False))
-        )
+        directory = Path(str(stage.prepare_artifact_directory("logical-turn", reuse=False)))
         payload = b"\x89PNG\r\n\x1a\n\x00\xffbinary"
         (directory / "plot.png").write_bytes(payload)
         (directory / "linked.png").symlink_to(directory / "plot.png")
@@ -1009,10 +993,7 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> N
         (directory / "nested" / "hidden.png").write_bytes(payload)
 
         assert stage.list_artifact_files("logical-turn") == [("plot.png", len(payload))]
-        assert (
-            stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
-            == payload
-        )
+        assert stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024) == payload
         with pytest.raises(ValueError, match="plain base name"):
             stage.read_artifact_bytes("logical-turn", "../plot.png", max_bytes=1024)
     finally:
@@ -1032,9 +1013,7 @@ def test_remote_stage_resume_rejects_symlinked_artifact_scope(monkeypatch) -> No
     monkeypatch.setattr(
         stage,
         "_ssh",
-        lambda arguments: subprocess.run(
-            arguments, capture_output=True, text=True, check=False
-        ),
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
     )
     try:
         with pytest.raises(StateUnavailable, match="saved artifact directory"):

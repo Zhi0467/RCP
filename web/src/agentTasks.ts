@@ -27,7 +27,7 @@ export function projectActivityTask(
   const active = tasks.find(isActiveTask);
   if (active) return active;
   const continuedTaskIds = new Set(
-    tasks.flatMap((task) => task.parent_operation_id ? [task.parent_operation_id] : []),
+    tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),
   );
   const paused = tasks.find(
     (task) => task.status === "paused" && !continuedTaskIds.has(task.operation_id),
@@ -39,11 +39,16 @@ export function projectActivityTask(
 
 export function taskKindLabel(kind: AgentTaskKind): string {
   switch (kind) {
-    case "seed": return "Seed project graph";
-    case "refresh": return "Refresh project graph";
-    case "node_chat": return "Node conversation";
-    case "project_chat": return "Project conversation";
-    case "paper_coach": return "Writing coach";
+    case "seed":
+      return "Seed project graph";
+    case "refresh":
+      return "Refresh project graph";
+    case "node_chat":
+      return "Node conversation";
+    case "project_chat":
+      return "Project conversation";
+    case "paper_coach":
+      return "Writing coach";
   }
 }
 
@@ -54,7 +59,9 @@ export function relatedChatTasks(
   requestedChatId?: string | null,
 ): AgentTask[] {
   const candidates = tasks
-    .filter((task) => task.kind === kind && (kind === "project_chat" || task.request.node_id === nodeId))
+    .filter(
+      (task) => task.kind === kind && (kind === "project_chat" || task.request.node_id === nodeId),
+    )
     .sort(compareTaskTime);
   if (requestedChatId) return candidates.filter((task) => task.request.chat_id === requestedChatId);
   const latest = candidates.at(-1);
@@ -77,10 +84,13 @@ export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {
   return [...tasks].reverse().find((task) => task.status === "paused" && task.can_resume) ?? null;
 }
 
-export function chatTasksMissingFromHistory(tasks: AgentTask[], messages: ChatMessage[]): AgentTask[] {
-  const persistedOperationIds = new Set(messages.flatMap(
-    (message) => message.operation_id ? [message.operation_id] : [],
-  ));
+export function chatTasksMissingFromHistory(
+  tasks: AgentTask[],
+  messages: ChatMessage[],
+): AgentTask[] {
+  const persistedOperationIds = new Set(
+    messages.flatMap((message) => (message.operation_id ? [message.operation_id] : [])),
+  );
   const availablePrompts = new Map<string, number[]>();
   messages.forEach((message) => {
     if (message.role !== "user") return;
@@ -120,17 +130,21 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const graphUpdate = task.result?.graph_update ?? null;
     if (message) lines.push({ role: "human", text: message, taskId: task.operation_id, mode });
     const messages = Array.isArray(task.result?.messages)
-      ? task.result.messages.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      ? task.result.messages.filter(
+          (item): item is string => typeof item === "string" && item.trim().length > 0,
+        )
       : [];
     const artifacts = taskArtifacts(task);
-    messages.forEach((text, index) => lines.push({
-      role: "agent",
-      text,
-      taskId: task.operation_id,
-      mode,
-      ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
-      ...(index === messages.length - 1 && graphUpdate ? { graphUpdate } : {}),
-    }));
+    messages.forEach((text, index) =>
+      lines.push({
+        role: "agent",
+        text,
+        taskId: task.operation_id,
+        mode,
+        ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
+        ...(index === messages.length - 1 && graphUpdate ? { graphUpdate } : {}),
+      }),
+    );
     if (!messages.length && (artifacts.length || (graphUpdate && graphUpdate.status !== "none"))) {
       lines.push({
         role: "agent",
@@ -144,8 +158,16 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const graphOnlyRejection = task.status === "succeeded" && graphUpdate?.status === "rejected";
     if (task.error && !graphOnlyRejection) {
       lines.push({ role: "error", text: task.error, taskId: task.operation_id });
-    } else if (task.status === "failed" || task.status === "interrupted" || task.status === "paused") {
-      lines.push({ role: task.status === "failed" ? "error" : "meta", text: task.status_message, taskId: task.operation_id });
+    } else if (
+      task.status === "failed" ||
+      task.status === "interrupted" ||
+      task.status === "paused"
+    ) {
+      lines.push({
+        role: task.status === "failed" ? "error" : "meta",
+        text: task.status_message,
+        taskId: task.operation_id,
+      });
     }
     return lines;
   });
@@ -161,12 +183,19 @@ export function artifactUrl(
 }
 
 export function latestNativeSessionId(tasks: AgentTask[]): string | null {
-  return [...tasks].sort(compareTaskTime).reverse().find((task) => task.native_session_id)?.native_session_id ?? null;
+  return (
+    [...tasks]
+      .sort(compareTaskTime)
+      .reverse()
+      .find((task) => task.native_session_id)?.native_session_id ?? null
+  );
 }
 
 function compareTaskTime(left: AgentTask, right: AgentTask): number {
-  return Date.parse(left.created_at) - Date.parse(right.created_at)
-    || left.operation_id.localeCompare(right.operation_id);
+  return (
+    Date.parse(left.created_at) - Date.parse(right.created_at) ||
+    left.operation_id.localeCompare(right.operation_id)
+  );
 }
 
 function textValue(value: unknown): string | null {
@@ -179,11 +208,12 @@ function conversationMode(value: unknown): ConversationMode | null {
 
 function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
   if (!Array.isArray(task.result?.artifacts)) return [];
-  return task.result.artifacts.filter((item): item is AgentArtifactDescriptor => (
-    typeof item === "object"
-    && item !== null
-    && typeof item.artifact_id === "string"
-    && typeof item.name === "string"
-    && typeof item.media_type === "string"
-  ));
+  return task.result.artifacts.filter(
+    (item): item is AgentArtifactDescriptor =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof item.artifact_id === "string" &&
+      typeof item.name === "string" &&
+      typeof item.media_type === "string",
+  );
 }

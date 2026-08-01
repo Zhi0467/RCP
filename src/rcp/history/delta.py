@@ -34,9 +34,7 @@ class RefreshDeltaEntry(BaseModel):
     field_names: list[str] = Field(default_factory=list)
     previous_standing: Standing | None = None
     current_standing: Standing | None = None
-    decision: Literal[
-        "approved", "rejected", "withdrawn", "resolved", "dismissed"
-    ] | None = None
+    decision: Literal["approved", "rejected", "withdrawn", "resolved", "dismissed"] | None = None
 
 
 class RefreshDelta(BaseModel):
@@ -80,11 +78,7 @@ def build_refresh_delta(
         and not materialization.reports[patch.revision].rejected
     ]
     baseline = max(
-        (
-            patch.revision
-            for patch in accepted
-            if patch.kind in {"seed", "refresh"}
-        ),
+        (patch.revision for patch in accepted if patch.kind in {"seed", "refresh"}),
         default=0,
     )
     standing_transitions = _standing_transition_entries(
@@ -114,11 +108,7 @@ def build_refresh_delta(
     mandatory_keys = {_entry_identity(entry) for entry in mandatory}
     candidates = [
         *mandatory,
-        *(
-            entry
-            for entry in recent
-            if _entry_identity(entry) not in mandatory_keys
-        ),
+        *(entry for entry in recent if _entry_identity(entry) not in mandatory_keys),
     ]
 
     selected: list[RefreshDeltaEntry] = []
@@ -166,8 +156,7 @@ def _current_contested_entries(
             (
                 item
                 for item in reversed(transitions)
-                if item.target_id == node.id
-                and item.current_standing == Standing.CONTESTED
+                if item.target_id == node.id and item.current_standing == Standing.CONTESTED
             ),
             None,
         )
@@ -211,9 +200,7 @@ def _standing_transition_entries(
                 before = standings.get(node_id, Standing.ASSERTED)
                 after = Standing(str(operation.get("standing")))
                 if before != after:
-                    entries.append(
-                        _standing_entry(state, patch, node_id, before, after)
-                    )
+                    entries.append(_standing_entry(state, patch, node_id, before, after))
                 standings[node_id] = after
                 continue
             if patch.kind == "approval":
@@ -222,9 +209,7 @@ def _standing_transition_entries(
                 before = standings.get(node_id, Standing.ASSERTED)
                 after = Standing.ASSERTED
                 if before != after:
-                    entries.append(
-                        _standing_entry(state, patch, node_id, before, after)
-                    )
+                    entries.append(_standing_entry(state, patch, node_id, before, after))
                 standings[node_id] = after
     return entries
 
@@ -233,15 +218,11 @@ def _nodes_reset_by_operation(operation: dict[str, object]) -> list[str]:
     name = operation.get("op")
     if name == "update_nodes":
         return [
-            str(raw.get("id", ""))
-            for raw in _dict_items(operation.get("nodes"))
-            if raw.get("id")
+            str(raw.get("id", "")) for raw in _dict_items(operation.get("nodes")) if raw.get("id")
         ]
     if name == "supersede_nodes":
         return [
-            str(raw.get("id", ""))
-            for raw in _dict_items(operation.get("nodes"))
-            if raw.get("id")
+            str(raw.get("id", "")) for raw in _dict_items(operation.get("nodes")) if raw.get("id")
         ]
     if name == "merge_nodes":
         return [
@@ -281,10 +262,7 @@ def _recent_entries(
     for patch in patches:
         for operation in patch.ops:
             name = operation.get("op")
-            if (
-                name == "update_nodes"
-                and patch.kind == "approval"
-            ):
+            if name == "update_nodes" and patch.kind == "approval":
                 for update in operation.get("nodes", []):
                     # Direct literal prose edits carry the optimistic concurrency
                     # guard. Proposal replay operations do not and are routed by
@@ -387,9 +365,7 @@ def _chat_entries(
                 raw.get("id")
                 or f"{raw.get('source', '')}::{raw.get('relation', '')}::{raw.get('target', '')}"
             )
-            targets.append(
-                (edge_id, "edge", str(raw.get("relation", "")), _field_names(raw))
-            )
+            targets.append((edge_id, "edge", str(raw.get("relation", "")), _field_names(raw)))
     elif name == "remove_edges":
         targets.extend(
             (str(edge_id), "edge", "", ["removed"])
@@ -530,9 +506,7 @@ def _candidate_encoded_size(
             {
                 "after_revision": after_revision,
                 "through_revision": through_revision,
-                "entries": [
-                    entry.model_dump(mode="json") for entry in entries
-                ],
+                "entries": [entry.model_dump(mode="json") for entry in entries],
                 "omitted_count": omitted_count,
                 "omitted_from_revision": omitted_from_revision,
                 "omitted_through_revision": omitted_through_revision,

@@ -89,34 +89,47 @@ export function groupChatConversations(
     });
   }
   for (const draft of drafts) {
-    if (!grouped.has(draft.chatId)) grouped.set(draft.chatId, { ...draft, tasks: [], updatedAt: "" });
+    if (!grouped.has(draft.chatId))
+      grouped.set(draft.chatId, { ...draft, tasks: [], updatedAt: "" });
   }
   for (const task of tasks) {
     const chatId = chatIdForTask(task);
     if (!chatId) continue;
     const kind = task.kind as ChatKind;
-    const nodeId = kind === "node_chat" && typeof task.request.node_id === "string"
-      ? task.request.node_id
-      : null;
+    const nodeId =
+      kind === "node_chat" && typeof task.request.node_id === "string"
+        ? task.request.node_id
+        : null;
     const existing = grouped.get(chatId);
-    const title = nodeId ? nodeTitles[nodeId] ?? nodeId : projectTitle;
+    const title = nodeId ? (nodeTitles[nodeId] ?? nodeId) : projectTitle;
     if (existing) {
       existing.tasks.push(task);
       if (Date.parse(task.updated_at) > Date.parse(existing.updatedAt || "1970-01-01")) {
         existing.updatedAt = task.updated_at;
       }
     } else {
-      grouped.set(chatId, { chatId, kind, nodeId, title, tasks: [task], updatedAt: task.updated_at });
+      grouped.set(chatId, {
+        chatId,
+        kind,
+        nodeId,
+        title,
+        tasks: [task],
+        updatedAt: task.updated_at,
+      });
     }
   }
-  grouped.forEach((conversation) => conversation.tasks.sort((left, right) => (
-    Date.parse(left.created_at) - Date.parse(right.created_at)
-    || left.operation_id.localeCompare(right.operation_id)
-  )));
-  return [...grouped.values()].sort((left, right) => (
-    Date.parse(right.updatedAt || "9999-01-01") - Date.parse(left.updatedAt || "9999-01-01")
-    || left.title.localeCompare(right.title)
-  ));
+  grouped.forEach((conversation) =>
+    conversation.tasks.sort(
+      (left, right) =>
+        Date.parse(left.created_at) - Date.parse(right.created_at) ||
+        left.operation_id.localeCompare(right.operation_id),
+    ),
+  );
+  return [...grouped.values()].sort(
+    (left, right) =>
+      Date.parse(right.updatedAt || "9999-01-01") - Date.parse(left.updatedAt || "9999-01-01") ||
+      left.title.localeCompare(right.title),
+  );
 }
 
 export function latestConversation(
@@ -124,20 +137,31 @@ export function latestConversation(
   kind: ChatKind,
   nodeId: string | null = null,
 ): ChatConversation | null {
-  return conversations.find((conversation) => (
-    conversation.kind === kind && (kind === "project_chat" || conversation.nodeId === nodeId)
-  )) ?? null;
+  return (
+    conversations.find(
+      (conversation) =>
+        conversation.kind === kind && (kind === "project_chat" || conversation.nodeId === nodeId),
+    ) ?? null
+  );
 }
 
-export function chatIndicator(tasks: AgentTask[], unreadTaskIds: Set<string>): "active" | "unread" | null {
+export function chatIndicator(
+  tasks: AgentTask[],
+  unreadTaskIds: Set<string>,
+): "active" | "unread" | null {
   if (tasks.some((task) => chatIdForTask(task) && chatTaskNeedsAttention(task))) return "active";
-  if (tasks.some((task) => unreadTaskIds.has(task.operation_id) && chatIdForTask(task))) return "unread";
+  if (tasks.some((task) => unreadTaskIds.has(task.operation_id) && chatIdForTask(task)))
+    return "unread";
   return null;
 }
 
 export function chatTaskNeedsAttention(task: AgentTask): boolean {
-  return task.status === "queued" || task.status === "running"
-    || task.status === "pausing" || task.status === "paused";
+  return (
+    task.status === "queued" ||
+    task.status === "running" ||
+    task.status === "pausing" ||
+    task.status === "paused"
+  );
 }
 
 export function chatEntryConversationId(
@@ -146,15 +170,16 @@ export function chatEntryConversationId(
   unreadTaskIds: Set<string>,
   previousChatId: string | null,
 ): string | null {
-  const activeChatId = activityTask && chatTaskNeedsAttention(activityTask)
-    ? chatIdForTask(activityTask)
-    : null;
-  if (activeChatId && conversations.some((item) => item.chatId === activeChatId)) return activeChatId;
-  const unread = conversations.find((conversation) => conversation.tasks.some(
-    (task) => unreadTaskIds.has(task.operation_id),
-  ));
+  const activeChatId =
+    activityTask && chatTaskNeedsAttention(activityTask) ? chatIdForTask(activityTask) : null;
+  if (activeChatId && conversations.some((item) => item.chatId === activeChatId))
+    return activeChatId;
+  const unread = conversations.find((conversation) =>
+    conversation.tasks.some((task) => unreadTaskIds.has(task.operation_id)),
+  );
   if (unread) return unread.chatId;
-  if (previousChatId && conversations.some((item) => item.chatId === previousChatId)) return previousChatId;
+  if (previousChatId && conversations.some((item) => item.chatId === previousChatId))
+    return previousChatId;
   return conversations[0]?.chatId ?? null;
 }
 
@@ -166,9 +191,8 @@ export function newlyUnreadChatTaskIds(
   return tasks.flatMap((task) => {
     const chatId = chatIdForTask(task);
     const previous = previousStatuses.get(task.operation_id);
-    const becameTerminal = previous !== undefined
-      && previous !== task.status
-      && !chatTaskNeedsAttention(task);
+    const becameTerminal =
+      previous !== undefined && previous !== task.status && !chatTaskNeedsAttention(task);
     return chatId && chatId !== visibleChatId && becameTerminal ? [task.operation_id] : [];
   });
 }

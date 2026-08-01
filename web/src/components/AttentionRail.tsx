@@ -50,11 +50,16 @@ export function AttentionRail({
             <dl className="card-brief">
               <div>
                 <dt>The situation, cold</dt>
-                <dd>{proposal.card.situation_cold || "The agent did not supply a cold-readable summary."}</dd>
+                <dd>
+                  {proposal.card.situation_cold ||
+                    "The agent did not supply a cold-readable summary."}
+                </dd>
               </div>
               <div>
                 <dt>Why you, why now</dt>
-                <dd>{proposal.card.why_human_now || "Human authority is required by the gate set."}</dd>
+                <dd>
+                  {proposal.card.why_human_now || "Human authority is required by the gate set."}
+                </dd>
               </div>
               <div>
                 <dt>If accepted</dt>
@@ -62,7 +67,9 @@ export function AttentionRail({
               </div>
               <div>
                 <dt>Decision needed</dt>
-                <dd>{proposal.card.decision_needed || "Approve or reject the stored operation."}</dd>
+                <dd>
+                  {proposal.card.decision_needed || "Approve or reject the stored operation."}
+                </dd>
               </div>
             </dl>
             <div className="card-actions">
@@ -91,10 +98,13 @@ export function AttentionRail({
         const status = draft?.ambiguities[ambiguity.id]?.status;
         return (
           <article className={`ambiguity-card${status ? " draft-touched" : ""}`} key={ambiguity.id}>
-            <button className="attention-item" onClick={() => {
-              const nodeId = ambiguity.related_node_ids[0];
-              if (nodeId) onSelectNode(nodeId);
-            }}>
+            <button
+              className="attention-item"
+              onClick={() => {
+                const nodeId = ambiguity.related_node_ids[0];
+                if (nodeId) onSelectNode(nodeId);
+              }}
+            >
               <MessageSquareText size={15} />
               <strong>{ambiguity.question}</strong>
               <ArrowRight size={14} />
@@ -105,20 +115,28 @@ export function AttentionRail({
                 aria-pressed={status === "dismissed"}
                 disabled={mutationsDisabled}
                 onClick={() => onAmbiguity(ambiguity, status === "dismissed" ? null : "dismissed")}
-              ><X size={13} /> Dismiss</button>
+              >
+                <X size={13} /> Dismiss
+              </button>
               <button
                 className={`button judgment${status === "resolved" ? " selected agree" : ""}`}
                 aria-pressed={status === "resolved"}
                 disabled={mutationsDisabled}
                 onClick={() => onAmbiguity(ambiguity, status === "resolved" ? null : "resolved")}
-              ><Check size={13} /> Resolve</button>
+              >
+                <Check size={13} /> Resolve
+              </button>
             </div>
           </article>
         );
       })}
 
       {blockers.map((blocker) => (
-        <button className={`attention-item blocker${blocker.draft_touched ? " draft-touched" : ""}`} key={blocker.id} onClick={() => onSelectNode(blocker.id)}>
+        <button
+          className={`attention-item blocker${blocker.draft_touched ? " draft-touched" : ""}`}
+          key={blocker.id}
+          onClick={() => onSelectNode(blocker.id)}
+        >
           <AlertTriangle size={15} />
           <strong>{blocker.title}</strong>
           <ArrowRight size={14} />

@@ -22,9 +22,11 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
   try {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed) || parsed.version !== 1) return null;
-    if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string")) return null;
+    if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
+      return null;
     if (!isRecord(parsed.profiles)) return null;
-    if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths)) return null;
+    if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
+      return null;
     return parsed as unknown as SettingsDraft;
   } catch {
     return null;
@@ -66,8 +68,8 @@ export function mergeMachineProviderPaths(
 function isMachineProviderPaths(value: unknown): value is MachineProviderPaths {
   if (!isRecord(value)) return false;
   return Object.values(value).every(
-    (providers) => isRecord(providers)
-      && Object.values(providers).every((path) => typeof path === "string"),
+    (providers) =>
+      isRecord(providers) && Object.values(providers).every((path) => typeof path === "string"),
   );
 }
 

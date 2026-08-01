@@ -15,7 +15,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { modelChange, modelOptions, modelsFor, providerChange, providerOptions, reasoningOptions } from "../providers";
+import {
+  modelChange,
+  modelOptions,
+  modelsFor,
+  providerChange,
+  providerOptions,
+  reasoningOptions,
+} from "../providers";
 import type {
   AgentSurface,
   ProviderReadiness,
@@ -98,20 +105,30 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
         setProviders(known);
         const fallback = known[0]?.provider;
         if (!fallback) return;
-        setAgents((current) => Object.fromEntries(
-          Object.entries(current).map(([surface, profile]) => [
-            surface,
-            known.some((item) => item.provider === profile.provider)
-              ? profile
-              : { ...profile, provider: fallback },
-          ]),
-        ) as SetupAgents);
+        setAgents(
+          (current) =>
+            Object.fromEntries(
+              Object.entries(current).map(([surface, profile]) => [
+                surface,
+                known.some((item) => item.provider === profile.provider)
+                  ? profile
+                  : { ...profile, provider: fallback },
+              ]),
+            ) as SetupAgents,
+        );
       })
       .catch(() => setProviders([]));
   }, []);
 
   const remoteHosts = useMemo(
-    () => [...new Set(repositories.filter((repo) => repo.location === "ssh").map((repo) => repo.host.trim()).filter(Boolean))],
+    () => [
+      ...new Set(
+        repositories
+          .filter((repo) => repo.location === "ssh")
+          .map((repo) => repo.host.trim())
+          .filter(Boolean),
+      ),
+    ],
     [repositories],
   );
   const stateRepo = repositories.find((repo) => repo.alias === stateRepository) ?? repositories[0];
@@ -135,9 +152,11 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
         id,
         {
           ...agents[id],
-          ...(id === "paper_coach" ? {
-            host: agents[id].location === "ssh" ? agents[id].host.trim() : "",
-          } : canonicalExecution),
+          ...(id === "paper_coach"
+            ? {
+                host: agents[id].location === "ssh" ? agents[id].host.trim() : "",
+              }
+            : canonicalExecution),
         },
       ]),
     ) as SetupAgents,
@@ -172,7 +191,8 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
       return "Aliases must start with a lowercase letter and use only lowercase letters, numbers, or hyphens.";
     }
     if (new Set(aliases).size !== aliases.length) return "Each repository needs a unique alias.";
-    if (repositories.some((repo) => !repo.path.trim())) return "Every repository needs an absolute path.";
+    if (repositories.some((repo) => !repo.path.trim()))
+      return "Every repository needs an absolute path.";
     if (repositories.some((repo) => repo.location === "ssh" && !repo.host.trim())) {
       return "Every SSH repository needs a host.";
     }
@@ -181,11 +201,12 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     }
     if (!aliases.includes(stateRepository)) return "Choose a canonical state repository.";
     if (targetStep < 2) return null;
-    const invalidAgent = agentSurfaces.find(({ id }) => (
-      id === "paper_coach"
-      && agents[id].location === "ssh"
-      && !remoteHosts.includes(agents[id].host)
-    ));
+    const invalidAgent = agentSurfaces.find(
+      ({ id }) =>
+        id === "paper_coach" &&
+        agents[id].location === "ssh" &&
+        !remoteHosts.includes(agents[id].host),
+    );
     if (invalidAgent) {
       return `Choose one of the repository hosts for the ${invalidAgent.label} agent.`;
     }
@@ -286,11 +307,19 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
   return (
     <div className="setup-shell">
       <header className="setup-header">
-        <button className="rcp-mark setup-brand" onClick={onCancel} aria-label="Return to project index">
-          <span className="rcp-wordmark" aria-hidden="true">RCP</span>
+        <button
+          className="rcp-mark setup-brand"
+          onClick={onCancel}
+          aria-label="Return to project index"
+        >
+          <span className="rcp-wordmark" aria-hidden="true">
+            RCP
+          </span>
         </button>
         <span className="setup-header-title">Add project</span>
-        <button className="button ghost" onClick={onCancel}>Cancel</button>
+        <button className="button ghost" onClick={onCancel}>
+          Cancel
+        </button>
       </header>
 
       <main className="setup-layout">
@@ -298,7 +327,13 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           <span className="eyebrow">Configuration route</span>
           {steps.map(([number, label], index) => (
             <button
-              className={index === step ? "setup-step active" : index < step ? "setup-step complete" : "setup-step"}
+              className={
+                index === step
+                  ? "setup-step active"
+                  : index < step
+                    ? "setup-step complete"
+                    : "setup-step"
+              }
               disabled={index > step}
               key={number}
               onClick={() => {
@@ -328,7 +363,10 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                 <input
                   autoFocus
                   value={name}
-                  onChange={(event) => { setName(event.target.value); setError(null); }}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    setError(null);
+                  }}
                   placeholder="Continual RL Plasticity"
                 />
               </label>
@@ -371,32 +409,111 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
 
           {step === 2 && (
             <div className="setup-section">
-              <SectionHeading
-                eyebrow="Agent roles"
-                title="Choose the agent behind each surface."
-              />
+              <SectionHeading eyebrow="Agent roles" title="Choose the agent behind each surface." />
               <div className="agent-role-stack">
                 {agentSurfaces.map(({ id, label }) => {
                   const profile = agents[id];
                   const models = modelsFor(providers, profile.provider);
                   const execution = id === "paper_coach" ? profile : canonicalExecution;
-                  const machineValue = execution.location === "local" ? "local" : `ssh:${execution.host}`;
+                  const machineValue =
+                    execution.location === "local" ? "local" : `ssh:${execution.host}`;
                   return (
                     <article className="agent-role-card" key={id}>
                       <header>
                         <strong>{label}</strong>
-                        <span className="role-permission">{id === "paper_coach" ? "read-only coach" : "graph patch only"}</span>
+                        <span className="role-permission">
+                          {id === "paper_coach" ? "read-only coach" : "graph patch only"}
+                        </span>
                       </header>
                       <div className="agent-role-fields">
-                        <label>Provider<select value={profile.provider} onChange={(event) => updateAgent(id, providerChange(modelsFor(providers, event.target.value), event.target.value, profile.reasoning))}>{providerOptions(providers, profile.provider).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-                        <label>Model<select value={profile.model} onChange={(event) => updateAgent(id, modelChange(models, event.target.value, profile.reasoning))}>{modelOptions(models, profile.model).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-                        <label>Reasoning<select value={profile.reasoning} onChange={(event) => updateAgent(id, { reasoning: event.target.value })}>{reasoningOptions(models, profile.model, profile.reasoning).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
-                        <label className={id === "paper_coach" ? undefined : "agent-machine-fixed"}>Run on {id === "paper_coach" ? null : <LockKeyhole size={10} aria-hidden="true" />}<select value={machineValue} disabled={id !== "paper_coach"} onChange={(event) => {
-                          const value = event.target.value;
-                          updateAgent(id, value === "local" ? { location: "local", host: "" } : { location: "ssh", host: value.slice(4) });
-                        }}><option value="local">This machine</option>{remoteHosts.map((host) => <option key={host} value={`ssh:${host}`}>{host}</option>)}</select></label>
+                        <label>
+                          Provider
+                          <select
+                            value={profile.provider}
+                            onChange={(event) =>
+                              updateAgent(
+                                id,
+                                providerChange(
+                                  modelsFor(providers, event.target.value),
+                                  event.target.value,
+                                  profile.reasoning,
+                                ),
+                              )
+                            }
+                          >
+                            {providerOptions(providers, profile.provider).map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Model
+                          <select
+                            value={profile.model}
+                            onChange={(event) =>
+                              updateAgent(
+                                id,
+                                modelChange(models, event.target.value, profile.reasoning),
+                              )
+                            }
+                          >
+                            {modelOptions(models, profile.model).map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Reasoning
+                          <select
+                            value={profile.reasoning}
+                            onChange={(event) => updateAgent(id, { reasoning: event.target.value })}
+                          >
+                            {reasoningOptions(models, profile.model, profile.reasoning).map(
+                              (option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.label}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                        </label>
+                        <label className={id === "paper_coach" ? undefined : "agent-machine-fixed"}>
+                          Run on{" "}
+                          {id === "paper_coach" ? null : (
+                            <LockKeyhole size={10} aria-hidden="true" />
+                          )}
+                          <select
+                            value={machineValue}
+                            disabled={id !== "paper_coach"}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              updateAgent(
+                                id,
+                                value === "local"
+                                  ? { location: "local", host: "" }
+                                  : { location: "ssh", host: value.slice(4) },
+                              );
+                            }}
+                          >
+                            <option value="local">This machine</option>
+                            {remoteHosts.map((host) => (
+                              <option key={host} value={`ssh:${host}`}>
+                                {host}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                       </div>
-                      <div className="role-contract"><LockKeyhole size={13} /> {id === "paper_coach" ? "Introduction and project inputs are read-only · no writes" : "Project and run-scope inputs are read-only · graph patch output only"}</div>
+                      <div className="role-contract">
+                        <LockKeyhole size={13} />{" "}
+                        {id === "paper_coach"
+                          ? "Introduction and project inputs are read-only · no writes"
+                          : "Project and run-scope inputs are read-only · graph patch output only"}
+                      </div>
                     </article>
                   );
                 })}
@@ -408,17 +525,27 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
             <div className="setup-section review-section">
               <SectionHeading
                 eyebrow="Read-only preflight complete"
-                title={preview.action === "connect" ? "Connect the existing RCP project." : "The project is ready to initialize."}
+                title={
+                  preview.action === "connect"
+                    ? "Connect the existing RCP project."
+                    : "The project is ready to initialize."
+                }
               />
               {preview.action === "connect" && (
                 <div className="existing-manifest">
                   <FileCode2 size={19} />
-                  <span>Existing manifest: <strong>{preview.existing_project_name}</strong> · setup entries will not overwrite it</span>
+                  <span>
+                    Existing manifest: <strong>{preview.existing_project_name}</strong> · setup
+                    entries will not overwrite it
+                  </span>
                 </div>
               )}
               <div className="preflight-checks">
                 {preview.checks.map((check, index) => (
-                  <div className={`preflight-check ${check.status}`} key={`${check.label}-${index}`}>
+                  <div
+                    className={`preflight-check ${check.status}`}
+                    key={`${check.label}-${index}`}
+                  >
                     {check.status === "pass" && <CheckCircle2 size={17} />}
                     {check.status === "warn" && <TriangleAlert size={17} />}
                     {check.status === "fail" && <XCircle size={17} />}
@@ -428,37 +555,81 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                 ))}
               </div>
               <details className="manifest-preview">
-                <summary><FileCode2 size={15} /> Manifest {preview.action === "connect" ? "to connect" : "preview"}</summary>
+                <summary>
+                  <FileCode2 size={15} /> Manifest{" "}
+                  {preview.action === "connect" ? "to connect" : "preview"}
+                </summary>
                 <pre>{preview.manifest_preview}</pre>
               </details>
-              <label className={preview.can_create ? "final-confirmation" : "final-confirmation disabled"}>
+              <label
+                className={
+                  preview.can_create ? "final-confirmation" : "final-confirmation disabled"
+                }
+              >
                 <input
                   type="checkbox"
                   checked={confirmed}
                   disabled={!preview.can_create}
                   onChange={(event) => setConfirmed(event.target.checked)}
                 />
-                <span>{preview.action === "connect" ? "Connect this project" : "Create the project manifest"} · {preview.remote_write
-                  ? `RCP may write canonical project state over SSH at ${preview.canonical_location}`
-                  : `RCP may initialize canonical project state at ${preview.canonical_location}`}</span>
+                <span>
+                  {preview.action === "connect"
+                    ? "Connect this project"
+                    : "Create the project manifest"}{" "}
+                  ·{" "}
+                  {preview.remote_write
+                    ? `RCP may write canonical project state over SSH at ${preview.canonical_location}`
+                    : `RCP may initialize canonical project state at ${preview.canonical_location}`}
+                </span>
               </label>
             </div>
           )}
 
-          {error && <div className="setup-error" role="alert"><TriangleAlert size={16} /><span>{error}</span></div>}
+          {error && (
+            <div className="setup-error" role="alert">
+              <TriangleAlert size={16} />
+              <span>{error}</span>
+            </div>
+          )}
           <footer className="setup-actions">
-            <button className="button secondary" onClick={goBack}><ArrowLeft size={15} /> Back</button>
+            <button className="button secondary" onClick={goBack}>
+              <ArrowLeft size={15} /> Back
+            </button>
             {step < 3 && (
-              <button className="button primary" disabled={busy !== null} onClick={() => void advance()}>
-                {busy === "preflight" ? <LoaderCircle className="spin" size={15} /> : step === 2 ? <ShieldCheck size={15} /> : null}
-                {busy === "preflight" ? "Checking" : step === 2 ? "Run read-only preflight" : "Continue"}
+              <button
+                className="button primary"
+                disabled={busy !== null}
+                onClick={() => void advance()}
+              >
+                {busy === "preflight" ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : step === 2 ? (
+                  <ShieldCheck size={15} />
+                ) : null}
+                {busy === "preflight"
+                  ? "Checking"
+                  : step === 2
+                    ? "Run read-only preflight"
+                    : "Continue"}
                 {!busy && step < 2 && <ArrowRight size={15} />}
               </button>
             )}
             {step === 3 && preview && (
-              <button className="button primary" disabled={!preview.can_create || !confirmed || busy !== null} onClick={() => void create()}>
-                {busy === "create" ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
-                {busy === "create" ? "Opening project" : preview.action === "connect" ? "Connect and open" : "Create and open"}
+              <button
+                className="button primary"
+                disabled={!preview.can_create || !confirmed || busy !== null}
+                onClick={() => void create()}
+              >
+                {busy === "create" ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <Check size={15} />
+                )}
+                {busy === "create"
+                  ? "Opening project"
+                  : preview.action === "connect"
+                    ? "Connect and open"
+                    : "Create and open"}
               </button>
             )}
           </footer>
@@ -480,15 +651,21 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           <LedgerItem
             number="C"
             label="Raw prompt inputs"
-            value={defaultRead.length ? defaultRead.map((repo) => repo.alias || "unnamed").join(", ") : "None selected"}
+            value={
+              defaultRead.length
+                ? defaultRead.map((repo) => repo.alias || "unnamed").join(", ")
+                : "None selected"
+            }
           />
           <LedgerItem
             number="D"
             label="Agent roles"
-            value={agentSurfaces.map(({ id, label }) => {
-              const execution = id === "paper_coach" ? agents[id] : canonicalExecution;
-              return `${label}: ${agents[id].provider} @ ${execution.location === "ssh" ? execution.host || "remote" : "local"}`;
-            }).join(" · ")}
+            value={agentSurfaces
+              .map(({ id, label }) => {
+                const execution = id === "paper_coach" ? agents[id] : canonicalExecution;
+                return `${label}: ${agents[id].provider} @ ${execution.location === "ssh" ? execution.host || "remote" : "local"}`;
+              })
+              .join(" · ")}
           />
         </aside>
       </main>
@@ -523,38 +700,83 @@ function RepositoryEditor({
   return (
     <article className={canonical ? "repository-editor canonical" : "repository-editor"}>
       <header>
-        <span className="repository-number"><FolderGit2 size={16} /></span>
+        <span className="repository-number">
+          <FolderGit2 size={16} />
+        </span>
         <strong>{repository.alias || "Unnamed repository"}</strong>
         {canonical && <span className="repository-state">Canonical state</span>}
-        {!only && onRemove && <button className="icon-button compact" aria-label={`Remove ${repository.alias}`} onClick={onRemove}><Trash2 size={14} /></button>}
+        {!only && onRemove && (
+          <button
+            className="icon-button compact"
+            aria-label={`Remove ${repository.alias}`}
+            onClick={onRemove}
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
       </header>
       <div className="repository-fields">
         <label>
           <span>Alias</span>
-          <input value={repository.alias} onChange={(event) => onChange({ alias: event.target.value })} placeholder="research-code" />
+          <input
+            value={repository.alias}
+            onChange={(event) => onChange({ alias: event.target.value })}
+            placeholder="research-code"
+          />
         </label>
         <div className="location-toggle" aria-label="Repository location">
-          <button className={repository.location === "local" ? "active" : ""} onClick={() => onChange({ location: "local" })}>Local</button>
-          <button className={repository.location === "ssh" ? "active" : ""} onClick={() => onChange({ location: "ssh" })}>SSH</button>
+          <button
+            className={repository.location === "local" ? "active" : ""}
+            onClick={() => onChange({ location: "local" })}
+          >
+            Local
+          </button>
+          <button
+            className={repository.location === "ssh" ? "active" : ""}
+            onClick={() => onChange({ location: "ssh" })}
+          >
+            SSH
+          </button>
         </div>
         {repository.location === "ssh" && (
           <label>
             <span>SSH host</span>
-            <input value={repository.host} onChange={(event) => onChange({ host: event.target.value })} placeholder="gpu.example.edu" />
+            <input
+              value={repository.host}
+              onChange={(event) => onChange({ host: event.target.value })}
+              placeholder="gpu.example.edu"
+            />
           </label>
         )}
         <label className={repository.location === "ssh" ? "" : "wide"}>
           <span>Absolute repository path</span>
-          <input value={repository.path} onChange={(event) => onChange({ path: event.target.value })} placeholder={repository.location === "ssh" ? "/home/user/research/project" : "/Users/you/research/project"} />
+          <input
+            value={repository.path}
+            onChange={(event) => onChange({ path: event.target.value })}
+            placeholder={
+              repository.location === "ssh"
+                ? "/home/user/research/project"
+                : "/Users/you/research/project"
+            }
+          />
         </label>
       </div>
       <footer>
         <label className="check-control">
-          <input type="checkbox" checked={repository.default_read} onChange={(event) => onChange({ default_read: event.target.checked })} />
+          <input
+            type="checkbox"
+            checked={repository.default_read}
+            onChange={(event) => onChange({ default_read: event.target.checked })}
+          />
           <strong>Default raw input</strong>
         </label>
         <label className="radio-control">
-          <input type="radio" name="canonical-repository" checked={canonical} onChange={onCanonical} />
+          <input
+            type="radio"
+            name="canonical-repository"
+            checked={canonical}
+            onChange={onCanonical}
+          />
           <span>Canonical state</span>
         </label>
       </footer>
@@ -566,12 +788,17 @@ function LedgerItem({ number, label, value }: { number: string; label: string; v
   return (
     <div className="ledger-item">
       <span>{number}</span>
-      <div><small>{label}</small><strong>{value}</strong></div>
+      <div>
+        <small>{label}</small>
+        <strong>{value}</strong>
+      </div>
     </div>
   );
 }
 
 function repositoryLocation(repository: DraftRepository): string {
   if (!repository.path) return "Repository path not entered";
-  return repository.location === "ssh" ? `${repository.host || "host"}:${repository.path}` : repository.path;
+  return repository.location === "ssh"
+    ? `${repository.host || "host"}:${repository.path}`
+    : repository.path;
 }

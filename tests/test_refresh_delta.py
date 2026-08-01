@@ -147,8 +147,7 @@ def test_refresh_delta_preserves_human_and_chat_routing_metadata() -> None:
     assert delta.entries[0].previous_standing == Standing.ASSERTED
     assert delta.entries[0].current_standing == Standing.CONTESTED
     assert {
-        (entry.category, entry.target_id, tuple(entry.field_names))
-        for entry in delta.entries
+        (entry.category, entry.target_id, tuple(entry.field_names)) for entry in delta.entries
     } >= {
         ("human_prose_edit", "rq/current", ("question", "title")),
         ("chat_graph_update", "rq/current", ("motivation",)),
@@ -228,9 +227,7 @@ def test_refresh_delta_records_explicit_and_agent_reset_standing_transitions() -
     )
 
     delta = build_refresh_delta(patches, materialization)
-    transitions = [
-        entry for entry in delta.entries if entry.category == "standing_transition"
-    ]
+    transitions = [entry for entry in delta.entries if entry.category == "standing_transition"]
 
     assert [
         (entry.revision, entry.previous_standing, entry.current_standing)

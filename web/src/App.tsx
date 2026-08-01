@@ -30,7 +30,13 @@ import {
   type ChatKind,
   type DraftConversation,
 } from "./chatWorkspace";
-import { api, ApiError, loadProjectReadiness, pinApiInstance, registerMutationFailureHandler } from "./api";
+import {
+  api,
+  ApiError,
+  loadProjectReadiness,
+  pinApiInstance,
+  registerMutationFailureHandler,
+} from "./api";
 import {
   loadChatSummaryPage,
   loadChatTranscript,
@@ -111,15 +117,33 @@ import {
   type TextScaleAction,
 } from "./textScale";
 
-const AttentionOverview = lazy(() => import("./views/GraphViews").then((module) => ({ default: module.AttentionOverview })));
-const DagView = lazy(() => import("./views/GraphViews").then((module) => ({ default: module.DagView })));
-const ExecutionView = lazy(() => import("./views/GraphViews").then((module) => ({ default: module.ExecutionView })));
-const GlossaryView = lazy(() => import("./views/GraphViews").then((module) => ({ default: module.GlossaryView })));
-const ScientificView = lazy(() => import("./views/GraphViews").then((module) => ({ default: module.ScientificView })));
-const PaperWorkspace = lazy(() => import("./views/PaperWorkspace").then((module) => ({ default: module.PaperWorkspace })));
-const ProjectSettings = lazy(() => import("./views/ProjectSettings").then((module) => ({ default: module.ProjectSettings })));
-const ChatsWorkspace = lazy(() => import("./views/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })));
-const NodeChat = lazy(() => import("./components/NodeChat").then((module) => ({ default: module.NodeChat })));
+const AttentionOverview = lazy(() =>
+  import("./views/GraphViews").then((module) => ({ default: module.AttentionOverview })),
+);
+const DagView = lazy(() =>
+  import("./views/GraphViews").then((module) => ({ default: module.DagView })),
+);
+const ExecutionView = lazy(() =>
+  import("./views/GraphViews").then((module) => ({ default: module.ExecutionView })),
+);
+const GlossaryView = lazy(() =>
+  import("./views/GraphViews").then((module) => ({ default: module.GlossaryView })),
+);
+const ScientificView = lazy(() =>
+  import("./views/GraphViews").then((module) => ({ default: module.ScientificView })),
+);
+const PaperWorkspace = lazy(() =>
+  import("./views/PaperWorkspace").then((module) => ({ default: module.PaperWorkspace })),
+);
+const ProjectSettings = lazy(() =>
+  import("./views/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
+);
+const ChatsWorkspace = lazy(() =>
+  import("./views/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
+);
+const NodeChat = lazy(() =>
+  import("./components/NodeChat").then((module) => ({ default: module.NodeChat })),
+);
 
 const emptyGraph: GraphState = {
   revision: 0,
@@ -167,7 +191,9 @@ export default function App() {
   const [graph, setGraph] = useState<GraphState>(emptyGraph);
   const [paper, setPaper] = useState<PaperSnapshot | null>(null);
   const [view, setView] = useState<AppView>("overview");
-  const [trustView, setTrustView] = useState<TrustView>(() => (localStorage.getItem("rcp:trust-view") as TrustView) || "working");
+  const [trustView, setTrustView] = useState<TrustView>(
+    () => (localStorage.getItem("rcp:trust-view") as TrustView) || "working",
+  );
   const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [floatingChat, setFloatingChat] = useState<{ chatId: string; nodeId: string } | null>(null);
@@ -178,14 +204,19 @@ export default function App() {
   const [chatSummaryTotal, setChatSummaryTotal] = useState(0);
   const [chatSummaryNextOffset, setChatSummaryNextOffset] = useState(0);
   const [chatSummariesLoading, setChatSummariesLoading] = useState(false);
-  const [chatTranscripts, setChatTranscripts] = useState<Map<string, ChatTranscript>>(() => new Map());
+  const [chatTranscripts, setChatTranscripts] = useState<Map<string, ChatTranscript>>(
+    () => new Map(),
+  );
   const [selectedCanonicalChat, setSelectedCanonicalChat] = useState<ChatSummary | null>(null);
   const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
-  const [textScale, setTextScale] = useState(() => normalizeTextScale(localStorage.getItem(TEXT_SCALE_STORAGE_KEY)));
+  const [textScale, setTextScale] = useState(() =>
+    normalizeTextScale(localStorage.getItem(TEXT_SCALE_STORAGE_KEY)),
+  );
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
   const [loading, setLoading] = useState(true);
-  const [projectReconciliation, setProjectReconciliation] = useState<ProjectReconciliation>("opening");
+  const [projectReconciliation, setProjectReconciliation] =
+    useState<ProjectReconciliation>("opening");
   const [humanDraft, setHumanDraft] = useState<HumanDraft | null>(null);
   const [syncingDraft, setSyncingDraft] = useState(false);
   const [taskStarting, setTaskStarting] = useState(false);
@@ -220,30 +251,47 @@ export default function App() {
     }
   }, []);
 
-  const applyProjectSnapshot = useCallback((nextProject: ProjectSnapshot, preserveReadiness: boolean) => {
-    const nextGraph = nextProject.graph;
-    setProject((current) => preserveReadiness ? preserveProjectReadiness(nextProject, current) : nextProject);
-    setGraph(nextGraph);
-    setPaper(nextProject.paper);
-    setSelectedNode((current) => current ? nextGraph.nodes[current.id] ?? current : null);
-    setRunScope((current) => current.length
-      ? current.filter((item) => nextProject.project_truth_scope.includes(item))
-      : nextProject.default_run_truth_scope);
-  }, []);
+  const applyProjectSnapshot = useCallback(
+    (nextProject: ProjectSnapshot, preserveReadiness: boolean) => {
+      const nextGraph = nextProject.graph;
+      setProject((current) =>
+        preserveReadiness ? preserveProjectReadiness(nextProject, current) : nextProject,
+      );
+      setGraph(nextGraph);
+      setPaper(nextProject.paper);
+      setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
+      setRunScope((current) =>
+        current.length
+          ? current.filter((item) => nextProject.project_truth_scope.includes(item))
+          : nextProject.default_run_truth_scope,
+      );
+    },
+    [],
+  );
 
   const refreshChatSummaries = useCallback(async (requestedProjectId: string, base: string) => {
     const generation = ++chatSummaryRefreshGeneration.current;
     setChatSummariesLoading(true);
     try {
       const page = await loadChatSummaryPage(base, 0, api);
-      if (activeProjectId.current !== requestedProjectId || generation !== chatSummaryRefreshGeneration.current) return;
+      if (
+        activeProjectId.current !== requestedProjectId ||
+        generation !== chatSummaryRefreshGeneration.current
+      )
+        return;
       const selectedChatId = selectedChatIdRef.current;
       const previousSummary = selectedChatId
-        ? chatSummariesRef.current.find((summary) => summary.chat_id === selectedChatId)
-          ?? (selectedCanonicalChatRef.current?.chat_id === selectedChatId ? selectedCanonicalChatRef.current : null)
+        ? (chatSummariesRef.current.find((summary) => summary.chat_id === selectedChatId) ??
+          (selectedCanonicalChatRef.current?.chat_id === selectedChatId
+            ? selectedCanonicalChatRef.current
+            : null))
         : null;
       let validation: ChatTranscript | null | undefined;
-      if (selectedChatId && previousSummary && !page.items.some((summary) => summary.chat_id === selectedChatId)) {
+      if (
+        selectedChatId &&
+        previousSummary &&
+        !page.items.some((summary) => summary.chat_id === selectedChatId)
+      ) {
         try {
           validation = await loadChatTranscript(base, selectedChatId, api);
         } catch (error) {
@@ -251,7 +299,11 @@ export default function App() {
           else throw error;
         }
       }
-      if (activeProjectId.current !== requestedProjectId || generation !== chatSummaryRefreshGeneration.current) return;
+      if (
+        activeProjectId.current !== requestedProjectId ||
+        generation !== chatSummaryRefreshGeneration.current
+      )
+        return;
       const nextSummaries = mergeChatSummaryPage([], page.items, "refresh");
       chatSummariesRef.current = nextSummaries;
       setChatSummaries(nextSummaries);
@@ -271,7 +323,9 @@ export default function App() {
         if (validation) {
           setChatTranscripts((current) => new Map(current).set(validation.chat_id, validation));
         } else if (reconciliation.deleteTranscript && selectedChatId) {
-          setDraftConversations((current) => current.filter((draft) => draft.chatId !== selectedChatId));
+          setDraftConversations((current) =>
+            current.filter((draft) => draft.chatId !== selectedChatId),
+          );
           setChatTranscripts((current) => {
             if (!current.has(selectedChatId)) return current;
             const next = new Map(current);
@@ -281,70 +335,96 @@ export default function App() {
         }
       }
     } finally {
-      if (activeProjectId.current === requestedProjectId && generation === chatSummaryRefreshGeneration.current) {
+      if (
+        activeProjectId.current === requestedProjectId &&
+        generation === chatSummaryRefreshGeneration.current
+      ) {
         setChatSummariesLoading(false);
       }
     }
   }, []);
 
   const loadMoreChatSummaries = useCallback(async () => {
-    if (!projectId || !apiBase || chatSummariesLoading || chatSummaryNextOffset >= chatSummaryTotal) return;
+    if (!projectId || !apiBase || chatSummariesLoading || chatSummaryNextOffset >= chatSummaryTotal)
+      return;
     const requestedProjectId = projectId;
     const generation = chatSummaryRefreshGeneration.current;
     const offset = chatSummaryNextOffset;
     setChatSummariesLoading(true);
     try {
       const page = await loadChatSummaryPage(apiBase, offset, api);
-      if (activeProjectId.current !== requestedProjectId || generation !== chatSummaryRefreshGeneration.current) return;
+      if (
+        activeProjectId.current !== requestedProjectId ||
+        generation !== chatSummaryRefreshGeneration.current
+      )
+        return;
       const nextSummaries = mergeChatSummaryPage(chatSummariesRef.current, page.items, "append");
       chatSummariesRef.current = nextSummaries;
       setChatSummaries(nextSummaries);
       setChatSummaryTotal(page.total);
       setChatSummaryNextOffset(nextChatSummaryOffset(page));
     } catch (error) {
-      if (activeProjectId.current === requestedProjectId && generation === chatSummaryRefreshGeneration.current) {
-        setNotice({ kind: "error", text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}` });
+      if (
+        activeProjectId.current === requestedProjectId &&
+        generation === chatSummaryRefreshGeneration.current
+      ) {
+        setNotice({
+          kind: "error",
+          text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+        });
       }
     } finally {
-      if (activeProjectId.current === requestedProjectId && generation === chatSummaryRefreshGeneration.current) {
+      if (
+        activeProjectId.current === requestedProjectId &&
+        generation === chatSummaryRefreshGeneration.current
+      ) {
         setChatSummariesLoading(false);
       }
     }
   }, [apiBase, chatSummariesLoading, chatSummaryNextOffset, chatSummaryTotal, projectId]);
 
-  const reload = useCallback(async (includeTasks = true) => {
-    if (!projectId) return;
-    const requestedProjectId = projectId;
-    const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-    const projectRequest = api<ProjectSnapshot>(base).then((nextProject) => {
-      if (activeProjectId.current !== requestedProjectId) return;
-      applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
-      authoritativeProjectId.current = requestedProjectId;
-      setProjectReconciliation("authoritative");
-      void loadProjectReadiness(base)
-        .then((readiness) => {
-          if (activeProjectId.current !== requestedProjectId) return;
-          setProject((current) => current?.id === nextProject.id
-            ? { ...current, ...readiness }
-            : current);
-        })
-        .catch((error) => {
-          if (activeProjectId.current !== requestedProjectId) return;
-          setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-        });
-    });
-    const tasksRequest = includeTasks
-      ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
-        if (activeProjectId.current === requestedProjectId) setTasks(nextTasks);
-      })
-      : Promise.resolve();
-    const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
-      if (activeProjectId.current === requestedProjectId) {
-        setNotice({ kind: "error", text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}` });
-      }
-    });
-    await Promise.all([projectRequest, tasksRequest, chatsRequest]);
-  }, [applyProjectSnapshot, projectId, refreshChatSummaries]);
+  const reload = useCallback(
+    async (includeTasks = true) => {
+      if (!projectId) return;
+      const requestedProjectId = projectId;
+      const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+      const projectRequest = api<ProjectSnapshot>(base).then((nextProject) => {
+        if (activeProjectId.current !== requestedProjectId) return;
+        applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
+        authoritativeProjectId.current = requestedProjectId;
+        setProjectReconciliation("authoritative");
+        void loadProjectReadiness(base)
+          .then((readiness) => {
+            if (activeProjectId.current !== requestedProjectId) return;
+            setProject((current) =>
+              current?.id === nextProject.id ? { ...current, ...readiness } : current,
+            );
+          })
+          .catch((error) => {
+            if (activeProjectId.current !== requestedProjectId) return;
+            setNotice({
+              kind: "error",
+              text: error instanceof Error ? error.message : String(error),
+            });
+          });
+      });
+      const tasksRequest = includeTasks
+        ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
+            if (activeProjectId.current === requestedProjectId) setTasks(nextTasks);
+          })
+        : Promise.resolve();
+      const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
+        if (activeProjectId.current === requestedProjectId) {
+          setNotice({
+            kind: "error",
+            text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      });
+      await Promise.all([projectRequest, tasksRequest, chatsRequest]);
+    },
+    [applyProjectSnapshot, projectId, refreshChatSummaries],
+  );
   reloadRef.current = reload;
 
   const refreshDesktopUpdate = useCallback(async () => {
@@ -388,13 +468,18 @@ export default function App() {
         if (identity.ok) {
           if (activeProjectId.current) {
             const visibleProjectId = activeProjectId.current;
-            const nextTasks = await api<AgentTask[]>(`/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`);
+            const nextTasks = await api<AgentTask[]>(
+              `/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`,
+            );
             if (activeProjectId.current === visibleProjectId) setTasks(nextTasks);
             setProjectReconciliation("reconciling");
             void reloadRef.current(false).catch((error) => {
               if (activeProjectId.current !== visibleProjectId || stopped) return;
               setProjectReconciliation("failed");
-              setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+              setNotice({
+                kind: "error",
+                text: error instanceof Error ? error.message : String(error),
+              });
             });
           } else {
             const nextProjects = await api<ProjectCard[]>("/api/projects");
@@ -403,12 +488,20 @@ export default function App() {
           await refreshDesktopUpdate();
         }
       } catch (error) {
-        if (!stopped) setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+        if (!stopped)
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
       } finally {
         try {
           await desktopShowReady();
         } catch (error) {
-          if (!stopped) setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+          if (!stopped)
+            setNotice({
+              kind: "error",
+              text: error instanceof Error ? error.message : String(error),
+            });
         }
       }
     };
@@ -425,7 +518,8 @@ export default function App() {
           available: true,
           version: payload.version ?? current?.version,
           current_version: current?.current_version,
-          active_agent_tasks: current?.active_agent_tasks ?? verifiedHealthRef.current?.active_agent_tasks ?? 0,
+          active_agent_tasks:
+            current?.active_agent_tasks ?? verifiedHealthRef.current?.active_agent_tasks ?? 0,
         }));
       }),
     ]).then((nextCleanups) => {
@@ -449,7 +543,7 @@ export default function App() {
     if (!apiBase) return;
     try {
       const readiness = await loadProjectReadiness(apiBase, true);
-      setProject((current) => current ? { ...current, ...readiness } : current);
+      setProject((current) => (current ? { ...current, ...readiness } : current));
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -457,7 +551,7 @@ export default function App() {
 
   const updatePaper = useCallback((nextPaper: PaperSnapshot) => {
     setPaper(nextPaper);
-    setProject((current) => current ? { ...current, paper: nextPaper } : current);
+    setProject((current) => (current ? { ...current, paper: nextPaper } : current));
   }, []);
 
   useEffect(() => {
@@ -509,7 +603,12 @@ export default function App() {
     if (!projectId) {
       api<ProjectCard[]>("/api/projects")
         .then(setProjects)
-        .catch((error) => setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) }))
+        .catch((error) =>
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          }),
+        )
         .finally(() => setLoading(false));
       return;
     }
@@ -529,7 +628,10 @@ export default function App() {
         setLoading(false);
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 404) && !cancelled) {
-          setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
         }
       }
       try {
@@ -543,8 +645,18 @@ export default function App() {
       }
     };
     void openProject();
-    return () => { cancelled = true; };
-  }, [applyProjectSnapshot, identityIssue, identityReady, projectId, reload, selectChat, setupOpen]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applyProjectSnapshot,
+    identityIssue,
+    identityReady,
+    projectId,
+    reload,
+    selectChat,
+    setupOpen,
+  ]);
 
   useEffect(() => localStorage.setItem("rcp:trust-view", trustView), [trustView]);
 
@@ -555,7 +667,10 @@ export default function App() {
   useEffect(() => {
     if (!desktop) return;
     void setDesktopWebviewZoom(textScale / 100).catch((error) => {
-      setNotice({ kind: "error", text: `Text size could not be applied: ${error instanceof Error ? error.message : String(error)}` });
+      setNotice({
+        kind: "error",
+        text: `Text size could not be applied: ${error instanceof Error ? error.message : String(error)}`,
+      });
     });
   }, [desktop, textScale]);
 
@@ -571,44 +686,61 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [desktop]);
 
-  const activeTask = useMemo(
-    () => tasks.find(isActiveTask) ?? null,
-    [tasks],
-  );
+  const activeTask = useMemo(() => tasks.find(isActiveTask) ?? null, [tasks]);
   const retryConfig = useMemo(
-    () => retryTask && project ? taskRetryConfig(retryTask, project) : null,
+    () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
   );
   const mutationsDisabled = graphMutationsDisabled(graph);
   const presentedGraph = useMemo(
-    () => mutationsDisabled ? graph : applyHumanDraft(graph, humanDraft),
+    () => (mutationsDisabled ? graph : applyHumanDraft(graph, humanDraft)),
     [graph, humanDraft, mutationsDisabled],
   );
-  const nodeTitles = useMemo(() => Object.fromEntries(
-    Object.values(presentedGraph.nodes).map((node) => [node.id, node.title]),
-  ), [presentedGraph.nodes]);
+  const nodeTitles = useMemo(
+    () =>
+      Object.fromEntries(Object.values(presentedGraph.nodes).map((node) => [node.id, node.title])),
+    [presentedGraph.nodes],
+  );
   const visibleChatSummaries = useMemo(
-    () => selectedCanonicalChat && !chatSummaries.some((summary) => summary.chat_id === selectedCanonicalChat.chat_id)
-      ? [...chatSummaries, selectedCanonicalChat]
-      : chatSummaries,
+    () =>
+      selectedCanonicalChat &&
+      !chatSummaries.some((summary) => summary.chat_id === selectedCanonicalChat.chat_id)
+        ? [...chatSummaries, selectedCanonicalChat]
+        : chatSummaries,
     [chatSummaries, selectedCanonicalChat],
   );
   const conversations = useMemo(
-    () => groupChatConversations(visibleChatSummaries, tasks, nodeTitles, project?.name ?? "Project", draftConversations),
+    () =>
+      groupChatConversations(
+        visibleChatSummaries,
+        tasks,
+        nodeTitles,
+        project?.name ?? "Project",
+        draftConversations,
+      ),
     [draftConversations, nodeTitles, project?.name, tasks, visibleChatSummaries],
   );
-  const visibleChatIds = useMemo(() => [...new Set([
-    ...(view === "chats" && selectedChatId ? [selectedChatId] : []),
-    ...(floatingChat ? [floatingChat.chatId] : []),
-  ])], [floatingChat, selectedChatId, view]);
-  const visibleChatVersions = visibleChatIds.map((chatId) => (
-    `${chatId}:${visibleChatSummaries.find((summary) => summary.chat_id === chatId)?.updated_at ?? ""}`
-  )).join("|");
+  const visibleChatIds = useMemo(
+    () => [
+      ...new Set([
+        ...(view === "chats" && selectedChatId ? [selectedChatId] : []),
+        ...(floatingChat ? [floatingChat.chatId] : []),
+      ]),
+    ],
+    [floatingChat, selectedChatId, view],
+  );
+  const visibleChatVersions = visibleChatIds
+    .map(
+      (chatId) =>
+        `${chatId}:${visibleChatSummaries.find((summary) => summary.chat_id === chatId)?.updated_at ?? ""}`,
+    )
+    .join("|");
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const draftIsStale = Boolean(humanDraft && humanDraft.base_revision !== graph.revision);
   const latestTask = tasks[0] ?? null;
   const activityTask = projectActivityTask(tasks, activityTaskId);
-  const visibleTask = activityTask && !dismissedTaskIds.has(activityTask.operation_id) ? activityTask : null;
+  const visibleTask =
+    activityTask && !dismissedTaskIds.has(activityTask.operation_id) ? activityTask : null;
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -630,12 +762,9 @@ export default function App() {
   };
 
   const openChats = (preferredChatId?: string | null) => {
-    const nextChatId = preferredChatId ?? chatEntryConversationId(
-      conversations,
-      activityTask,
-      unreadChatTaskIds,
-      selectedChatId,
-    );
+    const nextChatId =
+      preferredChatId ??
+      chatEntryConversationId(conversations, activityTask, unreadChatTaskIds, selectedChatId);
     selectChat(nextChatId);
     setFloatingChat(null);
     setView("chats");
@@ -667,7 +796,10 @@ export default function App() {
     if (completedChatTasks.length) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
-          setNotice({ kind: "error", text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}` });
+          setNotice({
+            kind: "error",
+            text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+          });
         });
       }
     }
@@ -685,11 +817,16 @@ export default function App() {
         })
         .catch((error) => {
           if (!cancelled) {
-            setNotice({ kind: "error", text: `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}` });
+            setNotice({
+              kind: "error",
+              text: `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+            });
           }
         });
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [apiBase, visibleChatVersions]);
 
   useEffect(() => {
@@ -718,10 +855,13 @@ export default function App() {
         next = await api<AgentTask[]>(`/api/projects/${encodeURIComponent(projectId)}/tasks`);
       } catch (error) {
         if (!stopped) {
-          setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
           void reverifyBackendIdentity("active-task-poll-failure");
           consecutiveFailures += 1;
-          schedule(Math.min(8000, 1000 * (2 ** (consecutiveFailures - 1))));
+          schedule(Math.min(8000, 1000 * 2 ** (consecutiveFailures - 1)));
         }
         return;
       }
@@ -736,7 +876,10 @@ export default function App() {
             await reload();
           } catch (error) {
             if (!stopped) {
-              setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+              setNotice({
+                kind: "error",
+                text: error instanceof Error ? error.message : String(error),
+              });
             }
           }
         }
@@ -757,9 +900,11 @@ export default function App() {
   const inspectorVersion = inspectorSummary?.updated_at;
   useEffect(() => {
     if (!inspectorSummary) return;
-    setInspectedTask((current) => current?.operation_id === inspectorSummary.operation_id
-      ? { ...current, ...inspectorSummary, events: current.events }
-      : current);
+    setInspectedTask((current) =>
+      current?.operation_id === inspectorSummary.operation_id
+        ? { ...current, ...inspectorSummary, events: current.events }
+        : current,
+    );
   }, [inspectorSummary]);
   useEffect(() => {
     if (!projectId || !taskInspectorId) {
@@ -773,12 +918,18 @@ export default function App() {
         if (!cancelled) setInspectedTask(task);
       })
       .catch((error) => {
-        if (!cancelled) setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+        if (!cancelled)
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
       })
       .finally(() => {
         if (!cancelled) setTaskInspectorLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [inspectorVersion, projectId, taskInspectorId]);
 
   const pendingProposals = useMemo(
@@ -790,9 +941,13 @@ export default function App() {
     [graph],
   );
   const scientificBlockers = useMemo(
-    () => Object.values(presentedGraph.nodes).filter(
-      (node) => node.type === "blocker" && node.status === "open" && ["scientific", "design"].includes(String(node.blocker_type)),
-    ),
+    () =>
+      Object.values(presentedGraph.nodes).filter(
+        (node) =>
+          node.type === "blocker" &&
+          node.status === "open" &&
+          ["scientific", "design"].includes(String(node.blocker_type)),
+      ),
     [presentedGraph],
   );
   const rejectedPatches = useMemo(
@@ -845,8 +1000,8 @@ export default function App() {
       });
       resetHumanDraft();
       setGraph(nextGraph);
-      setProject((current) => current ? projectWithGraph(current, nextGraph) : current);
-      setSelectedNode((current) => current ? nextGraph.nodes[current.id] ?? current : null);
+      setProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
+      setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
       await reload();
       setNotice({ kind: "info", text: `Synced revision ${nextGraph.revision}.` });
     } catch (error) {
@@ -863,8 +1018,12 @@ export default function App() {
     }
   };
 
-  const startAgentTask = async (kind: AgentTaskKind, request: AgentTaskRequest): Promise<AgentTask> => {
-    if (taskStartLock.current || taskStarting || activeTask) throw new Error("Another agent task is already active for this project.");
+  const startAgentTask = async (
+    kind: AgentTaskKind,
+    request: AgentTaskRequest,
+  ): Promise<AgentTask> => {
+    if (taskStartLock.current || taskStarting || activeTask)
+      throw new Error("Another agent task is already active for this project.");
     taskStartLock.current = true;
     setTaskStarting(true);
     try {
@@ -872,7 +1031,10 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(request),
       });
-      setTasks((current) => [task, ...current.filter((item) => item.operation_id !== task.operation_id)]);
+      setTasks((current) => [
+        task,
+        ...current.filter((item) => item.operation_id !== task.operation_id),
+      ]);
       setActivityTaskId(task.operation_id);
       setDismissedTaskIds((current) => {
         const next = new Set(current);
@@ -912,7 +1074,10 @@ export default function App() {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
         method: "POST",
       });
-      setTasks((current) => [next, ...current.filter((item) => item.operation_id !== next.operation_id)]);
+      setTasks((current) => [
+        next,
+        ...current.filter((item) => item.operation_id !== next.operation_id),
+      ]);
       setActivityTaskId(next.operation_id);
       setTaskInspectorId(next.operation_id);
       setInspectedTask(next);
@@ -944,7 +1109,10 @@ export default function App() {
         `${apiBase}/tasks/${encodeURIComponent(operationId)}/repair-graph-update`,
         { method: "POST" },
       );
-      setTasks((current) => [next, ...current.filter((item) => item.operation_id !== next.operation_id)]);
+      setTasks((current) => [
+        next,
+        ...current.filter((item) => item.operation_id !== next.operation_id),
+      ]);
       setActivityTaskId(next.operation_id);
       setDismissedTaskIds((current) => {
         const updated = new Set(current);
@@ -967,7 +1135,10 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(config),
       });
-      setTasks((current) => [next, ...current.filter((item) => item.operation_id !== next.operation_id)]);
+      setTasks((current) => [
+        next,
+        ...current.filter((item) => item.operation_id !== next.operation_id),
+      ]);
       setActivityTaskId(next.operation_id);
       setTaskInspectorId(next.operation_id);
       setInspectedTask(next);
@@ -1064,7 +1235,9 @@ export default function App() {
     }
   };
 
-  const updateHasActiveWork = Boolean(activeTask) || (desktopUpdate?.active_agent_tasks ?? verifiedHealth?.active_agent_tasks ?? 0) > 0;
+  const updateHasActiveWork =
+    Boolean(activeTask) ||
+    (desktopUpdate?.active_agent_tasks ?? verifiedHealth?.active_agent_tasks ?? 0) > 0;
   const applyUpdate = async () => {
     if (!desktopUpdate || updateApplying) return;
     setUpdateApplying(true);
@@ -1089,22 +1262,23 @@ export default function App() {
     }
   };
 
-  const updateSurface = desktop && (desktopUpdate || updateError) ? (
-    <DesktopUpdateNotice
-      update={desktopUpdate}
-      activeWork={updateHasActiveWork}
-      expanded={updateExpanded}
-      applying={updateApplying}
-      error={updateError}
-      onExpand={() => setUpdateExpanded(true)}
-      onApply={() => void applyUpdate()}
-      onDismiss={() => {
-        setDesktopUpdate(null);
-        setUpdateError(null);
-        setUpdateExpanded(false);
-      }}
-    />
-  ) : null;
+  const updateSurface =
+    desktop && (desktopUpdate || updateError) ? (
+      <DesktopUpdateNotice
+        update={desktopUpdate}
+        activeWork={updateHasActiveWork}
+        expanded={updateExpanded}
+        applying={updateApplying}
+        error={updateError}
+        onExpand={() => setUpdateExpanded(true)}
+        onApply={() => void applyUpdate()}
+        onDismiss={() => {
+          setDesktopUpdate(null);
+          setUpdateError(null);
+          setUpdateExpanded(false);
+        }}
+      />
+    ) : null;
   const desktopAccessSurface = pendingDesktopProjectId ? (
     <div className="modal-backdrop desktop-access-backdrop">
       <section
@@ -1122,7 +1296,11 @@ export default function App() {
           RCP accesses only project folders you choose. macOS may ask for access when a chosen
           project is in Documents, Desktop, or iCloud Drive.
         </p>
-        {desktopAccessError && <div className="desktop-access-error" role="alert">{desktopAccessError}</div>}
+        {desktopAccessError && (
+          <div className="desktop-access-error" role="alert">
+            {desktopAccessError}
+          </div>
+        )}
         <footer>
           <button
             className="button secondary"
@@ -1134,7 +1312,12 @@ export default function App() {
           >
             Not now
           </button>
-          <button className="button primary" type="button" autoFocus onClick={continueDesktopProjectOpen}>
+          <button
+            className="button primary"
+            type="button"
+            autoFocus
+            onClick={continueDesktopProjectOpen}
+          >
             Continue
           </button>
         </footer>
@@ -1142,12 +1325,73 @@ export default function App() {
     </div>
   ) : null;
 
-  if (!identityReady) return <div className="app-loading"><LoaderCircle className="spin" /><span>Verifying the RCP backend</span></div>;
-  if (identityIssue) return <div className="fatal-state reconnect-state"><AlertTriangle /><h1>Reconnect to RCP</h1><p>{identityIssue}</p><button className="button secondary" disabled={reconnecting} onClick={() => void reconnectBackend()}>{reconnecting ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} {backendReconnectLabel(desktop)}</button>{updateSurface}</div>;
-  if (loading) return <div className="app-loading"><LoaderCircle className="spin" /><span>{projectId ? "Opening project" : "Reading the project index"}</span>{updateSurface}{desktopAccessSurface}</div>;
-  if (setupOpen) return <><ProjectSetup onCancel={returnToProjects} onCreated={openProject} />{updateSurface}{desktopAccessSurface}</>;
-  if (!projectId) return <><ProjectLanding projects={projects} onOpen={openProject} onCreate={openSetup} onDelete={deleteProject} />{updateSurface}{desktopAccessSurface}</>;
-  if (!project || !paper) return <div className="fatal-state"><AlertTriangle /><h1>Project could not be opened</h1><p>{notice?.text || "The API returned no project state."}</p><button className="button secondary" onClick={returnToProjects}><ArrowLeft size={15} /> All projects</button>{updateSurface}{desktopAccessSurface}</div>;
+  if (!identityReady)
+    return (
+      <div className="app-loading">
+        <LoaderCircle className="spin" />
+        <span>Verifying the RCP backend</span>
+      </div>
+    );
+  if (identityIssue)
+    return (
+      <div className="fatal-state reconnect-state">
+        <AlertTriangle />
+        <h1>Reconnect to RCP</h1>
+        <p>{identityIssue}</p>
+        <button
+          className="button secondary"
+          disabled={reconnecting}
+          onClick={() => void reconnectBackend()}
+        >
+          {reconnecting ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}{" "}
+          {backendReconnectLabel(desktop)}
+        </button>
+        {updateSurface}
+      </div>
+    );
+  if (loading)
+    return (
+      <div className="app-loading">
+        <LoaderCircle className="spin" />
+        <span>{projectId ? "Opening project" : "Reading the project index"}</span>
+        {updateSurface}
+        {desktopAccessSurface}
+      </div>
+    );
+  if (setupOpen)
+    return (
+      <>
+        <ProjectSetup onCancel={returnToProjects} onCreated={openProject} />
+        {updateSurface}
+        {desktopAccessSurface}
+      </>
+    );
+  if (!projectId)
+    return (
+      <>
+        <ProjectLanding
+          projects={projects}
+          onOpen={openProject}
+          onCreate={openSetup}
+          onDelete={deleteProject}
+        />
+        {updateSurface}
+        {desktopAccessSurface}
+      </>
+    );
+  if (!project || !paper)
+    return (
+      <div className="fatal-state">
+        <AlertTriangle />
+        <h1>Project could not be opened</h1>
+        <p>{notice?.text || "The API returned no project state."}</p>
+        <button className="button secondary" onClick={returnToProjects}>
+          <ArrowLeft size={15} /> All projects
+        </button>
+        {updateSurface}
+        {desktopAccessSurface}
+      </div>
+    );
 
   const attentionCount = pendingProposals.length + ambiguities.length + scientificBlockers.length;
   const showTrustFilter = view === "scientific" || view === "dag" || view === "execution";
@@ -1158,16 +1402,26 @@ export default function App() {
     <div className="app-shell overview-shell">
       <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
         <div className="brand-lockup">
-          <button className="project-back" onClick={returnToProjects} aria-label="All projects"><ArrowLeft size={16} /></button>
+          <button className="project-back" onClick={returnToProjects} aria-label="All projects">
+            <ArrowLeft size={16} />
+          </button>
           <strong>{project.name}</strong>
           {projectReconciliation === "reconciling" && (
-            <span className="project-reconciliation" role="status" aria-label="Refreshing project state">
+            <span
+              className="project-reconciliation"
+              role="status"
+              aria-label="Refreshing project state"
+            >
               <LoaderCircle className="spin" size={13} aria-hidden="true" />
             </span>
           )}
         </div>
         <div className="project-header-actions">
-          <div className="project-header-group project-action-group" role="group" aria-label="Project actions">
+          <div
+            className="project-header-group project-action-group"
+            role="group"
+            aria-label="Project actions"
+          >
             <div className="header-sync-side">
               {draftChangeCount > 0 && (
                 <button
@@ -1176,20 +1430,37 @@ export default function App() {
                   title="Reset staged changes"
                   disabled={projectReconciliation !== "authoritative" || syncingDraft}
                   onClick={resetHumanDraft}
-                ><RotateCcw size={14} /></button>
+                >
+                  <RotateCcw size={14} />
+                </button>
               )}
               <button
                 className={`button draft-sync${draftChangeCount > 0 ? " active" : ""}${draftIsStale ? " stale" : ""}`}
-                disabled={mutationsDisabled || projectReconciliation !== "authoritative" || draftChangeCount === 0 || syncingDraft || draftIsStale || !project.canonical_state.reachable}
+                disabled={
+                  mutationsDisabled ||
+                  projectReconciliation !== "authoritative" ||
+                  draftChangeCount === 0 ||
+                  syncingDraft ||
+                  draftIsStale ||
+                  !project.canonical_state.reachable
+                }
                 title={draftIsStale ? "Draft base is stale" : undefined}
-                aria-label={syncingDraft
-                  ? "Syncing staged changes"
-                  : draftIsStale ? `Sync conflict, ${draftChangeCount} staged changes` : undefined}
+                aria-label={
+                  syncingDraft
+                    ? "Syncing staged changes"
+                    : draftIsStale
+                      ? `Sync conflict, ${draftChangeCount} staged changes`
+                      : undefined
+                }
                 onClick={() => void syncHumanDraft()}
               >
-                {syncingDraft
-                  ? <LoaderCircle className="spin" size={14} />
-                  : draftIsStale ? <AlertTriangle size={14} /> : <CloudUpload size={14} />}
+                {syncingDraft ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : draftIsStale ? (
+                  <AlertTriangle size={14} />
+                ) : (
+                  <CloudUpload size={14} />
+                )}
                 <span>Sync</span>
                 {draftChangeCount > 0 && <small>{draftChangeCount}</small>}
               </button>
@@ -1205,22 +1476,42 @@ export default function App() {
               <MessageCircle size={14} /> Ask
             </button>
           </div>
-          <div className="project-header-group project-utility-group" role="group" aria-label="Project utilities">
+          <div
+            className="project-header-group project-utility-group"
+            role="group"
+            aria-label="Project utilities"
+          >
             <button
               className="icon-button task-history-control"
               disabled={!latestTask}
               aria-label={activeTask ? "Agent tasks, task in progress" : "Agent tasks"}
               onClick={() => latestTask && setTaskInspectorId(latestTask.operation_id)}
             >
-              <History size={15} />{activeTask ? <span className="activity-pulse" /> : null}
+              <History size={15} />
+              {activeTask ? <span className="activity-pulse" /> : null}
             </button>
             <button
               className="icon-button primary refresh-control"
-              disabled={mutationsDisabled || projectReconciliation !== "authoritative" || !project.canonical_state.reachable || Boolean(activeTask) || taskStarting}
-              aria-label={activeTask ? `${taskKindLabel(activeTask.kind)} in progress` : runKind === "seed" ? "Seed project" : "Refresh project"}
+              disabled={
+                mutationsDisabled ||
+                projectReconciliation !== "authoritative" ||
+                !project.canonical_state.reachable ||
+                Boolean(activeTask) ||
+                taskStarting
+              }
+              aria-label={
+                activeTask
+                  ? `${taskKindLabel(activeTask.kind)} in progress`
+                  : runKind === "seed"
+                    ? "Seed project"
+                    : "Refresh project"
+              }
               onClick={() => setRunDialogOpen(true)}
             >
-              <RefreshCw className={activeTask && activeTask.status !== "pausing" ? "spin" : ""} size={15} />
+              <RefreshCw
+                className={activeTask && activeTask.status !== "pausing" ? "spin" : ""}
+                size={15}
+              />
             </button>
           </div>
         </div>
@@ -1230,14 +1521,20 @@ export default function App() {
         {navItems.map((item) => (
           <button
             key={item.view}
-            className={view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""}
-            onClick={() => item.view === "chats" ? openChats() : setView(item.view)}
+            className={
+              view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
+            }
+            onClick={() => (item.view === "chats" ? openChats() : setView(item.view))}
           >
-            {item.icon}<span>{item.label}</span>
+            {item.icon}
+            <span>{item.label}</span>
             {item.view === "attention" && <small className="inbox-count">{attentionCount}</small>}
             {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
             {item.view === "chats" && chatsIndicator && (
-              <small className={`chats-indicator ${chatsIndicator}`} aria-label={chatsIndicator === "active" ? "Chat task active" : "Unread chat result"}>
+              <small
+                className={`chats-indicator ${chatsIndicator}`}
+                aria-label={chatsIndicator === "active" ? "Chat task active" : "Unread chat result"}
+              >
                 {chatsIndicator === "active" ? "•" : unreadChatTaskIds.size}
               </small>
             )}
@@ -1246,7 +1543,10 @@ export default function App() {
         {showTrustFilter && (
           <label className="trust-filter">
             <span>Show</span>
-            <select value={trustView} onChange={(event) => setTrustView(event.target.value as TrustView)}>
+            <select
+              value={trustView}
+              onChange={(event) => setTrustView(event.target.value as TrustView)}
+            >
               <option value="working">Working graph</option>
               <option value="accepted">Accepted only</option>
               <option value="review">Everything</option>
@@ -1260,26 +1560,56 @@ export default function App() {
         {visibleTask && (!chatIdForTask(visibleTask) || view === "chats") && (
           <AgentTaskActivity
             task={visibleTask}
-            actionBusy={Boolean(taskActionId || (activeTask && activeTask.operation_id !== visibleTask.operation_id))}
+            actionBusy={Boolean(
+              taskActionId || (activeTask && activeTask.operation_id !== visibleTask.operation_id),
+            )}
             mutatingActionsDisabled={mutationsDisabled && taskMayMutateGraph(visibleTask)}
             onPause={() => void operateTask(visibleTask, "pause")}
             onResume={() => void operateTask(visibleTask, "resume")}
             onRetry={() => requestRetry(visibleTask)}
             onInspect={() => setTaskInspectorId(visibleTask.operation_id)}
-            onDismiss={() => setDismissedTaskIds((current) => new Set(current).add(visibleTask.operation_id))}
+            onDismiss={() =>
+              setDismissedTaskIds((current) => new Set(current).add(visibleTask.operation_id))
+            }
           />
         )}
         {!project.canonical_state.reachable && (
-          <div className="coverage-banner state-offline"><AlertTriangle size={15} /><span><strong>Canonical state is offline.</strong> Sync is unavailable.</span></div>
+          <div className="coverage-banner state-offline">
+            <AlertTriangle size={15} />
+            <span>
+              <strong>Canonical state is offline.</strong> Sync is unavailable.
+            </span>
+          </div>
         )}
         {replayWarning && (
-          <div className="coverage-banner replay-degraded" role="alert"><AlertTriangle size={15} /><span><strong>Replay degraded.</strong> {replayWarning}</span></div>
+          <div className="coverage-banner replay-degraded" role="alert">
+            <AlertTriangle size={15} />
+            <span>
+              <strong>Replay degraded.</strong> {replayWarning}
+            </span>
+          </div>
         )}
-        {(project.coverage.sessions_skipped.length > 0 || project.coverage.repositories_never_seen.length > 0) && view === "overview" && (
-          <div className="coverage-banner"><AlertTriangle size={15} /><span><strong>Coverage boundary:</strong> {project.coverage.note}</span></div>
-        )}
+        {(project.coverage.sessions_skipped.length > 0 ||
+          project.coverage.repositories_never_seen.length > 0) &&
+          view === "overview" && (
+            <div className="coverage-banner">
+              <AlertTriangle size={15} />
+              <span>
+                <strong>Coverage boundary:</strong> {project.coverage.note}
+              </span>
+            </div>
+          )}
         {rejectedPatches.length > 0 && view === "attention" && (
-          <div className="coverage-banner validation-rejected"><AlertTriangle size={15} /><span><strong>{rejectedPatches.length} rejected history operation{rejectedPatches.length === 1 ? "" : "s"}.</strong> Latest: {rejectedPatches.at(-1)?.message}</span></div>
+          <div className="coverage-banner validation-rejected">
+            <AlertTriangle size={15} />
+            <span>
+              <strong>
+                {rejectedPatches.length} rejected history operation
+                {rejectedPatches.length === 1 ? "" : "s"}.
+              </strong>{" "}
+              Latest: {rejectedPatches.at(-1)?.message}
+            </span>
+          </div>
         )}
       </div>
 
@@ -1288,130 +1618,156 @@ export default function App() {
         inert={projectReconciliation !== "authoritative"}
         aria-busy={projectReconciliation !== "authoritative"}
       >
-        <Suspense fallback={<div className="project-view-loading" aria-label="Loading view"><LoaderCircle className="spin" /></div>}>
-        {(view === "scientific" || view === "dag") && (
-          <div className="research-subpanel" role="tablist" aria-label="Research panels">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === "scientific"}
-              className={view === "scientific" ? "active" : ""}
-              onClick={() => setView("scientific")}
-            ><GitBranch size={13} /> Research</button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === "dag"}
-              className={view === "dag" ? "active" : ""}
-              onClick={() => setView("dag")}
-            ><Network size={13} /> DAG</button>
-          </div>
-        )}
-        {view === "overview" && <ProjectOverview project={projectWithGraph(project, presentedGraph)} graph={presentedGraph} onNavigate={setView} />}
-        {view === "attention" && (
-          <div className="attention-page">
-            <AttentionOverview graph={presentedGraph} onSelectNode={setSelectedNode} />
-            <AttentionRail
-              proposals={pendingProposals}
-              ambiguities={ambiguities}
-              blockers={scientificBlockers}
-              draft={mutationsDisabled ? null : humanDraft}
-              mutationsDisabled={mutationsDisabled}
-              onDecision={(proposal, decision) => updateHumanDraft((draft) => (
-                stageProposalDecision(draft, proposal.id, decision)
-              ))}
-              onAmbiguity={(ambiguity, status) => updateHumanDraft((draft) => (
-                stageAmbiguityDecision(draft, ambiguity.id, status)
-              ))}
-              onSelectNode={(id) => setSelectedNode(presentedGraph.nodes[id] ?? null)}
+        <Suspense
+          fallback={
+            <div className="project-view-loading" aria-label="Loading view">
+              <LoaderCircle className="spin" />
+            </div>
+          }
+        >
+          {(view === "scientific" || view === "dag") && (
+            <div className="research-subpanel" role="tablist" aria-label="Research panels">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === "scientific"}
+                className={view === "scientific" ? "active" : ""}
+                onClick={() => setView("scientific")}
+              >
+                <GitBranch size={13} /> Research
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === "dag"}
+                className={view === "dag" ? "active" : ""}
+                onClick={() => setView("dag")}
+              >
+                <Network size={13} /> DAG
+              </button>
+            </div>
+          )}
+          {view === "overview" && (
+            <ProjectOverview
+              project={projectWithGraph(project, presentedGraph)}
+              graph={presentedGraph}
+              onNavigate={setView}
             />
-          </div>
-        )}
-        {view === "scientific" && <ScientificView
-          graph={presentedGraph}
-          trustView={trustView}
-          mutationsDisabled={mutationsDisabled}
-          onSelectNode={setSelectedNode}
-          onStageCustomNode={(node) => updateHumanDraft((draft) => stageCustomNode(draft, node))}
-        />}
-        {view === "dag" && (
-          <DagView
-            graph={presentedGraph}
-            trustView={trustView}
-            projectId={project.id}
-            relationFocusNodeId={dagRelationFocusId}
-            onClearRelationFocus={() => setDagRelationFocusId(null)}
-            onSelectNode={setSelectedNode}
-          />
-        )}
-        {view === "execution" && (
-          <ExecutionView
-            graph={presentedGraph}
-            trustView={trustView}
-            tasks={tasks}
-            lastRefreshAt={project.last_refresh_at}
-            onInspectTask={setTaskInspectorId}
-            onSelectNode={setSelectedNode}
-          />
-        )}
-        {view === "glossary" && <GlossaryView graph={presentedGraph} />}
-        {view === "paper" && (
-          <PaperWorkspace
-            apiBase={apiBase}
-            project={project}
-            initialPaper={paper}
-            tasks={tasks}
-            activeTask={activeTask}
-            onStartTask={startAgentTask}
-            onPaperChange={updatePaper}
-          />
-        )}
-        {view === "settings" && (
-          <ProjectSettings
-            apiBase={apiBase}
-            project={project}
-            cacheClearDisabled={Boolean(activeTask)}
-            writesDisabled={mutationsDisabled}
-            ontology={presentedGraph.ontology}
-            canonicalOntology={graph.ontology}
-            ontologyStaged={Boolean(humanDraft?.ontology)}
-            showDisplaySettings={desktop}
-            textScale={textScale}
-            onTextScaleChange={changeAppTextScale}
-            onOntologyChange={(ontology) => updateHumanDraft((draft) => stageOntology(draft, graph, ontology))}
-            onRefreshReadiness={refreshReadiness}
-            onCacheMetricsChange={(cacheMetrics) => {
-              setProject((current) => current ? { ...current, cache_metrics: cacheMetrics } : current);
-            }}
-            onSaved={(saved, preserveReadiness = true) => {
-              setProject((current) => preserveReadiness ? preserveProjectReadiness(saved, current) : saved);
-              setRunScope(saved.default_run_truth_scope);
-              setNotice({ kind: "info", text: "Project defaults synced." });
-            }}
-          />
-        )}
-        {view === "chats" && (
-          <ChatsWorkspace
-            project={project}
-            conversations={conversations}
-            selectedChatId={selectedChatId}
-            nodes={presentedGraph.nodes}
-            runScope={runScope}
-            tasks={tasks}
-            activeTask={activeTask}
-            graphChangesDisabled={mutationsDisabled}
-            unreadTaskIds={unreadChatTaskIds}
-            chatTranscripts={chatTranscripts}
-            hasMore={chatSummaryNextOffset < chatSummaryTotal}
-            loadingMore={chatSummariesLoading}
-            onSelect={selectChat}
-            onLoadMore={() => void loadMoreChatSummaries()}
-            onStartTask={startAgentTask}
-            onInspectTask={setTaskInspectorId}
-            onOpenInbox={() => setView("attention")}
-            onRepairGraphUpdate={repairGraphUpdate}
-          />
-        )}
+          )}
+          {view === "attention" && (
+            <div className="attention-page">
+              <AttentionOverview graph={presentedGraph} onSelectNode={setSelectedNode} />
+              <AttentionRail
+                proposals={pendingProposals}
+                ambiguities={ambiguities}
+                blockers={scientificBlockers}
+                draft={mutationsDisabled ? null : humanDraft}
+                mutationsDisabled={mutationsDisabled}
+                onDecision={(proposal, decision) =>
+                  updateHumanDraft((draft) => stageProposalDecision(draft, proposal.id, decision))
+                }
+                onAmbiguity={(ambiguity, status) =>
+                  updateHumanDraft((draft) => stageAmbiguityDecision(draft, ambiguity.id, status))
+                }
+                onSelectNode={(id) => setSelectedNode(presentedGraph.nodes[id] ?? null)}
+              />
+            </div>
+          )}
+          {view === "scientific" && (
+            <ScientificView
+              graph={presentedGraph}
+              trustView={trustView}
+              mutationsDisabled={mutationsDisabled}
+              onSelectNode={setSelectedNode}
+              onStageCustomNode={(node) =>
+                updateHumanDraft((draft) => stageCustomNode(draft, node))
+              }
+            />
+          )}
+          {view === "dag" && (
+            <DagView
+              graph={presentedGraph}
+              trustView={trustView}
+              projectId={project.id}
+              relationFocusNodeId={dagRelationFocusId}
+              onClearRelationFocus={() => setDagRelationFocusId(null)}
+              onSelectNode={setSelectedNode}
+            />
+          )}
+          {view === "execution" && (
+            <ExecutionView
+              graph={presentedGraph}
+              trustView={trustView}
+              tasks={tasks}
+              lastRefreshAt={project.last_refresh_at}
+              onInspectTask={setTaskInspectorId}
+              onSelectNode={setSelectedNode}
+            />
+          )}
+          {view === "glossary" && <GlossaryView graph={presentedGraph} />}
+          {view === "paper" && (
+            <PaperWorkspace
+              apiBase={apiBase}
+              project={project}
+              initialPaper={paper}
+              tasks={tasks}
+              activeTask={activeTask}
+              onStartTask={startAgentTask}
+              onPaperChange={updatePaper}
+            />
+          )}
+          {view === "settings" && (
+            <ProjectSettings
+              apiBase={apiBase}
+              project={project}
+              cacheClearDisabled={Boolean(activeTask)}
+              writesDisabled={mutationsDisabled}
+              ontology={presentedGraph.ontology}
+              canonicalOntology={graph.ontology}
+              ontologyStaged={Boolean(humanDraft?.ontology)}
+              showDisplaySettings={desktop}
+              textScale={textScale}
+              onTextScaleChange={changeAppTextScale}
+              onOntologyChange={(ontology) =>
+                updateHumanDraft((draft) => stageOntology(draft, graph, ontology))
+              }
+              onRefreshReadiness={refreshReadiness}
+              onCacheMetricsChange={(cacheMetrics) => {
+                setProject((current) =>
+                  current ? { ...current, cache_metrics: cacheMetrics } : current,
+                );
+              }}
+              onSaved={(saved, preserveReadiness = true) => {
+                setProject((current) =>
+                  preserveReadiness ? preserveProjectReadiness(saved, current) : saved,
+                );
+                setRunScope(saved.default_run_truth_scope);
+                setNotice({ kind: "info", text: "Project defaults synced." });
+              }}
+            />
+          )}
+          {view === "chats" && (
+            <ChatsWorkspace
+              project={project}
+              conversations={conversations}
+              selectedChatId={selectedChatId}
+              nodes={presentedGraph.nodes}
+              runScope={runScope}
+              tasks={tasks}
+              activeTask={activeTask}
+              graphChangesDisabled={mutationsDisabled}
+              unreadTaskIds={unreadChatTaskIds}
+              chatTranscripts={chatTranscripts}
+              hasMore={chatSummaryNextOffset < chatSummaryTotal}
+              loadingMore={chatSummariesLoading}
+              onSelect={selectChat}
+              onLoadMore={() => void loadMoreChatSummaries()}
+              onStartTask={startAgentTask}
+              onInspectTask={setTaskInspectorId}
+              onOpenInbox={() => setView("attention")}
+              onRepairGraphUpdate={repairGraphUpdate}
+            />
+          )}
         </Suspense>
       </main>
 
@@ -1431,15 +1787,15 @@ export default function App() {
             setSelectedNode(null);
           }}
           onClose={() => setSelectedNode(null)}
-          onBeginEdit={() => updateHumanDraft((draft) => (
-            stageNodeEditStart(draft, graph, selectedNode.id)
-          ))}
-          onStanding={(standing) => updateHumanDraft((draft) => (
-            stageNodeStanding(draft, graph, selectedNode.id, standing)
-          ))}
-          onStage={(changes) => updateHumanDraft((draft) => (
-            stageNodeEdit(draft, graph, selectedNode.id, changes)
-          ))}
+          onBeginEdit={() =>
+            updateHumanDraft((draft) => stageNodeEditStart(draft, graph, selectedNode.id))
+          }
+          onStanding={(standing) =>
+            updateHumanDraft((draft) => stageNodeStanding(draft, graph, selectedNode.id, standing))
+          }
+          onStage={(changes) =>
+            updateHumanDraft((draft) => stageNodeEdit(draft, graph, selectedNode.id, changes))
+          }
           onOpenChat={() => {
             const node = presentedGraph.nodes[selectedNode.id] ?? selectedNode;
             const chatId = ensureConversation("node_chat", node);
@@ -1456,27 +1812,33 @@ export default function App() {
       )}
       {floatingChat && (
         <DraggableWindow className="node-chat-window" kind="chat">
-          <Suspense fallback={<div className="project-view-loading" aria-label="Loading chat"><LoaderCircle className="spin" /></div>}>
-          <NodeChat
-            key={floatingChat.chatId}
-            project={project}
-            node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
-            runScope={runScope}
-            tasks={tasks}
-            activeTask={activeTask}
-            historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
-            chatId={floatingChat.chatId}
-            presentation="floating"
-            graphChangesDisabled={mutationsDisabled}
-            onStartTask={startAgentTask}
-            onInspectTask={setTaskInspectorId}
-            onOpenInbox={() => {
-              setFloatingChat(null);
-              setView("attention");
-            }}
-            onRepairGraphUpdate={repairGraphUpdate}
-            onClose={() => setFloatingChat(null)}
-          />
+          <Suspense
+            fallback={
+              <div className="project-view-loading" aria-label="Loading chat">
+                <LoaderCircle className="spin" />
+              </div>
+            }
+          >
+            <NodeChat
+              key={floatingChat.chatId}
+              project={project}
+              node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
+              runScope={runScope}
+              tasks={tasks}
+              activeTask={activeTask}
+              historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
+              chatId={floatingChat.chatId}
+              presentation="floating"
+              graphChangesDisabled={mutationsDisabled}
+              onStartTask={startAgentTask}
+              onInspectTask={setTaskInspectorId}
+              onOpenInbox={() => {
+                setFloatingChat(null);
+                setView("attention");
+              }}
+              onRepairGraphUpdate={repairGraphUpdate}
+              onClose={() => setFloatingChat(null)}
+            />
           </Suspense>
         </DraggableWindow>
       )}
@@ -1507,8 +1869,12 @@ export default function App() {
           tasks={tasks}
           task={inspectedTask}
           loading={taskInspectorLoading}
-          actionBusy={Boolean(taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId))}
-          mutatingActionsDisabled={Boolean(mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask))}
+          actionBusy={Boolean(
+            taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId),
+          )}
+          mutatingActionsDisabled={Boolean(
+            mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
+          )}
           onSelect={setTaskInspectorId}
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
@@ -1516,7 +1882,11 @@ export default function App() {
           onClose={() => setTaskInspectorId(null)}
         />
       )}
-      {notice && <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>{notice.text}</button>}
+      {notice && (
+        <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
+          {notice.text}
+        </button>
+      )}
       {desktopAccessSurface}
     </div>
   );
@@ -1535,7 +1905,7 @@ function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectS
     graph,
     revision: graph.revision,
     primary_question: project.primary_question
-      ? graph.nodes[project.primary_question.id] ?? project.primary_question
+      ? (graph.nodes[project.primary_question.id] ?? project.primary_question)
       : project.primary_question,
     counts: { ...project.counts, ...standingCounts },
   };
@@ -1606,7 +1976,10 @@ function DesktopUpdateNotice({
     );
   }
   return (
-    <div className={`desktop-update-notice${error ? " error" : ""}`} role={error ? "alert" : "status"}>
+    <div
+      className={`desktop-update-notice${error ? " error" : ""}`}
+      role={error ? "alert" : "status"}
+    >
       <CircleArrowUp size={15} />
       <strong>{error || `RCP ${update?.version || "update"} is ready`}</strong>
       {update && (
@@ -1615,7 +1988,9 @@ function DesktopUpdateNotice({
           {activeWork ? "Update now" : "Update"}
         </button>
       )}
-      <button className="desktop-update-dismiss" type="button" onClick={onDismiss}>Later</button>
+      <button className="desktop-update-dismiss" type="button" onClick={onDismiss}>
+        Later
+      </button>
     </div>
   );
 }

@@ -17,20 +17,43 @@ const nodes = [
 ];
 
 test("working graph keeps accepted, asserted, and contested research visible", () => {
-  assert.deepEqual(projectNodes(nodes, "working").map((node) => node.id), ["accepted", "contested", "asserted", "evidence"]);
-  assert.deepEqual(projectNodes(nodes, "accepted").map((node) => node.id), ["accepted"]);
+  assert.deepEqual(
+    projectNodes(nodes, "working").map((node) => node.id),
+    ["accepted", "contested", "asserted", "evidence"],
+  );
+  assert.deepEqual(
+    projectNodes(nodes, "accepted").map((node) => node.id),
+    ["accepted"],
+  );
 });
 
 test("relation focus temporarily projects every node and marks one-hop neighbors", () => {
   const graph = {
     nodes: Object.fromEntries(nodes.map((node) => [node.id, node])),
     edges: {
-      first: { id: "first", source: "evidence", target: "contested", relation: "supports", layer: "epistemic", explanation: "" },
-      second: { id: "second", source: "accepted", target: "asserted", relation: "has_decision", layer: "action", explanation: "" },
+      first: {
+        id: "first",
+        source: "evidence",
+        target: "contested",
+        relation: "supports",
+        layer: "epistemic",
+        explanation: "",
+      },
+      second: {
+        id: "second",
+        source: "accepted",
+        target: "asserted",
+        relation: "has_decision",
+        layer: "action",
+        explanation: "",
+      },
     },
   };
   const projection = buildDagProjection(graph, "accepted", "contested");
-  assert.deepEqual(projection.nodes.map((node) => node.id), ["accepted", "contested", "asserted", "evidence"]);
+  assert.deepEqual(
+    projection.nodes.map((node) => node.id),
+    ["accepted", "contested", "asserted", "evidence"],
+  );
 
   const focused = relationFocus("contested", projection.edges);
   assert.deepEqual([...focused.nodeIds], ["contested", "evidence"]);
@@ -39,10 +62,38 @@ test("relation focus temporarily projects every node and marks one-hop neighbors
 
 test("ontology projection changes emphasis without changing the projected graph", () => {
   const edges = [
-    { id: "belief", source: "evidence", target: "contested", relation: "supports", layer: "epistemic", explanation: "" },
-    { id: "seam", source: "asserted", target: "contested", relation: "tests", layer: "seam", explanation: "" },
-    { id: "action", source: "accepted", target: "asserted", relation: "has_decision", layer: "action", explanation: "" },
-    { id: "meta", source: "contested", target: "accepted", relation: "duplicate_of", layer: "meta", explanation: "" },
+    {
+      id: "belief",
+      source: "evidence",
+      target: "contested",
+      relation: "supports",
+      layer: "epistemic",
+      explanation: "",
+    },
+    {
+      id: "seam",
+      source: "asserted",
+      target: "contested",
+      relation: "tests",
+      layer: "seam",
+      explanation: "",
+    },
+    {
+      id: "action",
+      source: "accepted",
+      target: "asserted",
+      relation: "has_decision",
+      layer: "action",
+      explanation: "",
+    },
+    {
+      id: "meta",
+      source: "contested",
+      target: "accepted",
+      relation: "duplicate_of",
+      layer: "meta",
+      explanation: "",
+    },
   ];
   assert.equal(edgeProjectionEmphasis(edges[0], "belief"), "emphasized");
   assert.equal(edgeProjectionEmphasis(edges[1], "belief"), "emphasized");

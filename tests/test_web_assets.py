@@ -38,9 +38,7 @@ def test_prebuilt_assets_never_invoke_npm(tmp_path, monkeypatch) -> None:
     dist.mkdir()
     (dist / "index.html").write_text("<main>RCP</main>", encoding="utf-8")
     monkeypatch.setattr("rcp.web_assets.web_dist_path", lambda: dist)
-    monkeypatch.setattr(
-        "rcp.web_assets._run_build", lambda: pytest.fail("npm build was invoked")
-    )
+    monkeypatch.setattr("rcp.web_assets._run_build", lambda: pytest.fail("npm build was invoked"))
     monkeypatch.setattr(
         "rcp.web_assets._start_build_watcher",
         lambda: pytest.fail("npm watcher was invoked"),
@@ -50,9 +48,7 @@ def test_prebuilt_assets_never_invoke_npm(tmp_path, monkeypatch) -> None:
         pass
 
 
-def test_prebuilt_assets_fail_before_launch_when_bundle_is_missing(
-    tmp_path, monkeypatch
-) -> None:
+def test_prebuilt_assets_fail_before_launch_when_bundle_is_missing(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("rcp.web_assets.web_dist_path", lambda: tmp_path / "missing")
 
     with (

@@ -18,9 +18,7 @@ from rcp.service import CoachRequest, GraphUpdateResult, RunRequest
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
 
 AgentTaskRequest = RunRequest | CoachRequest
-AgentTaskContinuation = Literal[
-    "fresh", "resume", "correction", "handoff", "graph_repair"
-]
+AgentTaskContinuation = Literal["fresh", "resume", "correction", "handoff", "graph_repair"]
 
 
 @dataclass
@@ -385,8 +383,7 @@ class BackgroundAgentTasks:
             feedback = "" if continuation == "resume" else " with prior failure diagnostics"
             self.store.record_agent_task_event(
                 operation_id,
-                f"{action} task {parent.operation_id[:8]} as attempt "
-                f"{record.attempt}{feedback}.",
+                f"{action} task {parent.operation_id[:8]} as attempt {record.attempt}{feedback}.",
             )
         else:
             self.store.record_agent_task_event(operation_id, "Agent task queued.")
@@ -434,9 +431,7 @@ class BackgroundAgentTasks:
             ),
         )
         try:
-            outcome = asyncio.run(
-                self._consume(record.project_id, record.kind, request, execution)
-            )
+            outcome = asyncio.run(self._consume(record.project_id, record.kind, request, execution))
         except TaskPaused:
             self.store.pause_agent_task(operation_id)
         except Exception as exc:  # The persisted task is the API error boundary.
@@ -546,11 +541,7 @@ class BackgroundAgentTasks:
                             phase="applying",
                             event=True,
                         )
-                    elif (
-                        parsed_graph_update is None
-                        and event.text.strip()
-                        and len(messages) < 32
-                    ):
+                    elif parsed_graph_update is None and event.text.strip() and len(messages) < 32:
                         messages.append(event.text.strip()[:16_000])
                 if event.event == "answer" and event.text.strip() and len(messages) < 32:
                     messages.append(event.text.strip()[:16_000])
@@ -558,8 +549,7 @@ class BackgroundAgentTasks:
                     event.event == "artifact"
                     and event.artifact is not None
                     and len(artifacts) < CHAT_ARTIFACT_MAX_COUNT
-                    and event.artifact.artifact_id
-                    not in {item.artifact_id for item in artifacts}
+                    and event.artifact.artifact_id not in {item.artifact_id for item in artifacts}
                 ):
                     artifacts.append(event.artifact)
                 if event.event == "raw" and event.text.startswith(
@@ -620,7 +610,11 @@ class BackgroundAgentTasks:
         while parent_id and parent_id not in seen_operations and len(feedback) < 3:
             seen_operations.add(parent_id)
             parent = self.store.agent_task(parent_id)
-            if parent is None or parent.project_id != record.project_id or parent.kind != record.kind:
+            if (
+                parent is None
+                or parent.project_id != record.project_id
+                or parent.kind != record.kind
+            ):
                 break
             if parent.error:
                 detail = " ".join(parent.error.split())[:1600]

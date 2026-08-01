@@ -101,12 +101,14 @@ test("serialization survives localStorage round trips and request conversion str
 
   assert.deepEqual(toHumanSyncRequest(restored), {
     base_revision: 4,
-    nodes: [{
-      node_id: "hyp/example",
-      base_updated_rev: 4,
-      changes: { title: "Revised", statement: "Sharper statement" },
-      standing: "asserted",
-    }],
+    nodes: [
+      {
+        node_id: "hyp/example",
+        base_updated_rev: 4,
+        changes: { title: "Revised", statement: "Sharper statement" },
+        standing: "asserted",
+      },
+    ],
     proposals: [{ proposal_id: "proposal/1", decision: "rejected" }],
     ambiguities: [{ ambiguity_id: "ambiguity/1", status: "dismissed" }],
     ontology: null,
@@ -116,8 +118,26 @@ test("serialization survives localStorage round trips and request conversion str
 
 test("ontology and custom nodes round trip, count, present, and serialize through project Sync", () => {
   const ontology = {
-    types: [{ name: "mechanism_hypothesis", definition: "A causal mechanism claim.", base_type: "hypothesis", layer: "epistemic", deprecated: false }],
-    fields: [{ owner_type: "mechanism_hypothesis", name: "mechanism", definition: "The causal mechanism.", kind: "text", required: true, agent_writable: false, deprecated: false }],
+    types: [
+      {
+        name: "mechanism_hypothesis",
+        definition: "A causal mechanism claim.",
+        base_type: "hypothesis",
+        layer: "epistemic",
+        deprecated: false,
+      },
+    ],
+    fields: [
+      {
+        owner_type: "mechanism_hypothesis",
+        name: "mechanism",
+        definition: "The causal mechanism.",
+        kind: "text",
+        required: true,
+        agent_writable: false,
+        deprecated: false,
+      },
+    ],
     relations: [],
   };
   const customNode = {

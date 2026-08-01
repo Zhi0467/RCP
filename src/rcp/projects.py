@@ -364,8 +364,10 @@ class ProjectCatalog:
 
     def _paper_snapshot_path(self, project_id: str) -> Path:
         safe_project_id = re.sub(r"[^A-Za-z0-9._-]+", "_", project_id).strip("._")
-        return self.data_dir / "paper-snapshots" / (
-            f"{(safe_project_id or 'project')[:80]}-introduction.md"
+        return (
+            self.data_dir
+            / "paper-snapshots"
+            / (f"{(safe_project_id or 'project')[:80]}-introduction.md")
         )
 
     def _open_service(self, project_id: str) -> tuple[ProjectService, GraphState]:

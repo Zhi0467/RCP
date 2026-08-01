@@ -76,12 +76,10 @@ export function forceTuning(repulsion: number) {
 }
 
 export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceDagOptions) {
-  const flowLayout = useMemo(
-    () => buildSemanticLaneLayout(nodes, edges),
-    [edges, nodes],
-  );
+  const flowLayout = useMemo(() => buildSemanticLaneLayout(nodes, edges), [edges, nodes]);
   const metrics = useMemo(() => canvasMetrics(nodes, mode, flowLayout), [flowLayout, mode, nodes]);
-  const storageKey = mode === "force" ? `rcp:dag-layout:v2:${projectId}` : `rcp:dag-layout:flow:v2:${projectId}`;
+  const storageKey =
+    mode === "force" ? `rcp:dag-layout:v2:${projectId}` : `rcp:dag-layout:flow:v2:${projectId}`;
   const simulationRef = useRef<Simulation<ForceNode, ForceEdge> | null>(null);
   const nodesRef = useRef<ForceNode[]>([]);
   const activeModeRef = useRef<DagLayoutMode | null>(null);
@@ -98,14 +96,16 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
   }, [metrics.height, metrics.width]);
 
   useEffect(() => {
-    const previous = activeModeRef.current === mode
-      ? new Map(nodesRef.current.map((node) => [node.id, node]))
-      : new Map<string, ForceNode>();
+    const previous =
+      activeModeRef.current === mode
+        ? new Map(nodesRef.current.map((node) => [node.id, node]))
+        : new Map<string, ForceNode>();
     activeModeRef.current = mode;
     const stored = readStoredPositions(storageKey);
-    const initial = mode === "flow"
-      ? flowPositions(flowLayout, metrics.width, metrics.height)
-      : initialPositions(nodes, metrics.width, metrics.height);
+    const initial =
+      mode === "flow"
+        ? flowPositions(flowLayout, metrics.width, metrics.height)
+        : initialPositions(nodes, metrics.width, metrics.height);
     const forceNodes: ForceNode[] = nodes.map((node) => {
       const prior = previous.get(node.id);
       const saved = stored[node.id];
@@ -143,10 +143,30 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
 
     const tuning = forceTuning(repulsion);
     const simulation = forceSimulation<ForceNode>(forceNodes)
-      .force("links", forceLink<ForceNode, ForceEdge>(forceEdges).id((node) => node.id).distance(tuning.linkDistance).strength(tuning.linkStrength))
-      .force("repulsion", forceManyBody<ForceNode>().strength(tuning.chargeStrength).distanceMin(90).distanceMax(tuning.chargeDistanceMax))
-      .force("lanes", forceX<ForceNode>((node) => forceLaneX(node.lane, metrics.width)).strength(tuning.laneStrength))
-      .force("centerline", forceY<ForceNode>(metrics.height / 2).strength(tuning.centerlineStrength))
+      .force(
+        "links",
+        forceLink<ForceNode, ForceEdge>(forceEdges)
+          .id((node) => node.id)
+          .distance(tuning.linkDistance)
+          .strength(tuning.linkStrength),
+      )
+      .force(
+        "repulsion",
+        forceManyBody<ForceNode>()
+          .strength(tuning.chargeStrength)
+          .distanceMin(90)
+          .distanceMax(tuning.chargeDistanceMax),
+      )
+      .force(
+        "lanes",
+        forceX<ForceNode>((node) => forceLaneX(node.lane, metrics.width)).strength(
+          tuning.laneStrength,
+        ),
+      )
+      .force(
+        "centerline",
+        forceY<ForceNode>(metrics.height / 2).strength(tuning.centerlineStrength),
+      )
       .force("collision", forceRectangleCollide(tuning.collisionPadding, 0.94))
       .alpha(0.9)
       .alphaDecay(0.035)
@@ -179,7 +199,18 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
       if (simulationRef.current === simulation) simulationRef.current = null;
     };
-  }, [edges, flowLayout, metrics.height, metrics.width, mode, nodes, publish, repulsion, resetGeneration, storageKey]);
+  }, [
+    edges,
+    flowLayout,
+    metrics.height,
+    metrics.width,
+    mode,
+    nodes,
+    publish,
+    repulsion,
+    resetGeneration,
+    storageKey,
+  ]);
 
   const beginDrag = useCallback((nodeId: string) => {
     const node = nodesRef.current.find((item) => item.id === nodeId);
@@ -189,20 +220,33 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
     simulationRef.current?.alphaTarget(0.16).restart();
   }, []);
 
-  const moveDrag = useCallback((nodeId: string, x: number, y: number) => {
-    const node = nodesRef.current.find((item) => item.id === nodeId);
-    if (!node) return;
-    node.fx = clamp(x, HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2, metrics.width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2);
-    node.fy = clamp(y, VERTICAL_PADDING + DAG_NODE_HEIGHT / 2, metrics.height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2);
-    node.x = node.fx;
-    node.y = node.fy;
-    publish();
-  }, [metrics.height, metrics.width, publish]);
+  const moveDrag = useCallback(
+    (nodeId: string, x: number, y: number) => {
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      if (!node) return;
+      node.fx = clamp(
+        x,
+        HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2,
+        metrics.width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2,
+      );
+      node.fy = clamp(
+        y,
+        VERTICAL_PADDING + DAG_NODE_HEIGHT / 2,
+        metrics.height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2,
+      );
+      node.x = node.fx;
+      node.y = node.fy;
+      publish();
+    },
+    [metrics.height, metrics.width, publish],
+  );
 
   const endDrag = useCallback(() => {
     simulationRef.current?.alphaTarget(0);
     persistPinnedPositions(storageKey, nodesRef.current);
-    setPinCount(nodesRef.current.filter((node) => node.fx !== null && node.fx !== undefined).length);
+    setPinCount(
+      nodesRef.current.filter((node) => node.fx !== null && node.fx !== undefined).length,
+    );
     publish();
   }, [publish, storageKey]);
 
@@ -224,28 +268,33 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
     publish();
   }, [mode, publish, storageKey]);
 
-  const releasePin = useCallback((nodeId: string) => {
-    const node = nodesRef.current.find((item) => item.id === nodeId);
-    if (!node) return;
-    node.fx = null;
-    node.fy = null;
+  const releasePin = useCallback(
+    (nodeId: string) => {
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      if (!node) return;
+      node.fx = null;
+      node.fy = null;
 
-    if (mode === "flow") {
-      const flowPosition = flowPositions(flowLayout, metrics.width, metrics.height)[nodeId];
-      if (flowPosition) {
-        node.x = flowPosition.x;
-        node.y = flowPosition.y;
-        node.vx = 0;
-        node.vy = 0;
+      if (mode === "flow") {
+        const flowPosition = flowPositions(flowLayout, metrics.width, metrics.height)[nodeId];
+        if (flowPosition) {
+          node.x = flowPosition.x;
+          node.y = flowPosition.y;
+          node.vx = 0;
+          node.vy = 0;
+        }
+      } else {
+        simulationRef.current?.alpha(0.72).alphaTarget(0).restart();
       }
-    } else {
-      simulationRef.current?.alpha(0.72).alphaTarget(0).restart();
-    }
 
-    persistPinnedPositions(storageKey, nodesRef.current);
-    setPinCount(nodesRef.current.filter((item) => item.fx !== null && item.fx !== undefined).length);
-    publish();
-  }, [flowLayout, metrics.height, metrics.width, mode, publish, storageKey]);
+      persistPinnedPositions(storageKey, nodesRef.current);
+      setPinCount(
+        nodesRef.current.filter((item) => item.fx !== null && item.fx !== undefined).length,
+      );
+      publish();
+    },
+    [flowLayout, metrics.height, metrics.width, mode, publish, storageKey],
+  );
 
   const resetLayout = useCallback(() => {
     removeStoredPositions(storageKey);
@@ -272,10 +321,12 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
 function canvasMetrics(nodes: GraphNode[], mode: DagLayoutMode, flowLayout: SemanticLaneLayout) {
   if (mode === "force") return forceCanvasMetrics(nodes);
   const largestLane = Math.max(1, ...flowLayout.lanes.map((lane) => lane.length));
-  const flowHeight = VERTICAL_PADDING * 2 + largestLane * DAG_NODE_HEIGHT + (largestLane - 1) * FLOW_ROW_GAP;
-  const flowWidth = HORIZONTAL_PADDING * 2
-    + DAG_NODE_WIDTH
-    + Math.max(0, flowLayout.lanes.length - 1) * (DAG_NODE_WIDTH + FLOW_COLUMN_GAP);
+  const flowHeight =
+    VERTICAL_PADDING * 2 + largestLane * DAG_NODE_HEIGHT + (largestLane - 1) * FLOW_ROW_GAP;
+  const flowWidth =
+    HORIZONTAL_PADDING * 2 +
+    DAG_NODE_WIDTH +
+    Math.max(0, flowLayout.lanes.length - 1) * (DAG_NODE_WIDTH + FLOW_COLUMN_GAP);
   return {
     width: Math.max(1220, flowWidth),
     height: Math.max(760, flowHeight),
@@ -299,7 +350,11 @@ export function forceCanvasMetrics(nodes: Pick<GraphNode, "type">[]) {
   };
 }
 
-function initialPositions(nodes: GraphNode[], width: number, height: number): Record<string, StoredPosition> {
+function initialPositions(
+  nodes: GraphNode[],
+  width: number,
+  height: number,
+): Record<string, StoredPosition> {
   const lanes = new Map<number, GraphNode[]>();
   nodes.forEach((node) => {
     const lane = RESEARCH_STAGE_BY_NODE_TYPE[node.type];
@@ -313,17 +368,25 @@ function initialPositions(nodes: GraphNode[], width: number, height: number): Re
       const availableHeight = height - (VERTICAL_PADDING * 2 + DAG_NODE_HEIGHT);
       positions[node.id] = {
         x: forceLaneX(lane, width),
-        y: VERTICAL_PADDING + DAG_NODE_HEIGHT / 2 + ((index + 1) * availableHeight) / (items.length + 1),
+        y:
+          VERTICAL_PADDING +
+          DAG_NODE_HEIGHT / 2 +
+          ((index + 1) * availableHeight) / (items.length + 1),
       };
     });
   });
   return positions;
 }
 
-function flowPositions(flowLayout: SemanticLaneLayout, width: number, height: number): Record<string, StoredPosition> {
+function flowPositions(
+  flowLayout: SemanticLaneLayout,
+  width: number,
+  height: number,
+): Record<string, StoredPosition> {
   const positions: Record<string, StoredPosition> = {};
   flowLayout.lanes.forEach((nodeIds, lane) => {
-    const occupiedHeight = nodeIds.length * DAG_NODE_HEIGHT + Math.max(0, nodeIds.length - 1) * FLOW_ROW_GAP;
+    const occupiedHeight =
+      nodeIds.length * DAG_NODE_HEIGHT + Math.max(0, nodeIds.length - 1) * FLOW_ROW_GAP;
     const firstY = Math.max(VERTICAL_PADDING, (height - occupiedHeight) / 2) + DAG_NODE_HEIGHT / 2;
     nodeIds.forEach((nodeId, index) => {
       positions[nodeId] = {
@@ -350,8 +413,15 @@ export function forceLaneX(lane: number, width: number): number {
 
 function readStoredPositions(storageKey: string): Record<string, StoredPosition> {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as Record<string, StoredPosition>;
-    return Object.fromEntries(Object.entries(parsed).filter(([, position]) => Number.isFinite(position?.x) && Number.isFinite(position?.y)));
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as Record<
+      string,
+      StoredPosition
+    >;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([, position]) => Number.isFinite(position?.x) && Number.isFinite(position?.y),
+      ),
+    );
   } catch {
     return {};
   }
@@ -360,7 +430,10 @@ function readStoredPositions(storageKey: string): Record<string, StoredPosition>
 function persistPinnedPositions(storageKey: string, nodes: ForceNode[]): void {
   const pinned = Object.fromEntries(
     nodes
-      .filter((node) => node.fx !== null && node.fx !== undefined && node.fy !== null && node.fy !== undefined)
+      .filter(
+        (node) =>
+          node.fx !== null && node.fx !== undefined && node.fy !== null && node.fy !== undefined,
+      )
       .map((node) => [node.id, { x: Number(node.fx), y: Number(node.fy) }]),
   );
   try {
@@ -390,8 +463,16 @@ function constrainNodeToCanvas(node: ForceNode, width: number, height: number): 
   const pinned = node.fx !== null && node.fx !== undefined;
   const rawX = node.fx ?? node.x ?? width / 2;
   const rawY = node.fy ?? node.y ?? height / 2;
-  const x = clamp(rawX, HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2, width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2);
-  const y = clamp(rawY, VERTICAL_PADDING + DAG_NODE_HEIGHT / 2, height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2);
+  const x = clamp(
+    rawX,
+    HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2,
+    width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2,
+  );
+  const y = clamp(
+    rawY,
+    VERTICAL_PADDING + DAG_NODE_HEIGHT / 2,
+    height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2,
+  );
   if (x !== rawX) node.vx = 0;
   if (y !== rawY) node.vy = 0;
   node.x = x;
@@ -406,7 +487,13 @@ function constrainNodeToCanvas(node: ForceNode, width: number, height: number): 
 function forceRectangleCollide(padding: number, strength: number) {
   let nodes: ForceNode[] = [];
   const force = () => {
-    resolveRectangleCollisions(nodes, DAG_NODE_WIDTH + padding, DAG_NODE_HEIGHT + padding, strength, 4);
+    resolveRectangleCollisions(
+      nodes,
+      DAG_NODE_WIDTH + padding,
+      DAG_NODE_HEIGHT + padding,
+      strength,
+      4,
+    );
   };
   force.initialize = (forceNodes: ForceNode[]) => {
     nodes = forceNodes;

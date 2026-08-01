@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { clampFloatingPosition, defaultFloatingPosition, floatingWindowSize, movedPosition } from "../src/floatingWindow.ts";
+import {
+  clampFloatingPosition,
+  defaultFloatingPosition,
+  floatingWindowSize,
+  movedPosition,
+} from "../src/floatingWindow.ts";
 
 test("floating windows clamp to reachable viewport positions", () => {
   const size = { width: 400, height: 300 };
@@ -14,7 +19,10 @@ test("detail and chat use independent non-overlapping wide-screen defaults", () 
   const viewport = { width: 1440, height: 900 };
   assert.deepEqual(defaultFloatingPosition("chat", viewport), { x: 12, y: 118 });
   assert.deepEqual(defaultFloatingPosition("detail", viewport), { x: 838, y: 118 });
-  assert.deepEqual(movedPosition({ x: 20, y: 30 }, { x: 100, y: 100 }, { x: 145, y: 80 }), { x: 65, y: 10 });
+  assert.deepEqual(movedPosition({ x: 20, y: 30 }, { x: 100, y: 100 }, { x: 145, y: 80 }), {
+    x: 65,
+    y: 10,
+  });
 });
 
 test("supported compact windows start below navigation and side by side", () => {

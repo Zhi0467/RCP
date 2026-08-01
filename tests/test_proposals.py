@@ -128,9 +128,7 @@ def test_approval_replays_exact_ops_and_accepts_node(manifest, tmp_path) -> None
     assert state.proposals["prop/activate-replanning-hypothesis"].status == "approved"
 
 
-def test_agent_ontology_proposal_is_applied_only_after_human_approval(
-    manifest, tmp_path
-) -> None:
+def test_agent_ontology_proposal_is_applied_only_after_human_approval(manifest, tmp_path) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     history.append(ontology_proposal_patch())
@@ -160,9 +158,7 @@ def test_ontology_change_makes_an_older_ontology_proposal_stale(manifest, tmp_pa
         history,
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
     )
-    service.sync_graph(
-        GraphSyncRequest(base_revision=2, ontology=ontology_payload())
-    )
+    service.sync_graph(GraphSyncRequest(base_revision=2, ontology=ontology_payload()))
 
     state = service.decide_proposal(
         "prop/add-mechanism-hypothesis",
@@ -221,9 +217,7 @@ def test_proposal_cannot_claim_a_future_base_revision(manifest) -> None:
     with pytest.raises(PatchRejected) as caught:
         history.append(patch)
 
-    assert any(
-        message.code == "proposal-base-revision" for message in caught.value.report.messages
-    )
+    assert any(message.code == "proposal-base-revision" for message in caught.value.report.messages)
     assert history.state().proposals == {}
 
 
@@ -237,8 +231,7 @@ def test_proposal_cannot_omit_affected_nodes(manifest) -> None:
         history.append(patch)
 
     assert any(
-        message.code == "proposal-dependency-mismatch"
-        for message in caught.value.report.messages
+        message.code == "proposal-dependency-mismatch" for message in caught.value.report.messages
     )
     assert history.state().proposals == {}
 
@@ -280,9 +273,7 @@ def test_agent_edge_touching_accepted_node_requires_and_accepts_proposal(
     with pytest.raises(PatchRejected) as caught:
         history.append(patch)
 
-    assert any(
-        message.code == "accepted-edge-change" for message in caught.value.report.messages
-    )
+    assert any(message.code == "accepted-edge-change" for message in caught.value.report.messages)
     assert (
         "rq/learning-after-shift::supports::hyp/replanning-restores-plasticity"
         not in history.state().edges
@@ -325,10 +316,7 @@ def test_agent_edge_touching_accepted_node_requires_and_accepts_proposal(
         ProposalDecisionRequest(decision="approved"),
     )
 
-    assert (
-        "rq/learning-after-shift::supports::hyp/replanning-restores-plasticity"
-        in approved.edges
-    )
+    assert "rq/learning-after-shift::supports::hyp/replanning-restores-plasticity" in approved.edges
 
 
 def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manifest) -> None:

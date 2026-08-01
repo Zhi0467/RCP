@@ -40,17 +40,31 @@ export const humanFieldLabels: Record<string, string> = {
 };
 
 const contextOrder = [
-  "motivation", "rationale", "interpretation", "scope", "design", "current_summary", "next_action",
-  "predictions", "expected_outcomes", "interpretation_rules", "completion_criteria", "options",
-  "selected_option", "consequences", "resolution_condition",
+  "motivation",
+  "rationale",
+  "interpretation",
+  "scope",
+  "design",
+  "current_summary",
+  "next_action",
+  "predictions",
+  "expected_outcomes",
+  "interpretation_rules",
+  "completion_criteria",
+  "options",
+  "selected_option",
+  "consequences",
+  "resolution_condition",
 ];
 
 export function presentNode(node: GraphNode) {
   const key = primaryKey[node.type];
   const value = readableValue(node[key]) ? node[key] : node.title;
-  const context = contextOrder.flatMap((field) => readableValue(node[field])
-    ? [{ key: field, label: humanFieldLabels[field] ?? humanize(field), value: node[field] }]
-    : []);
+  const context = contextOrder.flatMap((field) =>
+    readableValue(node[field])
+      ? [{ key: field, label: humanFieldLabels[field] ?? humanize(field), value: node[field] }]
+      : [],
+  );
   return { key, label: humanFieldLabels[key], value, context };
 }
 
@@ -73,7 +87,12 @@ export function humanize(key: string): string {
 }
 
 function readableValue(value: unknown): boolean {
-  return value !== null && value !== undefined && value !== "" && (!Array.isArray(value) || value.length > 0);
+  return (
+    value !== null &&
+    value !== undefined &&
+    value !== "" &&
+    (!Array.isArray(value) || value.length > 0)
+  );
 }
 
 function collectText(value: unknown): string {

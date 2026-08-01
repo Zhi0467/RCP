@@ -174,9 +174,7 @@ def validate_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
                     f"Edge {data.get('id')!r} uses unknown relation {relation!r}.",
                     ctx.revision,
                     related_node_ids=[
-                        node_id
-                        for node_id in (source_id, target_id)
-                        if isinstance(node_id, str)
+                        node_id for node_id in (source_id, target_id) if isinstance(node_id, str)
                     ],
                 )
                 continue
@@ -483,14 +481,10 @@ def validate_resolve_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
 
 def validate_set_standing(op: dict[str, Any], ctx: OpContext) -> Any:
     if ctx.patch.kind != "approval":
-        ctx.report.reject(
-            "agent-set-standing", "Only the human UI may set standing.", ctx.revision
-        )
+        ctx.report.reject("agent-set-standing", "Only the human UI may set standing.", ctx.revision)
     node_id = op.get("node_id")
     if node_id not in ctx.state.nodes:
-        ctx.report.reject(
-            "unknown-node", f"Cannot review missing node {node_id!r}.", ctx.revision
-        )
+        ctx.report.reject("unknown-node", f"Cannot review missing node {node_id!r}.", ctx.revision)
     if op.get("standing") not in {"asserted", "accepted", "contested"}:
         ctx.report.reject(
             "invalid-standing",
@@ -570,9 +564,7 @@ def validate_set_ontology(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def depends_set_ontology(
-    op: dict[str, Any], state: GraphState
-) -> tuple[list[Any], list[str]]:
+def depends_set_ontology(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
     return [], ["ontology"]
 
 

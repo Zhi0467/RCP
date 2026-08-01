@@ -1,6 +1,12 @@
 import type { GraphNode, GraphState, OntologyState, Standing } from "./types";
 
-export type DraftNodeValue = string | number | boolean | string[] | Record<string, string | number | boolean | string[]> | null;
+export type DraftNodeValue =
+  | string
+  | number
+  | boolean
+  | string[]
+  | Record<string, string | number | boolean | string[]>
+  | null;
 export type ProposalDecision = "approved" | "rejected";
 export type AmbiguityDecision = "resolved" | "dismissed";
 
@@ -49,26 +55,33 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
 
 export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): HumanDraft {
   if (draft.base_revision !== graph.revision) return cloneDraft(draft);
-  const nodes = Object.fromEntries(Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
-    const node = graph.nodes[nodeId];
-    if (!node) return [];
-    const changes = Object.fromEntries(
-      Object.entries(entry.changes).filter(([key, value]) => !sameValue(node[key], value)),
-    );
-    let standing = entry.standing === node.standing ? undefined : entry.standing;
-    let standingOrigin = standing ? entry.standing_origin : undefined;
-    if (Object.keys(changes).length === 0 && standingOrigin === "edit") {
-      standing = undefined;
-      standingOrigin = undefined;
-    }
-    if (Object.keys(changes).length === 0 && standing === undefined) return [];
-    return [[nodeId, {
-      base_updated_rev: entry.base_updated_rev,
-      changes,
-      ...(standing ? { standing } : {}),
-      ...(standingOrigin ? { standing_origin: standingOrigin } : {}),
-    } satisfies DraftNodeChange]];
-  }));
+  const nodes = Object.fromEntries(
+    Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
+      const node = graph.nodes[nodeId];
+      if (!node) return [];
+      const changes = Object.fromEntries(
+        Object.entries(entry.changes).filter(([key, value]) => !sameValue(node[key], value)),
+      );
+      let standing = entry.standing === node.standing ? undefined : entry.standing;
+      let standingOrigin = standing ? entry.standing_origin : undefined;
+      if (Object.keys(changes).length === 0 && standingOrigin === "edit") {
+        standing = undefined;
+        standingOrigin = undefined;
+      }
+      if (Object.keys(changes).length === 0 && standing === undefined) return [];
+      return [
+        [
+          nodeId,
+          {
+            base_updated_rev: entry.base_updated_rev,
+            changes,
+            ...(standing ? { standing } : {}),
+            ...(standingOrigin ? { standing_origin: standingOrigin } : {}),
+          } satisfies DraftNodeChange,
+        ],
+      ];
+    }),
+  );
   const ontology = sameValue(draft.ontology, graph.ontology) ? null : draft.ontology;
   return { ...cloneDraft(draft), nodes, ontology };
 }
@@ -201,11 +214,13 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
     (count, entry) => count + Object.keys(entry.changes).length + (entry.standing ? 1 : 0),
     0,
   );
-  return nodeChanges
-    + Object.keys(draft.proposals).length
-    + Object.keys(draft.ambiguities).length
-    + (draft.ontology ? 1 : 0)
-    + Object.keys(draft.custom_nodes).length;
+  return (
+    nodeChanges +
+    Object.keys(draft.proposals).length +
+    Object.keys(draft.ambiguities).length +
+    (draft.ontology ? 1 : 0) +
+    Object.keys(draft.custom_nodes).length
+  );
 }
 
 export function toHumanSyncRequest(draft: HumanDraft): HumanSyncRequest {
@@ -242,12 +257,16 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
   if (!value) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || parsed.version !== 1 || !Number.isInteger(parsed.base_revision)) return null;
-    if (!isRecord(parsed.nodes) || !isRecord(parsed.proposals) || !isRecord(parsed.ambiguities)) return null;
+    if (!isRecord(parsed) || parsed.version !== 1 || !Number.isInteger(parsed.base_revision))
+      return null;
+    if (!isRecord(parsed.nodes) || !isRecord(parsed.proposals) || !isRecord(parsed.ambiguities))
+      return null;
     return {
       ...(parsed as unknown as HumanDraft),
-      ontology: isRecord(parsed.ontology) ? parsed.ontology as unknown as OntologyState : null,
-      custom_nodes: isRecord(parsed.custom_nodes) ? parsed.custom_nodes as Record<string, GraphNode> : {},
+      ontology: isRecord(parsed.ontology) ? (parsed.ontology as unknown as OntologyState) : null,
+      custom_nodes: isRecord(parsed.custom_nodes)
+        ? (parsed.custom_nodes as Record<string, GraphNode>)
+        : {},
     };
   } catch {
     return null;
@@ -257,26 +276,42 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
 function cloneDraft(draft: HumanDraft): HumanDraft {
   return {
     ...draft,
-    nodes: Object.fromEntries(Object.entries(draft.nodes).map(([id, entry]) => [id, {
-      ...entry,
-      changes: { ...entry.changes },
-    }])),
-    proposals: Object.fromEntries(Object.entries(draft.proposals).map(([id, entry]) => [id, { ...entry }])),
-    ambiguities: Object.fromEntries(Object.entries(draft.ambiguities).map(([id, entry]) => [id, { ...entry }])),
-    ontology: draft.ontology ? {
-      types: draft.ontology.types.map((item) => ({ ...item })),
-      fields: draft.ontology.fields.map((item) => ({ ...item })),
-      relations: draft.ontology.relations.map((item) => ({
-        ...item,
-        source_types: [...item.source_types],
-        target_types: [...item.target_types],
-      })),
-    } : null,
-    custom_nodes: Object.fromEntries(Object.entries(draft.custom_nodes).map(([id, node]) => [id, {
-      ...node,
-      extension_fields: { ...node.extension_fields },
-      source_refs: [...node.source_refs],
-    }])),
+    nodes: Object.fromEntries(
+      Object.entries(draft.nodes).map(([id, entry]) => [
+        id,
+        {
+          ...entry,
+          changes: { ...entry.changes },
+        },
+      ]),
+    ),
+    proposals: Object.fromEntries(
+      Object.entries(draft.proposals).map(([id, entry]) => [id, { ...entry }]),
+    ),
+    ambiguities: Object.fromEntries(
+      Object.entries(draft.ambiguities).map(([id, entry]) => [id, { ...entry }]),
+    ),
+    ontology: draft.ontology
+      ? {
+          types: draft.ontology.types.map((item) => ({ ...item })),
+          fields: draft.ontology.fields.map((item) => ({ ...item })),
+          relations: draft.ontology.relations.map((item) => ({
+            ...item,
+            source_types: [...item.source_types],
+            target_types: [...item.target_types],
+          })),
+        }
+      : null,
+    custom_nodes: Object.fromEntries(
+      Object.entries(draft.custom_nodes).map(([id, node]) => [
+        id,
+        {
+          ...node,
+          extension_fields: { ...node.extension_fields },
+          source_refs: [...node.source_refs],
+        },
+      ]),
+    ),
   };
 }
 
