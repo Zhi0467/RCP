@@ -429,10 +429,15 @@ guarantees — surface the conflict instead of working around it.
 
 ## Gotchas
 
-- **`uv run pytest` needs a built `web/dist`.** It is gitignored, and
+- **Build `web/dist` before anything Python, including `uv sync`.** It is
+  gitignored, and the wheel force-includes it
+  ([pyproject.toml](pyproject.toml)), so on a fresh clone `uv sync` fails in
+  hatchling with `Forced include not found` before you reach a single test.
+  `uv run pytest` needs it for a second reason:
   `test_legacy_direct_human_write_endpoints_are_not_exposed` asserts `405` on
-  paths that return `404` when the SPA catch-all is not mounted. Run
-  `npm --prefix web run build` before pytest on a fresh clone, as CI does.
+  paths that return `404` when the SPA catch-all is not mounted. So the order on
+  a fresh clone is `npm --prefix web ci && npm --prefix web run build`, then
+  `uv sync`, then pytest — which is what CI does.
 - **`.research/` is excluded from every pre-commit hook.** Patch files are
   append-only and materialized files are outputs (invariants 1 and 2); a
   whitespace fixer rewriting one would violate both. Keep the top-level

@@ -25,9 +25,12 @@ jobs:
           enable-cache: true
           python-version: "3.11"
       # The hooks shell out to `uv run ruff` and `npm --prefix web exec prettier`,
-      # so both toolchains have to be installed before pre-commit runs.
-      - run: uv sync
+      # so both toolchains have to be installed before pre-commit runs. The build
+      # comes first because `uv sync` builds this package, and the wheel
+      # force-includes web/dist — without it hatchling fails on a missing path.
       - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - run: uv sync
       - run: uv run pre-commit run --all-files --show-diff-on-failure
 
   python:
