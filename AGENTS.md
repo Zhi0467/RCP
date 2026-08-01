@@ -11,8 +11,15 @@ you are expected to update it as the project changes.
 RCP is the implementation of the design blueprint in [`docs/`](docs/). The
 blueprint is versioned (`research-control-panel-blueprint-v*.md`); **always read
 the highest version present** rather than a version remembered from an earlier
-session — `ls docs/` first. The blueprint is the specification: when code and
-blueprint disagree, say so explicitly instead of silently picking one.
+session — `ls docs/` first. Note the newer files may be short amendments that
+only supersede named sections, so the section you need may still live in an
+older version. The blueprint is the specification: when code and blueprint
+disagree, say so explicitly instead of silently picking one.
+
+[`docs/open-questions.md`](docs/open-questions.md) holds design questions that
+are raised and evidenced but **not decided**. Read it before proposing a change
+to something it covers, and add an entry rather than deciding an open question
+inside an implementation.
 
 In one sentence: a local web app that turns agent-driven research conversations
 into one project-global research graph, a human authority queue, and a
