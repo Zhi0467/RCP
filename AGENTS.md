@@ -114,6 +114,22 @@ Web-only checks:
 npm --prefix web run typecheck && npm --prefix web test
 ```
 
+Formatting and lint are enforced by a `pre-commit` hook over ruff and prettier.
+Enable it once per clone; `--all-files` is what CI runs:
+
+```bash
+uv run pre-commit install
+```
+
+```bash
+uv run pre-commit run --all-files
+```
+
+The hooks call the repo's own pinned tools, so `uv sync` and
+`npm --prefix web install` must have run first. Note the hook covers *every*
+tracked Python file, which is wider than the `ruff check src tests` above —
+`packaging/` is only linted through pre-commit.
+
 Desktop bundles and their Rust checks (`cargo` lives in the rustup toolchain, not
 on the default `PATH`):
 
@@ -406,9 +422,14 @@ guarantees — surface the conflict instead of working around it.
 
 ## Gotchas
 
-- **This working copy is not a git repository.** Do not assume `git` history,
-  branches, or diffs are available; check before relying on them, and do not run
-  `git init` without asking.
+- **`uv run pytest` needs a built `web/dist`.** It is gitignored, and
+  `test_legacy_direct_human_write_endpoints_are_not_exposed` asserts `405` on
+  paths that return `404` when the SPA catch-all is not mounted. Run
+  `npm --prefix web run build` before pytest on a fresh clone, as CI does.
+- **`.research/` is excluded from every pre-commit hook.** Patch files are
+  append-only and materialized files are outputs (invariants 1 and 2); a
+  whitespace fixer rewriting one would violate both. Keep the top-level
+  `exclude:` in `.pre-commit-config.yaml` if you add hooks.
 - The blueprint is long. Read the specific section you need (headings are
   greppable) rather than the whole file.
 - Remote/SSH paths mean a path *on that machine*, always paired with a host.

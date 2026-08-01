@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      # The hooks shell out to `uv run ruff` and `npm --prefix web exec prettier`,
+      # so both toolchains have to be installed before pre-commit runs.
+      - run: uv sync
+      - run: npm --prefix web ci
+      - run: uv run pre-commit run --all-files --show-diff-on-failure
+
+  python:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      # web/dist is gitignored and the app serves it when present; the suite has a
+      # test that depends on the SPA catch-all route being mounted.
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - run: uv sync
+      - run: uv run pytest
+
+  web:
+    name: web typecheck and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - run: npm --prefix web test

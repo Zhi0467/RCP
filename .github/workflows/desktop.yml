@@ -1,0 +1,49 @@
+name: Desktop (Rust)
+
+# Split out of ci.yml and path-filtered on purpose. This repo is private, where
+# macOS runners bill at 10x the Linux rate, and the Tauri shell is a macOS app —
+# so it runs on macOS, but only when the Rust side actually changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/src-tauri/**"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+    paths:
+      - "web/src-tauri/**"
+      - ".github/workflows/desktop.yml"
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: fmt, clippy, test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web/src-tauri
+
+      # tauri.conf.json points frontendDist at ../dist, so tauri-build fails
+      # before compiling anything if the bundle is missing.
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+
+      - name: cargo fmt
+        run: cargo fmt --manifest-path web/src-tauri/Cargo.toml --check
+      - name: cargo clippy
+        run: cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --manifest-path web/src-tauri/Cargo.toml
