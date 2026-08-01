@@ -1,0 +1,121 @@
+# Copy this file to a writable local location before opening it. On first open,
+# the app initializes the canonical .research/ directory in crlp-remote.
+name = "continual-RL-plasticity"
+
+[[machines]]
+alias = "gpu"
+host = "tianhaowang-gpu0.ucsd.edu"
+
+[[machines]]
+alias = "laptop"
+host = ""
+
+[[repositories]]
+alias = "crlp-remote"
+machine = "gpu"
+path = "/home/zhiwang/continual-RL-plasticity"
+
+[[repositories]]
+alias = "crlp-laptop"
+machine = "laptop"
+path = "/Users/zhiwang/research/continual-RL-plasticity"
+
+[project]
+truth_scope = ["crlp-remote", "crlp-laptop"]
+
+[state]
+repository = "crlp-remote"
+
+[agent]
+default_run_truth_scope = ["crlp-remote"]
+
+[sources]
+claude_roots = ["~/.claude/projects"]
+codex_roots = ["~/.codex/sessions"]
+remote_claude_roots = ["~/.claude/projects"]
+remote_codex_roots = ["~/.codex/sessions"]
+
+[agent.seed]
+provider = "codex"
+model = ""
+reasoning = "medium"
+run_on = "gpu"
+write_path = "protected"
+
+[agent.seed.permissions]
+read_graph = true
+read_research_md = true
+read_introduction = true
+read_repositories = "run_scope"
+read_conversations = "run_scope"
+write_graph_patch = true
+write_project_files = false
+write_paper = false
+
+[agent.refresh]
+provider = "codex"
+model = ""
+reasoning = "medium"
+run_on = "gpu"
+write_path = "protected"
+
+[agent.refresh.permissions]
+read_graph = true
+read_research_md = true
+read_introduction = true
+read_repositories = "run_scope"
+read_conversations = "run_scope"
+write_graph_patch = true
+write_project_files = false
+write_paper = false
+
+[agent.node_chat]
+provider = "codex"
+model = ""
+reasoning = "medium"
+run_on = "gpu"
+write_path = "protected"
+
+[agent.node_chat.permissions]
+read_graph = true
+read_research_md = true
+read_introduction = true
+read_repositories = "run_scope"
+read_conversations = "run_scope"
+write_graph_patch = true
+write_project_files = false
+write_paper = false
+
+[agent.project_chat]
+provider = "codex"
+model = ""
+reasoning = "medium"
+run_on = "gpu"
+write_path = "protected"
+
+[agent.project_chat.permissions]
+read_graph = true
+read_research_md = true
+read_introduction = true
+read_repositories = "run_scope"
+read_conversations = "run_scope"
+write_graph_patch = true
+write_project_files = false
+write_paper = false
+
+[agent.paper_coach]
+provider = "codex"
+model = "gpt-5.6-luna"
+reasoning = "medium"
+run_on = "laptop"
+write_path = "protected"
+
+[agent.paper_coach.permissions]
+read_graph = true
+read_research_md = true
+read_introduction = true
+read_repositories = "project_scope"
+read_conversations = "none"
+write_graph_patch = false
+write_project_files = false
+write_paper = false

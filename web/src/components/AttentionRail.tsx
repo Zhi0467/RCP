@@ -1,0 +1,129 @@
+import { AlertTriangle, ArrowRight, Check, MessageSquareText, X } from "lucide-react";
+import type { AmbiguityDecision, HumanDraft, ProposalDecision } from "../humanDraft";
+import type { Ambiguity, GraphNode, Proposal } from "../types";
+
+interface Props {
+  proposals: Proposal[];
+  ambiguities: Ambiguity[];
+  blockers: GraphNode[];
+  draft: HumanDraft | null;
+  mutationsDisabled?: boolean;
+  onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
+  onAmbiguity: (ambiguity: Ambiguity, status: AmbiguityDecision | null) => void;
+  onSelectNode: (nodeId: string) => void;
+}
+
+export function AttentionRail({
+  proposals,
+  ambiguities,
+  blockers,
+  draft,
+  mutationsDisabled = false,
+  onDecision,
+  onAmbiguity,
+  onSelectNode,
+}: Props) {
+  const total = proposals.length + ambiguities.length + blockers.length;
+  return (
+    <aside className="attention-rail" aria-label="Needs your judgment">
+      <header className="rail-heading">
+        <h2>Needs your judgment</h2>
+        <span className="count-badge">{total}</span>
+      </header>
+
+      {total === 0 && (
+        <div className="quiet-empty">
+          <Check size={16} />
+          <strong>No judgment queued</strong>
+        </div>
+      )}
+
+      {proposals.map((proposal) => {
+        const decision = draft?.proposals[proposal.id]?.decision;
+        return (
+          <article className={`proposal-card${decision ? " draft-touched" : ""}`} key={proposal.id}>
+            <div className="proposal-topline">
+              <span className="eyebrow">Pending proposal</span>
+              <span className="mono">rev {proposal.base_rev}</span>
+            </div>
+            <h3>{proposal.title}</h3>
+            <dl className="card-brief">
+              <div>
+                <dt>The situation, cold</dt>
+                <dd>{proposal.card.situation_cold || "The agent did not supply a cold-readable summary."}</dd>
+              </div>
+              <div>
+                <dt>Why you, why now</dt>
+                <dd>{proposal.card.why_human_now || "Human authority is required by the gate set."}</dd>
+              </div>
+              <div>
+                <dt>If accepted</dt>
+                <dd>{proposal.card.consequences || "Consequences were not made explicit."}</dd>
+              </div>
+              <div>
+                <dt>Decision needed</dt>
+                <dd>{proposal.card.decision_needed || "Approve or reject the stored operation."}</dd>
+              </div>
+            </dl>
+            <div className="card-actions">
+              <button
+                className={`button judgment${decision === "rejected" ? " selected disagree" : ""}`}
+                aria-pressed={decision === "rejected"}
+                disabled={mutationsDisabled}
+                onClick={() => onDecision(proposal, decision === "rejected" ? null : "rejected")}
+              >
+                <X size={14} /> Reject
+              </button>
+              <button
+                className={`button judgment${decision === "approved" ? " selected agree" : ""}`}
+                aria-pressed={decision === "approved"}
+                disabled={mutationsDisabled}
+                onClick={() => onDecision(proposal, decision === "approved" ? null : "approved")}
+              >
+                <Check size={14} /> Approve
+              </button>
+            </div>
+          </article>
+        );
+      })}
+
+      {ambiguities.map((ambiguity) => {
+        const status = draft?.ambiguities[ambiguity.id]?.status;
+        return (
+          <article className={`ambiguity-card${status ? " draft-touched" : ""}`} key={ambiguity.id}>
+            <button className="attention-item" onClick={() => {
+              const nodeId = ambiguity.related_node_ids[0];
+              if (nodeId) onSelectNode(nodeId);
+            }}>
+              <MessageSquareText size={15} />
+              <strong>{ambiguity.question}</strong>
+              <ArrowRight size={14} />
+            </button>
+            <div className="card-actions ambiguity-actions">
+              <button
+                className={`button judgment${status === "dismissed" ? " selected disagree" : ""}`}
+                aria-pressed={status === "dismissed"}
+                disabled={mutationsDisabled}
+                onClick={() => onAmbiguity(ambiguity, status === "dismissed" ? null : "dismissed")}
+              ><X size={13} /> Dismiss</button>
+              <button
+                className={`button judgment${status === "resolved" ? " selected agree" : ""}`}
+                aria-pressed={status === "resolved"}
+                disabled={mutationsDisabled}
+                onClick={() => onAmbiguity(ambiguity, status === "resolved" ? null : "resolved")}
+              ><Check size={13} /> Resolve</button>
+            </div>
+          </article>
+        );
+      })}
+
+      {blockers.map((blocker) => (
+        <button className={`attention-item blocker${blocker.draft_touched ? " draft-touched" : ""}`} key={blocker.id} onClick={() => onSelectNode(blocker.id)}>
+          <AlertTriangle size={15} />
+          <strong>{blocker.title}</strong>
+          <ArrowRight size={14} />
+        </button>
+      ))}
+    </aside>
+  );
+}

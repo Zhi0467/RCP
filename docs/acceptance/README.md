@@ -1,0 +1,238 @@
+# Acceptance scenarios
+
+These describe what RCP must actually do, in the language of someone using it.
+They are the definition of "done" for a feature, a bug fix, or any substantial
+change. `uv run pytest` passing is a precondition, not the finish line.
+
+A scenario states a **promise**. A test is one way to check a promise. Those are
+different things, which is why both exist:
+
+- `test_unauthorized_chat_patch_is_discarded_not_applied` is a filename.
+- "Asking a question costs no graph revision, and an agent cannot grant itself
+  permission by writing the file anyway" is a promise — and you can tell whether
+  you still believe in it a year from now.
+
+Many promises here are already checked by tests. That is a good outcome, not a
+redundancy: the promise is written down once, in one place, traceable to the
+checks that defend it.
+
+## Two halves
+
+- **Drive** — what happens, in prose. For browser scenarios that means what a
+  person clicks; for others it is a request or a fixture. Written as prose on
+  purpose: when a button moves or a label changes, the prose still reads true.
+- **Assert** — what must be true afterward. Named checks that return the same
+  answer every run. Many read state the screen never shows.
+
+An agent asked "does this look right?" is a lenient judge — it will call a
+broken column order a minor layout difference. So the agent drives, and the
+checks decide. The agent's opinion is not the verdict.
+
+## Driver — how a promise is checked
+
+Not every promise needs a browser. Getting this wrong in either direction is
+expensive: browser theater around a backend fact is slow and flaky, and a
+backend test standing in for frontend state proves nothing.
+
+| `driver` | Means | Cost |
+|---|---|---|
+| `pytest` | A test function. Usually one that already exists. | free |
+| `api` | HTTP against a served app, no browser. | seconds |
+| `browser` | Genuinely needs the UI driven. | minutes |
+| `desktop` | Needs the app driven in its own window, not a browser. | minutes |
+
+**The rule for choosing:** a promise needs `browser` exactly when the thing that
+can break lives in the browser — pin state, draft state, split position, a
+toggle resetting, a run staying visible across views. Backend truth is cheaper
+and more reliable to check with pytest, always.
+
+`desktop` is `browser`'s equivalent for the application window, and it is a
+separate value because none of the browser tooling reaches one. It is earned by
+the same rule and one addition: a promise about the shell itself — window
+lifecycle, quit semantics, an embedded webview's own behavior. Server ownership
+is not that, even when a desktop app is what motivated it.
+
+`covered_by:` names the tests that already defend the promise. `covered_by:
+none` is the interesting case — a promise nothing checks.
+
+`last_passed:` is the date the scenario was last seen to pass, end to end. A
+`pytest`-driven scenario carries no date, because its tests run on every change
+and the date would only ever restate that. It is the `browser` and `api` ones
+that go quietly stale, so those are the ones that carry it.
+
+## End of a coding session
+
+Anything that debugged, built a feature, or changed a module significantly ends
+with a sweep — not a re-run:
+
+1. **Grep the `pending` and `blocked-external` scenarios.** For each, ask two
+   questions: *can this be run now* — did today's work build the feature, or make
+   the missing machine reachable — and *should this be rewritten*, because what
+   we learned today changed what the promise ought to say.
+2. **Update anything the session invalidated.** A scenario describing a UI path
+   that got built differently is worse than no scenario.
+3. **Do not re-run `implemented` scenarios** unless asked. They cost real time,
+   and a green result nobody asked for buys nothing.
+4. **Stamp `last_passed`** on whatever you did drive to a pass.
+
+The asymmetry is deliberate. Pending scenarios rot because the world moves under
+them; implemented ones only rot when code changes, and the code change is what
+prompts a re-run.
+
+```bash
+grep -l "^status: \(pending\|blocked-external\)" docs/acceptance/S*.md
+```
+
+## Status
+
+| Status | Meaning | Red means |
+|---|---|---|
+| `implemented` | Built and expected to work | **Regression.** Something broke. |
+| `pending` | Written before the feature exists | Nothing. It hasn't been built. |
+| `blocked-external` | Needs something this machine lacks | Can't run. Never counted as passing. |
+
+A `pending` scenario turning green is how a feature is known to have landed —
+not "the code looks right." Green.
+
+## Scenarios come before code
+
+For a new feature, a bug you actually hit, or a substantial change to a module,
+**the scenario is written and confirmed with the human first.** Not after, and
+not as documentation of what got built.
+
+This is the point of the whole directory. Settling the scenario is where the
+design decisions actually get made — where the UI path lives, what is refused,
+what happens to existing work. Those decisions get made either way; writing them
+first means they get made deliberately, by the person who has to live with them,
+instead of being improvised inside an implementation and discovered later.
+
+So a `pending` scenario carries one more section than an implemented one:
+
+### UI path (proposal)
+
+Where the thing lives, what the controls are, what is deliberately **not**
+possible, and the open questions that need a human answer. Marked as a proposal
+until confirmed, because the agent proposing it is guessing.
+
+An implemented scenario does not need this section — the app is the answer.
+
+The workflow, in `AGENTS.md` terms: propose scenarios → **confirm with the
+human** → then plan and implement → the scenario turning green is done.
+
+## Tier
+
+- `hermetic` — a fake agent, a throwaway data directory, a temporary copy of a
+  state repo. Deterministic, free, unattended.
+- `live` — a real Codex or Claude run. Nondeterministic, so it asserts shape,
+  never content. Before a release, not every change.
+- `remote` — needs a reachable SSH host.
+- `packaged` — needs a built application bundle rather than a source checkout,
+  and sometimes an account that has granted it nothing. Never runs from `uv`.
+
+## What does not exist yet
+
+1. **The fake agent.** Scenarios that launch an agent need one that does the
+   identical thing every run. `ScriptedLauncher` in `tests/test_api.py` already
+   does this, but only inside a test process — a served app has no way to use
+   it. Needs an explicit opt-in reported in `/api/health` and shown in the UI,
+   so a fake agent can never be quietly on.
+2. **The check functions** for anything whose `covered_by` is `none`.
+3. **The desktop harness.** No tooling here drives an application window; the
+   browser tools cannot attach to one. The intended mechanism is WebdriverIO's
+   Tauri service with its embedded macOS driver, and it is unproven in this
+   repository — proving it is part of building the shell, not a later chore. A
+   `desktop` scenario is not runnable until it exists.
+
+A `browser` scenario is **runnable today** — an agent drives the app and reports
+what it found. S03 and S08's browser half need no fake agent at all, since no
+agent runs in either. What is missing there is not a harness, it is that nobody
+has run them and nothing persists the result.
+
+## Scenarios
+
+A scenario earns a file when it carries something code cannot tell you: a design
+decision, a UI path, a refusal rule, an open question — or when nothing can check
+it but a browser or a machine we do not have.
+
+| # | Promise | Status | Driver | Covered |
+|---|---|---|---|---|
+| [S01](S01-first-project.md) | Start the app and build a first graph | implemented | api + browser | partial |
+| [S03](S03-views-and-graph-controls.md) | Move between views and work the graph | implemented | **browser** | partial |
+| [S08](S08-human-authority.md) | Human authority, and Sync as the only commit | implemented | pytest + **browser** | backend only |
+| [S10](S10-pause-resume-retry.md) | Agent work is durable | implemented | pytest + **browser** | backend only |
+| [S11](S11-paper-coach.md) | The coach reads and never writes | implemented | pytest + **browser** | partial |
+| [S12](S12-ontology-evolution.md) | Change the ontology without breaking old work | implemented | pytest + browser | covered + driven 2026-07-30 |
+| [S13](S13-replay-halts.md) | A bad patch stops replay instead of vanishing | implemented | pytest | covered |
+| [S14](S14-remote-state.md) | Canonical state on another machine | implemented | api | partial |
+| [S15](S15-real-agent.md) | One real agent run, end to end | implemented | api | **none** |
+| [S16](S16-chat-artifact-contract.md) | A preview is optional; the answer and graph are not | implemented | pytest | covered |
+| [S17](S17-real-agent-preview.md) | A real provider produces the same preview | implemented | browser | driven 2026-07-30 |
+| [S18](S18-remote-artifact-preview.md) | A remote preview stays remote and temporary | implemented | api + browser | driven 2026-07-30 |
+| [S19](S19-nothing-typed-is-lost.md) | Nothing typed is ever lost | implemented | **browser** | driven 2026-07-30 |
+| [S20](S20-no-ui-commentary-lines.md) | Primary UI elements stand on their own | implemented | **browser** | driven 2026-07-30 |
+| [S21](S21-compact-project-navigation.md) | The project shell says only what is needed | implemented | **browser** | driven 2026-07-30 |
+| [S22](S22-fast-project-open.md) | Opening a project does one authoritative replay | implemented | pytest + **browser** | driven 2026-07-30 |
+| [S23](S23-margin-visual-system.md) | RCP uses Margin's visual grammar | implemented | **browser** | driven 2026-07-30 |
+| [S24](S24-provider-registry.md) | Every agent choice offered is one the provider accepts | implemented | **browser** | driven 2026-08-01 |
+| [S25](S25-grounded-belief-ontology.md) | Belief changes are grounded and readable | implemented | pytest + **browser** | covered + driven 2026-07-30 |
+| [S26](S26-delete-project.md) | Delete an RCP project without deleting the research project | pending | pytest + **browser** | none |
+| [S27](S27-agent-task-explains-and-recovers.md) | An agent task explains what happened and offers the right recovery | pending | pytest + **browser** | none |
+| [S28](S28-one-backend-two-entrances.md) | One backend, two entrances | pending | pytest + api | none |
+| [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | pending | pytest | none |
+| [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | pending | **desktop** | none |
+| [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | **desktop** | none |
+| [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | none |
+| [S33](S33-a-seed-corrects-itself.md) | A seed that goes wrong corrects itself | implemented | pytest + **browser** | covered + driven 2026-07-31 |
+| [S34](S34-packaged-app-needs-no-toolchain.md) | A dev shell that loads the checkout, and a release app that needs nothing | pending | **desktop** | none |
+| [S35](S35-packaged-environment-parity.md) | RCP knows where your tools are, and you can see and correct it | blocked-external | **desktop** | none |
+| [S36](S36-updating-never-interrupts-work.md) | An update waits for idle, and never interrupts work without being asked | pending | **desktop** | none |
+| [S37](S37-desktop-text-scale.md) | Text stays readable throughout the desktop app | implemented | **desktop** | covered + driven 2026-07-31 |
+| [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
+| [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | implemented | pytest | passed 2026-08-01 |
+| [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
+
+Ids are never reused. The gaps are scenarios that were folded into the list
+below; a new scenario takes the next free number.
+
+## Promises already defended by tests
+
+These need no file. Each is a real promise, each is fully covered, and none of
+them carries a design decision or a frontend half — so a file would only restate
+its tests and add somewhere else to keep in sync.
+
+If one of these ever grows a UI path, a refusal rule, or a browser assertion,
+promote it back to a file with a fresh id.
+
+| Promise | Defended by |
+|---|---|
+| Reopening and refreshing a project appends, and never edits a prior patch | `test_sync.py::test_replay_ignores_an_uncommitted_hidden_batch`, `::test_interrupted_batch_write_exposes_none_of_the_sync`, `test_history.py::test_successful_patch_materializes_processed_cursors` |
+| A question with no authority changes nothing, and an agent cannot grant itself authority by writing the file; scratch remains writable for disposable outputs | `test_api.py::test_unauthorized_chat_patch_is_discarded_not_applied`, `::test_node_chat_answers_without_writing_a_patch`. One frontend residual is uncovered: authorization is **per turn**, so the toggle must not stay on after a send — correct today at [NodeChat.tsx:85](../../web/src/components/NodeChat.tsx:85), defended by nothing |
+| An authorized question changes exactly one thing, and is refused if the graph moved under it | `test_api.py::test_authorized_chat_launch_is_not_read_only`, `::test_chat_patch_cannot_move_the_ingest_boundary`, `::test_chat_patch_is_refused_when_the_graph_moved_under_it` |
+| A conversation outlives its turns: one folder, prior patch cleared, exact file projection | `test_api.py::test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch`, `::test_claude_chat_projects_exact_conversation_files`, `::test_same_chat_id_uses_distinct_stages_for_distinct_projects` |
+| A bad patch is corrected in-session, and a failed run keeps its work | `test_api.py::test_invalid_patch_is_corrected_in_the_same_native_session`, `::test_failed_run_retains_its_patch_and_scratch_folder`, `::test_patch_under_an_unexpected_filename_is_still_applied`, `::test_patch_collector_prefers_patch_json_and_refuses_ambiguity` |
+| An authorized turn that changes nothing spends no revision | **nothing — test to write.** The Sync analogue exists (`test_sync.py::test_graph_sync_no_net_change_writes_no_patch`); the chat path has none |
+
+Three things these tables say out loud:
+
+- **Ten of sixteen implemented API/browser scenarios have persisted verdicts.**
+  S01, S03, S08, S10, S11, and S15 still need their named end-to-end drive.
+- **Six implemented scenarios remain without automated coverage.** Some are
+  deliberately live or visual. The two highest-value holes are an authorized
+  chat turn that changes nothing (a cheap test) and S15's real-provider seam.
+- **S13 established an ordering constraint in v0.5.** The
+  structural/authoring split (§6.4) landed before the replay halt (§6.4b), so
+  replay can distinguish a patch rejected at admission from an accepted patch
+  that later fails structural integrity.
+
+The artifact-preview feature has a three-part gate: S16 is the implemented
+deterministic merge contract, S17 is the live provider/version gate and must be
+re-run when a provider launch contract changes, and S18 is the live remote gate
+and must be re-run when remote stage or SSH transport behavior changes.
+
+## Adding one
+
+When you hit a bug, write the scenario that would have caught it, then fix the
+bug. Every bug becomes a permanent check instead of a memory.
+
+When you build a feature, the scenario comes first, as `pending`, with its UI
+path proposed and confirmed.

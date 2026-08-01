@@ -1,0 +1,12 @@
+{
+  "productName": "RCP Dev",
+  "identifier": "app.researchcontrolpanel.rcp.dev",
+  "build": {
+    "beforeBuildCommand": "npm run build"
+  },
+  "bundle": {
+    "macOS": {
+      "infoPlist": "generated/Info.dev.plist"
+    }
+  }
+}

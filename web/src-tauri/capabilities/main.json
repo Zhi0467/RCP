@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The RCP application window. Artifact preview windows intentionally do not match this capability.",
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:webview:allow-set-webview-zoom",
+    "allow-desktop-status",
+    "allow-desktop-reconnect-backend",
+    "allow-desktop-show-ready",
+    "allow-open-artifact-preview",
+    "allow-download-artifact",
+    "allow-open-external",
+    "allow-request-quit",
+    "allow-check-for-update",
+    "allow-apply-update"
+  ]
+}
