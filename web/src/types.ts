@@ -257,8 +257,6 @@ export interface AgentTaskRequest {
   chat_id?: string | null;
   session_id?: string | null;
   mode?: ConversationMode;
-  /** @deprecated Legacy request decoding only; new turns send `mode`. */
-  allow_graph_change?: boolean;
   [key: string]: unknown;
 }
 

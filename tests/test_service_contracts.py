@@ -5,12 +5,10 @@ from pydantic import ValidationError
 from rcp.service import ChatMessage, GraphUpdateResult, RunRequest
 
 
-def test_new_conversation_requests_use_mode_and_omit_the_retired_gate() -> None:
+def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph() -> None:
     request = RunRequest(mode="work", message="Run the experiment.")
 
     assert request.mode == "work"
-    assert request.allow_graph_change is True
-    assert request.legacy_graph_authorization is False
     assert request.model_dump(mode="json") == {
         "provider": None,
         "run_truth_scope": None,
@@ -26,33 +24,13 @@ def test_new_conversation_requests_use_mode_and_omit_the_retired_gate() -> None:
     }
 
 
-def test_legacy_graph_authorization_never_becomes_work_repository_authority() -> None:
+def test_the_retired_graph_gate_grants_no_authority() -> None:
     request = RunRequest.model_validate(
         {"message": "Update the graph.", "allow_graph_change": True}
     )
 
     assert request.mode == "discuss"
-    assert request.allow_graph_change is True
-    assert request.legacy_graph_authorization is True
     assert "allow_graph_change" not in request.model_dump(mode="json")
-    assert "legacy_graph_authorization" not in request.model_dump(mode="json")
-
-    # A persistence round-trip can only narrow the legacy turn. It must never
-    # turn into a Work request with repository-write authority.
-    restored = RunRequest.model_validate(request.model_dump(mode="json"))
-    assert restored.mode == "discuss"
-    assert restored.allow_graph_change is False
-    assert restored.legacy_graph_authorization is False
-
-
-def test_explicit_mode_is_authoritative_over_a_stale_legacy_field() -> None:
-    request = RunRequest.model_validate(
-        {"mode": "discuss", "allow_graph_change": True}
-    )
-
-    assert request.mode == "discuss"
-    assert request.allow_graph_change is False
-    assert request.legacy_graph_authorization is False
 
 
 def test_graph_update_result_round_trips_through_a_chat_message() -> None:

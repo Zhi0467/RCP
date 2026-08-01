@@ -15,12 +15,15 @@ covered_by:
   - web/tests/chatWorkspace.test.mjs::conversation mode controls have stable storage keys and Shift+Tab semantics
   - web/tests/agentTasks.test.mjs::conversation reconstruction preserves immutable mode and graph receipt metadata
 invariants: [4, 4b, 8, 9, 10, 10b, 10c, 10d, 10e, 11]
-last_passed: 2026-08-01 — 458 backend tests, 109 web tests, lint, and the
-  production build passed. A live Codex Discuss turn and Work turn ran through
-  the browser against an isolated project; Work wrote the exact requested file,
-  returned graph_update none, left revision 7 unchanged, and persisted across
-  reload. Experiment, Decision, and project composers all exposed the same mode
-  switch, and the browser reported no warnings or errors.
+last_passed: 2026-08-01 — 456 backend tests, 109 web tests, lint, and the
+  production build passed. Re-driven in the browser after the retired
+  `allow_graph_change` and `read_only` compatibility layers were deleted: a live
+  Codex Discuss turn answered and produced no graph_update, Shift+Tab switched
+  the same composer to Work, and a live Work turn ran a command inside a
+  run-scope repository and returned graph_update none. Launch receipts recorded
+  capability `discuss` with no writable directory and `work_auto` with two, both
+  network-enabled; revision stayed 7, each sent turn kept its immutable mode
+  badge, and neither the browser console nor the server log reported an error.
 ---
 
 # Change one conversation from discussion into work
@@ -87,8 +90,9 @@ state change. There is no helper subtitle beneath it.
 - The composer mode may change between ordinary turns even when provider,
   model, execution machine, and run scope are locked for the conversation.
 - A running or resumed task always uses the mode captured when it was launched.
-- New requests contain no `allow_graph_change` authority switch. Work itself is
-  the per-turn authorization for an optional validated graph patch.
+- `allow_graph_change` is gone rather than decoded: `mode` is the only graph
+  authority a request carries, and an old payload still naming the retired
+  switch is ignored entirely instead of being honoured as a graph-only turn.
 - Discuss receives no graph-patch path or schema. A stray `patch.json` is kept
   only as a diagnostic receipt and never validated or applied.
 - Work receives exact writable run-scope repository roots, writable scratch,

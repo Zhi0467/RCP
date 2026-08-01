@@ -12,14 +12,9 @@ export function replayFailureLabel(graph: GraphState): string | null {
 }
 
 export function taskMayMutateGraph(task: AgentTask): boolean {
-  if (task.kind === "seed" || task.kind === "refresh") return true;
-  if (task.kind === "node_chat" || task.kind === "project_chat") {
-    // Work's operational result is independent of its optional graph reflection.
-    // A degraded graph may reject the patch, but must not strand Resume or Retry
-    // for repository work that can still complete safely.
-    if (task.request.mode === "work") return false;
-    if (task.request.mode === "discuss") return false;
-    return task.request.allow_graph_change === true;
-  }
-  return false;
+  // Only ingestion is gated on graph health. Work's operational result is
+  // independent of its optional graph reflection: a degraded graph may reject
+  // the patch, but must not strand Resume or Retry for repository work that can
+  // still complete safely.
+  return task.kind === "seed" || task.kind === "refresh";
 }

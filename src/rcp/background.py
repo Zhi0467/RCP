@@ -110,7 +110,7 @@ class BackgroundAgentTasks:
                 "task checkpoint."
             )
         self._validate_request_type(kind, request)
-        request_data = _stored_request_payload(request)
+        request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
         return self._create_and_spawn(
             project_id,
@@ -171,7 +171,7 @@ class BackgroundAgentTasks:
         }
         request = type(original).model_validate(
             {
-                **_stored_request_payload(original),
+                **original.model_dump(mode="json"),
                 **updates,
                 "session_id": None,
             }
@@ -209,7 +209,7 @@ class BackgroundAgentTasks:
         estimate, samples = self.store.agent_task_estimate(
             previous.project_id,
             previous.kind,
-            _stored_request_payload(request),
+            request.model_dump(mode="json"),
         )
         retried = self._create_and_spawn(
             previous.project_id,
@@ -348,7 +348,7 @@ class BackgroundAgentTasks:
                 project_id=project_id,
                 kind=kind,
                 status="queued",
-                request=_stored_request_payload(request),
+                request=request.model_dump(mode="json"),
                 created_at=now,
                 updated_at=now,
                 status_message=f"Waiting for the background worker to {verb}.",
@@ -666,16 +666,6 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
-
-
-def _stored_request_payload(request: AgentTaskRequest) -> dict[str, object]:
-    """Serialize background authority without upgrading or narrowing legacy turns."""
-
-    payload = request.model_dump(mode="json")
-    if isinstance(request, RunRequest) and request.legacy_graph_authorization:
-        payload.pop("mode", None)
-        payload["allow_graph_change"] = True
-    return payload
 
 
 def _event_from_sse(frame: str) -> AgentEvent:

@@ -23,7 +23,6 @@ from rcp.providers import (
     ModelChoice,
     ProviderId,
     profile_for,
-    resolve_agent_capability,
 )
 from rcp.transport.ssh import ssh_arguments
 
@@ -460,8 +459,7 @@ class AgentLauncher:
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
-        read_only: bool = False,
-        capability: AgentCapability | None = None,
+        capability: AgentCapability,
         binary: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
@@ -493,7 +491,6 @@ class AgentLauncher:
             session_id=session_id,
             read_dirs=read_dirs or [],
             write_dirs=write_dirs or [],
-            read_only=read_only,
             capability=capability,
         )
         local_cwd: str | None = str(cwd)
@@ -664,11 +661,9 @@ class AgentLauncher:
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path] | None = None,
-        read_only: bool = False,
-        capability: AgentCapability | None = None,
+        capability: AgentCapability,
     ) -> list[str]:
-        resolved_capability = resolve_agent_capability(capability, read_only=read_only)
-        if resolved_capability == "work_auto":
+        if capability == "work_auto":
             if cwd.name == ".research" or any(
                 directory.name == ".research" for directory in write_dirs or []
             ):
@@ -684,7 +679,7 @@ class AgentLauncher:
             session_id=session_id,
             read_dirs=read_dirs,
             write_dirs=write_dirs or [],
-            capability=resolved_capability,
+            capability=capability,
         )
 
     @staticmethod

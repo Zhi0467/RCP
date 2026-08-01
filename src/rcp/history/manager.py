@@ -109,7 +109,7 @@ class HistoryManager:
                 self.workspace.require_materialization_repair()
             if not (self.root / "manifest.toml").is_file():
                 raise
-            with self._process_lock, self._append_lock():
+            with self._append_lock():
                 self._reload_manifest()
                 self.ensure_layout()
                 result = self.materialize()

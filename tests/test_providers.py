@@ -288,6 +288,7 @@ def test_provider_commands_use_the_recorded_binary_as_argv_zero() -> None:
         reasoning=None,
         session_id=None,
         read_dirs=[],
+        capability="scratch_patch",
     )
 
     assert command[0] == "/Applications/Codex.app/Contents/MacOS/codex"

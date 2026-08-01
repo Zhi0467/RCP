@@ -33,22 +33,6 @@ AgentCapability = Literal[
 ]
 
 
-def resolve_agent_capability(
-    capability: AgentCapability | None,
-    *,
-    read_only: bool,
-) -> AgentCapability:
-    """Map the retired read-only switch onto the fixed capability contract.
-
-    Existing callers keep their exact launch behavior while conversation and
-    graph-run callers migrate to an explicit capability.
-    """
-
-    if capability is not None:
-        return capability
-    return "paper_readonly" if read_only else "scratch_patch"
-
-
 class ModelChoice(BaseModel):
     """One model a provider accepts, with the reasoning efforts it supports."""
 

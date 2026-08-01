@@ -40,7 +40,6 @@ from rcp.agents import (
     normalize_agent_patch_bookkeeping,
     normalize_processed_cursors,
     validate_agent_patch_shape,
-    validate_chat_patch,
     validate_session_evidence,
     validate_work_patch,
 )
@@ -911,9 +910,8 @@ def _validated_task_request(
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 
     request = RunRequest.model_validate(body)
-    if kind in {"seed", "refresh"} or request.legacy_graph_authorization:
-        service.history.require_writable()
     if kind in {"seed", "refresh"}:
+        service.history.require_writable()
         if request.session_id:
             raise ValueError(
                 "Seed and refresh sessions can only be resumed from an RCP background "
@@ -965,7 +963,7 @@ def _validate_stored_task_request(
         )
         return
     request = RunRequest.model_validate(body)
-    if kind in {"seed", "refresh"} or request.legacy_graph_authorization:
+    if kind in {"seed", "refresh"}:
         service.history.require_writable()
     _resolved_graph_request(service, kind, request)
 
@@ -1822,60 +1820,6 @@ def _pinned_to_profile(request: _RequestT, profile: AgentSurfaceConfig) -> _Requ
     )
 
 
-def _legacy_graph_only_task_contract(
-    *,
-    project_name: str,
-    ontology_path: str,
-    graph_path: str,
-    research_path: str,
-    focused_node_id: str | None,
-    conversation_roots: dict[str, str],
-    conversations_unreachable: int,
-    repositories: list[dict[str, str]],
-    introduction_path: str | None,
-    human_request_path: str,
-    patch_path: str,
-    artifact_path: str,
-    output_schema_path: str,
-    retry_diagnostics_path: str | None = None,
-) -> str:
-    """The retired graph-only chat contract, without Work authority."""
-
-    return f"""# RCP legacy graph-only conversation contract
-
-This request predates Discuss and Work. Answer only the human's message and do not perform
-operational work. Project: {project_name}
-
-Read-only inputs:
-- ontology: `{ontology_path}`
-- graph: `{graph_path}`
-- research rendering: `{research_path}`
-- focused node id: `{focused_node_id or "none"}`
-- human introduction: `{introduction_path or "none"}`
-- grouped conversation roots: `{json.dumps(conversation_roots, ensure_ascii=False)}`
-- unreachable in-scope conversations: {conversations_unreachable}
-- exact repository pointers: `{json.dumps(repositories, ensure_ascii=False)}`
-- human request: `{human_request_path}`
-- prior diagnostics: `{retry_diagnostics_path or "none"}`
-
-Authority boundary:
-- Repositories, remote machines, and every `.research` path are read-only. Do not create, edit,
-  delete, submit, launch, or rerun anything there. A non-empty repository host may be reached only
-  for read-only inspection over SSH. Never copy a repository.
-- The writable conversation scratch, including `{artifact_path}`, is the only writable area.
-- Your labelled final assistant message is the complete Markdown reply.
-- A preview artifact is optional and follows the ordinary direct-file artifact contract.
-
-Optional legacy graph reflection:
-- A Patch is optional. If no graph reflection is useful, do not create `{patch_path}`.
-- Otherwise write exactly one `chat`/`agent` Patch JSON object to `{patch_path}` and validate it
-  against `{output_schema_path}`. This is the only graph-change channel RCP reads.
-- Use the listed repositories as run_truth_scope. Set no coverage, cursors, or standing. Changes
-  requiring human authority must be complete Proposal records; ordinary legal operations remain
-  asserted agent content.
-"""
-
-
 def _record_agent_launch_receipt(
     execution: AgentTaskExecution | None,
     request: RunRequest | CoachRequest,
@@ -1983,7 +1927,6 @@ async def _stream_agent_events(
                 if execution is not None and remote_stage is not None and remote_stage.root
                 else None
             ),
-            read_only=False,
             capability=capability,
             binary=binary,
         )
@@ -3587,7 +3530,6 @@ async def _stream_discuss_run(
                         )
                     )
                 workspace = Path(str(remote_stage.workspace))
-                patch_path = str(remote_stage.workspace / "patch.json")
             else:
                 stage_root = _swept_stage_root(data_dir)
                 expected_stage = stage_root / stage_name
@@ -3601,7 +3543,6 @@ async def _stream_discuss_run(
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
                 workspace = local_stage
-                patch_path = str(local_stage / "patch.json")
             if not resuming:
                 # A reused folder must not hand this turn the previous turn's patch.
                 _clear_stale_patch(workspace, remote_stage)
@@ -3658,9 +3599,7 @@ async def _stream_discuss_run(
                 contract = PromptFactory.continuation_task_contract(
                     original_contract_path=original_contract_path,
                     mode="resume",
-                    patch_path=(
-                        patch_path if request.legacy_graph_authorization else None
-                    ),
+                    patch_path=None,
                 )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
@@ -3676,16 +3615,6 @@ async def _stream_discuss_run(
                     f"task-{token}-human-request.txt",
                     request.message,
                 )
-                schema_path = (
-                    _stage_json_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-patch-schema.json",
-                        agent_output_schema(),
-                    )
-                    if request.legacy_graph_authorization
-                    else None
-                )
                 retry_diagnostics_path = (
                     _stage_json_task_input(
                         local_stage,
@@ -3696,32 +3625,23 @@ async def _stream_discuss_run(
                     if execution is not None and execution.retry_feedback
                     else None
                 )
-                common_contract = {
-                    "project_name": context.project_name,
-                    "ontology_path": f"{context.graph_path}#ontology",
-                    "graph_path": context.graph_path,
-                    "research_path": context.research_md_path,
-                    "focused_node_id": str(context.node["id"]) if context.node else None,
-                    "conversation_roots": _chat_conversation_roots(context),
-                    "conversations_unreachable": context.conversations_unreachable,
-                    "repositories": [
+                contract = PromptFactory.discuss_task_contract(
+                    project_name=context.project_name,
+                    ontology_path=f"{context.graph_path}#ontology",
+                    graph_path=context.graph_path,
+                    research_path=context.research_md_path,
+                    focused_node_id=str(context.node["id"]) if context.node else None,
+                    conversation_roots=_chat_conversation_roots(context),
+                    conversations_unreachable=context.conversations_unreachable,
+                    repositories=[
                         {"alias": item.alias, "host": item.host, "path": item.path}
                         for item in context.repositories
                     ],
-                    "introduction_path": context.introduction_path,
-                    "human_request_path": human_request_path,
-                    "artifact_path": str(artifact_directory),
-                    "retry_diagnostics_path": retry_diagnostics_path,
-                }
-                if request.legacy_graph_authorization:
-                    assert schema_path is not None
-                    contract = _legacy_graph_only_task_contract(
-                        **common_contract,
-                        patch_path=patch_path,
-                        output_schema_path=schema_path,
-                    )
-                else:
-                    contract = PromptFactory.discuss_task_contract(**common_contract)
+                    introduction_path=context.introduction_path,
+                    human_request_path=human_request_path,
+                    artifact_path=str(artifact_directory),
+                    retry_diagnostics_path=retry_diagnostics_path,
+                )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
                     remote_stage,
@@ -3742,14 +3662,8 @@ async def _stream_discuss_run(
             continuation=execution.continuation if execution is not None else "fresh",
             extra={
                 "surface": surface,
-                "mode": (
-                    "legacy_graph" if request.legacy_graph_authorization else "discuss"
-                ),
-                "capability": (
-                    "scratch_patch"
-                    if request.legacy_graph_authorization
-                    else "discuss"
-                ),
+                "mode": "discuss",
+                "capability": "discuss",
                 "network_access": True,
                 "launch_kind": "resume" if resuming else "initial",
                 "write_directory_count": 0,
@@ -3769,11 +3683,7 @@ async def _stream_discuss_run(
                     execution_host=execution_host,
                     execution=execution,
                     remote_stage=remote_stage,
-                    capability=(
-                        "scratch_patch"
-                        if request.legacy_graph_authorization
-                        else "discuss"
-                    ),
+                    capability="discuss",
                     outcome=outcome,
                     binary=provider_binary,
                 )
@@ -3827,24 +3737,26 @@ async def _stream_discuss_run(
                     detail=str(exc),
                 )
             artifacts = []
+        yield _sse(AgentEvent(event="answer", text=answer))
         for artifact in artifacts:
             yield _sse(AgentEvent(event="artifact", artifact=artifact))
 
-        applied_revision: int | None = None
-        graph_error: str | None = None
-        graph_update: GraphUpdateResult | None = None
-        try:
-            patch_text = _read_chat_patch(workspace, remote_stage)
-        except (OSError, StateUnavailable, ValueError) as exc:
-            patch_text = None
-            detail = f"The agent wrote a patch file that could not be read: {exc}"
-            if request.legacy_graph_authorization:
-                graph_error = detail
-            elif execution is not None:
+        # Authority to change the graph rides on the human's request. An agent
+        # cannot grant it to itself by writing the file, so a stray patch is kept
+        # as a receipt and discarded.
+        if execution is not None:
+            try:
+                patch_text = _read_chat_patch(workspace, remote_stage)
+            except (OSError, StateUnavailable, ValueError) as exc:
                 execution.store.record_agent_task_receipt(
                     execution.operation_id,
                     "discuss_patch_discarded",
-                    {"reason": "unreadable", "detail": detail[:400]},
+                    {
+                        "reason": "unreadable",
+                        "detail": f"The agent wrote a patch file that could not be read: {exc}"[
+                            :400
+                        ],
+                    },
                     tier="diagnostic",
                 )
                 execution.store.record_agent_task_event(
@@ -3853,16 +3765,11 @@ async def _stream_discuss_run(
                     "changing the graph.",
                     level="warning",
                 )
-        if patch_text is not None:
-            if execution is not None:
-                execution.store.record_agent_task_patch_output(
-                    execution.operation_id, patch_text
-                )
-            if not request.legacy_graph_authorization:
-                # Authority to change the graph rides on the human's request. An
-                # agent cannot grant it to itself by writing the file, so the patch
-                # is kept as a receipt and discarded.
-                if execution is not None:
+            else:
+                if patch_text is not None:
+                    execution.store.record_agent_task_patch_output(
+                        execution.operation_id, patch_text
+                    )
                     execution.store.record_agent_task_event(
                         execution.operation_id,
                         "Discuss has no graph authority, so the patch the agent wrote was "
@@ -3878,42 +3785,17 @@ async def _stream_discuss_run(
                         },
                         tier="diagnostic",
                     )
-            else:
-                try:
-                    applied_revision = _apply_chat_patch(
-                        service,
-                        execution,
-                        patch_text,
-                        base_revision=base_revision,
-                        run_truth_scope=context.run_truth_scope,
-                    )
-                    graph_update = GraphUpdateResult(
-                        status="applied" if applied_revision is not None else "none",
-                        applied_revision=applied_revision,
-                    )
-                except (ReplayHalted, StateUnavailable, PatchRejected, ValueError) as exc:
-                    # The answer is still worth delivering; only the change failed.
-                    graph_error = f"The reply stands, but its graph change was rejected: {exc}"
-                    graph_update = GraphUpdateResult(
-                        status="rejected",
-                        validation_messages=_bounded_graph_messages(str(exc)),
-                    )
 
-        yield _sse(AgentEvent(event="answer", text=answer))
         try:
             _append_chat_exchange(
                 service,
                 request,
                 answer,
                 outcome.session_id,
-                applied_revision,
-                graph_update=graph_update,
+                None,
                 execution=execution,
             )
         except (OSError, StateUnavailable, ValueError) as exc:
-            # The graph change, if any, is already committed and durable. Failing
-            # the turn here would invite a Retry that applies the same edit twice,
-            # so the lost transcript line is reported instead.
             if execution is not None:
                 execution.store.record_agent_task_event(
                     execution.operation_id,
@@ -3921,18 +3803,6 @@ async def _stream_discuss_run(
                     f"transcript: {exc}",
                     level="warning",
                 )
-        if graph_error:
-            yield _sse(AgentEvent(event="error", text=graph_error))
-            return
-        if applied_revision is not None:
-            yield _sse(
-                AgentEvent(
-                    event="message",
-                    text=json.dumps(
-                        {"applied_revision": applied_revision}, separators=(",", ":")
-                    ),
-                )
-            )
         yield _sse(AgentEvent(event="done"))
     finally:
         # Keep exact transcript copies only when this attempt can genuinely
@@ -4277,45 +4147,6 @@ def _record_work_graph_rejection(
     )
 
 
-def _apply_chat_patch(
-    service: ProjectService,
-    execution: AgentTaskExecution | None,
-    patch_text: str,
-    *,
-    base_revision: int,
-    run_truth_scope: list[str],
-) -> int | None:
-    """Apply an authorized chat patch, or return None if it changes nothing."""
-
-    patch, _ = service.parse_patch_output([patch_text])
-    _record_patch_receipt(execution, patch, byte_length=len(patch_text.encode("utf-8")))
-    _require_agent_patch_identity(patch, "chat")
-    patch = normalize_agent_patch_bookkeeping(patch)
-    validate_agent_patch_shape(patch)
-    validate_chat_patch(patch)
-    if sorted(patch.run_truth_scope) != sorted(run_truth_scope):
-        raise ValueError(
-            "A chat patch must declare the run truth scope it was given "
-            f"({sorted(run_truth_scope)}), not {sorted(patch.run_truth_scope)}."
-        )
-    if not patch.ops:
-        # An empty patch is the agent saying it changed nothing. Appending it would
-        # spend a graph revision on a question.
-        return None
-    with service.history.workspace.run_lock():
-        # The freshness check belongs to `append`, under the same lock as the write.
-        # Checking here first would leave a window for a human Sync, which takes the
-        # append lock without ever taking the run lock.
-        appended, result = service.history.append(
-            patch, raise_on_reject=False, expected_revision=base_revision
-        )
-        report = result.reports[appended.revision]
-        if report.rejected:
-            raise PatchRejected(report)
-    _record_patch_applied_receipt(execution, result.state)
-    return result.state.revision
-
-
 async def _stream_coach(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -4496,7 +4327,7 @@ async def _stream_coach(
             reasoning=reasoning,
             session_id=request.session_id,
             read_dirs=read_dirs,
-            read_only=True,
+            capability="paper_readonly",
             control=execution.control if execution is not None else None,
             binary=provider_binary,
         )
@@ -5476,7 +5307,7 @@ def _append_chat_exchange(
             "cwd": str(service.manifest.research_dir.parent),
             "timestamp": timestamp,
             "operationId": execution.operation_id if execution is not None else None,
-            "mode": None if request.legacy_graph_authorization else request.mode,
+            "mode": request.mode,
         }
         records = [
             {

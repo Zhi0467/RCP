@@ -20,8 +20,6 @@ test("only graph-writing task continuations are blocked by degraded replay", () 
   assert.equal(taskMayMutateGraph({ kind: "refresh", request: {} }), true);
   assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { mode: "work" } }), false);
   assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { mode: "discuss" } }), false);
-  assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { mode: "discuss", allow_graph_change: true } }), false);
-  assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { allow_graph_change: true } }), true);
-  assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { allow_graph_change: false } }), false);
+  assert.equal(taskMayMutateGraph({ kind: "node_chat", request: { mode: "work" } }), false);
   assert.equal(taskMayMutateGraph({ kind: "paper_coach", request: {} }), false);
 });

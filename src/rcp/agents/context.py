@@ -572,29 +572,17 @@ def _default_session_routing_root(
     return indexer.session_artifact_root()
 
 
-def validate_chat_patch(patch: Patch) -> None:
-    """Chat may change the graph, but it never advances the ingest boundary."""
-
-    _validate_conversation_patch(patch, label="A chat patch")
-
-
 def validate_work_patch(patch: Patch) -> None:
     """Work may reflect graph changes, but it never advances ingest state."""
 
-    _validate_conversation_patch(patch, label="A Work patch")
-
-
-def _validate_conversation_patch(patch: Patch, *, label: str) -> None:
-    """Shared no-cursor/no-coverage legality for conversation patches."""
-
     if patch.processed_cursors:
         raise ValueError(
-            f"{label} must not claim processed_cursors; only seed and refresh read "
+            "A Work patch must not claim processed_cursors; only seed and refresh read "
             "conversations forward from a cursor."
         )
     if any(operation.get("op") == "set_coverage" for operation in patch.ops):
         raise ValueError(
-            f"{label} must not set coverage; only seed and refresh move the coverage "
+            "A Work patch must not set coverage; only seed and refresh move the coverage "
             "boundary."
         )
 

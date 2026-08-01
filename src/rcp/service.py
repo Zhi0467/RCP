@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents import (
     AgentLauncher,
@@ -216,7 +216,6 @@ class GraphSyncRequest(BaseModel):
 
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    _legacy_graph_authorization: bool = PrivateAttr(default=False)
 
     provider: ProviderId | None = None
     run_truth_scope: list[str] | None = None
@@ -229,35 +228,6 @@ class RunRequest(BaseModel):
     chat_id: str | None = None
     session_id: str | None = None
     mode: ConversationMode = "discuss"
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def migrate_legacy_graph_authorization(cls, value: object, handler: Any) -> RunRequest:
-        """Decode old graph-only turns without granting repository writes."""
-
-        legacy_authorized = (
-            isinstance(value, dict)
-            and "mode" not in value
-            and value.get("allow_graph_change") is True
-        )
-        migrated = dict(value) if isinstance(value, dict) else value
-        if isinstance(migrated, dict):
-            migrated.pop("allow_graph_change", None)
-        request = handler(migrated)
-        request._legacy_graph_authorization = legacy_authorized
-        return request
-
-    @property
-    def legacy_graph_authorization(self) -> bool:
-        """Whether this is an old graph-only request, never a Work permission."""
-
-        return self._legacy_graph_authorization
-
-    @property
-    def allow_graph_change(self) -> bool:
-        """Compatibility for execution callers migrating to ``mode``."""
-
-        return self.mode == "work" or self._legacy_graph_authorization
 
 
 class CoachRequest(BaseModel):
@@ -1290,8 +1260,6 @@ class ProjectService:
         """Chat context: the graph and live pointers, never the ingest corpus."""
 
         state = self.history.state()
-        if request.legacy_graph_authorization:
-            self.history.require_writable(state)
         selected = request.run_truth_scope or self.manifest.agent.default_run_truth_scope
         repository_access = {
             alias: build_repository_access(

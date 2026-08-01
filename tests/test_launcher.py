@@ -148,7 +148,7 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
 
     events = [
         event
-        async for event in launcher.stream("codex", "prompt", cwd=Path("/tmp"))
+        async for event in launcher.stream("codex", "prompt", cwd=Path("/tmp"), capability="scratch_patch")
     ]
 
     assert captured["limit"] == AgentLauncher._STREAM_LIMIT
@@ -200,6 +200,7 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
                 "codex",
                 prompt,
                 cwd=tmp_path,
+                capability="scratch_patch",
             )
         ]
 
@@ -236,7 +237,7 @@ async def test_stream_records_explicit_terminal_provider_event(
 
     events = [
         event
-        async for event in launcher.stream("claude", "prompt", cwd=tmp_path)
+        async for event in launcher.stream("claude", "prompt", cwd=tmp_path, capability="scratch_patch")
     ]
 
     evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
@@ -269,7 +270,7 @@ async def test_stream_records_nonzero_provider_exit_before_error(
 
     events = [
         event
-        async for event in launcher.stream("codex", "prompt", cwd=tmp_path)
+        async for event in launcher.stream("codex", "prompt", cwd=tmp_path, capability="scratch_patch")
     ]
 
     exit_index = next(index for index, event in enumerate(events) if event.event == "provider_exit")
@@ -318,6 +319,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
             "prompt",
             cwd=tmp_path,
             binary=binary,
+            capability="scratch_patch",
         )
     ]
 
@@ -344,7 +346,7 @@ async def test_cold_readiness_does_not_block_stream_event_loop(tmp_path: Path) -
         )
 
     launcher.readiness = readiness
-    stream = launcher.stream("codex", "prompt", cwd=tmp_path, host="slow.example")
+    stream = launcher.stream("codex", "prompt", cwd=tmp_path, host="slow.example", capability="scratch_patch")
     first_event = asyncio.create_task(anext(stream))
     try:
         assert await asyncio.to_thread(entered.wait, 1)
@@ -380,6 +382,7 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
         "p" * (2 * 1024 * 1024),
         cwd=tmp_path,
         control=control,
+        capability="scratch_patch",
     )
     next_event = asyncio.create_task(anext(stream))
     process = None
@@ -489,6 +492,7 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
         reasoning="medium",
         session_id="019f0000-0000-7000-8000-000000000000",
         read_dirs=[Path("/project/repo-a")],
+        capability="scratch_patch",
     )
 
     assert command[:4] == ["codex", "exec", "resume", "--json"]
@@ -511,6 +515,7 @@ def test_codex_new_session_writes_only_into_its_scratch_folder() -> None:
         reasoning=None,
         session_id=None,
         read_dirs=[Path("/project/repo-a"), Path("/project/repo-b")],
+        capability="scratch_patch",
     )
 
     assert command[:3] == ["codex", "exec", "--json"]
@@ -559,7 +564,7 @@ def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
         reasoning=None,
         session_id=None,
         read_dirs=[Path("/project/repo-a")],
-        read_only=True,
+        capability="paper_readonly",
     )
 
     assert command[command.index("--sandbox") + 1] == "read-only"
@@ -657,7 +662,7 @@ def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
         reasoning=None,
         session_id=session_id,
         read_dirs=[],
-        read_only=True,
+        capability="paper_readonly",
     )
 
     assert command[:4] == ["codex", "exec", "resume", "--json"]
@@ -682,6 +687,7 @@ def test_claude_command_accepts_edits_without_a_tool_allowlist() -> None:
             Path("/sessions"),
             Path("/project/repo-a"),
         ],
+        capability="scratch_patch",
     )
 
     assert command[:2] == ["claude", "--print"]
@@ -705,7 +711,7 @@ def test_claude_read_only_command_uses_plan_permission_mode() -> None:
         reasoning=None,
         session_id="paper-session",
         read_dirs=[Path("/project/.research")],
-        read_only=True,
+        capability="paper_readonly",
     )
 
     assert command[command.index("--permission-mode") + 1] == "plan"
@@ -763,6 +769,7 @@ def test_remote_provider_launch_keeps_the_recorded_absolute_argv_zero() -> None:
         reasoning=None,
         session_id=None,
         read_dirs=[],
+        capability="scratch_patch",
     )
     command = AgentLauncher._remote_login_command(
         provider_command,
@@ -790,6 +797,7 @@ async def test_stream_refuses_a_stale_recorded_path_before_subprocess_launch(
             "prompt",
             cwd=tmp_path,
             binary="/missing/recorded/codex",
+            capability="scratch_patch",
         )
     ]
 
@@ -818,6 +826,7 @@ async def test_stream_refuses_a_denied_recorded_path_before_subprocess_launch(
             "prompt",
             cwd=tmp_path,
             binary=str(binary),
+            capability="scratch_patch",
         )
     ]
 

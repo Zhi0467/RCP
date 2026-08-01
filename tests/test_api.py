@@ -29,6 +29,7 @@ from rcp.api.app import (
     _project_native_transcripts,
     _record_context_reuse,
     _record_progress_handoff,
+    _sse,
     _stage_graph_context,
     _stream_chat_run,
     _stream_coach,
@@ -390,26 +391,21 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     assert settings.status_code == 409
     assert settings.json()["coherent_revision"] == 1
 
-    read_only_chat = _validated_task_request(
-        service,
-        "project_chat",
-        {
-            "message": "What is the current coherent graph?",
-            "chat_id": str(uuid.uuid4()),
-            "allow_graph_change": False,
-        },
-    )
-    assert read_only_chat.allow_graph_change is False
-    with pytest.raises(ReplayHalted):
-        _validated_task_request(
+    # Conversations stay usable: a degraded graph refuses the patch at append
+    # time rather than blocking the turn that might not write one.
+    for mode in ("discuss", "work"):
+        accepted = _validated_task_request(
             service,
             "project_chat",
             {
-                "message": "Change the graph.",
+                "message": "What is the current coherent graph?",
                 "chat_id": str(uuid.uuid4()),
-                "allow_graph_change": True,
+                "mode": mode,
             },
         )
+        assert accepted.mode == mode
+    with pytest.raises(ReplayHalted):
+        _validated_task_request(service, "refresh", {})
 
 
 def test_project_open_reuses_its_single_materialization(manifest, tmp_path, monkeypatch) -> None:
@@ -3301,7 +3297,6 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "chat_id": str(uuid.uuid4()),
             "message": "Explain this with a preview.",
             "run_truth_scope": ["repo-a"],
-            "allow_graph_change": False,
         },
     )
     completed = _wait_for_run(client, project_id, started.json()["operation_id"])
@@ -3518,7 +3513,7 @@ async def test_claude_chat_projects_exact_conversation_files(manifest, tmp_path)
     assert str(projection / "codex") in contract
     assert str(projected_path) not in contract
     assert str(source) not in launcher.last_args[1]
-    assert launcher.last_kwargs["read_only"] is False
+    assert launcher.last_kwargs["capability"] == "discuss"
     assert not projection.exists()
     assert Path(launcher.last_kwargs["cwd"]).is_dir()
 
@@ -3713,38 +3708,13 @@ async def test_pause_before_native_checkpoint_reclaims_claude_projection(
 
 
 @pytest.mark.asyncio
-async def test_authorized_chat_launch_is_not_read_only(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    service.history.append(seed_patch())
-    launcher = FakeLauncher(
-        [AgentEvent(event="answer", text="No graph change was necessary."), AgentEvent(event="done")]
-    )
-    request = RunRequest(
-        chat_scope="project",
-        message="Change the graph if needed.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        allow_graph_change=True,
-    )
-
-    frames = [
-        frame
-        async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
-    ]
-
-    assert not _error_texts(frames)
-    assert launcher.last_kwargs["read_only"] is False
-
-
-@pytest.mark.asyncio
 async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
-    patch = refresh_patch("rq/artifact-backed-change").model_copy(update={"kind": "chat"})
+    patch = refresh_patch("rq/artifact-backed-change").model_copy(update={"kind": "work"})
 
     class ArtifactPatchLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, **kwargs):
@@ -3764,7 +3734,7 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
         message="Record this change and preview it.",
         chat_id=str(uuid.uuid4()),
         run_truth_scope=["repo-a"],
-        allow_graph_change=True,
+        mode="work",
     )
 
     frames = [
@@ -3845,32 +3815,20 @@ def test_local_stage_sweeper_removes_read_only_conversation_projection(tmp_path)
 
 
 def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_path) -> None:
-    """A rejected graph change must not take the reply down with it.
+    """A failure after the reply must not take the reply down with it.
 
-    The human asked a question and got an answer; only the edit failed, and the
-    answer is already in the transcript. Dropping it from the task result would
-    leave the chat showing an error where its reply should be.
+    The human asked a question and got an answer; only what came after it failed,
+    and the answer is already in the transcript. Dropping it from the task result
+    would leave the chat showing an error where its reply should be.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    service.history.append(seed_patch())
-    answer = "Recorded — though the graph moved while I was writing."
-    patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "chat"})
+    app.state.service.history.append(seed_patch())
+    answer = "Recorded — though staging the follow-up failed right afterwards."
 
-    class RacingLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
-            service.history.append(refresh_patch("rq/landed-first"))
-            async for event in super().stream(provider, prompt, **kwargs):
-                yield event
-
-    launcher = RacingLauncher([{"patch.json": patch.model_dump_json()}], message=answer)
-
-    async def stream(_project_id, _kind, request, execution):
-        async for frame in _stream_chat_run(
-            service, launcher, request, tmp_path / "data", execution=execution
-        ):
-            yield frame
+    async def stream(_project_id, _kind, _request, _execution):
+        yield _sse(AgentEvent(event="answer", text=answer))
+        yield _sse(AgentEvent(event="error", text="The correction could not be staged."))
 
     app.state.background_tasks.stream = stream
     client = TestClient(app)
@@ -3881,7 +3839,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
             "chat_id": str(uuid.uuid4()),
             "message": "Record the transfer question.",
             "run_truth_scope": ["repo-a"],
-            "allow_graph_change": True,
+            "mode": "work",
         },
     )
 
@@ -3891,7 +3849,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
     )
     assert record["status"] == "failed"
     assert record["result"] == {"messages": [answer]}
-    assert "graph change was rejected" in record["error"]
+    assert "could not be staged" in record["error"]
 
 
 def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path) -> None:
@@ -4085,7 +4043,7 @@ async def test_node_chat_streams_answer_and_persists_transcript(
     service.history.append(seed_patch())
     chat_id = str(uuid.uuid4())
     answer = "Added the transfer question you described."
-    patch = refresh_patch().model_copy(update={"kind": "chat"})
+    patch = refresh_patch().model_copy(update={"kind": "work"})
     launcher = ScriptedLauncher(
         [{"patch.json": patch.model_dump_json()}],
         message=answer,
@@ -4095,7 +4053,7 @@ async def test_node_chat_streams_answer_and_persists_transcript(
         message="Record the transfer question as its own node.",
         chat_id=chat_id,
         run_truth_scope=["repo-a"],
-        allow_graph_change=True,
+        mode="work",
     )
 
     frames = [
@@ -4242,7 +4200,7 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
     service.history.append(seed_patch())
     revision_before = service.history.state().revision
     patch = Patch(
-        kind="chat",
+        kind="work",
         author="agent",
         summary="Claimed coverage from a chat turn.",
         ops=[{"op": "set_coverage", "coverage": {"sessions_read": ["repo-a/laptop/codex/x"]}}],
@@ -4256,7 +4214,7 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
         message="Explain and record what you read.",
         chat_id=str(uuid.uuid4()),
         run_truth_scope=["repo-a"],
-        allow_graph_change=True,
+        mode="work",
     )
 
     frames = [
@@ -4265,8 +4223,15 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
     ]
 
     # The answer still reaches the human; only the graph change is refused.
+    assert not _error_texts(frames)
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
-    assert any("must not set coverage" in text for text in _error_texts(frames))
+    graph_update = _graph_update(frames)
+    assert graph_update is not None
+    assert graph_update["status"] == "rejected"
+    assert any(
+        "must not set coverage" in message
+        for message in graph_update["validation_messages"]
+    )
     assert service.history.state().revision == revision_before
 
 
@@ -4356,14 +4321,14 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     service = app.state.service
     service.history.append(seed_patch())
     chat_id = str(uuid.uuid4())
-    patch = refresh_patch().model_copy(update={"kind": "chat"})
+    patch = refresh_patch().model_copy(update={"kind": "work"})
     first = ScriptedLauncher([{"patch.json": patch.model_dump_json()}], message="First answer.")
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
         message="Record the transfer question.",
         chat_id=chat_id,
         run_truth_scope=["repo-a"],
-        allow_graph_change=True,
+        mode="work",
     )
     async for _ in _stream_chat_run(service, first, request, tmp_path / "data"):
         pass
@@ -4382,8 +4347,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
                 update={
                     "message": "Thanks — what does that node mean?",
                     "session_id": first.native_session_id,
-                    "allow_graph_change": False,
-                }
+                        }
             ),
             tmp_path / "data",
         )
@@ -4403,7 +4367,7 @@ async def test_chat_patch_is_refused_when_the_graph_moved_under_it(manifest, tmp
     service = app.state.service
     service.history.append(seed_patch())
     answer = "Recorded."
-    patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "chat"})
+    patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "work"})
 
     class RacingLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, **kwargs):
@@ -4418,7 +4382,7 @@ async def test_chat_patch_is_refused_when_the_graph_moved_under_it(manifest, tmp
         message="Record the transfer question.",
         chat_id=str(uuid.uuid4()),
         run_truth_scope=["repo-a"],
-        allow_graph_change=True,
+        mode="work",
     )
 
     frames = [
@@ -4426,8 +4390,15 @@ async def test_chat_patch_is_refused_when_the_graph_moved_under_it(manifest, tmp
         async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
     ]
 
+    assert not _error_texts(frames)
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
-    assert any("while this patch was being written" in text for text in _error_texts(frames))
+    graph_update = _graph_update(frames)
+    assert graph_update is not None
+    assert graph_update["status"] == "rejected"
+    assert any(
+        "while this patch was being written" in message
+        for message in graph_update["validation_messages"]
+    )
     assert "rq/late-arrival" not in service.history.state().nodes
 
 
@@ -4459,7 +4430,7 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(
     )
     original_source_text = source.read_text(encoding="utf-8")
     session_id = str(uuid.uuid4())
-    patch = refresh_patch("rq/written-before-the-pause").model_copy(update={"kind": "chat"})
+    patch = refresh_patch("rq/written-before-the-pause").model_copy(update={"kind": "work"})
 
     class PausingChatLauncher:
         def __init__(self) -> None:
@@ -4511,15 +4482,14 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(
             "chat_id": str(uuid.uuid4()),
             "message": "Record the transfer question.",
             "run_truth_scope": ["repo-a"],
-            "allow_graph_change": True,
+            "mode": "work",
             "provider": "claude",
         },
     )
     operation_id = started.json()["operation_id"]
     _wait_for_status(client, project_id, operation_id, {"running"})
     original = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
-    assert original["request"]["allow_graph_change"] is True
-    assert "mode" not in original["request"]
+    assert original["request"]["mode"] == "work"
     client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
     _wait_for_status(client, project_id, operation_id, {"paused"})
     assert launcher.projections[0].is_dir()
@@ -4539,10 +4509,9 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(
     assert resumed_response.status_code == 202
     resumed = _wait_for_run(client, project_id, resumed_response.json()["operation_id"])
     assert resumed["parent_operation_id"] == operation_id
-    assert resumed["request"]["allow_graph_change"] is True
-    assert "mode" not in resumed["request"]
+    assert resumed["request"]["mode"] == "work"
     assert launcher.sessions == [None, session_id]
-    assert launcher.capabilities == ["scratch_patch", "scratch_patch"]
+    assert launcher.capabilities == ["work_auto", "work_auto"]
     assert launcher.projections[0] == launcher.projections[1]
     assert launcher.projected_text == [original_source_text, original_source_text]
     assert not launcher.projections[1].exists()
@@ -4550,7 +4519,11 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(
     assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [
         operation_id
     ]
-    assert "from revision 1 to 2" in (resumed["error"] or "")
+    # The operational turn completed; only its stale graph reflection is refused.
+    assert resumed["status"] == "succeeded"
+    assert "from revision 1 to 2" in " ".join(
+        resumed["result"]["graph_update"]["validation_messages"]
+    )
     assert "rq/written-before-the-pause" not in service.history.state().nodes
 
 
@@ -4983,7 +4956,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     ]
 
     assert launcher.calls == 1
-    assert launcher.last_kwargs["read_only"] is True
+    assert launcher.last_kwargs["capability"] == "paper_readonly"
     assert launcher.last_kwargs["binary"] == "/opt/agents/codex"
     assert launcher.last_kwargs["cwd"] == manifest.research_dir
     assert any("Review the claim boundary." in item for item in events)

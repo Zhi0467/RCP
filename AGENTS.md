@@ -254,7 +254,9 @@ guarantees — surface the conflict instead of working around it.
    graph authority. Work has exact run-scope repository roots, writable scratch,
    network access, and no direct canonical `.research` path. Seed, Refresh, and
    graph correction write only their run scratch. The paper coach has no write
-   or Apply path anywhere.
+   or Apply path anywhere. Every launch names its capability outright —
+   `AgentLauncher.stream` and `_command` require it, and there is no boolean
+   shorthand a caller can pass instead.
 4b. **One way to get a patch out of an agent.** There is no write-path mode. The
    provider is launched with its cwd on a scratch folder and writes `patch.json`
    there; that file is the only graph-change channel RCP reads. Work may also
