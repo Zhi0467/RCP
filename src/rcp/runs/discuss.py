@@ -1,0 +1,411 @@
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import aclosing, suppress
+from pathlib import Path, PurePosixPath
+
+from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.background import AgentTaskExecution
+from rcp.config import AgentSurface
+from rcp.history import ReplayHalted
+from rcp.runs.chat import (
+    _append_chat_exchange,
+    _chat_conversation_roots,
+    _chat_native_checkpoint_available,
+    _chat_read_dirs,
+    _chat_stage_name,
+    _cleanup_chat_conversation_projection,
+    _clear_stale_patch,
+    _discover_chat_artifacts,
+    _first_chat_base_revision,
+    _known_chat_session,
+    _logical_chat_turn_operation_id,
+    _prepare_local_artifact_directory,
+    _project_chat_conversations,
+    _read_chat_patch,
+    _rebind_chat_conversations,
+    _record_artifact_discovery_receipt,
+    _record_chat_context_receipt,
+    _saved_chat_conversation_projection,
+    _validated_local_chat_resume_stage,
+    _validated_remote_chat_resume_stage,
+)
+from rcp.runs.shared import (
+    _parent_task_contract_path,
+    _pinned_to_profile,
+    _ProviderOutcome,
+    _record_agent_launch_receipt,
+    _sse,
+    _stage_context_paths,
+    _stage_json_task_input,
+    _stage_task_contract,
+    _stage_task_input,
+    _stream_agent_events,
+    _swept_stage_root,
+    _task_token,
+)
+from rcp.service import ProjectService, RunRequest
+from rcp.transport import RemoteRunStage, StateUnavailable
+
+
+async def stream_discuss_run(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution | None = None,
+) -> AsyncIterator[str]:
+    """One Discuss turn, plus the narrow legacy graph-only compatibility path.
+
+    Deliberately not the ingest pipeline: no cursors, no evidence slices, no
+    mandatory patch. New Discuss turns have neither a patch contract nor graph
+    authority. A legacy request may retain its old optional graph-only authority,
+    but never gains Work repository writes.
+    """
+    resuming = bool(execution is not None and execution.reuses_native_checkpoint)
+    surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
+    try:
+        profile = service.resolve_agent_profile(
+            surface,
+            provider=request.provider,
+            model=request.model,
+            reasoning=request.reasoning,
+            run_on=request.run_on,
+        )
+    except ValueError as exc:
+        yield _sse(AgentEvent(event="error", text=str(exc)))
+        return
+    request = _pinned_to_profile(request, profile)
+    local_stage: Path | None = None
+    execution_machine = service.manifest.machine_map[profile.run_on]
+    execution_host = execution_machine.host
+    provider_binary = execution_machine.provider_paths.get(profile.provider)
+    remote_stage: RemoteRunStage | None = None
+    conversation_projection: Path | PurePosixPath | None = None
+    artifact_scope_id: str | None = None
+    artifact_directory: Path | PurePosixPath | None = None
+    provider_started = False
+    outcome = _ProviderOutcome(session_id=request.session_id)
+    try:
+        try:
+            context = service.assemble_chat(request)
+            # A resumed turn re-assembles its context, so `graph_revision` is now
+            # whatever the graph has moved to — but the agent is still finishing
+            # reasoning it began at the original revision. That first revision is
+            # the one its patch must be judged against, and the context receipt
+            # from the interrupted attempt is where it survives.
+            base_revision = context.graph_revision
+            if resuming:
+                base_revision = _first_chat_base_revision(execution, base_revision)
+            _record_chat_context_receipt(execution, context, surface=surface)
+            if request.session_id and not resuming and not _known_chat_session(service, request):
+                raise ValueError(
+                    "That native session was not created by this chat. Start a new chat instead."
+                )
+            # One scratch folder per conversation, not per turn. Resuming a native
+            # session means resuming it in the directory it was given — Claude keys
+            # its sessions by that directory — so every turn of a chat, local or
+            # remote, reuses the same folder and _sweep_stale_stages ages it out.
+            stage_name = _chat_stage_name(service, request, execution)
+            if execution_host:
+                if resuming:
+                    stage_root = _validated_remote_chat_resume_stage(
+                        execution, execution_host, stage_name
+                    )
+                    remote_stage = RemoteRunStage(execution_host).attach(stage_root)
+                else:
+                    remote_stage = RemoteRunStage(execution_host).open(stage_name, reuse=True)
+                assert remote_stage.root is not None
+                if execution is not None:
+                    execution.checkpoint_stage(execution_host, str(remote_stage.root))
+                if not resuming:
+                    context = context.model_copy(
+                        update=_stage_context_paths(
+                            context, service, remote_stage, execution_machine.alias
+                        )
+                    )
+                workspace = Path(str(remote_stage.workspace))
+            else:
+                stage_root = _swept_stage_root(data_dir)
+                expected_stage = stage_root / stage_name
+                if resuming:
+                    local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
+                else:
+                    local_stage = expected_stage
+                    local_stage.mkdir(parents=True, exist_ok=True)
+                if execution is not None:
+                    execution.checkpoint_stage("", str(local_stage))
+                workspace = local_stage
+            if not resuming:
+                # A reused folder must not hand this turn the previous turn's patch.
+                _clear_stale_patch(workspace, remote_stage)
+            artifact_scope_id = (
+                _logical_chat_turn_operation_id(execution.store, execution.operation_id)
+                if execution is not None and resuming
+                else execution.operation_id
+                if execution is not None
+                else str(uuid.uuid4())
+            )
+            if remote_stage is not None:
+                artifact_directory = remote_stage.prepare_artifact_directory(
+                    artifact_scope_id, reuse=resuming
+                )
+            else:
+                assert local_stage is not None
+                artifact_directory = _prepare_local_artifact_directory(
+                    local_stage, artifact_scope_id, reuse=resuming
+                )
+
+            if resuming:
+                conversation_projection = _saved_chat_conversation_projection(
+                    local_stage, remote_stage
+                )
+                context = _rebind_chat_conversations(
+                    context,
+                    conversation_projection,
+                    verify_local=remote_stage is None,
+                )
+            else:
+                context, conversation_projection = _project_chat_conversations(
+                    context, local_stage, remote_stage
+                )
+
+            read_dirs = _chat_read_dirs(
+                context,
+                remote_stage,
+                service,
+                execution_machine.alias,
+                conversation_projection,
+            )
+            token = _task_token(execution)
+            if resuming:
+                if not request.session_id:
+                    raise ValueError(
+                        "The interrupted chat has no native agent session; retry it instead."
+                    )
+                assert execution is not None
+                original_contract_path = _parent_task_contract_path(
+                    execution, local_stage, remote_stage
+                )
+                contract = PromptFactory.continuation_task_contract(
+                    original_contract_path=original_contract_path,
+                    mode="resume",
+                    patch_path=None,
+                )
+                contract_path, prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-resume.md",
+                    contract,
+                )
+            else:
+                assert request.message is not None
+                human_request_path = _stage_task_input(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-human-request.txt",
+                    request.message,
+                )
+                retry_diagnostics_path = (
+                    _stage_json_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-retry-diagnostics.json",
+                        {"prior_attempt_diagnostics": list(execution.retry_feedback)},
+                    )
+                    if execution is not None and execution.retry_feedback
+                    else None
+                )
+                contract = PromptFactory.discuss_task_contract(
+                    project_name=context.project_name,
+                    ontology_path=f"{context.graph_path}#ontology",
+                    graph_path=context.graph_path,
+                    research_path=context.research_md_path,
+                    focused_node_id=str(context.node["id"]) if context.node else None,
+                    conversation_roots=_chat_conversation_roots(context),
+                    conversations_unreachable=context.conversations_unreachable,
+                    repositories=[
+                        {"alias": item.alias, "host": item.host, "path": item.path}
+                        for item in context.repositories
+                    ],
+                    introduction_path=context.introduction_path,
+                    human_request_path=human_request_path,
+                    artifact_path=str(artifact_directory),
+                    retry_diagnostics_path=retry_diagnostics_path,
+                )
+                contract_path, prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-initial.md",
+                    contract,
+                )
+        except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+            yield _sse(AgentEvent(event="error", text=str(exc)))
+            return
+
+        _record_agent_launch_receipt(
+            execution,
+            request,
+            prompt=prompt,
+            contract_path=contract_path,
+            remote=bool(execution_host),
+            resumed=resuming,
+            continuation=execution.continuation if execution is not None else "fresh",
+            extra={
+                "surface": surface,
+                "mode": "discuss",
+                "capability": "discuss",
+                "network_access": True,
+                "launch_kind": "resume" if resuming else "initial",
+                "write_directory_count": 0,
+            },
+        )
+        provider_started = True
+        try:
+            async with aclosing(
+                _stream_agent_events(
+                    launcher,
+                    request,
+                    prompt,
+                    workspace=workspace,
+                    session_id=request.session_id,
+                    read_dirs=read_dirs,
+                    write_dirs=[],
+                    execution_host=execution_host,
+                    execution=execution,
+                    remote_stage=remote_stage,
+                    capability="discuss",
+                    outcome=outcome,
+                    binary=provider_binary,
+                )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+        except Exception:
+            # Provider launch/runtime exceptions are terminal and Background will
+            # offer Retry, which re-projects. Cancellation and process shutdown use
+            # BaseException paths and retain the projection for a possible Resume.
+            outcome.failed = True
+            raise
+
+        # Only a labelled final assistant message is the reply. A provider that
+        # emitted none has not answered, and promoting its last trace would show
+        # reasoning or tool output to the human as if it were the answer.
+        answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
+        if not outcome.completed:
+            if outcome.failed or outcome.paused:
+                return
+            outcome.failed = True
+            yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
+            return
+        if not answer:
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text=f"{request.provider} finished without answering.",
+                )
+            )
+            return
+
+        assert artifact_scope_id is not None
+        assert artifact_directory is not None
+        try:
+            artifacts = _discover_chat_artifacts(
+                execution,
+                artifact_scope_id,
+                Path(str(artifact_directory)),
+                remote_stage,
+            )
+        except Exception as exc:
+            # Preview attachments are optional. Even a programming or storage
+            # error in this branch must not take down a labelled chat answer.
+            with suppress(Exception):
+                _record_artifact_discovery_receipt(
+                    execution,
+                    attached=0,
+                    candidates=0,
+                    ignored={"unexpected_error": 1},
+                    detail=str(exc),
+                )
+            artifacts = []
+        yield _sse(AgentEvent(event="answer", text=answer))
+        for artifact in artifacts:
+            yield _sse(AgentEvent(event="artifact", artifact=artifact))
+
+        # Authority to change the graph rides on the human's request. An agent
+        # cannot grant it to itself by writing the file, so a stray patch is kept
+        # as a receipt and discarded.
+        if execution is not None:
+            try:
+                patch_text = _read_chat_patch(workspace, remote_stage)
+            except (OSError, StateUnavailable, ValueError) as exc:
+                execution.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "discuss_patch_discarded",
+                    {
+                        "reason": "unreadable",
+                        "detail": f"The agent wrote a patch file that could not be read: {exc}"[
+                            :400
+                        ],
+                    },
+                    tier="diagnostic",
+                )
+                execution.store.record_agent_task_event(
+                    execution.operation_id,
+                    "Discuss wrote an unreadable patch.json; RCP discarded it without "
+                    "changing the graph.",
+                    level="warning",
+                )
+            else:
+                if patch_text is not None:
+                    execution.store.record_agent_task_patch_output(
+                        execution.operation_id, patch_text
+                    )
+                    execution.store.record_agent_task_event(
+                        execution.operation_id,
+                        "Discuss has no graph authority, so the patch the agent wrote was "
+                        "discarded. Switch to Work for a deliberate graph update.",
+                        level="warning",
+                    )
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "discuss_patch_discarded",
+                        {
+                            "reason": "no_graph_authority",
+                            "byte_length": len(patch_text.encode("utf-8")),
+                        },
+                        tier="diagnostic",
+                    )
+
+        try:
+            _append_chat_exchange(
+                service,
+                request,
+                answer,
+                outcome.session_id,
+                None,
+                execution=execution,
+            )
+        except (OSError, StateUnavailable, ValueError) as exc:
+            if execution is not None:
+                execution.store.record_agent_task_event(
+                    execution.operation_id,
+                    f"The reply was delivered but could not be written to the chat "
+                    f"transcript: {exc}",
+                    level="warning",
+                )
+        yield _sse(AgentEvent(event="done"))
+    finally:
+        # Keep exact transcript copies only when this attempt can genuinely
+        # Resume. A pause before the provider establishes any native checkpoint
+        # is Retry-only, so retaining its potentially large projection just leaks
+        # storage. The reusable native-session cwd itself always stays put.
+        retain_projection = (
+            provider_started
+            and not outcome.completed
+            and not outcome.failed
+            and _chat_native_checkpoint_available(execution, outcome.session_id)
+        )
+        if conversation_projection is not None and not retain_projection:
+            _cleanup_chat_conversation_projection(local_stage, remote_stage, execution)

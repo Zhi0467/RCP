@@ -190,6 +190,7 @@ it but a browser or a machine we do not have.
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
 | [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | implemented | pytest | passed 2026-08-01 |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
+| [S43](S43-agent-execution-module-boundaries.md) | Keep agent behavior intact while execution code moves | pending | pytest | 7 checks |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

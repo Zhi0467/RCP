@@ -18,25 +18,7 @@ from rcp.agents import AgentEvent, AgentProcessControl, ProviderReadiness
 from rcp.agents.context import RepositoryPointer
 from rcp.api import create_app
 from rcp.api.app import (
-    _MAX_CORRECTION_ROUNDS,
-    AgentOutputProblem,
-    _chat_stage_name,
-    _collect_patch_text,
-    _discover_chat_artifacts,
-    _first_chat_base_revision,
-    _paper_snapshot_path,
-    _prepare_local_artifact_directory,
-    _project_native_transcripts,
-    _record_context_reuse,
-    _record_progress_handoff,
-    _sse,
-    _stage_graph_context,
-    _stream_chat_run,
-    _stream_coach,
-    _stream_graph_run,
-    _sweep_stale_stages,
     _validated_task_request,
-    _work_write_dirs,
 )
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
@@ -44,6 +26,30 @@ from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.paper import WritingSession
+from rcp.runs.chat import (
+    _chat_stage_name,
+    _discover_chat_artifacts,
+    _first_chat_base_revision,
+    _prepare_local_artifact_directory,
+    _work_write_dirs,
+)
+from rcp.runs.coach import _paper_snapshot_path, stream_coach
+from rcp.runs.discuss import stream_discuss_run
+from rcp.runs.graph import (
+    _MAX_CORRECTION_ROUNDS,
+    _project_native_transcripts,
+    _record_context_reuse,
+    _record_progress_handoff,
+    _stage_graph_context,
+    stream_graph_run,
+)
+from rcp.runs.shared import (
+    AgentOutputProblem,
+    _collect_patch_text,
+    _sse,
+    _sweep_stale_stages,
+)
+from rcp.runs.work import stream_work_run
 from rcp.service import CoachRequest, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateUnavailable
@@ -1234,7 +1240,7 @@ async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
 
     events = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             app.state.service,
             launcher,
             "seed",
@@ -1271,7 +1277,7 @@ async def test_graph_stream_reuses_revision_from_assembled_context(
 
     frames = [
         frame
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             "refresh",
@@ -1363,7 +1369,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     )
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             kind,
@@ -1454,7 +1460,7 @@ async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_pa
 
     _ = [
         frame
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             "refresh",
@@ -1479,7 +1485,7 @@ async def test_patch_under_an_unexpected_filename_is_still_applied(
 
     frames = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             launcher,
             "refresh",
@@ -1509,7 +1515,7 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
 
     frames = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             launcher,
             "refresh",
@@ -1549,7 +1555,7 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
 
     frames = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             launcher,
             "refresh",
@@ -1578,7 +1584,7 @@ def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> 
     failed_execution = _agent_task_execution(store, "failed-operation")
     failed_launcher = ScriptedLauncher([{"patch.json": rejected}])
     failed_frames = _drain(
-        _stream_graph_run(
+        stream_graph_run(
             service,
             failed_launcher,
             "refresh",
@@ -1601,7 +1607,7 @@ def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> 
     applied_execution = _agent_task_execution(store, "applied-operation")
     applied_launcher = ScriptedLauncher([{"patch.json": refresh_patch().model_dump_json()}])
     applied_frames = _drain(
-        _stream_graph_run(
+        stream_graph_run(
             service,
             applied_launcher,
             "refresh",
@@ -1726,7 +1732,7 @@ async def test_graph_agent_cannot_forge_human_approval_patch(manifest, tmp_path)
 
     frames = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             launcher,
             "refresh",
@@ -1923,7 +1929,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             self.root = None
             return True
 
-    monkeypatch.setattr("rcp.api.app.RemoteRunStage", FakeRemoteStage)
+    monkeypatch.setattr("rcp.runs.graph.RemoteRunStage", FakeRemoteStage)
     request = RunRequest(
         provider="codex",
         run_truth_scope=["repo-a"],
@@ -1938,7 +1944,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     failed_launcher = FakeLauncher([AgentEvent(event="error", text="provider failed")])
     failed_events = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             failed_launcher,
             "refresh",
@@ -1962,7 +1968,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     paused_launcher = FakeLauncher([AgentEvent(event="paused", text="paused")])
     paused_events = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             paused_launcher,
             "refresh",
@@ -1980,7 +1986,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     blocked_launcher = FakeLauncher([AgentEvent(event="done")])
     blocked_events = [
         item
-        async for item in _stream_graph_run(
+        async for item in stream_graph_run(
             service,
             blocked_launcher,
             "refresh",
@@ -2391,7 +2397,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     launcher = ProviderSwitchLauncher()
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             kind,
@@ -2527,7 +2533,7 @@ def test_same_provider_correction_uses_saved_context_and_prior_diagnostic(
     launcher = RetryLauncher()
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             kind,
@@ -2596,7 +2602,7 @@ def test_correction_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) 
     launcher = StaleLauncher()
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service, launcher, kind, request, tmp_path / "data", execution=execution
         ):
             yield frame
@@ -2667,7 +2673,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
     launcher = ResumeLauncher()
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             kind,
@@ -2717,7 +2723,7 @@ def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> No
             yield AgentEvent(event="error", text="provider exited with status 7")
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             ExitLauncher(),
             kind,
@@ -2759,7 +2765,7 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_pa
     launcher = FailingLauncher()
 
     async def graph_stream(_project_id, kind, request, execution):
-        async for frame in _stream_graph_run(
+        async for frame in stream_graph_run(
             service,
             launcher,
             kind,
@@ -2882,7 +2888,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
         worker_started.set()
         while not release_worker.is_set():
             await asyncio.sleep(0.01)
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             service,
             launcher,
             request,
@@ -3167,7 +3173,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     launcher = ArtifactLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
 
     async def stream(_project_id, _kind, request, execution):
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             service, launcher, request, tmp_path / "data", execution=execution
         ):
             yield frame
@@ -3270,23 +3276,23 @@ def test_chat_artifact_discovery_enforces_every_central_bound(tmp_path, monkeypa
     directory.joinpath("b.html").write_text("bb")
     directory.joinpath("c.html").write_text("ccc")
 
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_COUNT", 2)
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_FILE_BYTES", 10)
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_TOTAL_BYTES", 10)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_COUNT", 2)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_FILE_BYTES", 10)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_TOTAL_BYTES", 10)
     assert [item.name for item in _discover_chat_artifacts(None, "turn", directory, None)] == [
         "a.html",
         "b.html",
     ]
 
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_COUNT", 8)
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_FILE_BYTES", 2)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_COUNT", 8)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_FILE_BYTES", 2)
     assert [item.name for item in _discover_chat_artifacts(None, "turn", directory, None)] == [
         "a.html",
         "b.html",
     ]
 
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_FILE_BYTES", 10)
-    monkeypatch.setattr("rcp.api.app.CHAT_ARTIFACT_MAX_TOTAL_BYTES", 2)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_FILE_BYTES", 10)
+    monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_TOTAL_BYTES", 2)
     assert [item.name for item in _discover_chat_artifacts(None, "turn", directory, None)] == [
         "a.html"
     ]
@@ -3302,7 +3308,7 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     answer = "The reply remains available."
     launcher = FakeLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
     monkeypatch.setattr(
-        "rcp.api.app._discover_chat_artifacts",
+        "rcp.runs.discuss._discover_chat_artifacts",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("previewer bug")),
     )
     request = RunRequest(
@@ -3313,7 +3319,7 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -3376,7 +3382,7 @@ async def test_claude_chat_projects_exact_conversation_files(manifest, tmp_path)
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -3416,10 +3422,10 @@ async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
     def reject_path(*_args, **_kwargs) -> None:
         raise ValueError("cache path used a different canonical spelling")
 
-    monkeypatch.setattr("rcp.api.app._append_chat_exchange", reject_path)
+    monkeypatch.setattr("rcp.runs.discuss._append_chat_exchange", reject_path)
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert [event.text for event in _events(frames) if event.event == "answer"] == [
@@ -3489,7 +3495,7 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
 
     first_frames = [
         frame
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             first_service,
             first_launcher,
             request,
@@ -3499,7 +3505,7 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
     ]
     second_frames = [
         frame
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             second_service,
             second_launcher,
             request,
@@ -3567,7 +3573,7 @@ async def test_pause_before_native_checkpoint_reclaims_claude_projection(
 
     frames = [
         frame
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             service,
             launcher,
             request,
@@ -3613,7 +3619,7 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -3661,7 +3667,7 @@ async def test_claude_launch_exception_reclaims_projection_but_keeps_workspace(
     )
 
     with pytest.raises(OSError, match="provider launch failed"):
-        async for _frame in _stream_chat_run(service, launcher, request, tmp_path / "data"):
+        async for _frame in stream_discuss_run(service, launcher, request, tmp_path / "data"):
             pass
 
     assert not launcher.projection.exists()
@@ -3736,7 +3742,7 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path
 
     async def stream(_project_id, kind, request, execution):
         assert kind == "paper_coach"
-        async for frame in _stream_coach(
+        async for frame in stream_coach(
             service,
             launcher,
             service.paper,
@@ -3799,7 +3805,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
 
     async def stream(_project_id, kind, request, execution):
         assert kind == "paper_coach"
-        async for frame in _stream_coach(
+        async for frame in stream_coach(
             service,
             launcher,
             service.paper,
@@ -3922,9 +3928,7 @@ async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_pa
         mode="work",
     )
 
-    frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
-    ]
+    frames = [item async for item in stream_work_run(service, launcher, request, tmp_path / "data")]
 
     assert answer in [event.text for event in _events(frames) if event.event == "answer"]
     assert service.history.state().revision == 2
@@ -3951,7 +3955,7 @@ async def test_node_chat_answers_without_writing_a_patch(manifest, tmp_path) -> 
     )
 
     frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     events = _events(frames)
@@ -4003,7 +4007,7 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
     )
 
     frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -4023,7 +4027,7 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
         run_truth_scope=["repo-a"],
     )
 
-    async for _ in _stream_chat_run(service, launcher, request, tmp_path / "data"):
+    async for _ in stream_discuss_run(service, launcher, request, tmp_path / "data"):
         pass
 
     prompt = launcher.prompts[0]
@@ -4075,9 +4079,7 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
         mode="work",
     )
 
-    frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
-    ]
+    frames = [item async for item in stream_work_run(service, launcher, request, tmp_path / "data")]
 
     # The answer still reaches the human; only the graph change is refused.
     assert not _error_texts(frames)
@@ -4118,7 +4120,7 @@ async def test_project_chat_persists_project_scoped_transcript(manifest, tmp_pat
     )
 
     frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert answer in [event.text for event in _events(frames) if event.event == "answer"]
@@ -4149,7 +4151,7 @@ async def test_unauthorized_chat_patch_is_discarded_not_applied(manifest, tmp_pa
     )
 
     frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        item async for item in stream_discuss_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
@@ -4182,7 +4184,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
         run_truth_scope=["repo-a"],
         mode="work",
     )
-    async for _ in _stream_chat_run(service, first, request, tmp_path / "data"):
+    async for _ in stream_work_run(service, first, request, tmp_path / "data"):
         pass
     applied = service.history.state().revision
     workspace = first.workspaces[0]
@@ -4192,7 +4194,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     second = ScriptedLauncher([{}], message="Second answer.")
     frames = [
         item
-        async for item in _stream_chat_run(
+        async for item in stream_work_run(
             service,
             second,
             request.model_copy(
@@ -4237,9 +4239,7 @@ async def test_chat_patch_is_refused_when_the_graph_moved_under_it(manifest, tmp
         mode="work",
     )
 
-    frames = [
-        item async for item in _stream_chat_run(service, launcher, request, tmp_path / "data")
-    ]
+    frames = [item async for item in stream_work_run(service, launcher, request, tmp_path / "data")]
 
     assert not _error_texts(frames)
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
@@ -4316,7 +4316,7 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(manifest, t
     launcher = PausingChatLauncher()
 
     async def stream(_project_id, _kind, request, execution):
-        async for frame in _stream_chat_run(
+        async for frame in stream_work_run(
             service, launcher, request, tmp_path / "data", execution=execution
         ):
             yield frame
@@ -4396,7 +4396,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
     launcher = RetryLauncher()
 
     async def stream(_project_id, _kind, request, execution):
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             service, launcher, request, tmp_path / "data", execution=execution
         ):
             yield frame
@@ -4484,7 +4484,7 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
 
     frames = [
         frame
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             service,
             launcher,
             request,
@@ -4606,14 +4606,14 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_artifact_files(self, _scope_id):
             return []
 
-    monkeypatch.setattr("rcp.api.app.RemoteRunStage", RecordingRemoteStage)
+    monkeypatch.setattr("rcp.runs.discuss.RemoteRunStage", RecordingRemoteStage)
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="Remote continuation."), AgentEvent(event="done")]
     )
 
     frames = [
         frame
-        async for frame in _stream_chat_run(
+        async for frame in stream_discuss_run(
             service,
             launcher,
             request,
@@ -4737,7 +4737,7 @@ async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_
 
     events = [
         item
-        async for item in _stream_coach(
+        async for item in stream_coach(
             service,
             launcher,
             paper,
@@ -4772,7 +4772,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
 
     events = [
         item
-        async for item in _stream_coach(
+        async for item in stream_coach(
             service,
             launcher,
             paper,
@@ -4841,7 +4841,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -4875,7 +4875,7 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
     launcher = ScriptedLauncher([{}], message="Finished.")
 
     async def stream(_project_id, _kind, request, execution):
-        async for frame in _stream_chat_run(
+        async for frame in stream_work_run(
             service, launcher, request, tmp_path / "data", execution=execution
         ):
             yield frame
@@ -5040,7 +5040,7 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5077,7 +5077,7 @@ async def test_exhausted_work_patch_correction_preserves_successful_answer(
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5125,7 +5125,7 @@ async def test_stale_work_patch_is_rejected_without_correction_or_rebase(
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
     ]
 
     assert not _error_texts(frames)
@@ -5199,7 +5199,7 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
     )
 
     frames = [
-        frame async for frame in _stream_chat_run(service, launcher, request, tmp_path / "data")
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
     ]
 
     graph_update = _graph_update(frames)
@@ -5234,7 +5234,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     )
 
     async def stream(_project_id, _kind, request, execution):
-        async for frame in _stream_chat_run(
+        async for frame in stream_work_run(
             service, launcher, request, tmp_path / "data", execution=execution
         ):
             yield frame

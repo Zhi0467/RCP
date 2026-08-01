@@ -1,0 +1,617 @@
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import hashlib
+import json
+import os
+import re
+import shutil
+import tempfile
+import time
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import TypeVar
+from urllib.parse import quote
+
+from pydantic import BaseModel
+
+from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
+from rcp.agents.context import ConversationPointer, SessionPointer
+from rcp.background import AgentTaskExecution
+from rcp.config import AgentSurfaceConfig
+from rcp.core.models import GraphState, Patch
+from rcp.limits import RUN_STAGE_RETENTION_DAYS
+from rcp.providers import AgentCapability
+from rcp.service import CoachRequest, ProjectService, RunRequest
+from rcp.transport import RemoteRunStage, StateUnavailable
+
+_STAGE_RETENTION_SECONDS = RUN_STAGE_RETENTION_DAYS * 24 * 3600
+_MAX_PATCH_CANDIDATES = 8
+_STATE_PATH_FIELDS = (
+    "graph_path",
+    "research_md_path",
+    "introduction_path",
+    "glossary_path",
+    "coverage_path",
+)
+_RequestT = TypeVar("_RequestT", bound=BaseModel)
+
+
+class AgentOutputProblem(ValueError):
+    """The agent finished but its patch file is missing or does not validate.
+
+    These are the failures the recovery ladder can act on by talking to the same
+    live session again. Agent-authored graph rejection follows the same ladder.
+    """
+
+
+def _looks_like_patch(text: str) -> bool:
+    try:
+        value = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(value, dict) and "ops" in value and "kind" in value
+
+
+def _existing_patch_digest(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> str | None:
+    """Fingerprint a patch already sitting in the stage before a launch.
+
+    A continuation runs in the stage its earlier attempt was given, and
+    invariant 9 keeps that attempt's `patch.json` on disk. Without this
+    fingerprint a provider that writes nothing at all has its predecessor's
+    file collected as this launch's deliverable.
+    """
+    try:
+        text, _ = _collect_patch_text(workspace, remote_stage)
+    except (AgentOutputProblem, OSError, StateUnavailable):
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _collect_patch_text(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> tuple[str, str]:
+    """Recover the patch the agent wrote, whatever it chose to call the file.
+
+    Rung 1 of the recovery ladder: a filename mismatch used to discard a whole
+    run's work, so the entire scratch folder is searched rather than one path.
+    """
+    if remote_stage is not None:
+        names = remote_stage.list_workspace_files()
+        reader = remote_stage.read_text
+
+        def read(name: str) -> str:
+            return reader(remote_stage.workspace / name)
+    else:
+        names = sorted(item.name for item in workspace.iterdir() if item.is_file())
+
+        def read(name: str) -> str:
+            return (workspace / name).read_text(encoding="utf-8")
+
+    ordered = sorted(
+        (name for name in names if name.casefold().endswith(".json")),
+        key=lambda name: (
+            name != "patch.json",
+            name.casefold() != "patch.json",
+            name,
+        ),
+    )
+    if not ordered:
+        raise AgentOutputProblem(
+            "The agent finished without writing any JSON file to its scratch folder."
+        )
+    matches: list[tuple[str, str]] = []
+    for name in ordered[:_MAX_PATCH_CANDIDATES]:
+        try:
+            text = read(name)
+        except (OSError, ValueError):
+            continue
+        if name == "patch.json" and _looks_like_patch(text):
+            return text, name
+        if _looks_like_patch(text):
+            matches.append((text, name))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise AgentOutputProblem(
+            "The agent left more than one patch-shaped JSON file in its scratch folder: "
+            + ", ".join(name for _, name in matches)
+            + ". Write exactly one, named patch.json."
+        )
+    raise AgentOutputProblem(
+        "The agent finished without writing a patch object to patch.json. "
+        f"The scratch folder holds: {', '.join(ordered) or 'nothing'}."
+    )
+
+
+def _sweep_stale_stages(root: Path, *, now: float) -> None:
+    """Age out retained scratch folders. Failed runs keep theirs until then."""
+    if not root.is_dir():
+        return
+    for candidate in root.iterdir():
+        if not candidate.is_dir():
+            continue
+        try:
+            age = now - candidate.stat().st_mtime
+        except OSError:
+            continue
+        if age > _STAGE_RETENTION_SECONDS:
+            try:
+                _remove_local_tree(candidate, root)
+            except (OSError, ValueError):
+                # Retention is best effort; a live run must not fail because an
+                # unrelated expired stage could not be reclaimed.
+                continue
+
+
+def _remove_local_tree(target: Path, boundary: Path) -> None:
+    """Remove one exact tree beneath ``boundary``, including read-only copies."""
+    if target.parent != boundary:
+        raise ValueError("local cleanup target is outside its exact stage boundary")
+    if not os.path.lexists(target):
+        return
+    if target.is_symlink() or not target.is_dir():
+        target.unlink()
+    else:
+        _make_local_tree_writable(target)
+        shutil.rmtree(target)
+    if os.path.lexists(target):
+        raise OSError(f"local cleanup left {target} behind")
+
+
+def _make_local_tree_writable(target: Path) -> None:
+    if target.is_symlink():
+        return
+    target.chmod(0o700 if target.is_dir() else 0o600)
+    if not target.is_dir():
+        return
+    for child in target.iterdir():
+        _make_local_tree_writable(child)
+
+
+def _swept_stage_root(data_dir: Path) -> Path:
+    """The local scratch root, with expired folders reclaimed before it is used."""
+    stage_root = data_dir / "run-stage"
+    _sweep_stale_stages(stage_root, now=time.time())
+    return stage_root
+
+
+def _stage_task_input(
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    label: str,
+    content: str,
+) -> str:
+    """Create one immutable task input and return its execution-host path."""
+    if (local_stage is None) == (remote_stage is None):
+        raise ValueError("exactly one task stage must be selected")
+    safe_label = _safe_stage_name(label)
+    if safe_label != label:
+        raise ValueError("task input label contains unsupported characters")
+    if remote_stage is not None:
+        with tempfile.TemporaryDirectory(prefix="rcp-task-input-") as temporary:
+            source = Path(temporary) / safe_label
+            source.write_text(content, encoding="utf-8")
+            source.chmod(0o400)
+            return remote_stage.put_file(source, safe_label)
+
+    assert local_stage is not None
+    inputs = local_stage / "inputs"
+    inputs.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = inputs / safe_label
+    if target.exists():
+        raise ValueError(f"immutable task input already exists: {safe_label}")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{safe_label}.", dir=inputs)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o400)
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return str(target)
+
+
+def _task_token(execution: AgentTaskExecution | None) -> str:
+    return _safe_stage_name(execution.operation_id if execution is not None else uuid.uuid4().hex)
+
+
+def _parent_task_contract_path(
+    execution: AgentTaskExecution,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> str:
+    record = execution.store.agent_task(execution.operation_id)
+    if record is None or record.parent_operation_id is None:
+        raise ValueError("The resumed operation has no original task contract.")
+    receipts = execution.store.agent_task_receipts(record.parent_operation_id)
+    candidates = [
+        receipt.payload.get("contract_path")
+        for receipt in receipts
+        if receipt.category == "agent_prompt"
+    ]
+    contract_path = next(
+        (value for value in reversed(candidates) if isinstance(value, str) and value), None
+    )
+    if contract_path is None:
+        raise ValueError("The resumed operation has no recorded original task contract.")
+    if remote_stage is not None:
+        assert remote_stage.root is not None
+        if PurePosixPath(contract_path).parent != remote_stage.root / "inputs":
+            raise ValueError("The resumed operation's task contract is outside its saved stage.")
+    else:
+        assert local_stage is not None
+        if Path(contract_path).resolve().parent != (local_stage / "inputs").resolve():
+            raise ValueError("The resumed operation's task contract is outside its saved stage.")
+    return contract_path
+
+
+def _stage_json_task_input(
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    label: str,
+    value: object,
+) -> str:
+    return _stage_task_input(
+        local_stage,
+        remote_stage,
+        label,
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _stage_task_contract(
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    label: str,
+    content: str,
+    *,
+    execution: AgentTaskExecution | None = None,
+    role: str | None = None,
+) -> tuple[str, str]:
+    if execution is not None:
+        execution.store.record_agent_task_contract(
+            execution.operation_id,
+            role or label,
+            content,
+            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+    contract_path = _stage_task_input(local_stage, remote_stage, label, content)
+    return contract_path, PromptFactory.launch_prompt(contract_path)
+
+
+def _pinned_to_profile(request: _RequestT, profile: AgentSurfaceConfig) -> _RequestT:
+    """Pin the resolved launch configuration onto the request the run will use."""
+    return request.model_copy(
+        update={
+            "provider": profile.provider,
+            "model": profile.model or None,
+            "reasoning": profile.reasoning,
+            "run_on": profile.run_on,
+        }
+    )
+
+
+def _record_agent_launch_receipt(
+    execution: AgentTaskExecution | None,
+    request: RunRequest | CoachRequest,
+    *,
+    prompt: str,
+    contract_path: str,
+    remote: bool,
+    resumed: bool,
+    continuation: str | None = None,
+    extra: dict[str, object],
+) -> None:
+    if execution is None:
+        return
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "agent_launch",
+        {
+            "provider": request.provider,
+            "run_on": request.run_on,
+            "remote": remote,
+            "resumed": resumed,
+            **({"continuation_cause": continuation} if continuation is not None else {}),
+            **extra,
+        },
+    )
+    encoded = prompt.encode("utf-8")
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "agent_prompt",
+        {
+            "prompt": prompt,
+            "contract_path": contract_path,
+            "byte_length": len(encoded),
+            "line_count": len(prompt.splitlines()),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "resumed": resumed,
+            **({"continuation_cause": continuation} if continuation is not None else {}),
+            **extra,
+        },
+        tier="diagnostic",
+    )
+
+
+@dataclass
+class _ProviderOutcome:
+    """What one pass of a provider stream leaves behind for its caller.
+
+    `answers` collects only the provider's labelled final assistant messages; a
+    `message` is a trace and is never promoted into it. What an answer is worth
+    is the caller's decision — an ingest run leaves this list unread.
+    """
+
+    session_id: str | None = None
+    completed: bool = False
+    failed: bool = False
+    paused: bool = False
+    answers: list[str] = dataclasses.field(default_factory=list)
+    trace_messages: list[str] = dataclasses.field(default_factory=list)
+    exit_evidence: dict[str, object] | None = None
+    exit_recorded: bool = False
+
+
+async def _stream_agent_events(
+    launcher: AgentLauncher,
+    request: RunRequest,
+    prompt: str,
+    *,
+    workspace: Path,
+    session_id: str | None,
+    read_dirs: list[Path],
+    write_dirs: list[Path],
+    execution_host: str,
+    execution: AgentTaskExecution | None,
+    remote_stage: RemoteRunStage | None,
+    capability: AgentCapability,
+    outcome: _ProviderOutcome,
+    binary: str | None,
+) -> AsyncIterator[str]:
+    """Run one provider pass, recording its outcome and forwarding wire events.
+
+    Terminal and labelled events are withheld from the wire: the caller decides
+    what a completed run, an answer, or a trace is worth in its own protocol.
+    """
+    if remote_stage is not None:
+        try:
+            await asyncio.to_thread(remote_stage.finalize_inputs)
+        except (OSError, StateUnavailable, ValueError) as exc:
+            outcome.failed = True
+            yield _sse(AgentEvent(event="error", text=str(exc)))
+            return
+    async with aclosing(
+        launcher.stream(
+            request.provider,
+            prompt,
+            cwd=workspace,
+            model=request.model,
+            reasoning=request.reasoning,
+            session_id=session_id,
+            read_dirs=read_dirs,
+            write_dirs=write_dirs,
+            host=execution_host,
+            control=execution.control if execution is not None else None,
+            remote_pid_file=(
+                str(remote_stage.root / "agent.pid")
+                if execution is not None and remote_stage is not None and remote_stage.root
+                else None
+            ),
+            capability=capability,
+            binary=binary,
+        )
+    ) as stream:
+        async for event in stream:
+            if event.event == "provider_exit":
+                try:
+                    evidence = json.loads(event.text)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    evidence = {"unparsed": event.text[:400]}
+                outcome.exit_evidence = (
+                    evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
+                )
+                _record_provider_exit(
+                    execution,
+                    outcome,
+                    workspace=workspace,
+                    remote_stage=remote_stage,
+                )
+                continue
+            if event.event == "paused":
+                outcome.paused = True
+            if event.event == "session" and event.session_id:
+                outcome.session_id = event.session_id
+                if execution_host and execution is None:
+                    continue
+            if event.event == "answer":
+                outcome.answers.append(event.text)
+                continue
+            if event.event == "message":
+                if event.text.strip() and len(outcome.trace_messages) < 16:
+                    outcome.trace_messages.append(event.text.strip()[:16_000])
+                continue
+            if event.event == "error":
+                outcome.failed = True
+            if event.event == "done":
+                outcome.completed = True
+                continue
+            yield _sse(event)
+
+
+def _record_provider_exit(
+    execution: AgentTaskExecution | None,
+    outcome: _ProviderOutcome,
+    *,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    if execution is None or outcome.exit_evidence is None or outcome.exit_recorded:
+        return
+    payload = dict(outcome.exit_evidence)
+    try:
+        if remote_stage is not None:
+            patch_exists = "patch.json" in remote_stage.list_workspace_files()
+        else:
+            patch_exists = (workspace / "patch.json").is_file()
+        payload["patch_json_exists"] = patch_exists
+    except (OSError, StateUnavailable, ValueError) as exc:
+        payload["patch_json_exists"] = None
+        payload["patch_check_error"] = " ".join(str(exc).split())[:400]
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "provider_exit",
+        payload,
+        tier="diagnostic",
+    )
+    outcome.exit_recorded = True
+
+
+def _record_patch_receipt(
+    execution: AgentTaskExecution | None,
+    patch: Patch,
+    *,
+    byte_length: int,
+) -> None:
+    if execution is None:
+        return
+    known_operations = {
+        "create_nodes",
+        "update_nodes",
+        "create_edges",
+        "remove_edges",
+        "supersede_nodes",
+        "merge_nodes",
+        "create_ambiguities",
+        "resolve_ambiguities",
+        "upsert_glossary",
+        "set_coverage",
+        "set_project_truth_scope",
+        "create_proposals",
+        "resolve_proposals",
+    }
+    operation_counts: dict[str, int] = {}
+    created_node_count = 0
+    created_edge_count = 0
+    for operation in patch.ops:
+        raw_kind = operation.get("op")
+        operation_kind = (
+            raw_kind if isinstance(raw_kind, str) and raw_kind in known_operations else "unknown"
+        )
+        operation_counts[operation_kind] = operation_counts.get(operation_kind, 0) + 1
+        if operation_kind == "create_nodes" and isinstance(operation.get("nodes"), list):
+            created_node_count += len(operation["nodes"])
+        if operation_kind == "create_edges" and isinstance(operation.get("edges"), list):
+            created_edge_count += len(operation["edges"])
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "patch_parsed",
+        {
+            "byte_length": byte_length,
+            "kind": patch.kind,
+            "author": patch.author,
+            "operation_count": len(patch.ops),
+            "operation_counts": operation_counts,
+            "created_node_count": created_node_count,
+            "created_edge_count": created_edge_count,
+            "processed_cursor_count": len(patch.processed_cursors),
+            "change_summary_count": len(patch.change_summary),
+        },
+        tier="diagnostic",
+    )
+
+
+def _record_patch_applied_receipt(
+    execution: AgentTaskExecution | None,
+    state: GraphState,
+) -> None:
+    if execution is None:
+        return
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "patch_applied",
+        {
+            "revision": state.revision,
+            "node_count": len(state.nodes),
+            "edge_count": len(state.edges),
+            "validation_message_count": len(state.validation_messages),
+        },
+    )
+
+
+def _safe_stage_name(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    if not name:
+        raise ValueError("run stage name is empty")
+    return name
+
+
+def _stage_context_paths(
+    context: RunContext | ChatContext,
+    service: ProjectService,
+    stage: RemoteRunStage,
+    execution_machine: str,
+) -> dict[str, object]:
+    """Repository and materialized-state pointers a remote agent can open."""
+
+    repositories = []
+    for repository in context.repositories:
+        if repository.machine == execution_machine:
+            repositories.append(repository.model_copy(update={"host": ""}))
+            continue
+        if not repository.host:
+            raise StateUnavailable(
+                f"Repository {repository.alias!r} is on {repository.machine!r}, which has no "
+                f"SSH host reachable from execution machine {execution_machine!r}. Run the "
+                "agent on that repository's machine or configure a reachable host."
+            )
+        repositories.append(repository)
+    updates: dict[str, object] = {"repositories": repositories}
+    state_repository = service.manifest.repository_map[service.manifest.state.repository]
+    if state_repository.machine != execution_machine:
+        raise StateUnavailable(
+            "Graph-writing agents must run on the canonical state machine; "
+            "cross-machine state staging is forbidden."
+        )
+    canonical = PurePosixPath(state_repository.path) / ".research"
+    for field in _STATE_PATH_FIELDS:
+        raw_path = getattr(context, field)
+        if raw_path:
+            updates[field] = str(canonical / Path(raw_path).name)
+    updates["facts_dir"] = str(canonical / "facts")
+    return updates
+
+
+def _session_bundle_relative_path(
+    session: SessionPointer | ConversationPointer,
+) -> Path:
+    key = session.key
+    parts = key.split("/", 3)
+    if len(parts) != 4:
+        raise ValueError(f"conversation session key is not reversible: {key!r}")
+    repository, machine, provider, session_id = parts
+    if provider != session.provider:
+        raise ValueError(f"conversation session provider does not match its key: {key!r}")
+    return Path(
+        quote(provider, safe=""),
+        quote(repository, safe=""),
+        quote(machine, safe=""),
+        f"{quote(session_id, safe='')}.jsonl",
+    )
+
+
+def _sse(event: AgentEvent) -> str:
+    return f"data: {event.model_dump_json()}\n\n"

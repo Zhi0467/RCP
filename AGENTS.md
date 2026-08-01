@@ -77,7 +77,8 @@ These boundaries are clean seams; parallel agents rarely collide across them.
 | Transport | `src/rcp/transport/` | SSH, canonical-state workspace, repo snapshots, remote run stage |
 | Sources | `src/rcp/sources/` | Claude/Codex JSONL discovery, indexing, slicing |
 | History | `src/rcp/history/` | append-only patch log, locking, materialized outputs |
-| Service/API | `src/rcp/service.py`, `src/rcp/api/app.py`, `src/rcp/projects.py`, `src/rcp/background.py` | request models, routes, project catalog, background runs |
+| Run orchestration | `src/rcp/runs/` | distinct Seed/Refresh, Work, Discuss, graph repair, and paper coach workflows; policy-neutral staging and event plumbing |
+| Service/API | `src/rcp/service.py`, `src/rcp/api/app.py`, `src/rcp/projects.py`, `src/rcp/background.py` | app construction, routes, project catalog, background task lifecycle |
 | Paper | `src/rcp/paper/` | draft store, canonical introduction, writing sessions |
 | Setup | `src/rcp/setup.py`, `src/rcp/config.py` | manifest rendering, preflight, manifest schema |
 | Providers | `src/rcp/providers.py`, `web/src/providers.ts` | the provider registry: ids, labels, auth probe, model catalog, launch command |
@@ -317,9 +318,10 @@ guarantees — surface the conflict instead of working around it.
 9. **A failed run keeps its scratch folder and its patch text.** The patch is
    persisted before validation runs, and the folder is deleted only after the
    patch applies — otherwise it ages out on a retention window. Recovery is
-   automatic (the ladder in `_stream_graph_run`): rescan the folder for the
-   patch, then hand validation errors back to the same live session for at most
-   two rounds. A graph-level rejection is never retried.
+   automatic (the ladder in
+   [`stream_graph_run`](src/rcp/runs/graph.py)): rescan the folder for the patch,
+   then hand validation errors back to the same live session for at most two
+   rounds. A graph-level rejection is never retried.
 10. **A conversation turn is not an ingest run.** Seed/refresh and conversation
    turns share the launcher and background lifecycle, nothing else. Discuss and
    Work assemble chat context
@@ -328,10 +330,11 @@ guarantees — surface the conflict instead of working around it.
    Work patch actually needs applying. Discuss receives no patch contract. A
    Work patch is optional and forbidden from touching coverage or cursors;
    asking a question and Work with no net graph change spend no revision. Keep
-   the Discuss, Work, and `_stream_graph_run` policy paths separate in
-   [app.py](src/rcp/api/app.py) rather than reintroducing a shared `is_chat`
-   branch. Shared *plumbing* is fine and expected — they call the same launch,
-   receipt, and event-pump helpers. The line is the discriminator: no
+   the Discuss, Work, and Seed/Refresh policy paths in distinct modules and entry
+   points under [`src/rcp/runs/`](src/rcp/runs/) rather than reintroducing a
+   shared `is_chat` branch. Shared *plumbing* is fine and expected — they call
+   the same launch, receipt, staging, and event-pump helpers. The line is the
+   discriminator: no
    shared helper may take a `kind`, `is_chat`, `surface`, or equivalent parameter,
    because anything that must know which surface it serves is policy and belongs
    in the caller. Leaving some lines duplicated is the correct outcome, not a
@@ -457,6 +460,9 @@ carrying forward, and correct an entry when they change their mind.
 
 - Implementation is delegated and fanned out; reading, planning, verification,
   and review stay with the main agent.
+- Agent execution policy belongs in individual run modules while `app.py`
+  remains composition and routes; extract behavior unchanged before cleanup or
+  deduplication.
 - A review is not a handoff: fix important bugs or gaps it finds in the same
   task, then verify the repaired behavior.
 - UI-level verification is expected for features, user-reported bugs, and

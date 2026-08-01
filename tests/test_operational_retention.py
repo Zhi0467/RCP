@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from rcp.api.app import _first_chat_base_revision
 from rcp.background import AgentProcessControl, AgentTaskExecution
+from rcp.runs.chat import _first_chat_base_revision
 from rcp.storage import AgentTaskRecord, AppStore
 
 
