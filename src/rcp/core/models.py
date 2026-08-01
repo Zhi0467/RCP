@@ -28,10 +28,29 @@ class SourceRef(BaseModel):
     excerpt: str = Field(max_length=800)
 
 
+class ExperimentDecisionPin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: str
+    decision_revision: int = Field(ge=0)
+    selected_option: str = Field(min_length=1)
+
+
+class ExperimentAttemptDebug(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mechanical_fault: str = Field(min_length=1)
+    change: str = Field(min_length=1)
+    predicted_effect: str = Field(min_length=1)
+
+
 class ExperimentAttempt(BaseModel):
     id: str
     sequence: int = Field(ge=1)
     purpose: str
+    attempt_kind: Literal["external_run", "proposal_only"] = "external_run"
+    decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
+    debug: ExperimentAttemptDebug | None = None
     configuration: str = ""
     status: Literal[
         "planned", "submitted", "running", "failed", "completed", "cancelled", "superseded"
@@ -96,6 +115,7 @@ class Experiment(BaseNode):
     expected_outcomes: list[str] = Field(default_factory=list)
     interpretation_rules: list[str] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
+    attempt_ceiling: int = Field(default=5, ge=1)
     status: Literal[
         "proposed",
         "designing",
@@ -154,6 +174,7 @@ HUMAN_EDITABLE_NODE_FIELDS: dict[str, frozenset[str]] = {
             "expected_outcomes",
             "interpretation_rules",
             "completion_criteria",
+            "attempt_ceiling",
             "current_summary",
             "next_action",
         }
@@ -399,7 +420,7 @@ class GraphState(BaseModel):
 
 class Patch(BaseModel):
     revision: int = 0
-    kind: Literal["seed", "refresh", "chat", "work", "approval"]
+    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval"]
     author: Literal["agent", "human"]
     created_at: datetime = Field(default_factory=utc_now)
     summary: str
@@ -410,3 +431,7 @@ class Patch(BaseModel):
     change_summary: list[str] = Field(default_factory=list)
     admission: Literal["accepted", "rejected"] = "accepted"
     admission_messages: list[ValidationMessage] = Field(default_factory=list)
+    # RCP stamps these after reading an experiment-loop deliverable. They are
+    # persisted so canonical replay enforces the same control boundary.
+    experiment_control_node_id: str | None = None
+    experiment_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)

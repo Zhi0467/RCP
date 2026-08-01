@@ -1706,6 +1706,44 @@ button:disabled {
 .attempt-outcome {
   color: var(--ink-soft);
 }
+.attempt-kind {
+  background: var(--amber-soft);
+  border-radius: 999px;
+  color: var(--walnut);
+  display: inline-block;
+  font-size: 7px;
+  margin-left: 6px;
+  padding: 2px 5px;
+  text-transform: uppercase;
+}
+.attempt-pins,
+.attempt-debug {
+  display: flex;
+  font-size: 8px;
+  gap: 5px 10px;
+  grid-column: 2 / -1;
+}
+.attempt-pins {
+  color: var(--cobalt-dark);
+  flex-wrap: wrap;
+  font-family: var(--mono);
+}
+.attempt-pins > span {
+  background: var(--cobalt-soft);
+  padding: 3px 5px;
+}
+.attempt-debug {
+  background: var(--paper-deep);
+  border-left: 2px solid var(--mustard);
+  color: var(--ink-soft);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  line-height: 1.4;
+  padding: 6px 8px;
+}
+.attempt-debug > strong {
+  color: var(--walnut);
+}
 .next-action {
   align-items: center;
   background: var(--surface-cool);
@@ -2267,6 +2305,12 @@ button:disabled {
   font-weight: 650;
   letter-spacing: 0.06em;
 }
+.node-edit-error {
+  color: var(--red);
+  display: block;
+  font-size: 9px;
+  margin-top: 5px;
+}
 .node-edit-field input,
 .node-edit-field textarea,
 .node-edit-field select {
@@ -2292,6 +2336,10 @@ button:disabled {
   border-color: var(--cobalt);
   box-shadow: 0 0 0 3px var(--cobalt-soft);
 }
+.node-edit-field input[aria-invalid="true"] {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--red-soft);
+}
 .node-edit-field input:disabled,
 .node-edit-field textarea:disabled {
   opacity: 0.65;
@@ -2300,6 +2348,98 @@ button:disabled {
   color: var(--muted);
   font-size: 9px;
   padding-left: 6px;
+}
+.experiment-control {
+  background: color-mix(in srgb, var(--forest) 6%, var(--sheet));
+  border-left: 3px solid var(--forest);
+  margin: 0 -22px;
+  padding: 14px 22px !important;
+}
+.experiment-control.active {
+  background: color-mix(in srgb, var(--mustard) 10%, var(--sheet));
+  border-left-color: var(--mustard);
+}
+.experiment-control-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.experiment-control-heading > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.experiment-control-heading > div:first-child strong {
+  font: 700 18px var(--mono);
+}
+.experiment-loop-marker {
+  background: var(--amber-soft);
+  border: 1px solid color-mix(in srgb, var(--mustard) 50%, var(--rule));
+  border-radius: 999px;
+  color: var(--walnut);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+.button.experiment-run-button {
+  background: var(--forest);
+  border-color: var(--forest);
+  margin-left: auto;
+}
+.button.experiment-run-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--forest) 84%, black);
+  border-color: color-mix(in srgb, var(--forest) 84%, black);
+}
+.button.experiment-run-button:disabled {
+  background: var(--faint);
+  border-color: var(--line);
+}
+.experiment-gate-reasons {
+  color: var(--red);
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+  line-height: 1.45;
+  margin: 10px 0 0;
+  padding-left: 17px;
+}
+.experiment-attempts {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.experiment-attempts li {
+  align-items: center;
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 8px;
+  padding-left: 8px;
+}
+.experiment-attempts li.open {
+  border-left-color: var(--amber);
+}
+.experiment-attempt-status {
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+.experiment-attempt-pins {
+  font-family: var(--mono-family, monospace);
+  opacity: 0.7;
+}
+.experiment-decision-drift {
+  color: var(--amber);
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+  line-height: 1.45;
+  margin: 10px 0 0;
+  padding-left: 17px;
 }
 .drawer-actions {
   align-items: center;
@@ -3009,6 +3149,61 @@ button:disabled {
   display: block;
   flex: 1;
 }
+.chat-watcher-count {
+  align-items: center;
+  background: color-mix(in srgb, var(--cobalt) 10%, var(--sheet));
+  border: 1px solid color-mix(in srgb, var(--cobalt) 30%, var(--line));
+  border-radius: 999px;
+  color: var(--cobalt-dark);
+  display: inline-flex;
+  font: 700 9px var(--mono);
+  gap: 4px;
+  padding: 4px 7px;
+}
+.chat-watchers {
+  background: var(--paper-deep);
+  border-bottom: 1px solid var(--line);
+  max-height: 150px;
+  overflow: auto;
+  padding: 7px 10px 8px;
+}
+.chat-watchers > header {
+  align-items: center;
+  color: var(--cobalt-dark);
+  display: flex;
+  font-size: 9px;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.chat-watcher-row {
+  align-items: baseline;
+  border-left: 2px solid var(--cobalt);
+  display: grid;
+  gap: 2px 8px;
+  grid-template-columns: minmax(90px, 0.45fr) minmax(0, 1fr);
+  margin-top: 4px;
+  padding: 4px 7px;
+}
+.chat-watcher-row.degraded {
+  background: var(--red-soft);
+  border-left-color: var(--red);
+}
+.chat-watcher-row > strong {
+  font: 700 9px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-watcher-row time {
+  color: var(--muted);
+  font-size: 8px;
+}
+.chat-watcher-row > span {
+  color: var(--red);
+  font-size: 8px;
+  grid-column: 1 / -1;
+  line-height: 1.4;
+}
 .node-chat-lines {
   flex: 1;
   overflow: auto;
@@ -3054,6 +3249,23 @@ button:disabled {
 .chat-turn-mode.work {
   background: color-mix(in srgb, white 88%, var(--forest));
   color: var(--forest);
+}
+.chat-turn-trigger {
+  border-radius: 999px;
+  display: block;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  margin: 0 0 6px;
+  padding: 3px 6px;
+  text-transform: uppercase;
+  width: fit-content;
+}
+.chat-turn-trigger.watcher {
+  background: color-mix(in srgb, var(--cobalt) 11%, var(--sheet));
+  border: 1px solid color-mix(in srgb, var(--cobalt) 35%, var(--line));
+  color: var(--cobalt-dark);
 }
 .chat-markdown {
   white-space: normal;

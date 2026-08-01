@@ -285,6 +285,44 @@ test("durable chat lines retain their task identity with a legacy message fallba
   assert.equal(chatMessageTranscriptLine({ ...record, operation_id: null }).taskId, "message-id");
 });
 
+test("a watcher wake reconstructs only an attributed agent line", () => {
+  const wake = task({
+    operation_id: "watcher-wake",
+    request: {
+      chat_id: "chat",
+      trigger: "watcher",
+      message: "Inspect watcher/one and watcher/two",
+      mode: "work",
+    },
+    result: { messages: ["Both detached jobs are finished."] },
+  });
+  const transcript = reconstructTaskTranscript([wake]);
+  assert.deepEqual(
+    transcript.map(({ role, text, trigger }) => ({ role, text, trigger })),
+    [
+      {
+        role: "agent",
+        text: "Both detached jobs are finished.",
+        trigger: "watcher",
+      },
+    ],
+  );
+});
+
+test("durable watcher messages never occupy the human side of a conversation", () => {
+  const line = chatMessageTranscriptLine({
+    message_id: "watcher-message",
+    operation_id: "watcher-task",
+    role: "assistant",
+    text: "The watched work is gone.",
+    mode: "work",
+    graph_update: null,
+    trigger: "watcher",
+  });
+  assert.equal(line.role, "agent");
+  assert.equal(line.trigger, "watcher");
+});
+
 test("artifact URLs contain only RCP identifiers and the explicit action", () => {
   assert.equal(
     artifactUrl("project/id", "task id", "artifact#id", "preview"),

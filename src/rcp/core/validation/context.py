@@ -27,6 +27,7 @@ class OpContext:
     default_run_truth_scope: set[str]
     state_repository: str | None
     mode: Literal["admission", "replay"]
+    experiment_control_node_id: str | None = None
 
 
 #: Validates one operation, reporting into ``ctx.report``. Returns the oldest

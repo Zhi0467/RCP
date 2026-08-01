@@ -86,7 +86,16 @@ def validate_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
             ctx.report,
             authoring=False,
         )
-        if ctx.patch.kind != "approval" and is_gated_update(node, changes):
+        is_control_update = (
+            ctx.patch.kind == "experiment_loop"
+            and node_id == ctx.experiment_control_node_id
+            and set(changes) <= {"attempts", "status"}
+        )
+        if (
+            ctx.patch.kind != "approval"
+            and not is_control_update
+            and is_gated_update(node, changes)
+        ):
             ctx.report.reject(
                 "gated-transition",
                 f"Update to {node_id} requires a Proposal and human approval.",

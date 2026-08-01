@@ -1,8 +1,22 @@
-import { AlertTriangle, Check, MessageCircle, Network, PencilLine, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  FlaskConical,
+  MessageCircle,
+  Network,
+  PencilLine,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DraggableWindow } from "./DraggableWindow";
-import { changedNodeFields, editableNodeFields, nodeEditDraft } from "../nodeEditing";
+import {
+  changedNodeFields,
+  editableNodeFields,
+  nodeEditDraft,
+  type NodeEditField,
+} from "../nodeEditing";
 import type { DraftNodeValue } from "../humanDraft";
 import { beliefCausePresentation, edgeValidationFlags, nodeBeliefTransitions } from "../nodeDetail";
 import {
@@ -15,6 +29,7 @@ import {
 import type {
   BeliefTransition,
   Edge,
+  ExperimentControlState,
   GlossaryTerm,
   GraphNode,
   OntologyState,
@@ -31,11 +46,16 @@ interface Props {
   ontology: OntologyState;
   mutationsDisabled?: boolean;
   stagedNewNode?: boolean;
+  experimentControl?: ExperimentControlState | null;
+  onReleaseAttempt?: (attemptId: string) => void;
+  experimentRunDisabled?: boolean;
+  experimentRunBusy?: boolean;
   onUnstage?: () => void;
   onClose: () => void;
   onBeginEdit: () => void;
   onStanding: (standing: GraphNode["standing"]) => void;
   onStage: (changes: Record<string, DraftNodeValue>) => void;
+  onRunExperiment?: () => void;
   onOpenChat: () => void;
   onExploreRelations: () => void;
   onSelectNode: (nodeId: string) => void;
@@ -73,11 +93,16 @@ export function DetailDrawer({
   ontology,
   mutationsDisabled = false,
   stagedNewNode = false,
+  experimentControl = null,
+  onReleaseAttempt,
+  experimentRunDisabled = false,
+  experimentRunBusy = false,
   onUnstage,
   onClose,
   onBeginEdit,
   onStanding,
   onStage,
+  onRunExperiment,
   onOpenChat,
   onExploreRelations,
   onSelectNode,
@@ -92,6 +117,17 @@ export function DetailDrawer({
     [draft, editBase, ontology],
   );
   const changeCount = Object.keys(changes).length;
+  const editErrors = useMemo(
+    () =>
+      Object.fromEntries(
+        editFields.flatMap((field) => {
+          const error = nodeEditFieldError(field, draft[field.key] ?? "");
+          return error ? [[field.key, error]] : [];
+        }),
+      ),
+    [draft, editFields],
+  );
+  const editInvalid = Object.keys(editErrors).length > 0;
 
   useEffect(() => {
     if (!editing) {
@@ -122,7 +158,7 @@ export function DetailDrawer({
     setEditing(false);
   };
   const stage = () => {
-    if (changeCount === 0 || mutationsDisabled) return;
+    if (changeCount === 0 || mutationsDisabled || editInvalid) return;
     onStage(changes);
     standingBeforeEdit.current = null;
     setEditing(false);
@@ -189,14 +225,24 @@ export function DetailDrawer({
                     {field.nullable ? <span className="node-field-optional">Optional</span> : null}
                   </span>
                   {field.kind === "text" || field.kind === "number" ? (
-                    <input
-                      type={field.kind === "number" ? "number" : "text"}
-                      autoFocus={field.key === "title"}
-                      value={draft[field.key] ?? ""}
-                      onChange={(event) =>
-                        setDraft((current) => ({ ...current, [field.key]: event.target.value }))
-                      }
-                    />
+                    <>
+                      <input
+                        type={field.kind === "number" ? "number" : "text"}
+                        min={field.min}
+                        step={field.kind === "number" ? (field.integer ? 1 : "any") : undefined}
+                        aria-invalid={Boolean(editErrors[field.key])}
+                        autoFocus={field.key === "title"}
+                        value={draft[field.key] ?? ""}
+                        onChange={(event) =>
+                          setDraft((current) => ({ ...current, [field.key]: event.target.value }))
+                        }
+                      />
+                      {editErrors[field.key] && (
+                        <small className="node-edit-error" role="alert">
+                          {editErrors[field.key]}
+                        </small>
+                      )}
+                    </>
                   ) : field.kind === "boolean" ? (
                     <select
                       value={draft[field.key] ?? ""}
@@ -226,6 +272,86 @@ export function DetailDrawer({
                 <span className="eyebrow">{presentation.label}</span>
                 <p>{formatValue(presentation.value)}</p>
               </section>
+
+              {node.type === "experiment" && experimentControl && onRunExperiment && (
+                <section
+                  className={`experiment-control${experimentControl.active ? " active" : ""}`}
+                >
+                  <div className="experiment-control-heading">
+                    <div>
+                      <span className="eyebrow">Attempt budget</span>
+                      <strong>
+                        {experimentControl.attempts_used} / {experimentControl.attempt_ceiling}
+                      </strong>
+                    </div>
+                    {experimentControl.active && (
+                      <span className="experiment-loop-marker">Active loop</span>
+                    )}
+                    <button
+                      className="button primary compact experiment-run-button"
+                      type="button"
+                      disabled={
+                        mutationsDisabled ||
+                        experimentRunDisabled ||
+                        experimentRunBusy ||
+                        experimentControl.active ||
+                        !experimentControl.ready
+                      }
+                      onClick={onRunExperiment}
+                    >
+                      <FlaskConical size={13} /> {experimentRunBusy ? "Starting" : "Run"}
+                    </button>
+                  </div>
+                  {experimentControl.reasons.length > 0 && (
+                    <ul className="experiment-gate-reasons" aria-label="Run requirements">
+                      {experimentControl.reasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {(node.attempts ?? []).length > 0 && (
+                    <ol className="experiment-attempts" aria-label="Attempts">
+                      {(node.attempts ?? []).map((attempt) => {
+                        const open = ["planned", "submitted", "running"].includes(attempt.status);
+                        return (
+                          <li key={attempt.id} className={open ? "open" : undefined}>
+                            <span className="experiment-attempt-status">{attempt.status}</span>
+                            <span>{attempt.purpose}</span>
+                            {attempt.decision_bundle.length > 0 && (
+                              <span className="experiment-attempt-pins">
+                                {attempt.decision_bundle
+                                  .map((pin) => pin.selected_option)
+                                  .join(", ")}
+                              </span>
+                            )}
+                            {open && onReleaseAttempt && (
+                              <button
+                                className="button compact"
+                                type="button"
+                                disabled={mutationsDisabled}
+                                onClick={() => onReleaseAttempt(attempt.id)}
+                              >
+                                Stop attempt
+                              </button>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+                  {experimentControl.decision_drift.length > 0 && (
+                    <ul className="experiment-decision-drift" aria-label="Decision drift">
+                      {experimentControl.decision_drift.map((drift) => (
+                        <li key={drift.decision_id}>
+                          {drift.proposed
+                            ? `${drift.decision_id} has a proposed change. The latest attempt ran under ${drift.pinned_option}.`
+                            : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} since the latest attempt ran under ${drift.pinned_option}.`}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
 
               {presentation.context.length > 0 && (
                 <section className="node-context">
@@ -389,7 +515,7 @@ export function DetailDrawer({
                 <button
                   className="button primary compact"
                   type="button"
-                  disabled={mutationsDisabled || changeCount === 0}
+                  disabled={mutationsDisabled || changeCount === 0 || editInvalid}
                   onClick={stage}
                 >
                   <Check size={14} /> Done
@@ -456,6 +582,19 @@ function hasValue(value: unknown): boolean {
     value !== "" &&
     !(Array.isArray(value) && value.length === 0)
   );
+}
+
+function nodeEditFieldError(field: NodeEditField, value: string): string | null {
+  if (field.kind !== "number") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "Enter a number.";
+  if (field.integer && !Number.isInteger(number)) return "Enter a whole number.";
+  if (field.min !== undefined && number < field.min) {
+    return field.integer
+      ? `Enter a whole number of at least ${field.min}.`
+      : `Enter a number of at least ${field.min}.`;
+  }
+  return null;
 }
 
 function formatValue(value: unknown): React.ReactNode {

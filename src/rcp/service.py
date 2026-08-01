@@ -25,8 +25,10 @@ from rcp.agents import (
     RunContext,
 )
 from rcp.config import AgentSurface, AgentSurfaceConfig, MachineConfig, Manifest
+from rcp.control import derive_experiment_control_state
 from rcp.core.models import (
     HUMAN_EDITABLE_NODE_FIELDS,
+    ExperimentDecisionPin,
     GraphState,
     OntologyState,
     Patch,
@@ -56,6 +58,8 @@ _SETTINGS_SURFACES: tuple[AgentSurface, ...] = (
 
 
 ConversationMode = Literal["discuss", "work"]
+TaskTrigger = Literal["human", "experiment_run", "watcher"]
+GraphPatchKind = Literal["work", "experiment_loop"]
 
 
 class GraphUpdateResult(BaseModel):
@@ -86,6 +90,7 @@ class ChatMessage(BaseModel):
     applied_revision: int | None = Field(default=None, ge=0)
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = None
+    trigger: TaskTrigger = "human"
 
 
 class ChatSummary(BaseModel):
@@ -139,6 +144,7 @@ class _StoredChatRecord(BaseModel):
     applied_revision: int | None = Field(default=None, alias="appliedRevision", ge=0)
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
+    trigger: TaskTrigger = "human"
 
 
 class ReviewRequest(BaseModel):
@@ -168,11 +174,14 @@ class GraphSyncNodeChange(BaseModel):
     base_updated_rev: int = Field(ge=0)
     changes: dict[str, Any] = Field(default_factory=dict)
     standing: Literal["asserted", "accepted", "contested"] | None = None
+    cancel_attempt_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_change(self) -> GraphSyncNodeChange:
-        if not self.changes and self.standing is None:
-            raise ValueError("a staged node must change wording or standing")
+        if not self.changes and self.standing is None and not self.cancel_attempt_ids:
+            raise ValueError("a staged node must change wording, standing, or an open attempt")
+        if len(self.cancel_attempt_ids) != len(set(self.cancel_attempt_ids)):
+            raise ValueError("a staged node cannot cancel the same attempt twice")
         return self
 
 
@@ -228,6 +237,13 @@ class RunRequest(BaseModel):
     chat_id: str | None = None
     session_id: str | None = None
     mode: ConversationMode = "discuss"
+    trigger: TaskTrigger = "human"
+    patch_kind: GraphPatchKind = "work"
+    control_node_id: str | None = None
+    control_revision: int | None = Field(default=None, ge=0)
+    control_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
+    control_completion_criteria: list[str] = Field(default_factory=list)
+    watcher_ids: list[str] = Field(default_factory=list)
 
 
 class CoachRequest(BaseModel):
@@ -501,6 +517,7 @@ class ProjectService:
                 applied_revision=record.applied_revision,
                 mode=record.mode,
                 graph_update=record.graph_update,
+                trigger=record.trigger,
             )
             for record in records
         ]
@@ -548,6 +565,11 @@ class ProjectService:
             surface: self.manifest.agent_profile(surface).model_dump(mode="json")
             for surface in ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
         }
+        experiment_control = {
+            node.id: derive_experiment_control_state(state, node.id).model_dump(mode="json")
+            for node in state.nodes.values()
+            if node.type == "experiment"
+        }
         return {
             "name": self.manifest.name,
             "revision": state.revision,
@@ -560,6 +582,7 @@ class ProjectService:
             "machines": [machine.model_dump() for machine in self.manifest.machines],
             "primary_question": primary,
             "last_refresh_at": state.last_refresh_at,
+            "experiment_control": experiment_control,
             "counts": {
                 "pending_proposals": len(pending),
                 "open_ambiguities": len(open_ambiguities),
@@ -985,6 +1008,26 @@ class ProjectService:
                         }
                     )
                     change_summary.append(f"Updated wording for {node.id}.")
+            if staged.cancel_attempt_ids:
+                ops.append(
+                    {
+                        "op": "update_nodes",
+                        "nodes": [
+                            {
+                                "id": node.id,
+                                "base_updated_rev": staged.base_updated_rev,
+                                "changes": {
+                                    "attempts": self._cancelled_attempts(
+                                        node, staged.cancel_attempt_ids
+                                    )
+                                },
+                            }
+                        ],
+                    }
+                )
+                change_summary.append(
+                    f"Released {len(staged.cancel_attempt_ids)} open attempt(s) on {node.id}."
+                )
             if staged.standing is not None and staged.standing != node.standing:
                 ops.append(
                     {
@@ -1006,6 +1049,42 @@ class ProjectService:
                 )
 
         return patches
+
+    @staticmethod
+    def _cancelled_attempts(node: ProjectNode, attempt_ids: list[str]) -> list[dict[str, Any]]:
+        """Close the named open attempts, leaving every other attempt untouched.
+
+        The human releases an attempt whose watcher can no longer answer. Only an
+        open attempt can be released — this never rewrites a finished record.
+        """
+
+        from rcp.core.models import Experiment, utc_now
+
+        if not isinstance(node, Experiment):
+            raise ValueError(f"{node.id} has no attempts to release.")
+        open_ids = {
+            attempt.id
+            for attempt in node.attempts
+            if attempt.status in {"planned", "submitted", "running"}
+        }
+        unknown = sorted(set(attempt_ids) - open_ids)
+        if unknown:
+            raise ValueError(f"{node.id} has no open attempt named: {', '.join(unknown)}.")
+        finished_at = utc_now()
+        return [
+            (
+                attempt.model_copy(
+                    update={
+                        "status": "cancelled",
+                        "finished_at": finished_at,
+                        "failure_reason": "Released by the human.",
+                    }
+                )
+                if attempt.id in set(attempt_ids)
+                else attempt
+            ).model_dump(mode="json")
+            for attempt in node.attempts
+        ]
 
     def edit_node(self, node_id: str, request: NodeEditRequest) -> GraphState:
         state = self.history.state()

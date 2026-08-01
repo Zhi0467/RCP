@@ -50,6 +50,15 @@ def _clear_stale_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> 
     (workspace / "patch.json").unlink(missing_ok=True)
 
 
+def _clear_stale_watch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
+    """Drop a prior turn's watcher request from the reusable conversation stage."""
+
+    if remote_stage is not None:
+        remote_stage.remove_workspace_file("watch.json")
+        return
+    (workspace / "watch.json").unlink(missing_ok=True)
+
+
 def _prepare_local_artifact_directory(
     stage: Path,
     scope_id: str,
@@ -193,6 +202,32 @@ def _read_chat_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> st
     if not path.is_file():
         return None
     return path.read_text(encoding="utf-8")
+
+
+def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
+    """Read the exact optional watcher deliverable without searching scratch output."""
+
+    if remote_stage is not None:
+        if "watch.json" not in remote_stage.list_workspace_files():
+            return None
+        return remote_stage.read_text(remote_stage.workspace / "watch.json")
+    path = workspace / "watch.json"
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def _existing_watch_digest(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> str | None:
+    try:
+        text = _read_watch_request(workspace, remote_stage)
+    except (OSError, StateUnavailable, ValueError):
+        return None
+    if text is None:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _record_chat_context_receipt(
@@ -722,15 +757,20 @@ def _append_chat_exchange(
             "timestamp": timestamp,
             "operationId": execution.operation_id if execution is not None else None,
             "mode": request.mode,
+            "trigger": request.trigger,
         }
-        records = [
-            {
-                **common,
-                "uuid": str(uuid.uuid4()),
-                "type": "user",
-                "role": "user",
-                "text": request.message,
-            },
+        records = []
+        if request.trigger != "watcher":
+            records.append(
+                {
+                    **common,
+                    "uuid": str(uuid.uuid4()),
+                    "type": "user",
+                    "role": "user",
+                    "text": request.message,
+                }
+            )
+        records.append(
             {
                 **common,
                 "uuid": str(uuid.uuid4()),
@@ -741,8 +781,8 @@ def _append_chat_exchange(
                 "graphUpdate": (
                     graph_update.model_dump(mode="json") if graph_update is not None else None
                 ),
-            },
-        ]
+            }
+        )
         lock_path = service.history.workspace.root / ".chat.lock"
         with lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -785,6 +825,7 @@ def _append_chat_graph_receipt(
             "timestamp": datetime.now(UTC).isoformat(),
             "operationId": execution.operation_id,
             "mode": "work",
+            "trigger": request.trigger,
             "uuid": str(uuid.uuid4()),
             "type": "assistant",
             "role": "assistant",

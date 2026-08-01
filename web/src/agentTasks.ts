@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ConversationMode,
   GraphUpdateResult,
+  TaskTrigger,
 } from "./types";
 
 export interface TaskTranscriptLine {
@@ -13,6 +14,7 @@ export interface TaskTranscriptLine {
   taskId: string;
   artifacts?: AgentArtifactDescriptor[];
   mode?: ConversationMode | null;
+  trigger?: TaskTrigger;
   graphUpdate?: GraphUpdateResult | null;
 }
 
@@ -114,10 +116,11 @@ export function chatTasksMissingFromHistory(
 
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
   return {
-    role: message.role === "user" ? "human" : "agent",
+    role: message.role === "user" && message.trigger !== "watcher" ? "human" : "agent",
     text: message.text,
     taskId: message.operation_id ?? message.message_id,
     mode: message.mode,
+    trigger: message.trigger,
     graphUpdate: message.graph_update,
   };
 }
@@ -127,8 +130,11 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const lines: TaskTranscriptLine[] = [];
     const message = textValue(task.request.message);
     const mode = conversationMode(task.request.mode);
+    const trigger = taskTrigger(task.request.trigger);
     const graphUpdate = task.result?.graph_update ?? null;
-    if (message) lines.push({ role: "human", text: message, taskId: task.operation_id, mode });
+    if (message && trigger === "human") {
+      lines.push({ role: "human", text: message, taskId: task.operation_id, mode, trigger });
+    }
     const messages = Array.isArray(task.result?.messages)
       ? task.result.messages.filter(
           (item): item is string => typeof item === "string" && item.trim().length > 0,
@@ -141,6 +147,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         text,
         taskId: task.operation_id,
         mode,
+        trigger,
         ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
         ...(index === messages.length - 1 && graphUpdate ? { graphUpdate } : {}),
       }),
@@ -151,13 +158,14 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         text: "",
         taskId: task.operation_id,
         mode,
+        trigger,
         ...(artifacts.length ? { artifacts } : {}),
         ...(graphUpdate ? { graphUpdate } : {}),
       });
     }
     const graphOnlyRejection = task.status === "succeeded" && graphUpdate?.status === "rejected";
     if (task.error && !graphOnlyRejection) {
-      lines.push({ role: "error", text: task.error, taskId: task.operation_id });
+      lines.push({ role: "error", text: task.error, taskId: task.operation_id, trigger });
     } else if (
       task.status === "failed" ||
       task.status === "interrupted" ||
@@ -167,6 +175,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         role: task.status === "failed" ? "error" : "meta",
         text: task.status_message,
         taskId: task.operation_id,
+        trigger,
       });
     }
     return lines;
@@ -204,6 +213,10 @@ function textValue(value: unknown): string | null {
 
 function conversationMode(value: unknown): ConversationMode | null {
   return value === "discuss" || value === "work" ? value : null;
+}
+
+function taskTrigger(value: unknown): TaskTrigger {
+  return value === "experiment_run" || value === "watcher" ? value : "human";
 }
 
 function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {

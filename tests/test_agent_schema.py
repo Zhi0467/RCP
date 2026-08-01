@@ -58,6 +58,8 @@ def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects()
     assert "source_id" not in rendered
     assert "admission" not in schema["properties"]
     assert "admission_messages" not in schema["properties"]
+    assert "experiment_control_node_id" not in schema["properties"]
+    assert "experiment_decision_bundle" not in schema["properties"]
     assert "ValidationMessage" not in schema["$defs"]
     assert "layer" not in schema["$defs"]["NewEdge"]["properties"]
     for definition in ("NodeUpdate", "SupersedeNode", "NodeMerge"):

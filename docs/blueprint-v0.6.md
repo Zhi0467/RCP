@@ -1,7 +1,7 @@
 # RCP — Blueprint v0.6
 
 This document is the v0.6 amendment to
-[`research-control-panel-blueprint-v0.5.md`](research-control-panel-blueprint-v0.5.md).
+[`research-control-panel-blueprint-v0.5.md`](archive/research-control-panel-blueprint-v0.5.md).
 Everything in v0.5 remains authoritative except where this amendment explicitly
 replaces it. In particular, this amendment supersedes v0.5 D10–D12 wherever
 they require every chat turn to be a graph-update primitive or prohibit project

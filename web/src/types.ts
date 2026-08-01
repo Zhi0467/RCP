@@ -15,6 +15,8 @@ export type AgentTaskKind = AgentSurface;
 export type AgentTaskStatus =
   "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
 export type ConversationMode = "discuss" | "work";
+export type TaskTrigger = "human" | "experiment_run" | "watcher";
+export type GraphPatchKind = "work" | "experiment_loop";
 export type AgentCapability = "discuss" | "work_auto" | "scratch_patch" | "paper_readonly";
 
 export interface Health {
@@ -62,6 +64,8 @@ export interface GraphNode {
   validity?: string;
   origin?: "internal_run" | "external_publication" | "external_instance" | "analytic" | "unknown";
   attempts?: ExperimentAttempt[];
+  attempt_ceiling?: number;
+  completion_criteria?: string[];
   draft_touched?: boolean;
   [key: string]: unknown;
 }
@@ -72,10 +76,63 @@ export interface ExperimentAttempt {
   id: string;
   sequence: number;
   purpose: string;
+  attempt_kind: "external_run" | "proposal_only";
+  decision_bundle: ExperimentDecisionPin[];
+  debug?: ExperimentAttemptDebug | null;
   status: string;
   outcome?: string | null;
   failure_reason?: string | null;
   job_refs: string[];
+}
+
+export interface ExperimentDecisionPin {
+  decision_id: string;
+  decision_revision: number;
+  selected_option: string;
+}
+
+export interface ExperimentAttemptDebug {
+  mechanical_fault: string;
+  change: string;
+  predicted_effect: string;
+}
+
+export interface DecisionDrift {
+  decision_id: string;
+  pinned_option: string;
+  pinned_revision: number;
+  current_option: string | null;
+  current_status: string | null;
+  proposed: boolean;
+}
+
+export interface ExperimentControlState {
+  ready: boolean;
+  reasons: string[];
+  attempts_used: number;
+  attempt_ceiling: number;
+  active: boolean;
+  governing_decisions: ExperimentDecisionPin[];
+  decision_drift: DecisionDrift[];
+}
+
+export interface WatcherRecord {
+  watcher_id: string;
+  project_id: string;
+  origin_operation_id: string;
+  chat_id: string;
+  node_id: string | null;
+  execution_host: string;
+  check_command: string;
+  log_path: string;
+  cwd: string;
+  status: "active" | "degraded" | "completed" | "stopped";
+  created_at: string;
+  last_checked_at: string | null;
+  last_error: string | null;
+  completed_at: string | null;
+  notified: boolean;
+  notification_operation_id: string | null;
 }
 
 export interface Edge {
@@ -267,6 +324,13 @@ export interface AgentTaskRequest {
   chat_id?: string | null;
   session_id?: string | null;
   mode?: ConversationMode;
+  trigger?: TaskTrigger;
+  patch_kind?: GraphPatchKind;
+  control_node_id?: string | null;
+  control_revision?: number | null;
+  control_decision_bundle?: ExperimentDecisionPin[];
+  control_completion_criteria?: string[];
+  watcher_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -361,6 +425,7 @@ export interface ChatMessage {
   applied_revision: number | null;
   mode: ConversationMode | null;
   graph_update: GraphUpdateResult | null;
+  trigger: TaskTrigger;
 }
 
 export interface ChatTranscript extends ChatSummary {
@@ -415,6 +480,7 @@ export interface ProjectSnapshot {
   machines: Machine[];
   primary_question?: GraphNode | null;
   last_refresh_at?: string | null;
+  experiment_control: Record<string, ExperimentControlState>;
   counts: {
     pending_proposals: number;
     open_ambiguities: number;

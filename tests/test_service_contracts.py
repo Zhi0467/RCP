@@ -21,6 +21,13 @@ def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph(
         "chat_id": None,
         "session_id": None,
         "mode": "work",
+        "trigger": "human",
+        "patch_kind": "work",
+        "control_node_id": None,
+        "control_revision": None,
+        "control_decision_bundle": [],
+        "control_completion_criteria": [],
+        "watcher_ids": [],
     }
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import median
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
@@ -118,6 +118,52 @@ class AgentTaskRecord(BaseModel):
     can_pause: bool = False
     can_resume: bool = False
     can_retry: bool = False
+
+
+WatcherStatus = Literal["active", "degraded", "completed", "stopped"]
+
+
+class WatcherContinuation(BaseModel):
+    """RCP-bound policy needed to create a fresh Work wake."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    model: str | None = None
+    reasoning: str | None = None
+    run_on: str
+    run_truth_scope: list[str] | None = None
+    patch_kind: Literal["work", "experiment_loop"] = "work"
+    control_node_id: str | None = None
+    control_revision: int | None = Field(default=None, ge=0)
+    control_decision_bundle: list[dict[str, object]] = Field(default_factory=list)
+    control_completion_criteria: list[str] = Field(default_factory=list)
+
+
+class WatcherRecord(BaseModel):
+    """Durable operational watcher, separate from graph and provider attempts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    watcher_id: str
+    project_id: str
+    origin_operation_id: str
+    origin_task_kind: Literal["node_chat", "project_chat"]
+    chat_id: str
+    node_id: str | None = None
+    execution_host: str = ""
+    check_command: str
+    log_path: str
+    cwd: str
+    continuation: WatcherContinuation
+    status: WatcherStatus = "active"
+    created_at: str
+    last_checked_at: str | None = None
+    last_exit_code: int | None = None
+    last_error: str | None = None
+    completed_at: str | None = None
+    notified: bool = False
+    notification_operation_id: str | None = None
 
 
 class AppStore:
@@ -243,6 +289,33 @@ class AppStore:
                     PRIMARY KEY(operation_id, role),
                     FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
                 );
+                CREATE TABLE IF NOT EXISTS watchers (
+                    watcher_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    origin_operation_id TEXT NOT NULL,
+                    origin_task_kind TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    node_id TEXT,
+                    execution_host TEXT NOT NULL,
+                    check_command TEXT NOT NULL,
+                    log_path TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    continuation_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_checked_at TEXT,
+                    last_exit_code INTEGER,
+                    last_error TEXT,
+                    completed_at TEXT,
+                    notified INTEGER NOT NULL DEFAULT 0,
+                    notification_operation_id TEXT
+                );
+                CREATE INDEX IF NOT EXISTS watchers_project
+                    ON watchers(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS watchers_pollable
+                    ON watchers(status, created_at);
+                CREATE INDEX IF NOT EXISTS watchers_delivery
+                    ON watchers(project_id, origin_operation_id, notified, completed_at);
                 """
             )
             # Existing v0.2 databases need additive migration before the index
@@ -379,6 +452,9 @@ class AppStore:
                     "writing_sessions": connection.execute(
                         "DELETE FROM writing_sessions WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "watchers": connection.execute(
+                        "DELETE FROM watchers WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                 }
                 for table in (
                     "graph_run_outputs",
@@ -502,48 +578,349 @@ class AppStore:
                 "UPDATE graph_runs SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
+            connection.execute(
+                "UPDATE watchers SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
 
     def create_agent_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
         try:
             with self.connection() as connection:
-                connection.execute(
-                    """
-                    INSERT INTO graph_runs (
-                        operation_id, project_id, kind, status, request_json,
-                        created_at, updated_at, started_at, finished_at,
-                        status_message, error, applied_revision, result_json, attempt,
-                        parent_operation_id, native_session_id, stage_host,
-                        stage_root, estimate_seconds, estimate_samples, phase,
-                        last_activity_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        record.operation_id,
-                        record.project_id,
-                        record.kind,
-                        record.status,
-                        json.dumps(record.request, separators=(",", ":")),
-                        record.created_at,
-                        record.updated_at,
-                        record.started_at,
-                        record.finished_at,
-                        record.status_message,
-                        record.error,
-                        record.applied_revision,
-                        self._bounded_result_json(record.result),
-                        record.attempt,
-                        record.parent_operation_id,
-                        record.native_session_id,
-                        record.stage_host,
-                        record.stage_root,
-                        record.estimate_seconds,
-                        record.estimate_samples,
-                        record.phase,
-                        record.last_activity_at,
-                    ),
-                )
+                self._insert_agent_task(connection, record)
         except sqlite3.IntegrityError as exc:
             raise ValueError("Another agent task is already running for this project.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def _insert_agent_task(
+        self,
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, kind, status, request_json,
+                created_at, updated_at, started_at, finished_at,
+                status_message, error, applied_revision, result_json, attempt,
+                parent_operation_id, native_session_id, stage_host,
+                stage_root, estimate_seconds, estimate_samples, phase,
+                last_activity_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.operation_id,
+                record.project_id,
+                record.kind,
+                record.status,
+                json.dumps(record.request, separators=(",", ":")),
+                record.created_at,
+                record.updated_at,
+                record.started_at,
+                record.finished_at,
+                record.status_message,
+                record.error,
+                record.applied_revision,
+                self._bounded_result_json(record.result),
+                record.attempt,
+                record.parent_operation_id,
+                record.native_session_id,
+                record.stage_host,
+                record.stage_root,
+                record.estimate_seconds,
+                record.estimate_samples,
+                record.phase,
+                record.last_activity_at,
+            ),
+        )
+
+    def create_watchers(self, records: list[WatcherRecord]) -> list[WatcherRecord]:
+        """Insert one validated watch list atomically."""
+
+        if not records:
+            raise ValueError("a watch list must contain at least one watcher")
+        watcher_ids = [record.watcher_id for record in records]
+        if len(watcher_ids) != len(set(watcher_ids)):
+            raise ValueError("a watch list cannot repeat a watcher id")
+        bindings = {
+            (
+                record.project_id,
+                record.origin_operation_id,
+                record.origin_task_kind,
+                record.chat_id,
+                record.node_id,
+                record.execution_host,
+                record.continuation.model_dump_json(),
+            )
+            for record in records
+        }
+        if len(bindings) != 1:
+            raise ValueError("one watch list must share one RCP-bound continuation context")
+        with self.connection() as connection:
+            for record in records:
+                connection.execute(
+                    """
+                    INSERT INTO watchers (
+                        watcher_id, project_id, origin_operation_id, origin_task_kind,
+                        chat_id, node_id, execution_host, check_command, log_path, cwd,
+                        continuation_json, status, created_at, last_checked_at,
+                        last_exit_code, last_error, completed_at, notified,
+                        notification_operation_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.watcher_id,
+                        record.project_id,
+                        record.origin_operation_id,
+                        record.origin_task_kind,
+                        record.chat_id,
+                        record.node_id,
+                        record.execution_host,
+                        record.check_command,
+                        record.log_path,
+                        record.cwd,
+                        record.continuation.model_dump_json(),
+                        record.status,
+                        record.created_at,
+                        record.last_checked_at,
+                        record.last_exit_code,
+                        record.last_error,
+                        record.completed_at,
+                        int(record.notified),
+                        record.notification_operation_id,
+                    ),
+                )
+        stored: list[WatcherRecord] = []
+        for watcher_id in watcher_ids:
+            record = self.watcher(watcher_id)
+            assert record is not None
+            stored.append(record)
+        return stored
+
+    def watcher(self, watcher_id: str) -> WatcherRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
+            ).fetchone()
+        return self._watcher_record(row) if row is not None else None
+
+    def watchers(
+        self,
+        project_id: str,
+        *,
+        chat_id: str | None = None,
+    ) -> list[WatcherRecord]:
+        query = "SELECT * FROM watchers WHERE project_id = ?"
+        parameters: list[object] = [project_id]
+        if chat_id is not None:
+            query += " AND chat_id = ?"
+            parameters.append(chat_id)
+        query += " ORDER BY created_at DESC, watcher_id"
+        with self.connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [self._watcher_record(row) for row in rows]
+
+    def pollable_watchers(self) -> list[WatcherRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE status IN ('active', 'degraded')
+                ORDER BY created_at, watcher_id
+                """
+            ).fetchall()
+        return [self._watcher_record(row) for row in rows]
+
+    def stop_watchers(self, project_id: str, watcher_ids: list[str]) -> list[WatcherRecord]:
+        """Release watchers the human has given up on.
+
+        A stopped watcher leaves the polling set and can never wake a turn. RCP
+        never decides this for itself — a check that cannot answer is reported,
+        not interpreted.
+        """
+
+        ids = list(dict.fromkeys(watcher_ids))
+        if not ids:
+            raise ValueError("stopping watchers requires at least one watcher id")
+        placeholders = ",".join("?" for _ in ids)
+        with self.connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE watchers
+                SET status = 'stopped', notified = 1
+                WHERE project_id = ? AND watcher_id IN ({placeholders})
+                  AND status IN ('active', 'degraded')
+                """,
+                (project_id, *ids),
+            )
+        stopped = []
+        for watcher_id in ids:
+            record = self.watcher(watcher_id)
+            if record is None or record.project_id != project_id:
+                raise KeyError(watcher_id)
+            stopped.append(record)
+        return stopped
+
+    def experiment_watcher_ids(self, project_id: str, control_node_id: str) -> list[str]:
+        """Live watchers armed by a bounded loop on one experiment."""
+
+        return [
+            record.watcher_id
+            for record in self.watchers(project_id)
+            if record.status in {"active", "degraded"}
+            and record.continuation.control_node_id == control_node_id
+        ]
+
+    def record_watcher_check(
+        self,
+        watcher_id: str,
+        *,
+        status: WatcherStatus,
+        exit_code: int | None,
+        error: str | None,
+        checked_at: str | None = None,
+    ) -> WatcherRecord:
+        if status == "degraded" and not error:
+            raise ValueError("a degraded watcher requires a check error")
+        if status != "degraded":
+            error = None
+        timestamp = checked_at or self.now()
+        completed_at = timestamp if status == "completed" else None
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE watchers
+                SET status = ?, last_checked_at = ?, last_exit_code = ?, last_error = ?,
+                    completed_at = CASE
+                        WHEN ? = 'completed' THEN COALESCE(completed_at, ?)
+                        ELSE completed_at
+                    END
+                WHERE watcher_id = ? AND status IN ('active', 'degraded')
+                """,
+                (
+                    status,
+                    timestamp,
+                    exit_code,
+                    error,
+                    status,
+                    completed_at,
+                    watcher_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                existing = connection.execute(
+                    "SELECT 1 FROM watchers WHERE watcher_id = ?", (watcher_id,)
+                ).fetchone()
+                if existing is None:
+                    raise KeyError(watcher_id)
+        stored = self.watcher(watcher_id)
+        assert stored is not None
+        return stored
+
+    def completed_watcher_groups(self) -> list[list[WatcherRecord]]:
+        """Group completed watchers by conversation and compatible continuation policy."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE status = 'completed' AND notified = 0
+                ORDER BY completed_at, created_at, watcher_id
+                """
+            ).fetchall()
+        groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
+        for row in rows:
+            record = self._watcher_record(row)
+            key = (
+                record.project_id,
+                record.origin_task_kind,
+                record.chat_id,
+                record.node_id,
+                record.execution_host,
+                record.continuation.model_dump_json(),
+            )
+            groups.setdefault(key, []).append(record)
+        return list(groups.values())
+
+    def create_watcher_notification_task(
+        self,
+        record: AgentTaskRecord,
+        watcher_ids: list[str],
+    ) -> AgentTaskRecord | None:
+        """Queue a wake and mark its completed watchers notified in one transaction.
+
+        A live task wins the project slot. In that case no watcher row changes,
+        and the same completed group can be retried by a later poll.
+        """
+
+        ids = list(dict.fromkeys(watcher_ids))
+        if not ids or len(ids) != len(watcher_ids):
+            raise ValueError("a watcher notification requires unique watcher ids")
+        if record.status != "queued":
+            raise ValueError("a watcher notification task must be queued")
+        requested_ids = record.request.get("watcher_ids")
+        if (
+            not isinstance(requested_ids, list)
+            or any(not isinstance(item, str) for item in requested_ids)
+            or len(requested_ids) != len(set(requested_ids))
+            or set(requested_ids) != set(ids)
+        ):
+            raise ValueError("the watcher notification request must name exactly its watcher ids")
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                rows = connection.execute(
+                    f"""
+                    SELECT watcher_id, project_id, origin_task_kind, chat_id, node_id,
+                        execution_host, continuation_json
+                    FROM watchers
+                    WHERE watcher_id IN ({placeholders})
+                        AND status = 'completed' AND notified = 0
+                    """,
+                    ids,
+                ).fetchall()
+                if {str(row["watcher_id"]) for row in rows} != set(ids):
+                    raise ValueError("watchers are missing, incomplete, or already notified")
+                if {str(row["project_id"]) for row in rows} != {record.project_id}:
+                    raise ValueError("watchers and notification task belong to different projects")
+                bindings = {
+                    (
+                        str(row["origin_task_kind"]),
+                        str(row["chat_id"]),
+                        row["node_id"],
+                        str(row["execution_host"]),
+                        str(row["continuation_json"]),
+                    )
+                    for row in rows
+                }
+                if len(bindings) != 1:
+                    raise ValueError("one notification cannot merge incompatible watch lists")
+                active = connection.execute(
+                    """
+                    SELECT 1 FROM graph_runs
+                    WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
+                    LIMIT 1
+                    """,
+                    (record.project_id,),
+                ).fetchone()
+                if active is not None:
+                    return None
+                self._insert_agent_task(connection, record)
+                cursor = connection.execute(
+                    f"""
+                    UPDATE watchers
+                    SET notified = 1, notification_operation_id = ?
+                    WHERE watcher_id IN ({placeholders})
+                        AND status = 'completed' AND notified = 0
+                    """,
+                    [record.operation_id, *ids],
+                )
+                if cursor.rowcount != len(ids):
+                    raise RuntimeError("watcher notification changed during its transaction")
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not queue the watcher notification task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
@@ -1407,6 +1784,13 @@ class AppStore:
         if data["reachable"] is not None:
             data["reachable"] = bool(data["reachable"])
         return ProjectRecord.model_validate(data)
+
+    @staticmethod
+    def _watcher_record(row: sqlite3.Row) -> WatcherRecord:
+        data = dict(row)
+        data["continuation"] = json.loads(data.pop("continuation_json"))
+        data["notified"] = bool(data["notified"])
+        return WatcherRecord.model_validate(data)
 
     def _agent_task_record(self, row: sqlite3.Row) -> AgentTaskRecord:
         data = dict(row)

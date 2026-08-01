@@ -15,6 +15,7 @@ export interface DraftNodeChange {
   changes: Record<string, DraftNodeValue>;
   standing?: Standing;
   standing_origin?: "edit" | "judgment";
+  cancel_attempt_ids?: string[];
 }
 
 export interface HumanDraft {
@@ -34,6 +35,7 @@ export interface HumanSyncRequest {
     base_updated_rev: number;
     changes: Record<string, DraftNodeValue>;
     standing?: Standing;
+    cancel_attempt_ids?: string[];
   }>;
   proposals: Array<{ proposal_id: string; decision: ProposalDecision; reason?: string }>;
   ambiguities: Array<{ ambiguity_id: string; status: AmbiguityDecision }>;
@@ -68,7 +70,19 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
         standing = undefined;
         standingOrigin = undefined;
       }
-      if (Object.keys(changes).length === 0 && standing === undefined) return [];
+      // An attempt already closed canonically no longer needs releasing.
+      const openIds = new Set(
+        (node.attempts ?? [])
+          .filter((attempt) => ["planned", "submitted", "running"].includes(attempt.status))
+          .map((attempt) => attempt.id),
+      );
+      const cancelAttemptIds = (entry.cancel_attempt_ids ?? []).filter((id) => openIds.has(id));
+      if (
+        Object.keys(changes).length === 0 &&
+        standing === undefined &&
+        cancelAttemptIds.length === 0
+      )
+        return [];
       return [
         [
           nodeId,
@@ -77,6 +91,7 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
             changes,
             ...(standing ? { standing } : {}),
             ...(standingOrigin ? { standing_origin: standingOrigin } : {}),
+            ...(cancelAttemptIds.length > 0 ? { cancel_attempt_ids: cancelAttemptIds } : {}),
           } satisfies DraftNodeChange,
         ],
       ];
@@ -147,6 +162,26 @@ export function stageNodeStanding(
   return normalizeHumanDraft(next, graph);
 }
 
+export function stageAttemptRelease(
+  draft: HumanDraft,
+  graph: GraphState,
+  nodeId: string,
+  attemptId: string,
+): HumanDraft {
+  const node = graph.nodes[nodeId];
+  if (!node) return draft;
+  const existing = draft.nodes[nodeId];
+  const next = cloneDraft(draft);
+  const already = existing?.cancel_attempt_ids ?? [];
+  next.nodes[nodeId] = {
+    ...existing,
+    base_updated_rev: existing?.base_updated_rev ?? node.updated_rev,
+    changes: { ...existing?.changes },
+    cancel_attempt_ids: already.includes(attemptId) ? already : [...already, attemptId],
+  };
+  return normalizeHumanDraft(next, graph);
+}
+
 export function stageProposalDecision(
   draft: HumanDraft,
   proposalId: string,
@@ -211,7 +246,11 @@ export function applyHumanDraft(graph: GraphState, draft: HumanDraft | null): Gr
 export function humanDraftChangeCount(draft: HumanDraft | null): number {
   if (!draft) return 0;
   const nodeChanges = Object.values(draft.nodes).reduce(
-    (count, entry) => count + Object.keys(entry.changes).length + (entry.standing ? 1 : 0),
+    (count, entry) =>
+      count +
+      Object.keys(entry.changes).length +
+      (entry.standing ? 1 : 0) +
+      (entry.cancel_attempt_ids?.length ?? 0),
     0,
   );
   return (
@@ -231,6 +270,7 @@ export function toHumanSyncRequest(draft: HumanDraft): HumanSyncRequest {
       base_updated_rev: entry.base_updated_rev,
       changes: entry.changes,
       ...(entry.standing ? { standing: entry.standing } : {}),
+      ...(entry.cancel_attempt_ids?.length ? { cancel_attempt_ids: entry.cancel_attempt_ids } : {}),
     })),
     proposals: Object.entries(draft.proposals).map(([proposalId, entry]) => ({
       proposal_id: proposalId,

@@ -123,6 +123,36 @@ def test_work_contract_authorizes_exact_operations_and_an_optional_patch() -> No
     _assert_fixed_ontology_guidance(contract)
 
 
+def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() -> None:
+    contract = PromptFactory.work_task_contract(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        focused_node_id="exp/example",
+        conversation_roots={},
+        conversations_unreachable=0,
+        repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
+        introduction_path=None,
+        human_request_path="/stage/inputs/human-request.txt",
+        patch_path="/stage/patch.json",
+        artifact_path="/stage/artifacts",
+        output_schema_path="/stage/inputs/patch-schema.json",
+        watch_path="/stage/watch.json",
+        patch_kind="experiment_loop",
+        control_context_path="/stage/inputs/experiment-control.json",
+    )
+
+    compact = " ".join(contract.split())
+    assert "one `experiment_loop`/`agent` Patch" in compact
+    assert "attempt ceiling is reached" in compact
+    assert "exact pinned decision bundle" in compact
+    assert "there is no watcher API to call" in contract
+    assert "query the scheduler rather than the process table" in contract
+    assert "grep -Fxq 4471" in contract
+    assert "must never submit, cancel, kill, or modify" in contract
+
+
 def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority() -> None:
     contract = PromptFactory.discuss_task_contract(
         project_name="Example",

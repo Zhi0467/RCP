@@ -275,7 +275,7 @@ AgentOperation = Annotated[
 class AgentPatch(Patch):
     model_config = ConfigDict(extra="forbid")
     revision: Literal[0] = 0
-    kind: Literal["seed", "refresh", "chat", "work"]
+    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop"]
     author: Literal["agent"]
     ops: list[AgentOperation]
 
@@ -286,10 +286,20 @@ def agent_output_schema() -> dict[str, object]:
     if isinstance(properties, dict):
         properties.pop("admission", None)
         properties.pop("admission_messages", None)
+        properties.pop("experiment_control_node_id", None)
+        properties.pop("experiment_decision_bundle", None)
     required = schema.get("required")
     if isinstance(required, list):
         schema["required"] = [
-            name for name in required if name not in {"admission", "admission_messages"}
+            name
+            for name in required
+            if name
+            not in {
+                "admission",
+                "admission_messages",
+                "experiment_control_node_id",
+                "experiment_decision_bundle",
+            }
         ]
     definitions = schema.get("$defs", {})
     if isinstance(definitions, dict):

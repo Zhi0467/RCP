@@ -77,6 +77,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     assert counts == {
         "paper_drafts": 1,
         "writing_sessions": 1,
+        "watchers": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
         "graph_run_receipts": 1,

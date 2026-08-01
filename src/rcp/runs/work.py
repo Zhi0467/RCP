@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -7,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from rcp.agents import (
     AgentEvent,
@@ -19,7 +21,8 @@ from rcp.agents import (
 )
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
-from rcp.core.models import Patch
+from rcp.control import decision_drift
+from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.runs.chat import (
     _append_chat_exchange,
@@ -30,13 +33,16 @@ from rcp.runs.chat import (
     _chat_stage_name,
     _cleanup_chat_conversation_projection,
     _clear_stale_patch,
+    _clear_stale_watch,
     _discover_chat_artifacts,
+    _existing_watch_digest,
     _first_chat_base_revision,
     _known_chat_session,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
     _project_chat_conversations,
     _read_chat_patch,
+    _read_watch_request,
     _rebind_chat_conversations,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
@@ -63,7 +69,14 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
+from rcp.storage import WatcherContinuation
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.watchers import (
+    WatcherBinding,
+    WatcherInitialCheckError,
+    arm_watchers,
+    parse_watch_json,
+)
 
 _MAX_CORRECTION_ROUNDS = 2
 
@@ -162,6 +175,7 @@ async def stream_work_run(
                     )
                 workspace = Path(str(remote_stage.workspace))
                 patch_path = str(remote_stage.workspace / "patch.json")
+                watch_path = str(remote_stage.workspace / "watch.json")
             else:
                 stage_root = _swept_stage_root(data_dir)
                 expected_stage = stage_root / stage_name
@@ -174,8 +188,10 @@ async def stream_work_run(
                     execution.checkpoint_stage("", str(local_stage))
                 workspace = local_stage
                 patch_path = str(local_stage / "patch.json")
+                watch_path = str(local_stage / "watch.json")
             if not resuming:
                 _clear_stale_patch(workspace, remote_stage)
+                _clear_stale_watch(workspace, remote_stage)
             artifact_scope_id = (
                 _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
@@ -265,6 +281,53 @@ async def stream_work_run(
                     if execution is not None and execution.retry_feedback
                     else None
                 )
+                control_context_path = None
+                if request.patch_kind == "experiment_loop":
+                    if not request.control_node_id or request.control_revision is None:
+                        raise ValueError("Experiment-loop work is missing its RCP control binding.")
+                    control_node = context.node
+                    if (
+                        control_node is None
+                        or control_node.get("id") != request.control_node_id
+                        or control_node.get("type") != "experiment"
+                    ):
+                        raise ValueError(
+                            "Experiment-loop work no longer resolves to its Experiment."
+                        )
+                    attempts = control_node.get("attempts", [])
+                    attempt_ceiling = control_node.get("attempt_ceiling", 5)
+                    # RCP computes the drift rather than leaving the turn to
+                    # notice that its pins no longer match the graph. Reading
+                    # canonical state can touch a remote repository, so it stays
+                    # off the event loop.
+                    drift = await asyncio.to_thread(
+                        lambda: decision_drift(
+                            service.history.state(),
+                            request.control_decision_bundle,
+                        )
+                    )
+                    control_context_path = _stage_json_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-experiment-control.json",
+                        {
+                            "experiment_id": request.control_node_id,
+                            "pinned_graph_revision": request.control_revision,
+                            "decision_bundle": [
+                                item.model_dump(mode="json")
+                                for item in request.control_decision_bundle
+                            ],
+                            "completion_criteria": request.control_completion_criteria,
+                            "decision_drift": [item.model_dump(mode="json") for item in drift],
+                            "attempts_used": len(attempts) if isinstance(attempts, list) else 0,
+                            "attempt_ceiling": attempt_ceiling,
+                            "at_ceiling": (
+                                isinstance(attempt_ceiling, int)
+                                and isinstance(attempts, list)
+                                and len(attempts) >= attempt_ceiling
+                            ),
+                        },
+                    )
                 contract = PromptFactory.work_task_contract(
                     project_name=context.project_name,
                     ontology_path=f"{context.graph_path}#ontology",
@@ -283,6 +346,9 @@ async def stream_work_run(
                     artifact_path=str(artifact_directory),
                     output_schema_path=schema_path,
                     retry_diagnostics_path=retry_diagnostics_path,
+                    watch_path=watch_path,
+                    patch_kind=request.patch_kind,
+                    control_context_path=control_context_path,
                 )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
@@ -402,6 +468,9 @@ async def stream_work_run(
                         patch_text,
                         base_revision=base_revision,
                         run_truth_scope=context.run_truth_scope,
+                        patch_kind=request.patch_kind,
+                        control_node_id=request.control_node_id,
+                        control_decision_bundle=request.control_decision_bundle,
                     )
                     if result is not None:
                         graph_update = result.model_copy(
@@ -560,6 +629,211 @@ async def stream_work_run(
                     patch_text = None
                     continue
                 patch_text = corrected
+
+        watch_correction_rounds = 0
+        try:
+            watch_text = _read_watch_request(workspace, remote_stage)
+        except (OSError, StateUnavailable, ValueError) as exc:
+            watch_text = None
+            watch_problem: str | None = f"The watcher request could not be read: {exc}"
+            watch_correctable = False
+        else:
+            watch_problem = None
+            watch_correctable = True
+
+        while watch_text is not None or watch_problem is not None:
+            if watch_text is not None:
+                try:
+                    if execution is None:
+                        raise ValueError("Watcher arming requires a durable originating operation.")
+                    origin_task = execution.store.agent_task(execution.operation_id)
+                    if origin_task is None:
+                        raise ValueError("The originating Work operation is no longer available.")
+                    specs = parse_watch_json(watch_text)
+                    binding = WatcherBinding(
+                        project_id=origin_task.project_id,
+                        origin_operation_id=execution.operation_id,
+                        origin_task_kind=surface,
+                        chat_id=request.chat_id or "",
+                        node_id=request.node_id,
+                        execution_host=execution_host,
+                        continuation=WatcherContinuation(
+                            provider=request.provider or "",
+                            model=request.model,
+                            reasoning=request.reasoning,
+                            run_on=request.run_on or "",
+                            run_truth_scope=context.run_truth_scope,
+                            patch_kind=request.patch_kind,
+                            control_node_id=request.control_node_id,
+                            control_revision=request.control_revision,
+                            control_decision_bundle=[
+                                item.model_dump(mode="json")
+                                for item in request.control_decision_bundle
+                            ],
+                            control_completion_criteria=request.control_completion_criteria,
+                        ),
+                    )
+                    armed = await asyncio.to_thread(
+                        arm_watchers,
+                        execution.store,
+                        specs,
+                        binding,
+                    )
+                except WatcherInitialCheckError as exc:
+                    watch_problem = str(exc)
+                    watch_correctable = True
+                except ValueError as exc:
+                    watch_problem = str(exc)
+                    watch_correctable = True
+                except (OSError, StateUnavailable) as exc:
+                    watch_problem = str(exc)
+                    watch_correctable = False
+                else:
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "watchers_armed",
+                        {
+                            "watcher_ids": [item.watcher_id for item in armed],
+                            "count": len(armed),
+                            "correction_rounds": watch_correction_rounds,
+                        },
+                    )
+                    watch_problem = None
+                    break
+
+            if watch_problem is None:
+                break
+            if (
+                not watch_correctable
+                or watch_correction_rounds >= _MAX_CORRECTION_ROUNDS
+                or not native_session_id
+            ):
+                if execution is not None:
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "watcher_handoff_rejected",
+                        {
+                            "problem": watch_problem[:1600],
+                            "correction_rounds": watch_correction_rounds,
+                        },
+                        tier="diagnostic",
+                    )
+                    execution.store.record_agent_task_event(
+                        execution.operation_id,
+                        f"Watcher handoff was not armed: {watch_problem}",
+                        level="warning",
+                    )
+                break
+
+            watch_correction_rounds += 1
+            assert execution is not None
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "watcher_correction_requested",
+                {"round": watch_correction_rounds, "problem": watch_problem[:400]},
+                tier="diagnostic",
+            )
+            execution.store.update_agent_task_message(
+                execution.operation_id,
+                "Correcting watcher handoff.",
+                phase="correcting",
+                event=True,
+            )
+            diagnostics_path = _stage_json_task_input(
+                local_stage,
+                remote_stage,
+                f"task-{token}-watch-correction-{watch_correction_rounds}.json",
+                {"problem": watch_problem},
+            )
+            correction_contract = PromptFactory.continuation_task_contract(
+                original_contract_path=base_contract_path,
+                mode="watch_correction",
+                diagnostics_path=diagnostics_path,
+                watch_path=watch_path,
+            )
+            correction_path, correction_prompt = _stage_task_contract(
+                local_stage,
+                remote_stage,
+                f"task-{token}-watch-correction-{watch_correction_rounds}.md",
+                correction_contract,
+                execution=execution,
+                role=f"watch_correction_{watch_correction_rounds}",
+            )
+            pre_launch_digest = _existing_watch_digest(workspace, remote_stage)
+            _record_agent_launch_receipt(
+                execution,
+                request,
+                prompt=correction_prompt,
+                contract_path=correction_path,
+                remote=bool(execution_host),
+                resumed=True,
+                continuation="watch_correction",
+                extra={
+                    "surface": surface,
+                    "mode": "work",
+                    "capability": "scratch_patch",
+                    "network_access": True,
+                    "launch_kind": "watch_correction",
+                    "correction_round": watch_correction_rounds,
+                    "write_directory_count": 0,
+                },
+            )
+            correction_outcome = _ProviderOutcome(session_id=native_session_id)
+            correction_error: str | None = None
+            async with aclosing(
+                _stream_agent_events(
+                    launcher,
+                    request,
+                    correction_prompt,
+                    workspace=workspace,
+                    session_id=native_session_id,
+                    read_dirs=[],
+                    write_dirs=[],
+                    execution_host=execution_host,
+                    execution=execution,
+                    remote_stage=remote_stage,
+                    capability="scratch_patch",
+                    outcome=correction_outcome,
+                    binary=provider_binary,
+                )
+            ) as stream:
+                async for frame in stream:
+                    event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+                    if event.event == "error":
+                        correction_error = event.text or "Watcher correction failed."
+                    elif event.event not in {"answer", "done"}:
+                        yield frame
+            native_session_id = correction_outcome.session_id or native_session_id
+            if correction_outcome.paused:
+                return
+            if correction_error or not correction_outcome.completed:
+                watch_problem = correction_error or (
+                    f"{request.provider} produced no watcher correction result."
+                )
+                watch_text = None
+                watch_correction_rounds = _MAX_CORRECTION_ROUNDS
+                continue
+            try:
+                corrected = _read_watch_request(workspace, remote_stage)
+            except (OSError, StateUnavailable, ValueError) as exc:
+                corrected = None
+                watch_problem = f"The corrected watcher request could not be read: {exc}"
+            if corrected is None:
+                watch_problem = "The correction completed without writing watch.json."
+                watch_text = None
+                continue
+            if (
+                pre_launch_digest is not None
+                and hashlib.sha256(corrected.encode("utf-8")).hexdigest() == pre_launch_digest
+            ):
+                watch_problem = (
+                    f"{watch_problem} The correction left watch.json byte-identical; rewrite it "
+                    "with the required changes."
+                )
+                watch_text = None
+                continue
+            watch_text = corrected
+            watch_problem = None
 
         try:
             _append_chat_exchange(
@@ -770,6 +1044,9 @@ async def _stream_work_graph_repair(
         patch_text,
         base_revision=base_revision,
         run_truth_scope=request.run_truth_scope or service.manifest.agent.default_run_truth_scope,
+        patch_kind=request.patch_kind,
+        control_node_id=request.control_node_id,
+        control_decision_bundle=request.control_decision_bundle,
     )
     if graph_update is None:
         assert failure is not None
@@ -811,6 +1088,9 @@ def _apply_work_patch(
     *,
     base_revision: int,
     run_truth_scope: list[str],
+    patch_kind: Literal["work", "experiment_loop"] = "work",
+    control_node_id: str | None = None,
+    control_decision_bundle: list[ExperimentDecisionPin] | None = None,
 ) -> tuple[GraphUpdateResult | None, _WorkPatchFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
@@ -833,8 +1113,15 @@ def _apply_work_patch(
             patch,
             byte_length=len(patch_text.encode("utf-8")),
         )
-        _require_agent_patch_identity(patch, "work")
+        _require_agent_patch_identity(patch, patch_kind)
         patch = normalize_agent_patch_bookkeeping(patch)
+        if patch_kind == "experiment_loop":
+            patch = patch.model_copy(
+                update={
+                    "experiment_control_node_id": control_node_id,
+                    "experiment_decision_bundle": list(control_decision_bundle or ()),
+                }
+            )
         validate_agent_patch_shape(patch)
         validate_work_patch(patch)
         if sorted(patch.run_truth_scope) != sorted(run_truth_scope):

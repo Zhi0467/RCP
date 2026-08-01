@@ -6,6 +6,7 @@ import {
   History,
   Inbox,
   MessageCircle,
+  RadioTower,
   RotateCcw,
   Send,
   X,
@@ -46,6 +47,7 @@ import type {
   GraphUpdateResult,
   ProjectSnapshot,
   StartAgentTask,
+  WatcherRecord,
 } from "../types";
 import { AgentConfigControls, profileRunConfig } from "./AgentConfigControls";
 import { RepositoryScope } from "./RepositoryScope";
@@ -56,6 +58,7 @@ interface Props {
   runScope: string[];
   tasks: AgentTask[];
   activeTask: AgentTask | null;
+  watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
   chatId: string;
   presentation?: "floating" | "workspace";
@@ -65,6 +68,7 @@ interface Props {
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
+  onStopWatcher?: (watcherId: string) => void;
   onClose: () => void;
 }
 
@@ -74,6 +78,7 @@ export function NodeChat({
   runScope,
   tasks,
   activeTask,
+  watchers = [],
   historyMessages = [],
   chatId,
   presentation = "floating",
@@ -83,6 +88,7 @@ export function NodeChat({
   onInspectTask,
   onOpenInbox,
   onRepairGraphUpdate,
+  onStopWatcher,
   onClose,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
@@ -122,6 +128,11 @@ export function NodeChat({
   );
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const liveWatchers = useMemo(
+    () =>
+      watchers.filter((watcher) => watcher.chat_id === chatId && watcher.status !== "completed"),
+    [chatId, watchers],
+  );
   const continuedTaskIds = useMemo(
     () =>
       new Set(
@@ -302,6 +313,11 @@ export function NodeChat({
       <header data-drag-handle={presentation === "floating" ? "true" : undefined}>
         <MessageCircle size={17} />
         <strong>{node?.title || project.name}</strong>
+        {liveWatchers.length > 0 && (
+          <span className="chat-watcher-count">
+            <RadioTower size={12} /> {liveWatchers.length}
+          </span>
+        )}
         {presentation === "floating" && (
           <button
             className="icon-button"
@@ -333,11 +349,44 @@ export function NodeChat({
           />
         </div>
       </AgentConfigControls>
+      {liveWatchers.length > 0 && (
+        <section className="chat-watchers" aria-label="Active watchers">
+          <header>
+            <RadioTower size={13} />
+            <strong>
+              {liveWatchers.length} active watcher{liveWatchers.length === 1 ? "" : "s"}
+            </strong>
+          </header>
+          {liveWatchers.map((watcher) => (
+            <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
+              <strong>{fileName(watcher.log_path)}</strong>
+              <time dateTime={watcher.last_checked_at ?? undefined}>
+                {watcher.last_checked_at
+                  ? `Checked ${new Date(watcher.last_checked_at).toLocaleString()}`
+                  : "Not checked yet"}
+              </time>
+              {watcher.last_error && <span role="alert">{watcher.last_error}</span>}
+              {onStopWatcher && (
+                <button
+                  className="button compact"
+                  type="button"
+                  onClick={() => onStopWatcher(watcher.watcher_id)}
+                >
+                  Stop watching
+                </button>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
       <div className="node-chat-lines" aria-live="polite">
         {transcript.map((line, index) => (
           <div className={`node-chat-line ${line.role}`} key={`${line.taskId}-${index}`}>
             {line.role === "human" && line.mode && (
               <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+            )}
+            {line.trigger === "watcher" && (
+              <span className="chat-turn-trigger watcher">Watcher</span>
             )}
             {line.role === "agent" ? (
               line.text && (
@@ -572,6 +621,10 @@ function GraphUpdateReceipt({
 
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
   return mode === "discuss" ? "Discuss" : "Work";
+}
+
+function fileName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function readStorage(key: string): string | null {

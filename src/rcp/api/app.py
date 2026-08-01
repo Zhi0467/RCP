@@ -34,6 +34,8 @@ from rcp.background import (
     BackgroundAgentTasks,
 )
 from rcp.config import AgentSurface
+from rcp.control import derive_experiment_control_state
+from rcp.core.models import Experiment, GraphState
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -69,8 +71,9 @@ from rcp.sources import (
     SESSION_SLICE_CACHE_LIMITS,
     RebuildableCache,
 )
-from rcp.storage import AgentTaskKind, AppStore
+from rcp.storage import AgentTaskKind, AppStore, WatcherRecord
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.watchers import WatcherPoller
 from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
@@ -209,6 +212,45 @@ def create_app(
 
     background_tasks = BackgroundAgentTasks(store, background_task_stream)
 
+    def deliver_watcher_group(group: list[WatcherRecord]) -> None:
+        if not group:
+            return
+        first = group[0]
+        continuation = first.continuation
+        watcher_ids = [item.watcher_id for item in group]
+        details = "\n".join(f"- watcher `{item.watcher_id}`: `{item.log_path}`" for item in group)
+        request = RunRequest(
+            provider=continuation.provider,
+            model=continuation.model,
+            reasoning=continuation.reasoning,
+            run_on=continuation.run_on,
+            run_truth_scope=continuation.run_truth_scope,
+            chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
+            node_id=first.node_id,
+            message=(
+                "RCP watcher update: the following external work is no longer present in its "
+                f"system. Inspect the named logs and continue the Work turn.\n{details}"
+            ),
+            chat_id=first.chat_id,
+            session_id=None,
+            mode="work",
+            trigger="watcher",
+            patch_kind=continuation.patch_kind,
+            control_node_id=continuation.control_node_id,
+            control_revision=continuation.control_revision,
+            control_decision_bundle=continuation.control_decision_bundle,
+            control_completion_criteria=continuation.control_completion_criteria,
+            watcher_ids=watcher_ids,
+        )
+        background_tasks.start_watcher_notification(
+            first.project_id,
+            first.origin_task_kind,
+            request,
+            watcher_ids,
+        )
+
+    watcher_poller = WatcherPoller(store, on_completed=deliver_watcher_group)
+
     async def warm_local_provider_capabilities() -> None:
         try:
             targets = await asyncio.to_thread(catalog.local_provider_targets)
@@ -256,6 +298,7 @@ def create_app(
             startup_maintenance.append(asyncio.create_task(warm_local_provider_capabilities()))
             if default_state_host:
                 startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
+            watcher_poller.start()
             yield
         finally:
             for task in startup_maintenance:
@@ -263,6 +306,7 @@ def create_app(
             for task in startup_maintenance:
                 with suppress(asyncio.CancelledError):
                     await task
+            watcher_poller.stop()
             background_tasks.shutdown()
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
@@ -278,6 +322,7 @@ def create_app(
     app.state.service = default_service
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
+    app.state.watcher_poller = watcher_poller
     app.state.instance_metadata = identity
     app.add_middleware(
         CORSMiddleware,
@@ -412,6 +457,17 @@ def create_app(
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         snapshot["id"] = project_id
+        state = GraphState.model_validate(snapshot["graph"])
+        active_control_ids = _active_experiment_control_ids(store, project_id)
+        snapshot["experiment_control"] = {
+            node.id: derive_experiment_control_state(
+                state,
+                node.id,
+                active_control_ids,
+            ).model_dump(mode="json")
+            for node in state.nodes.values()
+            if node.type == "experiment"
+        }
         try:
             catalog.update_summary(project_id, snapshot)
             catalog.write_cached_snapshot(project_id, snapshot)
@@ -537,10 +593,93 @@ def create_app(
             raise HTTPException(status_code=status, detail=str(exc)) from exc
         return record.model_dump(mode="json")
 
+    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/run", status_code=202)
+    def run_experiment(
+        project_id: str,
+        node_id: str,
+        body: dict[str, object],
+    ) -> dict[str, object]:
+        service = _project_service(catalog, project_id)
+        state = service.history.state()
+        node = state.nodes.get(node_id)
+        if not isinstance(node, Experiment):
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        control = derive_experiment_control_state(
+            state,
+            node_id,
+            _active_experiment_control_ids(store, project_id),
+        )
+        if not control.ready:
+            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
+        try:
+            supplied = RunRequest.model_validate(body)
+            if not supplied.chat_id:
+                raise ValueError("Run requires a chat_id")
+            uuid.UUID(supplied.chat_id)
+            request = supplied.model_copy(
+                update={
+                    "chat_scope": "node",
+                    "node_id": node_id,
+                    "message": (
+                        f"Run the bounded control loop for {node_id}. Perform bounded preflight, "
+                        "then either launch and record one attempt, or record one proposal-only "
+                        "attempt when an upstream decision must change."
+                    ),
+                    "session_id": None,
+                    "mode": "work",
+                    "trigger": "experiment_run",
+                    "patch_kind": "experiment_loop",
+                    "control_node_id": node_id,
+                    "control_revision": state.revision,
+                    "control_decision_bundle": control.governing_decisions,
+                    "control_completion_criteria": list(node.completion_criteria),
+                    "watcher_ids": [],
+                }
+            )
+            request = _resolved_graph_request(service, "node_chat", request)
+            record = background_tasks.start(project_id, "node_chat", request)
+        except ValueError as exc:
+            status = 409 if "already running" in str(exc) else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        return record.model_dump(mode="json")
+
     @app.get("/api/projects/{project_id}/tasks")
     def agent_tasks(project_id: str) -> list[dict[str, object]]:
         _require_registered_project(catalog, project_id)
         return [record.model_dump(mode="json") for record in store.agent_tasks(project_id)]
+
+    @app.get("/api/projects/{project_id}/watchers")
+    def project_watchers(project_id: str) -> list[dict[str, object]]:
+        _require_registered_project(catalog, project_id)
+        return [record.model_dump(mode="json") for record in store.watchers(project_id)]
+
+    @app.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
+    def stop_watcher(project_id: str, watcher_id: str) -> dict[str, object]:
+        _require_registered_project(catalog, project_id)
+        try:
+            stopped = store.stop_watchers(project_id, [watcher_id])
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Watcher not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return stopped[0].model_dump(mode="json")
+
+    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
+    def stop_experiment_watchers(project_id: str, node_id: str) -> list[dict[str, object]]:
+        """Release every live watcher a bounded loop armed on one experiment.
+
+        Operational only. The attempt those watchers were following stays open
+        until the human syncs its cancellation, because that is a graph change.
+        """
+
+        _require_registered_project(catalog, project_id)
+        watcher_ids = store.experiment_watcher_ids(project_id, node_id)
+        if not watcher_ids:
+            return []
+        return [
+            record.model_dump(mode="json")
+            for record in store.stop_watchers(project_id, watcher_ids)
+        ]
 
     @app.get(
         "/api/projects/{project_id}/chats",
@@ -827,6 +966,21 @@ def _project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _active_experiment_control_ids(store: AppStore, project_id: str) -> set[str]:
+    active: set[str] = set()
+    for task in store.agent_tasks(project_id):
+        if task.kind not in {"node_chat", "project_chat"}:
+            continue
+        if task.status not in {"queued", "running", "pausing"}:
+            continue
+        if task.request.get("patch_kind") != "experiment_loop":
+            continue
+        node_id = task.request.get("control_node_id")
+        if isinstance(node_id, str):
+            active.add(node_id)
+    return active
+
+
 def _require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
     try:
         catalog.card(project_id)
@@ -842,7 +996,17 @@ def _validated_task_request(
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 
-    request = RunRequest.model_validate(body)
+    request = RunRequest.model_validate(body).model_copy(
+        update={
+            "trigger": "human",
+            "patch_kind": "work",
+            "control_node_id": None,
+            "control_revision": None,
+            "control_decision_bundle": [],
+            "control_completion_criteria": [],
+            "watcher_ids": [],
+        }
+    )
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
         if request.session_id:

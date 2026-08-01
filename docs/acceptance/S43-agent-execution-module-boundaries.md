@@ -1,6 +1,6 @@
 ---
 id: S43-agent-execution-module-boundaries
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest
 covered_by:
@@ -10,6 +10,9 @@ covered_by:
   - tests/test_api.py::test_unauthorized_chat_patch_is_discarded_not_applied
   - tests/test_api.py::test_work_without_patch_succeeds_without_spending_a_revision
   - tests/test_api.py::test_invalid_work_patch_is_corrected_without_repeating_operational_work
+  - tests/test_api.py::test_public_task_request_cannot_select_watcher_or_control_authority
+  - tests/test_api.py::test_experiment_work_stamps_and_applies_the_bound_control_patch
+  - tests/test_api.py::test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn
   - tests/test_api.py::test_paper_coach_uses_agent_task_manager_and_result_shape
 invariants: [4, 4b, 8, 9, 10, 10b, 10c, 10d, 10e, 11]
 ---
@@ -48,6 +51,9 @@ regress is backend dispatch and lifecycle policy, not browser state.
 - Work keeps exact run-scope repository writes, optional graph reflection,
   independent operational and graph outcomes, and bounded patch-only correction
   without repeating operational work.
+- Experiment-loop and Watcher continuations retain the Work authority captured
+  by RCP: public task payloads cannot forge it, a bound control patch is stamped
+  and validated as such, and a watcher wake is not persisted as a user turn.
 - Paper coaching remains read-only and retains its current session and task
   lifecycle.
 - Local and remote stages, conversation projections, artifact discovery,

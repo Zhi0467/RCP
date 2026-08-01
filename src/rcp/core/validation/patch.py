@@ -9,9 +9,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
-from rcp.core.models import GraphState, Patch
+from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
+from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
 from rcp.core.validation.nodes import older
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
@@ -26,6 +27,9 @@ def validate_patch(
     default_run_truth_scope: Iterable[str] | None = None,
     state_repository: str | None = None,
     mode: Literal["admission", "replay"] = "admission",
+    *,
+    experiment_control_node_id: str | None = None,
+    experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
     try:
         return _validate_patch(
@@ -37,6 +41,8 @@ def validate_patch(
             default_run_truth_scope=default_run_truth_scope,
             state_repository=state_repository,
             mode=mode,
+            experiment_control_node_id=experiment_control_node_id,
+            experiment_decision_bundle=experiment_decision_bundle,
         )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         report = ValidationReport()
@@ -57,9 +63,18 @@ def _validate_patch(
     default_run_truth_scope: Iterable[str] | None = None,
     state_repository: str | None = None,
     mode: Literal["admission", "replay"] = "admission",
+    *,
+    experiment_control_node_id: str | None = None,
+    experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
     report = ValidationReport()
     scope = set(project_truth_scope)
+    control_node_id = experiment_control_node_id or patch.experiment_control_node_id
+    decision_bundle = tuple(
+        experiment_decision_bundle
+        if experiment_decision_bundle is not None
+        else patch.experiment_decision_bundle
+    )
     ctx = OpContext(
         state=state,
         patch=patch,
@@ -71,6 +86,7 @@ def _validate_patch(
         default_run_truth_scope=set(default_run_truth_scope or ()),
         state_repository=state_repository,
         mode=mode,
+        experiment_control_node_id=control_node_id,
     )
 
     if patch.revision and patch.revision != state.revision + 1:
@@ -81,6 +97,21 @@ def _validate_patch(
         )
     _validate_authorship(ctx)
     _validate_declared_scope(ctx)
+
+    if patch.kind == "experiment_loop":
+        validate_experiment_loop_authority(
+            state,
+            patch,
+            report,
+            control_node_id=control_node_id,
+            decision_bundle=decision_bundle,
+        )
+    elif control_node_id or decision_bundle:
+        report.reject(
+            "unexpected-experiment-control",
+            "Experiment control metadata is legal only on experiment-loop patches.",
+            ctx.revision,
+        )
 
     op_names = [str(op.get("op", "")) for op in patch.ops]
     if any(name.startswith("delete") for name in op_names):

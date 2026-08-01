@@ -129,6 +129,61 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
         )
 
 
+_OPEN_ATTEMPT_STATUSES = frozenset({"planned", "submitted", "running"})
+
+
+def _validate_attempt_release(
+    node: Any,
+    raw_attempts: Any,
+    report: ValidationReport,
+    revision: int | None,
+) -> None:
+    """The one non-prose direct edit: releasing an attempt nobody can close.
+
+    A watcher that can no longer answer leaves its attempt open forever, and an
+    open attempt keeps the experiment un-runnable. So the human may move an open
+    attempt to `cancelled` — and nothing else. A finished attempt is a record.
+    """
+
+    def refuse(message: str) -> None:
+        report.reject("invalid-attempt-release", message, revision, related_node_ids=[node.id])
+
+    previous = getattr(node, "attempts", None)
+    if previous is None:
+        refuse(f"{node.id} has no attempts to release.")
+        return
+    if not isinstance(raw_attempts, list) or len(raw_attempts) != len(previous):
+        refuse(f"Releasing an attempt on {node.id} cannot add or remove attempt records.")
+        return
+    released = 0
+    for before, after in zip(previous, raw_attempts, strict=True):
+        if not isinstance(after, dict):
+            refuse(f"Releasing an attempt on {node.id} requires whole attempt records.")
+            return
+        unchanged = before.model_dump(mode="json")
+        if after == unchanged:
+            continue
+        expected = {
+            **unchanged,
+            "status": "cancelled",
+            "finished_at": after.get("finished_at"),
+            "failure_reason": after.get("failure_reason"),
+        }
+        if (
+            before.status not in _OPEN_ATTEMPT_STATUSES
+            or after != expected
+            or after.get("finished_at") is None
+        ):
+            refuse(
+                f"A human release on {node.id} may only move an open attempt to cancelled with "
+                "its finish time."
+            )
+            return
+        released += 1
+    if released == 0:
+        refuse(f"No open attempt on {node.id} was released.")
+
+
 def _validate_direct_node_edit(
     state: GraphState,
     operation: dict[str, Any],
@@ -182,6 +237,9 @@ def _validate_direct_node_edit(
             "A direct node edit must change at least one prose field.",
             revision,
         )
+        return
+    if set(changes) == {"attempts"}:
+        _validate_attempt_release(node, changes["attempts"], report, revision)
         return
     allowed = HUMAN_EDITABLE_NODE_FIELDS[node.type] | {"extension_fields"}
     disallowed = sorted(set(changes) - allowed)

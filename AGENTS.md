@@ -481,6 +481,11 @@ carrying forward, and correct an entry when they change their mind.
   what should prompt a re-run, not elapsed time.
 - Server launch commands own singleton replacement and frontend builds; the
   human should never need to look up or kill an RCP PID manually.
+- Routine RCP development uses the browser workflow and does not run Tauri
+  builds. Run the desktop checks only when native behavior changed or for final
+  pre-push/release verification. After that verification, run
+  `cargo clean --manifest-path web/src-tauri/Cargo.toml` unless more Tauri work
+  is planned, so disposable Rust build artifacts do not accumulate on disk.
 - Nothing versioned should be hardcoded into instructions; point at the source
   of truth instead.
 - **Tunables belong in one central place, not scattered as per-file globals.**

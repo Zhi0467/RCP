@@ -13,6 +13,8 @@ const server = await createServer({
 });
 const { RunDialog } = await server.ssrLoadModule("/src/components/RunDialog.tsx");
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
+const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
+const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const { providerPathPresentation } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 const { ChatsWorkspace } = await server.ssrLoadModule("/src/views/ChatsWorkspace.tsx");
 
@@ -21,6 +23,20 @@ after(() => server.close());
 const project = {
   agent_profiles: {
     seed: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
+    node_chat: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
+    project_chat: {
       provider: "codex",
       model: "",
       reasoning: "medium",
@@ -43,6 +59,8 @@ const project = {
   project_truth_scope: ["repo"],
   state_repository: "repo",
   machines: [{ alias: "local", host: null }],
+  id: "project",
+  name: "Project",
 };
 
 test("seed and refresh runs offer one empty, labelled additional-message field", () => {
@@ -91,6 +109,7 @@ test("chat history exposes one explicit end-of-list page control", () => {
     runScope: [],
     tasks: [],
     activeTask: null,
+    watchers: [],
     graphChangesDisabled: false,
     unreadTaskIds: new Set(),
     chatTranscripts: new Map(),
@@ -114,6 +133,147 @@ test("chat history exposes one explicit end-of-list page control", () => {
   );
   assert.match(ready, /<button class="button primary compact" type="button">Load more<\/button>/);
   assert.doesNotMatch(complete, /Load more/);
+});
+
+test("experiment detail shows the exact gate and keeps ordinary Ask available", () => {
+  const node = {
+    id: "experiment/demo",
+    type: "experiment",
+    title: "Demo run",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+    objective: "Test the mechanism",
+    attempt_ceiling: 3,
+    attempts: [
+      {
+        id: "attempt-1",
+        sequence: 1,
+        purpose: "Train the ablation",
+        attempt_kind: "external_run",
+        decision_bundle: [
+          { decision_id: "decision/resource", decision_revision: 3, selected_option: "4xA100" },
+        ],
+        status: "running",
+        job_refs: ["4471"],
+      },
+    ],
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  let html;
+  try {
+    html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossary: {},
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        experimentControl: {
+          ready: false,
+          reasons: ["Decision decision/data is still open."],
+          attempts_used: 2,
+          attempt_ceiling: 3,
+          active: false,
+          governing_decisions: [],
+          decision_drift: [
+            {
+              decision_id: "decision/resource",
+              pinned_option: "4xA100",
+              pinned_revision: 3,
+              current_option: "8xA100",
+              current_status: "decided",
+              proposed: false,
+            },
+          ],
+        },
+        onClose() {},
+        onBeginEdit() {},
+        onStanding() {},
+        onStage() {},
+        onRunExperiment() {},
+        onReleaseAttempt() {},
+        onOpenChat() {},
+        onExploreRelations() {},
+        onSelectNode() {},
+      }),
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+  assert.match(html, /Attempt budget/);
+  assert.match(html, /2 \/ 3/);
+  assert.match(html, /Decision decision\/data is still open\./);
+  assert.match(
+    html,
+    /decision\/resource moved to 8xA100 since the latest attempt ran under 4xA100/,
+  );
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Run<\/button>/s);
+  // An open attempt is the thing that keeps the loop marked active, so the
+  // human needs a way to release it when its watcher can no longer answer.
+  assert.match(html, /Train the ablation/);
+  assert.match(html, /Stop attempt/);
+  assert.match(html, /Ask about this node/);
+});
+
+test("conversation watcher status and wake attribution stay operational", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      project,
+      node: null,
+      runScope: ["repo"],
+      tasks: [],
+      activeTask: null,
+      watchers: [
+        {
+          watcher_id: "watcher-1",
+          chat_id: "chat",
+          status: "degraded",
+          log_path: "/tmp/train.log",
+          last_checked_at: "2026-08-01T04:00:00Z",
+          last_error: "SSH exited 255",
+        },
+      ],
+      historyMessages: [
+        {
+          message_id: "message-1",
+          operation_id: "wake-1",
+          role: "assistant",
+          text: "The watched work finished.",
+          timestamp: "2026-08-01T04:01:00Z",
+          native_session_id: null,
+          provider: "codex",
+          model: null,
+          reasoning: null,
+          execution_machine: "local",
+          applied_revision: null,
+          mode: "work",
+          graph_update: null,
+          trigger: "watcher",
+        },
+      ],
+      chatId: "chat",
+      onStartTask() {},
+      onInspectTask() {},
+      onOpenInbox() {},
+      onRepairGraphUpdate() {},
+      onStopWatcher() {},
+      onClose() {},
+    }),
+  );
+  assert.match(html, /1 active watcher/);
+  assert.match(html, /train\.log/);
+  assert.match(html, /Checked/);
+  assert.match(html, /SSH exited 255/);
+  assert.match(html, /chat-turn-trigger watcher[^>]*>Watcher/);
+  assert.match(html, /Stop watching/);
+  assert.doesNotMatch(html, /node-chat-line human/);
 });
 
 test("retry keeps the original task boundary and exposes provider configuration", () => {
