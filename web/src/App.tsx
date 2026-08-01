@@ -82,6 +82,7 @@ import {
   stageAmbiguityDecision,
   stageNodeEdit,
   stageNodeEditStart,
+  stageAttemptRelease,
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
@@ -98,6 +99,7 @@ import type {
   AppView,
   ChatSummary,
   ChatTranscript,
+  ExperimentControlState,
   GraphNode,
   GraphState,
   Health,
@@ -105,6 +107,7 @@ import type {
   ProjectCard,
   ProjectSnapshot,
   TrustView,
+  WatcherRecord,
 } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
 import { ProjectOverview } from "./views/ProjectOverview";
@@ -222,6 +225,7 @@ export default function App() {
   const [taskStarting, setTaskStarting] = useState(false);
   const [taskActionId, setTaskActionId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const [taskInspectorId, setTaskInspectorId] = useState<string | null>(null);
   const [inspectedTask, setInspectedTask] = useState<AgentTask | null>(null);
   const [taskInspectorLoading, setTaskInspectorLoading] = useState(false);
@@ -413,6 +417,9 @@ export default function App() {
             if (activeProjectId.current === requestedProjectId) setTasks(nextTasks);
           })
         : Promise.resolve();
+      const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
+        if (activeProjectId.current === requestedProjectId) setWatchers(nextWatchers);
+      });
       const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
         if (activeProjectId.current === requestedProjectId) {
           setNotice({
@@ -421,7 +428,7 @@ export default function App() {
           });
         }
       });
-      await Promise.all([projectRequest, tasksRequest, chatsRequest]);
+      await Promise.all([projectRequest, tasksRequest, watchersRequest, chatsRequest]);
     },
     [applyProjectSnapshot, projectId, refreshChatSummaries],
   );
@@ -589,6 +596,7 @@ export default function App() {
     setRetryTask(null);
     setRunScope([]);
     setTasks([]);
+    setWatchers([]);
     setTaskInspectorId(null);
     setInspectedTask(null);
     setActivityTaskId(null);
@@ -687,6 +695,22 @@ export default function App() {
   }, [desktop]);
 
   const activeTask = useMemo(() => tasks.find(isActiveTask) ?? null, [tasks]);
+  const watchersAwaitingDelivery = useMemo(
+    () => watchers.some((watcher) => !watcher.notified),
+    [watchers],
+  );
+  const selectedExperimentControl = useMemo<ExperimentControlState | null>(() => {
+    if (!project || selectedNode?.type !== "experiment") return null;
+    const control = project.experiment_control?.[selectedNode.id];
+    if (!control) return null;
+    const operationActive = tasks.some(
+      (task) =>
+        isActiveTask(task) &&
+        task.request.patch_kind === "experiment_loop" &&
+        task.request.control_node_id === selectedNode.id,
+    );
+    return operationActive && !control.active ? { ...control, active: true } : control;
+  }, [project, selectedNode, tasks]);
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
@@ -882,6 +906,20 @@ export default function App() {
               });
             }
           }
+        } else if (current.kind === "node_chat" || current.kind === "project_chat") {
+          try {
+            const nextWatchers = await api<WatcherRecord[]>(
+              `/api/projects/${encodeURIComponent(projectId)}/watchers`,
+            );
+            if (!stopped) setWatchers(nextWatchers);
+          } catch (error) {
+            if (!stopped) {
+              setNotice({
+                kind: "error",
+                text: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
         }
         if (!stopped) setTasks(next);
         return;
@@ -895,6 +933,61 @@ export default function App() {
       window.clearTimeout(timer);
     };
   }, [activeTask, projectId, reload]);
+
+  useEffect(() => {
+    if (!projectId || !watchersAwaitingDelivery) return;
+    const requestedProjectId = projectId;
+    const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+    let stopped = false;
+    let timer = 0;
+    const schedule = () => {
+      timer = window.setTimeout(() => void poll(), 5000);
+    };
+    const poll = async () => {
+      try {
+        const [nextWatchers, nextTasks] = await Promise.all([
+          api<WatcherRecord[]>(`${base}/watchers`),
+          api<AgentTask[]>(`${base}/tasks`),
+        ]);
+        if (!stopped && activeProjectId.current === requestedProjectId) {
+          const unseenWatcherResults = nextTasks.filter(
+            (task) =>
+              task.request.trigger === "watcher" &&
+              !chatTaskStatuses.current.has(task.operation_id) &&
+              (task.status === "succeeded" ||
+                task.status === "failed" ||
+                task.status === "interrupted"),
+          );
+          setWatchers(nextWatchers);
+          setTasks(nextTasks);
+          if (unseenWatcherResults.length > 0) {
+            setUnreadChatTaskIds(
+              (current) =>
+                new Set([
+                  ...current,
+                  ...unseenWatcherResults.flatMap((task) => {
+                    const chatId = chatIdForTask(task);
+                    return chatId && chatId !== selectedChatIdRef.current
+                      ? [task.operation_id]
+                      : [];
+                  }),
+                ]),
+            );
+            void refreshChatSummaries(requestedProjectId, base);
+          }
+        }
+      } catch {
+        // The authoritative project reload surfaces persistent API failures.
+      } finally {
+        if (!stopped) schedule();
+      }
+    };
+    schedule();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [projectId, refreshChatSummaries, watchersAwaitingDelivery]);
 
   const inspectorSummary = tasks.find((task) => task.operation_id === taskInspectorId);
   const inspectorVersion = inspectorSummary?.updated_at;
@@ -1018,6 +1111,20 @@ export default function App() {
     }
   };
 
+  const recordStartedTask = (task: AgentTask) => {
+    setTasks((current) => [
+      task,
+      ...current.filter((item) => item.operation_id !== task.operation_id),
+    ]);
+    setActivityTaskId(task.operation_id);
+    setDismissedTaskIds((current) => {
+      const next = new Set(current);
+      next.delete(task.operation_id);
+      return next;
+    });
+    setNotice(null);
+  };
+
   const startAgentTask = async (
     kind: AgentTaskKind,
     request: AgentTaskRequest,
@@ -1031,18 +1138,80 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(request),
       });
-      setTasks((current) => [
-        task,
-        ...current.filter((item) => item.operation_id !== task.operation_id),
-      ]);
-      setActivityTaskId(task.operation_id);
-      setDismissedTaskIds((current) => {
-        const next = new Set(current);
-        next.delete(task.operation_id);
-        return next;
-      });
-      setNotice(null);
+      recordStartedTask(task);
       return task;
+    } finally {
+      taskStartLock.current = false;
+      setTaskStarting(false);
+    }
+  };
+
+  const stopWatcher = async (watcherId: string) => {
+    if (!apiBase) return;
+    try {
+      await api<WatcherRecord>(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, {
+        method: "POST",
+      });
+      setWatchers(await api<WatcherRecord[]>(`${apiBase}/watchers`));
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    }
+  };
+
+  // Releasing an attempt is two commitments: the watchers stop now because they
+  // are operational, and the attempt closes at Sync because it is graph history.
+  const releaseAttempt = async (node: GraphNode, attemptId: string) => {
+    if (!apiBase || mutationsDisabled) return;
+    updateHumanDraft((draft) => stageAttemptRelease(draft, graph, node.id, attemptId));
+    try {
+      await api<WatcherRecord[]>(
+        `${apiBase}/experiments/${encodeURIComponent(node.id)}/watchers/stop`,
+        { method: "POST" },
+      );
+      setWatchers(await api<WatcherRecord[]>(`${apiBase}/watchers`));
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    }
+  };
+
+  const runExperiment = async (node: GraphNode) => {
+    if (!project || node.type !== "experiment" || mutationsDisabled) return;
+    const control = project.experiment_control?.[node.id];
+    if (!control?.ready || control.active) {
+      const reason = control?.active
+        ? "A control loop is already active for this experiment."
+        : (control?.reasons.join(" ") ?? "This experiment is not ready to run.");
+      setNotice({ kind: "error", text: reason });
+      return;
+    }
+    if (taskStartLock.current || taskStarting || activeTask) {
+      setNotice({ kind: "error", text: "Another agent task is already active for this project." });
+      return;
+    }
+    const chatId = ensureConversation("node_chat", node);
+    const profile = project.agent_profiles.node_chat;
+    taskStartLock.current = true;
+    setTaskStarting(true);
+    try {
+      const task = await api<AgentTask>(
+        `${apiBase}/experiments/${encodeURIComponent(node.id)}/run`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            provider: profile.provider,
+            model: profile.model || null,
+            reasoning: profile.reasoning,
+            run_on: profile.run_on,
+            run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
+            chat_id: chatId,
+          }),
+        },
+      );
+      recordStartedTask(task);
+      selectChat(chatId);
+      setFloatingChat({ chatId, nodeId: node.id });
+    } catch (caught) {
+      setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
       taskStartLock.current = false;
       setTaskStarting(false);
@@ -1755,6 +1924,7 @@ export default function App() {
               runScope={runScope}
               tasks={tasks}
               activeTask={activeTask}
+              watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
               unreadTaskIds={unreadChatTaskIds}
               chatTranscripts={chatTranscripts}
@@ -1766,6 +1936,7 @@ export default function App() {
               onInspectTask={setTaskInspectorId}
               onOpenInbox={() => setView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
+              onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
             />
           )}
         </Suspense>
@@ -1782,6 +1953,9 @@ export default function App() {
           ontology={presentedGraph.ontology}
           mutationsDisabled={mutationsDisabled}
           stagedNewNode={Boolean(humanDraft?.custom_nodes[selectedNode.id])}
+          experimentControl={selectedExperimentControl}
+          experimentRunDisabled={Boolean(activeTask)}
+          experimentRunBusy={taskStarting}
           onUnstage={() => {
             updateHumanDraft((draft) => unstageCustomNode(draft, selectedNode.id));
             setSelectedNode(null);
@@ -1795,6 +1969,12 @@ export default function App() {
           }
           onStage={(changes) =>
             updateHumanDraft((draft) => stageNodeEdit(draft, graph, selectedNode.id, changes))
+          }
+          onRunExperiment={() =>
+            void runExperiment(presentedGraph.nodes[selectedNode.id] ?? selectedNode)
+          }
+          onReleaseAttempt={(attemptId) =>
+            void releaseAttempt(presentedGraph.nodes[selectedNode.id] ?? selectedNode, attemptId)
           }
           onOpenChat={() => {
             const node = presentedGraph.nodes[selectedNode.id] ?? selectedNode;
@@ -1826,6 +2006,7 @@ export default function App() {
               runScope={runScope}
               tasks={tasks}
               activeTask={activeTask}
+              watchers={watchers}
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
               chatId={floatingChat.chatId}
               presentation="floating"
@@ -1837,6 +2018,7 @@ export default function App() {
                 setView("attention");
               }}
               onRepairGraphUpdate={repairGraphUpdate}
+              onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onClose={() => setFloatingChat(null)}
             />
           </Suspense>

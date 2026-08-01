@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { changedNodeFields, editableNodeFields, nodeEditDraft } from "../src/nodeEditing.ts";
+import {
+  emptyHumanDraft,
+  humanDraftChangeCount,
+  stageAttemptRelease,
+  toHumanSyncRequest,
+} from "../src/humanDraft.ts";
 
 const hypothesis = {
   id: "hyp/example",
@@ -31,6 +37,7 @@ test("editable fields mirror the human-editable allowlist for every node type", 
     "expected_outcomes",
     "interpretation_rules",
     "completion_criteria",
+    "attempt_ceiling",
     "current_summary",
     "next_action",
   ]);
@@ -143,4 +150,94 @@ test("blank nullable prose becomes null while an existing null is unchanged", ()
   assert.deepEqual(changedNodeFields(decision, draft), { rationale: null });
   const alreadyBlank = { ...decision, rationale: null };
   assert.deepEqual(changedNodeFields(alreadyBlank, nodeEditDraft(alreadyBlank)), {});
+});
+
+test("the experiment attempt ceiling is a positive integer field in the human draft", () => {
+  const experiment = {
+    ...hypothesis,
+    type: "experiment",
+    objective: "Run the benchmark",
+    design: "One controlled run",
+    expected_outcomes: [],
+    interpretation_rules: [],
+    completion_criteria: [],
+    attempt_ceiling: 5,
+    current_summary: "Ready",
+    next_action: null,
+  };
+  const field = editableNodeFields(experiment).find((item) => item.key === "attempt_ceiling");
+  assert.deepEqual(field, {
+    key: "attempt_ceiling",
+    label: "Attempt ceiling",
+    kind: "number",
+    min: 1,
+    integer: true,
+  });
+  const draft = nodeEditDraft(experiment);
+  draft.attempt_ceiling = "7";
+  assert.deepEqual(changedNodeFields(experiment, draft), { attempt_ceiling: 7 });
+});
+
+test("releasing an attempt stages only that attempt and drops once it closes", () => {
+  const experiment = {
+    id: "exp/stuck",
+    type: "experiment",
+    title: "Stuck",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 4,
+    source_refs: [],
+    extension_fields: {},
+    objective: "Train",
+    attempts: [
+      {
+        id: "attempt-1",
+        sequence: 1,
+        purpose: "Train",
+        attempt_kind: "external_run",
+        decision_bundle: [],
+        status: "running",
+        job_refs: [],
+      },
+      {
+        id: "attempt-2",
+        sequence: 2,
+        purpose: "Retry",
+        attempt_kind: "external_run",
+        decision_bundle: [],
+        status: "failed",
+        job_refs: [],
+      },
+    ],
+  };
+  const graph = { revision: 4, nodes: { "exp/stuck": experiment }, edges: {}, ontology: null };
+
+  const staged = stageAttemptRelease(emptyHumanDraft(4), graph, "exp/stuck", "attempt-1");
+
+  assert.deepEqual(toHumanSyncRequest(staged).nodes, [
+    { node_id: "exp/stuck", base_updated_rev: 4, changes: {}, cancel_attempt_ids: ["attempt-1"] },
+  ]);
+  assert.equal(humanDraftChangeCount(staged), 1);
+
+  // Releasing a finished attempt is meaningless, and so is re-releasing one the
+  // graph already closed underneath the draft.
+  const closed = {
+    ...graph,
+    nodes: {
+      "exp/stuck": {
+        ...experiment,
+        attempts: [{ ...experiment.attempts[0], status: "cancelled" }, experiment.attempts[1]],
+      },
+    },
+  };
+  assert.deepEqual(
+    toHumanSyncRequest(stageAttemptRelease(emptyHumanDraft(4), closed, "exp/stuck", "attempt-1"))
+      .nodes,
+    [],
+  );
+  assert.deepEqual(
+    toHumanSyncRequest(stageAttemptRelease(emptyHumanDraft(4), graph, "exp/stuck", "attempt-2"))
+      .nodes,
+    [],
+  );
 });

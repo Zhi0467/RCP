@@ -7,6 +7,7 @@ import type {
   GraphNode,
   ProjectSnapshot,
   StartAgentTask,
+  WatcherRecord,
 } from "../types";
 import { NodeChat } from "../components/NodeChat";
 
@@ -18,6 +19,7 @@ interface Props {
   runScope: string[];
   tasks: AgentTask[];
   activeTask: AgentTask | null;
+  watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
   unreadTaskIds: ReadonlySet<string>;
   chatTranscripts: ReadonlyMap<string, ChatTranscript>;
@@ -29,6 +31,7 @@ interface Props {
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
+  onStopWatcher?: (watcherId: string) => void;
 }
 
 export function ChatsWorkspace({
@@ -39,6 +42,7 @@ export function ChatsWorkspace({
   runScope,
   tasks,
   activeTask,
+  watchers,
   graphChangesDisabled,
   unreadTaskIds,
   chatTranscripts,
@@ -50,6 +54,7 @@ export function ChatsWorkspace({
   onInspectTask,
   onOpenInbox,
   onRepairGraphUpdate,
+  onStopWatcher,
 }: Props) {
   const selected =
     conversations.find((conversation) => conversation.chatId === selectedChatId) ??
@@ -121,6 +126,7 @@ export function ChatsWorkspace({
             runScope={runScope}
             tasks={tasks}
             activeTask={activeTask}
+            watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             chatId={selected.chatId}
             presentation="workspace"
@@ -129,6 +135,7 @@ export function ChatsWorkspace({
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}
             onRepairGraphUpdate={onRepairGraphUpdate}
+            onStopWatcher={onStopWatcher}
             onClose={() => undefined}
           />
         ) : null}

@@ -190,6 +190,8 @@ it but a browser or a machine we do not have.
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
 | [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | implemented | pytest | passed 2026-08-01 |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
+| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | none |
+| [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | pending | pytest + **browser** | none |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

@@ -13,7 +13,7 @@ the entry, so the next person does not re-derive it.
 ## Q1 — Should `RELATION_SPEC` widen to let evidence reach a blocker or a decision?
 
 **Status:** open. Raised 2026-08-01. No decision.
-**Governing section:** [v0.5 §`RELATION_SPEC` — typing and layers](research-control-panel-blueprint-v0.5.md).
+**Governing section:** [v0.5 §`RELATION_SPEC` — typing and layers](archive/research-control-panel-blueprint-v0.5.md).
 v0.6 does not touch it.
 
 ### The question
@@ -102,3 +102,148 @@ merits and is not contingent on the widening decision.
 
 Do not "fix" the demo fixture's flagged edge, and do not work around the table
 with a project-custom relation. The flag is the observation the design asked for.
+
+---
+
+## Q2 — What belongs in Control v2 after completion-only watchers?
+
+**Status:** open. Raised 2026-08-01. V1 boundary decided; v2 details are not.
+**Governing section:** [v0.7 D29](blueprint-v0.7.md).
+
+### Decided boundary
+
+V1 watchers are generic, restart-durable completion checks. They do not stream
+live output, interpret outcomes, own external work, or carry experiment-attempt
+semantics. V1 adds no stale-watcher cleanup primitive and no hard repository
+lease.
+
+### Main Control v2 goal
+
+Add wake-on-new-output while watched work is still running. Follow OpenClaude's
+file-backed output plus durable-offset shape rather than holding logs in memory.
+The unresolved contract is:
+
+- how a watcher requests completion delivery, output delivery, or both;
+- what constitutes a deliverable output delta;
+- how repeated wakes are batched or debounced;
+- when offsets advance relative to queued and delivered turns;
+- how restart recovery avoids both dropped and repeated output;
+- how a diagnostic turn may stop doomed external work without making the watcher
+  itself the owner of that work.
+
+### Direct graph manipulation (v2)
+
+The human wants to drag between nodes to create an edge, choose its relation
+type, and approve, refute, or delete an edge in place. This fits how the app
+already treats human corrections as literal edits rather than agent requests.
+
+Keep it separate from [Q3](#q3--what-exactly-does-the-human-accept-when-an-experiment-produces-evidence).
+Direct manipulation is UI authority; Q3 is about what unit a human accepts when
+a loop reports a result. Building the first must not silently answer the second.
+
+### Secondary v2 lifecycle questions
+
+- When, if ever, are permanently degraded or abandoned watcher records cleaned
+  up? The rows are cheap, survive app close, and need no v1 user-facing cleanup
+  action.
+- Does experiment control eventually need an enforceable repository lease, or is
+  the v1 advisory active-loop marker enough? Human authority must remain explicit
+  either way.
+
+### Releasing stuck work — decided shape, not yet built
+
+An attempt whose watcher can no longer answer leaves the experiment permanently
+un-runnable: a nonterminal attempt marks the loop active, and `attempts` is not
+human-editable. V1 needs a human release, and the shape is settled:
+
+- **RCP never decides that a watcher is dead.** `degraded` is already mechanical
+  — the last check exited neither 0 nor 1. The node reports the fact and its age
+  ("last answered 3 days ago", plus the last error) and the human reads it. No
+  threshold, no inference; the same reason "unknown" was deleted from the check
+  contract.
+- **One action per object, scoped by what it is attached to.** A watcher armed by
+  an experiment attempt releases through **Stop attempt**, which closes that
+  attempt as `cancelled` and drops its watchers in one human `approval` patch. A
+  watcher armed by an ordinary Work turn has no attempt, and releases through
+  **Stop watching**. Two labels, never two buttons on the same object.
+- **Not an agent path.** Cancelling asserts the external run is finished, which
+  needs knowledge of the machine RCP cannot see — and a broken watcher never
+  wakes an agent to be asked in the first place.
+- **Display is a timeline, not a dashboard.** Attempt rows with their pinned
+  decisions and start/finish, watcher rows with last-answered and last error.
+  Counts appear only inside a gate reason, where they explain a refusal.
+
+Graph-level scheduling across the research frontier is still separately deferred.
+It is not part of this question merely because both features use the word
+"control."
+
+---
+
+## Q3 — What exactly does the human accept when an experiment produces evidence?
+
+**Status:** **decided 2026-08-01, not yet built.** The human settled it: the unit
+of acceptance is the belief change, not the edge. See "Decision" below; the rest
+of this entry is kept as the reasoning that led there.
+**Governing sections:** [v0.7 D25-D26](blueprint-v0.7.md) and
+[S41](acceptance/S41-bounded-experiment-control.md).
+
+### Decision
+
+What a human accepts is **the belief change**, carrying its evidence edge as the
+cause. Not the edge on its own, and not a second standing model.
+
+- The evidence node and the epistemic edge are **asserted** by the loop, as they
+  are today. They are facts about a run that happened; the loop is entitled to
+  record them.
+- The **hypothesis status change** is the Inbox item — one proposal, one gated
+  card, one judgment. Approving it applies the status change and records the
+  `BeliefTransition` with the edge as its cause.
+- `Edge` gains no `standing` field. A seeded graph does not acquire hundreds of
+  unaccepted edges.
+
+This resolves the tension noted in resolution 2 below: the loop does *not*
+propose the edge, so nothing about assertion changes. What widens is only the
+loop's proposal scope, by exactly one narrowly checkable shape — target must be a
+hypothesis the bound experiment `tests`, and the ops must be that hypothesis's
+status plus a belief cause naming an edge created in the same patch. Proposing a
+status change does not violate the anchor; the anchor is that the loop may never
+*apply* one.
+
+Building it needs `_validate_proposals` in
+[experiment_loop.py](../src/rcp/core/validation/experiment_loop.py) widened to
+that second shape, and nothing else new — Inbox, `GatedCard`, `BeliefTransition`,
+and the `evidence_edge` cause kind already exist. **S41 stays pending until this
+is implemented**, because until then nothing mechanically distinguishes an edge a
+human blessed from one the loop wrote.
+
+### The mismatch
+
+V0.7 says a successful loop asserts an evidence edge, creates exactly one Inbox
+item, and that human acceptance makes the edge accepted. The current graph has no
+such mechanical state:
+
+- standing belongs to nodes; `Edge` has no standing field;
+- Inbox contains pending proposals, open ambiguities, and open blockers, not
+  asserted edges;
+- accepting a node in its detail drawer is a human action, but it is not an
+  Inbox item and does not itself update a downstream belief.
+
+The v0.7 validator can therefore admit an asserted Evidence node and epistemic
+edge while preserving the rule that the loop cannot change a hypothesis status,
+but it cannot honestly satisfy S41's final acceptance step.
+
+### Plausible resolutions
+
+1. Make the human accept the Evidence node, then separately edit the downstream
+   belief. This uses existing standing but is neither one Inbox item nor one
+   atomic judgment.
+2. Put the evidence, edge, and belief transition inside one Proposal. This uses
+   the existing Inbox and atomic approval path, but the loop would propose the
+   edge rather than assert it, and D26's proposal scope would need to expand
+   beyond upstream decisions.
+3. Add standing and review semantics to edges. This matches the v0.7 wording but
+   creates a second standing model and is the largest change.
+
+Do not silently pick one during implementation. Until this is decided, keep S41
+pending and do not claim that successful completion produces its promised human
+authority item.

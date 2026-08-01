@@ -781,12 +781,34 @@ export function ExecutionView({
                       <span className="attempt-seq">
                         {String(attempt.sequence).padStart(2, "0")}
                       </span>
-                      <strong>{attempt.purpose}</strong>
+                      <strong>
+                        {attempt.purpose}
+                        {attempt.attempt_kind === "proposal_only" && (
+                          <span className="attempt-kind">Proposal only</span>
+                        )}
+                      </strong>
                       <span className="attempt-outcome">
                         {attempt.outcome || attempt.failure_reason || "No outcome recorded"}
                       </span>
                       <span className="mono">{attempt.job_refs?.[0] ?? "—"}</span>
                       <span>{attempt.status}</span>
+                      {(attempt.decision_bundle ?? []).length > 0 && (
+                        <span className="attempt-pins">
+                          {(attempt.decision_bundle ?? []).map((decision) => (
+                            <span key={`${attempt.id}:${decision.decision_id}`}>
+                              {decision.decision_id} · r{decision.decision_revision} ·{" "}
+                              {decision.selected_option}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                      {attempt.debug && (
+                        <span className="attempt-debug">
+                          <strong>Fault</strong> {attempt.debug.mechanical_fault}
+                          <strong>Change</strong> {attempt.debug.change}
+                          <strong>Predicted effect</strong> {attempt.debug.predicted_effect}
+                        </span>
+                      )}
                     </div>
                   ))}
                   {node.next_action && (

@@ -118,6 +118,44 @@ class BackgroundAgentTasks:
             estimate_samples=samples,
         )
 
+    def start_watcher_notification(
+        self,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        request: RunRequest,
+        watcher_ids: list[str],
+    ) -> AgentTaskRecord | None:
+        """Atomically consume completed watchers and start their attributed Work turn."""
+
+        if request.trigger != "watcher" or request.mode != "work" or request.session_id:
+            raise ValueError("A watcher notification must be a fresh watcher-attributed Work turn.")
+        if request.watcher_ids != watcher_ids:
+            raise ValueError("The watcher notification request must name its watcher records.")
+        self._validate_request_type(kind, request)
+        request_data = request.model_dump(mode="json")
+        estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
+        operation_id = str(uuid.uuid4())
+        now = self.store.now()
+        record = AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            kind=kind,
+            status="queued",
+            request=request_data,
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting to deliver a watcher update.",
+            native_session_id=None,
+            estimate_seconds=estimate,
+            estimate_samples=samples,
+            phase="queued",
+            last_activity_at=now,
+        )
+        stored = self.store.create_watcher_notification_task(record, watcher_ids)
+        if stored is None:
+            return None
+        return self._spawn_record(stored, request, continuation="fresh")
+
     def resume(self, operation_id: str) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
         if not previous.can_resume or not previous.native_session_id:
@@ -330,7 +368,6 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord:
         operation_id = str(uuid.uuid4())
         now = self.store.now()
-        reuses_native_checkpoint = continuation in {"resume", "correction", "graph_repair"}
         verb = (
             "repair its graph update"
             if continuation == "graph_repair"
@@ -361,11 +398,23 @@ class BackgroundAgentTasks:
                 last_activity_at=now,
             )
         )
+        return self._spawn_record(record, request, continuation=continuation, parent=parent)
+
+    def _spawn_record(
+        self,
+        record: AgentTaskRecord,
+        request: AgentTaskRequest,
+        *,
+        continuation: AgentTaskContinuation,
+        parent: AgentTaskRecord | None = None,
+    ) -> AgentTaskRecord:
+        operation_id = record.operation_id
+        reuses_native_checkpoint = continuation in {"resume", "correction", "graph_repair"}
         self.store.record_agent_task_receipt(
             operation_id,
             "operation_created",
             {
-                "kind": kind,
+                "kind": record.kind,
                 "attempt": record.attempt,
                 "has_parent": parent is not None,
                 "continuation_cause": continuation,
@@ -385,6 +434,13 @@ class BackgroundAgentTasks:
                 operation_id,
                 f"{action} task {parent.operation_id[:8]} as attempt {record.attempt}{feedback}.",
             )
+        elif isinstance(request, RunRequest) and request.trigger == "watcher":
+            self.store.record_agent_task_receipt(
+                operation_id,
+                "watcher_notification",
+                {"watcher_ids": request.watcher_ids},
+            )
+            self.store.record_agent_task_event(operation_id, "Watcher completion queued.")
         else:
             self.store.record_agent_task_event(operation_id, "Agent task queued.")
         control = AgentProcessControl()
@@ -393,7 +449,7 @@ class BackgroundAgentTasks:
         worker = threading.Thread(
             target=self._run,
             args=(record, request, control, continuation),
-            name=f"rcp-{kind}-{operation_id[:8]}",
+            name=f"rcp-{record.kind}-{operation_id[:8]}",
             daemon=True,
         )
         with self._controls_lock:

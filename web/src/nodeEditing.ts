@@ -5,6 +5,8 @@ export interface NodeEditField {
   label: string;
   kind: "text" | "multiline" | "list" | "number" | "boolean";
   nullable?: boolean;
+  min?: number;
+  integer?: boolean;
   extensionName?: string;
 }
 
@@ -38,6 +40,13 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
     { key: "expected_outcomes", label: "Expected outcomes", kind: "list" },
     { key: "interpretation_rules", label: "Interpretation rules", kind: "list" },
     { key: "completion_criteria", label: "Completion criteria", kind: "list" },
+    {
+      key: "attempt_ceiling",
+      label: "Attempt ceiling",
+      kind: "number",
+      min: 1,
+      integer: true,
+    },
     { key: "current_summary", label: "Current summary", kind: "multiline" },
     { key: "next_action", label: "Next action", kind: "multiline", nullable: true },
   ],

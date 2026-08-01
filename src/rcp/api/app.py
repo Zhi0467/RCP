@@ -59,7 +59,8 @@ from rcp.background import (
     BackgroundAgentTasks,
 )
 from rcp.config import AgentSurface, AgentSurfaceConfig
-from rcp.core.models import CoverageBoundary, GraphState, Patch
+from rcp.control import decision_drift, derive_experiment_control_state
+from rcp.core.models import CoverageBoundary, Experiment, ExperimentDecisionPin, GraphState, Patch
 from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
@@ -96,8 +97,22 @@ from rcp.sources import (
     ConversationIndex,
     RebuildableCache,
 )
-from rcp.storage import AgentTaskKind, AgentTaskReceiptRecord, AgentTaskRecord, AppStore
+from rcp.storage import (
+    AgentTaskKind,
+    AgentTaskReceiptRecord,
+    AgentTaskRecord,
+    AppStore,
+    WatcherContinuation,
+    WatcherRecord,
+)
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.watchers import (
+    WatcherBinding,
+    WatcherInitialCheckError,
+    WatcherPoller,
+    arm_watchers,
+    parse_watch_json,
+)
 from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
@@ -251,6 +266,45 @@ def create_app(
 
     background_tasks = BackgroundAgentTasks(store, background_task_stream)
 
+    def deliver_watcher_group(group: list[WatcherRecord]) -> None:
+        if not group:
+            return
+        first = group[0]
+        continuation = first.continuation
+        watcher_ids = [item.watcher_id for item in group]
+        details = "\n".join(f"- watcher `{item.watcher_id}`: `{item.log_path}`" for item in group)
+        request = RunRequest(
+            provider=continuation.provider,
+            model=continuation.model,
+            reasoning=continuation.reasoning,
+            run_on=continuation.run_on,
+            run_truth_scope=continuation.run_truth_scope,
+            chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
+            node_id=first.node_id,
+            message=(
+                "RCP watcher update: the following external work is no longer present in its "
+                f"system. Inspect the named logs and continue the Work turn.\n{details}"
+            ),
+            chat_id=first.chat_id,
+            session_id=None,
+            mode="work",
+            trigger="watcher",
+            patch_kind=continuation.patch_kind,
+            control_node_id=continuation.control_node_id,
+            control_revision=continuation.control_revision,
+            control_decision_bundle=continuation.control_decision_bundle,
+            control_completion_criteria=continuation.control_completion_criteria,
+            watcher_ids=watcher_ids,
+        )
+        background_tasks.start_watcher_notification(
+            first.project_id,
+            first.origin_task_kind,
+            request,
+            watcher_ids,
+        )
+
+    watcher_poller = WatcherPoller(store, on_completed=deliver_watcher_group)
+
     async def warm_local_provider_capabilities() -> None:
         try:
             targets = await asyncio.to_thread(catalog.local_provider_targets)
@@ -298,6 +352,7 @@ def create_app(
             startup_maintenance.append(asyncio.create_task(warm_local_provider_capabilities()))
             if default_state_host:
                 startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
+            watcher_poller.start()
             yield
         finally:
             for task in startup_maintenance:
@@ -305,6 +360,7 @@ def create_app(
             for task in startup_maintenance:
                 with suppress(asyncio.CancelledError):
                     await task
+            watcher_poller.stop()
             background_tasks.shutdown()
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
@@ -320,6 +376,7 @@ def create_app(
     app.state.service = default_service
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
+    app.state.watcher_poller = watcher_poller
     app.state.instance_metadata = identity
     app.add_middleware(
         CORSMiddleware,
@@ -454,6 +511,17 @@ def create_app(
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         snapshot["id"] = project_id
+        state = GraphState.model_validate(snapshot["graph"])
+        active_control_ids = _active_experiment_control_ids(store, project_id)
+        snapshot["experiment_control"] = {
+            node.id: derive_experiment_control_state(
+                state,
+                node.id,
+                active_control_ids,
+            ).model_dump(mode="json")
+            for node in state.nodes.values()
+            if node.type == "experiment"
+        }
         try:
             catalog.update_summary(project_id, snapshot)
             catalog.write_cached_snapshot(project_id, snapshot)
@@ -579,10 +647,93 @@ def create_app(
             raise HTTPException(status_code=status, detail=str(exc)) from exc
         return record.model_dump(mode="json")
 
+    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/run", status_code=202)
+    def run_experiment(
+        project_id: str,
+        node_id: str,
+        body: dict[str, object],
+    ) -> dict[str, object]:
+        service = _project_service(catalog, project_id)
+        state = service.history.state()
+        node = state.nodes.get(node_id)
+        if not isinstance(node, Experiment):
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        control = derive_experiment_control_state(
+            state,
+            node_id,
+            _active_experiment_control_ids(store, project_id),
+        )
+        if not control.ready:
+            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
+        try:
+            supplied = RunRequest.model_validate(body)
+            if not supplied.chat_id:
+                raise ValueError("Run requires a chat_id")
+            uuid.UUID(supplied.chat_id)
+            request = supplied.model_copy(
+                update={
+                    "chat_scope": "node",
+                    "node_id": node_id,
+                    "message": (
+                        f"Run the bounded control loop for {node_id}. Perform bounded preflight, "
+                        "then either launch and record one attempt, or record one proposal-only "
+                        "attempt when an upstream decision must change."
+                    ),
+                    "session_id": None,
+                    "mode": "work",
+                    "trigger": "experiment_run",
+                    "patch_kind": "experiment_loop",
+                    "control_node_id": node_id,
+                    "control_revision": state.revision,
+                    "control_decision_bundle": control.governing_decisions,
+                    "control_completion_criteria": list(node.completion_criteria),
+                    "watcher_ids": [],
+                }
+            )
+            request = _resolved_graph_request(service, "node_chat", request)
+            record = background_tasks.start(project_id, "node_chat", request)
+        except ValueError as exc:
+            status = 409 if "already running" in str(exc) else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        return record.model_dump(mode="json")
+
     @app.get("/api/projects/{project_id}/tasks")
     def agent_tasks(project_id: str) -> list[dict[str, object]]:
         _require_registered_project(catalog, project_id)
         return [record.model_dump(mode="json") for record in store.agent_tasks(project_id)]
+
+    @app.get("/api/projects/{project_id}/watchers")
+    def project_watchers(project_id: str) -> list[dict[str, object]]:
+        _require_registered_project(catalog, project_id)
+        return [record.model_dump(mode="json") for record in store.watchers(project_id)]
+
+    @app.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
+    def stop_watcher(project_id: str, watcher_id: str) -> dict[str, object]:
+        _require_registered_project(catalog, project_id)
+        try:
+            stopped = store.stop_watchers(project_id, [watcher_id])
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Watcher not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return stopped[0].model_dump(mode="json")
+
+    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
+    def stop_experiment_watchers(project_id: str, node_id: str) -> list[dict[str, object]]:
+        """Release every live watcher a bounded loop armed on one experiment.
+
+        Operational only. The attempt those watchers were following stays open
+        until the human syncs its cancellation, because that is a graph change.
+        """
+
+        _require_registered_project(catalog, project_id)
+        watcher_ids = store.experiment_watcher_ids(project_id, node_id)
+        if not watcher_ids:
+            return []
+        return [
+            record.model_dump(mode="json")
+            for record in store.stop_watchers(project_id, watcher_ids)
+        ]
 
     @app.get(
         "/api/projects/{project_id}/chats",
@@ -869,6 +1020,21 @@ def _project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _active_experiment_control_ids(store: AppStore, project_id: str) -> set[str]:
+    active: set[str] = set()
+    for task in store.agent_tasks(project_id):
+        if task.kind not in {"node_chat", "project_chat"}:
+            continue
+        if task.status not in {"queued", "running", "pausing"}:
+            continue
+        if task.request.get("patch_kind") != "experiment_loop":
+            continue
+        node_id = task.request.get("control_node_id")
+        if isinstance(node_id, str):
+            active.add(node_id)
+    return active
+
+
 def _require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
     try:
         catalog.card(project_id)
@@ -884,7 +1050,17 @@ def _validated_task_request(
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 
-    request = RunRequest.model_validate(body)
+    request = RunRequest.model_validate(body).model_copy(
+        update={
+            "trigger": "human",
+            "patch_kind": "work",
+            "control_node_id": None,
+            "control_revision": None,
+            "control_decision_bundle": [],
+            "control_completion_criteria": [],
+            "watcher_ids": [],
+        }
+    )
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
         if request.session_id:
@@ -2762,6 +2938,7 @@ async def _stream_work_run(
                     )
                 workspace = Path(str(remote_stage.workspace))
                 patch_path = str(remote_stage.workspace / "patch.json")
+                watch_path = str(remote_stage.workspace / "watch.json")
             else:
                 stage_root = _swept_stage_root(data_dir)
                 expected_stage = stage_root / stage_name
@@ -2774,8 +2951,10 @@ async def _stream_work_run(
                     execution.checkpoint_stage("", str(local_stage))
                 workspace = local_stage
                 patch_path = str(local_stage / "patch.json")
+                watch_path = str(local_stage / "watch.json")
             if not resuming:
                 _clear_stale_patch(workspace, remote_stage)
+                _clear_stale_watch(workspace, remote_stage)
             artifact_scope_id = (
                 _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
@@ -2865,6 +3044,53 @@ async def _stream_work_run(
                     if execution is not None and execution.retry_feedback
                     else None
                 )
+                control_context_path = None
+                if request.patch_kind == "experiment_loop":
+                    if not request.control_node_id or request.control_revision is None:
+                        raise ValueError("Experiment-loop work is missing its RCP control binding.")
+                    control_node = context.node
+                    if (
+                        control_node is None
+                        or control_node.get("id") != request.control_node_id
+                        or control_node.get("type") != "experiment"
+                    ):
+                        raise ValueError(
+                            "Experiment-loop work no longer resolves to its Experiment."
+                        )
+                    attempts = control_node.get("attempts", [])
+                    attempt_ceiling = control_node.get("attempt_ceiling", 5)
+                    # RCP computes the drift rather than leaving the turn to
+                    # notice that its pins no longer match the graph. Reading
+                    # canonical state can touch a remote repository, so it stays
+                    # off the event loop.
+                    drift = await asyncio.to_thread(
+                        lambda: decision_drift(
+                            service.history.state(),
+                            request.control_decision_bundle,
+                        )
+                    )
+                    control_context_path = _stage_json_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-experiment-control.json",
+                        {
+                            "experiment_id": request.control_node_id,
+                            "pinned_graph_revision": request.control_revision,
+                            "decision_bundle": [
+                                item.model_dump(mode="json")
+                                for item in request.control_decision_bundle
+                            ],
+                            "completion_criteria": request.control_completion_criteria,
+                            "decision_drift": [item.model_dump(mode="json") for item in drift],
+                            "attempts_used": len(attempts) if isinstance(attempts, list) else 0,
+                            "attempt_ceiling": attempt_ceiling,
+                            "at_ceiling": (
+                                isinstance(attempt_ceiling, int)
+                                and isinstance(attempts, list)
+                                and len(attempts) >= attempt_ceiling
+                            ),
+                        },
+                    )
                 contract = PromptFactory.work_task_contract(
                     project_name=context.project_name,
                     ontology_path=f"{context.graph_path}#ontology",
@@ -2883,6 +3109,9 @@ async def _stream_work_run(
                     artifact_path=str(artifact_directory),
                     output_schema_path=schema_path,
                     retry_diagnostics_path=retry_diagnostics_path,
+                    watch_path=watch_path,
+                    patch_kind=request.patch_kind,
+                    control_context_path=control_context_path,
                 )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
@@ -3002,6 +3231,9 @@ async def _stream_work_run(
                         patch_text,
                         base_revision=base_revision,
                         run_truth_scope=context.run_truth_scope,
+                        patch_kind=request.patch_kind,
+                        control_node_id=request.control_node_id,
+                        control_decision_bundle=request.control_decision_bundle,
                     )
                     if result is not None:
                         graph_update = result.model_copy(
@@ -3160,6 +3392,211 @@ async def _stream_work_run(
                     patch_text = None
                     continue
                 patch_text = corrected
+
+        watch_correction_rounds = 0
+        try:
+            watch_text = _read_watch_request(workspace, remote_stage)
+        except (OSError, StateUnavailable, ValueError) as exc:
+            watch_text = None
+            watch_problem: str | None = f"The watcher request could not be read: {exc}"
+            watch_correctable = False
+        else:
+            watch_problem = None
+            watch_correctable = True
+
+        while watch_text is not None or watch_problem is not None:
+            if watch_text is not None:
+                try:
+                    if execution is None:
+                        raise ValueError("Watcher arming requires a durable originating operation.")
+                    origin_task = execution.store.agent_task(execution.operation_id)
+                    if origin_task is None:
+                        raise ValueError("The originating Work operation is no longer available.")
+                    specs = parse_watch_json(watch_text)
+                    binding = WatcherBinding(
+                        project_id=origin_task.project_id,
+                        origin_operation_id=execution.operation_id,
+                        origin_task_kind=surface,
+                        chat_id=request.chat_id or "",
+                        node_id=request.node_id,
+                        execution_host=execution_host,
+                        continuation=WatcherContinuation(
+                            provider=request.provider or "",
+                            model=request.model,
+                            reasoning=request.reasoning,
+                            run_on=request.run_on or "",
+                            run_truth_scope=context.run_truth_scope,
+                            patch_kind=request.patch_kind,
+                            control_node_id=request.control_node_id,
+                            control_revision=request.control_revision,
+                            control_decision_bundle=[
+                                item.model_dump(mode="json")
+                                for item in request.control_decision_bundle
+                            ],
+                            control_completion_criteria=request.control_completion_criteria,
+                        ),
+                    )
+                    armed = await asyncio.to_thread(
+                        arm_watchers,
+                        execution.store,
+                        specs,
+                        binding,
+                    )
+                except WatcherInitialCheckError as exc:
+                    watch_problem = str(exc)
+                    watch_correctable = True
+                except ValueError as exc:
+                    watch_problem = str(exc)
+                    watch_correctable = True
+                except (OSError, StateUnavailable) as exc:
+                    watch_problem = str(exc)
+                    watch_correctable = False
+                else:
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "watchers_armed",
+                        {
+                            "watcher_ids": [item.watcher_id for item in armed],
+                            "count": len(armed),
+                            "correction_rounds": watch_correction_rounds,
+                        },
+                    )
+                    watch_problem = None
+                    break
+
+            if watch_problem is None:
+                break
+            if (
+                not watch_correctable
+                or watch_correction_rounds >= _MAX_CORRECTION_ROUNDS
+                or not native_session_id
+            ):
+                if execution is not None:
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "watcher_handoff_rejected",
+                        {
+                            "problem": watch_problem[:1600],
+                            "correction_rounds": watch_correction_rounds,
+                        },
+                        tier="diagnostic",
+                    )
+                    execution.store.record_agent_task_event(
+                        execution.operation_id,
+                        f"Watcher handoff was not armed: {watch_problem}",
+                        level="warning",
+                    )
+                break
+
+            watch_correction_rounds += 1
+            assert execution is not None
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "watcher_correction_requested",
+                {"round": watch_correction_rounds, "problem": watch_problem[:400]},
+                tier="diagnostic",
+            )
+            execution.store.update_agent_task_message(
+                execution.operation_id,
+                "Correcting watcher handoff.",
+                phase="correcting",
+                event=True,
+            )
+            diagnostics_path = _stage_json_task_input(
+                local_stage,
+                remote_stage,
+                f"task-{token}-watch-correction-{watch_correction_rounds}.json",
+                {"problem": watch_problem},
+            )
+            correction_contract = PromptFactory.continuation_task_contract(
+                original_contract_path=base_contract_path,
+                mode="watch_correction",
+                diagnostics_path=diagnostics_path,
+                watch_path=watch_path,
+            )
+            correction_path, correction_prompt = _stage_task_contract(
+                local_stage,
+                remote_stage,
+                f"task-{token}-watch-correction-{watch_correction_rounds}.md",
+                correction_contract,
+                execution=execution,
+                role=f"watch_correction_{watch_correction_rounds}",
+            )
+            pre_launch_digest = _existing_watch_digest(workspace, remote_stage)
+            _record_agent_launch_receipt(
+                execution,
+                request,
+                prompt=correction_prompt,
+                contract_path=correction_path,
+                remote=bool(execution_host),
+                resumed=True,
+                continuation="watch_correction",
+                extra={
+                    "surface": surface,
+                    "mode": "work",
+                    "capability": "scratch_patch",
+                    "network_access": True,
+                    "launch_kind": "watch_correction",
+                    "correction_round": watch_correction_rounds,
+                    "write_directory_count": 0,
+                },
+            )
+            correction_outcome = _ProviderOutcome(session_id=native_session_id)
+            correction_error: str | None = None
+            async with aclosing(
+                _stream_agent_events(
+                    launcher,
+                    request,
+                    correction_prompt,
+                    workspace=workspace,
+                    session_id=native_session_id,
+                    read_dirs=[],
+                    write_dirs=[],
+                    execution_host=execution_host,
+                    execution=execution,
+                    remote_stage=remote_stage,
+                    capability="scratch_patch",
+                    outcome=correction_outcome,
+                    binary=provider_binary,
+                )
+            ) as stream:
+                async for frame in stream:
+                    event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+                    if event.event == "error":
+                        correction_error = event.text or "Watcher correction failed."
+                    elif event.event not in {"answer", "done"}:
+                        yield frame
+            native_session_id = correction_outcome.session_id or native_session_id
+            if correction_outcome.paused:
+                return
+            if correction_error or not correction_outcome.completed:
+                watch_problem = correction_error or (
+                    f"{request.provider} produced no watcher correction result."
+                )
+                watch_text = None
+                watch_correction_rounds = _MAX_CORRECTION_ROUNDS
+                continue
+            try:
+                corrected = _read_watch_request(workspace, remote_stage)
+            except (OSError, StateUnavailable, ValueError) as exc:
+                corrected = None
+                watch_problem = f"The corrected watcher request could not be read: {exc}"
+            if corrected is None:
+                watch_problem = "The correction completed without writing watch.json."
+                watch_text = None
+                continue
+            if (
+                pre_launch_digest is not None
+                and hashlib.sha256(corrected.encode("utf-8")).hexdigest() == pre_launch_digest
+            ):
+                watch_problem = (
+                    f"{watch_problem} The correction left watch.json byte-identical; rewrite it "
+                    "with the required changes."
+                )
+                watch_text = None
+                continue
+            watch_text = corrected
+            watch_problem = None
 
         try:
             _append_chat_exchange(
@@ -3370,6 +3807,9 @@ async def _stream_work_graph_repair(
         patch_text,
         base_revision=base_revision,
         run_truth_scope=request.run_truth_scope or service.manifest.agent.default_run_truth_scope,
+        patch_kind=request.patch_kind,
+        control_node_id=request.control_node_id,
+        control_decision_bundle=request.control_decision_bundle,
     )
     if graph_update is None:
         assert failure is not None
@@ -3779,6 +4219,15 @@ def _clear_stale_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> 
     (workspace / "patch.json").unlink(missing_ok=True)
 
 
+def _clear_stale_watch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
+    """Drop a prior turn's watcher request from the reusable conversation stage."""
+
+    if remote_stage is not None:
+        remote_stage.remove_workspace_file("watch.json")
+        return
+    (workspace / "watch.json").unlink(missing_ok=True)
+
+
 def _prepare_local_artifact_directory(
     stage: Path,
     scope_id: str,
@@ -3924,6 +4373,32 @@ def _read_chat_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> st
     return path.read_text(encoding="utf-8")
 
 
+def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
+    """Read the exact optional watcher deliverable without searching scratch output."""
+
+    if remote_stage is not None:
+        if "watch.json" not in remote_stage.list_workspace_files():
+            return None
+        return remote_stage.read_text(remote_stage.workspace / "watch.json")
+    path = workspace / "watch.json"
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8")
+
+
+def _existing_watch_digest(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> str | None:
+    try:
+        text = _read_watch_request(workspace, remote_stage)
+    except (OSError, StateUnavailable, ValueError):
+        return None
+    if text is None:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _apply_work_patch(
     service: ProjectService,
     execution: AgentTaskExecution | None,
@@ -3931,6 +4406,9 @@ def _apply_work_patch(
     *,
     base_revision: int,
     run_truth_scope: list[str],
+    patch_kind: Literal["work", "experiment_loop"] = "work",
+    control_node_id: str | None = None,
+    control_decision_bundle: list[ExperimentDecisionPin] | None = None,
 ) -> tuple[GraphUpdateResult | None, _WorkPatchFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
@@ -3953,8 +4431,15 @@ def _apply_work_patch(
             patch,
             byte_length=len(patch_text.encode("utf-8")),
         )
-        _require_agent_patch_identity(patch, "work")
+        _require_agent_patch_identity(patch, patch_kind)
         patch = normalize_agent_patch_bookkeeping(patch)
+        if patch_kind == "experiment_loop":
+            patch = patch.model_copy(
+                update={
+                    "experiment_control_node_id": control_node_id,
+                    "experiment_decision_bundle": list(control_decision_bundle or ()),
+                }
+            )
         validate_agent_patch_shape(patch)
         validate_work_patch(patch)
         if sorted(patch.run_truth_scope) != sorted(run_truth_scope):
@@ -5202,15 +5687,20 @@ def _append_chat_exchange(
             "timestamp": timestamp,
             "operationId": execution.operation_id if execution is not None else None,
             "mode": request.mode,
+            "trigger": request.trigger,
         }
-        records = [
-            {
-                **common,
-                "uuid": str(uuid.uuid4()),
-                "type": "user",
-                "role": "user",
-                "text": request.message,
-            },
+        records = []
+        if request.trigger != "watcher":
+            records.append(
+                {
+                    **common,
+                    "uuid": str(uuid.uuid4()),
+                    "type": "user",
+                    "role": "user",
+                    "text": request.message,
+                }
+            )
+        records.append(
             {
                 **common,
                 "uuid": str(uuid.uuid4()),
@@ -5221,8 +5711,8 @@ def _append_chat_exchange(
                 "graphUpdate": (
                     graph_update.model_dump(mode="json") if graph_update is not None else None
                 ),
-            },
-        ]
+            }
+        )
         lock_path = service.history.workspace.root / ".chat.lock"
         with lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -5265,6 +5755,7 @@ def _append_chat_graph_receipt(
             "timestamp": datetime.now(UTC).isoformat(),
             "operationId": execution.operation_id,
             "mode": "work",
+            "trigger": request.trigger,
             "uuid": str(uuid.uuid4()),
             "type": "assistant",
             "role": "assistant",

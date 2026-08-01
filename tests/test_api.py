@@ -5311,3 +5311,409 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert transcript.messages[-1].graph_update is not None
     assert transcript.messages[-1].graph_update.status == "applied"
     assert transcript.last_message_preview == "The operational work completed."
+
+
+def _experiment_fixture_patch(experiment_id: str = "exp/bounded-loop") -> Patch:
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary="Added an experiment for control-loop tests.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": experiment_id,
+                        "type": "experiment",
+                        "title": "Bounded loop",
+                        "objective": "Exercise the experiment control contract.",
+                        "completion_criteria": ["The detached fixture exits cleanly."],
+                        "attempt_ceiling": 2,
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def _chat_task_execution(
+    store: AppStore,
+    *,
+    operation_id: str,
+    project_id: str,
+    request: RunRequest,
+) -> AgentTaskExecution:
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            kind="node_chat" if request.chat_scope == "node" else "project_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
+    return AgentTaskExecution(
+        operation_id=operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+
+
+def test_public_task_request_cannot_select_watcher_or_control_authority(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    request = _validated_task_request(
+        service,
+        "project_chat",
+        {
+            "chat_id": str(uuid.uuid4()),
+            "message": "Ordinary Work.",
+            "mode": "work",
+            "trigger": "watcher",
+            "patch_kind": "experiment_loop",
+            "control_node_id": "experiment/forged",
+            "watcher_ids": ["forged"],
+        },
+    )
+
+    assert isinstance(request, RunRequest)
+    assert request.trigger == "human"
+    assert request.patch_kind == "work"
+    assert request.control_node_id is None
+    assert request.watcher_ids == []
+
+
+def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def stream(_project_id, kind, request, _execution):
+        assert kind == "node_chat"
+        assert request.trigger == "experiment_run"
+        assert request.patch_kind == "experiment_loop"
+        assert request.control_node_id == "exp/bounded-loop"
+        assert request.control_revision == 2
+        assert request.control_completion_criteria == ["The detached fixture exits cleanly."]
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        yield _sse(AgentEvent(event="answer", text="Preflight stopped before launch."))
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    response = client.post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+    try:
+        assert response.status_code == 202, response.text
+        assert entered.wait(timeout=1)
+        task = response.json()
+        assert task["request"]["control_decision_bundle"] == []
+        assert service.history.state().nodes["exp/bounded-loop"].attempts == []
+
+        snapshot = client.get(f"/api/projects/{project_id}").json()
+        control = snapshot["experiment_control"]["exp/bounded-loop"]
+        assert control["active"] is True
+        assert control["ready"] is False
+        assert control["reasons"] == ["An experiment loop is already active."]
+
+        duplicate = client.post(
+            f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+            json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+        )
+        assert duplicate.status_code == 409
+        assert "already active" in duplicate.json()["detail"]
+    finally:
+        release.set()
+
+    completed = _wait_for_run(client, project_id, response.json()["operation_id"])
+    assert completed["status"] == "succeeded"
+    assert service.history.state().nodes["exp/bounded-loop"].attempts == []
+
+
+@pytest.mark.asyncio
+async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    attempt = {
+        "id": "attempt-1",
+        "sequence": 1,
+        "purpose": "Launch the detached fixture.",
+        "attempt_kind": "external_run",
+        "decision_bundle": [],
+        "status": "running",
+        "job_refs": ["4471"],
+    }
+    patch = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Recorded the launched attempt.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/bounded-loop",
+                        "changes": {"status": "running", "attempts": [attempt]},
+                    }
+                ],
+            }
+        ],
+    )
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Run the bounded loop.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_completion_criteria=["The detached fixture exits cleanly."],
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="experiment-work",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    launcher = ScriptedLauncher(
+        [{"patch.json": patch.model_dump_json()}],
+        message="The fixture was launched once.",
+    )
+
+    frames = [
+        frame
+        async for frame in _stream_chat_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not _error_texts(frames)
+    assert _graph_update(frames)["status"] == "applied"
+    experiment = service.history.state().nodes["exp/bounded-loop"]
+    assert [item.id for item in experiment.attempts] == ["attempt-1"]
+    persisted = service.history.load_patches()[-1]
+    assert persisted.kind == "experiment_loop"
+    assert persisted.experiment_control_node_id == "exp/bounded-loop"
+    assert persisted.experiment_decision_bundle == []
+    contract = _local_task_contract(launcher.prompts[0])
+    assert "Experiment-loop authority" in contract
+    assert "Optional watcher handoff" in contract
+
+
+@pytest.mark.asyncio
+async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    store = app.state.background_tasks.store
+    chat_id = str(uuid.uuid4())
+    request = RunRequest(
+        chat_scope="project",
+        message="Launch the detached fixture.",
+        chat_id=chat_id,
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _chat_task_execution(
+        store,
+        operation_id="watch-origin",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    common = {
+        "log_path": str(tmp_path / "fixture.log"),
+        "cwd": str(tmp_path),
+    }
+    invalid = json.dumps([{**common, "check_command": "exit 2"}])
+    corrected = json.dumps([{**common, "check_command": "exit 1"}])
+    launcher = ScriptedLauncher(
+        [{"watch.json": invalid}, {"watch.json": corrected}],
+        message="The fixture was launched once.",
+    )
+
+    frames = [
+        frame
+        async for frame in _stream_chat_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not _error_texts(frames)
+    assert [event.text for event in _events(frames) if event.event == "answer"] == [
+        "The fixture was launched once."
+    ]
+    assert [item["capability"] for item in launcher.launch_kwargs] == [
+        "work_auto",
+        "scratch_patch",
+    ]
+    armed = store.watchers(app.state.default_project_id)
+    assert len(armed) == 1
+    assert armed[0].status == "active"
+    assert armed[0].origin_operation_id == "watch-origin"
+    assert armed[0].continuation.patch_kind == "work"
+    assert any(
+        receipt.category == "watchers_armed"
+        for receipt in store.agent_task_receipts("watch-origin")
+    )
+
+    store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
+    wake = request.model_copy(
+        update={
+            "message": "RCP watcher update for the completed fixture.",
+            "trigger": "watcher",
+            "watcher_ids": [armed[0].watcher_id],
+        }
+    )
+    wake_execution = _chat_task_execution(
+        store,
+        operation_id="watch-wake",
+        project_id=app.state.default_project_id,
+        request=wake,
+    )
+    wake_launcher = ScriptedLauncher([{}], message="The watched fixture completed cleanly.")
+    wake_frames = [
+        frame
+        async for frame in _stream_chat_run(
+            service,
+            wake_launcher,
+            wake,
+            tmp_path / "data",
+            execution=wake_execution,
+        )
+    ]
+
+    assert not _error_texts(wake_frames)
+    transcript = service.chat_transcript(chat_id)
+    assert transcript is not None
+    assert [message.role for message in transcript.messages] == ["user", "assistant", "assistant"]
+    assert [message.trigger for message in transcript.messages] == ["human", "human", "watcher"]
+    assert all(
+        message.text != "RCP watcher update for the completed fixture."
+        for message in transcript.messages
+    )
+    assert len(store.watchers(app.state.default_project_id)) == 1
+
+
+def _stuck_experiment_patch() -> Patch:
+    """An experiment whose only attempt is still open, as a dead watcher leaves it."""
+
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary="Record an experiment with an open attempt.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/stuck",
+                        "type": "experiment",
+                        "title": "Stuck run",
+                        "objective": "Train the ablation.",
+                        "status": "running",
+                        "attempts": [
+                            {
+                                "id": "attempt-1",
+                                "sequence": 1,
+                                "purpose": "Train the ablation.",
+                                "attempt_kind": "external_run",
+                                "status": "running",
+                                "job_refs": ["4471"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def test_a_human_releases_an_attempt_whose_watcher_can_no_longer_answer(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_stuck_experiment_patch())
+    client = TestClient(app)
+
+    control = client.get(f"/api/projects/{project_id}").json()["experiment_control"]["exp/stuck"]
+    assert control["active"] is True
+    assert control["ready"] is False
+    assert "An experiment loop is already active." in control["reasons"]
+    blocked = client.post(
+        f"/api/projects/{project_id}/experiments/exp/stuck/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+    assert blocked.status_code == 409
+
+    released = client.post(
+        f"/api/projects/{project_id}/sync",
+        json={
+            "base_revision": 2,
+            "nodes": [
+                {
+                    "node_id": "exp/stuck",
+                    "base_updated_rev": 2,
+                    "cancel_attempt_ids": ["attempt-1"],
+                }
+            ],
+        },
+    )
+
+    assert released.status_code == 200, released.json()
+    attempts = released.json()["nodes"]["exp/stuck"]["attempts"]
+    assert [item["status"] for item in attempts] == ["cancelled"]
+    assert attempts[0]["finished_at"] is not None
+    after = client.get(f"/api/projects/{project_id}").json()["experiment_control"]["exp/stuck"]
+    assert after["active"] is False
+    assert after["ready"] is True
+    # A finished attempt is a record, not something a later release may rewrite.
+    again = client.post(
+        f"/api/projects/{project_id}/sync",
+        json={
+            "base_revision": 3,
+            "nodes": [
+                {
+                    "node_id": "exp/stuck",
+                    "base_updated_rev": 3,
+                    "cancel_attempt_ids": ["attempt-1"],
+                }
+            ],
+        },
+    )
+    assert again.status_code == 422
+    assert "no open attempt" in again.json()["detail"]
