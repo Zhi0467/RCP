@@ -26,6 +26,7 @@ from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.paper import WritingSession
+from rcp.providers import ProviderUsage
 from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
@@ -1231,6 +1232,46 @@ def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, ki
     assert client.get(f"/api/projects/{project_id}/tasks").json() == []
 
 
+def test_project_usage_endpoint_returns_counted_and_excluded_records(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="usage-operation",
+            project_id=project_id,
+            kind="node_chat",
+            status="succeeded",
+            request={"provider": "codex", "model": "gpt"},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+        )
+    )
+    usage = ProviderUsage(
+        provider_profile="codex.turn.v1",
+        provider_event_type="turn.completed",
+        dedupe_key="turn-1",
+        processed_input_tokens=2_000,
+        generated_tokens=200,
+        cached_input_tokens=1_000,
+    )
+    store.record_agent_usage("usage-operation", usage)
+    store.record_agent_usage("usage-operation", usage)
+
+    response = TestClient(app).get(f"/api/projects/{project_id}/usage")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["counted_records"] == 1
+    assert payload["excluded_records"] == 1
+    assert payload["input_processed"]["total_tokens"] == 2_000
+    assert payload["input_processed"]["cache_share"] == 0.5
+    assert payload["generated"]["total_tokens"] == 200
+    assert {record["counted"] for record in payload["records"]} == {True, False}
+
+
 @pytest.mark.asyncio
 async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
     manifest, tmp_path
@@ -1251,6 +1292,46 @@ async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
 
     assert launcher.calls == 0
     assert "only be resumed from an RCP background task checkpoint" in events[0]
+
+
+@pytest.mark.asyncio
+async def test_graph_stream_launches_with_degraded_source_fallback(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+
+    def fail_source_assembly(*_args, **_kwargs):
+        raise PermissionError("provider source is unreadable")
+
+    monkeypatch.setattr(service, "index_snapshot", fail_source_assembly)
+    launcher = ScriptedLauncher([{"patch.json": refresh_patch().model_dump_json()}])
+
+    frames = [
+        item
+        async for item in stream_graph_run(
+            service,
+            launcher,
+            "refresh",
+            RunRequest(run_truth_scope=["repo-a"]),
+            tmp_path / "data",
+        )
+    ]
+
+    assert launcher.calls == 1
+    assert not _error_texts(frames)
+    contract = next(
+        value for name, value in launcher.input_snapshots[0].items() if name.endswith("-initial.md")
+    )
+    assert "Source assembly warning" in contract
+    assert "provider roots directly" in contract
+    assert "Last accounted coverage boundary" in contract
+    assert service.manifest.sources.codex_roots[0] in contract
+    assert any(
+        Path(path) == Path(service.manifest.sources.codex_roots[0])
+        for path in launcher.launch_kwargs[0]["read_dirs"]
+    )
 
 
 @pytest.mark.asyncio
@@ -3328,49 +3409,28 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
 
 
 @pytest.mark.asyncio
-async def test_claude_chat_projects_exact_conversation_files(manifest, tmp_path) -> None:
+async def test_chat_does_not_assemble_or_project_transcripts(
+    manifest, tmp_path, monkeypatch
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
-    codex_root = Path(next(iter(manifest.sources.codex_roots)))
-    source = codex_root / "repo-a.jsonl"
-    source_text = (
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {"id": "codex-session", "cwd": manifest.repository_map["repo-a"].path},
-            }
-        )
-        + "\n"
-    )
-    source.write_text(source_text, encoding="utf-8")
-    (codex_root / "unrelated-session.txt").write_text("private sibling", encoding="utf-8")
-    chat_id = str(uuid.uuid4())
+
+    def index_must_not_run(*_args, **_kwargs):
+        raise AssertionError("chat must not assemble a source index")
+
+    monkeypatch.setattr(service, "index_snapshot", index_must_not_run)
     request = RunRequest(
         chat_scope="project",
         message="What did we decide?",
-        chat_id=chat_id,
+        chat_id=str(uuid.uuid4()),
         run_truth_scope=["repo-a"],
         provider="claude",
     )
-    stale_projection = (
-        tmp_path
-        / "data"
-        / "run-stage"
-        / _chat_stage_name(service, request, None)
-        / "inputs"
-        / "conversations"
-    )
-    stale_projection.mkdir(parents=True)
-    (stale_projection / "stale.jsonl").write_text("stale", encoding="utf-8")
 
     class InspectingLauncher(FakeLauncher):
         async def stream(self, *args, **kwargs):
-            projection = Path(kwargs["cwd"]) / "inputs" / "conversations"
-            projected = list(projection.rglob("*.jsonl"))
-            self.projected_names = [str(item.relative_to(projection)) for item in projected]
-            self.projected_text = projected[0].read_text(encoding="utf-8")
-            self.projected_inode = projected[0].stat().st_ino
+            self.read_dirs = list(kwargs["read_dirs"])
             async for event in super().stream(*args, **kwargs):
                 yield event
 
@@ -3386,19 +3446,12 @@ async def test_claude_chat_projects_exact_conversation_files(manifest, tmp_path)
     ]
 
     assert not _error_texts(frames)
-    projection = Path(launcher.last_kwargs["cwd"]) / "inputs" / "conversations"
-    projected_path = projection / "codex" / "repo-a" / "laptop" / "codex-session.jsonl"
-    assert launcher.projected_names == ["codex/repo-a/laptop/codex-session.jsonl"]
-    assert launcher.projected_text == source_text
-    assert launcher.projected_inode != source.stat().st_ino
-    assert projection in launcher.last_kwargs["read_dirs"]
-    assert codex_root not in launcher.last_kwargs["read_dirs"]
     contract = _local_task_contract(launcher.last_args[1])
-    assert str(projection / "codex") in contract
-    assert str(projected_path) not in contract
-    assert str(source) not in launcher.last_args[1]
+    assert Path(manifest.repository_map["repo-a"].path) in launcher.read_dirs
+    assert not any(Path(path).name == "conversations" for path in launcher.read_dirs)
+    assert "Conversations:" not in contract
+    assert ".jsonl" not in contract
     assert launcher.last_kwargs["capability"] == "discuss"
-    assert not projection.exists()
     assert Path(launcher.last_kwargs["cwd"]).is_dir()
 
 
@@ -3630,29 +3683,18 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
 
 
 @pytest.mark.asyncio
-async def test_claude_launch_exception_reclaims_projection_but_keeps_workspace(
+async def test_chat_launch_exception_keeps_workspace_without_transcript_projection(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
-    codex_root = Path(next(iter(manifest.sources.codex_roots)))
-    (codex_root / "source.jsonl").write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {"id": "source", "cwd": manifest.repository_map["repo-a"].path},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
 
     class ExplodingLauncher:
         async def stream(self, *_args, **kwargs):
             self.workspace = Path(kwargs["cwd"])
             self.projection = self.workspace / "inputs" / "conversations"
-            assert self.projection.is_dir()
+            assert not self.projection.exists()
             if False:
                 yield AgentEvent(event="done")
             raise OSError("provider launch failed")
@@ -3674,14 +3716,14 @@ async def test_claude_launch_exception_reclaims_projection_but_keeps_workspace(
     assert launcher.workspace.is_dir()
 
 
-def test_local_stage_sweeper_removes_read_only_conversation_projection(tmp_path) -> None:
+def test_local_stage_sweeper_removes_stale_read_only_tree(tmp_path) -> None:
     root = tmp_path / "run-stage"
-    projection = root / "chat-expired" / "inputs" / "conversations"
-    projection.mkdir(parents=True)
-    copied = projection / "conversation-0000.jsonl"
-    copied.write_text("large transcript", encoding="utf-8")
+    stale_tree = root / "chat-expired" / "inputs" / "old-tree"
+    stale_tree.mkdir(parents=True)
+    copied = stale_tree / "old-input.txt"
+    copied.write_text("old input", encoding="utf-8")
     copied.chmod(0o400)
-    projection.chmod(0o500)
+    stale_tree.chmod(0o500)
     stage = root / "chat-expired"
     old_mtime = stage.stat().st_mtime
 
@@ -4265,19 +4307,6 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(manifest, t
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.append(seed_patch())
-    codex_root = Path(next(iter(manifest.sources.codex_roots)))
-    source = codex_root / "resume-source.jsonl"
-    source.write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {"id": "resume-source", "cwd": manifest.repository_map["repo-a"].path},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    original_source_text = source.read_text(encoding="utf-8")
     session_id = str(uuid.uuid4())
     patch = refresh_patch("rq/written-before-the-pause").model_copy(update={"kind": "work"})
 
@@ -4285,21 +4314,14 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(manifest, t
         def __init__(self) -> None:
             self.sessions: list[str | None] = []
             self.capabilities: list[str] = []
-            self.projections: list[Path] = []
-            self.projected_text: list[str] = []
+            self.read_dirs: list[list[Path]] = []
             self.workspaces: list[Path] = []
 
         async def stream(self, _provider, _prompt, **kwargs):
             self.sessions.append(kwargs.get("session_id"))
             self.capabilities.append(kwargs["capability"])
             self.workspaces.append(Path(kwargs["cwd"]))
-            projection = next(
-                Path(path) for path in kwargs["read_dirs"] if Path(path).name == "conversations"
-            )
-            self.projections.append(projection)
-            self.projected_text.append(
-                next(projection.rglob("*.jsonl")).read_text(encoding="utf-8")
-            )
+            self.read_dirs.append([Path(path) for path in kwargs["read_dirs"]])
             yield AgentEvent(event="session", session_id=session_id)
             if len(self.sessions) == 1:
                 control = kwargs["control"]
@@ -4341,16 +4363,11 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(manifest, t
     assert original["request"]["mode"] == "work"
     client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
     _wait_for_status(client, project_id, operation_id, {"paused"})
-    assert launcher.projections[0].is_dir()
+    assert not any(path.name == "conversations" for path in launcher.read_dirs[0])
     assert [item.name for item in (launcher.workspaces[0] / "turns").iterdir()] == [operation_id]
-    assert (
-        next(launcher.projections[0].rglob("*.jsonl")).read_text(encoding="utf-8")
-        == original_source_text
-    )
 
     # The human works on the graph while the turn is paused.
     service.history.append(refresh_patch("rq/landed-while-paused"))
-    source.write_text(original_source_text + '{"type":"later"}\n', encoding="utf-8")
     resumed_response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/resume")
 
     assert resumed_response.status_code == 202
@@ -4359,9 +4376,7 @@ def test_resumed_chat_is_judged_against_the_revision_it_started_from(manifest, t
     assert resumed["request"]["mode"] == "work"
     assert launcher.sessions == [None, session_id]
     assert launcher.capabilities == ["work_auto", "work_auto"]
-    assert launcher.projections[0] == launcher.projections[1]
-    assert launcher.projected_text == [original_source_text, original_source_text]
-    assert not launcher.projections[1].exists()
+    assert not any(path.name == "conversations" for path in launcher.read_dirs[1])
     assert launcher.workspaces[1].is_dir()
     assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [operation_id]
     # The operational turn completed; only its stale graph reflection is refused.
@@ -4588,13 +4603,6 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
             assert reuse is True
             assert scope_id == "remote-original"
             return self.workspace / "turns" / scope_id / "artifacts"
-
-        def require_conversation_inputs(self):
-            assert self.root is not None
-            return self.root / "inputs" / "conversations"
-
-        def remove_conversation_inputs(self):
-            return None
 
         def put_file(self, _source, label):
             assert self.root is not None

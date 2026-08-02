@@ -27,26 +27,19 @@ from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
-    _chat_conversation_roots,
-    _chat_native_checkpoint_available,
     _chat_read_dirs,
     _chat_stage_name,
-    _cleanup_chat_conversation_projection,
     _clear_stale_patch,
     _clear_stale_watch,
     _discover_chat_artifacts,
     _existing_watch_digest,
     _first_chat_base_revision,
-    _known_chat_session,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
-    _project_chat_conversations,
     _read_chat_patch,
     _read_watch_request,
-    _rebind_chat_conversations,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
-    _saved_chat_conversation_projection,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     _work_write_dirs,
@@ -139,10 +132,8 @@ async def stream_work_run(
     execution_host = execution_machine.host
     provider_binary = execution_machine.provider_paths.get(profile.provider)
     remote_stage: RemoteRunStage | None = None
-    conversation_projection: Path | PurePosixPath | None = None
     artifact_scope_id: str | None = None
     artifact_directory: Path | PurePosixPath | None = None
-    provider_started = False
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         try:
@@ -151,10 +142,6 @@ async def stream_work_run(
             if resuming:
                 base_revision = _first_chat_base_revision(execution, base_revision)
             _record_chat_context_receipt(execution, context, surface=surface)
-            if request.session_id and not resuming and not _known_chat_session(service, request):
-                raise ValueError(
-                    "That native session was not created by this chat. Start a new chat instead."
-                )
             stage_name = _chat_stage_name(service, request, execution)
             if execution_host:
                 if resuming:
@@ -208,26 +195,11 @@ async def stream_work_run(
                 artifact_directory = _prepare_local_artifact_directory(
                     local_stage, artifact_scope_id, reuse=resuming
                 )
-            if resuming:
-                conversation_projection = _saved_chat_conversation_projection(
-                    local_stage, remote_stage
-                )
-                context = _rebind_chat_conversations(
-                    context,
-                    conversation_projection,
-                    verify_local=remote_stage is None,
-                )
-            else:
-                context, conversation_projection = _project_chat_conversations(
-                    context, local_stage, remote_stage
-                )
-
             read_dirs = _chat_read_dirs(
                 context,
                 remote_stage,
                 service,
                 execution_machine.alias,
-                conversation_projection,
             )
             write_dirs = _work_write_dirs(
                 context,
@@ -334,8 +306,6 @@ async def stream_work_run(
                     graph_path=context.graph_path,
                     research_path=context.research_md_path,
                     focused_node_id=str(context.node["id"]) if context.node else None,
-                    conversation_roots=_chat_conversation_roots(context),
-                    conversations_unreachable=context.conversations_unreachable,
                     repositories=[
                         {"alias": item.alias, "host": item.host, "path": item.path}
                         for item in context.repositories
@@ -383,7 +353,6 @@ async def stream_work_run(
                 ),
             },
         )
-        provider_started = True
         try:
             async with aclosing(
                 _stream_agent_events(
@@ -859,15 +828,11 @@ async def stream_work_run(
             payload["applied_revision"] = graph_update.applied_revision
         yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
         yield _sse(AgentEvent(event="done"))
+
     finally:
-        retain_projection = (
-            provider_started
-            and not outcome.completed
-            and not outcome.failed
-            and _chat_native_checkpoint_available(execution, outcome.session_id)
-        )
-        if conversation_projection is not None and not retain_projection:
-            _cleanup_chat_conversation_projection(local_stage, remote_stage, execution)
+        # There is no per-turn source cleanup; the reusable native-session stage
+        # remains available to the normal stage sweeper.
+        pass
 
 
 async def _stream_work_graph_repair(

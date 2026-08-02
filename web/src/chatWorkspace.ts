@@ -1,4 +1,5 @@
 import type {
+  AgentRunConfig,
   AgentTask,
   AgentTaskStatus,
   ChatMessage,
@@ -30,6 +31,40 @@ export function chatDraftStorageKey(projectId: string, chatId: string): string {
 
 export function chatModeStorageKey(projectId: string, chatId: string): string {
   return `rcp:chat-mode:${projectId}:${chatId}`;
+}
+
+export function chatConfigStorageKey(projectId: string, chatId: string): string {
+  return `rcp:chat-config:${projectId}:${chatId}`;
+}
+
+export function parseStoredAgentRunConfig(value: string | null): AgentRunConfig | null {
+  if (!value) return null;
+  try {
+    return parseAgentRunConfig(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+export function parseAgentRunConfig(value: unknown): AgentRunConfig | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.provider !== "string" ||
+    !record.provider.trim() ||
+    typeof record.model !== "string" ||
+    typeof record.reasoning !== "string" ||
+    typeof record.run_on !== "string" ||
+    !record.run_on.trim()
+  ) {
+    return null;
+  }
+  return {
+    provider: record.provider,
+    model: record.model,
+    reasoning: record.reasoning,
+    run_on: record.run_on,
+  };
 }
 
 export function parseConversationMode(value: unknown): ConversationMode | null {
@@ -64,6 +99,60 @@ export function latestPersistedConversationMode(
   return candidates.at(-1)?.mode ?? "discuss";
 }
 
+export function latestPersistedChatConfig(
+  messages: ChatMessage[],
+  tasks: AgentTask[],
+  fallback: AgentRunConfig,
+): AgentRunConfig {
+  const candidates: Array<{ config: AgentRunConfig; timestamp: number; order: number }> = [];
+  let order = 0;
+  messages.forEach((message) => {
+    if (
+      typeof message.provider === "string" &&
+      message.provider.trim() &&
+      typeof message.execution_machine === "string" &&
+      message.execution_machine.trim()
+    ) {
+      candidates.push({
+        config: {
+          ...fallback,
+          provider: message.provider,
+          model: message.model ?? "",
+          reasoning: message.reasoning ?? fallback.reasoning,
+          run_on: message.execution_machine,
+        },
+        timestamp: comparableTime(message.timestamp),
+        order,
+      });
+    }
+    order += 1;
+  });
+  tasks.forEach((task) => {
+    const request = task.request;
+    if (
+      typeof request.provider === "string" &&
+      request.provider.trim() &&
+      typeof request.run_on === "string" &&
+      request.run_on.trim()
+    ) {
+      candidates.push({
+        config: {
+          ...fallback,
+          provider: request.provider,
+          model: typeof request.model === "string" ? request.model : "",
+          reasoning: typeof request.reasoning === "string" ? request.reasoning : fallback.reasoning,
+          run_on: request.run_on,
+        },
+        timestamp: comparableTime(task.created_at),
+        order,
+      });
+    }
+    order += 1;
+  });
+  candidates.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+  return candidates.at(-1)?.config ?? fallback;
+}
+
 export function chatIdForTask(task: AgentTask): string | null {
   if (task.kind !== "node_chat" && task.kind !== "project_chat") return null;
   const value = task.request.chat_id;
@@ -79,11 +168,15 @@ export function groupChatConversations(
 ): ChatConversation[] {
   const grouped = new Map<string, ChatConversation>();
   for (const summary of summaries) {
+    const title =
+      summary.kind === "node_chat" && summary.node_id
+        ? (nodeTitles[summary.node_id] ?? summary.node_id)
+        : summary.title;
     grouped.set(summary.chat_id, {
       chatId: summary.chat_id,
       kind: summary.kind,
       nodeId: summary.node_id,
-      title: summary.title,
+      title,
       tasks: [],
       updatedAt: summary.updated_at,
     });

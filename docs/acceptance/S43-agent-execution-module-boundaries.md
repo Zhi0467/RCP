@@ -56,9 +56,10 @@ regress is backend dispatch and lifecycle policy, not browser state.
   and validated as such, and a watcher wake is not persisted as a user turn.
 - Paper coaching remains read-only and retains its current session and task
   lifecycle.
-- Local and remote stages, conversation projections, artifact discovery,
-  native-session checkpoints, receipts, transcript writes, and cleanup rules are
-  unchanged.
+- Local and remote stages, artifact discovery, native-session checkpoints,
+  receipts, chat-history writes, and cleanup rules remain policy-owned. Chat
+  stages do not project or validate prior transcripts; Seed/Refresh stages keep
+  their independent source-slice handling.
 - Shared execution plumbing contains no `kind`, `is_chat`, `mode`, `surface`, or
   equivalent discriminator that decides policy.
 - Private helpers moved out of `rcp.api.app` are imported from their owning

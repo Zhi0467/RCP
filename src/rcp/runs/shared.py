@@ -20,7 +20,7 @@ from urllib.parse import quote
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
-from rcp.agents.context import ConversationPointer, SessionPointer
+from rcp.agents.context import SessionPointer
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, Patch
@@ -596,7 +596,7 @@ def _stage_context_paths(
 
 
 def _session_bundle_relative_path(
-    session: SessionPointer | ConversationPointer,
+    session: SessionPointer,
 ) -> Path:
     key = session.key
     parts = key.split("/", 3)

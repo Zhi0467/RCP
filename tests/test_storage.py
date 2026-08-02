@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.providers import ProviderUsage
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 
 
@@ -102,6 +103,48 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     reopened = AppStore(store.path)
     assert reopened.project("delete-me") is None
     assert reopened.project("keep-me") is not None
+
+
+def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="refresh-operation",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={"provider": "codex", "model": "gpt"},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+        )
+    )
+    usage = ProviderUsage(
+        provider_profile="codex.turn.v1",
+        provider_event_type="turn.completed",
+        dedupe_key="turn-1",
+        processed_input_tokens=1_000,
+        generated_tokens=100,
+        cached_input_tokens=400,
+        provider_fields={"input_tokens": 1_000},
+    )
+
+    counted = store.record_agent_usage("refresh-operation", usage)
+    duplicate = store.record_agent_usage("refresh-operation", usage)
+
+    assert counted.counted is True
+    assert duplicate.counted is False
+    assert duplicate.count_reason == "duplicate"
+    snapshot = store.agent_usage_snapshot("project")
+    assert snapshot.counted_records == 1
+    assert snapshot.excluded_records == 1
+    assert snapshot.input_processed.total_tokens == 1_000
+    assert snapshot.generated.total_tokens == 100
+    assert snapshot.input_processed.cache_share == 0.4
+    assert snapshot.input_processed.block_tokens == 50
+    assert snapshot.input_processed.cells[0].task_kind == "refresh"
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "pausing"])

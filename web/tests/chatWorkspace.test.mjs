@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chatConfigStorageKey,
   chatDraftStorageKey,
   chatIdForTask,
   chatIndicator,
@@ -11,9 +12,11 @@ import {
   groupChatConversations,
   isConversationModeShortcut,
   latestConversation,
+  latestPersistedChatConfig,
   latestPersistedConversationMode,
   newlyUnreadChatTaskIds,
   parseConversationMode,
+  parseStoredAgentRunConfig,
   toggleConversationMode,
 } from "../src/chatWorkspace.ts";
 
@@ -71,6 +74,7 @@ test("conversations group by chat id rather than latest node", () => {
     conversations.map((item) => item.chatId),
     ["chat-p", "chat-b", "chat-a"],
   );
+  assert.equal(conversations.find((item) => item.chatId === "chat-a")?.title, "Node A");
   assert.equal(latestConversation(conversations, "node_chat", "node/a")?.chatId, "chat-b");
   assert.equal(chatIdForTask(tasks[2]), "chat-p");
 });
@@ -195,6 +199,7 @@ test("a completion is unread unless its exact conversation is selected and visib
 test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
   assert.equal(chatDraftStorageKey("project", "chat"), "rcp:chat-draft:project:chat");
   assert.equal(chatModeStorageKey("project", "chat"), "rcp:chat-mode:project:chat");
+  assert.equal(chatConfigStorageKey("project", "chat"), "rcp:chat-config:project:chat");
   assert.equal(toggleConversationMode("discuss"), "work");
   assert.equal(toggleConversationMode("work"), "discuss");
   assert.equal(isConversationModeShortcut("Tab", true), true);
@@ -202,6 +207,29 @@ test("conversation mode controls have stable storage keys and Shift+Tab semantic
   assert.equal(isConversationModeShortcut("Enter", true), false);
   assert.equal(parseConversationMode("work"), "work");
   assert.equal(parseConversationMode("legacy"), null);
+});
+
+test("chat provider configuration follows the persisted conversation", () => {
+  const fallback = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
+  const claude = { provider: "claude", model: "opus", reasoning: "high", run_on: "local" };
+  assert.deepEqual(parseStoredAgentRunConfig(JSON.stringify(claude)), claude);
+  assert.equal(parseStoredAgentRunConfig("not json"), null);
+  assert.deepEqual(
+    latestPersistedChatConfig(
+      [
+        {
+          provider: "claude",
+          model: "opus",
+          reasoning: "high",
+          execution_machine: "local",
+          timestamp: "2026-07-28T00:02:00Z",
+        },
+      ],
+      [],
+      fallback,
+    ),
+    claude,
+  );
 });
 
 test("the next turn derives from the latest explicit mode without relabelling legacy history", () => {

@@ -557,6 +557,24 @@ class BackgroundAgentTasks:
         async with aclosing(self.stream(project_id, kind, request, execution)) as stream:
             async for frame in stream:
                 event = _event_from_sse(frame)
+                if event.usage is not None:
+                    usage_record = self.store.record_agent_usage(
+                        execution.operation_id,
+                        event.usage,
+                    )
+                    self.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "provider_usage",
+                        {
+                            "usage_id": usage_record.usage_id,
+                            "counted": usage_record.counted,
+                            "count_reason": usage_record.count_reason,
+                            "provider_profile": usage_record.provider_profile,
+                            "processed_input_tokens": usage_record.processed_input_tokens,
+                            "generated_tokens": usage_record.generated_tokens,
+                        },
+                        tier="diagnostic",
+                    )
                 if event.event == "error":
                     raise TaskFailed(event.text or "The agent task failed.", messages, artifacts)
                 if event.event == "paused":

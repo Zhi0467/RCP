@@ -25,6 +25,7 @@ interface Props {
   onPause: () => void;
   onResume: () => void;
   onRetry: () => void;
+  onDismiss: () => void;
   onClose: () => void;
 }
 
@@ -38,6 +39,7 @@ export function AgentTaskInspector({
   onPause,
   onResume,
   onRetry,
+  onDismiss,
   onClose,
 }: Props) {
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
@@ -277,36 +279,49 @@ export function AgentTaskInspector({
           </div>
         </div>
 
-        {task && (task.can_pause || task.can_resume || task.can_retry) && (
-          <footer className="drawer-actions run-inspector-actions">
-            <div>
-              {task.can_pause && (
-                <button className="button secondary" disabled={actionBusy} onClick={onPause}>
-                  <CirclePause size={14} /> Pause
-                </button>
-              )}
-              {task.can_retry && (
-                <button
-                  className="button secondary"
-                  disabled={actionBusy || mutatingActionsDisabled}
-                  onClick={onRetry}
-                >
-                  <RotateCcw size={14} />{" "}
-                  {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}
-                </button>
-              )}
-              {task.can_resume && (
-                <button
-                  className="button primary"
-                  disabled={actionBusy || mutatingActionsDisabled}
-                  onClick={onResume}
-                >
-                  <Play size={14} /> Resume
-                </button>
-              )}
-            </div>
-          </footer>
-        )}
+        {task &&
+          (task.can_pause ||
+            task.can_resume ||
+            task.can_retry ||
+            task.status === "failed" ||
+            task.status === "interrupted" ||
+            task.status === "paused") && (
+            <footer className="drawer-actions run-inspector-actions">
+              <div>
+                {task.can_pause && (
+                  <button className="button secondary" disabled={actionBusy} onClick={onPause}>
+                    <CirclePause size={14} /> Pause
+                  </button>
+                )}
+                {task.can_retry && (
+                  <button
+                    className="button secondary"
+                    disabled={actionBusy || mutatingActionsDisabled}
+                    onClick={onRetry}
+                  >
+                    <RotateCcw size={14} />{" "}
+                    {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}
+                  </button>
+                )}
+                {task.can_resume && (
+                  <button
+                    className="button primary"
+                    disabled={actionBusy || mutatingActionsDisabled}
+                    onClick={onResume}
+                  >
+                    <Play size={14} /> Resume
+                  </button>
+                )}
+                {(task.status === "failed" ||
+                  task.status === "interrupted" ||
+                  task.status === "paused") && (
+                  <button className="button ghost" type="button" onClick={onDismiss}>
+                    <X size={14} /> Dismiss notification
+                  </button>
+                )}
+              </div>
+            </footer>
+          )}
       </aside>
     </div>
   );

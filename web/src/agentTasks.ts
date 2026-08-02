@@ -12,6 +12,7 @@ export interface TaskTranscriptLine {
   role: "human" | "agent" | "error" | "meta";
   text: string;
   taskId: string;
+  timestamp: string;
   artifacts?: AgentArtifactDescriptor[];
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
@@ -20,6 +21,42 @@ export interface TaskTranscriptLine {
 
 export function isActiveTask(task: AgentTask): boolean {
   return task.status === "queued" || task.status === "running" || task.status === "pausing";
+}
+
+export function taskNotificationStorageKey(projectId: string | null): string {
+  return `rcp:dismissed-task-notifications:${projectId ?? "none"}`;
+}
+
+export function parseDismissedTaskIds(value: string | null): Set<string> {
+  if (!value) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+export function serializeDismissedTaskIds(taskIds: ReadonlySet<string>): string {
+  return JSON.stringify([...taskIds].sort());
+}
+
+export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
+  if (
+    (task.kind !== "seed" && task.kind !== "refresh") ||
+    (task.status !== "failed" && task.status !== "interrupted")
+  )
+    return false;
+  return tasks.some(
+    (candidate) =>
+      (candidate.kind === "seed" || candidate.kind === "refresh") &&
+      candidate.status === "succeeded" &&
+      compareTaskTime(candidate, task) > 0,
+  );
 }
 
 export function projectActivityTask(
@@ -34,9 +71,21 @@ export function projectActivityTask(
   const paused = tasks.find(
     (task) => task.status === "paused" && !continuedTaskIds.has(task.operation_id),
   );
-  if (paused) return paused;
+  if (paused) return isTaskNotificationSuperseded(paused, tasks) ? null : paused;
   if (!observedTaskId) return null;
-  return tasks.find((task) => task.operation_id === observedTaskId) ?? null;
+  const observed = tasks.find((task) => task.operation_id === observedTaskId);
+  if (!observed || isTaskNotificationSuperseded(observed, tasks)) return null;
+  const byId = new Map(tasks.map((task) => [task.operation_id, task]));
+  const descendants = tasks
+    .filter((task) => task.operation_id !== observed.operation_id)
+    .filter((task) => hasAncestor(task, observed.operation_id, byId))
+    .sort(compareTaskTime);
+  const latestDescendant = descendants.at(-1);
+  if (latestDescendant) {
+    if (latestDescendant.status === "succeeded") return null;
+    return latestDescendant;
+  }
+  return observed;
 }
 
 export function taskKindLabel(kind: AgentTaskKind): string {
@@ -93,25 +142,9 @@ export function chatTasksMissingFromHistory(
   const persistedOperationIds = new Set(
     messages.flatMap((message) => (message.operation_id ? [message.operation_id] : [])),
   );
-  const availablePrompts = new Map<string, number[]>();
-  messages.forEach((message) => {
-    if (message.role !== "user") return;
-    const timestamps = availablePrompts.get(message.text) ?? [];
-    timestamps.push(Date.parse(message.timestamp));
-    availablePrompts.set(message.text, timestamps);
-  });
-  availablePrompts.forEach((timestamps) => timestamps.sort((left, right) => left - right));
-  return tasks.filter((task) => {
-    if (persistedOperationIds.has(task.operation_id)) return false;
-    const prompt = textValue(task.request.message);
-    if (!prompt) return true;
-    const timestamps = availablePrompts.get(prompt) ?? [];
-    const taskCreatedAt = Date.parse(task.created_at);
-    const matchIndex = timestamps.findIndex((timestamp) => timestamp >= taskCreatedAt);
-    if (matchIndex < 0) return true;
-    timestamps.splice(matchIndex, 1);
-    return false;
-  });
+  // Operation id is the turn identity. Matching by prompt text loses one of
+  // two legitimate turns when the human sends the same message twice.
+  return tasks.filter((task) => !persistedOperationIds.has(task.operation_id));
 }
 
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
@@ -119,6 +152,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     role: message.role === "user" && message.trigger !== "watcher" ? "human" : "agent",
     text: message.text,
     taskId: message.operation_id ?? message.message_id,
+    timestamp: message.timestamp,
     mode: message.mode,
     trigger: message.trigger,
     graphUpdate: message.graph_update,
@@ -133,7 +167,14 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const trigger = taskTrigger(task.request.trigger);
     const graphUpdate = task.result?.graph_update ?? null;
     if (message && trigger === "human") {
-      lines.push({ role: "human", text: message, taskId: task.operation_id, mode, trigger });
+      lines.push({
+        role: "human",
+        text: message,
+        taskId: task.operation_id,
+        timestamp: task.created_at,
+        mode,
+        trigger,
+      });
     }
     const messages = Array.isArray(task.result?.messages)
       ? task.result.messages.filter(
@@ -146,6 +187,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         role: "agent",
         text,
         taskId: task.operation_id,
+        timestamp: task.created_at,
         mode,
         trigger,
         ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
@@ -157,6 +199,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         role: "agent",
         text: "",
         taskId: task.operation_id,
+        timestamp: task.created_at,
         mode,
         trigger,
         ...(artifacts.length ? { artifacts } : {}),
@@ -165,7 +208,13 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     }
     const graphOnlyRejection = task.status === "succeeded" && graphUpdate?.status === "rejected";
     if (task.error && !graphOnlyRejection) {
-      lines.push({ role: "error", text: task.error, taskId: task.operation_id, trigger });
+      lines.push({
+        role: "error",
+        text: task.error,
+        taskId: task.operation_id,
+        timestamp: task.created_at,
+        trigger,
+      });
     } else if (
       task.status === "failed" ||
       task.status === "interrupted" ||
@@ -175,11 +224,18 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         role: task.status === "failed" ? "error" : "meta",
         text: task.status_message,
         taskId: task.operation_id,
+        timestamp: task.created_at,
         trigger,
       });
     }
     return lines;
   });
+}
+
+export function orderTranscriptLines(lines: TaskTranscriptLine[]): TaskTranscriptLine[] {
+  return [...lines].sort(
+    (left, right) => comparableTime(left.timestamp) - comparableTime(right.timestamp),
+  );
 }
 
 export function artifactUrl(
@@ -205,6 +261,26 @@ function compareTaskTime(left: AgentTask, right: AgentTask): number {
     Date.parse(left.created_at) - Date.parse(right.created_at) ||
     left.operation_id.localeCompare(right.operation_id)
   );
+}
+
+function comparableTime(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function hasAncestor(
+  task: AgentTask,
+  ancestorId: string,
+  byId: ReadonlyMap<string, AgentTask>,
+): boolean {
+  const seen = new Set<string>();
+  let parentId = task.parent_operation_id;
+  while (parentId && !seen.has(parentId)) {
+    if (parentId === ancestorId) return true;
+    seen.add(parentId);
+    parentId = byId.get(parentId)?.parent_operation_id ?? null;
+  }
+  return false;
 }
 
 function textValue(value: unknown): string | null {

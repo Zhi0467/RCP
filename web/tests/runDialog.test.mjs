@@ -276,6 +276,64 @@ test("conversation watcher status and wake attribution stay operational", () => 
   assert.doesNotMatch(html, /node-chat-line human/);
 });
 
+test("long human chat messages render a bounded preview control", () => {
+  const longMessage = "Please compare each of these constraints carefully. ".repeat(8);
+  const html = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      project,
+      node: null,
+      runScope: ["repo"],
+      tasks: [],
+      activeTask: null,
+      historyMessages: [
+        {
+          message_id: "message-human-long",
+          operation_id: "task-human-long",
+          role: "user",
+          text: longMessage,
+          timestamp: "2026-08-01T04:00:00Z",
+          native_session_id: null,
+          provider: null,
+          model: null,
+          reasoning: null,
+          execution_machine: null,
+          applied_revision: null,
+          mode: "discuss",
+          graph_update: null,
+          trigger: "human",
+        },
+        {
+          message_id: "message-agent-long",
+          operation_id: "task-agent-long",
+          role: "assistant",
+          text: longMessage,
+          timestamp: "2026-08-01T04:01:00Z",
+          native_session_id: null,
+          provider: "codex",
+          model: null,
+          reasoning: null,
+          execution_machine: "local",
+          applied_revision: null,
+          mode: "discuss",
+          graph_update: null,
+          trigger: "human",
+        },
+      ],
+      chatId: "chat-long-message",
+      onStartTask() {},
+      onInspectTask() {},
+      onOpenInbox() {},
+      onRepairGraphUpdate() {},
+      onClose() {},
+    }),
+  );
+
+  assert.match(html, /chat-human-message collapsed/);
+  assert.match(html, /class="chat-message-toggle"[^>]*aria-expanded="false"[^>]*>See more/);
+  assert.match(html, /chat-markdown/);
+  assert.equal(html.match(/chat-human-message collapsed/g)?.length, 1);
+});
+
 test("retry keeps the original task boundary and exposes provider configuration", () => {
   const html = renderToStaticMarkup(
     React.createElement(RunDialog, {

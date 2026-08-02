@@ -22,6 +22,7 @@ from rcp.providers import (
     AgentCapability,
     ModelChoice,
     ProviderId,
+    ProviderUsage,
     profile_for,
 )
 from rcp.transport.ssh import ssh_arguments
@@ -68,8 +69,8 @@ class ProviderReadiness(BaseModel):
     version: str | None = None
     reason: str | None = None
     #: The exact executable checked. For an unconfigured provider this is the
-    #: absolute candidate discovery found, but it is not used for launch until
-    #: a human records it in the project manifest.
+    #: absolute candidate discovery found and used for a best-effort launch;
+    #: a project manifest may save it as a stable pin.
     binary_path: str | None = None
     path_state: ProviderPathState = "resolved"
     #: What this CLI will actually accept, probed where it can enumerate and
@@ -99,6 +100,7 @@ class AgentEvent(BaseModel):
     text: str = ""
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
+    usage: ProviderUsage | None = None
 
 
 class AgentProcessControl:
@@ -222,8 +224,9 @@ class AgentLauncher:
         """Return one app-scoped capability, probing only when it is not known.
 
         Configured capabilities are keyed by their exact executable. Discovery
-        without a configured path is a separate entry used by project setup;
-        its ``unconfigured`` presentation must never make it launchable.
+        without a configured path is a separate entry; an installed and
+        authenticated discovered executable is still launchable, while the
+        ``unconfigured`` state tells settings that no stable path is saved yet.
         """
 
         key = (provider, host, binary)
@@ -385,7 +388,7 @@ class AgentLauncher:
             binary_path=candidate,
             path_state="resolved" if configured else "unconfigured",
             reason=(
-                f"{provider} was found at {candidate}; record this path before launching it."
+                f"{provider} was found at {candidate}; using the discovered path until a saved path is provided."
                 if authenticated and not configured
                 else (
                     None
@@ -466,8 +469,16 @@ class AgentLauncher:
             provider,
             **readiness_kwargs,
         )
+        discovered_path_is_usable = (
+            binary is None
+            and getattr(readiness, "path_state", "resolved") == "unconfigured"
+            and bool(getattr(readiness, "binary_path", None))
+        )
         if (
-            getattr(readiness, "path_state", "resolved") != "resolved"
+            not (
+                getattr(readiness, "path_state", "resolved") == "resolved"
+                or discovered_path_is_usable
+            )
             or not readiness.installed
             or not readiness.authenticated
         ):
@@ -684,6 +695,7 @@ class AgentLauncher:
             event=decoded.event,
             text=decoded.text,
             session_id=decoded.session_id,
+            usage=decoded.usage,
         )
 
     @staticmethod

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from rcp.limits import (
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
+from rcp.providers import ProviderUsage
 
 
 class ProjectRecord(BaseModel):
@@ -118,6 +120,61 @@ class AgentTaskRecord(BaseModel):
     can_pause: bool = False
     can_resume: bool = False
     can_retry: bool = False
+
+
+AgentUsageCountReason = Literal["counted", "duplicate", "invalid"]
+
+
+class AgentUsageRecord(BaseModel):
+    usage_id: str
+    project_id: str
+    operation_id: str
+    task_kind: AgentTaskKind
+    provider: str
+    model: str | None = None
+    provider_profile: str
+    provider_event_type: str
+    dedupe_key: str
+    counted: bool
+    count_reason: AgentUsageCountReason
+    created_at: str
+    processed_input_tokens: int = Field(ge=0)
+    generated_tokens: int = Field(ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    cache_creation_input_tokens: int = Field(default=0, ge=0)
+    cache_write_input_tokens: int = Field(default=0, ge=0)
+    reasoning_output_tokens: int = Field(default=0, ge=0)
+    reported_input_tokens: int | None = Field(default=None, ge=0)
+    reported_output_tokens: int | None = Field(default=None, ge=0)
+    reported_total_tokens: int | None = Field(default=None, ge=0)
+    provider_fields: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentUsageCell(BaseModel):
+    task_kind: AgentTaskKind
+    provider: str
+    processed_input_tokens: int = 0
+    generated_tokens: int = 0
+    cached_input_tokens: int = 0
+    counted_records: int = 0
+
+
+class AgentUsageMetric(BaseModel):
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    cache_share: float = 0.0
+    block_percent: float = 5.0
+    block_tokens: float = 0.0
+    cells: list[AgentUsageCell] = Field(default_factory=list)
+
+
+class AgentUsageSnapshot(BaseModel):
+    project_id: str
+    input_processed: AgentUsageMetric
+    generated: AgentUsageMetric
+    counted_records: int = 0
+    excluded_records: int = 0
+    records: list[AgentUsageRecord] = Field(default_factory=list)
 
 
 WatcherStatus = Literal["active", "degraded", "completed", "stopped"]
@@ -253,6 +310,33 @@ class AppStore:
                 );
                 CREATE INDEX IF NOT EXISTS graph_runs_project
                     ON graph_runs(project_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS agent_usage (
+                    usage_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    task_kind TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT,
+                    provider_profile TEXT NOT NULL,
+                    provider_event_type TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL,
+                    counted INTEGER NOT NULL,
+                    count_reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    processed_input_tokens INTEGER NOT NULL,
+                    generated_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    cache_creation_input_tokens INTEGER NOT NULL,
+                    cache_write_input_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    reported_input_tokens INTEGER,
+                    reported_output_tokens INTEGER,
+                    reported_total_tokens INTEGER,
+                    provider_fields_json TEXT NOT NULL,
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS agent_usage_project
+                    ON agent_usage(project_id, created_at DESC);
                 CREATE TABLE IF NOT EXISTS graph_run_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     operation_id TEXT NOT NULL,
@@ -456,6 +540,7 @@ class AppStore:
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
                 }
+                connection.execute("DELETE FROM agent_usage WHERE project_id = ?", (project_id,))
                 for table in (
                     "graph_run_outputs",
                     "graph_run_events",
@@ -1036,6 +1121,139 @@ class AppStore:
                 (project_id, max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT))),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
+
+    def record_agent_usage(self, operation_id: str, usage: ProviderUsage) -> AgentUsageRecord:
+        """Persist one provider usage report and mark duplicate reports excluded."""
+
+        task = self.agent_task(operation_id)
+        if task is None:
+            raise ValueError(f"Cannot attribute provider usage to unknown task {operation_id!r}")
+        usage_id = str(uuid.uuid4())
+        now = self.now()
+        with self.connection() as connection:
+            duplicate = connection.execute(
+                """
+                SELECT 1 FROM agent_usage
+                WHERE operation_id = ? AND provider_profile = ? AND dedupe_key = ?
+                    AND counted = 1
+                LIMIT 1
+                """,
+                (operation_id, usage.provider_profile, usage.dedupe_key),
+            ).fetchone()
+            counted = duplicate is None
+            count_reason: AgentUsageCountReason = "counted" if counted else "duplicate"
+            connection.execute(
+                """
+                INSERT INTO agent_usage (
+                    usage_id, project_id, operation_id, provider, model,
+                    task_kind, provider_profile, provider_event_type, dedupe_key, counted,
+                    count_reason, created_at, processed_input_tokens,
+                    generated_tokens, cached_input_tokens,
+                    cache_creation_input_tokens, cache_write_input_tokens,
+                    reasoning_output_tokens, reported_input_tokens,
+                    reported_output_tokens, reported_total_tokens,
+                    provider_fields_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    usage_id,
+                    task.project_id,
+                    operation_id,
+                    task.request.get("provider") or "unknown",
+                    task.request.get("model"),
+                    task.kind,
+                    usage.provider_profile,
+                    usage.provider_event_type,
+                    usage.dedupe_key,
+                    int(counted),
+                    count_reason,
+                    now,
+                    usage.processed_input_tokens,
+                    usage.generated_tokens,
+                    usage.cached_input_tokens,
+                    usage.cache_creation_input_tokens,
+                    usage.cache_write_input_tokens,
+                    usage.reasoning_output_tokens,
+                    usage.reported_input_tokens,
+                    usage.reported_output_tokens,
+                    usage.reported_total_tokens,
+                    json.dumps(usage.provider_fields, separators=(",", ":")),
+                ),
+            )
+        record = self.agent_usage_record(usage_id)
+        assert record is not None
+        return record
+
+    def agent_usage_record(self, usage_id: str) -> AgentUsageRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_usage WHERE usage_id = ?", (usage_id,)
+            ).fetchone()
+        return self._agent_usage_record(row) if row else None
+
+    def agent_usage(self, project_id: str) -> list[AgentUsageRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_usage
+                WHERE project_id = ?
+                ORDER BY created_at ASC, usage_id ASC
+                """,
+                (project_id,),
+            ).fetchall()
+        return [self._agent_usage_record(row) for row in rows]
+
+    def agent_usage_snapshot(self, project_id: str) -> AgentUsageSnapshot:
+        records = self.agent_usage(project_id)
+        counted = [record for record in records if record.counted]
+        input_cells: dict[tuple[AgentTaskKind, str], AgentUsageCell] = {}
+        generated_cells: dict[tuple[AgentTaskKind, str], AgentUsageCell] = {}
+        for record in counted:
+            task = self.agent_task(record.operation_id)
+            if task is None:
+                continue
+            key = (task.kind, record.provider)
+            input_cell = input_cells.setdefault(
+                key,
+                AgentUsageCell(task_kind=task.kind, provider=record.provider),
+            )
+            input_cell.processed_input_tokens += record.processed_input_tokens
+            input_cell.cached_input_tokens += record.cached_input_tokens
+            input_cell.counted_records += 1
+            generated_cell = generated_cells.setdefault(
+                key,
+                AgentUsageCell(task_kind=task.kind, provider=record.provider),
+            )
+            generated_cell.generated_tokens += record.generated_tokens
+            generated_cell.counted_records += 1
+
+        input_total = sum(cell.processed_input_tokens for cell in input_cells.values())
+        generated_total = sum(cell.generated_tokens for cell in generated_cells.values())
+        cached_total = sum(cell.cached_input_tokens for cell in input_cells.values())
+        return AgentUsageSnapshot(
+            project_id=project_id,
+            input_processed=AgentUsageMetric(
+                total_tokens=input_total,
+                cached_tokens=cached_total,
+                cache_share=cached_total / input_total if input_total else 0.0,
+                block_tokens=input_total / 20 if input_total else 0.0,
+                cells=sorted(
+                    input_cells.values(),
+                    key=lambda cell: (cell.task_kind, cell.provider),
+                ),
+            ),
+            generated=AgentUsageMetric(
+                total_tokens=generated_total,
+                block_tokens=generated_total / 20 if generated_total else 0.0,
+                cells=sorted(
+                    generated_cells.values(),
+                    key=lambda cell: (cell.task_kind, cell.provider),
+                ),
+            ),
+            counted_records=len(counted),
+            excluded_records=len(records) - len(counted),
+            records=records,
+        )
 
     def has_resumable_paused_chat_task(
         self,
@@ -1823,6 +2041,13 @@ class AppStore:
         )
         data["can_retry"] = status in {"paused", "interrupted", "failed"} and not active
         return AgentTaskRecord.model_validate(data)
+
+    @staticmethod
+    def _agent_usage_record(row: sqlite3.Row) -> AgentUsageRecord:
+        data = dict(row)
+        data["counted"] = bool(data["counted"])
+        data["provider_fields"] = json.loads(data.pop("provider_fields_json"))
+        return AgentUsageRecord.model_validate(data)
 
     @staticmethod
     def _parse_time(value: object) -> datetime | None:

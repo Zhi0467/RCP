@@ -16,6 +16,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { api, clearProjectCaches } from "../api";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
+import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
 import { OntologyEditor } from "../components/OntologyEditor";
 import {
   deserializeSettingsDraft,
@@ -30,6 +31,7 @@ import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
 import type {
   AgentRunConfig,
   AgentSurface,
+  AgentUsageSnapshot,
   CacheMetric,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
@@ -43,6 +45,8 @@ import type {
 interface Props {
   apiBase: string;
   project: ProjectSnapshot;
+  usage: AgentUsageSnapshot | null;
+  onRefreshUsage: () => Promise<void>;
   cacheClearDisabled: boolean;
   writesDisabled?: boolean;
   onSaved: (project: ProjectSnapshot, preserveReadiness?: boolean) => void;
@@ -100,6 +104,8 @@ function stagedOrSaved(project: ProjectSnapshot) {
 export function ProjectSettings({
   apiBase,
   project,
+  usage,
+  onRefreshUsage,
   cacheClearDisabled,
   writesDisabled = false,
   onSaved,
@@ -141,6 +147,10 @@ export function ProjectSettings({
   useEffect(() => {
     setCacheMetrics(project.cache_metrics);
   }, [project.cache_metrics]);
+
+  useEffect(() => {
+    void onRefreshUsage();
+  }, [onRefreshUsage]);
 
   const baseline = useMemo(
     () =>
@@ -291,6 +301,8 @@ export function ProjectSettings({
 
   return (
     <section className="settings-page">
+      <AgentUsageWidgets usage={usage} providers={project.providers} />
+
       {showDisplaySettings && (
         <section className="settings-section display-settings">
           <header>

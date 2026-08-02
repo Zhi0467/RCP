@@ -1274,12 +1274,17 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        index = self.index_snapshot(
-            refresh=surface in {"seed", "refresh"},
-            execution_machine=execution_machine.alias,
-            pin_artifact=pin_artifact,
-        )
-        return ContextAssembler(self.manifest, self.indexer).assemble(
+        assembler = ContextAssembler(self.manifest, self.indexer)
+        try:
+            index = self.index_snapshot(
+                refresh=surface in {"seed", "refresh"},
+                execution_machine=execution_machine.alias,
+                pin_artifact=pin_artifact,
+            )
+        except Exception as exc:
+            detail = f"source assembly unavailable: {type(exc).__name__}: {exc}"
+            index = ConversationIndex(generated_at=datetime.now(UTC), source_errors=[detail])
+        context = assembler.assemble(
             state,
             index,
             request.run_truth_scope,
@@ -1288,7 +1293,15 @@ class ProjectService:
                 self.history.refresh_delta(materialization) if surface == "refresh" else None
             ),
             pin_artifact=pin_artifact,
+            source_roots=(
+                assembler.source_roots(execution_machine.alias) if index.source_errors else None
+            ),
         )
+        if context.source_errors and not context.source_roots:
+            context = context.model_copy(
+                update={"source_roots": assembler.source_roots(execution_machine.alias)}
+            )
+        return context
 
     def graph_task_contract(
         self,
@@ -1301,11 +1314,13 @@ class ProjectService:
         conversation_roots: dict[str, str],
         authorized_session_keys_path: str,
         cursor_path: str,
+        coverage_path: str | None = None,
         repositories: list[dict[str, str]],
         patch_path: str,
         output_schema_path: str,
         human_request_path: str | None = None,
         retry_diagnostics_path: str | None = None,
+        source_errors: list[str] | None = None,
     ) -> str:
         return PromptFactory.graph_task_contract(
             kind,
@@ -1316,11 +1331,13 @@ class ProjectService:
             conversation_roots=conversation_roots,
             authorized_session_keys_path=authorized_session_keys_path,
             cursor_path=cursor_path,
+            coverage_path=coverage_path,
             repositories=repositories,
             patch_path=patch_path,
             output_schema_path=output_schema_path,
             human_request_path=human_request_path,
             retry_diagnostics_path=retry_diagnostics_path,
+            source_errors=source_errors or [],
         )
 
     def assemble_chat(self, request: RunRequest) -> ChatContext:
@@ -1336,32 +1353,11 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
-        profile = self.resolve_agent_profile(
-            surface,
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-        )
-        execution_machine = self.manifest.machine_map[profile.run_on].alias
-        try:
-            # Indexed as the execution machine sees it, so a conversation already
-            # on that machine keeps its own path instead of a local cache copy.
-            index: ConversationIndex | None = self.index_snapshot(
-                execution_machine=execution_machine
-            )
-        except OSError:
-            # Conversations are citations here, not the corpus. Losing the index
-            # costs the turn its pointers; it must never cost the human a reply.
-            index = None
         return ContextAssembler(self.manifest, self.indexer).chat_context(
             state,
-            index=index,
             node_id=request.node_id if request.chat_scope == "node" else None,
             run_truth_scope=request.run_truth_scope,
             repository_access=repository_access,
-            execution_machine=execution_machine,
         )
 
     def coach_context(

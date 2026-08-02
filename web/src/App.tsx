@@ -4,6 +4,8 @@ import {
   BookOpenText,
   CircleArrowUp,
   CloudUpload,
+  ChevronDown,
+  ChevronUp,
   FileText,
   FlaskConical,
   FolderLock,
@@ -17,9 +19,17 @@ import {
   RefreshCw,
   RotateCcw,
   Settings2,
+  X,
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isActiveTask, projectActivityTask, taskKindLabel } from "./agentTasks";
+import {
+  isActiveTask,
+  parseDismissedTaskIds,
+  projectActivityTask,
+  serializeDismissedTaskIds,
+  taskKindLabel,
+  taskNotificationStorageKey,
+} from "./agentTasks";
 import {
   chatIdForTask,
   chatIndicator,
@@ -96,6 +106,7 @@ import type {
   AgentTask,
   AgentTaskKind,
   AgentTaskRequest,
+  AgentUsageSnapshot,
   AppView,
   ChatSummary,
   ChatTranscript,
@@ -107,6 +118,7 @@ import type {
   ProjectCard,
   ProjectSnapshot,
   TrustView,
+  ValidationMessage,
   WatcherRecord,
 } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
@@ -119,6 +131,7 @@ import {
   textScaleShortcut,
   type TextScaleAction,
 } from "./textScale";
+import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 
 const AttentionOverview = lazy(() =>
   import("./views/GraphViews").then((module) => ({ default: module.AttentionOverview })),
@@ -173,6 +186,8 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
 ];
 
+const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
+
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
 
 export default function App() {
@@ -191,6 +206,9 @@ export default function App() {
   const [setupOpen, setSetupOpen] = useState(() => isSetupRoute());
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [project, setProject] = useState<ProjectSnapshot | null>(null);
+  const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
+    readProjectHeaderCollapsed(projectId),
+  );
   const [graph, setGraph] = useState<GraphState>(emptyGraph);
   const [paper, setPaper] = useState<PaperSnapshot | null>(null);
   const [view, setView] = useState<AppView>("overview");
@@ -199,6 +217,7 @@ export default function App() {
   );
   const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
   const [floatingChat, setFloatingChat] = useState<{ chatId: string; nodeId: string } | null>(null);
   const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -225,12 +244,18 @@ export default function App() {
   const [taskStarting, setTaskStarting] = useState(false);
   const [taskActionId, setTaskActionId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const [taskInspectorId, setTaskInspectorId] = useState<string | null>(null);
   const [inspectedTask, setInspectedTask] = useState<AgentTask | null>(null);
   const [taskInspectorLoading, setTaskInspectorLoading] = useState(false);
   const [activityTaskId, setActivityTaskId] = useState<string | null>(null);
-  const [dismissedTaskIds, setDismissedTaskIds] = useState<Set<string>>(() => new Set());
+  const [dismissedTaskIds, setDismissedTaskIds] = useState<Set<string>>(() =>
+    readDismissedTaskIds(projectId),
+  );
+  const [dismissedHistoryNoticeIds, setDismissedHistoryNoticeIds] = useState<Set<string>>(() =>
+    readDismissedHistoryNoticeIds(projectId),
+  );
   const taskStartLock = useRef(false);
   const activeProjectId = useRef(projectId);
   const authoritativeProjectId = useRef<string | null>(null);
@@ -245,6 +270,14 @@ export default function App() {
   activeProjectId.current = projectId;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeoutId = window.setTimeout(() => {
+      setNotice((current) => (current === notice ? null : current));
+    }, NOTICE_TIMEOUT_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   const selectChat = useCallback((chatId: string | null) => {
     selectedChatIdRef.current = chatId;
@@ -264,6 +297,7 @@ export default function App() {
       setGraph(nextGraph);
       setPaper(nextProject.paper);
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
+      setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
       setRunScope((current) =>
         current.length
           ? current.filter((item) => nextProject.project_truth_scope.includes(item))
@@ -417,6 +451,14 @@ export default function App() {
             if (activeProjectId.current === requestedProjectId) setTasks(nextTasks);
           })
         : Promise.resolve();
+      const usageRequest = api<AgentUsageSnapshot>(`${base}/usage`)
+        .then((nextUsage) => {
+          if (activeProjectId.current === requestedProjectId) setUsage(nextUsage);
+        })
+        .catch((error) => {
+          if (!(error instanceof ApiError && error.status === 404)) throw error;
+          if (activeProjectId.current === requestedProjectId) setUsage(null);
+        });
       const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
         if (activeProjectId.current === requestedProjectId) setWatchers(nextWatchers);
       });
@@ -428,7 +470,13 @@ export default function App() {
           });
         }
       });
-      await Promise.all([projectRequest, tasksRequest, watchersRequest, chatsRequest]);
+      await Promise.all([
+        projectRequest,
+        tasksRequest,
+        usageRequest,
+        watchersRequest,
+        chatsRequest,
+      ]);
     },
     [applyProjectSnapshot, projectId, refreshChatSummaries],
   );
@@ -556,6 +604,16 @@ export default function App() {
     }
   }, [apiBase]);
 
+  const refreshUsage = useCallback(async () => {
+    if (!apiBase) return;
+    try {
+      const nextUsage = await api<AgentUsageSnapshot>(`${apiBase}/usage`);
+      if (activeProjectId.current === projectId) setUsage(nextUsage);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    }
+  }, [apiBase, projectId]);
+
   const updatePaper = useCallback((nextPaper: PaperSnapshot) => {
     setPaper(nextPaper);
     setProject((current) => (current ? { ...current, paper: nextPaper } : current));
@@ -580,6 +638,7 @@ export default function App() {
     setGraph(emptyGraph);
     setPaper(null);
     setSelectedNode(null);
+    setDockedNodeIds([]);
     setFloatingChat(null);
     setDraftConversations([]);
     selectChat(null);
@@ -600,7 +659,9 @@ export default function App() {
     setTaskInspectorId(null);
     setInspectedTask(null);
     setActivityTaskId(null);
-    setDismissedTaskIds(new Set());
+    setDismissedTaskIds(readDismissedTaskIds(projectId));
+    setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(projectId));
+    setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
     setHumanDraft(null);
     setSyncingDraft(false);
     setView("overview");
@@ -666,6 +727,18 @@ export default function App() {
     setupOpen,
   ]);
 
+  useEffect(() => {
+    if (!projectId) return;
+    try {
+      localStorage.setItem(
+        projectHeaderCollapsedStorageKey(projectId),
+        String(projectHeaderCollapsed),
+      );
+    } catch {
+      // Layout state is a convenience; storage failures must not affect the project.
+    }
+  }, [projectHeaderCollapsed, projectId]);
+
   useEffect(() => localStorage.setItem("rcp:trust-view", trustView), [trustView]);
 
   useEffect(() => {
@@ -720,6 +793,25 @@ export default function App() {
     () => (mutationsDisabled ? graph : applyHumanDraft(graph, humanDraft)),
     [graph, humanDraft, mutationsDisabled],
   );
+  const openNode = (node: GraphNode | null) => {
+    if (!node) return;
+    setDockedNodeIds((current) => current.filter((nodeId) => nodeId !== node.id));
+    setSelectedNode(node);
+  };
+  const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
+  const dockNode = (nodeId: string) => {
+    setDockedNodeIds((current) => (current.includes(nodeId) ? current : [...current, nodeId]));
+    setSelectedNode((current) => (current?.id === nodeId ? null : current));
+  };
+  const restoreDockedNode = (nodeId: string) => {
+    const node = presentedGraph.nodes[nodeId];
+    setDockedNodeIds((current) => current.filter((id) => id !== nodeId));
+    openNode(node ?? null);
+  };
+  const dockedNodes = dockedNodeIds.flatMap((nodeId) => {
+    const node = presentedGraph.nodes[nodeId];
+    return node ? [{ nodeId, node }] : [];
+  });
   const nodeTitles = useMemo(
     () =>
       Object.fromEntries(Object.values(presentedGraph.nodes).map((node) => [node.id, node.title])),
@@ -895,6 +987,11 @@ export default function App() {
       if (recoveredAfterFailure) void reverifyBackendIdentity("active-task-poll-recovered");
       const current = next.find((task) => task.operation_id === activeTask.operation_id);
       if (current && !isActiveTask(current)) {
+        void api<AgentUsageSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/usage`).then(
+          (nextUsage) => {
+            if (!stopped && activeProjectId.current === projectId) setUsage(nextUsage);
+          },
+        );
         if (current.status === "succeeded" && current.applied_revision) {
           try {
             await reload();
@@ -1044,8 +1141,14 @@ export default function App() {
     [presentedGraph],
   );
   const rejectedPatches = useMemo(
-    () => graph.validation_messages.filter((message) => message.level === "reject"),
-    [graph.validation_messages],
+    () =>
+      graph.validation_messages.filter(
+        (message) =>
+          message.level === "reject" &&
+          !dismissedHistoryNoticeIds.has(validationNoticeId(message)) &&
+          !(typeof message.patch_revision === "number" && message.patch_revision < graph.revision),
+      ),
+    [dismissedHistoryNoticeIds, graph.revision, graph.validation_messages],
   );
 
   const updateHumanDraft = (update: (draft: HumanDraft) => HumanDraft) => {
@@ -1064,6 +1167,36 @@ export default function App() {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
         return next;
       }
+    });
+  };
+
+  const dismissTaskNotification = (operationId: string) => {
+    setDismissedTaskIds((current) => {
+      const next = new Set(current);
+      next.add(operationId);
+      try {
+        localStorage.setItem(
+          taskNotificationStorageKey(projectId),
+          serializeDismissedTaskIds(next),
+        );
+      } catch {}
+      return next;
+    });
+    if (taskInspectorId === operationId) {
+      setTaskInspectorId(null);
+      setInspectedTask(null);
+    }
+  };
+
+  const dismissHistoryNotices = (messages: ValidationMessage[]) => {
+    const ids = messages.map(validationNoticeId);
+    setDismissedHistoryNoticeIds((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.add(id));
+      try {
+        localStorage.setItem(historyNoticeStorageKey(projectId), JSON.stringify([...next].sort()));
+      } catch {}
+      return next;
     });
   };
 
@@ -1569,124 +1702,144 @@ export default function App() {
 
   return (
     <div className="app-shell overview-shell">
-      <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
-        <div className="brand-lockup">
-          <button className="project-back" onClick={returnToProjects} aria-label="All projects">
-            <ArrowLeft size={16} />
-          </button>
-          <strong>{project.name}</strong>
-          {projectReconciliation === "reconciling" && (
-            <span
-              className="project-reconciliation"
-              role="status"
-              aria-label="Refreshing project state"
+      {!projectHeaderCollapsed && (
+        <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
+          <div className="brand-lockup">
+            <button className="project-back" onClick={returnToProjects} aria-label="All projects">
+              <ArrowLeft size={16} />
+            </button>
+            {projectReconciliation === "reconciling" && (
+              <span
+                className="project-reconciliation"
+                role="status"
+                aria-label="Refreshing project state"
+              >
+                <LoaderCircle className="spin" size={13} aria-hidden="true" />
+              </span>
+            )}
+          </div>
+          <div className="project-header-actions" id="project-header-actions">
+            <div
+              className="project-header-group project-action-group"
+              role="group"
+              aria-label="Project actions"
             >
-              <LoaderCircle className="spin" size={13} aria-hidden="true" />
-            </span>
-          )}
-        </div>
-        <div className="project-header-actions">
-          <div
-            className="project-header-group project-action-group"
-            role="group"
-            aria-label="Project actions"
-          >
-            <div className="header-sync-side">
-              {draftChangeCount > 0 && (
+              <div className="header-sync-side">
+                {draftChangeCount > 0 && (
+                  <button
+                    className="icon-button draft-reset"
+                    aria-label="Reset staged changes"
+                    title="Reset staged changes"
+                    disabled={projectReconciliation !== "authoritative" || syncingDraft}
+                    onClick={resetHumanDraft}
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                )}
                 <button
-                  className="icon-button draft-reset"
-                  aria-label="Reset staged changes"
-                  title="Reset staged changes"
-                  disabled={projectReconciliation !== "authoritative" || syncingDraft}
-                  onClick={resetHumanDraft}
+                  className={`button draft-sync${draftChangeCount > 0 ? " active" : ""}${draftIsStale ? " stale" : ""}`}
+                  disabled={
+                    mutationsDisabled ||
+                    projectReconciliation !== "authoritative" ||
+                    draftChangeCount === 0 ||
+                    syncingDraft ||
+                    draftIsStale ||
+                    !project.canonical_state.reachable
+                  }
+                  title={draftIsStale ? "Draft base is stale" : undefined}
+                  aria-label={
+                    syncingDraft
+                      ? "Syncing staged changes"
+                      : draftIsStale
+                        ? `Sync conflict, ${draftChangeCount} staged changes`
+                        : undefined
+                  }
+                  onClick={() => void syncHumanDraft()}
                 >
-                  <RotateCcw size={14} />
+                  {syncingDraft ? (
+                    <LoaderCircle className="spin" size={14} />
+                  ) : draftIsStale ? (
+                    <AlertTriangle size={14} />
+                  ) : (
+                    <CloudUpload size={14} />
+                  )}
+                  <span>Sync</span>
+                  {draftChangeCount > 0 && <small>{draftChangeCount}</small>}
                 </button>
-              )}
+              </div>
               <button
-                className={`button draft-sync${draftChangeCount > 0 ? " active" : ""}${draftIsStale ? " stale" : ""}`}
+                className="button secondary"
+                disabled={projectReconciliation !== "authoritative"}
+                onClick={() => {
+                  const chatId = ensureConversation("project_chat");
+                  openChats(chatId);
+                }}
+              >
+                <MessageCircle size={14} /> Ask
+              </button>
+            </div>
+            <div
+              className="project-header-group project-utility-group"
+              role="group"
+              aria-label="Project utilities"
+            >
+              <button
+                className="icon-button task-history-control"
+                disabled={!latestTask}
+                aria-label={activeTask ? "Agent tasks, task in progress" : "Agent tasks"}
+                onClick={() => latestTask && setTaskInspectorId(latestTask.operation_id)}
+              >
+                <History size={15} />
+                {activeTask ? <span className="activity-pulse" /> : null}
+              </button>
+              <button
+                className="icon-button primary refresh-control"
                 disabled={
                   mutationsDisabled ||
                   projectReconciliation !== "authoritative" ||
-                  draftChangeCount === 0 ||
-                  syncingDraft ||
-                  draftIsStale ||
-                  !project.canonical_state.reachable
+                  !project.canonical_state.reachable ||
+                  Boolean(activeTask) ||
+                  taskStarting
                 }
-                title={draftIsStale ? "Draft base is stale" : undefined}
                 aria-label={
-                  syncingDraft
-                    ? "Syncing staged changes"
-                    : draftIsStale
-                      ? `Sync conflict, ${draftChangeCount} staged changes`
-                      : undefined
+                  activeTask
+                    ? `${taskKindLabel(activeTask.kind)} in progress`
+                    : runKind === "seed"
+                      ? "Seed project"
+                      : "Refresh project"
                 }
-                onClick={() => void syncHumanDraft()}
+                onClick={() => setRunDialogOpen(true)}
               >
-                {syncingDraft ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : draftIsStale ? (
-                  <AlertTriangle size={14} />
-                ) : (
-                  <CloudUpload size={14} />
-                )}
-                <span>Sync</span>
-                {draftChangeCount > 0 && <small>{draftChangeCount}</small>}
+                <RefreshCw
+                  className={activeTask && activeTask.status !== "pausing" ? "spin" : ""}
+                  size={15}
+                />
               </button>
             </div>
-            <button
-              className="button secondary"
-              disabled={projectReconciliation !== "authoritative"}
-              onClick={() => {
-                const chatId = ensureConversation("project_chat");
-                openChats(chatId);
-              }}
-            >
-              <MessageCircle size={14} /> Ask
-            </button>
           </div>
-          <div
-            className="project-header-group project-utility-group"
-            role="group"
-            aria-label="Project utilities"
-          >
-            <button
-              className="icon-button task-history-control"
-              disabled={!latestTask}
-              aria-label={activeTask ? "Agent tasks, task in progress" : "Agent tasks"}
-              onClick={() => latestTask && setTaskInspectorId(latestTask.operation_id)}
-            >
-              <History size={15} />
-              {activeTask ? <span className="activity-pulse" /> : null}
-            </button>
-            <button
-              className="icon-button primary refresh-control"
-              disabled={
-                mutationsDisabled ||
-                projectReconciliation !== "authoritative" ||
-                !project.canonical_state.reachable ||
-                Boolean(activeTask) ||
-                taskStarting
-              }
-              aria-label={
-                activeTask
-                  ? `${taskKindLabel(activeTask.kind)} in progress`
-                  : runKind === "seed"
-                    ? "Seed project"
-                    : "Refresh project"
-              }
-              onClick={() => setRunDialogOpen(true)}
-            >
-              <RefreshCw
-                className={activeTask && activeTask.status !== "pausing" ? "spin" : ""}
-                size={15}
-              />
-            </button>
-          </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       <nav className="project-tabs" aria-label="Project panels">
+        {projectHeaderCollapsed && (
+          <button
+            className="project-tabs-back project-back"
+            onClick={returnToProjects}
+            aria-label="All projects"
+          >
+            <ArrowLeft size={16} />
+          </button>
+        )}
+        <button
+          aria-expanded={!projectHeaderCollapsed}
+          aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
+          aria-label={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
+          className="project-tabs-toggle"
+          title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
+          onClick={() => setProjectHeaderCollapsed((collapsed) => !collapsed)}
+        >
+          {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+        </button>
         {navItems.map((item) => (
           <button
             key={item.view}
@@ -1724,6 +1877,29 @@ export default function App() {
         )}
       </nav>
 
+      {dockedNodes.length > 0 && (
+        <section className="node-window-dock" aria-label="Docked node windows">
+          <div className="node-window-dock-label">
+            <Network size={14} />
+            <span>Docked nodes</span>
+          </div>
+          <div className="node-window-dock-items">
+            {dockedNodes.map(({ nodeId, node }) => (
+              <button
+                className="node-window-dock-item"
+                key={nodeId}
+                type="button"
+                aria-label={`Restore ${node.title} node window`}
+                onClick={() => restoreDockedNode(nodeId)}
+              >
+                <span className={`node-window-dock-state ${node.standing}`} />
+                <span>{node.title}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="project-notices">
         {updateSurface}
         {visibleTask && (!chatIdForTask(visibleTask) || view === "chats") && (
@@ -1737,9 +1913,7 @@ export default function App() {
             onResume={() => void operateTask(visibleTask, "resume")}
             onRetry={() => requestRetry(visibleTask)}
             onInspect={() => setTaskInspectorId(visibleTask.operation_id)}
-            onDismiss={() =>
-              setDismissedTaskIds((current) => new Set(current).add(visibleTask.operation_id))
-            }
+            onDismiss={() => dismissTaskNotification(visibleTask.operation_id)}
           />
         )}
         {!project.canonical_state.reachable && (
@@ -1769,15 +1943,24 @@ export default function App() {
             </div>
           )}
         {rejectedPatches.length > 0 && view === "attention" && (
-          <div className="coverage-banner validation-rejected">
+          <div className="coverage-banner validation-rejected" role="status">
             <AlertTriangle size={15} />
             <span>
               <strong>
-                {rejectedPatches.length} rejected history operation
-                {rejectedPatches.length === 1 ? "" : "s"}.
+                History note: {rejectedPatches.length} operation
+                {rejectedPatches.length === 1 ? "" : "s"} rejected and not applied.
               </strong>{" "}
-              Latest: {rejectedPatches.at(-1)?.message}
+              RCP kept the attempted patch for audit, so the graph was unchanged. This is not an
+              Inbox decision. Reason: {rejectedPatches.at(-1)?.message}
             </span>
+            <button
+              type="button"
+              className="icon-button compact"
+              aria-label="Dismiss history note"
+              onClick={() => dismissHistoryNotices(rejectedPatches)}
+            >
+              <X size={14} />
+            </button>
           </div>
         )}
       </div>
@@ -1825,7 +2008,7 @@ export default function App() {
           )}
           {view === "attention" && (
             <div className="attention-page">
-              <AttentionOverview graph={presentedGraph} onSelectNode={setSelectedNode} />
+              <AttentionOverview graph={presentedGraph} onSelectNode={openNode} />
               <AttentionRail
                 proposals={pendingProposals}
                 ambiguities={ambiguities}
@@ -1838,7 +2021,7 @@ export default function App() {
                 onAmbiguity={(ambiguity, status) =>
                   updateHumanDraft((draft) => stageAmbiguityDecision(draft, ambiguity.id, status))
                 }
-                onSelectNode={(id) => setSelectedNode(presentedGraph.nodes[id] ?? null)}
+                onSelectNode={openNodeById}
               />
             </div>
           )}
@@ -1847,7 +2030,7 @@ export default function App() {
               graph={presentedGraph}
               trustView={trustView}
               mutationsDisabled={mutationsDisabled}
-              onSelectNode={setSelectedNode}
+              onSelectNode={openNode}
               onStageCustomNode={(node) =>
                 updateHumanDraft((draft) => stageCustomNode(draft, node))
               }
@@ -1860,7 +2043,7 @@ export default function App() {
               projectId={project.id}
               relationFocusNodeId={dagRelationFocusId}
               onClearRelationFocus={() => setDagRelationFocusId(null)}
-              onSelectNode={setSelectedNode}
+              onSelectNode={openNode}
             />
           )}
           {view === "execution" && (
@@ -1868,9 +2051,11 @@ export default function App() {
               graph={presentedGraph}
               trustView={trustView}
               tasks={tasks}
+              dismissedTaskIds={dismissedTaskIds}
               lastRefreshAt={project.last_refresh_at}
               onInspectTask={setTaskInspectorId}
-              onSelectNode={setSelectedNode}
+              onDismissTask={dismissTaskNotification}
+              onSelectNode={openNode}
             />
           )}
           {view === "glossary" && <GlossaryView graph={presentedGraph} />}
@@ -1889,6 +2074,8 @@ export default function App() {
             <ProjectSettings
               apiBase={apiBase}
               project={project}
+              usage={usage}
+              onRefreshUsage={refreshUsage}
               cacheClearDisabled={Boolean(activeTask)}
               writesDisabled={mutationsDisabled}
               ontology={presentedGraph.ontology}
@@ -1961,6 +2148,7 @@ export default function App() {
             setSelectedNode(null);
           }}
           onClose={() => setSelectedNode(null)}
+          onDock={() => dockNode(selectedNode.id)}
           onBeginEdit={() =>
             updateHumanDraft((draft) => stageNodeEditStart(draft, graph, selectedNode.id))
           }
@@ -1985,9 +2173,8 @@ export default function App() {
           onExploreRelations={() => {
             setDagRelationFocusId(selectedNode.id);
             setView("dag");
-            setSelectedNode(null);
           }}
-          onSelectNode={(nodeId) => setSelectedNode(presentedGraph.nodes[nodeId] ?? null)}
+          onSelectNode={openNodeById}
         />
       )}
       {floatingChat && (
@@ -2003,6 +2190,10 @@ export default function App() {
               key={floatingChat.chatId}
               project={project}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
+              conversationTitle={
+                conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
+                  ?.title
+              }
               runScope={runScope}
               tasks={tasks}
               activeTask={activeTask}
@@ -2061,6 +2252,7 @@ export default function App() {
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
           onRetry={() => inspectedTask && requestRetry(inspectedTask)}
+          onDismiss={() => inspectedTask && dismissTaskNotification(inspectedTask.operation_id)}
           onClose={() => setTaskInspectorId(null)}
         />
       )}
@@ -2072,6 +2264,43 @@ export default function App() {
       {desktopAccessSurface}
     </div>
   );
+}
+
+function readDismissedTaskIds(projectId: string | null): Set<string> {
+  try {
+    return parseDismissedTaskIds(localStorage.getItem(taskNotificationStorageKey(projectId)));
+  } catch {
+    return new Set();
+  }
+}
+
+function projectHeaderCollapsedStorageKey(projectId: string): string {
+  return `${PROJECT_HEADER_COLLAPSED_KEY}:${projectId}`;
+}
+
+function readProjectHeaderCollapsed(projectId: string | null): boolean {
+  if (!projectId) return false;
+  try {
+    return localStorage.getItem(projectHeaderCollapsedStorageKey(projectId)) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function historyNoticeStorageKey(projectId: string | null): string {
+  return `rcp:dismissed-history-notices:${projectId ?? "none"}`;
+}
+
+function readDismissedHistoryNoticeIds(projectId: string | null): Set<string> {
+  try {
+    return parseDismissedTaskIds(localStorage.getItem(historyNoticeStorageKey(projectId)));
+  } catch {
+    return new Set();
+  }
+}
+
+function validationNoticeId(message: ValidationMessage): string {
+  return JSON.stringify([message.code, message.patch_revision ?? null, message.message]);
 }
 
 function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectSnapshot {

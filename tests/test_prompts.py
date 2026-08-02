@@ -88,8 +88,6 @@ def test_work_contract_authorizes_exact_operations_and_an_optional_patch() -> No
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         focused_node_id="hyp/example",
-        conversation_roots={"provider-x": "/stage/conversations/provider-x"},
-        conversations_unreachable=0,
         repositories=[
             {"alias": "repo-a", "host": "", "path": "/repo-a"},
             {"alias": "repo-b", "host": "gpu.example", "path": "/srv/repo-b"},
@@ -105,7 +103,8 @@ def test_work_contract_authorizes_exact_operations_and_an_optional_patch() -> No
     assert "preview is optional" in contract
     assert "direct regular HTML or raster-image files" in contract
     assert "/state/graph.json" in contract
-    assert "/stage/conversations/provider-x" in contract
+    assert "/stage/conversations/provider-x" not in contract
+    assert ".jsonl" not in contract
     assert "/stage/inputs/human-request.txt" in contract
     assert "/stage/inputs/patch-schema.json" in contract
     assert "/stage/artifacts" in contract
@@ -130,8 +129,6 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         focused_node_id="exp/example",
-        conversation_roots={},
-        conversations_unreachable=0,
         repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
         introduction_path=None,
         human_request_path="/stage/inputs/human-request.txt",
@@ -160,8 +157,6 @@ def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority()
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         focused_node_id=None,
-        conversation_roots={},
-        conversations_unreachable=0,
         repositories=[],
         introduction_path=None,
         human_request_path="/stage/inputs/human-request.txt",
@@ -176,6 +171,8 @@ def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority()
     assert "Never copy, create, edit, or delete repository content" in contract
     assert "/stage/artifacts" in contract
     assert "Ontology authoring rules" not in contract
+    assert "Conversation roots" not in contract
+    assert ".jsonl" not in contract
 
 
 def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> None:

@@ -6,10 +6,14 @@ import {
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
   latestNativeSessionId,
+  orderTranscriptLines,
+  parseDismissedTaskIds,
   projectActivityTask,
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
+  serializeDismissedTaskIds,
+  taskNotificationStorageKey,
 } from "../src/agentTasks.ts";
 
 function task(overrides) {
@@ -103,7 +107,7 @@ test("paused resumable attempts block a new chat turn", () => {
   assert.equal(resumablePausedChatTask([{ ...paused, can_resume: false }]), null);
 });
 
-test("a newer identical prompt is not hidden by older durable history", () => {
+test("task identity, not repeated prompt text, decides reconstruction", () => {
   const older = task({
     operation_id: "older",
     created_at: "2026-07-28T00:00:00Z",
@@ -118,6 +122,7 @@ test("a newer identical prompt is not hidden by older durable history", () => {
   const messages = [
     {
       message_id: "message",
+      operation_id: "older",
       role: "user",
       text: "Same prompt",
       timestamp: "2026-07-28T00:00:01Z",
@@ -132,6 +137,88 @@ test("a newer identical prompt is not hidden by older durable history", () => {
   assert.deepEqual(
     chatTasksMissingFromHistory([older, active], messages).map((item) => item.operation_id),
     ["active"],
+  );
+});
+
+test("two identical task prompts both remain visible when neither has durable history", () => {
+  const first = task({
+    operation_id: "first",
+    created_at: "2026-07-28T00:00:00Z",
+    request: { message: "Same prompt" },
+  });
+  const second = task({
+    operation_id: "second",
+    created_at: "2026-07-28T00:01:00Z",
+    request: { message: "Same prompt" },
+  });
+  assert.deepEqual(
+    chatTasksMissingFromHistory([first, second], []).map((item) => item.operation_id),
+    ["first", "second"],
+  );
+});
+
+test("an older failed repeated prompt remains beside a newer durable turn", () => {
+  const failed = task({
+    operation_id: "failed",
+    created_at: "2026-07-28T00:00:00Z",
+    status: "failed",
+    request: { message: "Same prompt" },
+    error: "Provider exited",
+  });
+  const durable = {
+    message_id: "new-user",
+    operation_id: "succeeded",
+    role: "user",
+    text: "Same prompt",
+    timestamp: "2026-07-28T00:01:00Z",
+    mode: null,
+    graph_update: null,
+  };
+  const missing = chatTasksMissingFromHistory([failed], [durable]);
+  assert.deepEqual(
+    missing.map((item) => item.operation_id),
+    ["failed"],
+  );
+  assert.deepEqual(
+    orderTranscriptLines([
+      ...reconstructTaskTranscript(missing),
+      chatMessageTranscriptLine(durable),
+    ]).map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Same prompt" },
+      { role: "error", text: "Provider exited" },
+      { role: "human", text: "Same prompt" },
+    ],
+  );
+});
+
+test("task-only failures are merged into chronological chat history", () => {
+  const durable = {
+    message_id: "answer",
+    operation_id: "later",
+    role: "assistant",
+    text: "Later answer",
+    timestamp: "2026-07-28T00:02:00Z",
+    mode: null,
+    graph_update: null,
+  };
+  const failed = task({
+    operation_id: "earlier",
+    created_at: "2026-07-28T00:01:00Z",
+    status: "failed",
+    request: { message: "Earlier prompt" },
+    error: "Provider exited",
+  });
+  assert.deepEqual(
+    orderTranscriptLines([
+      ...reconstructTaskTranscript([failed]),
+      chatMessageTranscriptLine(durable),
+    ]).map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Earlier prompt" },
+      { role: "error", text: "Provider exited" },
+      { role: "agent", text: "Later answer" },
+    ],
   );
 });
 
@@ -370,4 +457,51 @@ test("project activity follows ongoing work and keeps its observed terminal resu
   assert.equal(projectActivityTask([running], null)?.operation_id, "running");
   assert.equal(projectActivityTask([paused], null)?.operation_id, "paused");
   assert.equal(projectActivityTask([failed], "running")?.status, "failed");
+});
+
+test("a later graph success clears an older failed graph notification", () => {
+  const failedSeed = task({
+    operation_id: "failed-seed",
+    kind: "seed",
+    status: "failed",
+    created_at: "2026-07-28T00:00:00Z",
+  });
+  const completedRefresh = task({
+    operation_id: "completed-refresh",
+    kind: "refresh",
+    status: "succeeded",
+    created_at: "2026-07-28T01:00:00Z",
+  });
+  assert.equal(projectActivityTask([completedRefresh, failedSeed], "failed-seed"), null);
+});
+
+test("a completed retry clears its failed parent, while a failed retry stays actionable", () => {
+  const failedSeed = task({
+    operation_id: "failed-seed",
+    kind: "seed",
+    status: "failed",
+    created_at: "2026-07-28T00:00:00Z",
+  });
+  const completedRetry = task({
+    operation_id: "completed-retry",
+    kind: "seed",
+    status: "succeeded",
+    parent_operation_id: "failed-seed",
+    created_at: "2026-07-28T01:00:00Z",
+  });
+  assert.equal(projectActivityTask([completedRetry, failedSeed], "failed-seed"), null);
+
+  const failedRetry = { ...completedRetry, operation_id: "failed-retry", status: "failed" };
+  assert.equal(
+    projectActivityTask([failedRetry, failedSeed], "failed-seed")?.operation_id,
+    "failed-retry",
+  );
+});
+
+test("dismissed task notification ids round trip by project", () => {
+  const ids = new Set(["task-b", "task-a"]);
+  assert.equal(taskNotificationStorageKey("project"), "rcp:dismissed-task-notifications:project");
+  assert.equal(serializeDismissedTaskIds(ids), '["task-a","task-b"]');
+  assert.deepEqual(parseDismissedTaskIds('["task-b","task-a",3]'), ids);
+  assert.deepEqual(parseDismissedTaskIds("not json"), new Set());
 });

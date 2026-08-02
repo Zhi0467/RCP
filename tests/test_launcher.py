@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
+from rcp.providers import profile_for
 
 
 def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) -> None:
@@ -83,6 +84,47 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
 
     assert calls == 2
     assert launcher.readiness("codex", binary=binary).version == "refreshed-result"
+
+
+def test_provider_usage_is_normalized_at_provider_boundaries() -> None:
+    codex_line = json.dumps(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 1_000,
+                "cached_input_tokens": 400,
+                "output_tokens": 120,
+                "reasoning_output_tokens": 80,
+            },
+        }
+    )
+    codex = AgentLauncher._normalize_event("codex", codex_line)
+    assert codex.usage is not None
+    assert codex.usage.provider_profile == "codex.turn.v1"
+    assert codex.usage.processed_input_tokens == 1_000
+    assert codex.usage.cached_input_tokens == 400
+    assert codex.usage.generated_tokens == 120
+
+    claude_line = json.dumps(
+        {
+            "type": "result",
+            "uuid": "query-result",
+            "usage": {
+                "input_tokens": 600,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 300,
+                "output_tokens": 90,
+                "output_tokens_details": {"thinking_tokens": 50},
+            },
+            "result": "Done",
+        }
+    )
+    claude = profile_for("claude").decode_event(json.loads(claude_line), claude_line)
+    assert claude.usage is not None
+    assert claude.usage.provider_profile == "claude.query.v1"
+    assert claude.usage.processed_input_tokens == 1_000
+    assert claude.usage.cached_input_tokens == 300
+    assert claude.usage.reasoning_output_tokens == 50
 
 
 @pytest.mark.asyncio
@@ -336,6 +378,40 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
     assert events[-1].event == "error"
     launcher.readiness("codex", binary=binary)
     assert probes == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_launches_an_authenticated_discovered_path_without_manual_recording(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, **_kwargs: ProviderReadiness(
+        provider=provider,
+        installed=True,
+        authenticated=True,
+        binary_path="/home/agent/.local/bin/codex",
+        path_state="unconfigured",
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            'import json; print(json.dumps({"type": "result", "result": "Finished."}), flush=True)',
+        ],
+    )
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "codex", "prompt", cwd=tmp_path, capability="scratch_patch"
+        )
+    ]
+
+    assert not any(event.event == "error" for event in events)
+    assert events[-1].event == "done"
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel
+from pydantic import AfterValidator, BaseModel, Field
 
 """The provider registry.
 
@@ -42,11 +43,35 @@ class ModelChoice(BaseModel):
     default_reasoning: str = ""
 
 
+class ProviderUsage(BaseModel):
+    """Provider-normalized usage at one accounting boundary.
+
+    `processed_input_tokens` and `generated_tokens` are the shared accounting
+    fields. The reported fields and `provider_fields` preserve what the CLI
+    actually emitted, because providers do not use identical cache semantics.
+    """
+
+    provider_profile: str
+    provider_event_type: str
+    dedupe_key: str
+    processed_input_tokens: int = Field(ge=0)
+    generated_tokens: int = Field(ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    cache_creation_input_tokens: int = Field(default=0, ge=0)
+    cache_write_input_tokens: int = Field(default=0, ge=0)
+    reasoning_output_tokens: int = Field(default=0, ge=0)
+    reported_input_tokens: int | None = Field(default=None, ge=0)
+    reported_output_tokens: int | None = Field(default=None, ge=0)
+    reported_total_tokens: int | None = Field(default=None, ge=0)
+    provider_fields: dict[str, object] = Field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class ProviderStreamEvent:
     event: Literal["session", "message", "answer", "error", "raw"]
     text: str = ""
     session_id: str | None = None
+    usage: ProviderUsage | None = None
 
 
 class ProviderProfile:
@@ -62,6 +87,7 @@ class ProviderProfile:
     declared: tuple[ModelChoice, ...] = ()
     local_session_roots_field: str
     remote_session_roots_field: str
+    usage_profile: str = "unknown.v1"
 
     def session_roots(self, sources: object, *, remote: bool) -> list[str]:
         """Return this provider's configured native-session roots.
@@ -120,10 +146,14 @@ class ProviderProfile:
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
         return ProviderStreamEvent(event="raw", text=raw)
 
+    def decode_usage(self, value: dict[str, object], raw: str) -> ProviderUsage | None:
+        return None
+
 
 class CodexProfile(ProviderProfile):
     id = "codex"
     label = "Codex"
+    usage_profile = "codex.turn.v1"
     local_session_roots_field = "codex_roots"
     remote_session_roots_field = "remote_codex_roots"
 
@@ -250,10 +280,12 @@ class CodexProfile(ProviderProfile):
         if not isinstance(value, dict):
             return ProviderStreamEvent(event="raw", text=raw)
         event_type = value.get("type", "")
+        usage = self.decode_usage(value, raw)
         if event_type in {"thread.started", "session.started"}:
             return ProviderStreamEvent(
                 event="session",
                 session_id=value.get("thread_id") or value.get("session_id"),
+                usage=usage,
             )
         if event_type in {"turn.failed", "error"}:
             error = value.get("error")
@@ -261,16 +293,43 @@ class CodexProfile(ProviderProfile):
                 detail = error.get("message") or json.dumps(error, ensure_ascii=False)
             else:
                 detail = error or value.get("message") or "Codex turn failed."
-            return ProviderStreamEvent(event="error", text=str(detail))
+            return ProviderStreamEvent(event="error", text=str(detail), usage=usage)
         item = value.get("item", {})
         if not isinstance(item, dict):
             item = {}
         text = item.get("text") or value.get("message") or ""
         if text:
             if item.get("type") == "agent_message" and event_type != "item.started":
-                return ProviderStreamEvent(event="answer", text=str(text))
-            return ProviderStreamEvent(event="message", text=str(text))
-        return ProviderStreamEvent(event="raw", text=raw)
+                return ProviderStreamEvent(event="answer", text=str(text), usage=usage)
+            return ProviderStreamEvent(event="message", text=str(text), usage=usage)
+        return ProviderStreamEvent(event="raw", text=raw, usage=usage)
+
+    def decode_usage(self, value: dict[str, object], raw: str) -> ProviderUsage | None:
+        event_type = value.get("type")
+        if event_type not in {"turn.completed", "turn.failed"}:
+            return None
+        usage = value.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        input_tokens = _usage_int(usage.get("input_tokens"))
+        output_tokens = _usage_int(usage.get("output_tokens"))
+        cached_input_tokens = _usage_int(usage.get("cached_input_tokens"))
+        cache_write_input_tokens = _usage_int(usage.get("cache_write_input_tokens"))
+        reasoning_output_tokens = _usage_int(usage.get("reasoning_output_tokens"))
+        return ProviderUsage(
+            provider_profile=self.usage_profile,
+            provider_event_type=str(event_type),
+            dedupe_key=_usage_dedupe_key(value, raw, "turn_id", "id", "event_id"),
+            processed_input_tokens=input_tokens,
+            generated_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_write_input_tokens=cache_write_input_tokens,
+            reasoning_output_tokens=reasoning_output_tokens,
+            reported_input_tokens=input_tokens,
+            reported_output_tokens=output_tokens,
+            reported_total_tokens=_optional_usage_int(usage.get("total_tokens")),
+            provider_fields={str(key): item for key, item in usage.items()},
+        )
 
 
 # Claude Code has no `codex debug models` equivalent, so its lists are read by
@@ -292,6 +351,7 @@ _CLAUDE_MODELS = tuple(
 class ClaudeProfile(ProviderProfile):
     id = "claude"
     label = "Claude"
+    usage_profile = "claude.query.v1"
     local_session_roots_field = "claude_roots"
     remote_session_roots_field = "remote_claude_roots"
     declared_against = "2.1.219"
@@ -356,18 +416,60 @@ class ClaudeProfile(ProviderProfile):
             return ProviderStreamEvent(event="raw", text=raw)
         event_type = str(value.get("type") or "")
         subtype = str(value.get("subtype") or "")
+        usage = self.decode_usage(value, raw)
         if event_type == "system" and value.get("session_id"):
-            return ProviderStreamEvent(event="session", session_id=str(value["session_id"]))
+            return ProviderStreamEvent(
+                event="session",
+                session_id=str(value["session_id"]),
+                usage=usage,
+            )
         result = value.get("result")
         detail = _provider_error_text(value)
         terminal_error = (
             value.get("is_error") is True or event_type == "error" or "error" in subtype.casefold()
         )
         if terminal_error:
-            return ProviderStreamEvent(event="error", text=detail or "Claude task failed.")
+            return ProviderStreamEvent(
+                event="error",
+                text=detail or "Claude task failed.",
+                usage=usage,
+            )
         if isinstance(result, str) and result:
-            return ProviderStreamEvent(event="answer", text=result)
-        return ProviderStreamEvent(event="raw", text=raw)
+            return ProviderStreamEvent(event="answer", text=result, usage=usage)
+        return ProviderStreamEvent(event="raw", text=raw, usage=usage)
+
+    def decode_usage(self, value: dict[str, object], raw: str) -> ProviderUsage | None:
+        # Claude's final result is the query-level accounting boundary. Earlier
+        # assistant messages may carry step usage and must not be added again.
+        if value.get("type") != "result":
+            return None
+        usage = value.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        reported_input = _usage_int(usage.get("input_tokens"))
+        cache_creation = _usage_int(usage.get("cache_creation_input_tokens"))
+        cache_read = _usage_int(usage.get("cache_read_input_tokens"))
+        reported_output = _usage_int(usage.get("output_tokens"))
+        details = usage.get("output_tokens_details")
+        thinking = (
+            _usage_int(details.get("thinking_tokens"))
+            if isinstance(details, dict)
+            else _usage_int(usage.get("thinking_tokens"))
+        )
+        return ProviderUsage(
+            provider_profile=self.usage_profile,
+            provider_event_type="result",
+            dedupe_key=_usage_dedupe_key(value, raw, "message_id", "uuid", "id"),
+            processed_input_tokens=reported_input + cache_creation + cache_read,
+            generated_tokens=reported_output,
+            cached_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_creation,
+            reasoning_output_tokens=thinking,
+            reported_input_tokens=reported_input,
+            reported_output_tokens=reported_output,
+            reported_total_tokens=_optional_usage_int(usage.get("total_tokens")),
+            provider_fields={str(key): item for key, item in usage.items()},
+        )
 
 
 def _provider_error_text(value: dict[str, object]) -> str:
@@ -380,6 +482,26 @@ def _provider_error_text(value: dict[str, object]) -> str:
                 return message.strip()
             return json.dumps(candidate, ensure_ascii=False)
     return ""
+
+
+def _usage_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def _optional_usage_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _usage_int(value)
+
+
+def _usage_dedupe_key(value: dict[str, object], raw: str, *fields: str) -> str:
+    for field in fields:
+        candidate = value.get(field)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 PROVIDERS: dict[str, ProviderProfile] = {

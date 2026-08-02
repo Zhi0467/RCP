@@ -15,7 +15,6 @@ from rcp.config import Manifest
 from rcp.core.models import CoverageBoundary, GraphState, Patch
 from rcp.history.delta import RefreshDelta
 from rcp.limits import (
-    CHAT_CONVERSATION_LIMIT,
     RUN_INLINE_SESSION_BYTES,
     RUN_INLINE_SESSION_LIMIT,
 )
@@ -97,6 +96,7 @@ class RunContext(BaseModel):
     facts_dir: str
     state_repository: str
     source_errors: list[str]
+    source_roots: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def routing_metadata_matches_internal_sessions(self) -> RunContext:
@@ -119,23 +119,6 @@ class RunContext(BaseModel):
         return payload
 
 
-class ConversationPointer(BaseModel):
-    """One conversation the chat agent is allowed to open, named exactly.
-
-    Chat carries the same run-scope boundary as an ingest run, so it names the
-    session files in scope rather than the provider roots that contain them —
-    a root would also expose conversations from repositories outside this run.
-    """
-
-    key: str
-    provider: str
-    machine: str
-    host: str = ""
-    path: str
-    last_timestamp: datetime | None = None
-    record_count: int = 0
-
-
 class ChatRelation(BaseModel):
     relation: str
     direction: Literal["outgoing", "incoming"]
@@ -146,13 +129,7 @@ class ChatRelation(BaseModel):
 
 
 class ChatContext(BaseModel):
-    """Everything a chat turn needs, assembled without touching ingest cursors.
-
-    Chat is not incremental, so it never loads `cursors.json` and never
-    materializes an evidence slice. Conversations stay reachable as file pointers
-    the agent may open on demand, which is why a corrupt cursor cannot block a
-    reply.
-    """
+    """Graph and exact repository context for one conversation turn."""
 
     project_name: str
     run_truth_scope: list[str]
@@ -167,9 +144,6 @@ class ChatContext(BaseModel):
     graph_revision: int
     node: dict[str, Any] | None
     relations: list[ChatRelation]
-    conversations: list[ConversationPointer]
-    conversations_truncated: int = 0
-    conversations_unreachable: int = 0
 
 
 class ContextAssembler:
@@ -191,6 +165,7 @@ class ContextAssembler:
         repository_access: dict[str, RepositoryAccess] | None = None,
         refresh_delta: RefreshDelta | None = None,
         pin_artifact: Callable[[Path], None] | None = None,
+        source_roots: dict[str, str] | None = None,
     ) -> RunContext:
         selected = run_truth_scope or self.manifest.agent.default_run_truth_scope
         selected_set = set(selected)
@@ -211,7 +186,12 @@ class ContextAssembler:
                     path=item.path,
                 )
             )
-        cursors = self._load_cursors()
+        source_errors = list(index.source_errors)
+        try:
+            cursors = self._load_cursors()
+        except Exception as exc:
+            cursors = {}
+            source_errors.append(f"cursor state unavailable: {type(exc).__name__}: {exc}")
         sessions = []
         active_slice_paths: list[str] = []
         slice_errors: list[str] = []
@@ -224,10 +204,10 @@ class ContextAssembler:
                     active_paths=active_slice_paths,
                     pin_artifact=pin_artifact,
                 )
-            except ValueError as exc:
+            except Exception as exc:
                 # One unreadable session must not cost the run every other one.
-                # It is dropped from the context and reported; the caller raises
-                # it as a run warning so the gap is never silent.
+                # It is dropped from the context and reported; the provider gets
+                # the source-root fallback so the gap is never silent.
                 slice_errors.append(f"{item.key}: {exc}")
                 continue
             active_slice_paths.append(evidence_slice.path)
@@ -263,15 +243,19 @@ class ContextAssembler:
         routing_root = self.session_routing_root or _default_session_routing_root(
             self.manifest, self.indexer
         )
-        routing_index = write_session_routing_index(
-            sessions,
-            routing_root,
-            pin_artifact=pin_artifact,
-        )
-        self.indexer.register_session_artifact(
-            routing_index.path,
-            active_paths=active_slice_paths,
-        )
+        try:
+            routing_index = write_session_routing_index(
+                sessions,
+                routing_root,
+                pin_artifact=pin_artifact,
+            )
+            self.indexer.register_session_artifact(
+                routing_index.path,
+                active_paths=active_slice_paths,
+            )
+        except Exception as exc:
+            routing_index = None
+            source_errors.append(f"session routing index unavailable: {type(exc).__name__}: {exc}")
         sessions_inline, sessions_omitted = bounded_session_metadata(sessions)
         return RunContext(
             project_name=self.manifest.name,
@@ -290,18 +274,17 @@ class ContextAssembler:
             coverage_path=str(root / "coverage.json"),
             facts_dir=str(root / "facts"),
             state_repository=self.manifest.state.repository,
-            source_errors=[*index.source_errors, *slice_errors],
+            source_errors=[*source_errors, *slice_errors],
+            source_roots=source_roots or {},
         )
 
     def chat_context(
         self,
         state: GraphState,
         *,
-        index: ConversationIndex | None = None,
         node_id: str | None = None,
         run_truth_scope: list[str] | None = None,
         repository_access: dict[str, RepositoryAccess] | None = None,
-        execution_machine: str | None = None,
     ) -> ChatContext:
         selected = run_truth_scope or self.manifest.agent.default_run_truth_scope
         selected_set = set(selected)
@@ -325,9 +308,6 @@ class ContextAssembler:
             for item in self.manifest.repositories
             if item.alias in selected_set
         ]
-        conversations, truncated, unreachable = self._conversation_pointers(
-            index, selected, execution_machine
-        )
         root = self.manifest.research_dir
         introduction = root / "paper" / "introduction.md"
         return ChatContext(
@@ -344,77 +324,29 @@ class ContextAssembler:
             graph_revision=state.revision,
             node=state.nodes[node_id].model_dump(mode="json") if node_id else None,
             relations=_one_hop_relations(state, node_id) if node_id else [],
-            conversations=conversations,
-            conversations_truncated=truncated,
-            conversations_unreachable=unreachable,
         )
 
-    def _conversation_pointers(
-        self,
-        index: ConversationIndex | None,
-        selected: list[str],
-        execution_machine: str | None,
-    ) -> tuple[list[ConversationPointer], int, int]:
-        """Name the run-scope session files, newest first, without reading any.
-
-        No cursor and no slice: the pointer is a path the agent opens only when a
-        question turns on what was said. An index that could not be built at all
-        costs the turn its citations, never its reply.
-        """
-        if index is None:
-            return [], 0, 0
-        ordered = sorted(
-            index.for_scope(selected),
-            key=lambda item: item.last_timestamp or datetime.min.replace(tzinfo=UTC),
-            reverse=True,
+    def source_roots(self, execution_machine: str | None) -> dict[str, str]:
+        """Name provider source roots for a degraded Seed/Refresh run."""
+        machine = self.manifest.machine_map.get(execution_machine or "")
+        remote = bool(machine and machine.host)
+        claude = (
+            self.manifest.sources.remote_claude_roots
+            if remote
+            else self.manifest.sources.claude_roots
         )
-        pointers: list[ConversationPointer] = []
-        unreachable = 0
-        for item in ordered:
-            location = self._session_location(item, execution_machine)
-            if location is None:
-                unreachable += 1
-                continue
-            host, path = location
-            pointers.append(
-                ConversationPointer(
-                    key=item.key,
-                    provider=item.provider,
-                    machine=item.source_machine,
-                    host=host,
-                    path=path,
-                    last_timestamp=item.last_timestamp,
-                    record_count=item.record_count,
-                )
+        codex = (
+            self.manifest.sources.remote_codex_roots
+            if remote
+            else self.manifest.sources.codex_roots
+        )
+
+        def display(values: list[str]) -> str:
+            return "; ".join(
+                str(Path(value).expanduser()) if not remote else value for value in values
             )
-        truncated = max(len(pointers) - CHAT_CONVERSATION_LIMIT, 0)
-        return pointers[:CHAT_CONVERSATION_LIMIT], truncated, unreachable
 
-    def _session_location(
-        self, session: ConversationSession, execution_machine: str | None
-    ) -> tuple[str, str] | None:
-        """Where the agent can actually open this conversation, or None if nowhere.
-
-        `session.path` is a local cache copy when the indexer had to fetch the file
-        from another machine, and a cache path means nothing to the agent. The
-        pointer therefore always names the original file, paired with the host to
-        reach it on from the execution machine — empty when it is already there.
-        A conversation on RCP's own machine is unreachable from a remote agent, so
-        it is dropped rather than named with a path that machine does not have.
-        """
-        if session.remote_source_path:
-            owner_host = session.remote_source_host or ""
-            path = session.remote_source_path
-        else:
-            owner = self.manifest.machine_map.get(session.source_machine)
-            owner_host = owner.host if owner else ""
-            path = session.path
-        execution = self.manifest.machine_map.get(execution_machine or "")
-        if owner_host == (execution.host if execution else ""):
-            return "", path
-        if not owner_host:
-            return None
-        return owner_host, path
+        return {"claude": display(claude), "codex": display(codex)}
 
     def paper_pointers(
         self,

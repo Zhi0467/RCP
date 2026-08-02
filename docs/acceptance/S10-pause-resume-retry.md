@@ -61,7 +61,7 @@ be paused mid-run, then writes a valid patch.
 - `fails_closed_on_missing_lineage`
 - `fails_closed_on_lineage_cycle`
 - `mismatched_saved_stage_rejected`
-- `conversation_projection_preserved_across_resume`
+- `reusable_native_session_stage_preserved_across_resume`
 - `turn_mode_preserved_across_resume` — changing the composer after pause never
   changes the resumed task's captured mode or permission envelope
 - `patches_appended == 1` across the whole chain, not one per attempt

@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -364,7 +365,13 @@ def _try_reuse_graph_context(
         request.run_truth_scope or service.manifest.agent.default_run_truth_scope
     )
     graph_revision = int(service.graph_snapshot()["revision"])
-    index = service.index_snapshot(refresh=True, execution_machine=execution_machine)
+    try:
+        index = service.index_snapshot(refresh=True, execution_machine=execution_machine)
+    except Exception as exc:
+        index = ConversationIndex(
+            generated_at=datetime.now(UTC),
+            source_errors=[f"source snapshot unavailable: {type(exc).__name__}: {exc}"],
+        )
     excluded_sessions = {
         (str(item.request.get("provider") or ""), item.native_session_id)
         for item in lineage
@@ -374,6 +381,8 @@ def _try_reuse_graph_context(
     prepared_parent = None
     context_errors: list[str] = []
     for candidate in lineage:
+        if index.source_errors:
+            break
         try:
             value = _read_prepared_graph_context(candidate)
             if kind not in {"seed", "refresh"} or value.kind != kind:
@@ -402,6 +411,8 @@ def _try_reuse_graph_context(
             break
         except (OSError, StateUnavailable, ValueError) as exc:
             context_errors.append(f"attempt {candidate.attempt}: {exc}")
+    if index.source_errors:
+        context_errors.extend(f"source snapshot: {detail}" for detail in index.source_errors)
 
     progress_parent = None
     progress: dict[str, object] = {}
@@ -719,30 +730,43 @@ async def stream_graph_run(
                     else None
                 )
                 if execution_record is not None:
-                    source_snapshot_digest = _source_snapshot_digest(
-                        service.index_snapshot(
-                            execution_machine=execution_machine.alias,
-                            pin_artifact=pin_artifact,
-                        ),
-                        context.run_truth_scope,
-                        exclude_native_sessions=(
-                            {
-                                (str(item.request.get("provider") or ""), item.native_session_id)
-                                for item in retry_state.lineage
-                                if item.native_session_id
-                            }
-                            if retry_state is not None
-                            else None
-                        ),
-                    )
+                    try:
+                        source_snapshot_digest = _source_snapshot_digest(
+                            service.index_snapshot(
+                                execution_machine=execution_machine.alias,
+                                pin_artifact=pin_artifact,
+                            ),
+                            context.run_truth_scope,
+                            exclude_native_sessions=(
+                                {
+                                    (
+                                        str(item.request.get("provider") or ""),
+                                        item.native_session_id,
+                                    )
+                                    for item in retry_state.lineage
+                                    if item.native_session_id
+                                }
+                                if retry_state is not None
+                                else None
+                            ),
+                        )
+                    except Exception as exc:
+                        source_snapshot_digest = (
+                            "unavailable:"
+                            + hashlib.sha256(f"{type(exc).__name__}: {exc}".encode()).hexdigest()
+                        )
+            try:
+                current_coverage = CoverageBoundary.model_validate_json(
+                    Path(context.coverage_path).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                current_coverage = service.history.state().coverage
             previous_coverage = (
                 continuation_prepared.previous_coverage
                 if continuation_prepared is not None
                 else retry_state.prepared.previous_coverage
                 if retry_state is not None and retry_state.prepared is not None
-                else CoverageBoundary.model_validate_json(
-                    Path(context.coverage_path).read_text(encoding="utf-8")
-                )
+                else current_coverage
             )
             # One scratch folder per operation, reused by every rung of the recovery
             # ladder so a resumed native session still points at the directory it was
@@ -908,6 +932,7 @@ async def stream_graph_run(
                         cursor_path=str(
                             PurePosixPath(context.coverage_path).with_name("cursors.json")
                         ),
+                        coverage_path=context.coverage_path,
                         repositories=[
                             {"alias": item.alias, "host": item.host, "path": item.path}
                             for item in context.repositories
@@ -916,6 +941,7 @@ async def stream_graph_run(
                         output_schema_path=schema_path,
                         human_request_path=human_request_path,
                         retry_diagnostics_path=retry_diagnostics_path,
+                        source_errors=context.source_errors,
                     )
                 base_label = (
                     f"task-{token}-base.md"
@@ -1330,14 +1356,14 @@ def _report_source_errors(
     execution: AgentTaskExecution | None,
     source_errors: list[str],
 ) -> None:
-    """Raise degraded sources as run warnings so a dropped session is never silent."""
+    """Surface degraded source assembly without turning it into a dead run."""
 
     if execution is None:
         return
     for detail in source_errors[:16]:
         execution.store.record_agent_task_event(
             execution.operation_id,
-            f"Conversation source unavailable and excluded from this run: {detail}",
+            f"Source assembly degraded; provider fallback remains available: {detail}",
             level="warning",
         )
 
@@ -1367,13 +1393,19 @@ def _agent_read_dirs(
             state_root = Path(state_repository.path) / ".research"
             if str(state_root) not in {str(item) for item in read_dirs}:
                 read_dirs.append(state_root)
+        if context.source_errors:
+            for root in context.source_roots.values():
+                read_dirs.extend(Path(item) for item in root.split("; ") if item)
         return read_dirs
     read_dirs = [item for item in read_dirs if item.exists()]
     read_dirs.append(service.manifest.research_dir)
     for root in _conversation_roots(context).values():
-        candidate = Path(root)
-        if candidate.is_dir():
-            read_dirs.append(candidate)
+        for item in root.split("; "):
+            if not item:
+                continue
+            candidate = Path(item)
+            if candidate.is_dir():
+                read_dirs.append(candidate)
     return read_dirs
 
 
@@ -1505,13 +1537,17 @@ def _rebind_graph_conversations(context: RunContext, root: Path) -> RunContext:
 
 
 def _conversation_roots(context: RunContext) -> dict[str, str]:
-    roots: dict[str, str] = {}
+    roots: dict[str, str] = dict(context.source_roots)
     for session in context.sessions:
         path = PurePosixPath(session.path)
         if len(path.parents) < 3:
             raise ValueError(f"staged conversation path has no provider root: {path}")
         root = str(path.parents[2])
-        previous = roots.setdefault(session.provider, root)
-        if previous != root:
+        previous = roots.get(session.provider)
+        if previous is None:
+            roots[session.provider] = root
+        elif context.source_errors and root not in previous.split("; "):
+            roots[session.provider] = f"{root}; {previous}"
+        elif not context.source_errors and previous != root:
             raise ValueError(f"provider {session.provider!r} has more than one visible root")
     return roots

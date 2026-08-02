@@ -46,7 +46,6 @@ from rcp.projects import ProjectCatalog
 from rcp.providers import PROVIDER_IDS, profile_for
 from rcp.runs.chat import (
     _assembled_graph_revision,
-    _known_chat_session,
     _logical_chat_turn_operation_id,
 )
 from rcp.runs.coach import _resolved_coach_request, stream_coach
@@ -71,7 +70,7 @@ from rcp.sources import (
     SESSION_SLICE_CACHE_LIMITS,
     RebuildableCache,
 )
-from rcp.storage import AgentTaskKind, AppStore, WatcherRecord
+from rcp.storage import AgentTaskKind, AgentUsageSnapshot, AppStore, WatcherRecord
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import WatcherPoller
 from rcp.web_assets import web_dist_path
@@ -648,6 +647,11 @@ def create_app(
         _require_registered_project(catalog, project_id)
         return [record.model_dump(mode="json") for record in store.agent_tasks(project_id)]
 
+    @app.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)
+    def agent_usage(project_id: str) -> AgentUsageSnapshot:
+        _require_registered_project(catalog, project_id)
+        return store.agent_usage_snapshot(project_id)
+
     @app.get("/api/projects/{project_id}/watchers")
     def project_watchers(project_id: str) -> list[dict[str, object]]:
         _require_registered_project(catalog, project_id)
@@ -1035,10 +1039,6 @@ def _validated_task_request(
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
     request = _resolved_graph_request(service, kind, request)
-    if request.session_id and not _known_chat_session(service, request):
-        raise ValueError(
-            "That native session was not created by this chat. Start a new chat instead."
-        )
     return request
 
 

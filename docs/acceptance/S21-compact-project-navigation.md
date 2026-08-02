@@ -12,10 +12,11 @@ last_passed: 2026-07-30 — agent-driven at desktop and 390px against a throwawa
 
 ## UI path — confirmed 2026-07-30
 
-Open any project. The project header contains the back control and project name,
-without an RCP wordmark, product logo, or revision label. Sync keeps its label.
-Agent task history and Refresh are icon-only controls with explicit accessible
-names; project chat is labeled **Ask**. The controls form two semantic groups:
+Open any project. The project header contains the back control, without a
+project name, RCP wordmark, product logo, or revision label. The project-panel
+navigation owns the fold control immediately to the left of Overview.
+Sync keeps its label. Agent task history and Refresh are icon-only controls with
+explicit accessible names; project chat is labeled **Ask**. The controls form two semantic groups:
 the labeled actions **Sync / Ask** sit together, followed by the icon utilities
 **History / Refresh** together. They are not four evenly spaced peers.
 

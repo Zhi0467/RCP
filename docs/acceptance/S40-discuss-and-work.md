@@ -15,15 +15,13 @@ covered_by:
   - web/tests/chatWorkspace.test.mjs::conversation mode controls have stable storage keys and Shift+Tab semantics
   - web/tests/agentTasks.test.mjs::conversation reconstruction preserves immutable mode and graph receipt metadata
 invariants: [4, 4b, 8, 9, 10, 10b, 10c, 10d, 10e, 11]
-last_passed: 2026-08-01 — 456 backend tests, 109 web tests, lint, and the
-  production build passed. Re-driven in the browser after the retired
-  `allow_graph_change` and `read_only` compatibility layers were deleted: a live
-  Codex Discuss turn answered and produced no graph_update, Shift+Tab switched
-  the same composer to Work, and a live Work turn ran a command inside a
-  run-scope repository and returned graph_update none. Launch receipts recorded
-  capability `discuss` with no writable directory and `work_auto` with two, both
-  network-enabled; revision stayed 7, each sent turn kept its immutable mode
-  badge, and neither the browser console nor the server log reported an error.
+last_passed: 2026-08-02 — the 2026-08-01 live provider drive verified Discuss
+  and Work permissions, immutable turn modes, and unchanged revision for a Work
+  turn without a patch. After the shortcut-scope change, 128 web tests,
+  typecheck, and production build passed. In the browser, Shift+Tab changed Work
+  to Discuss while focus remained on the Chats navigation button, then changed
+  Discuss to Work exactly once while the message box was focused. Leaving Chats,
+  pressing Shift+Tab, and returning did not change the conversation mode.
 ---
 
 # Change one conversation from discussion into work
@@ -45,9 +43,12 @@ Confirmed by the human on 2026-08-01.
 - Open an Experiment node conversation. The empty composer begins in
   plum **Discuss** mode.
 - Ask a question. The reply completes without a project edit or graph revision.
-- With the composer focused, press **Shift+Tab**. The same composer changes to
-  dark-green **Work** mode. Clicking the labelled mode control makes the same
-  change; mode is never communicated by color alone.
+- Anywhere on the **Chats** page, press **Shift+Tab** without first focusing the
+  composer. The selected conversation changes to dark-green **Work** mode.
+  Pressing it while the composer or another Chats control is focused makes the
+  same single change. Clicking the labelled mode control remains available;
+  mode is never communicated by color alone. A floating chat keeps the narrower
+  composer-focused shortcut rather than capturing Shift+Tab app-wide.
 - Ask the agent to make a harmless fixture edit, run a command, and launch a
   simulated experiment. The work completes in the same conversation. It may
   finish without writing `patch.json`; absence of a graph update is not an
@@ -89,12 +90,17 @@ state change. There is no helper subtitle beneath it.
   Legacy transcript records remain unlabelled rather than being reclassified.
 - The composer mode may change between ordinary turns even when provider,
   model, execution machine, and run scope are locked for the conversation.
+- Shift+Tab toggles the selected conversation once whenever the Chats page is
+  active, without requiring message-box focus or affecting non-Chats pages.
 - A running or resumed task always uses the mode captured when it was launched.
 - `allow_graph_change` is gone rather than decoded: `mode` is the only graph
   authority a request carries, and an old payload still naming the retired
   switch is ignored entirely instead of being honoured as a graph-only turn.
 - Discuss receives no graph-patch path or schema. A stray `patch.json` is kept
   only as a diagnostic receipt and never validated or applied.
+- Discuss and Work receive no indexed conversation pointers, provider roots, or
+  prior chat transcript input. Canonical chat history is written only for the
+  Chats UI after the turn completes.
 - Work receives exact writable run-scope repository roots, writable scratch,
   network access, and no direct canonical `.research` write path. Off-machine
   repositories remain host/path pointers and are never copied.

@@ -5,8 +5,6 @@ import hashlib
 import json
 import os
 import posixpath
-import shutil
-import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -30,7 +28,6 @@ from rcp.limits import (
 from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
-    _session_bundle_relative_path,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import AgentTaskKind, AgentTaskReceiptRecord, AgentTaskRecord, AppStore
@@ -245,8 +242,6 @@ def _record_chat_context_receipt(
             "surface": surface,
             "repository_count": len(context.repositories),
             "relation_count": len(context.relations),
-            "conversation_count": len(context.conversations),
-            "conversations_truncated": context.conversations_truncated,
             "graph_revision": context.graph_revision,
             "node_id": context.node["id"] if context.node else None,
         },
@@ -450,31 +445,16 @@ def _validated_local_chat_resume_stage(
     return stored
 
 
-def _chat_native_checkpoint_available(
-    execution: AgentTaskExecution | None,
-    native_session_id: str | None,
-) -> bool:
-    if execution is None:
-        return bool(native_session_id)
-    task = execution.store.agent_task(execution.operation_id)
-    return task is not None and bool(task.native_session_id)
-
-
 def _chat_read_dirs(
     context: ChatContext,
     remote_stage: RemoteRunStage | None,
     service: ProjectService,
     execution_machine: str,
-    conversation_projection: Path | PurePosixPath | None,
 ) -> list[Path]:
-    """Provider-generic read roots outside the chat scratch folder."""
+    """Provider-generic graph and exact repository roots outside chat scratch."""
     read_dirs = [
         Path(item.path) for item in context.repositories if item.machine == execution_machine
     ]
-    if conversation_projection is None:
-        raise StateUnavailable(
-            "The saved conversation projection is unavailable; retry this chat turn."
-        )
     if remote_stage is not None:
         assert remote_stage.root is not None
         read_dirs.append(Path(str(remote_stage.root / "inputs")))
@@ -483,16 +463,9 @@ def _chat_read_dirs(
             state_root = Path(state_repository.path) / ".research"
             if str(state_root) not in {str(item) for item in read_dirs}:
                 read_dirs.append(state_root)
-        read_dirs.append(Path(str(conversation_projection)))
         return read_dirs
     read_dirs = [item for item in read_dirs if item.exists()]
     read_dirs.append(service.manifest.research_dir)
-    projection = Path(conversation_projection)
-    if not projection.is_dir():
-        raise StateUnavailable(
-            "The saved conversation projection is unavailable; retry this chat turn."
-        )
-    read_dirs.append(projection)
     return read_dirs
 
 
@@ -555,146 +528,6 @@ def _overlaps_canonical_state(
     return inside_research or ancestor_of_state
 
 
-def _project_chat_conversations(
-    context: ChatContext,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-) -> tuple[ChatContext, Path | PurePosixPath]:
-    """Copy only authorized on-machine conversations into the chat stage."""
-    on_machine = [pointer for pointer in context.conversations if not pointer.host]
-    unavailable = context.conversations_unreachable + len(context.conversations) - len(on_machine)
-    entries = [
-        (pointer.path, _session_bundle_relative_path(pointer).as_posix()) for pointer in on_machine
-    ]
-    if remote_stage is not None:
-        projected_paths = remote_stage.replace_conversation_inputs(entries)
-        projection = remote_stage.require_conversation_inputs()
-    else:
-        if local_stage is None:
-            raise RuntimeError("local chat stage is unavailable")
-        projection = _replace_local_conversation_inputs(local_stage, entries)
-        projected_paths = [str(projection / relative) for _source, relative in entries]
-    conversations = [
-        pointer.model_copy(update={"path": path})
-        for pointer, path in zip(on_machine, projected_paths, strict=True)
-    ]
-    return context.model_copy(
-        update={
-            "conversations": conversations,
-            "conversations_unreachable": unavailable,
-        }
-    ), projection
-
-
-def _replace_local_conversation_inputs(stage: Path, sources: list[tuple[str, str]]) -> Path:
-    """Replace ``inputs/conversations`` with real copies, failing before launch."""
-    parent = stage / "inputs"
-    parent.mkdir(parents=True, exist_ok=True)
-    target = parent / "conversations"
-    staged = Path(tempfile.mkdtemp(prefix=".conversations-", dir=parent))
-    try:
-        for source_text, relative in sources:
-            source = Path(source_text)
-            if not source.is_file():
-                raise StateUnavailable(f"Conversation input is unavailable: {source}")
-            output = staged / relative
-            output.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, output, follow_symlinks=True)
-            output.chmod(0o400)
-        for directory in sorted(
-            (item for item in staged.rglob("*") if item.is_dir()),
-            key=lambda item: len(item.parts),
-            reverse=True,
-        ):
-            directory.chmod(0o500)
-        staged.chmod(0o500)
-        _remove_local_tree(target, parent)
-        os.replace(staged, target)
-    except Exception:
-        if os.path.lexists(staged):
-            _remove_local_tree(staged, parent)
-        raise
-    return target
-
-
-def _rebind_chat_conversations(
-    context: ChatContext,
-    projection: Path | PurePosixPath,
-    *,
-    verify_local: bool,
-) -> ChatContext:
-    available = [pointer for pointer in context.conversations if not pointer.host]
-    rebound = [
-        pointer.model_copy(
-            update={"path": str(projection / _session_bundle_relative_path(pointer))}
-        )
-        for pointer in available
-    ]
-    if verify_local and any(not Path(pointer.path).is_file() for pointer in rebound):
-        raise StateUnavailable(
-            "The saved grouped conversation inputs are incomplete; retry this chat turn."
-        )
-    return context.model_copy(
-        update={
-            "conversations": rebound,
-            "conversations_unreachable": (
-                context.conversations_unreachable + len(context.conversations) - len(available)
-            ),
-        }
-    )
-
-
-def _chat_conversation_roots(context: ChatContext) -> dict[str, str]:
-    roots: dict[str, str] = {}
-    for pointer in context.conversations:
-        path = PurePosixPath(pointer.path)
-        root = str(path.parents[2])
-        previous = roots.setdefault(pointer.provider, root)
-        if previous != root:
-            raise ValueError(f"provider {pointer.provider!r} has more than one visible root")
-    return roots
-
-
-def _saved_chat_conversation_projection(
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-) -> Path | PurePosixPath:
-    """Recover, but never refresh, the exact projection used by a resumed turn."""
-    if remote_stage is not None:
-        return remote_stage.require_conversation_inputs()
-    if local_stage is None:
-        raise RuntimeError("local chat stage is unavailable")
-    projection = local_stage / "inputs" / "conversations"
-    if not projection.is_dir():
-        raise StateUnavailable(
-            "The saved conversation projection is unavailable; retry this chat turn instead."
-        )
-    return projection
-
-
-def _cleanup_chat_conversation_projection(
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    execution: AgentTaskExecution | None,
-) -> None:
-    """Best-effort terminal cleanup of only ``inputs/conversations``."""
-    try:
-        if remote_stage is not None:
-            remote_stage.remove_conversation_inputs()
-            return
-        if local_stage is None:
-            return
-        inputs = local_stage / "inputs"
-        _remove_local_tree(inputs / "conversations", inputs)
-    except (OSError, StateUnavailable, ValueError) as exc:
-        if execution is not None:
-            execution.store.record_agent_task_event(
-                execution.operation_id,
-                f"Conversation projection cleanup could not reclaim its copies: {exc}",
-                level="warning",
-            )
-
-
 def _chat_path(service: ProjectService, request: RunRequest) -> Path:
     assert request.chat_id is not None
     return service.chat_path(
@@ -702,30 +535,6 @@ def _chat_path(service: ProjectService, request: RunRequest) -> Path:
         chat_scope=request.chat_scope,
         node_id=request.node_id,
     )
-
-
-def _known_chat_session(service: ProjectService, request: RunRequest) -> bool:
-    if not request.session_id:
-        return True
-    path = _chat_path(service, request)
-    if not path.is_file():
-        return False
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            record = json.loads(line)
-            if (
-                record.get("nativeSessionId") == request.session_id
-                and record.get("provider") == request.provider
-                and record.get("nodeId") == request.node_id
-                and record.get("chatScope", "node") == request.chat_scope
-                and record.get("executionMachine") == request.run_on
-                and record.get("model") == (request.model or "provider-default")
-                and record.get("reasoning") == request.reasoning
-            ):
-                return True
-    except (OSError, json.JSONDecodeError):
-        return False
-    return False
 
 
 def _append_chat_exchange(
@@ -795,8 +604,6 @@ def _append_chat_exchange(
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
-    # The transcript is itself an indexed app_chat source.
-    service.invalidate_source_index()
 
 
 def _append_chat_graph_receipt(

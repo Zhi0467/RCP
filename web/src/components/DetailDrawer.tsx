@@ -3,6 +3,7 @@ import {
   Check,
   FlaskConical,
   MessageCircle,
+  Minus,
   Network,
   PencilLine,
   Trash2,
@@ -52,6 +53,7 @@ interface Props {
   experimentRunBusy?: boolean;
   onUnstage?: () => void;
   onClose: () => void;
+  onDock: () => void;
   onBeginEdit: () => void;
   onStanding: (standing: GraphNode["standing"]) => void;
   onStage: (changes: Record<string, DraftNodeValue>) => void;
@@ -99,6 +101,7 @@ export function DetailDrawer({
   experimentRunBusy = false,
   onUnstage,
   onClose,
+  onDock,
   onBeginEdit,
   onStanding,
   onStage,
@@ -203,9 +206,19 @@ export function DetailDrawer({
               )}
             </div>
           </div>
-          <button className="icon-button" aria-label="Close detail" onClick={close}>
-            <X size={18} />
-          </button>
+          <div className="window-actions">
+            <button
+              className="icon-button"
+              aria-label="Dock node window"
+              title="Dock node window"
+              onClick={onDock}
+            >
+              <Minus size={18} />
+            </button>
+            <button className="icon-button" aria-label="Close detail" onClick={close}>
+              <X size={18} />
+            </button>
+          </div>
         </header>
 
         <div className={`drawer-content${editing ? " editing" : ""}`}>

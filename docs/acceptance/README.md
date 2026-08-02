@@ -193,6 +193,11 @@ it but a browser or a machine we do not have.
 | [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | none |
 | [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | pending | pytest + **browser** | none |
 | [S43](S43-agent-execution-module-boundaries.md) | Keep agent behavior intact while execution code moves | implemented | pytest | 10 checks |
+| [S44](S44-chat-conversation-projection-permissions.md) | Chat does not ingest transcripts; Seed/Refresh degrade safely | pending | pytest + **browser** | 4 checks |
+| [S45](S45-floating-window-dock.md) | Dock a floating node window without closing it | implemented | **browser** | driven 2026-08-02 |
+| [S46](S46-project-header-and-chat-split.md) | Fold the project utilities and resize the Chats split | implemented | **browser** | driven 2026-08-02 |
+| [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
+| [S48](S48-screen-story-token-scale.md) | Measure project usage in favorite screen stories | implemented | **browser** | 5 checks + driven 2026-08-02 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.
@@ -211,7 +216,7 @@ promote it back to a file with a fresh id.
 | Reopening and refreshing a project appends, and never edits a prior patch | `test_sync.py::test_replay_ignores_an_uncommitted_hidden_batch`, `::test_interrupted_batch_write_exposes_none_of_the_sync`, `test_history.py::test_successful_patch_materializes_processed_cursors` |
 | A question with no authority changes nothing, and an agent cannot grant itself authority by writing the file; scratch remains writable for disposable outputs | `test_api.py::test_unauthorized_chat_patch_is_discarded_not_applied`, `::test_node_chat_answers_without_writing_a_patch`. One frontend residual is uncovered: authorization is **per turn**, so the toggle must not stay on after a send — correct today at [NodeChat.tsx:85](../../web/src/components/NodeChat.tsx:85), defended by nothing |
 | An authorized question changes exactly one thing, and is refused if the graph moved under it | `test_api.py::test_authorized_chat_launch_is_not_read_only`, `::test_chat_patch_cannot_move_the_ingest_boundary`, `::test_chat_patch_is_refused_when_the_graph_moved_under_it` |
-| A conversation outlives its turns: one folder, prior patch cleared, exact file projection | `test_api.py::test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch`, `::test_claude_chat_projects_exact_conversation_files`, `::test_same_chat_id_uses_distinct_stages_for_distinct_projects` |
+| A conversation outlives its turns: one folder, prior patch cleared, and provider continuation state is retained without using chat history as agent context | `test_api.py::test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch`, `::test_same_chat_id_uses_distinct_stages_for_distinct_projects` |
 | A bad patch is corrected in-session, and a failed run keeps its work | `test_api.py::test_invalid_patch_is_corrected_in_the_same_native_session`, `::test_failed_run_retains_its_patch_and_scratch_folder`, `::test_patch_under_an_unexpected_filename_is_still_applied`, `::test_patch_collector_prefers_patch_json_and_refuses_ambiguity` |
 | An authorized turn that changes nothing spends no revision | **nothing — test to write.** The Sync analogue exists (`test_sync.py::test_graph_sync_no_net_change_writes_no_patch`); the chat path has none |
 

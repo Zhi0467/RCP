@@ -11,23 +11,16 @@ from rcp.config import AgentSurface
 from rcp.history import ReplayHalted
 from rcp.runs.chat import (
     _append_chat_exchange,
-    _chat_conversation_roots,
-    _chat_native_checkpoint_available,
     _chat_read_dirs,
     _chat_stage_name,
-    _cleanup_chat_conversation_projection,
     _clear_stale_patch,
     _discover_chat_artifacts,
     _first_chat_base_revision,
-    _known_chat_session,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
-    _project_chat_conversations,
     _read_chat_patch,
-    _rebind_chat_conversations,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
-    _saved_chat_conversation_projection,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
@@ -56,13 +49,7 @@ async def stream_discuss_run(
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
 ) -> AsyncIterator[str]:
-    """One Discuss turn, plus the narrow legacy graph-only compatibility path.
-
-    Deliberately not the ingest pipeline: no cursors, no evidence slices, no
-    mandatory patch. New Discuss turns have neither a patch contract nor graph
-    authority. A legacy request may retain its old optional graph-only authority,
-    but never gains Work repository writes.
-    """
+    """Run one Discuss turn over graph, node, request, and repository context."""
     resuming = bool(execution is not None and execution.reuses_native_checkpoint)
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
     try:
@@ -82,10 +69,8 @@ async def stream_discuss_run(
     execution_host = execution_machine.host
     provider_binary = execution_machine.provider_paths.get(profile.provider)
     remote_stage: RemoteRunStage | None = None
-    conversation_projection: Path | PurePosixPath | None = None
     artifact_scope_id: str | None = None
     artifact_directory: Path | PurePosixPath | None = None
-    provider_started = False
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         try:
@@ -99,10 +84,6 @@ async def stream_discuss_run(
             if resuming:
                 base_revision = _first_chat_base_revision(execution, base_revision)
             _record_chat_context_receipt(execution, context, surface=surface)
-            if request.session_id and not resuming and not _known_chat_session(service, request):
-                raise ValueError(
-                    "That native session was not created by this chat. Start a new chat instead."
-                )
             # One scratch folder per conversation, not per turn. Resuming a native
             # session means resuming it in the directory it was given — Claude keys
             # its sessions by that directory — so every turn of a chat, local or
@@ -157,26 +138,11 @@ async def stream_discuss_run(
                     local_stage, artifact_scope_id, reuse=resuming
                 )
 
-            if resuming:
-                conversation_projection = _saved_chat_conversation_projection(
-                    local_stage, remote_stage
-                )
-                context = _rebind_chat_conversations(
-                    context,
-                    conversation_projection,
-                    verify_local=remote_stage is None,
-                )
-            else:
-                context, conversation_projection = _project_chat_conversations(
-                    context, local_stage, remote_stage
-                )
-
             read_dirs = _chat_read_dirs(
                 context,
                 remote_stage,
                 service,
                 execution_machine.alias,
-                conversation_projection,
             )
             token = _task_token(execution)
             if resuming:
@@ -223,8 +189,6 @@ async def stream_discuss_run(
                     graph_path=context.graph_path,
                     research_path=context.research_md_path,
                     focused_node_id=str(context.node["id"]) if context.node else None,
-                    conversation_roots=_chat_conversation_roots(context),
-                    conversations_unreachable=context.conversations_unreachable,
                     repositories=[
                         {"alias": item.alias, "host": item.host, "path": item.path}
                         for item in context.repositories
@@ -261,7 +225,6 @@ async def stream_discuss_run(
                 "write_directory_count": 0,
             },
         )
-        provider_started = True
         try:
             async with aclosing(
                 _stream_agent_events(
@@ -284,8 +247,8 @@ async def stream_discuss_run(
                     yield frame
         except Exception:
             # Provider launch/runtime exceptions are terminal and Background will
-            # offer Retry, which re-projects. Cancellation and process shutdown use
-            # BaseException paths and retain the projection for a possible Resume.
+            # offer Retry. Cancellation and process shutdown use BaseException
+            # paths and retain the reusable native-session stage for Resume.
             outcome.failed = True
             raise
 
@@ -397,15 +360,6 @@ async def stream_discuss_run(
                 )
         yield _sse(AgentEvent(event="done"))
     finally:
-        # Keep exact transcript copies only when this attempt can genuinely
-        # Resume. A pause before the provider establishes any native checkpoint
-        # is Retry-only, so retaining its potentially large projection just leaks
-        # storage. The reusable native-session cwd itself always stays put.
-        retain_projection = (
-            provider_started
-            and not outcome.completed
-            and not outcome.failed
-            and _chat_native_checkpoint_available(execution, outcome.session_id)
-        )
-        if conversation_projection is not None and not retain_projection:
-            _cleanup_chat_conversation_projection(local_stage, remote_stage, execution)
+        # There is no per-turn source cleanup; the reusable native-session stage
+        # remains available to the normal stage sweeper.
+        pass

@@ -49,3 +49,18 @@ test("runs report the newest underlying graph or task observation", () => {
   assert.equal(latestRunObservation("2026-07-28T04:00:00Z", [newerTask]), "2026-07-28T04:00:00Z");
   assert.equal(latestRunObservation(null, []), null);
 });
+
+test("dismissed and superseded failures leave the action queue", () => {
+  const failed = task("failed", "failed", "2026-07-28T00:00:00Z");
+  const laterSuccess = task("later", "succeeded", "2026-07-28T01:00:00Z");
+  const dismissed = task("dismissed", "failed", "2026-07-28T02:00:00Z");
+  const projection = buildRunTaskProjection(
+    [laterSuccess, dismissed, failed],
+    new Set(["dismissed"]),
+  );
+  assert.deepEqual(projection.actionable, []);
+  assert.deepEqual(
+    projection.completed.map((group) => group.rootId),
+    ["later"],
+  );
+});

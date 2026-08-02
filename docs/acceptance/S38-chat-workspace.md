@@ -16,11 +16,13 @@ covered_by:
   - browser 2026-07-31 — draggable detail/chat, docking, draft preservation,
     project Ask routing, canonical transcript rendering, and isolated synthetic
     active-to-unread banner routing
-last_passed: 2026-08-01 — isolated browser drive covered independent floating
+last_passed: 2026-08-02 — reopened a long existing conversation and confirmed
+  the transcript landed at the latest turn, with no browser-console or server
+  errors. The earlier isolated browser drive covered independent floating
   detail/chat and draft preservation, then loaded a 205-conversation fixture as
   200 + 5 without changing the selected transcript. Canonical pagination,
   deletion/race reconciliation, and notification scoping passed in the 455
-  backend and 109 web tests, with no browser-console or server errors.
+  backend and 109 web tests.
 invariants: [8, 10, 10b, 10c, 11]
 ---
 
@@ -37,7 +39,7 @@ on the left and the selected transcript and composer on the right.
 
 ## UI path
 
-Confirmed on 2026-07-31.
+Confirmed on 2026-08-02.
 
 - **Chats** is a project navigation panel immediately to the right of
   **Settings**, equal in hierarchy to the other project panels.
@@ -50,9 +52,12 @@ Confirmed on 2026-07-31.
   older than the latest task page remain available.
 - The conversation list reads one canonical summary page at a time. Opening
   Chats never downloads every page preemptively; the explicit **Load more**
-  control requests the next page and appends it without changing the selection. One user request
-  refreshes remote canonical state at most once, and opening one conversation
-  does not parse every unrelated transcript.
+  control requests the next page and appends it without changing the selection.
+  A single request to open Chats refreshes remote canonical state at most once,
+  and opening one conversation does not parse every unrelated transcript.
+- Opening or reopening a conversation positions the transcript at its latest
+  turn. If the human scrolls up to read older turns, later transcript updates
+  respect that reading position until the human returns to the bottom.
 - Clicking a graph node opens its detail as a modeless draggable window. The
   project beneath remains visible and interactive.
 - **Ask** from that node opens its conversation in a second draggable window at
@@ -96,7 +101,9 @@ list, or routing a notification only to a generic task inspector.
    Enter Chats and open the completed conversation.
 7. Use the project-header **Ask** control, send a project-level message, then
    switch between the project and node conversations.
-8. Reopen the project and inspect an older completed conversation.
+8. Reopen the project and inspect an older completed conversation. Confirm the
+   transcript starts at its latest turn rather than at the beginning. Scroll up
+   and confirm the view stays there while the chat surface otherwise updates.
 9. Use a fixture with more than one page of conversations. Confirm the first
    page is usable before requesting the next, then load the next page without
    losing the selected conversation.
@@ -114,6 +121,8 @@ list, or routing a notification only to a generic task inspector.
 - `loading_another_page_preserves_selection`
 - `one_chat_request_performs_at_most_one_remote_refresh`
 - `opening_one_chat_does_not_parse_unrelated_transcripts`
+- `reopening_conversation_starts_at_latest_turn`
+- `manual_transcript_scroll_is_respected`
 - `minimized_chat_keeps_transcript_composer_and_status`
 - `project_ask_routes_to_project_conversation`
 - `chat_banner_is_visible_only_inside_chats`

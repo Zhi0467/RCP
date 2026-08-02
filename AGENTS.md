@@ -372,25 +372,23 @@ guarantees — surface the conflict instead of working around it.
    authorization — so the workspace list/remove operations in
    [run_stage.py](src/rcp/transport/run_stage.py) raise instead of reporting an
    unreachable workspace as an empty one.
-10d. **A conversation pointer names the file, not RCP's copy of it.** The indexer
-   may cache a remote session locally; that copy is RCP's. `chat_context` resolves
-   each pointer to the original path plus the host to reach it on *from the
-   execution machine*, and drops what that machine cannot reach into
-   `conversations_unreachable` rather than naming a path that does not exist there.
-   Claude never receives a provider/session parent in `--add-dir`: every new turn
-   copies only its authorized on-machine pointer files into the reusable stage's
-   exact `inputs/conversations` projection, rewrites those pointers, and grants
-   that directory. A remote execution copies same-host files on that host rather
-   than downloading through RCP. Replacement fails before launch; Resume reuses
-   the unchanged saved projection or fails and requires Retry. A paused or
-   interrupted provider retains it; every terminal provider outcome removes only
-   the projection, leaving the reusable native-session workspace intact. The next
-   ordinary turn or Retry projects afresh. Off-machine host pointers remain direct.
-   Every conversation launches with its scratch workspace writable. Canonical
-   state remains read-only. Discuss keeps repository inputs read-only; Work may
-   edit only exact run-scope repositories. Mode controls whether RCP advertises,
-   validates, and applies an optional `patch.json`, never whether the provider
-   may write disposable scratch output.
+10d. **Chat is not transcript ingestion.** `chat_context` contains the graph,
+   focused node, current request, and exact run-scope repositories. Discuss has
+   those repositories read-only; Work may edit only those exact repositories
+   and may return its optional validated `patch.json`. Discuss and Work never
+   read, index, copy, project, prompt with, validate, or authorize from prior
+   chat transcripts. A provider continuation/session identifier may still be
+   passed to the provider for its own native session behavior. The answer may
+   be appended to canonical chat history for the UI, but that write is not an
+   input to the turn. Every conversation launches with its scratch workspace
+   writable; canonical state remains read-only.
+10f. **Seed/Refresh source assembly is best effort.** Seed and Refresh are the
+   only paths that assemble conversation-source context, cursors, coverage, and
+   slices. If source metadata or a pointer cannot be assembled, RCP records the
+   exact diagnostic and still launches with provider/source names or roots and
+   the last accounted coverage boundary. The provider may inspect those sources
+   directly. RCP never advances a cursor or claims coverage for input it could
+   not read.
 10e. **The answer and preview artifacts are independent.** The labelled final
    assistant message is the Markdown reply. A turn may also leave supported
    files as direct regular children of its exact RCP-created artifact directory;
@@ -531,8 +529,9 @@ carrying forward, and correct an entry when they change their mind.
   navigate only its own sandboxed child frame and cause that navigation request.
 - Never copy a repository to make it readable. Give the agent the host and path.
 - Scope boundaries are named exactly, never approximated by a containing
-  directory: a chat turn gets the run-scope session files, not the provider roots
-  they sit under.
+  directory: Discuss and Work get the graph/current node and exact run-scope
+  repositories, but no provider-root or prior-transcript input. Seed and Refresh
+  are the only paths that receive provider-source roots for ingestion.
 - Every agent invocation is durable background work. Closing its launch or chat
   surface must not cancel it; one shared activity and notification design
   surfaces progress, completion, failure, resume, and retry while the app stays
@@ -616,16 +615,14 @@ longer apply.
   diagnostic with the original one and the agent never learns it wrote nothing.
 - "One shared background lifecycle" is not "one shared execution pipeline". Node
   chat was routed through the ingest path, so a corrupt ingest cursor killed an
-  ordinary question before the provider ever launched (fixed 2026-07-29 by
-  splitting `_stream_chat_run` out of `_stream_graph_run`). When adding a
-  surface, share the lifecycle and give it its own context, prompt, and
-  deliverable.
-- One unreadable conversation must not fail a whole run. `ContextAssembler`
-  drops that session, reports it in `source_errors`, and the run raises it as a
-  UI warning; only the slice itself still refuses to silently reread past a
-  missing cursor. A cursor lost to a rewritten source file is re-resolved by its
-  content digest instead (`_cursor_after_source_rewrite`), so provider log
-  compaction no longer strands a session.
+  ordinary question before the provider ever launched. Chat now has its own
+  graph/repository-only context and prompt; Seed/Refresh retain the separate
+  source-ingestion context and deliverable.
+- One unreadable conversation source must not kill Seed/Refresh before launch.
+  `ContextAssembler` drops only the source it cannot assemble, reports the exact
+  diagnostic, names the provider roots and last accounted coverage boundary in
+  the fallback prompt, and leaves the provider to inspect the source. No cursor
+  or coverage claim advances for input RCP did not read.
 - `codex exec resume` accepts neither `--sandbox` nor `--cd`; left alone it runs
   read-only, so a resumed session silently could not write its patch file (found
   and fixed 2026-07-29 by passing `sandbox_mode` through `--config`). Check the
@@ -633,16 +630,10 @@ longer apply.
 - Materialized files are regenerated from the patch log, so hand-editing
   `.research/cursors.json` to reproduce a bug does nothing — the next
   materialization wipes it. Append a patch carrying `processed_cursors` instead.
-- A pointer is only as good as the machine it is read from. Chat named remote
-  conversations with RCP's local cache path *and* the remote host, so the agent
-  could open neither (fixed 2026-07-29 in `_session_location`). Resolve every
-  path against the execution machine, and drop what it cannot reach instead of
-  naming it.
-- Remote cleanup that ignores an ssh failure fails open: a surviving `patch.json`
-  in a reused chat folder would be applied as the next turn's work. Workspace
-  list/remove now raise (fixed 2026-07-29).
-- An identifier named by RCP is staged as data and never derived by an agent from
-  a transport path; projected session paths reorder and escape canonical coverage keys.
+- Chat must not be made dependent on source-pointer reachability. A prior chat
+  transcript is UI history only; Discuss and Work never resolve, copy, or validate
+  it as agent input. A provider session id may continue the provider's native
+  session without becoming RCP context.
 - Failing a task discarded the answer it had already produced, so a chat whose
   graph change was rejected showed an error and no reply. `TaskFailed` carries
   the partial messages into `fail_agent_task`.
@@ -655,13 +646,9 @@ longer apply.
   models nothing: read task state across the chain, and exercise resume through
   `POST …/tasks/{id}/resume` so the child is real. If any ancestry proof is
   missing or cyclic, fail instead of using the child's current graph revision.
-- Claude `--add-dir` grants a directory, not one named file. Passing a Codex date
-  directory exposed unrelated sessions; project exact transcript copies into the
-  chat stage on each new turn and preserve only that projection across Resume.
-- Read-only projections make ordinary `rmtree(ignore_errors=True)` report success
-  while leaving hundreds of megabytes behind. Exact-target cleanup and sweepers
-  must make retained trees writable, delete them, and verify absence before
-  forgetting the path.
+- Claude `--add-dir` grants a directory, so never use it to smuggle provider
+  roots into Discuss or Work. Seed/Refresh may grant provider roots only when
+  source assembly degraded and the prompt explicitly tells the provider why.
 - Benign shell noise must never become a failure reason. `bash -lic` writes
   "cannot set terminal process group" on every remote run, so a connection
   dropped mid-run was reported to the human as a tty error instead of a lost

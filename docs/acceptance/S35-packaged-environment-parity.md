@@ -24,7 +24,9 @@ environment" really means "execute the user's login shell and harvest its
 result," which differs per terminal and per directory.
 
 So the promise is not that the app reconstructs your shell. It is that **RCP
-resolves each provider once, records the absolute path, and shows it to you.**
+discovers a usable absolute path before launch, uses it immediately, and shows
+it to you.** A saved absolute path is an optional stable pin, not a manual
+precondition for running an authenticated provider.
 Margin made the same choice: it records an absolute Node path in its bundle
 rather than reconstructing an environment. Every `ProviderProfile` method in
 [providers.py](../../src/rcp/providers.py) already takes a `binary` argument, so
@@ -32,7 +34,7 @@ only discovery is hardcoded to `PATH` — the plumbing is there.
 
 This also unifies local and remote, which currently disagree. Remote discovery
 runs through `bash -lic` and gets the login environment for free; local discovery
-gets nothing. One recorded path per provider per machine covers both.
+gets nothing. One discovered or saved path per provider per machine covers both.
 
 Beyond finding binaries, a signed application is subject to macOS privacy
 controls a terminal session normally is not. Project directories under Documents,
@@ -47,18 +49,21 @@ a rule against repeating an unverified blocker as if it were a finding.
 
 Confirmed with the human on 2026-07-31.
 
-- **A recorded path per provider per machine**, visible and editable wherever
+- **A saved path per provider per machine**, visible and editable wherever
   machines are configured. `MachineConfig` in
   [config.py](../../src/rcp/config.py) is a shared contract, so this field lands
-  serially before anything consuming it.
+  serially before anything consuming it. If no path is saved, an authenticated
+  path discovered on the target is used for the launch and remains an
+  unsaved readiness state.
 - **Environment repair is demoted to a discovery aid.** It runs before the
   backend starts, so every subprocess sees the same corrected environment, but
   nothing depends on it having worked — it only makes the first resolution more
   likely to succeed.
 - **A third readiness state.** The code already separates "not installed" from
-  "unreachable". Add "recorded at this path, not found", with a re-resolve
+  "unreachable". Add "saved at this path, not found", with a re-resolve
   action. This is what a version manager switching versions looks like, and it
-  should be visible rather than silently retried.
+  should be visible rather than silently retried. An unsaved discovered path is
+  usable and is not an error.
 - **A denied directory says it was denied**, and is never reported as a missing
   binary or an unreachable host.
 - **First-launch consent is explained** before macOS asks for it.
@@ -73,7 +78,7 @@ under repeated failures.
 
 Deliberately not possible: reporting a permission denial as a missing binary,
 requesting broad access to stand in for the folders a project actually uses, and
-a provider path RCP uses but will not show you.
+using a discovered provider path without showing it.
 
 ## Setup
 
@@ -94,7 +99,7 @@ reach, and a project whose state repository lives under a protected folder.
 ## Assert
 
 - `providers_visible_in_terminal_are_visible_in_the_application`
-- `each_provider_path_is_recorded_and_shown`
+- `each_provider_path_is_shown_and_launchable_when_discovered`
 - `a_recorded_path_can_be_edited_by_hand`
 - `a_stale_recorded_path_is_its_own_readiness_state`
 - `re_resolve_recovers_a_moved_binary`

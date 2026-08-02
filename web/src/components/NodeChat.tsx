@@ -11,24 +11,28 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
   isActiveTask,
   latestNativeSessionId,
+  orderTranscriptLines,
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
   taskKindLabel,
 } from "../agentTasks";
 import {
+  chatConfigStorageKey,
   chatDraftStorageKey,
   chatModeStorageKey,
   isConversationModeShortcut,
+  latestPersistedChatConfig,
   latestPersistedConversationMode,
   parseConversationMode,
+  parseStoredAgentRunConfig,
   toggleConversationMode,
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
@@ -49,12 +53,17 @@ import type {
   StartAgentTask,
   WatcherRecord,
 } from "../types";
+import {
+  CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
+  CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
+} from "../uiConstants";
 import { AgentConfigControls, profileRunConfig } from "./AgentConfigControls";
 import { RepositoryScope } from "./RepositoryScope";
 
 interface Props {
   project: ProjectSnapshot;
   node?: GraphNode | null;
+  conversationTitle?: string;
   runScope: string[];
   tasks: AgentTask[];
   activeTask: AgentTask | null;
@@ -72,9 +81,17 @@ interface Props {
   onClose: () => void;
 }
 
+interface PendingChatTurn {
+  clientId: string;
+  text: string;
+  timestamp: string;
+  mode: ConversationMode;
+}
+
 export function NodeChat({
   project,
   node,
+  conversationTitle,
   runScope,
   tasks,
   activeTask,
@@ -96,16 +113,35 @@ export function NodeChat({
     () => relatedChatTasks(tasks, surface, node?.id, chatId),
     [chatId, node?.id, surface, tasks],
   );
+  const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
   const transcript = useMemo(
-    () => [
-      ...historyMessages.map(chatMessageTranscriptLine),
-      ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, historyMessages)),
-    ],
-    [historyMessages, relatedTasks],
+    () =>
+      orderTranscriptLines([
+        ...historyMessages.map(chatMessageTranscriptLine),
+        ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, historyMessages)),
+        ...(pendingTurn
+          ? [
+              {
+                role: "human" as const,
+                text: pendingTurn.text,
+                taskId: pendingTurn.clientId,
+                timestamp: pendingTurn.timestamp,
+                mode: pendingTurn.mode,
+                trigger: "human" as const,
+              },
+            ]
+          : []),
+      ]),
+    [historyMessages, pendingTurn, relatedTasks],
   );
-  const [config, setConfig] = useState<AgentRunConfig>(() =>
-    profileRunConfig(project.agent_profiles[surface]),
-  );
+  const configKey = chatConfigStorageKey(project.id, chatId);
+  const [config, setConfig] = useState<AgentRunConfig>(() => {
+    const fallback = profileRunConfig(project.agent_profiles[surface]);
+    return (
+      parseStoredAgentRunConfig(readStorage(configKey)) ??
+      latestPersistedChatConfig(historyMessages, relatedTasks, fallback)
+    );
+  });
   const [scope, setScope] = useState(runScope);
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
@@ -119,6 +155,12 @@ export function NodeChat({
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
   });
   const [submitting, setSubmitting] = useState(false);
+  const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const chatLinesRef = useRef<HTMLDivElement | null>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const lastChatIdRef = useRef(chatId);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
@@ -152,6 +194,7 @@ export function NodeChat({
       ?.native_session_id ??
     null;
   const mode = modeState.value;
+  const chatTitle = node?.title || conversationTitle || project.name;
 
   useEffect(() => {
     setModeState((current) =>
@@ -166,9 +209,47 @@ export function NodeChat({
     else removeStorage(draftKey);
   }, [draftKey, message]);
 
-  const selectMode = (next: ConversationMode) => {
-    writeStorage(modeKey, next);
-    setModeState({ value: next, pinned: true });
+  useEffect(() => {
+    if (lastChatIdRef.current !== chatId) {
+      lastChatIdRef.current = chatId;
+      shouldStickToBottomRef.current = true;
+    }
+    const element = chatLinesRef.current;
+    if (!element || !shouldStickToBottomRef.current) return;
+    element.scrollTop = element.scrollHeight;
+  }, [chatId, transcript]);
+
+  const selectMode = useCallback(
+    (next: ConversationMode) => {
+      writeStorage(modeKey, next);
+      setModeState({ value: next, pinned: true });
+    },
+    [modeKey],
+  );
+
+  const toggleMode = useCallback(() => {
+    setModeState((current) => {
+      const next = toggleConversationMode(current.value);
+      writeStorage(modeKey, next);
+      return { value: next, pinned: true };
+    });
+  }, [modeKey]);
+
+  useEffect(() => {
+    if (presentation !== "workspace") return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat) return;
+      if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
+      event.preventDefault();
+      toggleMode();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [presentation, toggleMode]);
+
+  const updateConfig = (next: AgentRunConfig) => {
+    writeStorage(configKey, JSON.stringify(next));
+    setConfig(next);
   };
 
   const updateMessage = (next: string) => {
@@ -180,10 +261,35 @@ export function NodeChat({
     setSubmitError(null);
   };
 
+  const toggleHumanMessage = (messageId: string) => {
+    setExpandedHumanMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  };
+
+  const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    shouldStickToBottomRef.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <=
+      CHAT_SCROLL_BOTTOM_TOLERANCE_PX;
+  };
+
   const send = async () => {
     const text = message.trim();
     if (!text || activeTask || pausedAttempt || submitting || repairingTaskId || reviewPending)
       return;
+    shouldStickToBottomRef.current = true;
+    const clientId = `pending-${crypto.randomUUID()}`;
+    setPendingTurn({
+      clientId,
+      text,
+      timestamp: new Date().toISOString(),
+      mode,
+    });
+    setMessage("");
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -197,9 +303,11 @@ export function NodeChat({
         session_id: sessionId,
         mode,
       });
-      setMessage("");
+      setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       selectMode(mode);
     } catch (error) {
+      setPendingTurn((current) => (current?.clientId === clientId ? null : current));
+      setMessage((current) => (current ? current : text));
       setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
@@ -308,17 +416,18 @@ export function NodeChat({
       data-mode={mode}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
-      aria-label={node ? `Chat about ${node.title}` : "Project chat"}
+      aria-label={node || conversationTitle ? `Chat about ${chatTitle}` : "Project chat"}
+      aria-keyshortcuts={presentation === "workspace" ? "Shift+Tab" : undefined}
     >
-      <header data-drag-handle={presentation === "floating" ? "true" : undefined}>
-        <MessageCircle size={17} />
-        <strong>{node?.title || project.name}</strong>
-        {liveWatchers.length > 0 && (
-          <span className="chat-watcher-count">
-            <RadioTower size={12} /> {liveWatchers.length}
-          </span>
-        )}
-        {presentation === "floating" && (
+      {presentation === "floating" && (
+        <header data-drag-handle="true">
+          <MessageCircle size={17} />
+          <strong>{chatTitle}</strong>
+          {liveWatchers.length > 0 && (
+            <span className="chat-watcher-count">
+              <RadioTower size={12} /> {liveWatchers.length}
+            </span>
+          )}
           <button
             className="icon-button"
             onClick={onClose}
@@ -326,12 +435,12 @@ export function NodeChat({
           >
             <X size={17} />
           </button>
-        )}
-      </header>
+        </header>
+      )}
       <AgentConfigControls
         project={project}
         value={config}
-        onChange={setConfig}
+        onChange={updateConfig}
         runOnLocked
         locked={locked || Boolean(activeTask) || reviewPending}
         compact
@@ -379,94 +488,125 @@ export function NodeChat({
           ))}
         </section>
       )}
-      <div className="node-chat-lines" aria-live="polite">
-        {transcript.map((line, index) => (
-          <div className={`node-chat-line ${line.role}`} key={`${line.taskId}-${index}`}>
-            {line.role === "human" && line.mode && (
-              <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
-            )}
-            {line.trigger === "watcher" && (
-              <span className="chat-turn-trigger watcher">Watcher</span>
-            )}
-            {line.role === "agent" ? (
-              line.text && (
-                <div className="chat-markdown">
-                  <MarkdownAnswer text={line.text} />
-                </div>
-              )
-            ) : (
-              <span className="node-chat-text">{line.text}</span>
-            )}
-            {line.artifacts?.map((artifact) => {
-              const unavailable = unavailableArtifacts.has(
-                `${line.taskId}:${artifact.artifact_id}`,
-              );
-              const shellError = artifactShellErrors.get(`${line.taskId}:${artifact.artifact_id}`);
-              return (
-                <div
-                  className={`chat-artifact${unavailable ? " unavailable" : ""}`}
-                  key={artifact.artifact_id}
-                >
-                  <File size={14} />
-                  <span>{artifact.name}</span>
-                  {unavailable ? (
-                    <strong>Preview unavailable</strong>
-                  ) : (
-                    <div className="chat-artifact-actions">
-                      <button
-                        type="button"
-                        onClick={() => void openArtifact(line.taskId, artifact)}
-                      >
-                        <ExternalLink size={12} /> Open
-                      </button>
-                      {desktop ? (
+      <div
+        className="node-chat-lines"
+        aria-live="polite"
+        onScroll={handleChatScroll}
+        ref={chatLinesRef}
+      >
+        {transcript.map((line, index) => {
+          const messageId = `${line.taskId}:${index}`;
+          const collapsible =
+            line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
+          const expanded = expandedHumanMessageIds.has(messageId);
+          return (
+            <div className={`node-chat-line ${line.role}`} key={`${line.taskId}-${index}`}>
+              {line.role === "human" && line.mode && (
+                <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+              )}
+              {line.trigger === "watcher" && (
+                <span className="chat-turn-trigger watcher">Watcher</span>
+              )}
+              {line.role === "agent" ? (
+                line.text && (
+                  <div className="chat-markdown">
+                    <MarkdownAnswer text={line.text} />
+                  </div>
+                )
+              ) : line.role === "human" ? (
+                <>
+                  <div
+                    className={`chat-human-message${collapsible && !expanded ? " collapsed" : ""}`}
+                  >
+                    <span className="node-chat-text">{line.text}</span>
+                  </div>
+                  {collapsible && (
+                    <button
+                      type="button"
+                      className="chat-message-toggle"
+                      aria-expanded={expanded}
+                      onClick={() => toggleHumanMessage(messageId)}
+                    >
+                      {expanded ? "See less" : "See more"}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <span className="node-chat-text">{line.text}</span>
+              )}
+              {line.artifacts?.map((artifact) => {
+                const unavailable = unavailableArtifacts.has(
+                  `${line.taskId}:${artifact.artifact_id}`,
+                );
+                const shellError = artifactShellErrors.get(
+                  `${line.taskId}:${artifact.artifact_id}`,
+                );
+                return (
+                  <div
+                    className={`chat-artifact${unavailable ? " unavailable" : ""}`}
+                    key={artifact.artifact_id}
+                  >
+                    <File size={14} />
+                    <span>{artifact.name}</span>
+                    {unavailable ? (
+                      <strong>Preview unavailable</strong>
+                    ) : (
+                      <div className="chat-artifact-actions">
                         <button
                           type="button"
-                          onClick={() => void downloadArtifact(line.taskId, artifact)}
+                          onClick={() => void openArtifact(line.taskId, artifact)}
                         >
-                          <Download size={12} /> Download
+                          <ExternalLink size={12} /> Open
                         </button>
-                      ) : (
-                        <a
-                          href={artifactUrl(
-                            project.id,
-                            line.taskId,
-                            artifact.artifact_id,
-                            "download",
-                          )}
-                          download={artifact.name}
-                          onClick={() => void checkArtifact(line.taskId, artifact, "download")}
-                        >
-                          <Download size={12} /> Download
-                        </a>
-                      )}
-                    </div>
-                  )}
-                  {shellError && (
-                    <strong className="chat-artifact-shell-error" role="alert">
-                      {shellError}
-                    </strong>
-                  )}
-                </div>
-              );
-            })}
-            {line.role === "agent" && line.graphUpdate && (
-              <GraphUpdateReceipt
-                update={line.graphUpdate}
-                taskId={line.taskId}
-                repairBusy={repairingTaskId === line.taskId}
-                repairDisabled={
-                  graphChangesDisabled || Boolean(activeTask) || submitting || reviewPending
-                }
-                repairContinued={continuedTaskIds.has(line.taskId)}
-                repairError={repairErrors.get(line.taskId) ?? null}
-                onInspectTask={onInspectTask}
-                onOpenInbox={onOpenInbox}
-                onRepair={() => void repairGraphUpdate(line.taskId)}
-              />
-            )}
-          </div>
-        ))}
+                        {desktop ? (
+                          <button
+                            type="button"
+                            onClick={() => void downloadArtifact(line.taskId, artifact)}
+                          >
+                            <Download size={12} /> Download
+                          </button>
+                        ) : (
+                          <a
+                            href={artifactUrl(
+                              project.id,
+                              line.taskId,
+                              artifact.artifact_id,
+                              "download",
+                            )}
+                            download={artifact.name}
+                            onClick={() => void checkArtifact(line.taskId, artifact, "download")}
+                          >
+                            <Download size={12} /> Download
+                          </a>
+                        )}
+                      </div>
+                    )}
+                    {shellError && (
+                      <strong className="chat-artifact-shell-error" role="alert">
+                        {shellError}
+                      </strong>
+                    )}
+                  </div>
+                );
+              })}
+              {line.role === "agent" && line.graphUpdate && (
+                <GraphUpdateReceipt
+                  update={line.graphUpdate}
+                  taskId={line.taskId}
+                  repairBusy={repairingTaskId === line.taskId}
+                  repairDisabled={
+                    graphChangesDisabled || Boolean(activeTask) || submitting || reviewPending
+                  }
+                  repairContinued={continuedTaskIds.has(line.taskId)}
+                  repairError={repairErrors.get(line.taskId) ?? null}
+                  onInspectTask={onInspectTask}
+                  onOpenInbox={onOpenInbox}
+                  onRepair={() => void repairGraphUpdate(line.taskId)}
+                />
+              )}
+            </div>
+          );
+        })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
         {relatedActive && (
           <div className="thinking">
@@ -496,8 +636,10 @@ export function NodeChat({
           onChange={(event) => updateMessage(event.target.value)}
           onKeyDown={(event) => {
             if (isConversationModeShortcut(event.key, event.shiftKey)) {
-              event.preventDefault();
-              selectMode(toggleConversationMode(mode));
+              if (presentation !== "workspace") {
+                event.preventDefault();
+                toggleMode();
+              }
               return;
             }
             if (event.key === "Enter" && !event.shiftKey) {
@@ -519,7 +661,6 @@ export function NodeChat({
                 {modeLabel(option)}
               </button>
             ))}
-            <kbd aria-label="Shift plus Tab">⇧⇥</kbd>
           </div>
           <button
             className="icon-button primary chat-send-button"

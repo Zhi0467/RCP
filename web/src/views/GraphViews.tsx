@@ -693,8 +693,10 @@ export function DagView({
 
 interface ExecutionProps extends Props {
   tasks: AgentTask[];
+  dismissedTaskIds: ReadonlySet<string>;
   lastRefreshAt?: string | null;
   onInspectTask: (operationId: string) => void;
+  onDismissTask: (operationId: string) => void;
 }
 
 export function ExecutionView({
@@ -702,13 +704,15 @@ export function ExecutionView({
   trustView,
   onSelectNode,
   tasks,
+  dismissedTaskIds,
   lastRefreshAt,
   onInspectTask,
+  onDismissTask,
 }: ExecutionProps) {
   const nodes = projectNodes(Object.values(graph.nodes), trustView);
   const openBlockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
   const experiments = nodes.filter((node) => node.type === "experiment");
-  const taskProjection = buildRunTaskProjection(tasks);
+  const taskProjection = buildRunTaskProjection(tasks, dismissedTaskIds);
   const observedAt = latestRunObservation(lastRefreshAt, tasks);
   const hasRuns =
     openBlockers.length > 0 ||
@@ -732,7 +736,12 @@ export function ExecutionView({
               count={openBlockers.length + taskProjection.actionable.length}
             >
               {taskProjection.actionable.map((group) => (
-                <AgentRunRow group={group} onInspectTask={onInspectTask} key={group.rootId} />
+                <AgentRunRow
+                  group={group}
+                  onInspectTask={onInspectTask}
+                  onDismissTask={onDismissTask}
+                  key={group.rootId}
+                />
               ))}
               {openBlockers.map((node) => (
                 <button
@@ -751,7 +760,12 @@ export function ExecutionView({
           {taskProjection.running.length > 0 && (
             <RunSection title="Agent work" count={taskProjection.running.length}>
               {taskProjection.running.map((group) => (
-                <AgentRunRow group={group} onInspectTask={onInspectTask} key={group.rootId} />
+                <AgentRunRow
+                  group={group}
+                  onInspectTask={onInspectTask}
+                  onDismissTask={onDismissTask}
+                  key={group.rootId}
+                />
               ))}
             </RunSection>
           )}
@@ -824,7 +838,12 @@ export function ExecutionView({
           {taskProjection.completed.length > 0 && (
             <RunSection title="Recent agent work" count={taskProjection.completed.length}>
               {taskProjection.completed.slice(0, 8).map((group) => (
-                <AgentRunRow group={group} onInspectTask={onInspectTask} key={group.rootId} />
+                <AgentRunRow
+                  group={group}
+                  onInspectTask={onInspectTask}
+                  onDismissTask={onDismissTask}
+                  key={group.rootId}
+                />
               ))}
             </RunSection>
           )}
@@ -981,29 +1000,46 @@ function RunSection({
 function AgentRunRow({
   group,
   onInspectTask,
+  onDismissTask,
 }: {
   group: AgentTaskGroup;
   onInspectTask: (operationId: string) => void;
+  onDismissTask: (operationId: string) => void;
 }) {
   const latest = group.latest;
   return (
-    <button
-      className={`agent-run-row ${latest.status}`}
-      onClick={() => onInspectTask(latest.operation_id)}
-    >
-      <span className="agent-run-state" />
-      <span className="agent-run-copy">
-        <span className="eyebrow">
-          {agentTaskName(group.root)}
-          {group.attempts.length > 1 ? ` · ${group.attempts.length} attempts` : ""}
+    <div className="agent-run-row-shell">
+      <button
+        type="button"
+        className={`agent-run-row ${latest.status}`}
+        onClick={() => onInspectTask(latest.operation_id)}
+      >
+        <span className="agent-run-state" />
+        <span className="agent-run-copy">
+          <span className="eyebrow">
+            {agentTaskName(group.root)}
+            {group.attempts.length > 1 ? ` · ${group.attempts.length} attempts` : ""}
+          </span>
+          <strong>{latest.error || latest.status_message || latest.status}</strong>
         </span>
-        <strong>{latest.error || latest.status_message || latest.status}</strong>
-      </span>
-      <span className="agent-run-meta">
-        <span className={`status-pill ${latest.status}`}>{latest.status}</span>
-        <time dateTime={latest.updated_at}>{new Date(latest.updated_at).toLocaleString()}</time>
-      </span>
-    </button>
+        <span className="agent-run-meta">
+          <span className={`status-pill ${latest.status}`}>{latest.status}</span>
+          <time dateTime={latest.updated_at}>{new Date(latest.updated_at).toLocaleString()}</time>
+        </span>
+      </button>
+      {(latest.status === "failed" ||
+        latest.status === "interrupted" ||
+        latest.status === "paused") && (
+        <button
+          type="button"
+          className="icon-button compact agent-run-dismiss"
+          aria-label="Dismiss agent task notification"
+          onClick={() => onDismissTask(latest.operation_id)}
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
   );
 }
 

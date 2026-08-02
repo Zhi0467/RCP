@@ -392,6 +392,58 @@ export interface AgentTask {
   debug_receipts?: AgentTaskReceipt[];
 }
 
+export interface AgentUsageRecord {
+  usage_id: string;
+  project_id: string;
+  operation_id: string;
+  task_kind: AgentTaskKind;
+  provider: string;
+  model?: string | null;
+  provider_profile: string;
+  provider_event_type: string;
+  dedupe_key: string;
+  counted: boolean;
+  count_reason: "counted" | "duplicate" | "invalid";
+  created_at: string;
+  processed_input_tokens: number;
+  generated_tokens: number;
+  cached_input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_write_input_tokens: number;
+  reasoning_output_tokens: number;
+  reported_input_tokens?: number | null;
+  reported_output_tokens?: number | null;
+  reported_total_tokens?: number | null;
+  provider_fields: Record<string, unknown>;
+}
+
+export interface AgentUsageCell {
+  task_kind: AgentTaskKind;
+  provider: string;
+  processed_input_tokens: number;
+  generated_tokens: number;
+  cached_input_tokens: number;
+  counted_records: number;
+}
+
+export interface AgentUsageMetric {
+  total_tokens: number;
+  cached_tokens: number;
+  cache_share: number;
+  block_percent: number;
+  block_tokens: number;
+  cells: AgentUsageCell[];
+}
+
+export interface AgentUsageSnapshot {
+  project_id: string;
+  input_processed: AgentUsageMetric;
+  generated: AgentUsageMetric;
+  counted_records: number;
+  excluded_records: number;
+  records: AgentUsageRecord[];
+}
+
 export type StartAgentTask = (kind: AgentTaskKind, request: AgentTaskRequest) => Promise<AgentTask>;
 
 export interface ChatSummary {

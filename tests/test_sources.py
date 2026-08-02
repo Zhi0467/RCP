@@ -468,9 +468,7 @@ def test_app_chat_sessions_are_normalized_as_human_led_roots(manifest) -> None:
     assert session.remote_source_path is None
 
 
-def test_remote_canonical_app_chat_keeps_mirror_and_names_remote_original(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkeypatch) -> None:
     manifest.machines.append(MachineConfig(alias="remote-1", host="research.example"))
     state_repository = manifest.repositories[0]
     state_repository.machine = "remote-1"
@@ -525,25 +523,15 @@ def test_remote_canonical_app_chat_keeps_mirror_and_names_remote_original(
     state = GraphState(project_truth_scope=manifest.project.truth_scope)
     on_owner = assembler.chat_context(
         state,
-        index=index,
         run_truth_scope=["repo-a"],
-        execution_machine="remote-1",
     )
     from_laptop = assembler.chat_context(
         state,
-        index=index,
         run_truth_scope=["repo-a"],
-        execution_machine="laptop",
     )
 
-    assert on_owner.conversations_unreachable == 0
-    assert [(item.host, item.path) for item in on_owner.conversations] == [
-        ("", "/remote/project/.research/chat/remote-chat.jsonl")
-    ]
-    assert from_laptop.conversations_unreachable == 0
-    assert [(item.host, item.path) for item in from_laptop.conversations] == [
-        ("research.example", "/remote/project/.research/chat/remote-chat.jsonl")
-    ]
+    assert "conversations" not in on_owner.model_dump()
+    assert "conversations" not in from_laptop.model_dump()
 
 
 def test_context_materializes_terminal_bounded_normalized_slices(manifest, tmp_path) -> None:
@@ -676,12 +664,8 @@ def test_stale_record_cursor_drops_one_session_and_reports_it(manifest, tmp_path
     )
 
 
-def test_chat_context_names_run_scope_sessions_not_provider_roots(manifest, tmp_path) -> None:
-    """Chat carries the same conversation boundary as an ingest run.
-
-    Naming the provider root instead would hand the agent every conversation on
-    the machine, including repositories outside this run's truth scope.
-    """
+def test_chat_context_does_not_include_indexed_transcripts(manifest, tmp_path) -> None:
+    """Chat stays independent even when provider sources are indexed."""
 
     root = Path(next(iter(manifest.sources.codex_roots)))
     for alias in ("repo-a", "repo-b"):
@@ -700,28 +684,21 @@ def test_chat_context_names_run_scope_sessions_not_provider_roots(manifest, tmp_
         )
     indexer = ConversationIndexer(manifest, tmp_path / "source-cache")
 
+    index = indexer.build()
+    assert index.sessions
     context = ContextAssembler(manifest, indexer).chat_context(
         GraphState(project_truth_scope=manifest.project.truth_scope),
-        index=indexer.build(),
         run_truth_scope=["repo-a"],
     )
 
-    paths = {item.path for item in context.conversations}
-    assert paths == {str(root / "repo-a.jsonl")}
-    assert str(root) not in paths
-    assert context.conversations_truncated == 0
+    assert "conversations" not in context.model_dump()
+    assert str(root / "repo-a.jsonl") not in str(context.model_dump())
 
 
-def test_chat_conversation_pointers_name_a_file_the_agent_can_open(
+def test_chat_context_does_not_resolve_remote_transcript_pointers(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    """A local cache path paired with a remote host points at nothing.
-
-    The indexer may fetch a remote conversation into a local cache; that copy is
-    RCP's, not the agent's. The pointer names the original file and the host to
-    reach it on, and a conversation no agent on that machine can reach is dropped
-    and counted rather than named.
-    """
+    """Remote source indexing cannot add transcript inputs to chat."""
 
     manifest.machines.append(MachineConfig(alias="remote-1", host="research.example"))
     manifest.repositories[0].machine = "remote-1"
@@ -773,21 +750,12 @@ def test_chat_conversation_pointers_name_a_file_the_agent_can_open(
         "_cache_remote_files",
         cache_remote_files,
     )
-    state = GraphState(project_truth_scope=manifest.project.truth_scope)
-    assembler = ContextAssembler(manifest, indexer)
     index = indexer.build()
+    assert index.sessions
+    state = GraphState(project_truth_scope=manifest.project.truth_scope)
+    context = ContextAssembler(manifest, indexer).chat_context(state, run_truth_scope=["repo-a"])
 
-    remote_sessions = assembler.chat_context(state, index=index, run_truth_scope=["repo-a"])
-    unreachable = assembler.chat_context(
-        state, index=index, run_truth_scope=["repo-b"], execution_machine="remote-1"
-    )
-
-    assert {(item.host, item.path) for item in remote_sessions.conversations} == {
-        ("research.example", "/remote/sessions/claude.jsonl"),
-        ("research.example", "/remote/sessions/codex.jsonl"),
-    }
-    assert unreachable.conversations == []
-    assert unreachable.conversations_unreachable == 1
+    assert "conversations" not in context.model_dump()
 
 
 def test_cursor_survives_a_rewritten_source_file(manifest, tmp_path) -> None:
@@ -1005,6 +973,52 @@ def test_refresh_run_rebuilds_cached_conversation_index(manifest, tmp_path) -> N
     )
 
     assert [session.key for session in context.sessions] == ["repo-a/laptop/codex/new-session"]
+    assert context.source_roots == {}
+
+
+def test_refresh_source_failure_keeps_provider_fallback_context(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    service = ProjectService(
+        manifest,
+        HistoryManager(manifest),
+        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+    )
+
+    def fail_source_assembly(*_args, **_kwargs):
+        raise PermissionError("provider source is unreadable")
+
+    monkeypatch.setattr(service, "index_snapshot", fail_source_assembly)
+    context = service.assemble_run(
+        RunRequest(run_truth_scope=["repo-a"]),
+        surface="refresh",
+    )
+
+    assert context.sessions == []
+    assert any("source assembly unavailable" in error for error in context.source_errors)
+    assert set(context.source_roots) == {"claude", "codex"}
+    assert context.coverage_path.endswith("coverage.json")
+
+    contract = PromptFactory.graph_task_contract(
+        "refresh",
+        project_name=context.project_name,
+        ontology_path=f"{context.graph_path}#ontology",
+        graph_path=context.graph_path,
+        research_path=context.research_md_path,
+        conversation_roots=context.source_roots,
+        authorized_session_keys_path="/stage/authorized-session-keys.json",
+        cursor_path="/state/cursors.json",
+        coverage_path=context.coverage_path,
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        source_errors=context.source_errors,
+    )
+
+    assert "Source assembly warning" in contract
+    assert "provider roots directly" in contract
+    assert "last accounted coverage boundary" in contract
+    assert context.source_roots["codex"] in contract
 
 
 def test_out_of_scope_run_is_rejected_before_index(manifest, tmp_path, monkeypatch) -> None:

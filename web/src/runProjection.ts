@@ -16,10 +16,19 @@ export interface RunTaskProjection {
 const actionableStatuses = new Set(["failed", "paused", "interrupted"]);
 const runningStatuses = new Set(["queued", "running", "pausing"]);
 
-export function buildRunTaskProjection(tasks: AgentTask[]): RunTaskProjection {
-  const groups = groupAgentTasks(tasks);
+export function buildRunTaskProjection(
+  tasks: AgentTask[],
+  dismissedTaskIds: ReadonlySet<string> = new Set(),
+): RunTaskProjection {
+  const groups = groupAgentTasks(tasks).filter(
+    (group) => !isTaskNotificationSuperseded(group.latest, tasks),
+  );
   return {
-    actionable: groups.filter((group) => actionableStatuses.has(group.latest.status)),
+    actionable: groups.filter(
+      (group) =>
+        actionableStatuses.has(group.latest.status) &&
+        !dismissedTaskIds.has(group.latest.operation_id),
+    ),
     running: groups.filter((group) => runningStatuses.has(group.latest.status)),
     completed: groups.filter((group) => group.latest.status === "succeeded"),
   };
@@ -77,5 +86,19 @@ function compareTaskAscending(left: AgentTask, right: AgentTask): number {
   return (
     left.created_at.localeCompare(right.created_at) ||
     left.operation_id.localeCompare(right.operation_id)
+  );
+}
+
+function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
+  if (
+    (task.kind !== "seed" && task.kind !== "refresh") ||
+    (task.status !== "failed" && task.status !== "interrupted")
+  )
+    return false;
+  return tasks.some(
+    (candidate) =>
+      (candidate.kind === "seed" || candidate.kind === "refresh") &&
+      candidate.status === "succeeded" &&
+      compareTaskAscending(candidate, task) > 0,
   );
 }
