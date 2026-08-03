@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState, Patch
+from rcp.core.validation.proposals import proposal_is_stale
 from rcp.core.validation.report import ValidationReport
 
 
@@ -15,6 +16,7 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
             "set_standing",
             "resolve_ambiguities",
             "set_ontology",
+            "set_project_truth_scope",
         }:
             return
         if len(patch.ops) == 1 and names[0] == "create_nodes":
@@ -82,22 +84,12 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
     if proposal is None or proposal.status != "pending":
         report.reject("proposal-not-pending", "The referenced proposal is not pending.", revision)
         return
-    stale_nodes = [
-        node_id
-        for node_id in proposal.related_node_ids
-        if node_id not in state.nodes or state.nodes[node_id].updated_rev > proposal.base_rev
-    ]
-    stale_config = [
-        key
-        for key in proposal.related_config_keys
-        if state.config_revisions.get(key, 0) > proposal.base_rev
-    ]
     status = resolution.get("status")
-    is_stale = bool(stale_nodes or stale_config)
+    is_stale = proposal_is_stale(state, proposal)
     if is_stale and status != "withdrawn":
         report.reject(
             "stale-proposal",
-            "The underlying node or project setting changed after this proposal was written.",
+            "A node, project setting, or semantic cause changed after this proposal was written.",
             revision,
         )
     semantic_ops = [

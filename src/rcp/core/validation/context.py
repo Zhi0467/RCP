@@ -28,6 +28,7 @@ class OpContext:
     state_repository: str | None
     mode: Literal["admission", "replay"]
     experiment_control_node_id: str | None = None
+    reference_patch: Patch | None = None
 
 
 #: Validates one operation, reporting into ``ctx.report``. Returns the oldest
@@ -35,8 +36,9 @@ class OpContext:
 OpValidator = Callable[[dict[str, Any], OpContext], Any]
 
 #: Returns the graph nodes and project-config keys one operation depends on, as
-#: ``(candidate node ids, config keys)``. Candidates are filtered against the
-#: graph by the caller, so a rule may return ids that do not exist.
+#: ``(candidate node ids, config keys)``. Node ids are retained even when the
+#: outer patch creates them, because RCP derives Proposal bookkeeping before the
+#: staged patch has materialized those nodes.
 OpDependencies = Callable[[dict[str, Any], GraphState], tuple[list[Any], list[str]]]
 
 

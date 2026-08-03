@@ -2,24 +2,15 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from rcp.config import RepositoryConfig
+from rcp.core.authority import DECISION_PROPOSAL_FIELDS, HYPOTHESIS_PROPOSAL_FIELDS
 from rcp.core.models import (
-    Ambiguity,
-    Blocker,
     CoverageBoundary,
-    Decision,
-    Evidence,
-    Experiment,
+    ExperimentAttempt,
     GatedCard,
-    GlossaryTerm,
-    Hypothesis,
-    OntologyState,
     Patch,
-    Proposal,
-    ResearchQuestion,
-    Standing,
+    SourceRef,
 )
 
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
@@ -30,49 +21,104 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class AgentResearchQuestion(ResearchQuestion):
+class AgentSourceRef(SourceRef):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AgentExperimentAttempt(ExperimentAttempt):
+    model_config = ConfigDict(extra="forbid")
+
+    source_refs: list[AgentSourceRef] = Field(default_factory=list)
+
+
+class AgentGatedCard(GatedCard):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AgentNode(_StrictModel):
     id: str = Field(pattern=rf"^{_NODE_ID}$")
-    standing: Literal[Standing.ASSERTED] = Standing.ASSERTED
-    created_rev: Literal[0] = 0
-    updated_rev: Literal[0] = 0
+    title: str
+    extension_type: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+    )
+    extension_fields: dict[str, str | float | bool | list[str]] = Field(default_factory=dict)
+    source_refs: list[AgentSourceRef] = Field(default_factory=list)
 
 
-class AgentHypothesis(Hypothesis):
-    id: str = Field(pattern=rf"^{_NODE_ID}$")
-    standing: Literal[Standing.ASSERTED] = Standing.ASSERTED
-    created_rev: Literal[0] = 0
-    updated_rev: Literal[0] = 0
+class AgentResearchQuestion(AgentNode):
+    type: Literal["research_question"]
+    question: str
+    motivation: str = ""
+    scope: str = ""
+    status: Literal["open", "answered", "abandoned", "superseded"] = "open"
 
 
-class AgentDecision(Decision):
-    id: str = Field(pattern=rf"^{_NODE_ID}$")
-    standing: Literal[Standing.ASSERTED] = Standing.ASSERTED
-    created_rev: Literal[0] = 0
-    updated_rev: Literal[0] = 0
+class AgentHypothesis(AgentNode):
+    type: Literal["hypothesis"]
+    statement: str
+    rationale: str = ""
+    predictions: list[str] = Field(default_factory=list)
+    scope: str = ""
+    status: Literal["proposed"] = "proposed"
 
 
-class AgentExperiment(Experiment):
-    id: str = Field(pattern=rf"^{_NODE_ID}$")
-    standing: Literal[Standing.ASSERTED] = Standing.ASSERTED
-    created_rev: Literal[0] = 0
-    updated_rev: Literal[0] = 0
+class AgentDecision(AgentNode):
+    type: Literal["decision"]
+    question: str
+    options: list[str] = Field(default_factory=list)
+    selected_option: None = None
+    rationale: str | None = None
+    consequences: list[str] = Field(default_factory=list)
+    status: Literal["open"] = "open"
 
 
-class AgentEvidence(Evidence):
-    id: str = Field(pattern=rf"^{_NODE_ID}$")
+class AgentExperiment(AgentNode):
+    type: Literal["experiment"]
+    objective: str
+    design: str = ""
+    expected_outcomes: list[str] = Field(default_factory=list)
+    interpretation_rules: list[str] = Field(default_factory=list)
+    completion_criteria: list[str] = Field(default_factory=list)
+    attempt_ceiling: int = Field(default=5, ge=1)
+    status: Literal[
+        "proposed",
+        "designing",
+        "implementing",
+        "debugging",
+        "running",
+        "analyzing",
+        "completed",
+        "blocked",
+        "abandoned",
+        "superseded",
+    ] = "proposed"
+    attempts: list[AgentExperimentAttempt] = Field(default_factory=list)
+    current_summary: str = ""
+    next_action: str | None = None
+
+
+class AgentEvidence(AgentNode):
+    type: Literal["evidence"]
+    observation: str
+    interpretation: str = ""
+    strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] = "preliminary"
+    validity: Literal["valid", "qualified", "invalid", "superseded"] = "valid"
     origin: Literal[
         "internal_run", "external_publication", "external_instance", "analytic", "unknown"
     ]
-    standing: Literal[Standing.ASSERTED] = Standing.ASSERTED
-    created_rev: Literal[0] = 0
-    updated_rev: Literal[0] = 0
+    artifact_refs: list[str] = Field(default_factory=list)
 
 
-class AgentBlocker(Blocker):
-    id: str = Field(pattern=rf"^{_NODE_ID}$")
-    standing: Literal[Standing.ASSERTED] = Standing.ASSERTED
-    created_rev: Literal[0] = 0
-    updated_rev: Literal[0] = 0
+class AgentBlocker(AgentNode):
+    type: Literal["blocker"]
+    description: str
+    blocker_type: Literal[
+        "scientific", "design", "data", "implementation", "infrastructure", "unknown"
+    ] = "unknown"
+    status: Literal["open", "resolved", "superseded"] = "open"
+    resolution_condition: str = ""
+    recommended_action: str | None = None
 
 
 AgentProjectNode = Annotated[
@@ -99,40 +145,24 @@ class EvidenceEdgeCause(_StrictModel):
     ref_id: str
 
 
-class DecisionCause(_StrictModel):
-    kind: Literal["decision"]
-    ref_id: str
-
-
-class ProposalResolutionCause(_StrictModel):
-    kind: Literal["proposal_resolution"]
-    ref_id: str
-
-
-BeliefCause = Annotated[
-    EvidenceEdgeCause | DecisionCause | ProposalResolutionCause,
-    Field(discriminator="kind"),
-]
-
-
 class NodeUpdate(_StrictModel):
     id: str
     changes: dict[str, Any]
-    cause: BeliefCause | None = None
+    cause: EvidenceEdgeCause | None = None
 
 
 class SupersedeNode(_StrictModel):
     id: str
     superseded_by: str | None = None
     explanation: str = ""
-    cause: BeliefCause | None = None
+    cause: EvidenceEdgeCause | None = None
 
 
 class NodeMerge(_StrictModel):
     duplicate: str
     canonical: str
     explanation: str = ""
-    cause: BeliefCause | None = None
+    cause: EvidenceEdgeCause | None = None
 
 
 class AmbiguityResolution(_StrictModel):
@@ -140,21 +170,20 @@ class AmbiguityResolution(_StrictModel):
     status: Literal["resolved", "dismissed"]
 
 
-class ProposalWithdrawal(_StrictModel):
-    id: str
-    status: Literal["withdrawn"]
-    reason: str | None = None
-
-
-class AgentAmbiguity(Ambiguity):
-    model_config = ConfigDict(extra="forbid")
+class AgentAmbiguity(_StrictModel):
     id: str = Field(pattern=rf"^amb/{_SLUG}$")
-    raised_rev: Literal[0] = 0
+    question: str
+    why_it_matters: str
+    candidates: list[str] = Field(default_factory=list)
+    related_node_ids: list[str] = Field(default_factory=list)
+    artifact_refs: list[str] = Field(default_factory=list)
+    status: Literal["open", "resolved", "dismissed"] = "open"
 
 
-class AgentGlossaryTerm(GlossaryTerm):
-    model_config = ConfigDict(extra="forbid")
-    updated_rev: Literal[0] = 0
+class AgentGlossaryTerm(_StrictModel):
+    term: str
+    plain_definition: str
+    where_defined: str | None = None
 
 
 class AgentCoverageBoundary(CoverageBoundary):
@@ -211,48 +240,37 @@ class SetCoverageOperation(_StrictModel):
     coverage: AgentCoverageBoundary
 
 
-class SetProjectTruthScopeOperation(_StrictModel):
-    op: Literal["set_project_truth_scope"]
-    truth_scope: list[str] = Field(min_length=1)
-    repository: RepositoryConfig | None = None
+class ProposalNodeUpdate(NodeUpdate):
+    @model_validator(mode="after")
+    def validate_agent_authority_shape(self) -> ProposalNodeUpdate:
+        fields = frozenset(self.changes)
+        if not fields or not (
+            fields <= DECISION_PROPOSAL_FIELDS or fields == HYPOTHESIS_PROPOSAL_FIELDS
+        ):
+            raise ValueError(
+                "An agent Proposal may change only Decision selected_option/status or "
+                "Hypothesis status."
+            )
+        if self.cause is not None and fields != HYPOTHESIS_PROPOSAL_FIELDS:
+            raise ValueError("Only a Hypothesis status Proposal may carry an evidence_edge cause.")
+        return self
 
 
-class SetOntologyOperation(_StrictModel):
-    op: Literal["set_ontology"]
-    ontology: OntologyState
+class ProposalUpdateNodesOperation(_StrictModel):
+    op: Literal["update_nodes"]
+    nodes: list[ProposalNodeUpdate] = Field(min_length=1, max_length=1)
 
 
-ProposalReplayOperation = Annotated[
-    CreateNodesOperation
-    | UpdateNodesOperation
-    | CreateEdgesOperation
-    | RemoveEdgesOperation
-    | SupersedeNodesOperation
-    | SetProjectTruthScopeOperation
-    | SetOntologyOperation,
-    Field(discriminator="op"),
-]
-
-
-class AgentProposal(Proposal):
-    model_config = ConfigDict(extra="forbid")
+class AgentProposal(_StrictModel):
     id: str = Field(pattern=rf"^prop/{_SLUG}$")
-    card: GatedCard
-    ops: list[ProposalReplayOperation] = Field(min_length=1)
-    status: Literal["pending"] = "pending"
-    raised_rev: Literal[0] = 0
-    resolved_rev: None = None
-    rejection_reason: None = None
+    title: str
+    card: AgentGatedCard
+    ops: list[ProposalUpdateNodesOperation] = Field(min_length=1, max_length=1)
 
 
 class CreateProposalsOperation(_StrictModel):
     op: Literal["create_proposals"]
     proposals: list[AgentProposal] = Field(min_length=1)
-
-
-class ResolveProposalsOperation(_StrictModel):
-    op: Literal["resolve_proposals"]
-    resolutions: list[ProposalWithdrawal] = Field(min_length=1)
 
 
 AgentOperation = Annotated[
@@ -265,86 +283,145 @@ AgentOperation = Annotated[
     | CreateAmbiguitiesOperation
     | ResolveAmbiguitiesOperation
     | CreateProposalsOperation
-    | ResolveProposalsOperation
     | UpsertGlossaryOperation
     | SetCoverageOperation,
     Field(discriminator="op"),
 ]
 
 
-class AgentPatch(Patch):
-    model_config = ConfigDict(extra="forbid")
-    revision: Literal[0] = 0
-    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop"]
-    author: Literal["agent"]
+class AgentPatch(_StrictModel):
+    summary: str
     ops: list[AgentOperation]
+    repositories_read: list[str] = Field(default_factory=list)
+    change_summary: list[str] = Field(default_factory=list)
 
 
 def agent_output_schema() -> dict[str, object]:
-    schema = AgentPatch.model_json_schema()
-    properties = schema.get("properties", {})
-    if isinstance(properties, dict):
-        properties.pop("admission", None)
-        properties.pop("admission_messages", None)
-        properties.pop("experiment_control_node_id", None)
-        properties.pop("experiment_decision_bundle", None)
-    required = schema.get("required")
-    if isinstance(required, list):
-        schema["required"] = [
-            name
-            for name in required
-            if name
-            not in {
-                "admission",
-                "admission_messages",
-                "experiment_control_node_id",
-                "experiment_decision_bundle",
-            }
-        ]
-    definitions = schema.get("$defs", {})
-    if isinstance(definitions, dict):
-        definitions.pop("ValidationMessage", None)
-    return schema
+    return AgentPatch.model_json_schema()
 
 
-def validate_agent_patch_shape(patch: Patch) -> None:
+def parse_agent_patch_json(value: str) -> AgentPatch:
+    """Parse one semantic deliverable while preserving actionable schema diagnostics."""
+
     try:
-        AgentPatch.model_validate(patch.model_dump(mode="python"))
+        return AgentPatch.model_validate_json(value)
     except ValidationError as exc:
-        details: list[str] = []
-        for error in exc.errors(include_url=False):
-            location = ".".join(str(part) for part in error["loc"])
-            detail = f"{location}: {error['msg']}" if location else error["msg"]
-            if detail not in details:
-                details.append(detail)
-            if len(details) == 8:
-                break
-        suffix = "" if len(exc.errors()) <= len(details) else " Additional shape errors omitted."
-        raise ValueError(
-            "Agent patch does not match the graph operation schema: " + "; ".join(details) + suffix
-        ) from exc
+        raise _agent_patch_shape_error(exc) from exc
 
 
-def normalize_agent_patch_bookkeeping(patch: Patch) -> Patch:
-    """Reset revision fields that are assigned by the history manager."""
+def validate_agent_patch_shape(patch: AgentPatch | Patch) -> None:
+    value: AgentPatch | dict[str, Any]
+    if isinstance(patch, AgentPatch):
+        value = patch
+    else:
+        value = {
+            "summary": patch.summary,
+            "ops": _strip_rcp_bookkeeping(patch.ops),
+            "repositories_read": patch.repositories_read,
+            "change_summary": patch.change_summary,
+        }
+    try:
+        AgentPatch.model_validate(value)
+    except ValidationError as exc:
+        raise _agent_patch_shape_error(exc) from exc
 
-    data = patch.model_dump(mode="python")
-    data["revision"] = 0
-    data["admission"] = "accepted"
-    data["admission_messages"] = []
-    for operation in data["ops"]:
-        name = operation.get("op")
+
+def _agent_patch_shape_error(exc: ValidationError) -> ValueError:
+    details: list[str] = []
+    for error in exc.errors(include_url=False):
+        location = ".".join(str(part) for part in error["loc"])
+        detail = f"{location}: {error['msg']}" if location else error["msg"]
+        if detail not in details:
+            details.append(detail)
+        if len(details) == 8:
+            break
+    suffix = "" if len(exc.errors()) <= len(details) else " Additional shape errors omitted."
+    return ValueError(
+        "Agent patch does not match the graph operation schema: " + "; ".join(details) + suffix
+    )
+
+
+def prepare_agent_patch(
+    draft: AgentPatch,
+    *,
+    kind: Literal["seed", "refresh", "work", "experiment_loop"],
+    run_truth_scope: list[str],
+) -> Patch:
+    """Wrap one semantic agent deliverable in RCP-owned canonical metadata."""
+
+    operations = draft.model_dump(mode="python", exclude_none=True, exclude_unset=True)["ops"]
+    for operation in operations:
+        if operation.get("op") != "create_proposals":
+            continue
+        for proposal in operation.get("proposals", []):
+            proposal.update(
+                {
+                    "related_node_ids": [],
+                    "related_config_keys": [],
+                    "base_rev": 0,
+                    "status": "pending",
+                    "raised_rev": 0,
+                    "resolved_rev": None,
+                    "rejection_reason": None,
+                }
+            )
+    return Patch(
+        kind=kind,
+        author="agent",
+        summary=draft.summary,
+        ops=operations,
+        run_truth_scope=list(run_truth_scope),
+        repositories_read=list(draft.repositories_read),
+        change_summary=list(draft.change_summary),
+    )
+
+
+def _strip_rcp_bookkeeping(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stripped: list[dict[str, Any]] = []
+    for operation in operations:
+        item = {key: value for key, value in operation.items()}
+        name = item.get("op")
         if name == "create_nodes":
-            for node in operation.get("nodes", []):
-                node["created_rev"] = 0
-                node["updated_rev"] = 0
+            item["nodes"] = [
+                {
+                    key: value
+                    for key, value in node.items()
+                    if key not in {"standing", "created_rev", "updated_rev"}
+                }
+                for node in item.get("nodes", [])
+            ]
+        elif name == "create_edges":
+            item["edges"] = [
+                {key: value for key, value in edge.items() if key not in {"layer", "created_rev"}}
+                for edge in item.get("edges", [])
+            ]
         elif name == "create_ambiguities":
-            for ambiguity in operation.get("ambiguities", []):
-                ambiguity["raised_rev"] = 0
+            item["ambiguities"] = [
+                {key: value for key, value in ambiguity.items() if key != "raised_rev"}
+                for ambiguity in item.get("ambiguities", [])
+            ]
         elif name == "create_proposals":
-            for proposal in operation.get("proposals", []):
-                proposal["raised_rev"] = 0
+            item["proposals"] = [
+                {
+                    key: value
+                    for key, value in proposal.items()
+                    if key
+                    not in {
+                        "related_node_ids",
+                        "related_config_keys",
+                        "base_rev",
+                        "status",
+                        "raised_rev",
+                        "resolved_rev",
+                        "rejection_reason",
+                    }
+                }
+                for proposal in item.get("proposals", [])
+            ]
         elif name == "upsert_glossary":
-            for term in operation.get("terms", []):
-                term["updated_rev"] = 0
-    return Patch.model_validate(data)
+            item["terms"] = [
+                {key: value for key, value in term.items() if key != "updated_rev"}
+                for term in item.get("terms", [])
+            ]
+        stripped.append(item)
+    return stripped

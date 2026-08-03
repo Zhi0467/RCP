@@ -15,7 +15,6 @@ from rcp.runs.chat import (
     _chat_stage_name,
     _clear_stale_patch,
     _discover_chat_artifacts,
-    _first_chat_base_revision,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
     _read_chat_patch,
@@ -50,7 +49,11 @@ async def stream_discuss_run(
     execution: AgentTaskExecution | None = None,
 ) -> AsyncIterator[str]:
     """Run one Discuss turn over graph, node, request, and repository context."""
-    resuming = bool(execution is not None and execution.reuses_native_checkpoint)
+    continuation = execution.continuation if execution is not None else "fresh"
+    reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
+    resuming = continuation == "resume"
+    retrying = continuation == "retry"
+    retry_attempt = continuation in {"retry", "handoff"}
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
     try:
         profile = service.resolve_agent_profile(
@@ -75,14 +78,6 @@ async def stream_discuss_run(
     try:
         try:
             context = service.assemble_chat(request)
-            # A resumed turn re-assembles its context, so `graph_revision` is now
-            # whatever the graph has moved to — but the agent is still finishing
-            # reasoning it began at the original revision. That first revision is
-            # the one its patch must be judged against, and the context receipt
-            # from the interrupted attempt is where it survives.
-            base_revision = context.graph_revision
-            if resuming:
-                base_revision = _first_chat_base_revision(execution, base_revision)
             _record_chat_context_receipt(execution, context, surface=surface)
             # One scratch folder per conversation, not per turn. Resuming a native
             # session means resuming it in the directory it was given — Claude keys
@@ -90,7 +85,7 @@ async def stream_discuss_run(
             # remote, reuses the same folder and _sweep_stale_stages ages it out.
             stage_name = _chat_stage_name(service, request, execution)
             if execution_host:
-                if resuming:
+                if reusing_checkpoint:
                     stage_root = _validated_remote_chat_resume_stage(
                         execution, execution_host, stage_name
                     )
@@ -100,7 +95,7 @@ async def stream_discuss_run(
                 assert remote_stage.root is not None
                 if execution is not None:
                     execution.checkpoint_stage(execution_host, str(remote_stage.root))
-                if not resuming:
+                if not reusing_checkpoint or retrying:
                     context = context.model_copy(
                         update=_stage_context_paths(
                             context, service, remote_stage, execution_machine.alias
@@ -110,7 +105,7 @@ async def stream_discuss_run(
             else:
                 stage_root = _swept_stage_root(data_dir)
                 expected_stage = stage_root / stage_name
-                if resuming:
+                if reusing_checkpoint:
                     local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
                 else:
                     local_stage = expected_stage
@@ -118,7 +113,7 @@ async def stream_discuss_run(
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
                 workspace = local_stage
-            if not resuming:
+            if not reusing_checkpoint:
                 # A reused folder must not hand this turn the previous turn's patch.
                 _clear_stale_patch(workspace, remote_stage)
             artifact_scope_id = (
@@ -145,11 +140,12 @@ async def stream_discuss_run(
                 execution_machine.alias,
             )
             token = _task_token(execution)
+            if reusing_checkpoint and not request.session_id:
+                raise ValueError(
+                    "The continued chat has no native agent session; retry it from a clean "
+                    "attempt instead."
+                )
             if resuming:
-                if not request.session_id:
-                    raise ValueError(
-                        "The interrupted chat has no native agent session; retry it instead."
-                    )
                 assert execution is not None
                 original_contract_path = _parent_task_contract_path(
                     execution, local_stage, remote_stage
@@ -164,6 +160,8 @@ async def stream_discuss_run(
                     remote_stage,
                     f"task-{token}-resume.md",
                     contract,
+                    execution=execution,
+                    role="discuss_resume",
                 )
             else:
                 assert request.message is not None
@@ -180,7 +178,7 @@ async def stream_discuss_run(
                         f"task-{token}-retry-diagnostics.json",
                         {"prior_attempt_diagnostics": list(execution.retry_feedback)},
                     )
-                    if execution is not None and execution.retry_feedback
+                    if execution is not None and (execution.retry_feedback or retry_attempt)
                     else None
                 )
                 contract = PromptFactory.discuss_task_contract(
@@ -198,12 +196,36 @@ async def stream_discuss_run(
                     artifact_path=str(artifact_directory),
                     retry_diagnostics_path=retry_diagnostics_path,
                 )
-                contract_path, prompt = _stage_task_contract(
+                current_contract_path, current_prompt = _stage_task_contract(
                     local_stage,
                     remote_stage,
-                    f"task-{token}-initial.md",
+                    f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
                     contract,
+                    execution=execution,
+                    role="discuss_retry_base" if retry_attempt else "discuss",
                 )
+                if retrying:
+                    assert execution is not None
+                    assert retry_diagnostics_path is not None
+                    original_contract_path = _parent_task_contract_path(
+                        execution, local_stage, remote_stage
+                    )
+                    retry_contract = PromptFactory.continuation_task_contract(
+                        original_contract_path=original_contract_path,
+                        current_contract_path=current_contract_path,
+                        diagnostics_path=retry_diagnostics_path,
+                        mode="retry",
+                    )
+                    contract_path, prompt = _stage_task_contract(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-retry.md",
+                        retry_contract,
+                        execution=execution,
+                        role="discuss_retry",
+                    )
+                else:
+                    contract_path, prompt = current_contract_path, current_prompt
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
@@ -214,14 +236,14 @@ async def stream_discuss_run(
             prompt=prompt,
             contract_path=contract_path,
             remote=bool(execution_host),
-            resumed=resuming,
-            continuation=execution.continuation if execution is not None else "fresh",
+            resumed=reusing_checkpoint,
+            continuation=continuation,
             extra={
                 "surface": surface,
                 "mode": "discuss",
                 "capability": "discuss",
                 "network_access": True,
-                "launch_kind": "resume" if resuming else "initial",
+                "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
                 "write_directory_count": 0,
             },
         )

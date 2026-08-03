@@ -25,31 +25,38 @@ CLI or Claude Code.
 
 1. Refresh the project with the real provider. Let it finish.
 2. Start a **Work** turn. Ask for one harmless repository edit, one command, and
-   a small optional graph reflection. Let it finish.
+   a small optional semantic graph reflection. Have it run the staged validator
+   client before finishing.
 3. Repeat the Work launch with the other installed provider when both Codex and
    Claude are available.
 
 ## Assert
 
 - `check provider_launched` — the CLI actually started; no flag was rejected
-- `check_work_permissions` — Codex uses automatic non-interactive review and
-  Claude uses `acceptEdits`; both can edit the exact run-scope fixture and write
-  the optional scratch patch without an RCP approval interaction. Claude's
-  `auto` argument is deliberately excluded because its non-interactive mode
-  normalizes it to `default` and denies the required writes
+- `check_work_permissions` — Codex uses
+  `--dangerously-bypass-approvals-and-sandbox` and Claude uses
+  `--permission-mode bypassPermissions`; both have unrestricted repository and
+  tooling access without an RCP approval interaction
 - `check_network_enabled` — the launch receipt records network access for Work
   and the provider accepts the setting
+- `check_validator_client` — the immutable Python client runs from the writable
+  Work workspace, receives a response from RCP, and the task records the bounded
+  self-check count and result
 - `check patch_came_from_the_file` — read from `patch.json` in the scratch
   folder, never parsed out of the message stream
+- `check patch_is_semantic_only` — the provider supplies graph meaning while RCP
+  adds patch, Proposal, revision, scope, and lifecycle bookkeeping
 - `check answer_came_from_the_labelled_final_message` — not "the last text
   emitted", which for Codex is usually a tool or reasoning item
-- `check patch_validated` — whatever it wrote passed the schema
+- `check patch_validated` — whatever it wrote passed the live in-process
+  semantic validator and was re-prepared and revalidated at Apply
 - `check whole_graph_entered_the_run` — full graph and canonical `research.md`
 - `check only_run_scope_repos_entered_as_pointers` — project scope did not leak
-  in as raw content
+  in as raw content; those pointers are context, not a Work permission allowlist
 - `check provider_cwd_was_the_scratch_folder`
-- `check_canonical_state_not_a_work_output` — no provider receives a direct
-  canonical `.research` write path
+- `check_canonical_state_boundary_is_prompt_only` — the Work contract forbids
+  direct canonical `.research` writes and the receipt describes that known
+  limitation as prompt-enforced for both providers, never sandbox-enforced
 - `check graph_matches_log`
 - `check no_server_traceback`
 
@@ -58,6 +65,7 @@ run and pinning them makes this useless.
 
 ## Failure means
 
-The seam between RCP and a real provider broke — a renamed flag, a changed
-output format, a prompt that stopped producing a parseable deliverable. A fake
-agent will pass happily through every one of these.
+The seam between RCP and a real provider broke — a renamed bypass flag, a changed
+output format, a staged validator client the provider cannot run, or a prompt
+that stopped producing a semantic deliverable. A fake agent will pass happily
+through every one of these.

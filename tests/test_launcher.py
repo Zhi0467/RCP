@@ -656,7 +656,7 @@ def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
     assert 'approval_policy="never"' in command
 
 
-def test_codex_work_uses_auto_review_and_exact_writable_roots() -> None:
+def test_codex_work_bypasses_approvals_and_sandbox() -> None:
     command = AgentLauncher._command(
         "codex",
         "run the experiment",
@@ -670,22 +670,17 @@ def test_codex_work_uses_auto_review_and_exact_writable_roots() -> None:
     )
 
     assert "--sandbox" not in command
-    assert 'approval_policy="on-request"' in command
-    assert 'approvals_reviewer="auto_review"' in command
-    assert 'default_permissions="rcp_work"' in command
-    default_index = command.index('default_permissions="rcp_work"')
-    assert command[default_index - 1] == "--config"
-    assert command.count('default_permissions="rcp_work"') == 1
+    assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert not any(item.startswith("sandbox_mode=") for item in command)
+    assert not any(item.startswith("approval_policy=") for item in command)
+    assert not any(item.startswith("approvals_reviewer=") for item in command)
+    assert not any(item.startswith("default_permissions=") for item in command)
+    assert not any(item.startswith("permissions={") for item in command)
+    assert not any("workspace_roots" in item for item in command)
     assert command[-1] == "-"
-    profile = next(item for item in command if item.startswith("permissions={"))
-    assert 'extends=":workspace"' in profile
-    assert 'workspace_roots={"/project/repo-a"=true}' in profile
-    assert 'filesystem={":workspace_roots"={"."="write",".research"="read"}}' in profile
-    assert 'network={enabled=true,domains={"*"="allow"}}' in profile
-    assert "inputs" not in profile
 
 
-def test_codex_work_resume_reapplies_the_same_permission_profile() -> None:
+def test_codex_work_resume_bypasses_approvals_and_sandbox() -> None:
     session_id = "019f0000-0000-7000-8000-000000000002"
     command = AgentLauncher._command(
         "codex",
@@ -702,37 +697,13 @@ def test_codex_work_resume_reapplies_the_same_permission_profile() -> None:
     assert command[:4] == ["codex", "exec", "resume", "--json"]
     assert "--sandbox" not in command
     assert not any(item.startswith("sandbox_mode=") for item in command)
-    assert 'approval_policy="on-request"' in command
-    assert 'approvals_reviewer="auto_review"' in command
-    assert any('workspace_roots={"/project/repo-a"=true}' in item for item in command)
+    assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert not any(item.startswith("approval_policy=") for item in command)
+    assert not any(item.startswith("approvals_reviewer=") for item in command)
+    assert not any(item.startswith("default_permissions=") for item in command)
+    assert not any(item.startswith("permissions={") for item in command)
+    assert not any("workspace_roots" in item for item in command)
     assert command[-2:] == [session_id, "-"]
-
-
-@pytest.mark.parametrize(
-    ("cwd", "write_dirs", "message"),
-    [
-        (Path("/project/.research"), [Path("/project")], "canonical .research"),
-        (Path("/data/chat-stage"), [Path("/project/.research")], "canonical .research"),
-        (Path("/data/chat-stage"), [Path("relative/repo")], "absolute paths"),
-    ],
-)
-def test_codex_work_rejects_unsafe_writable_roots(
-    cwd: Path,
-    write_dirs: list[Path],
-    message: str,
-) -> None:
-    with pytest.raises(ValueError, match=message):
-        AgentLauncher._command(
-            "codex",
-            "run the experiment",
-            cwd=cwd,
-            model=None,
-            reasoning=None,
-            session_id=None,
-            read_dirs=[],
-            write_dirs=write_dirs,
-            capability="work_auto",
-        )
 
 
 def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
@@ -756,7 +727,7 @@ def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
     assert command[-2:] == [session_id, "-"]
 
 
-def test_claude_command_accepts_edits_without_a_tool_allowlist() -> None:
+def test_claude_scratch_patch_keeps_accept_edits_without_a_tool_allowlist() -> None:
     command = AgentLauncher._command(
         "claude",
         "write patch.json",
@@ -785,7 +756,7 @@ def test_claude_command_accepts_edits_without_a_tool_allowlist() -> None:
     assert add_dirs == ["/project/repo-a", "/sessions"]
 
 
-def test_claude_read_only_command_uses_plan_permission_mode() -> None:
+def test_claude_read_only_command_keeps_plan_permission_mode() -> None:
     command = AgentLauncher._command(
         "claude",
         "review the paper introduction",
@@ -802,7 +773,7 @@ def test_claude_read_only_command_uses_plan_permission_mode() -> None:
     assert command[command.index("--resume") + 1] == "paper-session"
 
 
-def test_claude_work_uses_noninteractive_edits_and_only_explicit_directories() -> None:
+def test_claude_work_bypasses_permissions() -> None:
     command = AgentLauncher._command(
         "claude",
         "run the experiment",
@@ -815,9 +786,7 @@ def test_claude_work_uses_noninteractive_edits_and_only_explicit_directories() -
         capability="work_auto",
     )
 
-    assert command[command.index("--permission-mode") + 1] == "acceptEdits"
-    add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
-    assert add_dirs == ["/data/chat-stage/inputs", "/project/repo-a"]
+    assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 def test_claude_discuss_keeps_scratch_writable_without_auto_mode() -> None:

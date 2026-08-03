@@ -665,13 +665,6 @@ class AgentLauncher:
         write_dirs: list[Path] | None = None,
         capability: AgentCapability,
     ) -> list[str]:
-        if capability == "work_auto":
-            if cwd.name == ".research" or any(
-                directory.name == ".research" for directory in write_dirs or []
-            ):
-                raise ValueError("Work cannot make a canonical .research directory writable")
-            if any(not directory.is_absolute() for directory in write_dirs or []):
-                raise ValueError("Work repository roots must be absolute paths")
         return profile_for(provider).command(
             prompt,
             binary=binary or provider,

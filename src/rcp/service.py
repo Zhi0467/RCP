@@ -18,11 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents import (
     AgentLauncher,
+    AgentPatch,
     ChatContext,
     ContextAssembler,
     PromptFactory,
     ProviderReadiness,
     RunContext,
+    parse_agent_patch_json,
 )
 from rcp.config import AgentSurface, AgentSurfaceConfig, MachineConfig, Manifest
 from rcp.control import derive_experiment_control_state
@@ -36,6 +38,7 @@ from rcp.core.models import (
     Proposal,
     Standing,
 )
+from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import HistoryManager
 from rcp.limits import (
     CHAT_PAGE_DEFAULT_LIMIT,
@@ -1397,30 +1400,29 @@ class ProjectService:
         return intro_hash, state.revision, hashlib.sha256(research).hexdigest()
 
     @staticmethod
-    def parse_patch_output(chunks: list[str]) -> tuple[Patch, str | None]:
+    def parse_patch_output(chunks: list[str]) -> tuple[AgentPatch, str | None]:
+        last_problem: ValueError | None = None
         for chunk in reversed(chunks):
             candidate = chunk.strip()
             try:
-                return Patch.model_validate_json(candidate), None
-            except ValueError:
+                return parse_agent_patch_json(candidate), None
+            except ValueError as exc:
+                last_problem = exc
                 start = candidate.find("{")
                 end = candidate.rfind("}")
                 if start >= 0 and end > start:
                     try:
-                        return Patch.model_validate_json(candidate[start : end + 1]), None
-                    except ValueError:
+                        return parse_agent_patch_json(candidate[start : end + 1]), None
+                    except ValueError as exc:
+                        last_problem = exc
                         continue
-        raise ValueError("agent completed without a valid Patch object")
+        if last_problem is not None:
+            raise last_problem
+        raise ValueError("agent completed without a valid semantic Patch object")
 
     @staticmethod
     def _proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
-        return any(
-            node_id not in state.nodes or state.nodes[node_id].updated_rev > proposal.base_rev
-            for node_id in proposal.related_node_ids
-        ) or any(
-            state.config_revisions.get(key, 0) > proposal.base_rev
-            for key in proposal.related_config_keys
-        )
+        return proposal_is_stale(state, proposal)
 
     @staticmethod
     def _primary_question(state: GraphState):

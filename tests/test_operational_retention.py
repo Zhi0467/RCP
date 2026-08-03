@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from rcp.background import AgentProcessControl, AgentTaskExecution
-from rcp.runs.chat import _first_chat_base_revision
 from rcp.storage import AgentTaskRecord, AppStore
 
 
@@ -106,42 +104,7 @@ def test_operational_prune_never_deletes_run_rows(tmp_path) -> None:
     assert count == 106
 
 
-def test_operational_prune_keeps_an_ancient_resume_chain_walkable(tmp_path) -> None:
-    store = AppStore(tmp_path / "lineage.sqlite3")
-    now = datetime(2026, 7, 29, tzinfo=UTC)
-    _chat_attempt(store, "original", parent=None, resumed=False, attempt=1, graph_revision=1)
-    _chat_attempt(store, "resumed", parent="original", resumed=True, attempt=2, graph_revision=91)
-    _chat_attempt(store, "retry", parent="resumed", resumed=False, attempt=3, graph_revision=3)
-    _chat_attempt(
-        store,
-        "resumed-retry",
-        parent="retry",
-        resumed=True,
-        attempt=4,
-        graph_revision=92,
-        status="failed",
-    )
-    _backdate_operational_rows(store, now - timedelta(days=3000))
-
-    store.prune_operational_storage(now=now)
-
-    for operation_id in ("original", "resumed", "retry", "resumed-retry"):
-        assert store.agent_task(operation_id) is not None
-
-    def _walk(operation_id: str) -> int:
-        execution = AgentTaskExecution(
-            operation_id=operation_id,
-            store=store,
-            control=AgentProcessControl(),
-            continuation="resume",
-        )
-        return _first_chat_base_revision(execution, fallback=99)
-
-    assert _walk("resumed") == 1
-    assert _walk("resumed-retry") == 3
-
-
-def test_operational_prune_ages_out_payloads_but_not_the_freshness_proof(tmp_path) -> None:
+def test_operational_prune_ages_out_payloads_but_not_summary_receipts(tmp_path) -> None:
     store = AppStore(tmp_path / "payloads.sqlite3")
     now = datetime(2026, 7, 29, tzinfo=UTC)
     _chat_attempt(store, "old", parent=None, resumed=False, attempt=1, graph_revision=1)

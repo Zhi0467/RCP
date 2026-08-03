@@ -195,7 +195,7 @@ export function DetailDrawer({
         aria-labelledby="drawer-title"
       >
         <header data-drag-handle="true">
-          <div>
+          <div data-text-selectable="true">
             <span className="eyebrow">{nodeTypeLabel(node)}</span>
             <h2 id="drawer-title">{node.title}</h2>
             <div className="node-meta">
@@ -561,22 +561,14 @@ export function DetailDrawer({
                   <PencilLine size={14} /> Edit node
                 </button>
                 <button
-                  className={`button judgment ${node.standing === "contested" ? "selected disagree" : ""}`}
-                  aria-pressed={node.standing === "contested"}
+                  className={`button judgment node-standing-toggle ${node.standing === "accepted" ? "contest" : "agree"}`}
                   disabled={mutationsDisabled}
                   onClick={() =>
-                    onStanding(node.standing === "contested" ? "asserted" : "contested")
+                    onStanding(node.standing === "accepted" ? "contested" : "accepted")
                   }
                 >
-                  <X size={14} /> Disagree
-                </button>
-                <button
-                  className={`button judgment ${node.standing === "accepted" ? "selected agree" : ""}`}
-                  aria-pressed={node.standing === "accepted"}
-                  disabled={mutationsDisabled}
-                  onClick={() => onStanding(node.standing === "accepted" ? "asserted" : "accepted")}
-                >
-                  <Check size={14} /> Agree
+                  {node.standing === "accepted" ? <X size={14} /> : <Check size={14} />}
+                  {node.standing === "accepted" ? "Contest" : "Agree"}
                 </button>
               </div>
             </>

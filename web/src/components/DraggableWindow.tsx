@@ -14,6 +14,12 @@ interface Props {
   kind: "detail" | "chat";
 }
 
+export function shouldStartWindowDrag(target: Element): boolean {
+  if (!target.closest("[data-drag-handle]")) return false;
+  if (target.closest("[data-text-selectable]")) return false;
+  return !target.closest("button, input, select, textarea, a");
+}
+
 export function DraggableWindow({ children, className, kind }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<Point>(() =>
@@ -50,8 +56,7 @@ export function DraggableWindow({ children, className, kind }: Props) {
       onFocusCapture={() => setZIndex(++topFloatingZIndex)}
       onPointerDown={(event) => {
         const target = event.target as HTMLElement;
-        if (!target.closest("[data-drag-handle]")) return;
-        if (target.closest("button, input, select, textarea, a")) return;
+        if (!shouldStartWindowDrag(target)) return;
         drag.current = { origin: position, pointer: { x: event.clientX, y: event.clientY } };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}

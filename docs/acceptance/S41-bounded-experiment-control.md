@@ -54,11 +54,12 @@ Confirmed by the human on 2026-08-01.
   further long-running launch is allowed. **Run** remains disabled. Raise the
   positive integer `attempt_ceiling` in the Experiment editor and press **Sync**;
   only then does the new canonical budget make **Run** available again.
-- Complete an experiment successfully. The loop asserts the evidence edge and
-  produces exactly one Inbox item. If optional `completion_criteria` exists, the
-  pinned criterion is shown with that proposed edge but never controlled the
-  loop. Only human acceptance changes the edge to accepted standing and updates
-  downstream belief.
+- Complete an experiment successfully. The loop asserts the Evidence node and
+  evidence edge, then produces exactly one Inbox item for the Hypothesis status
+  transition with that same-patch edge as its cause. If optional
+  `completion_criteria` exists, the pinned criterion is shown with the proposed
+  belief change but never controlled the loop. Only human acceptance updates the
+  downstream belief; edges have no standing.
 - While the loop is active, edit the repository manually through ordinary Work.
   RCP shows an advisory active-loop marker but neither locks the repository nor
   blocks the human action.
@@ -91,7 +92,7 @@ Confirmed by the human on 2026-08-01.
 - `loop_patch_cannot_decide_set_standing_or_edit_the_pinned_bundle`
 - `successful_operational_work_survives_a_rejected_graph_reflection`
 - `successful_completion_produces_one_human_authority_item`
-- `human_acceptance_is_required_for_accepted_evidence_and_belief_change`
+- `human_acceptance_is_required_for_the_evidence_grounded_belief_change`
 - `active_loop_marker_derives_from_control_work_or_nonterminal_attempts`
 - `generic_watchers_never_define_the_active_loop_marker`
 - `active_loop_state_only_suppresses_duplicate_run_not_ordinary_work`

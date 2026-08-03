@@ -6,10 +6,8 @@ driver: pytest + browser
 covered_by:
   - tests/test_api.py::test_background_seed_can_pause_inspect_and_resume
   - tests/test_api.py::test_failed_background_seed_can_retry_without_native_session
-  - tests/test_api.py::test_resumed_chat_is_judged_against_the_revision_it_started_from
-  - tests/test_api.py::test_resumed_chat_fails_closed_when_lineage_proof_is_missing
-  - tests/test_api.py::test_resumed_chat_fails_closed_on_lineage_cycle
   - tests/test_api.py::test_resumed_chat_rejects_a_mismatched_saved_stage
+  - tests/test_conversation_retry.py
   - tests/test_api.py::test_server_shutdown_pauses_live_background_seed
   - web/tests/agentTasks.test.mjs
 invariants: [8, 10b]
@@ -55,21 +53,23 @@ be paused mid-run, then writes a valid patch.
 
 - `resume_created_a_child_task` — parent → child, not one task changing state
 - `parent_chain_intact` — `parent_operation_id` links back
-- `freshness_used_first_attempt_revision` — the resumed turn is judged against
-  the revision its *original* context was assembled from, recovered by walking
-  the chain, never the revision it just re-assembled
-- `fails_closed_on_missing_lineage`
-- `fails_closed_on_lineage_cycle`
 - `mismatched_saved_stage_rejected`
 - `reusable_native_session_stage_preserved_across_resume`
 - `turn_mode_preserved_across_resume` — changing the composer after pause never
   changes the resumed task's captured mode or permission envelope
+- `work_apply_uses_live_state_not_resume_ancestry` — if resumed Work produces a
+  patch, RCP re-prepares bookkeeping and revalidates current graph state under
+  the append lock; neither its original context revision nor an ancestor walk is
+  an Apply gate
 - `patches_appended == 1` across the whole chain, not one per attempt
 - `retry_starts_clean`
 - `shutdown_pauses_live_work`
 
 ## Failure means
 
-A resumed turn applies a patch built against a graph that has since moved — the
-thing the freshness check exists to prevent. Or, on the untested half, you close
-a panel and cannot tell whether an expensive run is still alive.
+A run disappears, loses its saved native stage or captured mode, or appends the
+same patch twice; `work_patch_correction` also fails if it repeats a completed
+side effect. A Work patch fails if Resume ancestry or its original context
+revision is treated as an Apply gate instead of validating live current state.
+On the browser half, failure also means you close a panel and cannot tell whether
+an expensive run is still alive.

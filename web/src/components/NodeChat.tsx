@@ -63,6 +63,7 @@ import { RepositoryScope } from "./RepositoryScope";
 interface Props {
   project: ProjectSnapshot;
   node?: GraphNode | null;
+  nodes?: Readonly<Record<string, GraphNode>>;
   conversationTitle?: string;
   runScope: string[];
   tasks: AgentTask[];
@@ -77,6 +78,7 @@ interface Props {
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
+  onOpenNode?: (nodeId: string) => void;
   onStopWatcher?: (watcherId: string) => void;
   onClose: () => void;
 }
@@ -91,6 +93,7 @@ interface PendingChatTurn {
 export function NodeChat({
   project,
   node,
+  nodes = {},
   conversationTitle,
   runScope,
   tasks,
@@ -105,6 +108,7 @@ export function NodeChat({
   onInspectTask,
   onOpenInbox,
   onRepairGraphUpdate,
+  onOpenNode,
   onStopWatcher,
   onClose,
 }: Props) {
@@ -510,7 +514,7 @@ export function NodeChat({
               {line.role === "agent" ? (
                 line.text && (
                   <div className="chat-markdown">
-                    <MarkdownAnswer text={line.text} />
+                    <MarkdownAnswer text={line.text} nodes={nodes} onOpenNode={onOpenNode} />
                   </div>
                 )
               ) : line.role === "human" ? (
@@ -724,7 +728,7 @@ function GraphUpdateReceipt({
             <AlertTriangle size={12} /> Graph update rejected
           </strong>
         )}
-        {proposalCount > 0 && (
+        {update.status === "applied" && proposalCount > 0 && (
           <button type="button" onClick={onOpenInbox}>
             <Inbox size={12} />
             {proposalCount} proposal{proposalCount === 1 ? "" : "s"} sent to Inbox

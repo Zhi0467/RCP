@@ -372,6 +372,12 @@ def test_agent_task_contract_content_is_durable_beyond_receipt_limit(tmp_path) -
     store.record_agent_task_contract("operation", "base", content, digest)
 
     assert store.agent_task_contract("operation", "base") == content
+    contracts = store.agent_task_contracts("operation")
+    assert len(contracts) == 1
+    assert contracts[0].operation_id == "operation"
+    assert contracts[0].role == "base"
+    assert contracts[0].sha256 == digest
+    assert contracts[0].content == content
     with pytest.raises(ValueError, match="immutable"):
         store.record_agent_task_contract("operation", "base", content + "changed", digest)
 

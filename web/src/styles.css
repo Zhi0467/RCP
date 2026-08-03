@@ -2043,6 +2043,10 @@ button:disabled {
 .chat-dock > header[data-drag-handle]:active {
   cursor: grabbing;
 }
+.detail-drawer > header[data-drag-handle] [data-text-selectable] {
+  cursor: text;
+  user-select: text;
+}
 .window-actions {
   align-items: center;
   display: flex;
@@ -2124,6 +2128,7 @@ button:disabled {
 }
 .node-lead ul,
 .context-list ul {
+  list-style: disc;
   margin: 0;
   padding-left: 18px;
 }
@@ -3380,6 +3385,16 @@ button:disabled {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.chat-markdown a.chat-node-reference {
+  background: color-mix(in srgb, var(--oxblood) 8%, transparent);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 0.94em;
+  padding: 1px 3px;
+}
+.chat-markdown a.chat-node-reference:hover {
+  background: color-mix(in srgb, var(--oxblood) 16%, transparent);
+}
 .chat-artifact {
   align-items: center;
   background: var(--surface);
@@ -4441,6 +4456,15 @@ button:disabled {
   margin: 0;
   padding: 0;
 }
+.attention-main {
+  min-width: 0;
+}
+.proposal-judgment-section {
+  margin-top: 30px;
+}
+.proposal-section-heading {
+  margin-bottom: 12px;
+}
 .attention-page .attention-rail {
   background: transparent;
   border: 0;
@@ -4450,6 +4474,24 @@ button:disabled {
 .button.judgment {
   background: var(--surface);
   border-color: var(--line-strong);
+}
+.node-detail-window .button.judgment.node-standing-toggle.agree {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: white;
+}
+.node-detail-window .button.judgment.node-standing-toggle.agree:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--forest) 84%, black);
+  border-color: color-mix(in srgb, var(--forest) 84%, black);
+}
+.node-detail-window .button.judgment.node-standing-toggle.contest {
+  background: var(--red-soft);
+  border-color: var(--red);
+  color: var(--red);
+}
+.node-detail-window .button.judgment.node-standing-toggle.contest:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red-soft) 72%, var(--red));
+  border-color: var(--red);
 }
 .button.judgment.selected.agree {
   background: var(--forest);
@@ -6373,6 +6415,9 @@ button:disabled {
   .attention-page {
     display: block;
     padding: 24px 18px 60px;
+  }
+  .proposal-judgment-section {
+    margin-top: 28px;
   }
   .attention-page .attention-rail {
     margin-top: 32px;

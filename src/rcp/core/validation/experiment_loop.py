@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from rcp.core.authority import EVIDENCE_EDGE_CAUSE_KIND, EVIDENCE_RELATIONS
 from rcp.core.models import (
     RELATION_SPEC,
     Experiment,
@@ -69,7 +70,7 @@ def validate_experiment_loop_authority(
                 experiment.id,
                 set(pinned_ids),
                 _tested_hypothesis_ids(state, experiment.id),
-                _grounded_hypothesis_ids(patch.ops),
+                _grounding_edge_ids(state, patch.ops, created_types),
                 report,
                 revision,
             )
@@ -317,17 +318,18 @@ def _tested_hypothesis_ids(state: GraphState, experiment_id: str) -> set[str]:
     }
 
 
-_EVIDENCE_RELATIONS = frozenset({"supports", "weakens", "refutes", "inconclusive", "contradicts"})
-
-
-def _grounded_hypothesis_ids(ops: Iterable[dict[str, Any]]) -> set[str]:
-    """Hypotheses this patch points new evidence at.
+def _grounding_edge_ids(
+    state: GraphState,
+    ops: Iterable[dict[str, Any]],
+    created_types: dict[str, str],
+) -> dict[str, set[str]]:
+    """Same-patch Evidence -> Hypothesis edge ids grouped by target.
 
     A belief proposal must rest on evidence the same turn recorded, so the human
     is never asked to move a belief the patch supplies no reason for.
     """
 
-    grounded: set[str] = set()
+    grounded: dict[str, set[str]] = {}
     for op in ops:
         if op.get("op") != "create_edges":
             continue
@@ -335,8 +337,18 @@ def _grounded_hypothesis_ids(ops: Iterable[dict[str, Any]]) -> set[str]:
             if not isinstance(edge, dict):
                 continue
             target = edge.get("target")
-            if edge.get("relation") in _EVIDENCE_RELATIONS and isinstance(target, str):
-                grounded.add(target)
+            source = edge.get("source")
+            existing_source = state.nodes.get(source)
+            source_type = (
+                existing_source.type if existing_source is not None else created_types.get(source)
+            )
+            if (
+                edge.get("relation") in EVIDENCE_RELATIONS
+                and source_type == "evidence"
+                and isinstance(target, str)
+            ):
+                edge_id = edge.get("id") or f"{source}::{edge.get('relation')}::{target}"
+                grounded.setdefault(target, set()).add(edge_id)
     return grounded
 
 
@@ -345,7 +357,7 @@ def _validate_proposals(
     experiment_id: str,
     governing_decision_ids: set[str],
     tested_hypothesis_ids: set[str],
-    grounded_hypothesis_ids: set[str],
+    grounding_edge_ids: dict[str, set[str]],
     report: ValidationReport,
     revision: int | None,
 ) -> None:
@@ -358,8 +370,6 @@ def _validate_proposals(
     """
 
     for proposal in op.get("proposals", []):
-        related = proposal.get("related_node_ids")
-        related_ids = set(related) if isinstance(related, list) else set()
         replay_ops = proposal.get("ops")
         target_ids = _proposal_update_targets(replay_ops)
 
@@ -368,27 +378,19 @@ def _validate_proposals(
                 proposal,
                 experiment_id,
                 target_ids,
-                grounded_hypothesis_ids,
+                grounding_edge_ids,
                 report,
                 revision,
             )
             continue
 
-        if not related_ids or not related_ids <= governing_decision_ids:
-            report.reject(
-                "experiment-loop-proposal-scope",
-                f"Experiment loop {experiment_id} may propose changes only to its pinned "
-                "governing decisions or to a hypothesis it tests.",
-                revision,
-                related_node_ids=[experiment_id, *sorted(related_ids)],
-            )
         if not target_ids or not target_ids <= governing_decision_ids:
             report.reject(
                 "experiment-loop-proposal-operations",
                 f"Experiment loop {experiment_id} proposals may update only pinned governing "
                 "decisions.",
                 revision,
-                related_node_ids=[experiment_id, *sorted(related_ids)],
+                related_node_ids=[experiment_id, *sorted(target_ids)],
             )
 
 
@@ -415,7 +417,7 @@ def _validate_belief_proposal(
     proposal: dict[str, Any],
     experiment_id: str,
     target_ids: set[str],
-    grounded_hypothesis_ids: set[str],
+    grounding_edge_ids: dict[str, set[str]],
     report: ValidationReport,
     revision: int | None,
 ) -> None:
@@ -434,14 +436,13 @@ def _validate_belief_proposal(
         )
         return
     hypothesis_id = next(iter(target_ids))
-    if hypothesis_id not in grounded_hypothesis_ids:
+    if hypothesis_id not in grounding_edge_ids:
         refuse(
             "experiment-loop-belief-grounding",
             f"A belief proposal from {experiment_id} must rest on an evidence edge this patch "
             f"asserts into {hypothesis_id}.",
         )
 
-    proposal_id = proposal.get("id")
     updates = [
         item
         for replay_op in proposal.get("ops", [])
@@ -459,11 +460,11 @@ def _validate_belief_proposal(
         cause = update.get("cause")
         if (
             not isinstance(cause, dict)
-            or cause.get("kind") != "proposal_resolution"
-            or cause.get("ref_id") != proposal_id
+            or cause.get("kind") != EVIDENCE_EDGE_CAUSE_KIND
+            or cause.get("ref_id") not in grounding_edge_ids.get(hypothesis_id, set())
         ):
             refuse(
                 "experiment-loop-belief-cause",
-                f"A belief proposal from {experiment_id} must record the human's approval of "
-                f"{proposal_id!r} as the cause of the belief change.",
+                f"A belief proposal from {experiment_id} must name one of this patch's "
+                f"Evidence edges into {hypothesis_id} as its cause.",
             )

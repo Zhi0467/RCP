@@ -19,7 +19,9 @@ Discuss and Work are ordinary agent invocations over the project graph, the
 focused node, the user's request, and the exact repository scope. They do not
 read, index, copy, prompt with, validate against, or authorize from prior chat
 transcripts. Their current answer may still be written to the canonical chat
-history for the UI after the provider returns.
+history for the UI after the provider returns. Exact repository scope describes
+the context RCP supplies: Discuss remains read-only, while Work tooling and
+repository access are unrestricted.
 
 Seed and Refresh are separate ingestion runs. If RCP cannot assemble transcript
 metadata, the run remains launchable: the provider receives the named provider
@@ -32,16 +34,18 @@ could not read.
 - Open a node or project chat and send a **Discuss** turn.
 - Confirm the provider receives graph/current-node context and the exact
   repository scope, with no transcript pointers or transcript paths.
-- Send **Work** and confirm it keeps the same scope with its existing
-  repository-write and optional graph-patch authority.
+- Send **Work** and confirm it keeps the same contextual scope while using
+  unrestricted repository/tooling access and its optional semantic graph-patch
+  authority.
 - Start a **Seed** or **Refresh** run while one provider source is unreadable.
 
 ## Assertions
 
 - Discuss and Work launch without transcript projection or transcript-pointer
   validation, and a chat turn does not fail in transcript staging.
-- Discuss can read exact run-scope repositories; Work can edit only those exact
-  repositories. Neither mode gets provider-root directories through chat.
+- Discuss can read exact run-scope repositories. Work receives those same
+  pointers as context, but they do not limit its unrestricted repository/tooling
+  permissions. Neither mode gets provider-root directories through chat.
 - Seed/Refresh launch with an observable source warning and provider/source
   fallback, including the last accounted boundary; no false coverage is
   recorded.

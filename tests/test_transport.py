@@ -791,18 +791,137 @@ def test_remote_stage_failed_finalize_cleans_local_pending_inputs(tmp_path, monk
 
 
 def test_remote_stage_lists_workspace_files(monkeypatch) -> None:
+    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+    workspace = root / "workspace"
+    workspace.mkdir()
+    (workspace / "patch.json").write_text("{}", encoding="utf-8")
+    (workspace / "notes.md").write_text("notes", encoding="utf-8")
+    (workspace / "linked.json").symlink_to(workspace / "patch.json")
+    (workspace / "nested").mkdir()
+    (workspace / "nested" / "deep.json").write_text("{}", encoding="utf-8")
     stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath("/tmp/rcp-run.test")
-    workspace = str(stage.workspace)
+    stage.root = PurePosixPath(str(root))
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
+    )
+    try:
+        assert stage.list_workspace_files() == ["notes.md", "patch.json"]
+    finally:
+        shutil.rmtree(root)
 
-    def fake_ssh(arguments):
-        assert arguments[0] == "find"
-        listing = f"{workspace}/patch.json\n{workspace}/notes.md\n{workspace}/nested/deep.json\n"
-        return subprocess.CompletedProcess([], 0, listing, "")
 
-    monkeypatch.setattr(stage, "_ssh", fake_ssh)
+def test_remote_stage_workspace_mailbox_round_trip_is_atomic(monkeypatch) -> None:
+    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+    workspace = root / "workspace"
+    inputs = root / "inputs"
+    workspace.mkdir()
+    inputs.mkdir()
+    immutable_input = inputs / "validator-request.json"
+    immutable_input.write_text("input stays immutable", encoding="utf-8")
+    immutable_input.chmod(0o400)
+    target = workspace / "validator-response-01.json"
+    target.write_text("old response", encoding="utf-8")
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    calls: list[tuple[list[str], bytes | None]] = []
 
-    assert stage.list_workspace_files() == ["notes.md", "patch.json"]
+    def fake_ssh_bytes(arguments, *, input_data=None):
+        calls.append((arguments, input_data))
+        return subprocess.run(
+            arguments,
+            capture_output=True,
+            input=input_data,
+            check=False,
+        )
+
+    monkeypatch.setattr(stage, "_ssh_bytes", fake_ssh_bytes)
+    try:
+        response = '{"valid":true}\n'
+        stage.write_workspace_text("validator-response-01.json", response)
+
+        assert target.is_file()
+        assert not target.is_symlink()
+        assert stage.read_workspace_text("validator-response-01.json") == response
+        assert stage.read_text(stage.workspace / "validator-response-01.json") == response
+        assert immutable_input.read_text(encoding="utf-8") == "input stays immutable"
+        assert immutable_input.stat().st_mode & 0o777 == 0o400
+        assert not any(path.name.startswith(".rcp-write-") for path in workspace.iterdir())
+        assert "os.replace" in calls[0][0][2]
+        assert calls[0][1] == response.encode("utf-8")
+
+        call_count = len(calls)
+        with pytest.raises(ValueError, match="plain base name"):
+            stage.write_workspace_text("../inputs/validator-request.json", "not allowed")
+        with pytest.raises(ValueError, match="unsupported characters"):
+            stage.write_workspace_text("validator response.json", "not allowed")
+        with pytest.raises(ValueError, match="direct child"):
+            stage.read_text(PurePosixPath(str(immutable_input)))
+        assert len(calls) == call_count
+    finally:
+        immutable_input.chmod(0o600)
+        shutil.rmtree(root)
+
+
+def test_remote_stage_workspace_mailbox_rejects_symlinks(monkeypatch) -> None:
+    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+    workspace = root / "workspace"
+    workspace.mkdir()
+    outside = root / "outside.json"
+    outside.write_text("outside", encoding="utf-8")
+    linked = workspace / "validator-request.json"
+    linked.symlink_to(outside)
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+
+    def fake_ssh_bytes(arguments, *, input_data=None):
+        return subprocess.run(
+            arguments,
+            capture_output=True,
+            input=input_data,
+            check=False,
+        )
+
+    monkeypatch.setattr(stage, "_ssh_bytes", fake_ssh_bytes)
+    try:
+        with pytest.raises(ValueError, match="readable regular file"):
+            stage.read_workspace_text("validator-request.json")
+        with pytest.raises(ValueError, match="target is not a regular file"):
+            stage.write_workspace_text("validator-request.json", "replacement")
+
+        assert linked.is_symlink()
+        assert outside.read_text(encoding="utf-8") == "outside"
+    finally:
+        shutil.rmtree(root)
+
+
+def test_remote_stage_absent_mailbox_file_is_not_an_unreachable_workspace(monkeypatch) -> None:
+    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+    (root / "workspace").mkdir()
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
+    )
+    monkeypatch.setattr(
+        stage,
+        "_ssh_bytes",
+        lambda arguments, *, input_data=None: subprocess.run(
+            arguments,
+            capture_output=True,
+            input=input_data,
+            check=False,
+        ),
+    )
+    try:
+        assert stage.list_workspace_files() == []
+        with pytest.raises(FileNotFoundError, match="is absent"):
+            stage.read_workspace_text("validator-request.json")
+    finally:
+        shutil.rmtree(root)
 
 
 def test_remote_stage_workspace_operations_fail_closed(monkeypatch) -> None:
@@ -815,9 +934,20 @@ def test_remote_stage_workspace_operations_fail_closed(monkeypatch) -> None:
         "_ssh",
         lambda _arguments: subprocess.CompletedProcess([], 255, "", "ssh: connect timed out"),
     )
+    monkeypatch.setattr(
+        stage,
+        "_ssh_bytes",
+        lambda _arguments, **_kwargs: subprocess.CompletedProcess(
+            [], 255, b"", b"ssh: connect timed out"
+        ),
+    )
 
     with pytest.raises(StateUnavailable):
         stage.list_workspace_files()
+    with pytest.raises(StateUnavailable):
+        stage.read_workspace_text("validator-request.json")
+    with pytest.raises(StateUnavailable):
+        stage.write_workspace_text("validator-response.json", "{}")
     with pytest.raises(StateUnavailable):
         stage.remove_workspace_file("patch.json")
 

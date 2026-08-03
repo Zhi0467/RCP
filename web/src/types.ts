@@ -312,6 +312,14 @@ export interface AgentTaskReceipt {
   payload: Record<string, unknown>;
 }
 
+export interface AgentTaskContract {
+  operation_id: string;
+  role: string;
+  created_at: string;
+  sha256: string;
+  content: string;
+}
+
 export interface AgentTaskRequest {
   provider?: ProviderId | null;
   model?: string | null;
@@ -390,6 +398,7 @@ export interface AgentTask {
   can_retry: boolean;
   events?: AgentTaskEvent[];
   debug_receipts?: AgentTaskReceipt[];
+  contracts?: AgentTaskContract[];
 }
 
 export interface AgentUsageRecord {

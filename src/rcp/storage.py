@@ -92,6 +92,14 @@ class AgentTaskReceiptRecord(BaseModel):
     payload: dict[str, object]
 
 
+class AgentTaskContractRecord(BaseModel):
+    operation_id: str
+    role: str
+    created_at: str
+    sha256: str
+    content: str
+
+
 class AgentTaskRecord(BaseModel):
     operation_id: str
     project_id: str
@@ -1484,6 +1492,19 @@ class AppStore:
                 (operation_id, role),
             ).fetchone()
         return str(row["content"]) if row is not None else None
+
+    def agent_task_contracts(self, operation_id: str) -> list[AgentTaskContractRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT operation_id, role, created_at, sha256, content
+                FROM graph_run_contracts
+                WHERE operation_id = ?
+                ORDER BY rowid
+                """,
+                (operation_id,),
+            ).fetchall()
+        return [AgentTaskContractRecord.model_validate(dict(row)) for row in rows]
 
     @staticmethod
     def _bounded_receipt_payload(payload: dict[str, object]) -> str:

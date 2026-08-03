@@ -220,7 +220,7 @@ class CodexProfile(ProviderProfile):
         write_dirs: list[Path],
         capability: AgentCapability,
     ) -> list[str]:
-        del prompt, read_dirs
+        del prompt, read_dirs, write_dirs
         command = [binary, "exec"]
         if session_id:
             # `codex exec resume` has no --sandbox or --cd; it takes the process
@@ -232,30 +232,7 @@ class CodexProfile(ProviderProfile):
             ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]
         )
         if capability == "work_auto":
-            writable_roots = ",".join(
-                f"{json.dumps(directory)}=true"
-                for directory in dict.fromkeys(str(item) for item in write_dirs)
-            )
-            permission_profile = (
-                "permissions={rcp_work={"
-                'extends=":workspace",'
-                f"workspace_roots={{{writable_roots}}},"
-                'filesystem={":workspace_roots"={"."="write",".research"="read"}},'
-                'network={enabled=true,domains={"*"="allow"}}'
-                "}}"
-            )
-            command.extend(
-                [
-                    "--config",
-                    'approval_policy="on-request"',
-                    "--config",
-                    'approvals_reviewer="auto_review"',
-                    "--config",
-                    'default_permissions="rcp_work"',
-                    "--config",
-                    permission_profile,
-                ]
-            )
+            command.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             command.extend(["--config", 'approval_policy="never"'])
             sandbox = "read-only" if capability == "paper_readonly" else "workspace-write"
@@ -381,12 +358,13 @@ class ClaudeProfile(ProviderProfile):
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
-        # writes. Work therefore uses the same bounded non-interactive edit mode
-        # as graph-patch runs. The paper coach remains plan-only. No tool
-        # allowlist -- the agent needs Bash, Task, and WebSearch.
+        # writes. Work bypasses permission prompts so it can execute unattended;
+        # scratch-patch runs retain acceptEdits and the paper coach remains
+        # plan-only. No tool allowlist -- the agent needs Bash, Task, and
+        # WebSearch.
         permission_mode = {
             "discuss": "acceptEdits",
-            "work_auto": "acceptEdits",
+            "work_auto": "bypassPermissions",
             "scratch_patch": "acceptEdits",
             "paper_readonly": "plan",
         }[capability]

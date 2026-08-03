@@ -2,41 +2,36 @@ import { AlertTriangle, ArrowRight, Check, MessageSquareText, X } from "lucide-r
 import type { AmbiguityDecision, HumanDraft, ProposalDecision } from "../humanDraft";
 import type { Ambiguity, GraphNode, Proposal } from "../types";
 
-interface Props {
+interface ProposalJudgmentSectionProps {
   proposals: Proposal[];
+  draft: HumanDraft | null;
+  mutationsDisabled?: boolean;
+  onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
+}
+
+interface AttentionRailProps {
   ambiguities: Ambiguity[];
   blockers: GraphNode[];
   draft: HumanDraft | null;
   mutationsDisabled?: boolean;
-  onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
   onAmbiguity: (ambiguity: Ambiguity, status: AmbiguityDecision | null) => void;
   onSelectNode: (nodeId: string) => void;
 }
 
-export function AttentionRail({
+export function ProposalJudgmentSection({
   proposals,
-  ambiguities,
-  blockers,
   draft,
   mutationsDisabled = false,
   onDecision,
-  onAmbiguity,
-  onSelectNode,
-}: Props) {
-  const total = proposals.length + ambiguities.length + blockers.length;
-  return (
-    <aside className="attention-rail" aria-label="Needs your judgment">
-      <header className="rail-heading">
-        <h2>Needs your judgment</h2>
-        <span className="count-badge">{total}</span>
-      </header>
+}: ProposalJudgmentSectionProps) {
+  if (proposals.length === 0) return null;
 
-      {total === 0 && (
-        <div className="quiet-empty">
-          <Check size={16} />
-          <strong>No judgment queued</strong>
-        </div>
-      )}
+  return (
+    <section className="proposal-judgment-section" aria-label="Pending proposals">
+      <header className="rail-heading proposal-section-heading">
+        <h2>Pending proposals</h2>
+        <span className="count-badge">{proposals.length}</span>
+      </header>
 
       {proposals.map((proposal) => {
         const decision = draft?.proposals[proposal.id]?.decision;
@@ -93,6 +88,32 @@ export function AttentionRail({
           </article>
         );
       })}
+    </section>
+  );
+}
+
+export function AttentionRail({
+  ambiguities,
+  blockers,
+  draft,
+  mutationsDisabled = false,
+  onAmbiguity,
+  onSelectNode,
+}: AttentionRailProps) {
+  const total = ambiguities.length + blockers.length;
+  return (
+    <aside className="attention-rail" aria-label="Needs your judgment">
+      <header className="rail-heading">
+        <h2>Needs your judgment</h2>
+        <span className="count-badge">{total}</span>
+      </header>
+
+      {total === 0 && (
+        <div className="quiet-empty">
+          <Check size={16} />
+          <strong>No other judgment queued</strong>
+        </div>
+      )}
 
       {ambiguities.map((ambiguity) => {
         const status = draft?.ambiguities[ambiguity.id]?.status;

@@ -77,7 +77,7 @@ import {
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { AgentTaskActivity } from "./components/AgentTaskActivity";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
-import { AttentionRail } from "./components/AttentionRail";
+import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { RunDialog } from "./components/RunDialog";
@@ -2008,16 +2008,22 @@ export default function App() {
           )}
           {view === "attention" && (
             <div className="attention-page">
-              <AttentionOverview graph={presentedGraph} onSelectNode={openNode} />
+              <div className="attention-main">
+                <AttentionOverview graph={presentedGraph} onSelectNode={openNode} />
+                <ProposalJudgmentSection
+                  proposals={pendingProposals}
+                  draft={mutationsDisabled ? null : humanDraft}
+                  mutationsDisabled={mutationsDisabled}
+                  onDecision={(proposal, decision) =>
+                    updateHumanDraft((draft) => stageProposalDecision(draft, proposal.id, decision))
+                  }
+                />
+              </div>
               <AttentionRail
-                proposals={pendingProposals}
                 ambiguities={ambiguities}
                 blockers={scientificBlockers}
                 draft={mutationsDisabled ? null : humanDraft}
                 mutationsDisabled={mutationsDisabled}
-                onDecision={(proposal, decision) =>
-                  updateHumanDraft((draft) => stageProposalDecision(draft, proposal.id, decision))
-                }
                 onAmbiguity={(ambiguity, status) =>
                   updateHumanDraft((draft) => stageAmbiguityDecision(draft, ambiguity.id, status))
                 }
@@ -2118,6 +2124,7 @@ export default function App() {
               hasMore={chatSummaryNextOffset < chatSummaryTotal}
               loadingMore={chatSummariesLoading}
               onSelect={selectChat}
+              onOpenNode={openNodeById}
               onLoadMore={() => void loadMoreChatSummaries()}
               onStartTask={startAgentTask}
               onInspectTask={setTaskInspectorId}
@@ -2190,6 +2197,7 @@ export default function App() {
               key={floatingChat.chatId}
               project={project}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
+              nodes={presentedGraph.nodes}
               conversationTitle={
                 conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
                   ?.title
@@ -2209,6 +2217,7 @@ export default function App() {
                 setView("attention");
               }}
               onRepairGraphUpdate={repairGraphUpdate}
+              onOpenNode={openNodeById}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onClose={() => setFloatingChat(null)}
             />

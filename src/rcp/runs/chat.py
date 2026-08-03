@@ -4,7 +4,6 @@ import fcntl
 import hashlib
 import json
 import os
-import posixpath
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -248,57 +247,6 @@ def _record_chat_context_receipt(
     )
 
 
-def _first_chat_base_revision(execution: AgentTaskExecution | None, fallback: int) -> int:
-    """The graph revision the reasoning being resumed was actually written against.
-
-    A resume is a *new* task whose parent holds the original attempt, so the
-    revision has to be followed up the chain — reading only this attempt's
-    receipts would find the revision it just re-assembled and wave the stale
-    patch through. The walk stops at the first ancestor that was not itself a
-    resume, because a retry starts fresh reasoning at its own revision.
-    """
-    if execution is None:
-        return fallback
-    store = execution.store
-    operation_id: str | None = execution.operation_id
-    seen: set[str] = set()
-    first = True
-    lineage_project: str | None = None
-    lineage_kind: AgentTaskKind | None = None
-    expected_attempt: int | None = None
-    while operation_id is not None:
-        if operation_id in seen:
-            raise _resume_lineage_error("the task ancestry contains a cycle")
-        seen.add(operation_id)
-        record = store.agent_task(operation_id)
-        if record is None:
-            raise _resume_lineage_error(f"task {operation_id!r} is missing")
-        if first:
-            lineage_project = record.project_id
-            lineage_kind = record.kind
-        elif record.project_id != lineage_project or record.kind != lineage_kind:
-            raise _resume_lineage_error(
-                f"task {operation_id!r} crosses a project or task-kind boundary"
-            )
-        if expected_attempt is not None and record.attempt != expected_attempt:
-            raise _resume_lineage_error(f"task {operation_id!r} has inconsistent attempt ancestry")
-        receipts = store.agent_task_receipts(operation_id)
-        resumed = _attempt_was_resumed(receipts, record)
-        if first and not resumed:
-            raise _resume_lineage_error("the current task is not marked as a Resume")
-        if not resumed:
-            return _assembled_graph_revision(receipts, operation_id)
-        assert record.parent_operation_id is not None
-        expected_attempt = record.attempt - 1
-        if expected_attempt < 1:
-            raise _resume_lineage_error(
-                f"task {record.operation_id!r} has an invalid attempt number"
-            )
-        operation_id = record.parent_operation_id
-        first = False
-    raise _resume_lineage_error("the task ancestry ended without an original attempt")
-
-
 def _logical_chat_turn_operation_id(store: AppStore, operation_id: str) -> str:
     """Resume shares its original turn directory; Retry begins a fresh one."""
     seen: set[str] = set()
@@ -359,20 +307,6 @@ def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTa
             f"task {record.operation_id!r} has inconsistent parent provenance"
         )
     return resumed
-
-
-def _assembled_graph_revision(receipts: list[AgentTaskReceiptRecord], operation_id: str) -> int:
-    assembled = [receipt for receipt in receipts if receipt.category == "chat_context_assembled"]
-    if not assembled:
-        raise _resume_lineage_error(
-            f"the original attempt {operation_id!r} has no assembled chat context"
-        )
-    revision = assembled[0].payload.get("graph_revision")
-    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-        raise _resume_lineage_error(
-            f"the original attempt {operation_id!r} has an invalid graph revision"
-        )
-    return revision
 
 
 def _chat_stage_name(
@@ -476,37 +410,10 @@ def _work_write_dirs(
     *,
     remote: bool,
 ) -> list[Path]:
-    """Exact on-machine repository roots authorized by this Work turn."""
+    """On-machine repository pointers supplied to an unrestricted Work provider."""
 
-    pointers = [
-        item for item in context.repositories if item.machine == execution_machine and not item.host
-    ]
-    state_repository = service.manifest.repository_map[service.manifest.state.repository]
-    if state_repository.machine == execution_machine:
-        canonical_root = PurePosixPath(posixpath.normpath(state_repository.path))
-        canonical_research = canonical_root / ".research"
-        for pointer in pointers:
-            candidate = PurePosixPath(posixpath.normpath(pointer.path))
-            if _overlaps_canonical_state(candidate, canonical_root, canonical_research):
-                raise StateUnavailable(
-                    f"Work repository root {pointer.path!r} overlaps canonical RCP state; "
-                    "select the exact state repository root or a non-overlapping repository."
-                )
-        if not remote:
-            resolved_root = Path(state_repository.path).resolve()
-            resolved_research = service.manifest.research_dir.resolve()
-            for pointer in pointers:
-                resolved_candidate = Path(pointer.path).resolve()
-                if _overlaps_canonical_state(
-                    resolved_candidate,
-                    resolved_root,
-                    resolved_research,
-                ):
-                    raise StateUnavailable(
-                        f"Work repository root {pointer.path!r} resolves across canonical RCP "
-                        "state; select the exact state repository root or a non-overlapping "
-                        "repository."
-                    )
+    del service
+    pointers = [item for item in context.repositories if item.machine == execution_machine]
     roots = [Path(item.path) for item in pointers]
     if remote:
         return list(dict.fromkeys(roots))
@@ -516,16 +423,6 @@ def _work_write_dirs(
             f"Work repository roots are unavailable on the execution machine: {missing}"
         )
     return list(dict.fromkeys(roots))
-
-
-def _overlaps_canonical_state(
-    candidate: Path | PurePosixPath,
-    canonical_root: Path | PurePosixPath,
-    canonical_research: Path | PurePosixPath,
-) -> bool:
-    inside_research = candidate == canonical_research or canonical_research in candidate.parents
-    ancestor_of_state = candidate != canonical_root and candidate in canonical_root.parents
-    return inside_research or ancestor_of_state
 
 
 def _chat_path(service: ProjectService, request: RunRequest) -> Path:

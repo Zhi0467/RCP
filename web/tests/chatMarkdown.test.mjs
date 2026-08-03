@@ -26,3 +26,35 @@ test("chat Markdown does not execute raw HTML", () => {
   assert.doesNotMatch(rendered, /<script>/);
   assert.match(rendered, /&lt;script&gt;/);
 });
+
+test("chat Markdown links exact graph node ids in prose and inline code", () => {
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: [
+        "See exp/known alongside exp/not-in-the-graph.",
+        "",
+        "`exp/known` keeps its code styling and becomes a node link.",
+        "",
+        "```text",
+        "exp/known",
+        "```",
+        "",
+        "[A web link](https://example.test/exp/known) and **exp/known**.",
+      ].join("\n"),
+      nodes: { "exp/known": { id: "exp/known" } },
+      onOpenNode() {},
+    }),
+  );
+
+  assert.match(rendered, /href="#rcp-node=exp%2Fknown"/);
+  assert.match(rendered, /class="chat-node-reference"/);
+  assert.match(rendered, /aria-label="Open node exp\/known"/);
+  assert.match(rendered, /exp\/not-in-the-graph/);
+  assert.doesNotMatch(rendered, /rcp-node=exp%2Fnot-in-the-graph/);
+  assert.match(
+    rendered,
+    /<a href="#rcp-node=exp%2Fknown" class="chat-node-reference" aria-label="Open node exp\/known"><code>exp\/known<\/code><\/a>/,
+  );
+  assert.match(rendered, /<pre><code class="language-text">exp\/known\n<\/code><\/pre>/);
+  assert.match(rendered, /href="https:\/\/example\.test\/exp\/known"/);
+});

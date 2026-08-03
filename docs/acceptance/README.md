@@ -176,7 +176,7 @@ it but a browser or a machine we do not have.
 | [S24](S24-provider-registry.md) | Every agent choice offered is one the provider accepts | implemented | **browser** | driven 2026-08-01 |
 | [S25](S25-grounded-belief-ontology.md) | Belief changes are grounded and readable | implemented | pytest + **browser** | covered + driven 2026-07-30 |
 | [S26](S26-delete-project.md) | Delete an RCP project without deleting the research project | pending | pytest + **browser** | none |
-| [S27](S27-agent-task-explains-and-recovers.md) | An agent task explains what happened and offers the right recovery | pending | pytest + **browser** | none |
+| [S27](S27-agent-task-explains-and-recovers.md) | Every launch has one task, authority contract, and recovery cause | implemented | pytest + **browser** | `test_prompts.py`, `test_conversation_retry.py`, `test_api.py`, `test_proposal_boundary.py`, `runDialog.test.mjs`, browser 2026-08-03 |
 | [S28](S28-one-backend-two-entrances.md) | One backend, two entrances | pending | pytest + api | none |
 | [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | pending | pytest | none |
 | [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | pending | **desktop** | none |
@@ -198,6 +198,9 @@ it but a browser or a machine we do not have.
 | [S46](S46-project-header-and-chat-split.md) | Fold the project utilities and resize the Chats split | implemented | **browser** | driven 2026-08-02 |
 | [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
 | [S48](S48-screen-story-token-scale.md) | Measure project usage in favorite screen stories | implemented | **browser** | 5 checks + driven 2026-08-02 |
+| [S49](S49-chat-node-reference-links.md) | Open an existing node from a chat answer | implemented | **browser** | covered + driven 2026-08-02 |
+| [S50](S50-minimal-agent-proposal-boundary.md) | Agents propose only decisions and belief changes | implemented | pytest | covered |
+| [S51](S51-live-agent-patch-validation.md) | A Work agent checks the exact semantic patch RCP will apply | implemented | pytest | 2026-08-03 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

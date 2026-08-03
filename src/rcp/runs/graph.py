@@ -24,14 +24,14 @@ from rcp.agents import (
     RunContext,
     agent_output_schema,
     bounded_session_metadata,
-    normalize_agent_patch_bookkeeping,
     normalize_processed_cursors,
+    prepare_agent_patch,
     validate_agent_patch_shape,
     validate_session_evidence,
 )
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
-from rcp.core.models import CoverageBoundary, Patch
+from rcp.core.models import CoverageBoundary
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.providers import classify_terminal_error, profile_for
 from rcp.runs.shared import (
@@ -69,14 +69,6 @@ _MAX_CORRECTION_ROUNDS = 2
 _PREPARED_GRAPH_CONTEXT_FILE = "prepared-context.json"
 
 
-def _require_agent_patch_identity(patch: Patch, run_kind: str) -> None:
-    if patch.author != "agent" or patch.kind != run_kind:
-        raise ValueError(
-            f"The {run_kind} agent must return an agent-authored {run_kind} patch; "
-            "human approval patches can only be created by the RCP review UI."
-        )
-
-
 class _PreparedGraphContext(BaseModel):
     version: Literal[1] = 1
     project_id: str
@@ -100,7 +92,6 @@ class _GraphRetryState:
     transcript_sources: tuple[str, ...] = ()
     prior_progress_text: str | None = None
     retained_patch_text: str | None = None
-    base_contract_content: str | None = None
     context_reason: str | None = None
     progress_reason: str | None = None
 
@@ -194,7 +185,7 @@ def _continuation_graph_context(
 ) -> _PreparedGraphContext:
     """Load the immutable context owned by a native-session continuation.
 
-    Resume and same-provider correction continue a provider process in its
+    Resume and same-provider Retry continue a provider process in its
     original stage. Reassembling here would silently give that process a
     different graph and different evidence than the contract it is continuing.
     """
@@ -272,48 +263,6 @@ def _native_session_paths(
                 if len(matches) >= 8:
                     return sorted(set(matches))
     return sorted(set(matches))
-
-
-def _legacy_base_contract(execution: AgentTaskExecution, record: AgentTaskRecord) -> str | None:
-    stored = execution.store.agent_task_contract(record.operation_id, "base")
-    if stored is not None:
-        return stored
-    paths = [
-        receipt.payload.get("contract_path")
-        for receipt in execution.store.agent_task_receipts(record.operation_id)
-        if receipt.category == "agent_prompt"
-        and receipt.payload.get("launch_kind") == "initial"
-        and isinstance(receipt.payload.get("contract_path"), str)
-    ]
-    for value in paths:
-        assert isinstance(value, str)
-        try:
-            if not record.stage_root:
-                continue
-            if record.stage_host:
-                candidate = PurePosixPath(value)
-                if candidate.parent != PurePosixPath(record.stage_root) / "inputs":
-                    continue
-                content = (
-                    RemoteRunStage(record.stage_host)
-                    .attach(record.stage_root)
-                    .read_input_text(candidate.name)
-                )
-            else:
-                candidate = Path(value).resolve()
-                if candidate.parent != (Path(record.stage_root) / "inputs").resolve():
-                    continue
-                content = candidate.read_text(encoding="utf-8")
-            execution.store.record_agent_task_contract(
-                record.operation_id,
-                "base",
-                content,
-                hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            )
-            return content
-        except (OSError, StateUnavailable, ValueError):
-            continue
-    return None
 
 
 def _read_prior_progress(execution: AgentTaskExecution, parent: AgentTaskRecord) -> str | None:
@@ -443,14 +392,6 @@ def _try_reuse_graph_context(
             break
         progress_errors.append(f"attempt {candidate.attempt}: no retained provider progress")
 
-    base_contract_content = next(
-        (
-            content
-            for candidate in reversed(lineage)
-            if (content := _legacy_base_contract(execution, candidate)) is not None
-        ),
-        None,
-    )
     return _GraphRetryState(
         lineage=tuple(lineage),
         prepared=prepared,
@@ -460,7 +401,6 @@ def _try_reuse_graph_context(
         transcript_sources=transcript_sources,
         prior_progress_text=prior_progress_text if progress_parent else None,
         retained_patch_text=retained_patch_text if progress_parent else None,
-        base_contract_content=base_contract_content,
         context_reason="; ".join(context_errors)[:1200] if prepared is None else None,
         progress_reason="; ".join(progress_errors)[:1200] if progress_parent is None else None,
     )
@@ -575,11 +515,13 @@ def _stage_authorized_session_keys(
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
     context: RunContext,
+    *,
+    label: str = "authorized-session-keys.json",
 ) -> str:
     return _stage_json_task_input(
         local_stage,
         remote_stage,
-        "authorized-session-keys.json",
+        label,
         [{"key": session.key, "path": session.path} for session in context.sessions],
     )
 
@@ -843,7 +785,7 @@ async def stream_graph_run(
                 for conversation_root in _conversation_roots(context).values():
                     read_dirs.append(Path(conversation_root))
             token = _task_token(execution)
-            if reuses_native_checkpoint:
+            if reuses_native_checkpoint and continuation == "resume":
                 if not request.session_id:
                     raise ValueError(
                         "The interrupted operation has no native agent session; retry it instead."
@@ -852,101 +794,93 @@ async def stream_graph_run(
                 original_contract_path = _parent_task_contract_path(
                     execution, local_stage, remote_stage
                 )
-                if continuation == "correction":
-                    diagnostics_path = _stage_json_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-retry-correction.json",
-                        {
-                            "kind": kind,
-                            "prior_attempt_diagnostics": list(execution.retry_feedback),
-                            "retained_patch_path": patch_path,
-                        },
-                    )
-                    contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=original_contract_path,
-                        mode="patch_correction",
-                        patch_path=patch_path,
-                        diagnostics_path=diagnostics_path,
-                    )
-                    contract_path, prompt = _stage_task_contract(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-correction.md",
-                        contract,
-                        execution=execution,
-                        role="correction",
-                    )
-                else:
-                    # A literal native Resume already owns its immutable contract
-                    # and saved stage. Its only new instruction is to continue.
-                    contract_path = original_contract_path
-                    prompt = "Continue the interrupted task."
-                base_contract_path = contract_path
+                base_contract_path = original_contract_path
+                contract = PromptFactory.continuation_task_contract(
+                    original_contract_path=original_contract_path,
+                    mode="resume",
+                    patch_path=patch_path,
+                )
+                contract_path, prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-resume.md",
+                    contract,
+                    execution=execution,
+                    role="resume",
+                )
             else:
-                base_contract_content = (
-                    retry_state.base_contract_content
-                    if retry_state is not None and retry_state.prepared is not None
+                if reuses_native_checkpoint and continuation != "retry":
+                    raise ValueError(f"Unsupported graph continuation: {continuation}")
+                retry_original_contract_path: str | None = None
+                if reuses_native_checkpoint:
+                    if not request.session_id:
+                        raise ValueError(
+                            "The failed operation has no native agent session; retry it cleanly."
+                        )
+                    assert execution is not None
+                    retry_original_contract_path = _parent_task_contract_path(
+                        execution, local_stage, remote_stage
+                    )
+                schema_path = _stage_json_task_input(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-patch-schema.json",
+                    agent_output_schema(),
+                )
+                human_request_path = (
+                    _stage_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-human-request.txt",
+                        request.message,
+                    )
+                    if request.message
                     else None
                 )
-                if base_contract_content is None:
-                    schema_path = _stage_json_task_input(
+                retry_diagnostics_path = (
+                    _stage_json_task_input(
                         local_stage,
                         remote_stage,
-                        f"task-{token}-patch-schema.json",
-                        agent_output_schema(),
+                        f"task-{token}-retry-diagnostics.json",
+                        {"prior_attempt_diagnostics": list(execution.retry_feedback)},
                     )
-                    human_request_path = (
-                        _stage_task_input(
-                            local_stage,
-                            remote_stage,
-                            f"task-{token}-human-request.txt",
-                            request.message,
-                        )
-                        if request.message
-                        else None
-                    )
-                    retry_diagnostics_path = (
-                        _stage_json_task_input(
-                            local_stage,
-                            remote_stage,
-                            f"task-{token}-retry-diagnostics.json",
-                            {"prior_attempt_diagnostics": list(execution.retry_feedback)},
-                        )
-                        if execution is not None and execution.retry_feedback
-                        else None
-                    )
-                    authorized_session_keys_path = _stage_authorized_session_keys(
-                        local_stage,
-                        remote_stage,
-                        context,
-                    )
-                    base_contract_content = service.graph_task_contract(
-                        kind,
-                        project_name=context.project_name,
-                        ontology_path=f"{context.graph_path}#ontology",
-                        graph_path=context.graph_path,
-                        research_path=context.research_md_path,
-                        conversation_roots=_conversation_roots(context),
-                        authorized_session_keys_path=authorized_session_keys_path,
-                        cursor_path=str(
-                            PurePosixPath(context.coverage_path).with_name("cursors.json")
-                        ),
-                        coverage_path=context.coverage_path,
-                        repositories=[
-                            {"alias": item.alias, "host": item.host, "path": item.path}
-                            for item in context.repositories
-                        ],
-                        patch_path=patch_path,
-                        output_schema_path=schema_path,
-                        human_request_path=human_request_path,
-                        retry_diagnostics_path=retry_diagnostics_path,
-                        source_errors=context.source_errors,
-                    )
+                    if execution is not None and execution.retry_feedback
+                    else None
+                )
+                authorized_session_keys_path = _stage_authorized_session_keys(
+                    local_stage,
+                    remote_stage,
+                    context,
+                    label=(
+                        "authorized-session-keys.json"
+                        if continuation == "fresh"
+                        else f"task-{token}-authorized-session-keys.json"
+                    ),
+                )
+                base_contract_content = service.graph_task_contract(
+                    kind,
+                    project_name=context.project_name,
+                    ontology_path=f"{context.graph_path}#ontology",
+                    graph_path=context.graph_path,
+                    research_path=context.research_md_path,
+                    conversation_roots=_conversation_roots(context),
+                    authorized_session_keys_path=authorized_session_keys_path,
+                    cursor_path=str(PurePosixPath(context.coverage_path).with_name("cursors.json")),
+                    coverage_path=context.coverage_path,
+                    repositories=[
+                        {"alias": item.alias, "host": item.host, "path": item.path}
+                        for item in context.repositories
+                    ],
+                    patch_path=patch_path,
+                    output_schema_path=schema_path,
+                    human_request_path=human_request_path,
+                    retry_diagnostics_path=retry_diagnostics_path,
+                    source_errors=context.source_errors,
+                )
                 base_label = (
-                    f"task-{token}-base.md"
-                    if retry_state is not None
-                    else f"task-{token}-initial.md"
+                    f"task-{token}-initial.md"
+                    if continuation == "fresh"
+                    else f"task-{token}-base.md"
                 )
                 base_contract_path, base_prompt = _stage_task_contract(
                     local_stage,
@@ -957,7 +891,25 @@ async def stream_graph_run(
                     role="base",
                 )
 
-                if retry_state is not None and retry_state.progress_parent is not None:
+                if reuses_native_checkpoint:
+                    assert execution is not None
+                    assert retry_original_contract_path is not None
+                    contract = PromptFactory.continuation_task_contract(
+                        original_contract_path=retry_original_contract_path,
+                        mode="retry",
+                        patch_path=patch_path,
+                        diagnostics_path=retry_diagnostics_path,
+                        current_contract_path=base_contract_path,
+                    )
+                    contract_path, prompt = _stage_task_contract(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-retry.md",
+                        contract,
+                        execution=execution,
+                        role="retry",
+                    )
+                elif retry_state is not None and retry_state.progress_parent is not None:
                     handoff = dict(retry_state.progress)
                     transcript_paths = _project_native_transcripts(
                         local_stage,
@@ -1029,7 +981,6 @@ async def stream_graph_run(
                         context=context,
                         previous_coverage=previous_coverage,
                     )
-            base_contract_path = contract_path
         except (ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
@@ -1039,16 +990,16 @@ async def stream_graph_run(
         rounds = 0
         last_problem = (
             execution.retry_feedback[0]
-            if execution is not None and continuation == "correction" and execution.retry_feedback
+            if execution is not None and continuation == "retry" and execution.retry_feedback
             else None
         )
         while True:
-            # A correction reuses its predecessor's stage, so the patch it is
-            # meant to replace is still lying there. Remember it rather than
-            # deleting it: invariant 9 says a failed run keeps its patch text.
-            # Only a reused stage can hold one, so a first launch skips the probe
-            # and its remote round-trip.
-            correcting = bool(rounds) or continuation == "correction"
+            # Resume and Retry reuse their predecessor's stage, including any
+            # retained patch. Fingerprint it rather than deleting it: invariant 9
+            # says failed work remains inspectable, but a Retry may not claim an
+            # inherited file as output it produced. In-process correction rounds
+            # have the same safeguard.
+            requires_new_patch = bool(rounds) or continuation == "retry"
             pre_launch_patch_digest = (
                 _existing_patch_digest(workspace, remote_stage)
                 if reuses_native_checkpoint or rounds
@@ -1175,20 +1126,19 @@ async def stream_graph_run(
                     execution.store.record_agent_task_receipt(
                         execution.operation_id,
                         "patch_predates_launch",
-                        {"correction_round": rounds, "accepted": not correcting},
+                        {"correction_round": rounds, "accepted": not requires_new_patch},
                         tier="diagnostic",
                     )
-                if unchanged and correcting:
-                    # Applying it would report a correction that never happened.
-                    # The substantive diagnostic still leads: why the patch is
-                    # unacceptable is what the human and the agent both need,
-                    # and "you did not rewrite it" only explains this launch.
+                if unchanged and requires_new_patch:
+                    # Applying it would attribute inherited output to this launch.
+                    # The substantive diagnostic still leads; the fingerprint only
+                    # proves that this launch did not rewrite the deliverable.
                     stale_patch = True
                     raise AgentOutputProblem(
                         (f"{last_problem} " if last_problem else "")
                         + "The patch file is byte-identical to the one this launch "
-                        "was asked to correct, so no corrected patch was written. "
-                        "Rewrite patch.json with the changes the diagnostic requires."
+                        "inherited, so this launch did not write a new patch. Rewrite "
+                        "patch.json before RCP can accept it as this attempt's output."
                     )
             except AgentOutputProblem as exc:
                 problem = str(exc)
@@ -1217,16 +1167,19 @@ async def stream_graph_run(
                             level="warning",
                         )
                 try:
-                    patch, _ = service.parse_patch_output([patch_text])
+                    draft, _ = service.parse_patch_output([patch_text])
+                    validate_agent_patch_shape(draft)
+                    patch = prepare_agent_patch(
+                        draft,
+                        kind=kind,
+                        run_truth_scope=context.run_truth_scope,
+                    )
                     _record_patch_receipt(
                         execution,
                         patch,
                         byte_length=len(patch_text.encode("utf-8")),
                     )
-                    _require_agent_patch_identity(patch, kind)
-                    patch = normalize_agent_patch_bookkeeping(patch)
                     patch = normalize_processed_cursors(context, patch, previous_coverage)
-                    validate_agent_patch_shape(patch)
                     validate_session_evidence(context, patch, previous_coverage)
                 except ValueError as exc:
                     problem = str(exc)
@@ -1311,6 +1264,8 @@ async def stream_graph_run(
                 remote_stage,
                 f"task-{token}-correction-{rounds}.md",
                 correction_contract,
+                execution=execution,
+                role=f"graph_patch_correction_{rounds}",
             )
             session_id = native_session_id
     finally:

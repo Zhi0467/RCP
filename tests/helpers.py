@@ -1,6 +1,52 @@
 from __future__ import annotations
 
+import json
+
 from rcp.core.models import Patch
+
+_RCP_OWNED_ITEM_FIELDS = {
+    "create_nodes": ("nodes", {"standing", "created_rev", "updated_rev"}),
+    "create_edges": ("edges", {"layer", "created_rev"}),
+    "create_ambiguities": ("ambiguities", {"raised_rev"}),
+    "create_proposals": (
+        "proposals",
+        {
+            "related_node_ids",
+            "related_config_keys",
+            "base_rev",
+            "status",
+            "raised_rev",
+            "resolved_rev",
+            "rejection_reason",
+        },
+    ),
+    "upsert_glossary": ("terms", {"updated_rev"}),
+}
+
+
+def agent_patch_json(patch: Patch) -> str:
+    """Render canonical test data as the semantic JSON an agent may write."""
+
+    operations = json.loads(json.dumps(patch.ops))
+    for operation in operations:
+        owned = _RCP_OWNED_ITEM_FIELDS.get(operation.get("op"))
+        if owned is None:
+            continue
+        field, excluded = owned
+        operation[field] = [
+            {key: value for key, value in item.items() if key not in excluded}
+            for item in operation.get(field, [])
+        ]
+    return json.dumps(
+        {
+            "summary": patch.summary,
+            "ops": operations,
+            "repositories_read": list(patch.repositories_read),
+            "change_summary": list(patch.change_summary),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def refresh_patch(node_id: str = "rq/transfer-after-shift") -> Patch:

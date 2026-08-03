@@ -1373,7 +1373,8 @@ def test_run_context_prioritizes_interactive_roots_and_repairs_legacy_cursors(
     assert "/tmp/rcp-stage/patch.json" in contract
     assert "cold reader" in contract
     assert "glossary is supplementary" in contract
-    assert "Set processed_cursors to {}" in contract
+    assert "RCP derives processed cursors" in contract
+    assert "do not put cursors in the semantic Patch" in contract
 
     refresh_contract = PromptFactory.graph_task_contract(
         "refresh",

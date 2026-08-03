@@ -7,10 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from rcp.core.models import (
-    Blocker,
     Decision,
-    Evidence,
-    Experiment,
     GraphState,
     Hypothesis,
     Patch,
@@ -47,12 +44,6 @@ def validate_new_node(
     if raw.get("standing", "asserted") != "asserted" and patch.kind != "approval":
         report.reject(
             "agent-created-trusted-node", "Agent-created nodes must start asserted.", revision
-        )
-    if raw.get("type") == "blocker" and raw.get("blocker_type") in {"scientific", "design"}:
-        report.reject(
-            "gated-blocker",
-            "Scientific and design blockers must be introduced through a Proposal.",
-            revision,
         )
     try:
         NODE_ADAPTER.validate_python(raw)
@@ -95,6 +86,28 @@ def validate_new_node_authoring(
         )
     if node_type == "hypothesis" and raw.get("scope"):
         _validate_grounded_scope(raw, report, revision)
+    if (
+        patch.author == "agent"
+        and node_type == "hypothesis"
+        and raw.get("status", "proposed") != "proposed"
+    ):
+        report.reject(
+            "agent-created-belief-transition",
+            f"Agent-created Hypothesis {node_id!r} must start proposed.",
+            revision,
+            related_node_ids=[node_id] if isinstance(node_id, str) else [],
+        )
+    if (
+        patch.author == "agent"
+        and node_type == "decision"
+        and (raw.get("status", "open") != "open" or raw.get("selected_option") is not None)
+    ):
+        report.reject(
+            "agent-created-decision-transition",
+            f"Agent-created Decision {node_id!r} must start open without a selected option.",
+            revision,
+            related_node_ids=[node_id] if isinstance(node_id, str) else [],
+        )
 
     prefix = node_id.split("/", 1)[0] if "/" in node_id else ""
     suffix = node_id.split("/", 1)[-1]
@@ -168,29 +181,12 @@ def _normalize_grounding_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
-def is_gated_update(node: Any, changes: dict[str, Any]) -> bool:
-    if node.standing == "accepted" and changes:
-        return True
+def requires_proposal(node: Any, changes: dict[str, Any]) -> bool:
     if isinstance(node, Hypothesis) and "status" in changes and changes["status"] != node.status:
         return True
-    if isinstance(node, Decision) and node.status == "open" and changes.get("status") == "decided":
-        return True
-    if (
-        isinstance(node, Evidence)
-        and changes.get("validity") in {"invalid", "qualified"}
-        and changes.get("validity") != node.validity
-    ):
-        return True
-    if (
-        isinstance(node, Experiment)
-        and changes.get("status") == "abandoned"
-        and node.status != "abandoned"
-    ):
-        return True
-    return (
-        isinstance(node, Blocker)
-        and node.blocker_type in {"scientific", "design"}
-        and bool(changes)
+    return isinstance(node, Decision) and any(
+        field in changes and changes[field] != getattr(node, field)
+        for field in ("status", "selected_option")
     )
 
 

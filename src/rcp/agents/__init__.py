@@ -16,8 +16,10 @@ from rcp.agents.context import (
 from rcp.agents.launcher import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
 from rcp.agents.prompts import PromptFactory
 from rcp.agents.schema import (
+    AgentPatch,
     agent_output_schema,
-    normalize_agent_patch_bookkeeping,
+    parse_agent_patch_json,
+    prepare_agent_patch,
     validate_agent_patch_shape,
 )
 
@@ -25,6 +27,7 @@ __all__ = [
     "AgentEvent",
     "AgentLauncher",
     "AgentProcessControl",
+    "AgentPatch",
     "ChatContext",
     "ContextAssembler",
     "PromptFactory",
@@ -34,7 +37,8 @@ __all__ = [
     "SessionRoutingIndexPointer",
     "agent_output_schema",
     "bounded_session_metadata",
-    "normalize_agent_patch_bookkeeping",
+    "parse_agent_patch_json",
+    "prepare_agent_patch",
     "normalize_processed_cursors",
     "validate_agent_patch_shape",
     "validate_work_patch",

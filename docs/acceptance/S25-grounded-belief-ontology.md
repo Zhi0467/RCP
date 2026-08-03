@@ -55,9 +55,11 @@ payload. `confidence` is deleted from the model outright.
 
 The Hypothesis detail drawer's existing **Status history** shows each status
 transition with its revision and cause. The cause links to the Evidence relation,
-Decision, Proposal resolution, or human edit that justified it. A status change
-without one of those four causes is refused rather than recorded as unexplained
-belief.
+Decision, Proposal resolution, or human edit that justified it. Those broader
+cause types keep historical and human-authored transitions readable. A newly
+agent-authored transition may be recommended only through a one-node Proposal
+whose cause is an Evidence edge; a direct agent transition or an ungrounded
+Proposal is refused rather than recorded as unexplained belief.
 
 An edge outside `RELATION_SPEC` is accepted provisionally but visibly flagged.
 The relevant detail view names the relation, actual endpoint types, and expected

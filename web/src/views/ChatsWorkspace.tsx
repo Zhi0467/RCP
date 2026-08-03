@@ -41,6 +41,7 @@ interface Props {
   onStartTask: StartAgentTask;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
+  onOpenNode?: (nodeId: string) => void;
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
   onStopWatcher?: (watcherId: string) => void;
 }
@@ -93,6 +94,7 @@ export function ChatsWorkspace({
   onStartTask,
   onInspectTask,
   onOpenInbox,
+  onOpenNode,
   onRepairGraphUpdate,
   onStopWatcher,
 }: Props) {
@@ -316,6 +318,7 @@ export function ChatsWorkspace({
             key={selected.chatId}
             project={project}
             node={selected.nodeId ? (nodes[selected.nodeId] ?? null) : null}
+            nodes={nodes}
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
             runScope={runScope}
             tasks={tasks}
@@ -329,6 +332,7 @@ export function ChatsWorkspace({
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}
             onRepairGraphUpdate={onRepairGraphUpdate}
+            onOpenNode={onOpenNode}
             onStopWatcher={onStopWatcher}
             onClose={() => undefined}
           />

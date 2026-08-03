@@ -19,7 +19,12 @@ from rcp.config import (
     write_machine_provider_paths,
     write_project_scope,
 )
-from rcp.core.materialize import MaterializationResult, apply_valid_patch, materialize_patches
+from rcp.core.materialize import (
+    MaterializationResult,
+    apply_valid_patch,
+    materialize_patches,
+    prepare_patch_bookkeeping,
+)
 from rcp.core.models import GraphState, Patch
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import ValidationReport, validate_patch
@@ -207,46 +212,11 @@ class HistoryManager:
                     f"{current.state.revision} while this patch was being written"
                 )
             revision = self._next_revision()
-            patch = patch.model_copy(update={"revision": revision})
-            report = validate_patch(
-                current.state,
+            patch, report, _preflight_state = self._validate_candidate_locked(
+                current,
                 patch,
-                current.state.project_truth_scope,
-                repository_aliases=self.manifest.repository_map,
-                machine_aliases=self.manifest.machine_map,
-                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-                state_repository=self.manifest.state.repository,
+                revision,
             )
-            preflight_state: GraphState | None = None
-            if not report.rejected:
-                try:
-                    preflight_state = apply_valid_patch(current.state, patch)
-                except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                    report.reject(
-                        "malformed-operation",
-                        f"Patch operations could not be applied atomically: {exc}.",
-                        revision,
-                    )
-            if (
-                preflight_state is not None
-                and preflight_state.project_truth_scope != current.state.project_truth_scope
-            ):
-                descriptor = next(
-                    (
-                        op.get("repository")
-                        for op in patch.ops
-                        if op.get("op") == "set_project_truth_scope" and op.get("repository")
-                    ),
-                    None,
-                )
-                try:
-                    validate_project_scope_update(
-                        self.manifest,
-                        preflight_state.project_truth_scope,
-                        descriptor,
-                    )
-                except ValueError as exc:
-                    report.reject("invalid-project-scope", str(exc), revision)
             if discard_on_reject and report.rejected:
                 raise PatchRejected(report)
             patch = patch.model_copy(
@@ -284,6 +254,71 @@ class HistoryManager:
             if raise_on_reject and result.reports[revision].rejected:
                 raise PatchRejected(result.reports[revision])
             return patch, result
+
+    def validate_candidate(self, patch: Patch) -> tuple[Patch, ValidationReport, GraphState]:
+        """Validate without writing, against canonical state held under the append lock."""
+
+        with self.workspace.transaction(), self._append_lock():
+            self._reload_manifest()
+            self.ensure_layout()
+            self._repair_materializations_locked()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            prepared, report, _candidate = self._validate_candidate_locked(
+                current,
+                patch,
+                self._next_revision(),
+            )
+            return prepared, report, current.state
+
+    def _validate_candidate_locked(
+        self,
+        current: MaterializationResult,
+        patch: Patch,
+        revision: int,
+    ) -> tuple[Patch, ValidationReport, GraphState | None]:
+        patch = patch.model_copy(update={"revision": revision})
+        patch = prepare_patch_bookkeeping(current.state, patch)
+        report = validate_patch(
+            current.state,
+            patch,
+            current.state.project_truth_scope,
+            repository_aliases=self.manifest.repository_map,
+            machine_aliases=self.manifest.machine_map,
+            default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
+            state_repository=self.manifest.state.repository,
+        )
+        preflight_state: GraphState | None = None
+        if not report.rejected:
+            try:
+                preflight_state = apply_valid_patch(current.state, patch)
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                report.reject(
+                    "malformed-operation",
+                    f"Patch operations could not be applied atomically: {exc}.",
+                    revision,
+                )
+        if (
+            preflight_state is not None
+            and preflight_state.project_truth_scope != current.state.project_truth_scope
+        ):
+            descriptor = next(
+                (
+                    op.get("repository")
+                    for op in patch.ops
+                    if op.get("op") == "set_project_truth_scope" and op.get("repository")
+                ),
+                None,
+            )
+            try:
+                validate_project_scope_update(
+                    self.manifest,
+                    preflight_state.project_truth_scope,
+                    descriptor,
+                )
+            except ValueError as exc:
+                report.reject("invalid-project-scope", str(exc), revision)
+        return patch, report, preflight_state
 
     def update_agent_settings(
         self,
@@ -360,6 +395,7 @@ class HistoryManager:
             prepared: list[Patch] = []
             for offset, raw_patch in enumerate(patches):
                 patch = raw_patch.model_copy(update={"revision": next_revision + offset})
+                patch = prepare_patch_bookkeeping(state, patch)
                 report = validate_patch(
                     state,
                     patch,

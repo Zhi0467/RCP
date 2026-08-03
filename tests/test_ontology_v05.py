@@ -286,29 +286,6 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
 def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
     proposal_ops: list[dict[str, object]] = [
         {
-            "op": "create_nodes",
-            "nodes": [
-                {
-                    "id": "ev/result",
-                    "type": "evidence",
-                    "title": "Result",
-                    "observation": "The intervention helped.",
-                    "origin": "internal_run",
-                }
-            ],
-        },
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "id": "edge/support",
-                    "source": "ev/result",
-                    "target": "hyp/main",
-                    "relation": "supports",
-                }
-            ],
-        },
-        {
             "op": "update_nodes",
             "nodes": [
                 {
@@ -323,6 +300,29 @@ def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
     patch = _patch(
         2,
         [
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "ev/result",
+                        "type": "evidence",
+                        "title": "Result",
+                        "observation": "The intervention helped.",
+                        "origin": "internal_run",
+                    }
+                ],
+            },
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "id": "edge/support",
+                        "source": "ev/result",
+                        "target": "hyp/main",
+                        "relation": "supports",
+                    }
+                ],
+            },
             {
                 "op": "create_proposals",
                 "proposals": [
@@ -340,26 +340,15 @@ def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
                         "base_rev": 1,
                     }
                 ],
-            }
+            },
         ],
     )
     report = validate_patch(state, patch, ["repo"])
     assert not report.rejected
 
 
-def test_same_patch_decision_can_cause_belief_change() -> None:
+def test_existing_decision_belief_cause_is_replay_only() -> None:
     proposal_ops: list[dict[str, object]] = [
-        {
-            "op": "create_nodes",
-            "nodes": [
-                {
-                    "id": "dec/method",
-                    "type": "decision",
-                    "title": "Method",
-                    "question": "Which method?",
-                }
-            ],
-        },
         {
             "op": "update_nodes",
             "nodes": [
@@ -371,7 +360,17 @@ def test_same_patch_decision_can_cause_belief_change() -> None:
             ],
         },
     ]
-    state = GraphState(revision=1, project_truth_scope=["repo"], nodes={"hyp/main": _hypothesis()})
+    decision = Decision(
+        id="dec/method",
+        type="decision",
+        title="Method",
+        question="Which method?",
+    )
+    state = GraphState(
+        revision=1,
+        project_truth_scope=["repo"],
+        nodes={"hyp/main": _hypothesis(), decision.id: decision},
+    )
     patch = _patch(
         2,
         [
@@ -395,22 +394,34 @@ def test_same_patch_decision_can_cause_belief_change() -> None:
             }
         ],
     )
-    assert not validate_patch(state, patch, ["repo"]).rejected
+    admission = validate_patch(state, patch, ["repo"])
+    replay = validate_patch(state, patch, ["repo"], mode="replay")
+
+    assert admission.rejected
+    assert any(message.code == "invalid-agent-proposal-shape" for message in admission.messages)
+    assert not replay.rejected
 
 
 @pytest.mark.parametrize(
-    "operation",
+    ("operation", "expected_code"),
     [
-        {"op": "update_nodes", "nodes": [{"id": "hyp/main", "changes": {"status": "active"}}]},
-        {"op": "supersede_nodes", "nodes": [{"id": "hyp/main"}]},
-        {
-            "op": "merge_nodes",
-            "merges": [{"duplicate": "hyp/main", "canonical": "hyp/other"}],
-        },
+        (
+            {"op": "update_nodes", "nodes": [{"id": "hyp/main", "changes": {"status": "active"}}]},
+            "missing-belief-cause",
+        ),
+        ({"op": "supersede_nodes", "nodes": [{"id": "hyp/main"}]}, "gated-transition"),
+        (
+            {
+                "op": "merge_nodes",
+                "merges": [{"duplicate": "hyp/main", "canonical": "hyp/other"}],
+            },
+            "gated-transition",
+        ),
     ],
 )
-def test_every_belief_changing_operation_requires_a_cause(
+def test_every_belief_changing_operation_requires_human_authority(
     operation: dict[str, object],
+    expected_code: str,
 ) -> None:
     state = GraphState(
         project_truth_scope=["repo"],
@@ -420,8 +431,8 @@ def test_every_belief_changing_operation_requires_a_cause(
         },
     )
     report = validate_patch(state, _patch(1, [operation]), ["repo"])
-    assert "missing-belief-cause" in _codes(report)
-    assert "missing-belief-cause" not in _codes(
+    assert expected_code in _codes(report)
+    assert expected_code not in _codes(
         validate_patch(state, _patch(1, [operation]), ["repo"], mode="replay")
     )
 

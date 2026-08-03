@@ -19,40 +19,6 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
 ) -> None:
     initial = HistoryManager(manifest)
     initial.append(seed_patch())
-    initial.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Proposed narrowing the project truth scope.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
-                {
-                    "op": "create_proposals",
-                    "proposals": [
-                        {
-                            "id": "prop/narrow-project-scope",
-                            "title": "Narrow project scope",
-                            "card": {
-                                "situation_cold": "Repo-b is no longer part of this project.",
-                                "why_human_now": "Project membership requires human review.",
-                                "consequences": "Future runs will omit repo-b.",
-                                "decision_needed": "Decide whether to remove repo-b.",
-                            },
-                            "ops": [
-                                {
-                                    "op": "set_project_truth_scope",
-                                    "truth_scope": ["repo-a"],
-                                }
-                            ],
-                            "related_config_keys": ["project_truth_scope"],
-                            "base_rev": 1,
-                        }
-                    ],
-                }
-            ],
-        )
-    )
     settings_history = HistoryManager(load_manifest(manifest.path))
     scope_history = HistoryManager(load_manifest(manifest.path))
     assert settings_history._process_lock is scope_history._process_lock
@@ -84,11 +50,7 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
                     {
                         "op": "set_project_truth_scope",
                         "truth_scope": ["repo-a"],
-                    },
-                    {
-                        "op": "resolve_proposals",
-                        "resolutions": [{"id": "prop/narrow-project-scope", "status": "approved"}],
-                    },
+                    }
                 ],
             )
         )
@@ -103,7 +65,7 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
     updated = load_manifest(manifest.path)
     assert updated.project.truth_scope == ["repo-a"]
     assert updated.machine_map["laptop"].provider_paths["codex"] == "/opt/agents/codex"
-    assert scope_history.state().revision == 3
+    assert scope_history.state().revision == 2
 
 
 def test_seed_is_asserted_and_accepted_core_starts_empty(manifest) -> None:
@@ -417,7 +379,7 @@ def test_node_updates_cannot_change_identity_or_standing(manifest, changes) -> N
 
 
 @pytest.mark.parametrize(
-    ("operation", "code"),
+    "operation",
     [
         (
             {
@@ -425,39 +387,45 @@ def test_node_updates_cannot_change_identity_or_standing(manifest, changes) -> N
                 "nodes": [
                     {
                         "id": "hyp/replanning-restores-plasticity",
-                        "superseded_by": "rq/learning-after-shift",
+                        "superseded_by": "hyp/replanning-alternative",
                     }
                 ],
-            },
-            "gated-transition",
+            }
         ),
         (
             {
                 "op": "merge_nodes",
                 "merges": [
                     {
-                        "duplicate": "rq/learning-after-shift",
-                        "canonical": "hyp/replanning-restores-plasticity",
+                        "duplicate": "hyp/replanning-restores-plasticity",
+                        "canonical": "hyp/replanning-alternative",
                     }
                 ],
-            },
-            "accepted-node-merge",
+            }
         ),
     ],
 )
-def test_agent_cannot_supersede_or_merge_accepted_nodes(manifest, operation, code) -> None:
+def test_agent_cannot_supersede_or_merge_a_hypothesis_directly(manifest, operation) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     history.append(
         Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the hypothesis.",
+            kind="refresh",
+            author="agent",
+            summary="Recorded an alternative hypothesis.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
             ops=[
                 {
-                    "op": "set_standing",
-                    "node_id": "hyp/replanning-restores-plasticity",
-                    "standing": "accepted",
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "hyp/replanning-alternative",
+                            "type": "hypothesis",
+                            "title": "Replanning alternative",
+                            "statement": "A separate mechanism explains recovery.",
+                        }
+                    ],
                 }
             ],
         )
@@ -475,8 +443,85 @@ def test_agent_cannot_supersede_or_merge_accepted_nodes(manifest, operation, cod
             )
         )
 
-    assert any(message.code == code for message in caught.value.report.messages)
+    assert any(message.code == "gated-transition" for message in caught.value.report.messages)
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 3
+
+
+@pytest.mark.parametrize("operation", ["supersede_nodes", "merge_nodes"])
+def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operation) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Accepted the research question.",
+            ops=[
+                {
+                    "op": "set_standing",
+                    "node_id": "rq/learning-after-shift",
+                    "standing": "accepted",
+                }
+            ],
+        )
+    )
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Recorded a canonical research question.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "rq/canonical-learning-question",
+                            "type": "research_question",
+                            "title": "Canonical learning question",
+                            "question": "How does adaptation survive a task shift?",
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+    if operation == "supersede_nodes":
+        op = {
+            "op": operation,
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "superseded_by": "rq/canonical-learning-question",
+                }
+            ],
+        }
+    else:
+        op = {
+            "op": operation,
+            "merges": [
+                {
+                    "duplicate": "rq/learning-after-shift",
+                    "canonical": "rq/canonical-learning-question",
+                }
+            ],
+        }
+
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Reconciled duplicate research questions.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[op],
+        )
+    )
+
+    node = history.state().nodes["rq/learning-after-shift"]
+    assert node.status == "superseded"
+    assert node.standing == "asserted"
 
 
 @pytest.mark.parametrize(

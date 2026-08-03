@@ -14,6 +14,7 @@ const server = await createServer({
 const { RunDialog } = await server.ssrLoadModule("/src/components/RunDialog.tsx");
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
 const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
+const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/components/DraggableWindow.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const { providerPathPresentation } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 const { ChatsWorkspace } = await server.ssrLoadModule("/src/views/ChatsWorkspace.tsx");
@@ -222,6 +223,74 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
   assert.match(html, /Ask about this node/);
 });
 
+test("node standing action switches between green Agree and red Contest", () => {
+  const baseNode = {
+    id: "hyp/demo",
+    type: "hypothesis",
+    title: "Demo hypothesis",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const renderNode = (standing) =>
+    renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node: { ...baseNode, standing },
+        edges: [],
+        allNodes: { [baseNode.id]: { ...baseNode, standing } },
+        glossary: {},
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        onClose() {},
+        onDock() {},
+        onBeginEdit() {},
+        onStanding() {},
+        onStage() {},
+        onOpenChat() {},
+        onExploreRelations() {},
+        onSelectNode() {},
+      }),
+    );
+
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    const asserted = renderNode("asserted");
+    assert.match(asserted, /data-text-selectable="true"/);
+    assert.match(asserted, /class="button judgment node-standing-toggle agree"/);
+    assert.match(asserted, />Agree<\/button>/);
+    assert.doesNotMatch(asserted, />Contest<\/button>/);
+
+    const accepted = renderNode("accepted");
+    assert.match(accepted, /class="button judgment node-standing-toggle contest"/);
+    assert.match(accepted, />Contest<\/button>/);
+    assert.doesNotMatch(accepted, />Agree<\/button>/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("selectable node banner text never starts floating-window drag", () => {
+  const target = (...matches) => ({
+    closest(selector) {
+      return matches.includes(selector) ? {} : null;
+    },
+  });
+
+  assert.equal(shouldStartWindowDrag(target("[data-drag-handle]")), true);
+  assert.equal(
+    shouldStartWindowDrag(target("[data-drag-handle]", "[data-text-selectable]")),
+    false,
+  );
+  assert.equal(
+    shouldStartWindowDrag(target("[data-drag-handle]", "button, input, select, textarea, a")),
+    false,
+  );
+});
+
 test("conversation watcher status and wake attribution stay operational", () => {
   const html = renderToStaticMarkup(
     React.createElement(NodeChat, {
@@ -394,6 +463,15 @@ test("task inspector names every provider launch by its continuation cause", () 
       promptReceipt(3, "resume"),
       promptReceipt(4, "handoff"),
     ],
+    contracts: [
+      {
+        operation_id: "task-1",
+        role: "base",
+        created_at: now,
+        sha256: "contract-digest",
+        content: "# RCP seed task contract\n\nInstruction and trust boundary.",
+      },
+    ],
     events: [],
   };
   const html = renderToStaticMarkup(
@@ -414,6 +492,10 @@ test("task inspector names every provider launch by its continuation cause", () 
   assert.match(html, /Correcting prior failure · 2/);
   assert.match(html, /Continuing after interruption · 3/);
   assert.match(html, /Continuing in a new session · 4/);
+  assert.match(html, /Task contracts/);
+  assert.match(html, />Base</);
+  assert.match(html, /contract-digest/);
+  assert.match(html, /# RCP seed task contract/);
 });
 
 test("provider path state distinguishes a stale recorded executable", () => {

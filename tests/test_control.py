@@ -221,8 +221,8 @@ def _belief_patch_ops(
                                         cause
                                         if cause is not None
                                         else {
-                                            "kind": "proposal_resolution",
-                                            "ref_id": "proposal/belief",
+                                            "kind": "evidence_edge",
+                                            "ref_id": "ev/result::weakens::hyp/target",
                                         }
                                     ),
                                 }
@@ -245,10 +245,17 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
         validate_patch(state, _patch(wider), ["repo"])
     )
 
-    # The recorded cause is the human's approval, so the belief transition never
-    # claims the loop moved it.
+    # Approval authorizes the move, while the scientific cause remains the
+    # same-patch evidence edge rather than the Proposal itself.
+    approval_as_cause = _belief_patch_ops(
+        cause={"kind": "proposal_resolution", "ref_id": "proposal/belief"}
+    )
+    assert "experiment-loop-belief-cause" in _codes(
+        validate_patch(state, _patch(approval_as_cause), ["repo"])
+    )
+
     borrowed = _belief_patch_ops(
-        cause={"kind": "evidence_edge", "ref_id": "ev/result::weakens::hyp/target"}
+        cause={"kind": "evidence_edge", "ref_id": "ev/other::weakens::hyp/target"}
     )
     assert "experiment-loop-belief-cause" in _codes(
         validate_patch(state, _patch(borrowed), ["repo"])
@@ -264,9 +271,9 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
     )
 
     # A hypothesis this experiment does not test is neither a belief target nor a
-    # governing decision, so it falls back to the decision-scope refusal.
+    # governing decision, so its semantic update target is refused.
     foreign = _belief_patch_ops(target="hyp/unrelated")
-    assert "experiment-loop-proposal-scope" in _codes(
+    assert "experiment-loop-proposal-operations" in _codes(
         validate_patch(state, _patch(foreign), ["repo"])
     )
 
@@ -608,16 +615,19 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_governing_decision() -
     )
     assert not validate_patch(running_state, close_and_propose, ["repo"]).rejected
 
-    wrong_scope = deepcopy(proposal)
-    wrong_scope["related_node_ids"] = ["hyp/target"]
+    # Proposal dependencies are RCP bookkeeping, not an agent declaration or
+    # an experiment-loop authority input. The semantic target controls scope.
+    stale_bookkeeping = deepcopy(proposal)
+    stale_bookkeeping["related_node_ids"] = ["hyp/target"]
     codes = _codes(
         validate_patch(
             state,
-            _patch([{"op": "create_proposals", "proposals": [wrong_scope]}]),
+            _patch([{"op": "create_proposals", "proposals": [stale_bookkeeping]}]),
             ["repo"],
         )
     )
-    assert "experiment-loop-proposal-scope" in codes
+    assert "experiment-loop-proposal-scope" not in codes
+    assert "experiment-loop-proposal-operations" not in codes
 
     # A target that is neither a pinned decision nor a hypothesis this experiment
     # tests falls through both proposal shapes.

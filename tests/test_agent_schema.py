@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from rcp.agents import (
+    AgentPatch,
     agent_output_schema,
-    normalize_agent_patch_bookkeeping,
+    prepare_agent_patch,
     validate_agent_patch_shape,
 )
-from rcp.core.models import Patch, ValidationMessage
+from rcp.core.models import Patch
 from tests.helpers import seed_patch
 
 
@@ -66,6 +68,72 @@ def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects()
         assert "cause" in schema["$defs"][definition]["properties"]
 
 
+def test_agent_patch_is_a_semantic_model_not_a_canonical_patch() -> None:
+    schema = agent_output_schema()
+
+    assert not issubclass(AgentPatch, Patch)
+    assert set(schema["properties"]) == {
+        "summary",
+        "ops",
+        "repositories_read",
+        "change_summary",
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "kind",
+        "author",
+        "revision",
+        "created_at",
+        "run_truth_scope",
+        "processed_cursors",
+        "admission",
+        "admission_messages",
+        "experiment_control_node_id",
+        "experiment_decision_bundle",
+    ],
+)
+def test_raw_agent_patch_rejects_rcp_owned_top_level_metadata(field: str) -> None:
+    raw: dict[str, object] = {"summary": "Recorded semantic graph changes.", "ops": []}
+    raw[field] = "provider-supplied"
+
+    with pytest.raises(ValidationError, match=field):
+        AgentPatch.model_validate(raw)
+
+
+def test_agent_output_schema_omits_nested_rcp_bookkeeping() -> None:
+    definitions = agent_output_schema()["$defs"]
+    node_definitions = {
+        "AgentResearchQuestion",
+        "AgentHypothesis",
+        "AgentDecision",
+        "AgentExperiment",
+        "AgentEvidence",
+        "AgentBlocker",
+    }
+
+    for definition in node_definitions:
+        assert {"standing", "created_rev", "updated_rev"}.isdisjoint(
+            definitions[definition]["properties"]
+        )
+    assert "created_rev" not in definitions["NewEdge"]["properties"]
+    assert "raised_rev" not in definitions["AgentAmbiguity"]["properties"]
+    assert "updated_rev" not in definitions["AgentGlossaryTerm"]["properties"]
+    for definition in ("AgentSourceRef", "AgentExperimentAttempt", "AgentGatedCard"):
+        assert definitions[definition]["additionalProperties"] is False
+    assert {
+        "base_rev",
+        "related_node_ids",
+        "related_config_keys",
+        "status",
+        "raised_rev",
+        "resolved_rev",
+        "rejection_reason",
+    }.isdisjoint(definitions["AgentProposal"]["properties"])
+
+
 def test_new_agent_evidence_requires_an_explicit_origin() -> None:
     evidence = {
         "id": "ev/observed-recovery",
@@ -91,15 +159,8 @@ def test_new_agent_evidence_requires_an_explicit_origin() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "cause",
-    [
-        {"kind": "evidence_edge", "ref_id": "ev/result::supports::hyp/claim"},
-        {"kind": "decision", "ref_id": "dec/evaluation-rule"},
-        {"kind": "proposal_resolution", "ref_id": "prop/revise-claim"},
-    ],
-)
-def test_agent_belief_causes_have_strict_supported_shapes(cause: dict[str, str]) -> None:
+def test_agent_belief_causes_allow_only_a_strict_evidence_edge_shape() -> None:
+    cause = {"kind": "evidence_edge", "ref_id": "ev/result::supports::hyp/claim"}
     patch = Patch(
         kind="refresh",
         author="agent",
@@ -122,12 +183,19 @@ def test_agent_belief_causes_have_strict_supported_shapes(cause: dict[str, str])
 
     validate_agent_patch_shape(patch)
 
+    rendered = json.dumps(agent_output_schema())
+    assert '"evidence_edge"' in rendered
+    assert '"DecisionCause"' not in rendered
+    assert '"proposal_resolution"' not in rendered
+
 
 @pytest.mark.parametrize(
     "cause",
     [
         {"kind": "evidence_edge"},
+        {"kind": "decision", "ref_id": "dec/evaluation-rule"},
         {"kind": "decision", "ref_id": "dec/evaluation-rule", "note": "extra"},
+        {"kind": "proposal_resolution", "ref_id": "prop/revise-claim"},
         {"kind": "proposal_resolution", "ref_id": 7},
         {"kind": "human_edit"},
         {"kind": "human_edit", "ref_id": "human"},
@@ -161,12 +229,25 @@ def test_agent_belief_causes_reject_missing_extra_or_unknown_fields(
 
 
 def test_agent_edge_layer_is_backend_owned() -> None:
-    patch = seed_patch()
-    data = patch.model_dump(mode="python")
-    data["ops"][1]["edges"][0]["layer"] = "action"
+    raw = {
+        "summary": "Tried to assign an edge layer.",
+        "ops": [
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "source": "rq/question",
+                        "target": "hyp/claim",
+                        "relation": "has_hypothesis",
+                        "layer": "action",
+                    }
+                ],
+            }
+        ],
+    }
 
-    with pytest.raises(ValueError, match="layer"):
-        validate_agent_patch_shape(Patch.model_validate(data))
+    with pytest.raises(ValidationError, match="layer"):
+        AgentPatch.model_validate(raw)
 
 
 def test_agent_schema_accepts_the_generic_extension_namespace() -> None:
@@ -318,7 +399,7 @@ def test_agent_cannot_apply_ontology_directly() -> None:
         validate_agent_patch_shape(patch)
 
 
-def test_agent_can_propose_a_complete_ontology_state() -> None:
+def test_agent_cannot_propose_an_ontology_change() -> None:
     patch = Patch(
         kind="refresh",
         author="agent",
@@ -328,42 +409,124 @@ def test_agent_can_propose_a_complete_ontology_state() -> None:
         ops=[{"op": "create_proposals", "proposals": [_ontology_proposal()]}],
     )
 
-    validate_agent_patch_shape(patch)
+    with pytest.raises(ValueError, match="set_ontology|graph operation schema"):
+        validate_agent_patch_shape(patch)
 
     rendered = json.dumps(agent_output_schema())
-    assert '"set_ontology"' in rendered
-    assert '"OntologyState"' in rendered
+    assert '"set_ontology"' not in rendered
 
 
-def test_agent_revision_bookkeeping_is_normalized_before_shape_validation() -> None:
-    patch = seed_patch().model_copy(
-        update={
-            "revision": 7,
-            "admission": "rejected",
-            "admission_messages": [
-                ValidationMessage(
-                    level="reject",
-                    code="forged",
-                    message="The provider does not own admission.",
-                )
+def test_agent_cannot_resolve_or_withdraw_a_proposal() -> None:
+    patch = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Tried to remove a pending human judgment.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "resolve_proposals",
+                "resolutions": [{"id": "prop/pending", "status": "withdrawn"}],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="resolve_proposals|graph operation schema"):
+        validate_agent_patch_shape(patch)
+
+    assert '"resolve_proposals"' not in json.dumps(agent_output_schema())
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {
+            "id": "dec/already-chosen",
+            "type": "decision",
+            "title": "Already chosen",
+            "question": "Which option?",
+            "options": ["a", "b"],
+            "selected_option": "a",
+            "status": "decided",
+        },
+        {
+            "id": "hyp/already-supported",
+            "type": "hypothesis",
+            "title": "Already supported",
+            "statement": "The result supports this claim.",
+            "status": "supported",
+        },
+    ],
+)
+def test_agent_created_decisions_and_hypotheses_start_unresolved(node: dict[str, object]) -> None:
+    patch = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Tried to create a pre-resolved semantic node.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[{"op": "create_nodes", "nodes": [node]}],
+    )
+
+    with pytest.raises(ValueError, match="graph operation schema"):
+        validate_agent_patch_shape(patch)
+
+
+def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
+    draft = AgentPatch.model_validate(
+        {
+            "summary": "Proposed promoting the hypothesis.",
+            "repositories_read": ["repo-a"],
+            "change_summary": ["Raised a belief transition for review."],
+            "ops": [
+                {
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": "prop/promote-hypothesis",
+                            "title": "Promote the hypothesis",
+                            "card": {
+                                "situation_cold": "New evidence supports the hypothesis.",
+                                "why_human_now": "The belief transition requires human authority.",
+                                "consequences": "The hypothesis will become active.",
+                                "decision_needed": "Approve or reject the transition.",
+                            },
+                            "ops": [
+                                {
+                                    "op": "update_nodes",
+                                    "nodes": [
+                                        {
+                                            "id": "hyp/replanning-restores-plasticity",
+                                            "changes": {"status": "active"},
+                                            "cause": {
+                                                "kind": "evidence_edge",
+                                                "ref_id": "edge/replanning-support",
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
             ],
         }
     )
-    data = patch.model_dump(mode="python")
-    data["ops"][0]["nodes"][0]["created_rev"] = 7
-    data["ops"][0]["nodes"][0]["updated_rev"] = 7
 
-    normalized = normalize_agent_patch_bookkeeping(Patch.model_validate(data))
+    patch = prepare_agent_patch(draft, kind="work", run_truth_scope=["repo-a"])
+    proposal = patch.ops[0]["proposals"][0]
 
-    assert normalized.revision == 0
-    assert normalized.admission == "accepted"
-    assert normalized.admission_messages == []
-    assert normalized.ops[0]["nodes"][0]["created_rev"] == 0
-    assert normalized.ops[0]["nodes"][0]["updated_rev"] == 0
-    validate_agent_patch_shape(normalized)
-
-
-def test_work_is_an_agent_patch_kind() -> None:
-    patch = seed_patch().model_copy(update={"kind": "work"})
-
-    validate_agent_patch_shape(patch)
+    assert isinstance(patch, Patch)
+    assert patch.kind == "work"
+    assert patch.author == "agent"
+    assert patch.revision == 0
+    assert patch.run_truth_scope == ["repo-a"]
+    assert patch.repositories_read == ["repo-a"]
+    assert patch.change_summary == ["Raised a belief transition for review."]
+    assert proposal["base_rev"] == 0
+    assert proposal["related_node_ids"] == []
+    assert proposal["related_config_keys"] == []
+    assert proposal["status"] == "pending"
+    assert proposal["raised_rev"] == 0
+    assert proposal["resolved_rev"] is None
+    assert proposal["rejection_reason"] is None

@@ -18,7 +18,7 @@ from rcp.service import CoachRequest, GraphUpdateResult, RunRequest
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
 
 AgentTaskRequest = RunRequest | CoachRequest
-AgentTaskContinuation = Literal["fresh", "resume", "correction", "handoff", "graph_repair"]
+AgentTaskContinuation = Literal["fresh", "resume", "retry", "handoff", "graph_repair"]
 
 
 @dataclass
@@ -33,7 +33,7 @@ class AgentTaskExecution:
 
     @property
     def reuses_native_checkpoint(self) -> bool:
-        return self.continuation in {"resume", "correction", "graph_repair"}
+        return self.continuation in {"resume", "retry", "graph_repair"}
 
     def checkpoint_stage(self, host: str, root: str) -> None:
         self.stage_host = host or None
@@ -221,7 +221,7 @@ class BackgroundAgentTasks:
             and bool(previous.stage_root)
             and self._session_is_rcp_owned(previous)
         )
-        resume_same_provider = (
+        retry_same_provider = (
             previous.status == "failed"
             and same_provider
             and same_execution_host
@@ -229,14 +229,14 @@ class BackgroundAgentTasks:
             and not session_limit
             and not continuation_context_unavailable
         )
-        if resume_same_provider:
+        if retry_same_provider:
             request = request.model_copy(update={"session_id": previous.native_session_id})
             return self._create_and_spawn(
                 previous.project_id,
                 previous.kind,
                 request,
                 parent=previous,
-                continuation="correction",
+                continuation="retry",
                 estimate_seconds=previous.estimate_seconds,
                 estimate_samples=previous.estimate_samples,
                 stage_host=previous.stage_host,
@@ -268,7 +268,7 @@ class BackgroundAgentTasks:
                 "The provider session limit was exhausted; starting a clean retry.",
                 level="warning",
             )
-        elif previous.status == "failed" and same_provider and not resume_same_provider:
+        elif previous.status == "failed" and same_provider and not retry_same_provider:
             reason = (
                 "execution host changed"
                 if not same_execution_host
@@ -409,7 +409,7 @@ class BackgroundAgentTasks:
         parent: AgentTaskRecord | None = None,
     ) -> AgentTaskRecord:
         operation_id = record.operation_id
-        reuses_native_checkpoint = continuation in {"resume", "correction", "graph_repair"}
+        reuses_native_checkpoint = continuation in {"resume", "retry", "graph_repair"}
         self.store.record_agent_task_receipt(
             operation_id,
             "operation_created",
@@ -481,9 +481,7 @@ class BackgroundAgentTasks:
             stage_root=record.stage_root,
             continuation=continuation,
             retry_feedback=(
-                ()
-                if continuation in {"fresh", "resume", "graph_repair"}
-                else self._retry_feedback(record)
+                self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
             ),
         )
         try:

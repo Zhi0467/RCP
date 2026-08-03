@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { isActiveTask, reconstructTaskTranscript, taskKindLabel } from "../agentTasks";
-import type { AgentTask, AgentTaskReceipt } from "../types";
+import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../types";
 import { estimateLabel, formatDuration, taskStatusLabel } from "./AgentTaskActivity";
 
 interface Props {
@@ -43,8 +43,10 @@ export function AgentTaskInspector({
   onClose,
 }: Props) {
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
+  const [copiedContractRole, setCopiedContractRole] = useState<string | null>(null);
   const transcript = task ? reconstructTaskTranscript([task]) : [];
   const promptReceipts = task?.debug_receipts?.filter(isPromptReceipt) ?? [];
+  const contracts = task?.contracts ?? [];
 
   async function copyPrompt(receipt: AgentTaskReceipt) {
     const prompt = receipt.payload.prompt;
@@ -56,6 +58,16 @@ export function AgentTaskInspector({
     }
     setCopiedReceiptId(receipt.receipt_id);
     window.setTimeout(() => setCopiedReceiptId(null), 1600);
+  }
+
+  async function copyContract(contract: AgentTaskContract) {
+    try {
+      await navigator.clipboard.writeText(contract.content);
+    } catch {
+      return;
+    }
+    setCopiedContractRole(contract.role);
+    window.setTimeout(() => setCopiedContractRole(null), 1600);
   }
 
   return (
@@ -257,6 +269,40 @@ export function AgentTaskInspector({
                   </section>
                 )}
 
+                {contracts.length > 0 && (
+                  <section>
+                    <h4>Task contracts</h4>
+                    <div className="run-prompt-list">
+                      {contracts.map((contract) => (
+                        <details className="run-prompt" key={contract.role}>
+                          <summary>
+                            <strong>{humanize(contract.role)}</strong>
+                            <time>{formatTimestamp(contract.created_at)}</time>
+                          </summary>
+                          <div className="run-prompt-body">
+                            <div className="run-prompt-toolbar">
+                              <span>{contractStats(contract)}</span>
+                              <button
+                                className="button ghost compact"
+                                type="button"
+                                onClick={() => void copyContract(contract)}
+                              >
+                                {copiedContractRole === contract.role ? (
+                                  <Check size={12} />
+                                ) : (
+                                  <Copy size={12} />
+                                )}
+                                {copiedContractRole === contract.role ? "Copied" : "Copy"}
+                              </button>
+                            </div>
+                            <pre>{contract.content}</pre>
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
                 <section>
                   <h4>Event trail</h4>
                   <ol className="run-events">
@@ -382,6 +428,11 @@ function promptStats(receipt: AgentTaskReceipt, prompt: string): string {
   const sha =
     typeof receipt.payload.sha256 === "string" ? ` · SHA-256 ${receipt.payload.sha256}` : "";
   return `${lineCount.toLocaleString()} lines${sha}`;
+}
+
+function contractStats(contract: AgentTaskContract): string {
+  const lines = contract.content.split("\n").length;
+  return `${lines.toLocaleString()} lines · SHA-256 ${contract.sha256}`;
 }
 
 function firstString(payload: Record<string, unknown>, ...fields: string[]): string | null {

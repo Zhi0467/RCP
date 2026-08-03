@@ -360,10 +360,7 @@ finally:
         candidate = PurePosixPath(str(remote_path))
         if candidate.parent != self.workspace:
             raise ValueError("remote output must be a direct child of the run workspace")
-        result = self._ssh(["cat", str(candidate)])
-        if result.returncode:
-            raise ValueError(result.stderr.strip() or f"missing remote output {candidate.name}")
-        return result.stdout
+        return self.read_workspace_text(candidate.name)
 
     def read_input_text(self, label: str) -> str:
         """Read one immutable direct child of this stage's input directory."""
@@ -378,6 +375,123 @@ finally:
             raise ValueError(result.stderr.strip() or f"missing remote input {safe_label}")
         return result.stdout
 
+    def read_workspace_text(self, name: str) -> str:
+        """Read one direct regular workspace file without following symlinks.
+
+        A missing file is normal mailbox state and raises ``FileNotFoundError``.
+        An unavailable stage or SSH connection raises ``StateUnavailable`` so a
+        caller cannot mistake transport failure for a request that has not arrived.
+        """
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        name = _plain_workspace_file_name(name)
+        script = """
+import os,stat,sys
+root,name=sys.argv[1:3]
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        info=os.stat(name,dir_fd=workspace_fd,follow_symlinks=False)
+    except FileNotFoundError:
+        raise SystemExit(45)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    if not stat.S_ISREG(info.st_mode): raise SystemExit(46)
+    try:
+        flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)
+        file_fd=os.open(name,flags,dir_fd=workspace_fd); fds.append(file_fd)
+    except FileNotFoundError:
+        raise SystemExit(45)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    if not stat.S_ISREG(os.fstat(file_fd).st_mode): raise SystemExit(46)
+    while True:
+        chunk=os.read(file_fd,1024*1024)
+        if not chunk: break
+        sys.stdout.buffer.write(chunk)
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(["python3", "-c", script, str(self.root), name])
+        if result.returncode == 44:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise StateUnavailable(
+                detail or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 45:
+            raise FileNotFoundError(f"remote workspace file is absent: {name}")
+        if result.returncode == 46:
+            raise ValueError(f"remote workspace entry is not a readable regular file: {name}")
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise StateUnavailable(detail or f"could not read remote workspace file {name}")
+        try:
+            return result.stdout.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"remote workspace file is not UTF-8 text: {name}") from exc
+
+    def write_workspace_text(self, name: str, content: str) -> None:
+        """Atomically replace one safe, direct regular workspace file."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        name = _safe_workspace_file_name(name)
+        script = """
+import os,stat,sys,uuid
+root,name=sys.argv[1:3]
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]; temporary=''
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        current=os.stat(name,dir_fd=workspace_fd,follow_symlinks=False)
+    except FileNotFoundError:
+        current=None
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    if current is not None and not stat.S_ISREG(current.st_mode): raise SystemExit(46)
+    temporary='.rcp-write-'+uuid.uuid4().hex
+    flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0)
+    file_fd=os.open(temporary,flags,0o600,dir_fd=workspace_fd); fds.append(file_fd)
+    while True:
+        chunk=sys.stdin.buffer.read(1024*1024)
+        if not chunk: break
+        view=memoryview(chunk)
+        while view:
+            view=view[os.write(file_fd,view):]
+    os.fsync(file_fd); os.close(file_fd); fds.pop()
+    os.replace(temporary,name,src_dir_fd=workspace_fd,dst_dir_fd=workspace_fd); temporary=''
+    os.fsync(workspace_fd)
+finally:
+    if temporary and len(fds)>=2:
+        try: os.unlink(temporary,dir_fd=fds[1])
+        except OSError: pass
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(
+            ["python3", "-c", script, str(self.root), name],
+            input_data=content.encode("utf-8"),
+        )
+        if result.returncode == 44:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise StateUnavailable(
+                detail or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 46:
+            raise ValueError(f"remote workspace target is not a regular file: {name}")
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise StateUnavailable(detail or f"could not write remote workspace file {name}")
+
     def list_workspace_files(self) -> list[str]:
         """Return the base names of regular files directly inside the run workspace.
 
@@ -386,16 +500,37 @@ finally:
         """
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
-        result = self._ssh(["find", str(self.workspace), "-maxdepth", "1", "-type", "f"])
+        script = """
+import json,os,stat,sys
+root=sys.argv[1]
+flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',flags,dir_fd=root_fd); fds.append(workspace_fd)
+        names=[]
+        for name in os.listdir(workspace_fd):
+            try: info=os.stat(name,dir_fd=workspace_fd,follow_symlinks=False)
+            except FileNotFoundError: continue
+            if stat.S_ISREG(info.st_mode): names.append(name)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    print(json.dumps(sorted(names)))
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh(["python3", "-c", script, str(self.root)])
         if result.returncode:
             raise StateUnavailable(
                 result.stderr.strip() or f"could not list remote run workspace {self.workspace}"
             )
-        names = []
-        for line in result.stdout.splitlines():
-            candidate = PurePosixPath(line.strip())
-            if line.strip() and candidate.parent == self.workspace:
-                names.append(candidate.name)
+        try:
+            names = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise StateUnavailable("remote run workspace listing returned invalid data") from exc
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise StateUnavailable("remote run workspace listing returned invalid names")
         return sorted(names)
 
     def remove_workspace_file(self, name: str) -> None:
@@ -406,8 +541,7 @@ finally:
         """
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
-        if "/" in name or name in {"", ".", ".."}:
-            raise ValueError("workspace file name must be a plain base name")
+        name = _plain_workspace_file_name(name)
         result = self._ssh(["rm", "-f", str(self.workspace / name)])
         if result.returncode:
             raise StateUnavailable(
@@ -544,12 +678,18 @@ finally:
         except (OSError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess([], 255, "", str(exc))
 
-    def _ssh_bytes(self, arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def _ssh_bytes(
+        self,
+        arguments: list[str],
+        *,
+        input_data: bytes | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
             return subprocess.run(
                 ssh_arguments(self.host, command),
                 capture_output=True,
+                input=input_data,
                 timeout=REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
                 check=False,
             )
@@ -562,6 +702,19 @@ def _safe_label(value: str) -> str:
     if not label:
         raise ValueError("remote stage label is empty")
     return label
+
+
+def _plain_workspace_file_name(name: str) -> str:
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        raise ValueError("workspace file name must be a plain base name")
+    return name
+
+
+def _safe_workspace_file_name(name: str) -> str:
+    name = _plain_workspace_file_name(name)
+    if len(name) > 255 or re.fullmatch(r"[A-Za-z0-9._-]+", name) is None:
+        raise ValueError("workspace file name contains unsupported characters")
+    return name
 
 
 def _safe_root(value: str) -> bool:

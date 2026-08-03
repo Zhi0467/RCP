@@ -44,10 +44,7 @@ from rcp.limits import (
 )
 from rcp.projects import ProjectCatalog
 from rcp.providers import PROVIDER_IDS, profile_for
-from rcp.runs.chat import (
-    _assembled_graph_revision,
-    _logical_chat_turn_operation_id,
-)
+from rcp.runs.chat import _logical_chat_turn_operation_id
 from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.graph import stream_graph_run
@@ -728,6 +725,10 @@ def create_app(
         detail["debug_receipts"] = [
             receipt.model_dump(mode="json") for receipt in store.agent_task_receipts(operation_id)
         ]
+        detail["contracts"] = [
+            contract.model_dump(mode="json")
+            for contract in store.agent_task_contracts(operation_id)
+        ]
         return detail
 
     @app.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
@@ -829,19 +830,11 @@ def create_app(
         status_code=202,
     )
     def repair_agent_task_graph_update(project_id: str, operation_id: str) -> dict[str, object]:
-        service = _project_service(catalog, project_id)
+        _project_service(catalog, project_id)
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id:
             raise HTTPException(status_code=404, detail="Agent task not found")
         try:
-            receipts = store.agent_task_receipts(operation_id)
-            base_revision = _assembled_graph_revision(receipts, operation_id)
-            current_revision = service.history.state().revision
-            if current_revision != base_revision:
-                raise ValueError(
-                    f"The graph moved from revision {base_revision} to {current_revision}. "
-                    "Start a new Work turn to reconcile it."
-                )
             return background_tasks.repair_graph_update(operation_id).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Agent task not found") from exc

@@ -181,9 +181,9 @@ It is not part of this question merely because both features use the word
 
 ## Q3 — What exactly does the human accept when an experiment produces evidence?
 
-**Status:** **decided 2026-08-01, not yet built.** The human settled it: the unit
-of acceptance is the belief change, not the edge. See "Decision" below; the rest
-of this entry is kept as the reasoning that led there.
+**Status:** **decided 2026-08-01; implemented by S50.** The human settled it: the
+unit of acceptance is the belief change, not the edge. See "Decision" below;
+the rest of this entry is kept as the reasoning that led there.
 **Governing sections:** [v0.7 D25-D26](blueprint-v0.7.md) and
 [S41](acceptance/S41-bounded-experiment-control.md).
 
@@ -209,12 +209,11 @@ status plus a belief cause naming an edge created in the same patch. Proposing a
 status change does not violate the anchor; the anchor is that the loop may never
 *apply* one.
 
-Building it needs `_validate_proposals` in
-[experiment_loop.py](../src/rcp/core/validation/experiment_loop.py) widened to
-that second shape, and nothing else new — Inbox, `GatedCard`, `BeliefTransition`,
-and the `evidence_edge` cause kind already exist. **S41 stays pending until this
-is implemented**, because until then nothing mechanically distinguishes an edge a
-human blessed from one the loop wrote.
+S50 implements this as the second and only other agent Proposal shape. The shared
+model-facing policy in `src/rcp/core/authority.py` fixes the cause to the evidence
+edge and keeps that wording aligned with agent admission. S41 may remain pending
+for its broader browser and operational-control drive; the graph authority
+contract itself is covered hermetically.
 
 ### The mismatch
 
@@ -244,6 +243,7 @@ but it cannot honestly satisfy S41's final acceptance step.
 3. Add standing and review semantics to edges. This matches the v0.7 wording but
    creates a second standing model and is the largest change.
 
-Do not silently pick one during implementation. Until this is decided, keep S41
-pending and do not claim that successful completion produces its promised human
-authority item.
+Resolution 2 was chosen with one correction: the evidence and edge remain direct
+assertions, while only the belief transition is inside the Proposal. The cause
+is the same-patch evidence edge, so one Inbox judgment moves the belief without
+inventing edge standing.

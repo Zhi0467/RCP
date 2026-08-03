@@ -3,7 +3,7 @@ id: S12-ontology-evolution
 status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: tests/test_ontology_evolution.py, tests/test_sync.py, tests/test_proposals.py, web/tests/ontologyEditing.test.mjs, browser 2026-07-30
+covered_by: tests/test_ontology_evolution.py, tests/test_sync.py, web/tests/ontologyEditing.test.mjs, browser 2026-07-30
 last_passed: 2026-07-30
 invariants: [1, 3]
 blueprint: v0.5 §5.6, §5.7
@@ -44,11 +44,11 @@ extensions are defined against.
 
 ### Who can change it
 
-**Both paths.** A human authors directly in Settings. An agent may also *propose*
-an extension — it can notice the graph wants a type the ontology lacks — which
-lands in the judgment queue as an ordinary proposal for a human to approve. That
-keeps invariant 3 intact: the agent proposes, the human decides. There is no
-path by which an agent's proposal takes effect on its own.
+**Human Settings and Sync only.** An agent may report that the active ontology
+cannot express a concept and may create an Ambiguity about the missing
+vocabulary, but it may neither apply nor propose an ontology change. Ontology is
+project configuration, not one of the two semantic transitions represented by
+an agent Proposal.
 
 ### Deprecation and removal
 
@@ -116,7 +116,8 @@ to avoid, and it is the default if nobody handles this.
 7. Deprecate the new type, then remove it from Settings. Reopen.
 8. In one draft, define a second new type **and** create a node of it. Sync.
 9. Confirm there is no ontology control anywhere outside Settings.
-10. Have an agent propose an extension; approve it from the judgment queue.
+10. Have an agent attempt to author or propose an extension. Confirm the patch
+    is refused and the reply directs the human to Settings.
 
 ## Assert — pytest
 
@@ -134,8 +135,8 @@ to avoid, and it is the default if nobody handles this.
 - `base_ontology_mapping_declared`
 - `base_ontology_not_writable` — no operation can change it
 - `narrowing_change_refused`
-- `agent_proposal_requires_human_approval` — an agent-proposed extension has no
-  effect until approved
+- `agent_cannot_apply_or_propose_ontology` — ontology changes enter the log only
+  through human Settings and Sync
 
 ## Assert — browser
 
@@ -150,7 +151,7 @@ to avoid, and it is the default if nobody handles this.
   with the reason, never a silent Sync failure
 - `refused_change_explains_why` — naming the nodes that block it, not a generic
   error
-- `agent_proposed_extension_appears_in_judgment_queue`
+- `agent_ontology_gap_does_not_create_a_judgment_queue_proposal`
 
 ## Failure means
 

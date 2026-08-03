@@ -161,9 +161,9 @@ def test_validation_uses_the_ontology_in_force_before_each_patch() -> None:
             {"op": "create_nodes", "nodes": [_custom_node()]},
         ],
     )
-    assert "unknown-extension-type" in _codes(
-        validate_patch(GraphState(), combined, [], mode="admission")
-    )
+    combined_report = validate_patch(GraphState(), combined, [], mode="admission")
+    assert "unknown-extension-type" not in _codes(combined_report)
+    assert "invalid-standalone-review" in _codes(combined_report)
 
 
 def test_removed_type_and_fields_remain_readable_during_replay() -> None:
@@ -414,7 +414,7 @@ def test_new_required_field_cannot_strand_existing_nodes() -> None:
     assert message.related_node_ids == ["hyp/adapts"]
 
 
-def test_ontology_proposal_depends_on_config_and_has_no_effect_before_approval() -> None:
+def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejected() -> None:
     ontology_op = {"op": "set_ontology", "ontology": _ontology()}
     assert proposal_dependencies(GraphState(), [ontology_op]) == ([], ["ontology"])
     proposal = {
@@ -431,12 +431,29 @@ def test_ontology_proposal_depends_on_config_and_has_no_effect_before_approval()
         "base_rev": 0,
     }
     patch = _agent(1, [{"op": "create_proposals", "proposals": [proposal]}])
-    report = validate_patch(GraphState(project_truth_scope=["repo"]), patch, ["repo"])
-    assert not report.rejected
+    state = GraphState(project_truth_scope=["repo"])
+    admission = validate_patch(state, patch, ["repo"])
+    replay = validate_patch(state, patch, ["repo"], mode="replay")
+    assert admission.rejected
+    assert not replay.rejected
 
-    state = apply_valid_patch(GraphState(project_truth_scope=["repo"]), patch)
-    assert state.ontology == OntologyState()
-    assert state.proposals["prop/add-training-run"].related_config_keys == ["ontology"]
+    replayed = apply_valid_patch(state, patch)
+    assert replayed.ontology == OntologyState()
+    assert replayed.proposals["prop/add-training-run"].related_config_keys == ["ontology"]
+
+    approval = _approval(
+        2,
+        [
+            ontology_op,
+            {
+                "op": "resolve_proposals",
+                "resolutions": [{"id": "prop/add-training-run", "status": "approved"}],
+            },
+        ],
+    )
+    assert not validate_patch(replayed, approval, ["repo"]).rejected
+    approved = apply_valid_patch(replayed, approval)
+    assert approved.ontology.types[0].name == "training_run"
 
 
 def test_set_ontology_rejects_unknown_operation_keys() -> None:

@@ -98,7 +98,7 @@ OP_RULES: dict[str, OpRule] = {
 def proposal_dependencies(
     state: GraphState, ops: Iterable[dict[str, Any]]
 ) -> tuple[list[str], list[str]]:
-    """Derive the existing graph/config objects whose state a proposal depends on."""
+    """Derive the graph/config objects whose state a proposal depends on."""
     node_ids: set[str] = set()
     config_keys: set[str] = set()
 
@@ -109,7 +109,7 @@ def proposal_dependencies(
             continue
         candidates, keys = rule.dependencies(op, state)
         for node_id in candidates:
-            if isinstance(node_id, str) and node_id in state.nodes:
+            if isinstance(node_id, str):
                 node_ids.add(node_id)
         config_keys.update(keys)
 

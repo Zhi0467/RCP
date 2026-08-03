@@ -14,6 +14,7 @@ from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
 from rcp.core.validation.nodes import older
+from rcp.core.validation.proposals import proposal_is_stale
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
 
@@ -121,6 +122,7 @@ def _validate_patch(
         validate_approval_shape(state, patch, report)
 
     oldest_ref = _validate_operations(ctx)
+    _validate_created_proposal_liveness(ctx)
 
     if (
         mode == "admission"
@@ -136,6 +138,25 @@ def _validate_patch(
         )
 
     return report
+
+
+def _validate_created_proposal_liveness(ctx: OpContext) -> None:
+    proposal_ids = {
+        raw.get("id")
+        for operation in ctx.patch.ops
+        if operation.get("op") == "create_proposals"
+        for raw in operation.get("proposals", [])
+        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+    }
+    for proposal_id in sorted(proposal_ids):
+        proposal = ctx.state.proposals.get(proposal_id)
+        if proposal is not None and proposal_is_stale(ctx.state, proposal):
+            ctx.report.reject(
+                "stale-created-proposal",
+                f"Proposal {proposal_id!r} is already stale after applying its outer patch.",
+                ctx.revision,
+                related_node_ids=list(proposal.related_node_ids),
+            )
 
 
 def _validate_authorship(ctx: OpContext) -> None:
@@ -194,8 +215,23 @@ def _validate_operations(ctx: OpContext):
         if rule is None:
             ctx.report.reject("unknown-operation", f"Unknown operation {name!r}.", ctx.revision)
             continue
+        rejects_before = sum(message.level == "reject" for message in ctx.report.messages)
         if rule.structural_validate is not None:
             oldest_ref = older(oldest_ref, rule.structural_validate(op, ctx))
         if ctx.mode == "admission" and rule.authoring_validate is not None:
             oldest_ref = older(oldest_ref, rule.authoring_validate(op, ctx))
+        rejects_after = sum(message.level == "reject" for message in ctx.report.messages)
+        if rejects_after != rejects_before:
+            continue
+        try:
+            # Imported lazily because materialization imports this validator.
+            from rcp.core.materialize import apply_valid_operation
+
+            ctx.state = apply_valid_operation(ctx.state, ctx.patch, op)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            ctx.report.reject(
+                "malformed-operation",
+                f"Operation {name!r} could not be staged: {exc}.",
+                ctx.revision,
+            )
     return oldest_ref

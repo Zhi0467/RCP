@@ -82,6 +82,11 @@ async def stream_coach(
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
 ) -> AsyncIterator[str]:
+    continuation = execution.continuation if execution is not None else "fresh"
+    reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
+    resuming = continuation == "resume"
+    retrying = continuation == "retry"
+    retry_attempt = continuation in {"retry", "handoff"}
     existing = None
     if request.session_id:
         existing = next(
@@ -89,7 +94,7 @@ async def stream_coach(
             None,
         )
     try:
-        if not (execution is not None and execution.reuses_native_checkpoint and existing is None):
+        if not (reusing_checkpoint and existing is None):
             request = _resolved_coach_request(service, request)
         profile = service.resolve_agent_profile(
             "paper_coach",
@@ -117,7 +122,7 @@ async def stream_coach(
         )
         return
     stage_root = _swept_stage_root(data_dir)
-    if execution is not None and execution.reuses_native_checkpoint:
+    if reusing_checkpoint:
         if not execution.stage_root:
             yield _sse(
                 AgentEvent(
@@ -143,7 +148,7 @@ async def stream_coach(
             execution.checkpoint_stage("", str(local_stage))
     snapshot = paper.snapshot()
     draft_override = None
-    if snapshot.sync_state in {"unsynced", "conflict"}:
+    if not resuming and snapshot.sync_state in {"unsynced", "conflict"}:
         draft_override = Path(
             _stage_task_input(
                 local_stage,
@@ -153,7 +158,13 @@ async def stream_coach(
             )
         )
     try:
-        if execution is not None and execution.reuses_native_checkpoint:
+        if reusing_checkpoint and not request.session_id:
+            raise ValueError(
+                "The continued paper-coach task has no native agent session; retry it from a "
+                "clean attempt instead."
+            )
+        if resuming:
+            assert execution is not None
             original_contract_path = _parent_task_contract_path(execution, local_stage, None)
             contract = PromptFactory.continuation_task_contract(
                 original_contract_path=original_contract_path,
@@ -164,6 +175,8 @@ async def stream_coach(
                 None,
                 f"task-{_task_token(execution)}-resume.md",
                 contract,
+                execution=execution,
+                role="paper_coach_resume",
             )
             read_dirs = [service.manifest.research_dir, local_stage / "inputs"]
         else:
@@ -182,7 +195,7 @@ async def stream_coach(
                     f"task-{token}-retry-diagnostics.json",
                     {"prior_attempt_diagnostics": list(execution.retry_feedback)},
                 )
-                if execution is not None and execution.retry_feedback
+                if execution is not None and (execution.retry_feedback or retry_attempt)
                 else None
             )
             raw_repositories = pointers["truth_repositories"]
@@ -203,12 +216,34 @@ async def stream_coach(
                 human_request_path=human_request_path,
                 retry_diagnostics_path=retry_diagnostics_path,
             )
-            contract_path, prompt = _stage_task_contract(
+            current_contract_path, current_prompt = _stage_task_contract(
                 local_stage,
                 None,
-                f"task-{token}-initial.md",
+                f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
                 contract,
+                execution=execution,
+                role="paper_coach_retry_base" if retry_attempt else "paper_coach",
             )
+            if retrying:
+                assert execution is not None
+                assert retry_diagnostics_path is not None
+                original_contract_path = _parent_task_contract_path(execution, local_stage, None)
+                retry_contract = PromptFactory.continuation_task_contract(
+                    original_contract_path=original_contract_path,
+                    current_contract_path=current_contract_path,
+                    diagnostics_path=retry_diagnostics_path,
+                    mode="retry",
+                )
+                contract_path, prompt = _stage_task_contract(
+                    local_stage,
+                    None,
+                    f"task-{token}-retry.md",
+                    retry_contract,
+                    execution=execution,
+                    role="paper_coach_retry",
+                )
+            else:
+                contract_path, prompt = current_contract_path, current_prompt
             read_dirs.extend([service.manifest.research_dir, local_stage / "inputs"])
     except (StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -228,17 +263,13 @@ async def stream_coach(
         prompt=prompt,
         contract_path=contract_path,
         remote=False,
-        resumed=bool(execution is not None and execution.reuses_native_checkpoint),
-        continuation=execution.continuation if execution is not None else "fresh",
+        resumed=reusing_checkpoint,
+        continuation=continuation,
         extra={
             "surface": "paper_coach",
             "capability": "paper_readonly",
             "network_access": False,
-            "launch_kind": (
-                "resume"
-                if execution is not None and execution.reuses_native_checkpoint
-                else "initial"
-            ),
+            "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
         },
     )
     async with aclosing(

@@ -116,11 +116,11 @@ so steering was a fair suspicion. The fourth deliberately removed that word and
 described the same confound as a caveat — and produced the *same two rejections*,
 `gated-blocker` and `ungrounded-hypothesis-scope`.
 
-So this is not prompt steering. On a project with no graph yet, the agent
-reliably creates a gated blocker directly instead of via a Proposal, and gives a
-hypothesis a scope no cited excerpt contains. RCP is right to refuse all four.
-But a human seeding a new project hits a multi-minute run that ends in a
-rejection, every time, and no scenario covers that today.
+So this was not prompt steering. It exposed two independent admission rules: the
+hypothesis scope was ungrounded, while `gated-blocker` incorrectly treated an
+ordinary asserted Blocker as human-authoritative. S50 removes that overconstraint:
+Blockers now land directly, while the grounded-scope rejection remains. This
+historical drive must not be read as requiring a Blocker Proposal.
 
 ## Setup
 

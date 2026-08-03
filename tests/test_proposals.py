@@ -4,10 +4,10 @@ import pytest
 
 from rcp.config import load_manifest, write_project_scope
 from rcp.core.models import Patch
+from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
 from rcp.service import (
-    GraphSyncRequest,
     ProjectService,
     ProposalDecisionRequest,
     ReviewRequest,
@@ -60,8 +60,8 @@ def proposal_patch() -> Patch:
                                         "id": "hyp/replanning-restores-plasticity",
                                         "changes": {"status": "active"},
                                         "cause": {
-                                            "kind": "proposal_resolution",
-                                            "ref_id": "prop/activate-replanning-hypothesis",
+                                            "kind": "evidence_edge",
+                                            "ref_id": "edge/replanning-activation",
                                         },
                                     }
                                 ],
@@ -71,7 +71,30 @@ def proposal_patch() -> Patch:
                         "base_rev": 1,
                     }
                 ],
-            }
+            },
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "ev/replanning-activation",
+                        "type": "evidence",
+                        "title": "Replanning activation evidence",
+                        "observation": "The observed behavior warrants testing this as active.",
+                        "origin": "analytic",
+                    }
+                ],
+            },
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "id": "edge/replanning-activation",
+                        "source": "ev/replanning-activation",
+                        "target": "hyp/replanning-restores-plasticity",
+                        "relation": "supports",
+                    }
+                ],
+            },
         ],
     )
 
@@ -107,6 +130,76 @@ def ontology_proposal_patch() -> Patch:
     )
 
 
+def evidence_proposal_patch(*, remove_cause: bool = False) -> Patch:
+    ops: list[dict[str, object]] = [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "ev/replanning-result",
+                    "type": "evidence",
+                    "title": "Replanning result",
+                    "observation": "The held-out learning curve recovered.",
+                    "origin": "internal_run",
+                }
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "id": "edge/replanning-support",
+                    "source": "ev/replanning-result",
+                    "target": "hyp/replanning-restores-plasticity",
+                    "relation": "supports",
+                }
+            ],
+        },
+        {
+            "op": "create_proposals",
+            "proposals": [
+                {
+                    "id": "prop/support-replanning-hypothesis",
+                    "title": "Mark the replanning hypothesis supported",
+                    "card": {
+                        "situation_cold": "The held-out result supports the hypothesis.",
+                        "why_human_now": "Only a human may move the belief status.",
+                        "consequences": "The hypothesis will be marked supported.",
+                        "decision_needed": "Approve or reject the belief transition.",
+                    },
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "nodes": [
+                                {
+                                    "id": "hyp/replanning-restores-plasticity",
+                                    "changes": {"status": "supported"},
+                                    "cause": {
+                                        "kind": "evidence_edge",
+                                        "ref_id": "edge/replanning-support",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                    "related_node_ids": ["hyp/replanning-restores-plasticity"],
+                    "base_rev": 1,
+                }
+            ],
+        },
+    ]
+    if remove_cause:
+        ops.append({"op": "remove_edges", "edge_ids": ["edge/replanning-support"]})
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary="Recorded evidence and proposed its belief transition.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=ops,
+    )
+
+
 def test_approval_replays_exact_ops_and_accepts_node(manifest, tmp_path) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
@@ -128,45 +221,160 @@ def test_approval_replays_exact_ops_and_accepts_node(manifest, tmp_path) -> None
     assert state.proposals["prop/activate-replanning-hypothesis"].status == "approved"
 
 
-def test_agent_ontology_proposal_is_applied_only_after_human_approval(manifest, tmp_path) -> None:
+def test_evidence_grounded_proposal_can_be_approved(manifest, tmp_path) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    history.append(ontology_proposal_patch())
+    history.append(evidence_proposal_patch())
+    service = ProjectService(
+        manifest,
+        history,
+        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+    )
+
+    state = service.decide_proposal(
+        "prop/support-replanning-hypothesis",
+        ProposalDecisionRequest(decision="approved"),
+    )
+
+    node = state.nodes["hyp/replanning-restores-plasticity"]
+    assert node.status == "supported"
+    assert node.standing == "accepted"
+    assert state.proposals["prop/support-replanning-hypothesis"].status == "approved"
+
+
+def test_same_patch_removal_of_a_belief_cause_rejects_the_proposal(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+
+    with pytest.raises(PatchRejected):
+        history.append(evidence_proposal_patch(remove_cause=True))
+
+    assert history.state().proposals == {}
+
+
+def test_later_removal_of_a_belief_cause_withdraws_the_stale_proposal(manifest, tmp_path) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    history.append(evidence_proposal_patch())
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Removed the invalidated evidence relation.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[{"op": "remove_edges", "edge_ids": ["edge/replanning-support"]}],
+        )
+    )
+    service = ProjectService(
+        manifest,
+        history,
+        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+    )
+
+    state = service.decide_proposal(
+        "prop/support-replanning-hypothesis",
+        ProposalDecisionRequest(decision="approved"),
+    )
+
+    assert state.proposals["prop/support-replanning-hypothesis"].status == "withdrawn"
+    assert state.nodes["hyp/replanning-restores-plasticity"].status == "proposed"
+
+
+def test_agent_cannot_withdraw_a_pending_proposal_but_historical_replay_can(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    history.append(proposal_patch())
+    withdrawal = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Tried to withdraw a pending human judgment.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "resolve_proposals",
+                "resolutions": [
+                    {"id": "prop/activate-replanning-hypothesis", "status": "withdrawn"}
+                ],
+            }
+        ],
+    )
+
+    replay_report = validate_patch(
+        history.state(),
+        withdrawal.model_copy(update={"revision": 3}),
+        manifest.project.truth_scope,
+        mode="replay",
+    )
+    assert not replay_report.rejected
+
+    with pytest.raises(PatchRejected):
+        history.append(withdrawal)
+
+    assert history.state().proposals["prop/activate-replanning-hypothesis"].status == "pending"
+
+
+def test_agent_ontology_proposal_is_rejected(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+
+    with pytest.raises(PatchRejected):
+        history.append(ontology_proposal_patch())
+
     assert history.state().ontology.types == []
-    service = ProjectService(
-        manifest,
-        history,
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
-    )
-
-    state = service.decide_proposal(
-        "prop/add-mechanism-hypothesis",
-        ProposalDecisionRequest(decision="approved"),
-    )
-
-    assert [item.name for item in state.ontology.types] == ["mechanism_hypothesis"]
-    assert state.config_revisions["ontology"] == 3
-    assert state.proposals["prop/add-mechanism-hypothesis"].status == "approved"
+    assert history.state().proposals == {}
 
 
-def test_ontology_change_makes_an_older_ontology_proposal_stale(manifest, tmp_path) -> None:
+def test_historical_ontology_proposal_remains_replayable(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    history.append(ontology_proposal_patch())
-    service = ProjectService(
-        manifest,
-        history,
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
-    )
-    service.sync_graph(GraphSyncRequest(base_revision=2, ontology=ontology_payload()))
+    patch = ontology_proposal_patch().model_copy(update={"revision": 2})
 
-    state = service.decide_proposal(
-        "prop/add-mechanism-hypothesis",
-        ProposalDecisionRequest(decision="approved"),
+    report = validate_patch(
+        history.state(),
+        patch,
+        manifest.project.truth_scope,
+        mode="replay",
     )
 
-    assert state.proposals["prop/add-mechanism-hypothesis"].status == "withdrawn"
-    assert state.config_revisions["ontology"] == 3
+    assert not report.rejected
+
+
+def test_historical_non_evidence_belief_cause_remains_replayable(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    patch = proposal_patch().model_copy(update={"revision": 2})
+    update = patch.ops[0]["proposals"][0]["ops"][0]["nodes"][0]
+    update["cause"] = {
+        "kind": "proposal_resolution",
+        "ref_id": "prop/activate-replanning-hypothesis",
+    }
+
+    report = validate_patch(
+        history.state(),
+        patch,
+        manifest.project.truth_scope,
+        mode="replay",
+    )
+
+    assert not report.rejected
+
+
+def test_replay_does_not_recheck_rcp_owned_proposal_base_revision(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    patch = proposal_patch().model_copy(update={"revision": 2})
+    patch.ops[0]["proposals"][0]["base_rev"] = 999
+
+    report = validate_patch(
+        history.state(),
+        patch,
+        manifest.project.truth_scope,
+        mode="replay",
+    )
+
+    assert not report.rejected
 
 
 def test_stale_proposal_is_withdrawn_without_replay(manifest, tmp_path) -> None:
@@ -208,37 +416,51 @@ def test_stale_proposal_is_withdrawn_without_replay(manifest, tmp_path) -> None:
     assert state.nodes["hyp/replanning-restores-plasticity"].status == "proposed"
 
 
-def test_proposal_cannot_claim_a_future_base_revision(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
-    patch = proposal_patch()
-    patch.ops[0]["proposals"][0]["base_rev"] = 999
-
-    with pytest.raises(PatchRejected) as caught:
-        history.append(patch)
-
-    assert any(message.code == "proposal-base-revision" for message in caught.value.report.messages)
-    assert history.state().proposals == {}
-
-
-def test_proposal_cannot_omit_affected_nodes(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
-    patch = proposal_patch()
-    patch.ops[0]["proposals"][0].pop("related_node_ids")
-
-    with pytest.raises(PatchRejected) as caught:
-        history.append(patch)
-
-    assert any(
-        message.code == "proposal-dependency-mismatch" for message in caught.value.report.messages
-    )
-    assert history.state().proposals == {}
-
-
-def test_agent_edge_touching_accepted_node_requires_and_accepts_proposal(
-    manifest, tmp_path
+@pytest.mark.parametrize("legacy_bookkeeping", ["missing", "provider-supplied"])
+def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
+    manifest, legacy_bookkeeping: str
 ) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    patch = proposal_patch()
+    proposal = patch.ops[0]["proposals"][0]
+    bookkeeping = {
+        "related_node_ids": ["rq/learning-after-shift"],
+        "related_config_keys": ["ontology"],
+        "base_rev": 999,
+        "status": "approved",
+        "raised_rev": 999,
+        "resolved_rev": 999,
+        "rejection_reason": "Provider-owned bookkeeping must not survive.",
+    }
+    if legacy_bookkeeping == "missing":
+        for field in bookkeeping:
+            proposal.pop(field, None)
+    else:
+        proposal.update(bookkeeping)
+
+    canonical, result = history.append(patch)
+    prepared = canonical.ops[0]["proposals"][0]
+    admitted = result.state.proposals["prop/activate-replanning-hypothesis"]
+
+    assert canonical.admission == "accepted"
+    assert prepared["base_rev"] == 1
+    assert prepared["related_node_ids"] == ["hyp/replanning-restores-plasticity"]
+    assert prepared["related_config_keys"] == []
+    assert prepared["status"] == "pending"
+    assert prepared["raised_rev"] == 0
+    assert prepared["resolved_rev"] is None
+    assert prepared["rejection_reason"] is None
+    assert admitted.base_rev == 1
+    assert admitted.related_node_ids == ["hyp/replanning-restores-plasticity"]
+    assert admitted.related_config_keys == []
+    assert admitted.status == "pending"
+    assert admitted.raised_rev == 2
+    assert admitted.resolved_rev is None
+    assert admitted.rejection_reason is None
+
+
+def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     service = ProjectService(
@@ -253,70 +475,40 @@ def test_agent_edge_touching_accepted_node_requires_and_accepts_proposal(
     patch = Patch(
         kind="refresh",
         author="agent",
-        summary="Linked accepted content without human review.",
+        summary="Added a decision and linked it to accepted content.",
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
         ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "dec/evaluation-shape",
+                        "type": "decision",
+                        "title": "Evaluation shape",
+                        "question": "Which held-out evaluation should we use?",
+                        "options": ["matched", "shifted"],
+                    }
+                ],
+            },
             {
                 "op": "create_edges",
                 "edges": [
                     {
                         "source": "rq/learning-after-shift",
-                        "target": "hyp/replanning-restores-plasticity",
-                        "relation": "supports",
+                        "target": "dec/evaluation-shape",
+                        "relation": "has_decision",
                     }
                 ],
-            }
+            },
         ],
     )
 
-    with pytest.raises(PatchRejected) as caught:
-        history.append(patch)
+    history.append(patch)
 
-    assert any(message.code == "accepted-edge-change" for message in caught.value.report.messages)
-    assert (
-        "rq/learning-after-shift::supports::hyp/replanning-restores-plasticity"
-        not in history.state().edges
-    )
-
-    history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Proposed linking accepted content.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
-                {
-                    "op": "create_proposals",
-                    "proposals": [
-                        {
-                            "id": "prop/link-accepted-question",
-                            "title": "Link the accepted question to the hypothesis",
-                            "card": {
-                                "situation_cold": "The relation is not represented.",
-                                "why_human_now": "It changes accepted content.",
-                                "consequences": "The graph will show direct support.",
-                                "decision_needed": "Decide whether the relation is warranted.",
-                            },
-                            "ops": patch.ops,
-                            "related_node_ids": [
-                                "hyp/replanning-restores-plasticity",
-                                "rq/learning-after-shift",
-                            ],
-                            "base_rev": history.state().revision,
-                        }
-                    ],
-                }
-            ],
-        )
-    )
-    approved = service.decide_proposal(
-        "prop/link-accepted-question",
-        ProposalDecisionRequest(decision="approved"),
-    )
-
-    assert "rq/learning-after-shift::supports::hyp/replanning-restores-plasticity" in approved.edges
+    state = history.state()
+    assert "rq/learning-after-shift::has_decision::dec/evaluation-shape" in state.edges
+    assert state.nodes["rq/learning-after-shift"].standing == "accepted"
 
 
 def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manifest) -> None:
@@ -417,59 +609,50 @@ def test_proposal_replay_is_dry_run_materialized_at_creation(manifest) -> None:
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 
-def test_valid_repository_proposal_can_still_be_approved(manifest, tmp_path) -> None:
+def test_agent_cannot_propose_a_project_scope_change(manifest, tmp_path) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Proposed adding a valid repository.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
-                {
-                    "op": "create_proposals",
-                    "proposals": [
-                        {
-                            "id": "prop/add-valid-repository",
-                            "title": "Add a valid repository",
-                            "card": {
-                                "situation_cold": "A repository contains relevant evidence.",
-                                "why_human_now": "Repository membership is guarded.",
-                                "consequences": "Future agents may read this repository.",
-                                "decision_needed": "Decide whether to add the repository.",
-                            },
-                            "ops": [
-                                {
-                                    "op": "set_project_truth_scope",
-                                    "truth_scope": ["repo-a", "repo-b", "repo-c"],
-                                    "repository": {
-                                        "alias": "repo-c",
-                                        "machine": "laptop",
-                                        "path": str(tmp_path / "repo-c"),
-                                    },
-                                }
-                            ],
-                            "related_config_keys": ["project_truth_scope"],
-                            "base_rev": 1,
-                        }
-                    ],
-                }
-            ],
-        )
-    )
-    service = ProjectService(
-        manifest,
-        history,
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+    patch = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Proposed adding a valid repository.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/add-valid-repository",
+                        "title": "Add a valid repository",
+                        "card": {
+                            "situation_cold": "A repository contains relevant evidence.",
+                            "why_human_now": "Repository membership is guarded.",
+                            "consequences": "Future agents may read this repository.",
+                            "decision_needed": "Decide whether to add the repository.",
+                        },
+                        "ops": [
+                            {
+                                "op": "set_project_truth_scope",
+                                "truth_scope": ["repo-a", "repo-b", "repo-c"],
+                                "repository": {
+                                    "alias": "repo-c",
+                                    "machine": "laptop",
+                                    "path": str(tmp_path / "repo-c"),
+                                },
+                            }
+                        ],
+                        "related_config_keys": ["project_truth_scope"],
+                        "base_rev": 1,
+                    }
+                ],
+            }
+        ],
     )
 
-    state = service.decide_proposal(
-        "prop/add-valid-repository",
-        ProposalDecisionRequest(decision="approved"),
-    )
+    with pytest.raises(PatchRejected):
+        history.append(patch)
 
-    assert state.project_truth_scope == ["repo-a", "repo-b", "repo-c"]
-    reloaded = load_manifest(manifest.path)
-    assert reloaded.repository_map["repo-c"].machine == "laptop"
+    assert history.state().project_truth_scope == ["repo-a", "repo-b"]
+    assert history.state().proposals == {}
+    assert load_manifest(manifest.path).project.truth_scope == ["repo-a", "repo-b"]

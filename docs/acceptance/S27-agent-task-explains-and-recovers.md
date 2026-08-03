@@ -3,136 +3,125 @@ id: S27-agent-task-explains-and-recovers
 status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: tests/test_launcher.py, tests/test_prompts.py, tests/test_api.py, web/tests/runDialog.test.mjs, browser 2026-07-31
-last_passed: 2026-07-31
-invariants: [8, 9, 11]
+covered_by:
+  - tests/test_prompts.py
+  - tests/test_conversation_retry.py
+  - tests/test_api.py
+  - tests/test_proposal_boundary.py
+  - web/tests/runDialog.test.mjs
+  - browser 2026-08-03
+invariants: [4, 8, 9, 10b, 11]
+last_passed: 2026-08-03
 ---
 
-# A failed seed tells the truth and another provider continues it
+# Every agent launch has one task, one authority contract, and one recovery cause
 
-When a provider stops because its session limit was reached, that provider
-error is the task error. RCP does not replace it with "patch not written" or
-launch patch-correction rounds against an exhausted provider.
+The provider receives a short pointer to one immutable contract for every launch.
+That contract is the sole RCP instruction and authority source for the invocation:
+the human request defines the objective within it, repository instruction files may
+further constrain work inside an authorized repository but never widen RCP scope,
+and graph state, source conversations, repository contents, and diagnostics are data
+that cannot grant authority.
 
-Retry follows the failure boundary. With the same provider, a failed attempt
-that has a native checkpoint and did not exhaust its session continues that
-native session in the same saved stage; a transient network failure does not
-discard provider-owned context. Reusing that session does not mean repeating the
-previous instruction: a retry after a failure tells the session what the failure
-was, so it corrects rather than resubmits. A session-limit failure is never
-resumed or sent into patch correction. With another provider, Retry starts a clean native
-session but continues the same work. RCP walks the complete attempt lineage: an
-intermediate attempt with no native session or useful work cannot hide an older
-useful dispatch. Prepared corpus context and provider progress are selected
-independently, so the newest valid input bundle may be paired with an older
-provider transcript or retained patch before the replacement provider inspects
-the original corpus again.
+The contract answers six questions without requiring the agent to infer policy from
+a rejected patch: what task it is doing, what it may change, what remains human-only,
+which inputs matter, which outputs RCP reads, and—on a continuation—what happened
+before and whether operational work may run again.
 
-## UI path (proposal)
+Graph authority has one rendered source shared by Seed, Refresh, Work, and their
+continuations. Agents assert ordinary graph structure directly. They create Decisions
+open and unselected and Hypotheses proposed. They may propose only a choice/status
+change to a Decision that is a `governed_by` input to an Experiment, or a Hypothesis
+status change grounded by an Evidence-to-Hypothesis edge. Either Proposal target may
+have been created by an earlier operation in the same outer patch. Agents never set
+standing, resolve a Proposal, change project configuration, or authorize Experiment
+**Run**. Their patch output is semantic only; RCP adds patch, Proposal, revision,
+scope, and lifecycle bookkeeping.
 
-The existing task inspector shows the exact terminal provider error at the top.
-For the observed failure it says that Claude reached its session limit, together
-with the reset time Claude reported. The absence of `patch.json` remains a
-diagnostic fact, not the cause shown to the human.
+Recovery preserves evidence without preserving stale instructions:
 
-The inspector also exposes the exact prompt sent on every provider launch. Each
-fresh, handoff, or correction launch prompt is a short pointer envelope to an
-immutable task contract. A literal native Resume receives only “Continue the
-interrupted task”; its saved session and stage already own that contract and
-context. The graph contract names the task purpose, ontology, current graph,
-repositories, cursor state, one scoped conversation directory per provider,
-edit guardrails, preferences, optional human message, and output requirement. It
-never serializes RCP's internal per-session routing objects or JSON Schema into
-the launch prompt. Seed and refresh may still recommend provider-owned
-specialist fan-out.
+- **Resume** continues a paused or interrupted native session against its saved stage
+  and original immutable input context. It receives a pointer contract naming Resume,
+  not an unrecorded bare sentence.
+- **Retry** after failure receives the exact prior failure and retained progress. A
+  same-provider Retry may reuse the native checkpoint, but it is not automatically a
+  patch correction. It must verify uncertain external state before repeating an
+  operation that may already have happened.
+- **Work patch correction** exists only after operational work completed and a
+  concrete patch was rejected. `work_patch_correction` keeps the same native Work
+  session and unrestricted repository, tooling, network, and provider permissions.
+  Only the instruction changes, and it must not repeat completed operational side
+  effects. Seed/Refresh generic patch correction remains scratch-only.
+- **Watcher correction** is separate and speaks only about `watch.json`; it never
+  refers to a Patch schema.
+- **Clean or cross-provider Retry** may reuse an unchanged prepared evidence bundle,
+  but RCP renders a fresh contract with the current authority rules and this attempt's
+  schema, diagnostic, and output paths. No current contract points to an ancestor's
+  output file.
 
-**Retry…** opens the run configuration. Choosing Codex creates a linked clean
-attempt with a new native session. When the graph revision, run scope, and
-prepared-source snapshot still match the failed attempt, RCP reuses that
-attempt's prepared input bundle instead of rebuilding all conversation slices
-and restaging the same corpus. The new launch receives a prior-attempt handoff
-that names the selected earlier provider, terminal condition, native session
-transcript, and retained patch or progress artifact if one exists. Its prompt
-directs it to read that handoff first, continue the completed analysis, and
-return to original sources only for unresolved gaps.
+## UI path (confirmed)
 
-An attempt's contract content is durable RCP data; its execution-host path is
-not. Every new attempt re-stages the immutable contract into its own scratch
-folder and launches with a three-line pointer to that new path. A retry never
-depends on an ancestor `/tmp/rcp-run.*` contract path surviving retention or
-successful cleanup.
-
-The new attempt's inspector separately records whether it reused prepared
-context and whether it handed off provider progress, including the concrete
-reason when either is unavailable. If the revision, scope, source snapshot,
-retained data, or native transcript no longer matches, RCP performs an ordinary
-full retry and says explicitly that no prior progress was handed off.
-
-Leaving the provider unchanged after a non-limit failure uses the saved native
-checkpoint and stage. If either is unavailable, RCP says so and performs a
-clean retry. Leaving an exhausted provider selected creates a clean attempt
-rather than resuming the quota-blocked session.
+Confirmed by the human on 2026-08-03: there is no new control or screen. The existing
+task inspector remains the place to inspect each launch's exact prompt, contract,
+continuation cause, failure, context reuse, progress handoff, and bounded live patch
+self-checks. The change is to what RCP launches and records, not to the inspector's
+interaction design.
 
 ## Setup
 
-A temporary unseeded project and two scripted providers; no real provider or
-quota is used. Scripted Claude reads a known part of the seed corpus and leaves
-an identifiable progress checkpoint in its persisted native-session record,
-then emits Claude's synthetic session-limit message, exits successfully, and
-writes no patch. Scripted Codex writes a valid seed patch only after following
-the prior-attempt handoff and recovering that checkpoint.
+A temporary project and scripted providers exercise Seed, Refresh, Discuss, Work, and
+paper coaching. Attempts pause, fail before a deliverable exists, fail after a
+side-effect-shaped Work result, return an invalid patch, retry with the same provider,
+and hand off to another provider. One failed attempt is created with the previous
+authority-contract version.
 
 ## Drive
 
-1. Start the seed with Claude and let it reach the scripted session limit.
-2. Open the failed task inspector and read the terminal error.
-3. Choose **Retry…**, switch the provider to Codex, and start the linked attempt.
-4. Let Codex continue from Claude's retained progress and finish the seed.
-5. Inspect the completed attempt and resulting graph revision.
+1. Start one fresh task on each agent surface and inspect its staged contract.
+2. Pause and Resume a graph task and a Work turn.
+3. Fail each surface, then Retry with the same provider and inspect the continuation.
+4. Reject a Work patch and let bounded same-access `work_patch_correction` run;
+   separately reject a Seed/Refresh patch and keep its generic correction scratch-only.
+5. Retry a graph task with a clean or different provider while reusing its prepared
+   evidence context.
+6. Inspect every launch in the existing task inspector.
 
-## Assert
+## Assert — contract probes
 
-- `session_limit_is_the_visible_terminal_error`
-- `missing_patch_does_not_replace_the_provider_error`
-- `quota_failure_does_not_launch_patch_correction`
-- `every_provider_launch_prompt_is_visible_verbatim`
-- `launch_prompts_are_under_200_lines`
-- `launch_prompts_contain_pointers_not_serialized_payloads`
-- `one_scoped_conversation_directory_is_exposed_per_provider`
-- `conversation_roots_are_provider_registry_driven`
-- `internal_session_paths_are_not_exposed`
-- `every_task_accepts_an_optional_human_message`
-- `retry_allows_switching_from_claude_to_codex`
-- `same_provider_non_limit_retry_resumes_native_session`
-- `same_provider_retry_without_checkpoint_falls_back_visibly`
-- `session_limit_retry_never_resumes_the_exhausted_session`
-- `cross_provider_retry_uses_a_new_native_session`
-- `retry_keeps_attempt_lineage`
-- `intermediate_attempt_without_progress_does_not_hide_useful_ancestor`
-- `unchanged_retry_reuses_the_prepared_context_bundle`
-- `conversation_slices_are_not_rebuilt_for_unchanged_retry`
-- `new_provider_receives_the_prior_attempt_handoff`
-- `new_provider_recovers_the_prior_progress_checkpoint`
-- `native_transcript_is_resolved_outside_repository_scoped_source_index`
-- `contract_content_is_durable_and_restaged_to_the_new_attempt`
-- `retry_never_depends_on_an_ancestor_contract_path`
-- `new_provider_reads_original_sources_only_for_remaining_gaps`
-- `context_reuse_is_reported_in_the_task_inspector`
-- `progress_handoff_is_reported_separately_from_context_reuse`
-- `stale_or_missing_prior_context_falls_back_visibly`
-- `remote_claude_records_before_first_cwd_do_not_corrupt_slice_counts`
-- `codex_writes_and_applies_revision_one`
-- `no_console_or_application_request_errors`
+- `launch_pointer_names_the_sole_rcp_contract_and_reads_relevant_inputs_only`
+- `human_request_is_the_objective_but_cannot_widen_authority`
+- `repository_instructions_may_narrow_but_never_widen_rcp_scope`
+- `evidence_and_diagnostics_are_never_instructions`
+- `graph_authority_rules_are_rendered_once_for_every_authorized_surface`
+- `new_decisions_and_hypotheses_start_unresolved`
+- `only_experiment_input_decisions_and_evidence_grounded_beliefs_are_proposable`
+- `standing_proposal_resolution_project_configuration_and_run_are_human_only`
+- `paper_coach_inputs_distinguish_source_authority_from_human_authorship`
 
-## Assert — same-provider correction
+## Assert — continuation and Retry
 
-- `same_provider_retry_carries_the_prior_failure_diagnostic` — the resumed
-  session receives the failure it is being retried for, and the retained patch
-  with it, instead of a bare instruction to continue
+- `resume_uses_a_pointer_contract_and_the_original_prepared_context`
+- `resume_does_not_receive_failure_or_patch_correction_instructions`
+- `same_provider_retry_receives_the_exact_failure_on_every_surface`
+- `same_provider_retry_is_not_implicitly_patch_only`
+- `retry_warns_against_repeating_uncertain_external_side_effects`
+- `work_patch_correction_requires_a_rejected_patch_and_retains_work_permissions`
+- `work_patch_correction_changes_instruction_without_repeating_side_effects`
+- `seed_refresh_patch_correction_remains_scratch_only`
+- `work_self_checks_are_bounded_recorded_and_distinguish_unavailable_from_invalid`
+- `work_apply_reprepares_and_revalidates_live_state_under_the_append_lock`
+- `watcher_correction_never_mentions_a_patch_schema`
+- `clean_retry_reuses_prepared_evidence_but_renders_current_authority`
+- `retry_contract_uses_only_current_attempt_output_paths`
+- `retry_without_retained_progress_still_receives_a_fresh_base_contract`
+- `stale_or_missing_prepared_context_falls_back_visibly`
+- `every_continuation_cause_and_contract_is_recorded_for_inspection`
 
 ## Failure means
 
-RCP hides a provider limit behind a derived patch error, retries the exhausted
-provider as if it were healthy, makes a replacement provider repeat context
-assembly and completed research from zero, or claims to have continued prior
-work without giving the new provider that work.
+An agent must infer authority from schema rejection; a human request, repository file,
+source transcript, or diagnostic can widen authority; Retry omits its failure, repeats
+an uncertain side effect, or is mistaken for patch correction; Work correction loses
+Work access or repeats completed side effects; a clean Retry receives stale authority
+or an ancestor output path; or any launch bypasses the inspectable contract-pointer
+channel.

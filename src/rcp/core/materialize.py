@@ -125,6 +125,48 @@ def apply_valid_patch(state: GraphState, patch: Patch) -> GraphState:
     return updated
 
 
+def apply_valid_operation(
+    state: GraphState,
+    patch: Patch,
+    operation: dict[str, Any],
+) -> GraphState:
+    """Stage one already-validated operation without advancing the graph revision."""
+
+    updated = _fork_state(state)
+    _apply_patch(updated, patch.model_copy(update={"ops": [operation]}), [])
+    updated.revision = state.revision
+    return updated
+
+
+def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
+    """Replace RCP-owned Proposal metadata using the graph being appended to."""
+
+    operations = [dict(operation) for operation in patch.ops]
+    for operation in operations:
+        if operation.get("op") != "create_proposals":
+            continue
+        proposals: list[dict[str, Any]] = []
+        for raw in operation.get("proposals", []):
+            proposal = dict(raw)
+            related_node_ids, related_config_keys = proposal_dependencies(
+                state, proposal.get("ops", [])
+            )
+            proposal.update(
+                {
+                    "related_node_ids": related_node_ids,
+                    "related_config_keys": related_config_keys,
+                    "base_rev": state.revision,
+                    "status": "pending",
+                    "raised_rev": 0,
+                    "resolved_rev": None,
+                    "rejection_reason": None,
+                }
+            )
+            proposals.append(proposal)
+        operation["proposals"] = proposals
+    return patch.model_copy(update={"ops": operations})
+
+
 def _fork_state(state: GraphState) -> GraphState:
     """Fork a state so a failed apply cannot touch the caller's copy.
 
@@ -156,6 +198,7 @@ def _apply_patch(
     state: GraphState, patch: Patch, repository_descriptors: list[dict[str, str]]
 ) -> None:
     revision = patch.revision
+    created_edge_ids: list[str] = []
     for op in patch.ops:
         name = op["op"]
         if name == "create_nodes":
@@ -200,6 +243,7 @@ def _apply_patch(
                 if derived != edge.layer:
                     edge = edge.model_copy(update={"layer": derived})
                 state.edges[edge.id] = edge
+                created_edge_ids.append(edge.id)
         elif name == "remove_edges":
             for edge_id in op.get("edge_ids", []):
                 state.edges.pop(edge_id, None)
@@ -329,6 +373,17 @@ def _apply_patch(
         elif name == "set_ontology":
             state.ontology = OntologyState.model_validate(op["ontology"])
             state.config_revisions["ontology"] = revision
+
+    # A legal edge may forward-reference a node created later in this patch.
+    # Its first pass necessarily uses the relation's declared fallback layer;
+    # derive it once more from the completed staged graph without reordering ops.
+    for edge_id in dict.fromkeys(created_edge_ids):
+        edge = state.edges.get(edge_id)
+        if edge is None:
+            continue
+        derived = edge_layer(state, edge.source, edge.target, edge.layer)
+        if derived != edge.layer:
+            state.edges[edge_id] = edge.model_copy(update={"layer": derived})
 
     state.revision = max(state.revision, revision)
     if patch.kind in {"seed", "refresh"}:

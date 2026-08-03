@@ -54,7 +54,11 @@ def _looks_like_patch(text: str) -> bool:
         value = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return False
-    return isinstance(value, dict) and "ops" in value and "kind" in value
+    # Keep this deliberately looser than AgentPatch validation: malformed
+    # semantic patches still need to reach the correction ladder and receive the
+    # exact schema diagnostic. Historical canonical drafts also carry summary +
+    # ops, so retained pre-migration work remains recoverable.
+    return isinstance(value, dict) and "ops" in value and "summary" in value
 
 
 def _existing_patch_digest(

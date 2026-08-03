@@ -186,6 +186,14 @@ gitignored; a new `open` or `serve` process builds it before creating the app.
 Backend: `uv run pytest` and `uv run ruff check src tests`.
 Web: `npm --prefix web run build` (typechecks) and `npm --prefix web test`.
 
+### Finish every work chunk cleanly
+
+Before reporting any logical chunk of work complete or handing it to the human
+for a commit, run its relevant tests and then `uv run pre-commit run --all-files`.
+If a hook modifies files, review and stage those changes, then rerun the full
+hook suite until it passes. A first formatter pass that changed files is not a
+successful final check.
+
 ### Done means the scenario passes
 
 [`docs/acceptance/`](docs/acceptance/README.md) holds the promises the app makes,
@@ -275,29 +283,32 @@ guarantees — surface the conflict instead of working around it.
 4. **Agent permission contracts are fixed by capability.** `permissions_for()`
    in [config.py](src/rcp/config.py) is the contract; the manifest may not widen
    or narrow it. Discuss has writable conversation scratch but no project or
-   graph authority. Work has exact run-scope repository roots, writable scratch,
-   network access, and no direct canonical `.research` path. Seed, Refresh, and
-   graph correction write only their run scratch. The paper coach has no write
-   or Apply path anywhere. Every launch names its capability outright —
-   `AgentLauncher.stream` and `_command` require it, and there is no boolean
-   shorthand a caller can pass instead.
+   graph authority. Work is unrestricted for tooling and repositories: Codex
+   bypasses approvals and sandboxing, and Claude uses `bypassPermissions`.
+   Work-originated graph and watcher corrections retain that same Work capability
+   and native session; only their instruction changes. Direct canonical `.research` writes are
+   forbidden by the Work prompt contract only, a known accepted prompt-enforced
+   boundary for both providers. Seed, Refresh, and their generic patch correction
+   write only their run scratch. The paper coach has no write or Apply path
+   anywhere. Every launch names its capability outright — `AgentLauncher.stream`
+   and `_command` require it, and there is no boolean shorthand a caller can pass
+   instead.
 4b. **One way to get a patch out of an agent.** There is no write-path mode. The
    provider is launched with its cwd on a scratch folder and writes `patch.json`
-   there; that file is the only graph-change channel RCP reads. Work may also
-   edit exact run-scope repositories, but never canonical `.research`; those
-   edits carry operational authority, not graph authority. Conversations may
+   there; that file is the only graph-change channel RCP reads. Work may edit any
+   repository its unrestricted tools can reach, but those edits carry operational
+   authority, not graph authority. Its prohibition on direct canonical
+   `.research` writes is a prompt contract, not an OS boundary. Conversations may
    write optional preview files under the exact RCP-created artifact directory
    for its turn, but those files are temporary, non-canonical, and carry no
    graph authority. Never parse a patch out of stdout or a final message, never
-   add a canonical-state write path, and never copy a repository — off-machine
-   repos are read over SSH from the host and path in the prompt. Codex enforces
-   repository isolation with its sandbox.
-   Claude's required `acceptEdits` + `--add-dir` combination technically grants
-   edits to those read directories, so its no-repository-write boundary is a
-   prompt contract, not an OS sandbox guarantee; do not describe it otherwise.
+   add a canonical-state write path, and never copy a repository merely to make
+   it readable — off-machine repos are read over SSH from the host and path in
+   the prompt.
 5. **Run scope vs. project scope.** The whole graph and canonical `research.md`
    enter every graph agent run; only run-scope repositories enter as raw
-   pointers. Keep that distinction when touching `src/rcp/agents/context.py`.
+   pointers. For Work this is a context boundary, not a repository permission
+   boundary. Keep that distinction when touching `src/rcp/agents/context.py`.
 6. **Exactly one canonical state repository**, possibly remote. Writes go
    through the `StateWorkspace` (lock, publish explicit changed files); never
    write canonical files directly from a route handler.
@@ -321,7 +332,9 @@ guarantees — surface the conflict instead of working around it.
    automatic (the ladder in
    [`stream_graph_run`](src/rcp/runs/graph.py)): rescan the folder for the patch,
    then hand validation errors back to the same live session for at most two
-   rounds. A graph-level rejection is never retried.
+   scratch-only rounds. This is the Seed/Refresh generic patch-correction path;
+   Work instead uses same-access `work_patch_correction`. A graph-level rejection
+   is never retried.
 10. **A conversation turn is not an ingest run.** Seed/refresh and conversation
    turns share the launcher and background lifecycle, nothing else. Discuss and
    Work assemble chat context
@@ -344,18 +357,27 @@ guarantees — surface the conflict instead of working around it.
    per-turn `mode="work"` is the authority; there is no separate
    `allow_graph_change` gate, and the agent cannot grant itself authority by
    writing a file during Discuss. A stray Discuss patch is kept as a receipt and
-   discarded. A Work patch is pinned to the run scope and graph revision its
-   context was assembled from, and an empty patch spends no revision. Never infer
-   mode from the wording of the message. The freshness check belongs to
-   `HistoryManager.append(expected_revision=…)`, under the same append lock as
-   the write — checking first and appending second leaves a window for a human
-   Sync, which never takes the agent run lock. On a resumed attempt the expected
-   revision is the *first* attempt's, recovered by walking `parent_operation_id`
-   to the newest ancestor that was not itself a resume and reading its context
-   receipt — a resume is a new task, so its own receipts only show the revision
-   it just re-assembled. Missing records, parents, creation provenance, context
-   receipts, invalid revisions, and lineage cycles all fail the resumed turn;
-   never substitute its newly assembled revision when freshness cannot be proven.
+   discarded. A Work patch contains semantic operations only; RCP adds patch,
+   Proposal, revision, scope, and lifecycle bookkeeping. An empty patch spends no
+   revision. Never infer mode from the wording of the message.
+
+   Every Work stage contains an RCP-staged Python validator client. It exchanges
+   bounded request and response files through the writable workspace while RCP
+   polls locally or through the existing SSH run stage, prepares the candidate
+   against live current state in process, and records each check. Client exits
+   distinguish valid, semantically invalid, and validator unavailable so a
+   transport failure cannot become a correction loop. Validation stages
+   operations in their written order against earlier valid operations while
+   retaining whole-patch node and edge lookup for legal forward references; it
+   never reorders operations.
+
+   Apply re-prepares bookkeeping and reruns the same semantic validator against
+   current state while holding the canonical append lock. There is no original
+   context-revision pin or Resume-ancestor walk, and graph movement alone is not
+   a rejection. Work graph and watcher corrections reuse the same native Work
+   session and unrestricted Work permissions; only the instruction changes, and
+   they must not repeat completed operational side effects.
+
    A remote single-patch append uses the patch file as an observable atomic
    commit point: a confirmed commit succeeds and repairs derived outputs, an
    absent commit rolls the mirror back, and an unknown commit is quarantined
@@ -374,14 +396,16 @@ guarantees — surface the conflict instead of working around it.
    unreachable workspace as an empty one.
 10d. **Chat is not transcript ingestion.** `chat_context` contains the graph,
    focused node, current request, and exact run-scope repositories. Discuss has
-   those repositories read-only; Work may edit only those exact repositories
-   and may return its optional validated `patch.json`. Discuss and Work never
-   read, index, copy, project, prompt with, validate, or authorize from prior
-   chat transcripts. A provider continuation/session identifier may still be
-   passed to the provider for its own native session behavior. The answer may
-   be appended to canonical chat history for the UI, but that write is not an
-   input to the turn. Every conversation launches with its scratch workspace
-   writable; canonical state remains read-only.
+   those repositories read-only. Work receives the same exact pointers as
+   context, but its tooling and repository access are unrestricted; it may return
+   its optional semantic `patch.json`. Discuss and Work never read, index, copy,
+   project, prompt with, validate, or authorize from prior chat transcripts. A
+   provider continuation/session identifier may still be passed to the provider
+   for its own native session behavior. The answer may be appended to canonical
+   chat history for the UI, but that write is not an input to the turn. Every
+   conversation launches with its scratch workspace writable; canonical state is
+   read-only for Discuss, and direct canonical `.research` writes are
+   prompt-forbidden for Work.
 10f. **Seed/Refresh source assembly is best effort.** Seed and Refresh are the
    only paths that assemble conversation-source context, cursors, coverage, and
    slices. If source metadata or a pointer cannot be assembled, RCP records the
@@ -504,34 +528,38 @@ carrying forward, and correct an entry when they change their mind.
   write it to a file would be two channels for one payload. Capture it from the
   provider's labelled final assistant message instead.
 - Conversation scratch is writable in both modes. Discuss has no graph contract;
-  Work is the per-turn authorization for an optional validated `patch.json` and
-  exact run-scope repository edits. Optional previews stay temporary and
-  provider-agnostic.
+  Work is the per-turn authorization for unrestricted operational execution and
+  one optional semantic `patch.json`. RCP, not the agent, adds graph bookkeeping.
+  Optional previews stay temporary and provider-agnostic.
 - Discuss and Work are switchable on every node and project conversation.
   Discuss is plum, Work is dark forest, `Shift+Tab` toggles while the composer is
   focused, and every sent turn keeps an immutable visible mode label. A resumed
   task keeps its original mode regardless of the current composer setting.
-- Work is non-interactive for both providers. Codex uses automatic review with
-  network access; Claude uses `acceptEdits` because its `auto` argument
-  normalized to `default` and denied writes in a real non-interactive probe. A
-  denial is surfaced as an exact provider diagnostic, never an RCP approval
-  event. Seed, Refresh, and patch correction retain their scratch-only launch
-  profiles with network enabled.
+- Work is non-interactive and unrestricted for both providers. Codex uses
+  `--dangerously-bypass-approvals-and-sandbox`; Claude uses
+  `--permission-mode bypassPermissions`. Work graph and watcher corrections retain
+  that same native session and Work permission profile. The direct canonical
+  `.research` prohibition is prompt-enforced for both providers and is recorded
+  as that accepted limitation, never as sandbox enforcement. Discuss,
+  Seed/Refresh and their generic patch correction, and paper coaching retain
+  their existing narrower profiles.
 - A Work patch is not a universal Proposal. Ordinary legal graph operations
   apply as asserted agent content; only the existing narrow gated operations
   create Proposal records for Inbox.
-- Invalid Work patches enter a bounded same-session, patch-only correction path.
-  Operational work is never repeated merely to repair graph reflection, and an
-  exhausted or stale graph update cannot turn a completed Work task into a
-  failed operational task.
+- Invalid Work patches enter bounded same-session `work_patch_correction` with
+  the original Work access. Only the instruction becomes patch-focused;
+  operational work is never repeated merely to repair graph reflection. Apply
+  re-prepares and revalidates live state under the append lock, so graph movement
+  alone cannot turn completed Work into a rejected operational task.
 - HTML previews keep useful inline JavaScript. Their security boundary is
   isolation from the RCP parent, not literal zero network traffic: a script may
   navigate only its own sandboxed child frame and cause that navigation request.
 - Never copy a repository to make it readable. Give the agent the host and path.
-- Scope boundaries are named exactly, never approximated by a containing
+- Context boundaries are named exactly, never approximated by a containing
   directory: Discuss and Work get the graph/current node and exact run-scope
-  repositories, but no provider-root or prior-transcript input. Seed and Refresh
-  are the only paths that receive provider-source roots for ingestion.
+  repository pointers, but no provider-root or prior-transcript input. Those
+  pointers bound context, not unrestricted Work permission. Seed and Refresh are
+  the only paths that receive provider-source roots for ingestion.
 - Every agent invocation is durable background work. Closing its launch or chat
   surface must not cancel it; one shared activity and notification design
   surfaces progress, completion, failure, resume, and retry while the app stays
@@ -613,6 +641,13 @@ longer apply.
   Refusing means handing the unchanged-file diagnostic straight to the next
   correction, never revalidating the same bytes — revalidation overwrites that
   diagnostic with the original one and the agent never learns it wrote nothing.
+- A Work validator self-check is not a reservation. Human Sync may move the graph
+  after any response, so Apply must reload current state, re-prepare RCP-owned
+  bookkeeping, and rerun semantic validation under the append lock. Never restore
+  an expected-revision check or Resume-ancestor lookup as a substitute.
+- Whole-patch lookup is not operation reordering. Build lookup indexes for legal
+  node and edge references, but stage each operation against the temporary state
+  produced by earlier valid operations in exactly the order written.
 - "One shared background lifecycle" is not "one shared execution pipeline". Node
   chat was routed through the ingest path, so a corrupt ingest cursor killed an
   ordinary question before the provider ever launched. Chat now has its own
@@ -623,9 +658,9 @@ longer apply.
   diagnostic, names the provider roots and last accounted coverage boundary in
   the fallback prompt, and leaves the provider to inspect the source. No cursor
   or coverage claim advances for input RCP did not read.
-- `codex exec resume` accepts neither `--sandbox` nor `--cd`; left alone it runs
-  read-only, so a resumed session silently could not write its patch file (found
-  and fixed 2026-07-29 by passing `sandbox_mode` through `--config`). Check the
+- `codex exec resume` accepts neither `--sandbox` nor `--cd`. A Work Resume must
+  still receive `--dangerously-bypass-approvals-and-sandbox`; narrower resumed
+  capabilities carry their sandbox mode through `--config`. Check the
   subcommand's own `--help` before assuming a flag carries over from `codex exec`.
 - Materialized files are regenerated from the patch log, so hand-editing
   `.research/cursors.json` to reproduce a bug does nothing — the next
@@ -644,11 +679,14 @@ longer apply.
   once in `create_app` so cache roots and loaded manifest paths stay comparable.
 - Pause/resume is parent→child, not one operation id. A test that reuses one id
   models nothing: read task state across the chain, and exercise resume through
-  `POST …/tasks/{id}/resume` so the child is real. If any ancestry proof is
-  missing or cyclic, fail instead of using the child's current graph revision.
-- Claude `--add-dir` grants a directory, so never use it to smuggle provider
-  roots into Discuss or Work. Seed/Refresh may grant provider roots only when
-  source assembly degraded and the prompt explicitly tells the provider why.
+  `POST …/tasks/{id}/resume` so the child is real. Validate the saved native
+  stage and session provenance, but never walk that lineage to recover a Work
+  patch base revision; Apply always uses live state under the append lock.
+- Claude `--add-dir` is context plumbing, not a Work authority boundary:
+  `bypassPermissions` makes Work repository/tool access unrestricted. Do not put
+  provider roots into Discuss or Work context. Seed/Refresh may receive provider
+  roots only when source assembly degraded and the prompt explicitly explains
+  why.
 - Benign shell noise must never become a failure reason. `bash -lic` writes
   "cannot set terminal process group" on every remote run, so a connection
   dropped mid-run was reported to the human as a tty error instead of a lost

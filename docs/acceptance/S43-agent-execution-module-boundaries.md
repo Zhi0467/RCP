@@ -44,13 +44,21 @@ regress is backend dispatch and lifecycle policy, not browser state.
 - App construction, lifespan, middleware, and route declarations stay in
   `rcp.api.app`; agent-run orchestration lives in policy-specific modules.
 - Seed and Refresh keep their mandatory graph-output, bounded correction,
-  scratch retention, context-reuse, and Pause/Resume/Retry behavior.
+  scratch-only generic patch correction, scratch retention, context-reuse, and
+  Pause/Resume/Retry behavior.
 - Discuss keeps writable conversation scratch but receives no graph contract,
   repository write authority, or canonical append path. A stray patch remains a
   discarded diagnostic receipt.
-- Work keeps exact run-scope repository writes, optional graph reflection,
-  independent operational and graph outcomes, and bounded patch-only correction
-  without repeating operational work.
+- Work keeps unrestricted tooling and repository access, optional semantic graph
+  reflection, independent operational and graph outcomes, and bounded
+  `work_patch_correction` in the same native session with the same Work
+  permissions. Only the correction instruction changes; completed operational
+  side effects are not repeated.
+- Work stages the validator client and serves its bounded workspace
+  request/response exchange locally or through the existing SSH transport.
+  Self-check and Apply share live in-process semantic validation; Apply
+  re-prepares bookkeeping under the append lock without a context-revision pin
+  or Resume-ancestor walk.
 - Experiment-loop and Watcher continuations retain the Work authority captured
   by RCP: public task payloads cannot forge it, a bound control patch is stamped
   and validated as such, and a watcher wake is not persisted as a user turn.
@@ -67,9 +75,10 @@ regress is backend dispatch and lifecycle policy, not browser state.
 
 ## Deliberately unchanged
 
-Provider commands and permissions, persistence schemas, patch schemas,
-correction limits, stage names and retention, API payloads, event ordering,
-frontend behavior, and canonical graph semantics.
+Discuss permissions, Seed/Refresh and their generic scratch-only correction,
+paper-coach permissions, preview sandboxing, persistence schemas, correction
+limits, API payloads, frontend behavior, and canonical graph semantics outside
+the D29 Work-validator amendment.
 
 ## Failure means
 
