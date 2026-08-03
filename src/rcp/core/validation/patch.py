@@ -78,6 +78,7 @@ def _validate_patch(
     )
     ctx = OpContext(
         state=state,
+        initial_state=state,
         patch=patch,
         report=report,
         revision=patch.revision or None,

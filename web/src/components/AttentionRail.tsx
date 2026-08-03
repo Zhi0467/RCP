@@ -35,10 +35,14 @@ export function ProposalJudgmentSection({
 
       {proposals.map((proposal) => {
         const decision = draft?.proposals[proposal.id]?.decision;
+        const approved = decision === "approved";
+        const rejected = decision === "rejected";
         return (
           <article className={`proposal-card${decision ? " draft-touched" : ""}`} key={proposal.id}>
             <div className="proposal-topline">
-              <span className="eyebrow">Pending proposal</span>
+              <span className="eyebrow">
+                {decision ? `Pending · staged ${decision}` : "Pending proposal"}
+              </span>
               <span className="mono">rev {proposal.base_rev}</span>
             </div>
             <h3>{proposal.title}</h3>
@@ -69,20 +73,22 @@ export function ProposalJudgmentSection({
             </dl>
             <div className="card-actions">
               <button
-                className={`button judgment${decision === "rejected" ? " selected disagree" : ""}`}
-                aria-pressed={decision === "rejected"}
+                className={`button judgment proposal-decision-toggle reject${rejected ? " selected disagree" : ""}`}
+                aria-pressed={rejected}
                 disabled={mutationsDisabled}
-                onClick={() => onDecision(proposal, decision === "rejected" ? null : "rejected")}
+                onClick={() => onDecision(proposal, rejected ? null : "rejected")}
               >
-                <X size={14} /> Reject
+                {rejected ? <Check size={14} /> : <X size={14} />}
+                Reject
               </button>
               <button
-                className={`button judgment${decision === "approved" ? " selected agree" : ""}`}
-                aria-pressed={decision === "approved"}
+                className={`button judgment proposal-decision-toggle approve${approved ? " selected agree" : ""}`}
+                aria-pressed={approved}
                 disabled={mutationsDisabled}
-                onClick={() => onDecision(proposal, decision === "approved" ? null : "approved")}
+                onClick={() => onDecision(proposal, approved ? null : "approved")}
               >
-                <Check size={14} /> Approve
+                <Check size={14} />
+                Approve
               </button>
             </div>
           </article>

@@ -44,6 +44,9 @@ class ExperimentAttemptDebug(BaseModel):
     predicted_effect: str = Field(min_length=1)
 
 
+ACTIVE_EXPERIMENT_ATTEMPT_STATUSES = frozenset({"planned", "submitted", "running"})
+
+
 class ExperimentAttempt(BaseModel):
     id: str
     sequence: int = Field(ge=1)

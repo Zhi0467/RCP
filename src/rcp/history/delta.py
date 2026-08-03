@@ -22,6 +22,7 @@ class RefreshDeltaEntry(BaseModel):
         "current_contested",
         "standing_transition",
         "human_prose_edit",
+        "node_removal",
         "chat_graph_update",
         "proposal_decision",
         "ambiguity_decision",
@@ -316,7 +317,19 @@ def _recent_entries(
                             decision=decision,
                         )
                     )
-            if patch.kind in {"chat", "work"}:
+            elif name == "remove_nodes":
+                entries.extend(
+                    RefreshDeltaEntry(
+                        category="node_removal",
+                        target_id=node_id,
+                        target_type="node",
+                        revision=patch.revision,
+                        author=patch.author,
+                        field_names=["removed"],
+                    )
+                    for node_id in _string_items(operation.get("node_ids"))
+                )
+            if patch.kind in {"chat", "work"} and name != "remove_nodes":
                 entries.extend(_chat_entries(patch, operation, state))
     return sorted(
         entries,

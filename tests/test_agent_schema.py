@@ -54,6 +54,7 @@ def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects()
     rendered = json.dumps(schema)
 
     assert '"create_nodes"' in rendered
+    assert '"remove_nodes"' in rendered
     assert '"set_coverage"' in rendered
     assert schema["$defs"]["NewEdge"]["properties"]["relation"]["pattern"].startswith("^")
     assert '"additionalProperties": false' in rendered
@@ -66,6 +67,47 @@ def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects()
     assert "layer" not in schema["$defs"]["NewEdge"]["properties"]
     for definition in ("NodeUpdate", "SupersedeNode", "NodeMerge"):
         assert "cause" in schema["$defs"][definition]["properties"]
+
+
+def test_agent_patch_schema_accepts_remove_nodes() -> None:
+    validate_agent_patch_shape(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Removed stale asserted nodes.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "remove_nodes",
+                    "node_ids": ["rq/obsolete-question", "hyp/obsolete-hypothesis"],
+                }
+            ],
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"op": "remove_nodes", "node_ids": []},
+        {"op": "remove_nodes", "node_ids": ["rq/obsolete"], "reason": "No longer useful"},
+        {"op": "remove_nodes", "nodes": ["rq/obsolete"]},
+        {"op": "delete_nodes", "node_ids": ["rq/obsolete"]},
+    ],
+)
+def test_agent_remove_nodes_operation_is_strict(operation: dict[str, object]) -> None:
+    patch = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Tried a malformed node removal.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[operation],
+    )
+
+    with pytest.raises(ValueError, match="graph operation schema"):
+        validate_agent_patch_shape(patch)
 
 
 def test_agent_patch_is_a_semantic_model_not_a_canonical_patch() -> None:

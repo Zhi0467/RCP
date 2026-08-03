@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.core.models import (
+    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     Blocker,
     Decision,
     Experiment,
@@ -126,9 +127,8 @@ def derive_experiment_control_state(
             f"Attempt ceiling reached: {attempts_used} of {node.attempt_ceiling} attempts used."
         )
 
-    nonterminal = {"planned", "submitted", "running"}
     active = experiment_id in set(active_control_node_ids) or any(
-        attempt.status in nonterminal for attempt in node.attempts
+        attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES for attempt in node.attempts
     )
     if active:
         reasons.append("An experiment loop is already active.")

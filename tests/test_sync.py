@@ -4,6 +4,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from rcp.api import create_app
 from rcp.core.models import Patch, ValidationMessage
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest
+from rcp.storage import AgentTaskRecord
 from tests.helpers import seed_patch
 
 
@@ -113,7 +115,8 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
                     standing="accepted",
                 )
             ],
-        )
+        ),
+        active_control_node_ids=set(),
     )
 
     assert state.revision == 2
@@ -195,6 +198,310 @@ def test_graph_sync_no_net_change_writes_no_patch(manifest, tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["revision"] == 1
     assert len(service.history.load_patches()) == 1
+
+
+def test_graph_sync_removes_node_and_its_incident_edges(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 1,
+            "removed_node_ids": ["rq/learning-after-shift"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["revision"] == 2
+    assert "rq/learning-after-shift" not in response.json()["nodes"]
+    assert response.json()["edges"] == {}
+    stored = service.history.load_patches()[-1]
+    assert stored.kind == "approval"
+    assert stored.author == "human"
+    assert stored.ops == [{"op": "remove_nodes", "node_ids": ["rq/learning-after-shift"]}]
+
+
+def test_graph_sync_removal_preserves_base_revision_conflict(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Moved the graph after the draft opened.",
+            ops=[
+                {
+                    "op": "set_standing",
+                    "node_id": "hyp/replanning-restores-plasticity",
+                    "standing": "contested",
+                }
+            ],
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 1,
+            "removed_node_ids": ["rq/learning-after-shift"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert "graph changed after this draft began" in response.json()["detail"]
+    assert "rq/learning-after-shift" in service.history.state().nodes
+    assert service.history.state().revision == 2
+
+
+@pytest.mark.parametrize("same_draft", [False, True])
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_removal(
+    manifest, tmp_path, same_draft, decision
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Proposed activating the replanning hypothesis.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": "prop/activate-replanning-hypothesis",
+                            "title": "Treat replanning as the active hypothesis",
+                            "card": {
+                                "situation_cold": "The causal explanation is only proposed.",
+                                "why_human_now": "Activation changes experiment interpretation.",
+                                "consequences": "Evidence will be organized around it.",
+                                "decision_needed": "Decide whether it should become active.",
+                            },
+                            "ops": [
+                                {
+                                    "op": "update_nodes",
+                                    "nodes": [
+                                        {
+                                            "id": "hyp/replanning-restores-plasticity",
+                                            "changes": {"status": "active"},
+                                            "cause": {
+                                                "kind": "evidence_edge",
+                                                "ref_id": "edge/replanning-activation",
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                            "related_node_ids": ["hyp/replanning-restores-plasticity"],
+                            "base_rev": 1,
+                        }
+                    ],
+                },
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/replanning-activation",
+                            "type": "evidence",
+                            "title": "Replanning activation evidence",
+                            "observation": "The observed behavior warrants activation testing.",
+                            "origin": "analytic",
+                        }
+                    ],
+                },
+                {
+                    "op": "create_edges",
+                    "edges": [
+                        {
+                            "id": "edge/replanning-activation",
+                            "source": "ev/replanning-activation",
+                            "target": "hyp/replanning-restores-plasticity",
+                            "relation": "supports",
+                        }
+                    ],
+                },
+            ],
+        )
+    )
+    project_id = app.state.default_project_id
+    client = TestClient(app)
+    if same_draft:
+        decided = client.post(
+            f"/api/projects/{project_id}/sync",
+            json={
+                "base_revision": 2,
+                "removed_node_ids": ["hyp/replanning-restores-plasticity"],
+                "proposals": [
+                    {
+                        "proposal_id": "prop/activate-replanning-hypothesis",
+                        "decision": decision,
+                    }
+                ],
+            },
+        )
+    else:
+        removed = client.post(
+            f"/api/projects/{project_id}/sync",
+            json={
+                "base_revision": 2,
+                "removed_node_ids": ["hyp/replanning-restores-plasticity"],
+            },
+        )
+        assert removed.status_code == 200
+        assert removed.json()["proposals"]["prop/activate-replanning-hypothesis"]["status"] == (
+            "pending"
+        )
+
+        decided = client.post(
+            f"/api/projects/{project_id}/sync",
+            json={
+                "base_revision": 3,
+                "proposals": [
+                    {
+                        "proposal_id": "prop/activate-replanning-hypothesis",
+                        "decision": decision,
+                    }
+                ],
+            },
+        )
+
+    assert decided.status_code == 200
+    assert decided.json()["revision"] == 4
+    assert (
+        decided.json()["proposals"]["prop/activate-replanning-hypothesis"]["status"] == "withdrawn"
+    )
+    assert "hyp/replanning-restores-plasticity" not in decided.json()["nodes"]
+    assert service.history.load_patches()[-1].ops == [
+        {
+            "op": "resolve_proposals",
+            "resolutions": [{"id": "prop/activate-replanning-hypothesis", "status": "withdrawn"}],
+        }
+    ]
+    if same_draft:
+        assert service.history.load_patches()[-1].change_summary == [
+            "Proposal became stale because a related node was removed in this Sync."
+        ]
+
+
+def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.review_node(
+        "rq/learning-after-shift",
+        ReviewRequest(standing="accepted"),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 2,
+            "removed_node_ids": ["rq/learning-after-shift"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Accepted node rq/learning-after-shift cannot be removed; withdraw its acceptance "
+        "and Sync before removing it."
+    )
+    accepted = service.history.state().nodes["rq/learning-after-shift"]
+    combined = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 2,
+            "nodes": [
+                {
+                    "node_id": accepted.id,
+                    "base_updated_rev": accepted.updated_rev,
+                    "standing": "asserted",
+                }
+            ],
+            "removed_node_ids": [accepted.id],
+        },
+    )
+    assert combined.status_code == 422
+    assert "cannot both change and remove the same node" in combined.text
+    assert service.history.state().revision == 2
+
+
+def test_graph_sync_request_rejects_duplicate_and_conflicting_removals() -> None:
+    with pytest.raises(ValueError, match="duplicate removed node targets"):
+        GraphSyncRequest(
+            base_revision=1,
+            removed_node_ids=["hyp/one", "hyp/one"],
+        )
+
+    with pytest.raises(ValueError, match="both change and remove the same node: hyp/one"):
+        GraphSyncRequest(
+            base_revision=1,
+            nodes=[
+                GraphSyncNodeChange(
+                    node_id="hyp/one",
+                    base_updated_rev=1,
+                    standing="contested",
+                )
+            ],
+            removed_node_ids=["hyp/one"],
+        )
+
+
+def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    initial = seed_patch()
+    initial.ops[0]["nodes"].append(
+        {
+            "id": "exp/active-loop",
+            "type": "experiment",
+            "title": "Active loop",
+            "objective": "Exercise the bounded loop removal guard.",
+            "status": "running",
+        }
+    )
+    service.history.append(initial)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    now = datetime.now(UTC).isoformat()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="active-experiment-loop",
+            project_id=project_id,
+            kind="node_chat",
+            status="queued",
+            request={
+                "patch_kind": "experiment_loop",
+                "control_node_id": "exp/active-loop",
+            },
+            created_at=now,
+            updated_at=now,
+            status_message="Queued bounded experiment loop.",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{project_id}/sync",
+        json={"base_revision": 1, "removed_node_ids": ["exp/active-loop"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Experiment exp/active-loop cannot be removed while its bounded experiment loop is active."
+    )
+    assert service.history.state().revision == 1
 
 
 def test_graph_sync_commits_ontology_as_human_approval_patch(manifest, tmp_path) -> None:

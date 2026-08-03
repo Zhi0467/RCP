@@ -1,22 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ApiError } from "../src/api.ts";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
   emptyHumanDraft,
   humanDraftChangeCount,
   humanDraftStorageKey,
+  humanSyncFailure,
   normalizeHumanDraft,
   serializeHumanDraft,
   stageAmbiguityDecision,
   stageNodeEdit,
   stageNodeEditStart,
+  stageNodeRemoval,
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
   stageOntology,
   unstageCustomNode,
+  unstageNodeRemoval,
   toHumanSyncRequest,
 } from "../src/humanDraft.ts";
 
@@ -101,6 +105,7 @@ test("serialization survives localStorage round trips and request conversion str
 
   assert.deepEqual(toHumanSyncRequest(restored), {
     base_revision: 4,
+    removed_node_ids: [],
     nodes: [
       {
         node_id: "hyp/example",
@@ -161,6 +166,7 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
   assert.equal(presented.nodes[customNode.id].draft_touched, true);
   assert.deepEqual(toHumanSyncRequest(draft), {
     base_revision: 4,
+    removed_node_ids: [],
     nodes: [],
     proposals: [],
     ambiguities: [],
@@ -170,4 +176,86 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
   const ontologyOnly = unstageCustomNode(draft, customNode.id);
   assert.equal(humanDraftChangeCount(ontologyOnly), 1);
   assert.deepEqual(toHumanSyncRequest(ontologyOnly).custom_nodes, []);
+});
+
+test("node removal is persistent, reversible, normalized, and mutually exclusive with node changes", () => {
+  const contested = {
+    ...graph.nodes["hyp/example"],
+    id: "hyp/removable",
+    title: "Removable hypothesis",
+    standing: "contested",
+  };
+  const experiment = {
+    ...contested,
+    id: "exp/running",
+    type: "experiment",
+    title: "Running experiment",
+    standing: "asserted",
+    attempts: [],
+  };
+  const removalGraph = {
+    ...graph,
+    nodes: { ...graph.nodes, [contested.id]: contested, [experiment.id]: experiment },
+    edges: {
+      "edge/incident": {
+        id: "edge/incident",
+        source: contested.id,
+        target: "hyp/example",
+      },
+    },
+  };
+
+  let draft = stageNodeRemoval(emptyHumanDraft(4), removalGraph, contested.id);
+  assert.deepEqual(draft.removed_node_ids, [contested.id]);
+  assert.equal(humanDraftChangeCount(draft), 1);
+  assert.equal(applyHumanDraft(removalGraph, draft).nodes[contested.id].draft_touched, true);
+  assert.deepEqual(toHumanSyncRequest(draft).removed_node_ids, [contested.id]);
+
+  assert.equal(stageNodeStanding(draft, removalGraph, contested.id, "accepted"), draft);
+  assert.equal(stageNodeEdit(draft, removalGraph, contested.id, { title: "Ignored" }), draft);
+
+  draft = unstageNodeRemoval(draft, contested.id);
+  assert.equal(humanDraftChangeCount(draft), 0);
+
+  const changed = stageNodeStanding(emptyHumanDraft(4), removalGraph, contested.id, "asserted");
+  assert.equal(stageNodeRemoval(changed, removalGraph, contested.id), changed);
+  assert.deepEqual(
+    stageNodeRemoval(emptyHumanDraft(4), removalGraph, "hyp/example").removed_node_ids,
+    [],
+  );
+  assert.deepEqual(
+    stageNodeRemoval(emptyHumanDraft(4), removalGraph, experiment.id, true).removed_node_ids,
+    [],
+  );
+
+  const vanished = { ...draft, removed_node_ids: ["hyp/missing"] };
+  assert.deepEqual(normalizeHumanDraft(vanished, removalGraph).removed_node_ids, []);
+
+  const legacy = JSON.parse(serializeHumanDraft(emptyHumanDraft(4)));
+  delete legacy.removed_node_ids;
+  assert.deepEqual(deserializeHumanDraft(JSON.stringify(legacy)).removed_node_ids, []);
+});
+
+test("Sync conflicts preserve exact removal guards and rewrite only revision conflicts", () => {
+  const accepted =
+    "Accepted node hyp/example cannot be removed; withdraw its acceptance and Sync before removing it.";
+  assert.deepEqual(humanSyncFailure(new ApiError(accepted, 409)), {
+    text: accepted,
+    revisionConflict: false,
+  });
+
+  const active =
+    "Experiment exp/running cannot be removed while its bounded experiment loop is active.";
+  assert.deepEqual(humanSyncFailure(new ApiError(active, 409)), {
+    text: active,
+    revisionConflict: false,
+  });
+
+  assert.deepEqual(
+    humanSyncFailure(new ApiError("The graph changed after this draft began.", 409)),
+    {
+      text: "Draft base is stale. Reset the draft before syncing.",
+      revisionConflict: true,
+    },
+  );
 });

@@ -5,7 +5,7 @@ from typing import Any
 
 from rcp.core.models import Experiment, GraphState, Patch
 
-AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s50-v1"
+AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s52-v1"
 
 DECISION_PROPOSAL_FIELDS = frozenset({"selected_option", "status"})
 HYPOTHESIS_PROPOSAL_FIELDS = frozenset({"status"})
@@ -19,6 +19,8 @@ _AGENT_GRAPH_AUTHORITY_BODY = """Assert directly:
   removing any legal edge, including an edge whose endpoint has accepted standing.
 - Editing accepted node content applies directly and resets that node to asserted standing for
   ordinary review. Never preserve accepted standing on content the agent changed.
+- Removing an asserted or contested node also removes all of its incident edges. Never remove an
+  accepted node or an Experiment with a planned, submitted, or running bounded-loop attempt.
 - Every agent-created Decision starts `status="open"` with `selected_option=null`. Every
   agent-created Hypothesis starts `status="proposed"`.
 

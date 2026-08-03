@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from rcp.core.materialize import materialize_patches
+from rcp.core.materialize import apply_valid_operation, materialize_patches
 from rcp.core.models import (
     RELATION_SPEC,
     BaseRelation,
@@ -21,7 +21,8 @@ from rcp.core.models import (
     ValidationMessage,
 )
 from rcp.core.research_md import render_research_md
-from rcp.core.validation import validate_patch
+from rcp.core.validation import proposal_dependencies, validate_patch
+from rcp.core.validation.proposals import proposal_is_stale
 
 
 def _patch(revision: int, ops: list[dict[str, object]], **changes: object) -> Patch:
@@ -740,6 +741,27 @@ def test_experiment_attempts_remain_nested_records() -> None:
     experiment = result.state.nodes["exp/run"]
     assert experiment.attempts[0].id == "attempt-1"
     assert set(result.state.nodes) == {"exp/run"}
+
+
+def test_remove_nodes_keeps_a_dependent_proposal_pending_and_makes_it_stale() -> None:
+    state = _approval_state(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": "hyp/main", "changes": {"status": "active"}}],
+            }
+        ]
+    )
+    operation = {"op": "remove_nodes", "node_ids": ["hyp/main"]}
+    patch = _patch(4, [operation])
+
+    assert proposal_dependencies(state, [operation]) == (["hyp/main"], [])
+    assert not validate_patch(state, patch, ["repo"]).rejected
+
+    updated = apply_valid_operation(state, patch, operation)
+    proposal = updated.proposals["prop/change-belief"]
+    assert proposal.status == "pending"
+    assert proposal_is_stale(updated, proposal)
 
 
 def test_research_md_renders_hypothesis_scope() -> None:

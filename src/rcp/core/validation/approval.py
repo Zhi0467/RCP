@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState, Patch
+from rcp.core.models import (
+    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
+    HUMAN_EDITABLE_NODE_FIELDS,
+    GraphState,
+    Patch,
+)
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.core.validation.report import ValidationReport
 
@@ -14,6 +19,7 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
         names = [op.get("op") for op in patch.ops]
         if len(patch.ops) == 1 and names[0] in {
             "set_standing",
+            "remove_nodes",
             "resolve_ambiguities",
             "set_ontology",
             "set_project_truth_scope",
@@ -121,9 +127,6 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
         )
 
 
-_OPEN_ATTEMPT_STATUSES = frozenset({"planned", "submitted", "running"})
-
-
 def _validate_attempt_release(
     node: Any,
     raw_attempts: Any,
@@ -162,7 +165,7 @@ def _validate_attempt_release(
             "failure_reason": after.get("failure_reason"),
         }
         if (
-            before.status not in _OPEN_ATTEMPT_STATUSES
+            before.status not in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES
             or after != expected
             or after.get("finished_at") is None
         ):

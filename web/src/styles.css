@@ -2490,6 +2490,73 @@ button:disabled {
 .drawer-actions .button {
   font-size: 11px;
 }
+.node-detail-actions {
+  align-items: flex-end;
+  flex-direction: column;
+}
+.node-judgment-actions {
+  display: flex;
+  gap: 7px;
+}
+.node-removal-action {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 8px;
+  width: 100%;
+}
+.node-removal-action small {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.35;
+  max-width: 220px;
+}
+.node-removal-confirmation {
+  background: var(--red-soft);
+  border: 1px solid color-mix(in srgb, var(--red) 42%, var(--line));
+  border-radius: 7px;
+  color: var(--red);
+  display: grid;
+  font-size: 9px;
+  gap: 7px;
+  line-height: 1.4;
+  max-width: 330px;
+  padding: 8px;
+}
+.node-removal-confirmation[hidden] {
+  display: none;
+}
+.node-removal-confirmation > div {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.node-removal-confirmation .button:first-child {
+  background: var(--surface);
+  color: var(--ink);
+}
+.drawer-content section.node-removal-staged {
+  align-items: center;
+  background: var(--red-soft);
+  border: 1px solid color-mix(in srgb, var(--red) 42%, var(--line));
+  border-radius: 7px;
+  color: var(--red);
+  display: flex;
+  font-size: 10px;
+  gap: 9px;
+  line-height: 1.4;
+  margin-top: 12px;
+  padding: 9px 10px;
+}
+.node-removal-staged > span {
+  flex: 1;
+}
+.node-removal-staged .button {
+  background: var(--surface);
+  flex: none;
+}
 
 .run-inspector {
   max-width: 760px;
@@ -4475,22 +4542,23 @@ button:disabled {
   background: var(--surface);
   border-color: var(--line-strong);
 }
+.proposal-judgment-section .button.judgment.proposal-decision-toggle.approve,
 .node-detail-window .button.judgment.node-standing-toggle.agree {
-  background: var(--forest);
   border-color: var(--forest);
-  color: white;
+  color: var(--forest);
 }
+.proposal-judgment-section .button.judgment.proposal-decision-toggle.approve:hover:not(:disabled),
 .node-detail-window .button.judgment.node-standing-toggle.agree:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--forest) 84%, black);
-  border-color: color-mix(in srgb, var(--forest) 84%, black);
+  background: color-mix(in srgb, var(--forest) 10%, var(--surface));
 }
+.proposal-judgment-section .button.judgment.proposal-decision-toggle.reject,
 .node-detail-window .button.judgment.node-standing-toggle.contest {
-  background: var(--red-soft);
   border-color: var(--red);
   color: var(--red);
 }
+.proposal-judgment-section .button.judgment.proposal-decision-toggle.reject:hover:not(:disabled),
 .node-detail-window .button.judgment.node-standing-toggle.contest:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--red-soft) 72%, var(--red));
+  background: var(--red-soft);
   border-color: var(--red);
 }
 .button.judgment.selected.agree {

@@ -22,6 +22,7 @@ export interface HumanDraft {
   version: 1;
   base_revision: number;
   nodes: Record<string, DraftNodeChange>;
+  removed_node_ids: string[];
   proposals: Record<string, { decision: ProposalDecision; reason?: string }>;
   ambiguities: Record<string, { status: AmbiguityDecision }>;
   ontology: OntologyState | null;
@@ -30,6 +31,7 @@ export interface HumanDraft {
 
 export interface HumanSyncRequest {
   base_revision: number;
+  removed_node_ids: string[];
   nodes: Array<{
     node_id: string;
     base_updated_rev: number;
@@ -48,6 +50,7 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
     version: 1,
     base_revision: baseRevision,
     nodes: {},
+    removed_node_ids: [],
     proposals: {},
     ambiguities: {},
     ontology: null,
@@ -56,7 +59,10 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
 }
 
 export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): HumanDraft {
-  if (draft.base_revision !== graph.revision) return cloneDraft(draft);
+  const removedNodeIds = draft.removed_node_ids.filter((nodeId) => Boolean(graph.nodes[nodeId]));
+  if (draft.base_revision !== graph.revision) {
+    return { ...cloneDraft(draft), removed_node_ids: removedNodeIds };
+  }
   const nodes = Object.fromEntries(
     Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
       const node = graph.nodes[nodeId];
@@ -98,7 +104,7 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
     }),
   );
   const ontology = sameValue(draft.ontology, graph.ontology) ? null : draft.ontology;
-  return { ...cloneDraft(draft), nodes, ontology };
+  return { ...cloneDraft(draft), nodes, removed_node_ids: removedNodeIds, ontology };
 }
 
 export function stageNodeEdit(
@@ -108,7 +114,7 @@ export function stageNodeEdit(
   changes: Record<string, DraftNodeValue>,
 ): HumanDraft {
   const node = graph.nodes[nodeId];
-  if (!node) return draft;
+  if (!node || draft.removed_node_ids.includes(nodeId)) return draft;
   const existing = draft.nodes[nodeId];
   const effectiveStanding = existing?.standing ?? node.standing;
   const next = cloneDraft(draft);
@@ -131,7 +137,7 @@ export function stageNodeEditStart(
   nodeId: string,
 ): HumanDraft {
   const node = graph.nodes[nodeId];
-  if (!node) return draft;
+  if (!node || draft.removed_node_ids.includes(nodeId)) return draft;
   const existing = draft.nodes[nodeId];
   const next = cloneDraft(draft);
   next.nodes[nodeId] = {
@@ -150,7 +156,7 @@ export function stageNodeStanding(
   standing: Standing,
 ): HumanDraft {
   const node = graph.nodes[nodeId];
-  if (!node) return draft;
+  if (!node || draft.removed_node_ids.includes(nodeId)) return draft;
   const existing = draft.nodes[nodeId];
   const next = cloneDraft(draft);
   next.nodes[nodeId] = {
@@ -169,7 +175,7 @@ export function stageAttemptRelease(
   attemptId: string,
 ): HumanDraft {
   const node = graph.nodes[nodeId];
-  if (!node) return draft;
+  if (!node || draft.removed_node_ids.includes(nodeId)) return draft;
   const existing = draft.nodes[nodeId];
   const next = cloneDraft(draft);
   const already = existing?.cancel_attempt_ids ?? [];
@@ -180,6 +186,32 @@ export function stageAttemptRelease(
     cancel_attempt_ids: already.includes(attemptId) ? already : [...already, attemptId],
   };
   return normalizeHumanDraft(next, graph);
+}
+
+export function stageNodeRemoval(
+  draft: HumanDraft,
+  graph: GraphState,
+  nodeId: string,
+  experimentLoopActive = false,
+): HumanDraft {
+  const node = graph.nodes[nodeId];
+  if (
+    !node ||
+    node.standing === "accepted" ||
+    experimentLoopActive ||
+    draft.nodes[nodeId] ||
+    draft.removed_node_ids.includes(nodeId)
+  )
+    return draft;
+  const next = cloneDraft(draft);
+  next.removed_node_ids.push(nodeId);
+  return next;
+}
+
+export function unstageNodeRemoval(draft: HumanDraft, nodeId: string): HumanDraft {
+  const next = cloneDraft(draft);
+  next.removed_node_ids = next.removed_node_ids.filter((id) => id !== nodeId);
+  return next;
 }
 
 export function stageProposalDecision(
@@ -240,6 +272,10 @@ export function applyHumanDraft(graph: GraphState, draft: HumanDraft | null): Gr
   for (const [nodeId, node] of Object.entries(draft.custom_nodes)) {
     nodes[nodeId] = { ...node, draft_touched: true };
   }
+  for (const nodeId of draft.removed_node_ids) {
+    const node = nodes[nodeId];
+    if (node) nodes[nodeId] = { ...node, draft_touched: true };
+  }
   return { ...graph, nodes, ontology: draft.ontology ?? graph.ontology };
 }
 
@@ -255,6 +291,7 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
   );
   return (
     nodeChanges +
+    draft.removed_node_ids.length +
     Object.keys(draft.proposals).length +
     Object.keys(draft.ambiguities).length +
     (draft.ontology ? 1 : 0) +
@@ -265,6 +302,7 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
 export function toHumanSyncRequest(draft: HumanDraft): HumanSyncRequest {
   return {
     base_revision: draft.base_revision,
+    removed_node_ids: [...draft.removed_node_ids],
     nodes: Object.entries(draft.nodes).map(([nodeId, entry]) => ({
       node_id: nodeId,
       base_updated_rev: entry.base_updated_rev,
@@ -289,6 +327,25 @@ export function humanDraftStorageKey(projectId: string): string {
   return `rcp:human-draft:${projectId}`;
 }
 
+export function humanSyncFailure(error: unknown): {
+  text: string;
+  revisionConflict: boolean;
+} {
+  const revisionConflict =
+    isRecord(error) &&
+    error.status === 409 &&
+    typeof error.message === "string" &&
+    error.message.includes("graph changed after this draft began");
+  return {
+    text: revisionConflict
+      ? "Draft base is stale. Reset the draft before syncing."
+      : error instanceof Error
+        ? error.message
+        : String(error),
+    revisionConflict,
+  };
+}
+
 export function serializeHumanDraft(draft: HumanDraft): string {
   return JSON.stringify(draft);
 }
@@ -303,6 +360,9 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
       return null;
     return {
       ...(parsed as unknown as HumanDraft),
+      removed_node_ids: Array.isArray(parsed.removed_node_ids)
+        ? parsed.removed_node_ids.filter((id): id is string => typeof id === "string")
+        : [],
       ontology: isRecord(parsed.ontology) ? (parsed.ontology as unknown as OntologyState) : null,
       custom_nodes: isRecord(parsed.custom_nodes)
         ? (parsed.custom_nodes as Record<string, GraphNode>)
@@ -316,6 +376,7 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
 function cloneDraft(draft: HumanDraft): HumanDraft {
   return {
     ...draft,
+    removed_node_ids: [...draft.removed_node_ids],
     nodes: Object.fromEntries(
       Object.entries(draft.nodes).map(([id, entry]) => [
         id,

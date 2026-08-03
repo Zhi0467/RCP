@@ -12,7 +12,16 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from rcp.core.models import RELATION_SPEC, Decision, Edge, GraphState, Hypothesis
+from rcp.core.models import (
+    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
+    RELATION_SPEC,
+    Decision,
+    Edge,
+    Experiment,
+    GraphState,
+    Hypothesis,
+    Standing,
+)
 from rcp.core.ontology import (
     custom_relation,
     edge_matches_relation,
@@ -273,6 +282,76 @@ def depends_remove_edges(op: dict[str, Any], state: GraphState) -> tuple[list[An
             candidates.append(edge.source)
             candidates.append(edge.target)
     return candidates, []
+
+
+def validate_remove_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
+    if set(op) != {"op", "node_ids"}:
+        ctx.report.reject(
+            "invalid-remove-nodes-operation",
+            "A remove_nodes operation may contain only 'op' and 'node_ids'.",
+            ctx.revision,
+        )
+        return None
+    node_ids = op.get("node_ids")
+    if (
+        not isinstance(node_ids, list)
+        or not node_ids
+        or any(not isinstance(node_id, str) or not node_id for node_id in node_ids)
+    ):
+        ctx.report.reject(
+            "invalid-remove-nodes-operation",
+            "A remove_nodes operation requires at least one non-empty node id.",
+            ctx.revision,
+        )
+        return None
+    if len(node_ids) != len(set(node_ids)):
+        ctx.report.reject(
+            "invalid-remove-nodes-operation",
+            "A remove_nodes operation cannot name the same node more than once.",
+            ctx.revision,
+        )
+        return None
+
+    for node_id in node_ids:
+        node = ctx.state.nodes.get(node_id)
+        if node is None:
+            ctx.report.reject(
+                "unknown-node",
+                f"Cannot remove missing node {node_id!r}.",
+                ctx.revision,
+                related_node_ids=[node_id],
+            )
+            continue
+
+        initial_node = ctx.initial_state.nodes.get(node_id, node)
+        if initial_node.standing == Standing.ACCEPTED:
+            ctx.report.reject(
+                "accepted-node-removal",
+                f"Cannot remove accepted node {node_id!r}; clear or contest it in an earlier "
+                "human Sync first.",
+                ctx.revision,
+                related_node_ids=[node_id],
+            )
+        experiment_versions = (
+            candidate for candidate in (initial_node, node) if isinstance(candidate, Experiment)
+        )
+        if any(
+            attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES
+            for experiment in experiment_versions
+            for attempt in experiment.attempts
+        ):
+            ctx.report.reject(
+                "active-experiment-removal",
+                f"Cannot remove Experiment {node_id!r} while its bounded loop has an active "
+                "attempt.",
+                ctx.revision,
+                related_node_ids=[node_id],
+            )
+    return None
+
+
+def depends_remove_nodes(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
+    return list(op.get("node_ids", [])), []
 
 
 def validate_supersede_nodes(op: dict[str, Any], ctx: OpContext) -> Any:

@@ -14,6 +14,53 @@ from rcp.history import HistoryManager, PatchRejected, ReplayHalted, RevisionCon
 from tests.helpers import refresh_patch, seed_patch, shape_invalid_patch
 
 
+def _remove_nodes_patch(
+    *node_ids: str,
+    kind: str = "refresh",
+    author: str = "agent",
+) -> Patch:
+    return Patch.model_validate(
+        {
+            "kind": kind,
+            "author": author,
+            "summary": "Removed nodes from the current graph.",
+            "run_truth_scope": ["repo-a"] if author == "agent" else [],
+            "repositories_read": ["repo-a"] if author == "agent" else [],
+            "ops": [{"op": "remove_nodes", "node_ids": list(node_ids)}],
+        }
+    )
+
+
+def _record_experiment(history: HistoryManager, attempt_status: str | None = None) -> str:
+    experiment_id = "exp/bounded-loop"
+    node: dict[str, object] = {
+        "id": experiment_id,
+        "type": "experiment",
+        "title": "Bounded loop",
+        "objective": "Measure future plasticity.",
+    }
+    if attempt_status is not None:
+        node["attempts"] = [
+            {
+                "id": "attempt-1",
+                "sequence": 1,
+                "purpose": "Run the matched comparison.",
+                "status": attempt_status,
+            }
+        ]
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Recorded a bounded experiment.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[{"op": "create_nodes", "nodes": [node]}],
+        )
+    )
+    return experiment_id
+
+
 def test_manifest_writes_share_the_append_lock_across_manager_instances(
     manifest, monkeypatch
 ) -> None:
@@ -122,6 +169,186 @@ def test_standalone_review_generates_research_md(manifest) -> None:
     research = (manifest.research_dir / "research.md").read_text(encoding="utf-8")
     assert "Learning after task shift" in research
     assert "Replanning restores plasticity" not in research
+
+
+@pytest.mark.parametrize("standing", ["asserted", "contested"])
+def test_agent_removes_asserted_or_contested_node_and_incident_edges(
+    manifest, standing: str
+) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    node_id = "hyp/replanning-restores-plasticity"
+    if standing == "contested":
+        history.append(
+            Patch(
+                kind="approval",
+                author="human",
+                summary="Contested the hypothesis before removal.",
+                ops=[{"op": "set_standing", "node_id": node_id, "standing": "contested"}],
+            )
+        )
+
+    history.append(_remove_nodes_patch(node_id))
+
+    state = history.state()
+    assert node_id not in state.nodes
+    assert "rq/learning-after-shift" in state.nodes
+    assert all(edge.source != node_id and edge.target != node_id for edge in state.edges.values())
+
+
+def test_direct_human_remove_nodes_is_a_valid_standalone_approval(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+
+    history.append(
+        _remove_nodes_patch(
+            "hyp/replanning-restores-plasticity",
+            kind="approval",
+            author="human",
+        )
+    )
+
+    assert "hyp/replanning-restores-plasticity" not in history.state().nodes
+
+
+def test_accepted_target_rejects_the_entire_remove_nodes_operation(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    accepted_id = "hyp/replanning-restores-plasticity"
+    history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Accepted the hypothesis.",
+            ops=[{"op": "set_standing", "node_id": accepted_id, "standing": "accepted"}],
+        )
+    )
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(_remove_nodes_patch("rq/learning-after-shift", accepted_id))
+
+    assert any(message.code == "accepted-node-removal" for message in caught.value.report.messages)
+    state = history.state()
+    assert {"rq/learning-after-shift", accepted_id} <= set(state.nodes)
+    assert any(
+        edge.source == accepted_id or edge.target == accepted_id for edge in state.edges.values()
+    )
+
+
+def test_standing_change_cannot_bypass_accepted_node_removal(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    node_id = "hyp/replanning-restores-plasticity"
+    history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Accepted the hypothesis.",
+            ops=[{"op": "set_standing", "node_id": node_id, "standing": "accepted"}],
+        )
+    )
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(
+            Patch(
+                kind="approval",
+                author="human",
+                summary="Tried to clear and remove in one approval patch.",
+                ops=[
+                    {"op": "set_standing", "node_id": node_id, "standing": "asserted"},
+                    {"op": "remove_nodes", "node_ids": [node_id]},
+                ],
+            )
+        )
+
+    codes = {message.code for message in caught.value.report.messages}
+    assert {"invalid-standalone-review", "accepted-node-removal"} <= codes
+    assert history.state().nodes[node_id].standing == "accepted"
+
+
+def test_remove_nodes_rejects_unknown_target(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(_remove_nodes_patch("rq/missing"))
+
+    assert any(message.code == "unknown-node" for message in caught.value.report.messages)
+
+
+@pytest.mark.parametrize("attempt_status", ["planned", "submitted", "running"])
+def test_remove_nodes_refuses_experiment_with_active_attempt(manifest, attempt_status: str) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    experiment_id = _record_experiment(history, attempt_status)
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(_remove_nodes_patch(experiment_id))
+
+    assert any(
+        message.code == "active-experiment-removal" for message in caught.value.report.messages
+    )
+    assert experiment_id in history.state().nodes
+
+
+def test_update_to_active_attempt_cannot_bypass_experiment_removal(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    experiment_id = _record_experiment(history)
+    patch = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Tried to start and remove an Experiment in one patch.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": experiment_id,
+                        "changes": {
+                            "attempts": [
+                                {
+                                    "id": "attempt-1",
+                                    "sequence": 1,
+                                    "purpose": "Run the matched comparison.",
+                                    "status": "planned",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+            {"op": "remove_nodes", "node_ids": [experiment_id]},
+        ],
+    )
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(patch)
+
+    assert any(
+        message.code == "active-experiment-removal" for message in caught.value.report.messages
+    )
+    experiment = history.state().nodes[experiment_id]
+    assert experiment.attempts == []
+
+
+def test_experiment_loop_patch_cannot_remove_its_control_node(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    experiment_id = _record_experiment(history)
+    patch = _remove_nodes_patch(experiment_id, kind="experiment_loop").model_copy(
+        update={"experiment_control_node_id": experiment_id}
+    )
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(patch)
+
+    assert any(
+        message.code == "experiment-loop-operation" for message in caught.value.report.messages
+    )
+    assert experiment_id in history.state().nodes
 
 
 @pytest.mark.parametrize("standing", ["asserted", "accepted", "contested"])

@@ -497,6 +497,7 @@ def _record_patch_receipt(
         "update_nodes",
         "create_edges",
         "remove_edges",
+        "remove_nodes",
         "supersede_nodes",
         "merge_nodes",
         "create_ambiguities",

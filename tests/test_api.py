@@ -52,7 +52,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.work import stream_work_run
 from rcp.service import CoachRequest, ReviewRequest, RunRequest
-from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.transport import StateUnavailable
 
 from .helpers import agent_patch_json, gated_patch, refresh_patch, seed_patch, shape_invalid_patch
@@ -5608,6 +5608,211 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
     completed = _wait_for_run(client, project_id, response.json()["operation_id"])
     assert completed["status"] == "succeeded"
     assert service.history.state().nodes["exp/bounded-loop"].attempts == []
+
+
+def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    project_id = app.state.default_project_id
+    winner_barrier = threading.Barrier(2)
+    release_winner = threading.Event()
+    original_sync = service.sync_graph
+
+    def held_sync(*args, **kwargs):
+        winner_barrier.wait(timeout=3)
+        assert release_winner.wait(timeout=3)
+        return original_sync(*args, **kwargs)
+
+    monkeypatch.setattr(service, "sync_graph", held_sync)
+
+    async def drive_race():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            removal = asyncio.create_task(
+                client.post(
+                    f"/api/projects/{project_id}/sync",
+                    json={"base_revision": 2, "removed_node_ids": ["exp/bounded-loop"]},
+                )
+            )
+            try:
+                await asyncio.to_thread(winner_barrier.wait, 3)
+                admission = asyncio.create_task(
+                    client.post(
+                        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+                        json={"chat_id": str(uuid.uuid4())},
+                    )
+                )
+                await asyncio.sleep(0)
+            finally:
+                release_winner.set()
+            return await removal, await admission
+
+    removal, admission = asyncio.run(drive_race())
+
+    assert removal.status_code == 200
+    assert admission.status_code == 404
+    assert "exp/bounded-loop" not in service.history.state().nodes
+    assert app.state.background_tasks.store.agent_tasks(project_id) == []
+
+
+def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    project_id = app.state.default_project_id
+    winner_barrier = threading.Barrier(2)
+    release_winner = threading.Event()
+    release_stream = threading.Event()
+    original_start = app.state.background_tasks.start
+
+    async def held_stream(*_args):
+        while not release_stream.is_set():
+            await asyncio.sleep(0.01)
+        yield _sse(AgentEvent(event="answer", text="Admission won the race."))
+        yield _sse(AgentEvent(event="done"))
+
+    def held_start(*args, **kwargs):
+        record = original_start(*args, **kwargs)
+        winner_barrier.wait(timeout=3)
+        assert release_winner.wait(timeout=3)
+        return record
+
+    app.state.background_tasks.stream = held_stream
+    monkeypatch.setattr(app.state.background_tasks, "start", held_start)
+
+    async def drive_race():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            admission = asyncio.create_task(
+                client.post(
+                    f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+                    json={"chat_id": str(uuid.uuid4())},
+                )
+            )
+            try:
+                await asyncio.to_thread(winner_barrier.wait, 3)
+                removal = asyncio.create_task(
+                    client.post(
+                        f"/api/projects/{project_id}/sync",
+                        json={"base_revision": 2, "removed_node_ids": ["exp/bounded-loop"]},
+                    )
+                )
+                await asyncio.sleep(0)
+            finally:
+                release_winner.set()
+            return await admission, await removal
+
+    try:
+        admission, removal = asyncio.run(drive_race())
+        assert admission.status_code == 202
+        assert removal.status_code == 409
+        assert "bounded experiment loop is active" in removal.json()["detail"]
+        assert "exp/bounded-loop" in service.history.state().nodes
+    finally:
+        release_stream.set()
+
+
+def test_removed_experiment_fails_closed_for_every_continuation_admission(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    project_id = app.state.default_project_id
+    client = TestClient(app)
+    removed = client.post(
+        f"/api/projects/{project_id}/sync",
+        json={"base_revision": 2, "removed_node_ids": ["exp/bounded-loop"]},
+    )
+    assert removed.status_code == 200
+
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id=str(uuid.uuid4()),
+        chat_scope="node",
+        node_id="exp/bounded-loop",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+    )
+    store = app.state.background_tasks.store
+    now = store.now()
+    operation_ids = {
+        "resume": "removed-experiment-resume",
+        "retry": "removed-experiment-retry",
+        "repair-graph-update": "removed-experiment-repair",
+    }
+    for operation_id in operation_ids.values():
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind="node_chat",
+                status="paused",
+                request=request.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Paused before the Experiment was removed.",
+            )
+        )
+
+    def unexpected_admission(*_args, **_kwargs):
+        raise AssertionError("removed Experiment continuation reached task admission")
+
+    monkeypatch.setattr(app.state.background_tasks, "resume", unexpected_admission)
+    monkeypatch.setattr(app.state.background_tasks, "retry", unexpected_admission)
+    monkeypatch.setattr(app.state.background_tasks, "repair_graph_update", unexpected_admission)
+    monkeypatch.setattr(
+        app.state.background_tasks,
+        "start_watcher_notification",
+        unexpected_admission,
+    )
+
+    for endpoint, operation_id in operation_ids.items():
+        response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}")
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "Experiment exp/bounded-loop no longer exists; it cannot be continued."
+        )
+
+    continuation = WatcherContinuation(
+        provider="codex",
+        run_on="laptop",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+    )
+    watcher = WatcherRecord(
+        watcher_id="removed-experiment-watcher",
+        project_id=project_id,
+        origin_operation_id="removed-experiment-origin",
+        origin_task_kind="node_chat",
+        chat_id=request.chat_id,
+        node_id="exp/bounded-loop",
+        check_command="true",
+        log_path="/tmp/removed-experiment.log",
+        cwd="/tmp",
+        continuation=continuation,
+        status="completed",
+        created_at=now,
+    )
+    with pytest.raises(
+        ValueError,
+        match="Experiment exp/bounded-loop no longer exists; it cannot be continued",
+    ):
+        assert app.state.watcher_poller.on_completed is not None
+        app.state.watcher_poller.on_completed([watcher])
 
 
 @pytest.mark.asyncio

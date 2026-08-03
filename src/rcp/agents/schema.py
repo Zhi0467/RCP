@@ -210,6 +210,11 @@ class RemoveEdgesOperation(_StrictModel):
     edge_ids: list[str] = Field(min_length=1)
 
 
+class RemoveNodesOperation(_StrictModel):
+    op: Literal["remove_nodes"]
+    node_ids: list[str] = Field(min_length=1)
+
+
 class SupersedeNodesOperation(_StrictModel):
     op: Literal["supersede_nodes"]
     nodes: list[SupersedeNode] = Field(min_length=1)
@@ -278,6 +283,7 @@ AgentOperation = Annotated[
     | UpdateNodesOperation
     | CreateEdgesOperation
     | RemoveEdgesOperation
+    | RemoveNodesOperation
     | SupersedeNodesOperation
     | MergeNodesOperation
     | CreateAmbiguitiesOperation

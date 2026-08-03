@@ -238,6 +238,38 @@ def test_refresh_delta_records_explicit_and_agent_reset_standing_transitions() -
     ]
 
 
+def test_refresh_delta_records_human_and_work_node_removals_once() -> None:
+    patches = [
+        _patch(1, "refresh", "agent", []),
+        _patch(
+            2,
+            "approval",
+            "human",
+            [{"op": "remove_nodes", "node_ids": ["rq/removed-by-human"]}],
+        ),
+        _patch(
+            3,
+            "work",
+            "agent",
+            [{"op": "remove_nodes", "node_ids": ["hyp/removed-by-work"]}],
+        ),
+    ]
+    materialization = MaterializationResult(
+        state=GraphState(revision=3, project_truth_scope=["repo-a"]),
+        reports={patch.revision: ValidationReport() for patch in patches},
+    )
+
+    delta = build_refresh_delta(patches, materialization)
+    removals = [entry for entry in delta.entries if entry.category == "node_removal"]
+
+    assert [
+        (entry.target_id, entry.author, entry.target_type, entry.field_names) for entry in removals
+    ] == [
+        ("hyp/removed-by-work", "agent", "node", ["removed"]),
+        ("rq/removed-by-human", "human", "node", ["removed"]),
+    ]
+
+
 def test_refresh_delta_is_deterministically_bounded() -> None:
     patches = [_patch(1, "refresh", "agent", [])]
     nodes = {}

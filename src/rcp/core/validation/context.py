@@ -12,12 +12,15 @@ from rcp.core.validation.report import ValidationReport
 class OpContext:
     """Everything an operation rule needs to judge one operation of a patch.
 
-    ``repositories`` is deliberately mutable and shared across the operations of
-    a single patch: a ``set_project_truth_scope`` operation that introduces a new
-    repository descriptor makes that alias available to the operations after it.
+    ``initial_state`` retains the graph before any operation is staged, while
+    ``state`` advances after each valid operation. ``repositories`` is deliberately
+    mutable and shared across the operations of a single patch: a
+    ``set_project_truth_scope`` operation that introduces a new repository descriptor
+    makes that alias available to the operations after it.
     """
 
     state: GraphState
+    initial_state: GraphState
     patch: Patch
     report: ValidationReport
     revision: int | None

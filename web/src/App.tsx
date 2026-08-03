@@ -87,17 +87,20 @@ import {
   emptyHumanDraft,
   humanDraftChangeCount,
   humanDraftStorageKey,
+  humanSyncFailure,
   normalizeHumanDraft,
   serializeHumanDraft,
   stageAmbiguityDecision,
   stageNodeEdit,
   stageNodeEditStart,
   stageAttemptRelease,
+  stageNodeRemoval,
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
   stageOntology,
   unstageCustomNode,
+  unstageNodeRemoval,
   toHumanSyncRequest,
   type HumanDraft,
 } from "./humanDraft";
@@ -1227,17 +1230,16 @@ export default function App() {
       resetHumanDraft();
       setGraph(nextGraph);
       setProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
-      setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
+      setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
       await reload();
       setNotice({ kind: "info", text: `Synced revision ${nextGraph.revision}.` });
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
-        setNotice({ kind: "error", text: "Draft base is stale. Reset the draft before syncing." });
+      const failure = humanSyncFailure(error);
+      setNotice({ kind: "error", text: failure.text });
+      if (failure.revisionConflict) {
         try {
           await reload();
         } catch {}
-      } else {
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
     } finally {
       setSyncingDraft(false);
@@ -2147,6 +2149,9 @@ export default function App() {
           ontology={presentedGraph.ontology}
           mutationsDisabled={mutationsDisabled}
           stagedNewNode={Boolean(humanDraft?.custom_nodes[selectedNode.id])}
+          stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(selectedNode.id))}
+          hasStagedNodeChange={Boolean(humanDraft?.nodes[selectedNode.id])}
+          canonicalStanding={graph.nodes[selectedNode.id]?.standing ?? selectedNode.standing}
           experimentControl={selectedExperimentControl}
           experimentRunDisabled={Boolean(activeTask)}
           experimentRunBusy={taskStarting}
@@ -2154,6 +2159,19 @@ export default function App() {
             updateHumanDraft((draft) => unstageCustomNode(draft, selectedNode.id));
             setSelectedNode(null);
           }}
+          onRemove={() =>
+            updateHumanDraft((draft) =>
+              stageNodeRemoval(
+                draft,
+                graph,
+                selectedNode.id,
+                Boolean(selectedExperimentControl?.active),
+              ),
+            )
+          }
+          onUndoRemoval={() =>
+            updateHumanDraft((draft) => unstageNodeRemoval(draft, selectedNode.id))
+          }
           onClose={() => setSelectedNode(null)}
           onDock={() => dockNode(selectedNode.id)}
           onBeginEdit={() =>

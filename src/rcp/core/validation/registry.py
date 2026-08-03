@@ -23,6 +23,7 @@ from rcp.core.validation.ops import (
     depends_create_edges,
     depends_merge_nodes,
     depends_remove_edges,
+    depends_remove_nodes,
     depends_resolve_ambiguities,
     depends_set_ontology,
     depends_set_project_truth_scope,
@@ -33,6 +34,7 @@ from rcp.core.validation.ops import (
     validate_create_proposals,
     validate_merge_nodes,
     validate_remove_edges,
+    validate_remove_nodes,
     validate_resolve_ambiguities,
     validate_resolve_proposals,
     validate_set_ontology,
@@ -60,6 +62,10 @@ OP_RULES: dict[str, OpRule] = {
     "remove_edges": OpRule(
         structural_validate=validate_remove_edges,
         dependencies=depends_remove_edges,
+    ),
+    "remove_nodes": OpRule(
+        structural_validate=validate_remove_nodes,
+        dependencies=depends_remove_nodes,
     ),
     "supersede_nodes": OpRule(
         structural_validate=validate_supersede_nodes,

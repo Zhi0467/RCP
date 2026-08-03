@@ -47,11 +47,16 @@ interface Props {
   ontology: OntologyState;
   mutationsDisabled?: boolean;
   stagedNewNode?: boolean;
+  stagedForRemoval?: boolean;
+  hasStagedNodeChange?: boolean;
+  canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
   onReleaseAttempt?: (attemptId: string) => void;
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   onUnstage?: () => void;
+  onRemove?: () => void;
+  onUndoRemoval?: () => void;
   onClose: () => void;
   onDock: () => void;
   onBeginEdit: () => void;
@@ -95,11 +100,16 @@ export function DetailDrawer({
   ontology,
   mutationsDisabled = false,
   stagedNewNode = false,
+  stagedForRemoval = false,
+  hasStagedNodeChange = false,
+  canonicalStanding = node.standing,
   experimentControl = null,
   onReleaseAttempt,
   experimentRunDisabled = false,
   experimentRunBusy = false,
   onUnstage,
+  onRemove,
+  onUndoRemoval,
   onClose,
   onDock,
   onBeginEdit,
@@ -111,6 +121,7 @@ export function DetailDrawer({
   onSelectNode,
 }: Props) {
   const [editing, setEditing] = useState(false);
+  const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
   const [editBase, setEditBase] = useState(node);
   const [draft, setDraft] = useState<Record<string, string>>(() => nodeEditDraft(node, ontology));
   const standingBeforeEdit = useRef<GraphNode["standing"] | null>(null);
@@ -131,6 +142,7 @@ export function DetailDrawer({
     [draft, editFields],
   );
   const editInvalid = Object.keys(editErrors).length > 0;
+  const nodeMutationDisabled = mutationsDisabled || stagedForRemoval;
 
   useEffect(() => {
     if (!editing) {
@@ -140,11 +152,11 @@ export function DetailDrawer({
   }, [editing, node, ontology]);
 
   useEffect(() => {
-    if (mutationsDisabled) setEditing(false);
-  }, [mutationsDisabled]);
+    if (nodeMutationDisabled) setEditing(false);
+  }, [nodeMutationDisabled]);
 
   const beginEditing = () => {
-    if (mutationsDisabled) return;
+    if (nodeMutationDisabled) return;
     standingBeforeEdit.current = node.standing;
     if (node.standing !== "asserted") onBeginEdit();
     setEditBase(node);
@@ -161,7 +173,7 @@ export function DetailDrawer({
     setEditing(false);
   };
   const stage = () => {
-    if (changeCount === 0 || mutationsDisabled || editInvalid) return;
+    if (changeCount === 0 || nodeMutationDisabled || editInvalid) return;
     onStage(changes);
     standingBeforeEdit.current = null;
     setEditing(false);
@@ -175,6 +187,30 @@ export function DetailDrawer({
   };
 
   const relations = edges.filter((edge) => edge.source === node.id || edge.target === node.id);
+  const removalBlockedReason = stagedForRemoval
+    ? null
+    : canonicalStanding === "accepted"
+      ? "Clear or contest this accepted node and Sync before removing it."
+      : experimentControl?.active
+        ? "This node cannot be removed while its bounded experiment loop is active."
+        : hasStagedNodeChange
+          ? "Sync or reset this node's staged changes before removing it."
+          : null;
+  useEffect(() => {
+    setRemovalConfirmationOpen(false);
+  }, [
+    canonicalStanding,
+    experimentControl?.active,
+    hasStagedNodeChange,
+    mutationsDisabled,
+    node.id,
+    stagedForRemoval,
+  ]);
+  const confirmRemoval = () => {
+    if (mutationsDisabled || removalBlockedReason || !onRemove) return;
+    setRemovalConfirmationOpen(false);
+    onRemove();
+  };
   const transitions = nodeBeliefTransitions(node.id, beliefTransitions);
   const presentation = presentNode(node);
   const definitions = glossaryTermsForNode(node, glossary);
@@ -200,7 +236,10 @@ export function DetailDrawer({
             <h2 id="drawer-title">{node.title}</h2>
             <div className="node-meta">
               <span className="mono">{node.id}</span>
-              <span className={`standing ${node.standing}`}>{node.standing}</span>
+              <span className={`standing ${node.standing}`}>
+                {node.standing}
+                {canonicalStanding !== node.standing && " · staged"}
+              </span>
               {node.type === "evidence" && node.origin && (
                 <span className="node-origin">{originLabels[node.origin]}</span>
               )}
@@ -222,6 +261,23 @@ export function DetailDrawer({
         </header>
 
         <div className={`drawer-content${editing ? " editing" : ""}`}>
+          {stagedForRemoval && (
+            <section className="node-removal-staged" role="status">
+              <Trash2 size={16} />
+              <span>
+                <strong>Removal staged.</strong> Sync will remove this node and {relations.length}{" "}
+                connected relation{relations.length === 1 ? "" : "s"}.
+              </span>
+              <button
+                className="button compact"
+                type="button"
+                disabled={mutationsDisabled || !onUndoRemoval}
+                onClick={onUndoRemoval}
+              >
+                Undo
+              </button>
+            </section>
+          )}
           {editing ? (
             <form
               className="node-edit-form"
@@ -304,7 +360,7 @@ export function DetailDrawer({
                       className="button primary compact experiment-run-button"
                       type="button"
                       disabled={
-                        mutationsDisabled ||
+                        nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
                         experimentControl.active ||
@@ -341,7 +397,7 @@ export function DetailDrawer({
                               <button
                                 className="button compact"
                                 type="button"
-                                disabled={mutationsDisabled}
+                                disabled={nodeMutationDisabled}
                                 onClick={() => onReleaseAttempt(attempt.id)}
                               >
                                 Stop attempt
@@ -528,7 +584,7 @@ export function DetailDrawer({
                 <button
                   className="button primary compact"
                   type="button"
-                  disabled={mutationsDisabled || changeCount === 0 || editInvalid}
+                  disabled={nodeMutationDisabled || changeCount === 0 || editInvalid}
                   onClick={stage}
                 >
                   <Check size={14} /> Done
@@ -552,24 +608,82 @@ export function DetailDrawer({
               <button className="button ghost" onClick={onOpenChat}>
                 <MessageCircle size={15} /> Ask about this node
               </button>
-              <div>
-                <button
-                  className="button secondary"
-                  disabled={mutationsDisabled}
-                  onClick={beginEditing}
-                >
-                  <PencilLine size={14} /> Edit node
-                </button>
-                <button
-                  className={`button judgment node-standing-toggle ${node.standing === "accepted" ? "contest" : "agree"}`}
-                  disabled={mutationsDisabled}
-                  onClick={() =>
-                    onStanding(node.standing === "accepted" ? "contested" : "accepted")
-                  }
-                >
-                  {node.standing === "accepted" ? <X size={14} /> : <Check size={14} />}
-                  {node.standing === "accepted" ? "Contest" : "Agree"}
-                </button>
+              <div className="node-detail-actions">
+                <div className="node-judgment-actions">
+                  <button
+                    className="button secondary"
+                    disabled={nodeMutationDisabled}
+                    onClick={beginEditing}
+                  >
+                    <PencilLine size={14} /> Edit node
+                  </button>
+                  <button
+                    className={`button judgment node-standing-toggle contest${node.standing === "contested" ? " selected disagree" : ""}`}
+                    aria-pressed={node.standing === "contested"}
+                    disabled={nodeMutationDisabled}
+                    onClick={() =>
+                      onStanding(node.standing === "contested" ? "asserted" : "contested")
+                    }
+                  >
+                    {node.standing === "contested" ? <Check size={14} /> : <X size={14} />}
+                    Contest
+                  </button>
+                  <button
+                    className={`button judgment node-standing-toggle agree${node.standing === "accepted" ? " selected agree" : ""}`}
+                    aria-pressed={node.standing === "accepted"}
+                    disabled={nodeMutationDisabled}
+                    onClick={() =>
+                      onStanding(node.standing === "accepted" ? "asserted" : "accepted")
+                    }
+                  >
+                    <Check size={14} />
+                    Agree
+                  </button>
+                </div>
+                <div className="node-removal-action">
+                  <button
+                    className="button danger"
+                    type="button"
+                    hidden={removalConfirmationOpen}
+                    disabled={
+                      mutationsDisabled ||
+                      stagedForRemoval ||
+                      Boolean(removalBlockedReason) ||
+                      !onRemove
+                    }
+                    title={removalBlockedReason ?? undefined}
+                    onClick={() => setRemovalConfirmationOpen(true)}
+                  >
+                    <Trash2 size={14} /> {stagedForRemoval ? "Removal staged" : "Remove node…"}
+                  </button>
+                  <div
+                    className="node-removal-confirmation"
+                    role="alert"
+                    hidden={!removalConfirmationOpen}
+                  >
+                    <span>
+                      Remove <strong>“{node.title}”</strong>? Sync will remove it and{" "}
+                      {relations.length} connected relation{relations.length === 1 ? "" : "s"}.
+                    </span>
+                    <div>
+                      <button
+                        className="button compact"
+                        type="button"
+                        onClick={() => setRemovalConfirmationOpen(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="button danger compact"
+                        type="button"
+                        onClick={confirmRemoval}
+                      >
+                        Confirm remove
+                      </button>
+                    </div>
+                  </div>
+                  {removalBlockedReason && <small>{removalBlockedReason}</small>}
+                </div>
               </div>
             </>
           )}

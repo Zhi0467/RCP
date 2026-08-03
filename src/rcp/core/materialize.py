@@ -247,6 +247,16 @@ def _apply_patch(
         elif name == "remove_edges":
             for edge_id in op.get("edge_ids", []):
                 state.edges.pop(edge_id, None)
+        elif name == "remove_nodes":
+            node_ids = set(op.get("node_ids", []))
+            state.nodes = {
+                node_id: node for node_id, node in state.nodes.items() if node_id not in node_ids
+            }
+            state.edges = {
+                edge_id: edge
+                for edge_id, edge in state.edges.items()
+                if edge.source not in node_ids and edge.target not in node_ids
+            }
         elif name == "supersede_nodes":
             for item in op.get("nodes", []):
                 previous = state.nodes[item["id"]]

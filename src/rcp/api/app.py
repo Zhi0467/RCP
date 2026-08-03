@@ -4,10 +4,11 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 import time
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import aclosing, asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Iterator
+from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -143,6 +144,29 @@ def create_app(
     default_service = (
         _LazyProjectService(catalog, default_project_id) if default_project_id is not None else None
     )
+    experiment_operation_locks: dict[str, threading.RLock] = {}
+    experiment_operation_locks_guard = threading.Lock()
+
+    def experiment_operation_lock(project_id: str) -> threading.RLock:
+        with experiment_operation_locks_guard:
+            return experiment_operation_locks.setdefault(project_id, threading.RLock())
+
+    @contextmanager
+    def experiment_admission(
+        project_id: str,
+        service: ProjectService,
+        request: RunRequest | CoachRequest | dict[str, object],
+    ) -> Iterator[None]:
+        control_node_id = _experiment_control_node_id(request)
+        if control_node_id is None:
+            yield
+            return
+        with experiment_operation_lock(project_id):
+            if not isinstance(service.history.state().nodes.get(control_node_id), Experiment):
+                raise ValueError(
+                    f"Experiment {control_node_id} no longer exists; it cannot be continued."
+                )
+            yield
 
     async def background_task_stream(
         project_id: str,
@@ -238,12 +262,14 @@ def create_app(
             control_completion_criteria=continuation.control_completion_criteria,
             watcher_ids=watcher_ids,
         )
-        background_tasks.start_watcher_notification(
-            first.project_id,
-            first.origin_task_kind,
-            request,
-            watcher_ids,
-        )
+        service = _project_service(catalog, first.project_id)
+        with experiment_admission(first.project_id, service, request):
+            background_tasks.start_watcher_notification(
+                first.project_id,
+                first.origin_task_kind,
+                request,
+                watcher_ids,
+            )
 
     watcher_poller = WatcherPoller(store, on_completed=deliver_watcher_group)
 
@@ -539,7 +565,16 @@ def create_app(
     def sync_graph(project_id: str, body: GraphSyncRequest):
         service = _project_service(catalog, project_id)
         try:
-            return service.sync_graph(body).model_dump(mode="json")
+            if body.removed_node_ids:
+                with experiment_operation_lock(project_id):
+                    return service.sync_graph(
+                        body,
+                        active_control_node_ids=_active_experiment_control_ids(store, project_id),
+                    ).model_dump(mode="json")
+            return service.sync_graph(
+                body,
+                active_control_node_ids=_active_experiment_control_ids(store, project_id),
+            ).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail=f"Missing graph object: {exc.args[0]}"
@@ -596,44 +631,45 @@ def create_app(
         body: dict[str, object],
     ) -> dict[str, object]:
         service = _project_service(catalog, project_id)
-        state = service.history.state()
-        node = state.nodes.get(node_id)
-        if not isinstance(node, Experiment):
-            raise HTTPException(status_code=404, detail="Experiment not found")
-        control = derive_experiment_control_state(
-            state,
-            node_id,
-            _active_experiment_control_ids(store, project_id),
-        )
-        if not control.ready:
-            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
         try:
-            supplied = RunRequest.model_validate(body)
-            if not supplied.chat_id:
-                raise ValueError("Run requires a chat_id")
-            uuid.UUID(supplied.chat_id)
-            request = supplied.model_copy(
-                update={
-                    "chat_scope": "node",
-                    "node_id": node_id,
-                    "message": (
-                        f"Run the bounded control loop for {node_id}. Perform bounded preflight, "
-                        "then either launch and record one attempt, or record one proposal-only "
-                        "attempt when an upstream decision must change."
-                    ),
-                    "session_id": None,
-                    "mode": "work",
-                    "trigger": "experiment_run",
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": node_id,
-                    "control_revision": state.revision,
-                    "control_decision_bundle": control.governing_decisions,
-                    "control_completion_criteria": list(node.completion_criteria),
-                    "watcher_ids": [],
-                }
-            )
-            request = _resolved_graph_request(service, "node_chat", request)
-            record = background_tasks.start(project_id, "node_chat", request)
+            with experiment_operation_lock(project_id):
+                state = service.history.state()
+                node = state.nodes.get(node_id)
+                if not isinstance(node, Experiment):
+                    raise HTTPException(status_code=404, detail="Experiment not found")
+                control = derive_experiment_control_state(
+                    state,
+                    node_id,
+                    _active_experiment_control_ids(store, project_id),
+                )
+                if not control.ready:
+                    raise HTTPException(status_code=409, detail=" ".join(control.reasons))
+                supplied = RunRequest.model_validate(body)
+                if not supplied.chat_id:
+                    raise ValueError("Run requires a chat_id")
+                uuid.UUID(supplied.chat_id)
+                request = supplied.model_copy(
+                    update={
+                        "chat_scope": "node",
+                        "node_id": node_id,
+                        "message": (
+                            f"Run the bounded control loop for {node_id}. Perform bounded "
+                            "preflight, then either launch and record one attempt, or record one "
+                            "proposal-only attempt when an upstream decision must change."
+                        ),
+                        "session_id": None,
+                        "mode": "work",
+                        "trigger": "experiment_run",
+                        "patch_kind": "experiment_loop",
+                        "control_node_id": node_id,
+                        "control_revision": state.revision,
+                        "control_decision_bundle": control.governing_decisions,
+                        "control_completion_criteria": list(node.completion_criteria),
+                        "watcher_ids": [],
+                    }
+                )
+                request = _resolved_graph_request(service, "node_chat", request)
+                record = background_tasks.start(project_id, "node_chat", request)
         except ValueError as exc:
             status = 409 if "already running" in str(exc) else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -820,8 +856,9 @@ def create_app(
         if previous is None or previous.project_id != project_id:
             raise HTTPException(status_code=404, detail="Agent task not found")
         try:
-            _validate_stored_task_request(service, previous.kind, previous.request)
-            return background_tasks.resume(operation_id).model_dump(mode="json")
+            with experiment_admission(project_id, service, previous.request):
+                _validate_stored_task_request(service, previous.kind, previous.request)
+                return background_tasks.resume(operation_id).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -830,12 +867,13 @@ def create_app(
         status_code=202,
     )
     def repair_agent_task_graph_update(project_id: str, operation_id: str) -> dict[str, object]:
-        _project_service(catalog, project_id)
+        service = _project_service(catalog, project_id)
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id:
             raise HTTPException(status_code=404, detail="Agent task not found")
         try:
-            return background_tasks.repair_graph_update(operation_id).model_dump(mode="json")
+            with experiment_admission(project_id, service, previous.request):
+                return background_tasks.repair_graph_update(operation_id).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Agent task not found") from exc
         except ValueError as exc:
@@ -857,8 +895,13 @@ def create_app(
             candidate = request_type.model_validate(
                 {**previous.request, **overrides, "session_id": None}
             )
-            _validate_stored_task_request(service, previous.kind, candidate.model_dump(mode="json"))
-            return background_tasks.retry(operation_id, **overrides).model_dump(mode="json")
+            with experiment_admission(project_id, service, candidate):
+                _validate_stored_task_request(
+                    service,
+                    previous.kind,
+                    candidate.model_dump(mode="json"),
+                )
+                return background_tasks.retry(operation_id, **overrides).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -976,6 +1019,24 @@ def _active_experiment_control_ids(store: AppStore, project_id: str) -> set[str]
         if isinstance(node_id, str):
             active.add(node_id)
     return active
+
+
+def _experiment_control_node_id(
+    request: RunRequest | CoachRequest | dict[str, object],
+) -> str | None:
+    if isinstance(request, CoachRequest):
+        return None
+    if isinstance(request, RunRequest):
+        patch_kind = request.patch_kind
+        node_id = request.control_node_id
+    else:
+        patch_kind = request.get("patch_kind")
+        node_id = request.get("control_node_id")
+    if patch_kind != "experiment_loop":
+        return None
+    if not isinstance(node_id, str) or not node_id:
+        raise ValueError("A bounded experiment-loop task must name its control node.")
+    return node_id
 
 
 def _require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:

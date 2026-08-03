@@ -29,6 +29,7 @@ from rcp.agents import (
 from rcp.config import AgentSurface, AgentSurfaceConfig, MachineConfig, Manifest
 from rcp.control import derive_experiment_control_state
 from rcp.core.models import (
+    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
     ExperimentDecisionPin,
     GraphState,
@@ -212,6 +213,7 @@ class GraphSyncRequest(BaseModel):
     ambiguities: list[GraphSyncAmbiguityResolution] = Field(default_factory=list)
     ontology: OntologyState | None = None
     custom_nodes: list[ProjectNode] = Field(default_factory=list)
+    removed_node_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_unique_targets(self) -> GraphSyncRequest:
@@ -220,9 +222,18 @@ class GraphSyncRequest(BaseModel):
             ("proposal", [item.proposal_id for item in self.proposals]),
             ("ambiguity", [item.ambiguity_id for item in self.ambiguities]),
             ("custom node", [item.id for item in self.custom_nodes]),
+            ("removed node", self.removed_node_ids),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"a graph sync cannot contain duplicate {label} targets")
+        staged_node_ids = {item.node_id for item in self.nodes}
+        removed_node_ids = set(self.removed_node_ids)
+        conflicting_node_ids = sorted(staged_node_ids & removed_node_ids)
+        if conflicting_node_ids:
+            raise ValueError(
+                "a graph sync cannot both change and remove the same node: "
+                f"{', '.join(conflicting_node_ids)}"
+            )
         return self
 
 
@@ -810,18 +821,35 @@ class ProjectService:
         _, result = self.history.append(patch)
         return result.state
 
-    def sync_graph(self, request: GraphSyncRequest) -> GraphState:
+    def sync_graph(
+        self,
+        request: GraphSyncRequest,
+        *,
+        active_control_node_ids: set[str],
+    ) -> GraphState:
         """Commit one project-wide human draft in one canonical transaction."""
 
         has_staged_work = (
-            any((request.nodes, request.proposals, request.ambiguities, request.custom_nodes))
+            any(
+                (
+                    request.nodes,
+                    request.proposals,
+                    request.ambiguities,
+                    request.custom_nodes,
+                    request.removed_node_ids,
+                )
+            )
             or request.ontology is not None
         )
         if not has_staged_work:
             return self.history.current_materialization().state
         try:
             _, result = self.history.append_batch_from_state(
-                lambda state: self._build_sync_patches(request, state),
+                lambda state: self._build_sync_patches(
+                    request,
+                    state,
+                    active_control_node_ids=active_control_node_ids,
+                ),
                 expected_revision=request.base_revision,
             )
         except ValueError as exc:
@@ -830,12 +858,26 @@ class ProjectService:
             raise
         return result.state
 
-    def _build_sync_patches(self, request: GraphSyncRequest, state: GraphState) -> list[Patch]:
+    def _build_sync_patches(
+        self,
+        request: GraphSyncRequest,
+        state: GraphState,
+        *,
+        active_control_node_ids: set[str],
+    ) -> list[Patch]:
         """Build one Sync from the same fresh state that history will append against."""
 
         ontology_changed = request.ontology is not None and request.ontology != state.ontology
         if (
-            not any((request.nodes, request.proposals, request.ambiguities, request.custom_nodes))
+            not any(
+                (
+                    request.nodes,
+                    request.proposals,
+                    request.ambiguities,
+                    request.custom_nodes,
+                    request.removed_node_ids,
+                )
+            )
             and not ontology_changed
         ):
             return []
@@ -913,14 +955,68 @@ class ProjectService:
                 )
             )
 
+        if request.removed_node_ids:
+            for node_id in request.removed_node_ids:
+                node = state.nodes.get(node_id)
+                if node is None:
+                    raise KeyError(node_id)
+                if node.standing == Standing.ACCEPTED:
+                    raise NodeEditConflict(
+                        f"Accepted node {node_id} cannot be removed; withdraw its acceptance "
+                        "and Sync before removing it."
+                    )
+                if node.type == "experiment":
+                    control = derive_experiment_control_state(
+                        state,
+                        node_id,
+                        active_control_node_ids=active_control_node_ids,
+                    )
+                    if control.active:
+                        raise NodeEditConflict(
+                            f"Experiment {node_id} cannot be removed while its bounded "
+                            "experiment loop is active."
+                        )
+            node_ids = list(request.removed_node_ids)
+            noun = "node" if len(node_ids) == 1 else "nodes"
+            patches.append(
+                Patch(
+                    kind="approval",
+                    author="human",
+                    summary=f"Removed {noun} {', '.join(node_ids)}.",
+                    ops=[{"op": "remove_nodes", "node_ids": node_ids}],
+                    change_summary=[f"Removed {noun} {', '.join(node_ids)}."],
+                )
+            )
+
+        removed_node_ids = set(request.removed_node_ids)
         for staged in request.proposals:
             proposal = state.proposals.get(staged.proposal_id)
             if proposal is None:
                 raise KeyError(staged.proposal_id)
             if proposal.status != "pending":
                 raise NodeEditConflict(f"Proposal {proposal.id} is no longer pending.")
-            if self._proposal_is_stale(state, proposal):
-                raise NodeEditConflict(f"Proposal {proposal.id} is stale; reload before syncing.")
+            stale_from_removal = bool(removed_node_ids.intersection(proposal.related_node_ids))
+            if self._proposal_is_stale(state, proposal) or stale_from_removal:
+                reason = (
+                    "Proposal became stale because a related node was removed in this Sync."
+                    if stale_from_removal
+                    else "Proposal was stale and was withdrawn without applying changes."
+                )
+                patches.append(
+                    Patch(
+                        kind="approval",
+                        author="human",
+                        summary=f"Withdrew stale proposal {proposal.id}.",
+                        ops=[
+                            {
+                                "op": "resolve_proposals",
+                                "resolutions": [{"id": proposal.id, "status": "withdrawn"}],
+                            }
+                        ],
+                        change_summary=[reason],
+                    )
+                )
+                continue
             standing = "accepted" if staged.decision == "approved" else "contested"
             semantic_ops = proposal.ops if staged.decision == "approved" else []
             standing_ops = [
@@ -1068,7 +1164,7 @@ class ProjectService:
         open_ids = {
             attempt.id
             for attempt in node.attempts
-            if attempt.status in {"planned", "submitted", "running"}
+            if attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES
         }
         unknown = sorted(set(attempt_ids) - open_ids)
         if unknown:

@@ -13,6 +13,7 @@ const server = await createServer({
 });
 const { RunDialog } = await server.ssrLoadModule("/src/components/RunDialog.tsx");
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
+const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
 const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
 const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/components/DraggableWindow.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
@@ -223,7 +224,7 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
   assert.match(html, /Ask about this node/);
 });
 
-test("node standing action switches between green Agree and red Contest", () => {
+test("node standing presents Contest and Agree as independent three-state toggles", () => {
   const baseNode = {
     id: "hyp/demo",
     type: "hypothesis",
@@ -233,7 +234,7 @@ test("node standing action switches between green Agree and red Contest", () => 
     source_refs: [],
     extension_fields: {},
   };
-  const renderNode = (standing) =>
+  const renderNode = (standing, props = {}) =>
     renderToStaticMarkup(
       React.createElement(DetailDrawer, {
         node: { ...baseNode, standing },
@@ -251,6 +252,7 @@ test("node standing action switches between green Agree and red Contest", () => 
         onOpenChat() {},
         onExploreRelations() {},
         onSelectNode() {},
+        ...props,
       }),
     );
 
@@ -259,14 +261,161 @@ test("node standing action switches between green Agree and red Contest", () => 
   try {
     const asserted = renderNode("asserted");
     assert.match(asserted, /data-text-selectable="true"/);
-    assert.match(asserted, /class="button judgment node-standing-toggle agree"/);
+    assert.match(
+      asserted,
+      /class="button judgment node-standing-toggle contest"[^>]*aria-pressed="false"/,
+    );
+    assert.match(
+      asserted,
+      /class="button judgment node-standing-toggle agree"[^>]*aria-pressed="false"/,
+    );
+    assert.match(asserted, />Contest<\/button>/);
     assert.match(asserted, />Agree<\/button>/);
-    assert.doesNotMatch(asserted, />Contest<\/button>/);
 
     const accepted = renderNode("accepted");
-    assert.match(accepted, /class="button judgment node-standing-toggle contest"/);
+    assert.match(
+      accepted,
+      /class="button judgment node-standing-toggle contest"[^>]*aria-pressed="false"/,
+    );
+    assert.match(
+      accepted,
+      /class="button judgment node-standing-toggle agree selected agree"[^>]*aria-pressed="true"/,
+    );
     assert.match(accepted, />Contest<\/button>/);
-    assert.doesNotMatch(accepted, />Agree<\/button>/);
+    assert.match(accepted, />Agree<\/button>/);
+
+    const stagedAccepted = renderNode("accepted", { canonicalStanding: "asserted" });
+    assert.match(stagedAccepted, />accepted · staged<\/span>/);
+
+    const contested = renderNode("contested");
+    assert.match(
+      contested,
+      /class="button judgment node-standing-toggle contest selected disagree"[^>]*aria-pressed="true"/,
+    );
+    assert.match(
+      contested,
+      /class="button judgment node-standing-toggle agree"[^>]*aria-pressed="false"/,
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("proposal decisions present Reject and Approve as independent three-state toggles", () => {
+  const proposal = {
+    id: "prop/example",
+    title: "Choose the next experiment",
+    base_rev: 4,
+    card: {
+      situation_cold: "Two experiment paths remain plausible.",
+      why_human_now: "The next run depends on this choice.",
+      consequences: "One path becomes the active plan.",
+      decision_needed: "Approve or reject the proposed path.",
+    },
+  };
+  const renderProposal = (decision) =>
+    renderToStaticMarkup(
+      React.createElement(ProposalJudgmentSection, {
+        proposals: [proposal],
+        draft: decision ? { proposals: { [proposal.id]: { decision } } } : null,
+        onDecision() {},
+      }),
+    );
+
+  const undecided = renderProposal(null);
+  assert.match(
+    undecided,
+    /class="button judgment proposal-decision-toggle reject"[^>]*aria-pressed="false"/,
+  );
+  assert.match(
+    undecided,
+    /class="button judgment proposal-decision-toggle approve"[^>]*aria-pressed="false"/,
+  );
+  assert.match(undecided, />Reject<\/button>/);
+  assert.match(undecided, />Approve<\/button>/);
+
+  const approved = renderProposal("approved");
+  assert.match(
+    approved,
+    /class="button judgment proposal-decision-toggle reject"[^>]*aria-pressed="false"/,
+  );
+  assert.match(
+    approved,
+    /class="button judgment proposal-decision-toggle approve selected agree"[^>]*aria-pressed="true"/,
+  );
+  assert.match(approved, /Pending · staged approved/);
+
+  const rejected = renderProposal("rejected");
+  assert.match(
+    rejected,
+    /class="button judgment proposal-decision-toggle reject selected disagree"[^>]*aria-pressed="true"/,
+  );
+  assert.match(
+    rejected,
+    /class="button judgment proposal-decision-toggle approve"[^>]*aria-pressed="false"/,
+  );
+  assert.match(rejected, /Pending · staged rejected/);
+});
+
+test("node removal is separate, guarded by canonical truth and active loops, and remains visible", () => {
+  const node = {
+    id: "hyp/remove",
+    type: "hypothesis",
+    title: "Remove this hypothesis",
+    standing: "contested",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const renderNode = (props = {}) =>
+    renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        edges: [{ id: "edge/1", source: node.id, target: "hyp/other" }],
+        allNodes: { [node.id]: node },
+        glossary: {},
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        onClose() {},
+        onDock() {},
+        onBeginEdit() {},
+        onStanding() {},
+        onStage() {},
+        onRemove() {},
+        onUndoRemoval() {},
+        onOpenChat() {},
+        onExploreRelations() {},
+        onSelectNode() {},
+        ...props,
+      }),
+    );
+
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    const removable = renderNode();
+    assert.match(removable, /Remove node…<\/button>/);
+    assert.match(removable, /class="node-removal-confirmation" role="alert" hidden=""/);
+    assert.match(removable, /Remove <strong>“Remove this hypothesis”<\/strong>\?/);
+    assert.match(removable, /Sync will remove it and 1 connected relation\./);
+    assert.match(removable, />Cancel<\/button>/);
+    assert.match(removable, />Confirm remove<\/button>/);
+
+    const accepted = renderNode({ canonicalStanding: "accepted" });
+    assert.match(accepted, /Clear or contest this accepted node and Sync before removing it\./);
+    assert.match(accepted, /<button[^>]*disabled=""[^>]*>.*Remove node…<\/button>/s);
+
+    const active = renderNode({ experimentControl: { active: true } });
+    assert.match(active, /bounded experiment loop is active/);
+
+    const staged = renderNode({ stagedForRemoval: true });
+    assert.match(staged, /Removal staged\./);
+    assert.match(staged, /Sync will remove this node and 1 connected relation\./);
+    assert.match(staged, />Undo<\/button>/);
+    assert.match(staged, /aria-pressed="true" disabled=""/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

@@ -264,6 +264,7 @@ def _validate_proposal_ops(
     replay_report = ValidationReport()
     replay_context = OpContext(
         state=synthetic_state,
+        initial_state=synthetic_state,
         patch=synthetic_patch,
         report=replay_report,
         revision=revision,
