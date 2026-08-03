@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  chatConfigStorageKey,
   chatDraftStorageKey,
   chatIdForTask,
   chatIndicator,
@@ -16,7 +15,6 @@ import {
   latestPersistedConversationMode,
   newlyUnreadChatTaskIds,
   parseConversationMode,
-  parseStoredAgentRunConfig,
   toggleConversationMode,
 } from "../src/chatWorkspace.ts";
 
@@ -199,7 +197,6 @@ test("a completion is unread unless its exact conversation is selected and visib
 test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
   assert.equal(chatDraftStorageKey("project", "chat"), "rcp:chat-draft:project:chat");
   assert.equal(chatModeStorageKey("project", "chat"), "rcp:chat-mode:project:chat");
-  assert.equal(chatConfigStorageKey("project", "chat"), "rcp:chat-config:project:chat");
   assert.equal(toggleConversationMode("discuss"), "work");
   assert.equal(toggleConversationMode("work"), "discuss");
   assert.equal(isConversationModeShortcut("Tab", true), true);
@@ -209,11 +206,10 @@ test("conversation mode controls have stable storage keys and Shift+Tab semantic
   assert.equal(parseConversationMode("legacy"), null);
 });
 
-test("chat provider configuration follows the persisted conversation", () => {
+test("chat provider configuration follows the persisted conversation over the project fallback", () => {
   const fallback = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
   const claude = { provider: "claude", model: "opus", reasoning: "high", run_on: "local" };
-  assert.deepEqual(parseStoredAgentRunConfig(JSON.stringify(claude)), claude);
-  assert.equal(parseStoredAgentRunConfig("not json"), null);
+  assert.deepEqual(latestPersistedChatConfig([], [], fallback), fallback);
   assert.deepEqual(
     latestPersistedChatConfig(
       [

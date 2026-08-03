@@ -33,40 +33,6 @@ export function chatModeStorageKey(projectId: string, chatId: string): string {
   return `rcp:chat-mode:${projectId}:${chatId}`;
 }
 
-export function chatConfigStorageKey(projectId: string, chatId: string): string {
-  return `rcp:chat-config:${projectId}:${chatId}`;
-}
-
-export function parseStoredAgentRunConfig(value: string | null): AgentRunConfig | null {
-  if (!value) return null;
-  try {
-    return parseAgentRunConfig(JSON.parse(value));
-  } catch {
-    return null;
-  }
-}
-
-export function parseAgentRunConfig(value: unknown): AgentRunConfig | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.provider !== "string" ||
-    !record.provider.trim() ||
-    typeof record.model !== "string" ||
-    typeof record.reasoning !== "string" ||
-    typeof record.run_on !== "string" ||
-    !record.run_on.trim()
-  ) {
-    return null;
-  }
-  return {
-    provider: record.provider,
-    model: record.model,
-    reasoning: record.reasoning,
-    run_on: record.run_on,
-  };
-}
-
 export function parseConversationMode(value: unknown): ConversationMode | null {
   return value === "discuss" || value === "work" ? value : null;
 }

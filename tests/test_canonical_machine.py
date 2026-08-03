@@ -68,3 +68,30 @@ def test_runtime_override_cannot_move_graph_agent(manifest, tmp_path) -> None:
 
     coach = service.resolve_agent_profile("paper_coach", run_on="remote")
     assert coach.run_on == "remote"
+
+
+def test_provider_override_does_not_inherit_previous_provider_model(manifest, tmp_path) -> None:
+    stored = manifest.agent_profile("project_chat")
+    manifest.agent.project_chat = stored.model_copy(
+        update={"provider": "codex", "model": "gpt-5.6-luna"}
+    )
+    history = HistoryManager(manifest)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    paper = PaperService(manifest, store, history.workspace, project_id="project")
+    service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
+
+    provider_default = service.resolve_agent_profile(
+        "project_chat",
+        provider="claude",
+        model=None,
+    )
+    explicit = service.resolve_agent_profile(
+        "project_chat",
+        provider="claude",
+        model="claude-opus-4-1",
+    )
+
+    assert provider_default.provider == "claude"
+    assert provider_default.model == ""
+    assert explicit.provider == "claude"
+    assert explicit.model == "claude-opus-4-1"

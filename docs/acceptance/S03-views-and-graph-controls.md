@@ -27,11 +27,11 @@ There is no backend fact to fall back on.
 ## Setup
 
 A temporary copy of the demo project, opened against a data directory that
-already holds run history: at least one failed run, one paused run, one blocked
-run, and one retry with its parent. Runs are rows in the app database, not files
-in the state repository, so a fresh copy of the demo project has none of them and
-step 2 below would have nothing to sort — produce them beforehand with a fake
-agent.
+already holds ingestion-run history: at least one failed Seed or Refresh, one
+paused Seed or Refresh, and one retry with its parent. The graph also has an open
+Blocker. Runs are rows in the app database, not files in the state repository,
+so a fresh copy of the demo project has none of them and step 2 below would have
+nothing to sort — produce them beforehand with a fake agent.
 
 No agent runs during the drive itself.
 
@@ -39,8 +39,9 @@ No agent runs during the drive itself.
 
 1. Open the project. The **Research** projection renders — question-centered
    paths, with unconnected records separated out.
-2. Switch to **Runs**. Failed, paused, and blocked work sorts to the top;
-   retries nest under what they retried.
+2. Switch to **Runs**. Failed and paused ingestion work plus graph Blockers sort
+   into **Needs action**; retries nest under what they retried. Chat and
+   paper-coach tasks do not appear.
 3. Back to Research. Open the DAG's **Research flow** columns.
 4. Drag a node well away from where the layout put it. Pin it.
 5. Switch views and come back.
@@ -56,7 +57,8 @@ No agent runs during the drive itself.
 ## Assert
 
 - `both_projections_render`
-- `runs_view_prioritizes_unfinished` — failed/paused/blocked above the rest
+- `runs_view_prioritizes_unfinished_ingestion` — failed/paused Seed and Refresh
+  attempts plus graph Blockers appear above the rest; chat tasks stay out
 - `runs_view_as_of_time_is_truthful` — the timestamp reflects the data, not the
   render
 - `research_flow_columns_follow_semantic_stage` — not relation-arrow direction

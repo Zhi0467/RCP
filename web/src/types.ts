@@ -1,15 +1,7 @@
 export type Standing = "asserted" | "accepted" | "contested";
 export type TrustView = "working" | "accepted" | "review";
 export type AppView =
-  | "overview"
-  | "attention"
-  | "scientific"
-  | "dag"
-  | "execution"
-  | "glossary"
-  | "paper"
-  | "settings"
-  | "chats";
+  "overview" | "attention" | "scientific" | "dag" | "execution" | "paper" | "settings" | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentTaskKind = AgentSurface;
 export type AgentTaskStatus =
@@ -350,6 +342,15 @@ export interface GraphUpdateResult {
   validation_messages: string[];
   correction_rounds: number;
   repairable: boolean;
+}
+
+export interface RevisionSummary {
+  from_revision: number;
+  to_revision: number;
+  kind: "seed" | "refresh" | "chat" | "work" | "experiment_loop" | "approval";
+  author: "agent" | "human";
+  created_at: string;
+  sentences: string[];
 }
 
 export interface AgentTaskResult {

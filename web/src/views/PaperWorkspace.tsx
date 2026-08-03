@@ -12,7 +12,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agentTasks";
 import { api } from "../api";
-import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
+import { MarkdownAnswer } from "../chatMarkdown";
+import { profileRunConfig } from "../components/AgentConfigControls";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -37,6 +38,9 @@ const MAX_EDITOR_SHARE = 70;
 const MIN_EDITOR_WIDTH = 360;
 const MIN_COACH_WIDTH = 320;
 const DIVIDER_WIDTH = 9;
+const PAPER_VIEW_STORAGE_PREFIX = "rcp:paper-view";
+
+type PaperView = "write" | "preview";
 
 interface EditorShareBounds {
   minimum: number;
@@ -58,6 +62,16 @@ function editorShareBoundsForWidth(width: number): EditorShareBounds {
 
 function clampEditorShare(value: number, bounds: EditorShareBounds): number {
   return Math.min(bounds.maximum, Math.max(bounds.minimum, value));
+}
+
+function storedPaperView(projectId: string): PaperView {
+  try {
+    return localStorage.getItem(`${PAPER_VIEW_STORAGE_PREFIX}:${projectId}`) === "preview"
+      ? "preview"
+      : "write";
+  } catch {
+    return "write";
+  }
 }
 
 export function PaperWorkspace({
@@ -85,6 +99,7 @@ export function PaperWorkspace({
   );
   const [message, setMessage] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [paperView, setPaperView] = useState<PaperView>(() => storedPaperView(project.id));
   const [editorShare, setEditorShare] = useState(62);
   const [editorShareBounds, setEditorShareBounds] = useState<EditorShareBounds>({
     minimum: MIN_EDITOR_SHARE,
@@ -258,6 +273,12 @@ export function PaperWorkspace({
     if (!bounds) return;
     setEditorShare(constrainEditorShare(((clientX - bounds.left) / bounds.width) * 100));
   };
+  const selectPaperView = (next: PaperView) => {
+    setPaperView(next);
+    try {
+      localStorage.setItem(`${PAPER_VIEW_STORAGE_PREFIX}:${project.id}`, next);
+    } catch {}
+  };
 
   const paperCreated = paper.sync_state !== "not_created";
   useEffect(() => {
@@ -312,6 +333,18 @@ export function PaperWorkspace({
     >
       <div className="paper-editor-column">
         <header className="paper-toolbar">
+          <div className="paper-view-toggle" role="group" aria-label="Paper view">
+            {(["write", "preview"] as const).map((view) => (
+              <button
+                aria-pressed={paperView === view}
+                key={view}
+                onClick={() => selectPaperView(view)}
+                type="button"
+              >
+                {view === "write" ? "Write" : "Preview"}
+              </button>
+            ))}
+          </div>
           <div className="paper-status">
             <span>{wordCount} words</span>
             <span className={`sync-state ${saveError ? "save-error" : paper.sync_state}`}>
@@ -354,18 +387,27 @@ export function PaperWorkspace({
             </button>
           </div>
         )}
-        <textarea
-          ref={textarea}
-          className="markdown-editor"
-          aria-label="Paper introduction Markdown"
-          spellCheck
-          value={content}
-          onChange={(event) => {
-            setContent(event.target.value);
-            setDirty(true);
-            setSaveError(null);
-          }}
-        />
+        {paperView === "write" ? (
+          <textarea
+            ref={textarea}
+            className="markdown-editor"
+            aria-label="Paper introduction Markdown"
+            spellCheck
+            value={content}
+            onChange={(event) => {
+              setContent(event.target.value);
+              setDirty(true);
+              setSaveError(null);
+            }}
+          />
+        ) : (
+          <article
+            aria-label="Paper introduction preview"
+            className="markdown-editor paper-markdown-preview chat-markdown"
+          >
+            <MarkdownAnswer text={content} />
+          </article>
+        )}
       </div>
 
       <div
@@ -453,15 +495,12 @@ export function PaperWorkspace({
           </div>
         </details>
 
-        <AgentConfigControls
-          project={project}
-          value={config}
-          onChange={setConfig}
-          locked={Boolean(activeSession || activeTask)}
-          compact
-          collapsible
-          defaultCollapsed
-        />
+        <div
+          className="agent-provider-label"
+          aria-label={`Writing coach provider: ${readiness?.label || config.provider}`}
+        >
+          {readiness?.label || config.provider}
+        </div>
         {reviewStale && (
           <div className="stale-review">
             <AlertTriangle size={14} /> Project understanding changed since this session reviewed

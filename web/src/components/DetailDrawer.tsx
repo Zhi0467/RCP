@@ -11,7 +11,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { GlossaryIndex } from "../glossary";
 import { DraggableWindow } from "./DraggableWindow";
+import { GlossaryText } from "./GlossaryText";
 import {
   changedNodeFields,
   editableNodeFields,
@@ -20,18 +22,11 @@ import {
 } from "../nodeEditing";
 import type { DraftNodeValue } from "../humanDraft";
 import { beliefCausePresentation, edgeValidationFlags, nodeBeliefTransitions } from "../nodeDetail";
-import {
-  glossaryTermsForNode,
-  humanFieldLabels,
-  humanize,
-  nodeTypeLabel,
-  presentNode,
-} from "../nodePresentation";
+import { humanFieldLabels, humanize, nodeTypeLabel, presentNode } from "../nodePresentation";
 import type {
   BeliefTransition,
   Edge,
   ExperimentControlState,
-  GlossaryTerm,
   GraphNode,
   OntologyState,
   ValidationMessage,
@@ -41,10 +36,11 @@ interface Props {
   node: GraphNode;
   edges: Edge[];
   allNodes: Record<string, GraphNode>;
-  glossary: Record<string, GlossaryTerm>;
+  glossaryIndex: GlossaryIndex;
   beliefTransitions: BeliefTransition[];
   validationMessages: ValidationMessage[];
   ontology: OntologyState;
+  sizeStorageKey?: string;
   mutationsDisabled?: boolean;
   stagedNewNode?: boolean;
   stagedForRemoval?: boolean;
@@ -94,10 +90,11 @@ export function DetailDrawer({
   node,
   edges,
   allNodes,
-  glossary,
+  glossaryIndex,
   beliefTransitions,
   validationMessages,
   ontology,
+  sizeStorageKey,
   mutationsDisabled = false,
   stagedNewNode = false,
   stagedForRemoval = false,
@@ -213,7 +210,6 @@ export function DetailDrawer({
   };
   const transitions = nodeBeliefTransitions(node.id, beliefTransitions);
   const presentation = presentNode(node);
-  const definitions = glossaryTermsForNode(node, glossary);
   const presentedKeys = new Set([
     presentation.key,
     ...presentation.context.map((item) => item.key),
@@ -223,7 +219,12 @@ export function DetailDrawer({
   );
   const fullscreenTarget = typeof document === "undefined" ? null : document.fullscreenElement;
   const drawer = (
-    <DraggableWindow className="node-detail-window" kind="detail">
+    <DraggableWindow
+      className="node-detail-window"
+      kind="detail"
+      resizable
+      sizeStorageKey={sizeStorageKey}
+    >
       <aside
         className={`detail-drawer node-detail-drawer${node.draft_touched ? " draft-touched" : ""}`}
         role="dialog"
@@ -233,7 +234,9 @@ export function DetailDrawer({
         <header data-drag-handle="true">
           <div data-text-selectable="true">
             <span className="eyebrow">{nodeTypeLabel(node)}</span>
-            <h2 id="drawer-title">{node.title}</h2>
+            <h2 id="drawer-title">
+              <GlossaryText text={node.title} glossaryIndex={glossaryIndex} />
+            </h2>
             <div className="node-meta">
               <span className="mono">{node.id}</span>
               <span className={`standing ${node.standing}`}>
@@ -339,7 +342,7 @@ export function DetailDrawer({
             <>
               <section className="node-lead">
                 <span className="eyebrow">{presentation.label}</span>
-                <p>{formatValue(presentation.value)}</p>
+                <p>{formatValue(presentation.value, glossaryIndex)}</p>
               </section>
 
               {node.type === "experiment" && experimentControl && onRunExperiment && (
@@ -429,21 +432,7 @@ export function DetailDrawer({
                     {presentation.context.map((item) => (
                       <div key={item.key}>
                         <dt>{item.label}</dt>
-                        <dd>{formatValue(item.value)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </section>
-              )}
-
-              {definitions.length > 0 && (
-                <section className="node-glossary">
-                  <h3>Terms used here</h3>
-                  <dl>
-                    {definitions.map((term) => (
-                      <div key={term.term}>
-                        <dt>{term.term}</dt>
-                        <dd>{term.plain_definition}</dd>
+                        <dd>{formatValue(item.value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -487,7 +476,7 @@ export function DetailDrawer({
                     {Object.entries(node.extension_fields).map(([key, value]) => (
                       <div key={key}>
                         <dt>{humanize(key)}</dt>
-                        <dd>{formatValue(value)}</dd>
+                        <dd>{formatValue(value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -542,7 +531,7 @@ export function DetailDrawer({
                     {details.map(([key, value]) => (
                       <div key={key}>
                         <dt>{humanFieldLabels[key] ?? humanize(key)}</dt>
-                        <dd>{formatValue(value)}</dd>
+                        <dd>{formatValue(value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -716,16 +705,16 @@ function nodeEditFieldError(field: NodeEditField, value: string): string | null 
   return null;
 }
 
-function formatValue(value: unknown): React.ReactNode {
+function formatValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {
   if (Array.isArray(value))
     return (
       <ul>
         {value.map((item, index) => (
-          <li key={index}>{formatValue(item)}</li>
+          <li key={index}>{formatValue(item, glossaryIndex)}</li>
         ))}
       </ul>
     );
   if (typeof value === "object" && value !== null)
     return <pre>{JSON.stringify(value, null, 2)}</pre>;
-  return String(value);
+  return <GlossaryText text={String(value)} glossaryIndex={glossaryIndex} />;
 }

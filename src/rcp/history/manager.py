@@ -20,6 +20,7 @@ from rcp.config import (
     write_project_scope,
 )
 from rcp.core.materialize import (
+    AcceptedPatchObserver,
     MaterializationResult,
     apply_valid_patch,
     materialize_patches,
@@ -28,7 +29,12 @@ from rcp.core.materialize import (
 from rcp.core.models import GraphState, Patch
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import ValidationReport, validate_patch
-from rcp.history.delta import RefreshDelta, build_refresh_delta
+from rcp.history.delta import (
+    RefreshDelta,
+    RevisionSummary,
+    build_refresh_delta,
+    render_revision_summary,
+)
 from rcp.providers import ProviderId
 from rcp.transport import (
     BatchPublishFailed,
@@ -484,10 +490,17 @@ class HistoryManager:
         *,
         write_outputs: bool = True,
         pending_patch_paths: list[Path] | None = None,
+        accepted_patch_observer: AcceptedPatchObserver | None = None,
     ) -> MaterializationResult:
         with self._process_lock:
             self.ensure_layout()
-            result = self._replay(pending_patch_paths)
+            if accepted_patch_observer is None:
+                result = self._replay(pending_patch_paths)
+            else:
+                result = self._replay(
+                    pending_patch_paths,
+                    accepted_patch_observer=accepted_patch_observer,
+                )
             if write_outputs:
                 self._write_materialized_outputs(result)
             return result
@@ -526,7 +539,12 @@ class HistoryManager:
             return None
         return result
 
-    def _replay(self, pending_patch_paths: list[Path] | None = None) -> MaterializationResult:
+    def _replay(
+        self,
+        pending_patch_paths: list[Path] | None = None,
+        *,
+        accepted_patch_observer: AcceptedPatchObserver | None = None,
+    ) -> MaterializationResult:
         pending = pending_patch_paths or []
         patch_paths = sorted(
             [*self._patch_paths(), *pending],
@@ -543,6 +561,7 @@ class HistoryManager:
             machine_aliases=sorted(self.manifest.machine_map),
             default_run_truth_scope=list(self.manifest.agent.default_run_truth_scope),
             state_repository=self.manifest.state.repository,
+            accepted_patch_observer=accepted_patch_observer,
         )
 
     def _write_materialized_outputs(self, result: MaterializationResult) -> None:
@@ -587,6 +606,29 @@ class HistoryManager:
                 for patch in self.load_patches()
                 if from_revision <= patch.revision <= end
             ]
+
+    def revision_summaries(
+        self,
+        from_revision: int = 1,
+        to_revision: int | None = None,
+    ) -> list[dict[str, object]]:
+        """Return a reader-facing projection without changing the raw history contract."""
+
+        with self._process_lock:
+            with suppress(StateUnavailable):
+                self.workspace.refresh_if_stale()
+            end = to_revision if to_revision is not None else 10**12
+            summaries: list[RevisionSummary] = []
+
+            def collect(previous_state: GraphState, patch: Patch, state: GraphState) -> None:
+                if from_revision <= patch.revision <= end:
+                    summaries.append(render_revision_summary(previous_state, patch, state))
+
+            self.materialize(
+                write_outputs=False,
+                accepted_patch_observer=collect,
+            )
+            return [item.model_dump(mode="json") for item in summaries]
 
     def _next_revision(self) -> int:
         paths = self._patch_paths()

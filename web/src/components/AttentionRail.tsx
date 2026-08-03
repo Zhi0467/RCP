@@ -1,9 +1,12 @@
 import { AlertTriangle, ArrowRight, Check, MessageSquareText, X } from "lucide-react";
+import type { GlossaryIndex } from "../glossary";
 import type { AmbiguityDecision, HumanDraft, ProposalDecision } from "../humanDraft";
 import type { Ambiguity, GraphNode, Proposal } from "../types";
+import { GlossaryText } from "./GlossaryText";
 
 interface ProposalJudgmentSectionProps {
   proposals: Proposal[];
+  glossaryIndex: GlossaryIndex;
   draft: HumanDraft | null;
   mutationsDisabled?: boolean;
   onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
@@ -20,6 +23,7 @@ interface AttentionRailProps {
 
 export function ProposalJudgmentSection({
   proposals,
+  glossaryIndex,
   draft,
   mutationsDisabled = false,
   onDecision,
@@ -45,29 +49,51 @@ export function ProposalJudgmentSection({
               </span>
               <span className="mono">rev {proposal.base_rev}</span>
             </div>
-            <h3>{proposal.title}</h3>
+            <h3>
+              <GlossaryText text={proposal.title} glossaryIndex={glossaryIndex} />
+            </h3>
             <dl className="card-brief">
               <div>
                 <dt>The situation, cold</dt>
                 <dd>
-                  {proposal.card.situation_cold ||
-                    "The agent did not supply a cold-readable summary."}
+                  <GlossaryText
+                    text={
+                      proposal.card.situation_cold ||
+                      "The agent did not supply a cold-readable summary."
+                    }
+                    glossaryIndex={glossaryIndex}
+                  />
                 </dd>
               </div>
               <div>
                 <dt>Why you, why now</dt>
                 <dd>
-                  {proposal.card.why_human_now || "Human authority is required by the gate set."}
+                  <GlossaryText
+                    text={
+                      proposal.card.why_human_now || "Human authority is required by the gate set."
+                    }
+                    glossaryIndex={glossaryIndex}
+                  />
                 </dd>
               </div>
               <div>
                 <dt>If accepted</dt>
-                <dd>{proposal.card.consequences || "Consequences were not made explicit."}</dd>
+                <dd>
+                  <GlossaryText
+                    text={proposal.card.consequences || "Consequences were not made explicit."}
+                    glossaryIndex={glossaryIndex}
+                  />
+                </dd>
               </div>
               <div>
                 <dt>Decision needed</dt>
                 <dd>
-                  {proposal.card.decision_needed || "Approve or reject the stored operation."}
+                  <GlossaryText
+                    text={
+                      proposal.card.decision_needed || "Approve or reject the stored operation."
+                    }
+                    glossaryIndex={glossaryIndex}
+                  />
                 </dd>
               </div>
             </dl>

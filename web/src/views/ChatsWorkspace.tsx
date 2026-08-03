@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight, Circle, LoaderCircle, MessageCircle } from "
 import { useEffect, useRef, useState } from "react";
 import { isActiveTask } from "../agentTasks";
 import { conversationHasUnread, type ChatConversation } from "../chatWorkspace";
+import type { GlossaryIndex } from "../glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,
   CHAT_LIST_COLLAPSED_WIDTH,
@@ -27,6 +28,7 @@ interface Props {
   conversations: ChatConversation[];
   selectedChatId: string | null;
   nodes: Record<string, GraphNode>;
+  glossaryIndex: GlossaryIndex;
   runScope: string[];
   tasks: AgentTask[];
   activeTask: AgentTask | null;
@@ -80,6 +82,7 @@ export function ChatsWorkspace({
   conversations,
   selectedChatId,
   nodes,
+  glossaryIndex,
   runScope,
   tasks,
   activeTask,
@@ -319,6 +322,7 @@ export function ChatsWorkspace({
             project={project}
             node={selected.nodeId ? (nodes[selected.nodeId] ?? null) : null}
             nodes={nodes}
+            glossaryIndex={glossaryIndex}
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
             runScope={runScope}
             tasks={tasks}

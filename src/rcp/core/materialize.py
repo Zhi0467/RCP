@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +30,7 @@ from rcp.core.validation import (
 )
 
 NODE_ADAPTER = TypeAdapter(ProjectNode)
+AcceptedPatchObserver = Callable[[GraphState, Patch, GraphState], None]
 
 
 @dataclass
@@ -47,7 +48,10 @@ def materialize_patches(
     machine_aliases: Iterable[str] | None = None,
     default_run_truth_scope: Iterable[str] | None = None,
     state_repository: str | None = None,
+    accepted_patch_observer: AcceptedPatchObserver | None = None,
 ) -> MaterializationResult:
+    """Replay patches, optionally observing successful applications through a read-only callback."""
+
     initial_scope = list(initial_truth_scope)
     state = GraphState(project_truth_scope=initial_scope)
     state.coverage = state.coverage.model_copy(
@@ -88,7 +92,8 @@ def materialize_patches(
                 message=failure.message,
             )
             break
-        candidate = _fork_state(state)
+        previous_state = state
+        candidate = _fork_state(previous_state)
         candidate_descriptors: list[dict[str, str]] = []
         try:
             _apply_patch(candidate, patch, candidate_descriptors)
@@ -110,6 +115,8 @@ def materialize_patches(
         descriptors.extend(candidate_descriptors)
         processed_cursors.update(patch.processed_cursors)
         state.validation_messages.extend(patch.admission_messages)
+        if accepted_patch_observer is not None:
+            accepted_patch_observer(previous_state, patch, state)
 
     return MaterializationResult(
         state=state,

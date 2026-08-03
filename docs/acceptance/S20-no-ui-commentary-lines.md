@@ -25,14 +25,15 @@ point. Restating what the nav tab already said is.
 
 **A panel opened from a named tab does not reintroduce itself.** The tab is the
 title. A heading earns its place only by adding a word that means something —
-"Research paths" over a tab named Research is fine; "Glossary" over a tab named
-Glossary is not.
+"Research paths" over a tab named Research is fine; "Runs" over a tab named
+Runs is not.
 
 ## UI path — confirmed 2026-07-30
 
 This rule applies to every RCP surface: the project index, project setup,
-overview, Research and Runs projections, DAG, glossary and attention views,
-settings, run and task dialogs, detail drawers, chat, and the paper workspace.
+overview, Research and Runs projections, DAG, attention and inline glossary
+definitions, settings, run and task dialogs, detail drawers, chat, and the paper
+workspace.
 
 Remove helper subtitles and descriptive commentary lines beneath primary UI
 elements. Do not replace them with tooltips, placeholder text, empty-state
@@ -49,8 +50,8 @@ accessibility labels remain explicit.
 1. Open the project index and inspect existing project cards and the new-project
    action.
 2. Walk through every step of project setup.
-3. Open a project and visit Overview, Research, Runs, DAG, Glossary, Attention,
-   Paper, and Settings.
+3. Open a project and visit Overview, Research, Runs, DAG, Attention, Paper, and
+   Settings.
 4. Open the run dialog, task activity and inspector, a node detail drawer, node
    and project chat, and the paper coach.
 5. Trigger one validation error or conflict and inspect one active or completed

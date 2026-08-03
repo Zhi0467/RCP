@@ -431,6 +431,11 @@ none locally testable, none linted or typechecked, drifting as they multiply.
 So skills ship as real files on disk under `src/rcp/skills/<skill-id>/` and are
 staged as files. Do not start them as embedded strings.
 
+Because these folders contain non-Python resources, implementation must add
+them explicitly to wheel/package data and prove their presence by inspecting a
+built wheel installed without the source checkout. An editable install passing
+is not packaging evidence.
+
 **The transport already supports this.** `RemoteRunStage.put_directory(source,
 label)` exists at [run_stage.py:153](../src/rcp/transport/run_stage.py). Stage
 the skill folder with it rather than inventing per-file staging.
@@ -438,7 +443,10 @@ the skill folder with it rather than inventing per-file staging.
 **Register in one module.** Following the [`providers.py`](../src/rcp/providers.py)
 pattern — id, label, version, one-line when-to-use, folder path, and which
 surfaces receive it, all in one place, imperative parts included. Do not scatter
-skill definitions across the modules that invoke them.
+skill definitions across the modules that invoke them. Receiving surfaces in
+the registry are an allowlist, not a policy dispatcher: Work, Seed, and Refresh
+callers request their skills explicitly, and no shared helper accepts a
+`kind`/`surface` discriminator.
 
 ### First skill: the graph scanner
 
@@ -452,13 +460,26 @@ the scenario or they will merge into each other:
 | | Validator ([patch_validator.py](../src/rcp/runs/patch_validator.py)) | Graph scanner |
 |---|---|---|
 | Question | Will RCP accept this patch? | Should it have been written this way? |
-| Nature | Mandatory, blocking, RCP-owned semantics | Advisory, agent-invoked |
-| Output | valid / invalid / unavailable, exit codes matter | A report the agent reads and acts on |
+| Nature | Mandatory, blocking, RCP-owned semantics | Required by the initial-run prompt, advisory, agent-invoked |
+| Output | valid / invalid / unavailable, exit codes matter | clean / findings / unavailable; missing invocation is recorded separately |
 
 Share the staging and request/response plumbing. Do **not** fold the scanner's
 judgment into the validator's verdict — a badly attached but legal patch must
 still be applyable, or advisory quality checks become a hard gate nobody
 intended.
+
+The required invocation is deliberately a prompt-enforced contract when staging
+succeeds. RCP records that the agent did not run it, but a missing report is not
+a validation failure. A staging failure omits the advisory step and still
+launches the graph-writing task. Staging, transport, runtime, malformed-output,
+timeout, and bounded-size failures are recorded as `unavailable`, never scanner
+findings. When implemented, the report size bound belongs in central
+`src/rcp/limits.py`, not beside a consumer.
+
+The requirement applies to the initial Work, Seed, or Refresh launch only. A
+scanner-driven edit stays inside that launch and the same `patch.json`; neither
+`work_patch_correction` nor generic Seed/Refresh correction relaunches rerun the
+scanner or spend scanning against the correction budget.
 
 **What it should catch** — grounded in what the fixture project actually shows:
 a research question with no attached nodes while hypotheses that answer it hang
@@ -466,31 +487,14 @@ off a different question; fourteen sibling Decisions under one question with no
 grouping; nodes whose prose only makes sense to someone who already knows the
 project.
 
-### Invariants this must respect
-
-- **Invariant 3.** Agents assert or propose; humans hold authority. "Drop this
-  node" and "merge these two" are *proposals*, never assertions. Node removal
-  already has a scenario in flight —
-  [`docs/acceptance/S52-explicit-rejection-and-node-removal.md`](acceptance/S52-explicit-rejection-and-node-removal.md)
-  — read it first and stay consistent with it.
-- **Invariant 4b.** One way to get a patch out of an agent. A skill's output is
-  a report the agent reads, or operations in the same `patch.json`. Never a
-  second graph-change channel.
-- **Invariant 10.** Skills belong to specific run policies. No shared helper may
-  take a `kind`/`surface` parameter to decide which skills to stage — that
-  decision is policy and belongs in the caller.
-- **Permission contracts** are fixed by capability
-  ([config.py](../src/rcp/config.py) `permissions_for()`). A skill cannot widen
-  what its surface may do. Decide explicitly which patch-writing surfaces get
-  the scanner: Work, and/or Seed/Refresh, whose permissions differ.
-
 **Invariants this must respect.**
 
-- **Invariant 3.** Agents assert or propose; humans hold authority. "This node
-  should be dropped" and "these two should be merged" are *proposals*, never
-  assertions. Node removal already has a scenario in flight —
+- **Invariant 3.** Agents assert or propose; humans hold authority. Scanner
+  advice that "this node should be dropped" or "these two should be merged" is
+  Proposal-shaped, never an automatic operation. Node removal is governed by
   [`docs/acceptance/S52-explicit-rejection-and-node-removal.md`](acceptance/S52-explicit-rejection-and-node-removal.md)
-  — read it first and stay consistent with it.
+  — the scanner constraint does not revoke a graph-capable agent's existing
+  authority to author an independently chosen legal `remove_nodes` operation.
 - **Invariant 4b.** One way to get a patch out of an agent. A skill's output is
   either a report the agent reads, or operations in the same `patch.json`. Do
   not add a second graph-change channel.
@@ -499,25 +503,37 @@ project.
 - **Permission contracts** are fixed by capability
   ([config.py](../src/rcp/config.py) `permissions_for()`). A skill cannot widen
   what its surface may do.
+- **Human literals are constraints, not scanner material.** RCP derives accepted
+  nodes and exact current node fields last authored by human patches from
+  canonical history. The scanner may name a tension around them, but its advice
+  preserves accepted nodes and those literal fields exactly. This is stricter
+  than merely noticing current standing and stays consistent with S52's
+  accepted-node removal guard.
 
-### Questions the scenario must still answer
+### Proposed behavioral answers — still require human confirmation
 
-Delivery is settled; behaviour is not.
+[`acceptance/S59-staged-graph-audit-skills.md`](acceptance/S59-staged-graph-audit-skills.md)
+now answers the earlier questions as follows. These are review amendments, not
+authorization to implement D1:
 
-- Is running the scanner the agent's choice, or a required step in the Work
-  patch contract before it may finish?
-- Is its report visible to the human at all, or purely an agent-internal step?
-  If visible — Runs, the task inspector, or the Work receipt?
-- Does acting on the report cost an extra correction round against the existing
-  bounded `work_patch_correction` budget?
-- What happens when the scanner's advice contradicts a human `accepted`
-  standing? The human's judgment wins, but the scanner needs to know that.
-- Which surfaces stage it — Work only, or Seed/Refresh too?
-- How is a skill version surfaced when reconstructing what a past run did?
+- Initial Work, Seed, and Refresh prompts require invocation after `patch.json`
+  is written. The requirement is prompt-enforced and missing execution remains
+  advisory metadata, never validator rejection.
+- Agent tasks exposes the compact staged pointer and version; the task receipt
+  exposes invocation plus clean/findings/unavailable outcome. Historical
+  receipts retain the exact version.
+- Scanner-driven edits stay in the original launch and patch.
+  `work_patch_correction` and generic Seed/Refresh correction relaunches do not
+  scan again or alter their existing budgets.
+- RCP supplies accepted-node and human-literal protection constraints derived
+  from canonical history. Advice calls out those protected fields and preserves
+  them exactly.
+- Report bytes are bounded by a central `src/rcp/limits.py` tunable, and built
+  wheel/package-data coverage proves registered non-Python skill folders ship.
 
-**Do not** begin by adding skill files. Begin by writing the scenario in
-[`docs/acceptance/`](acceptance/README.md), including the UI path, and
-confirming it.
+**Do not** add skill files or plan implementation yet. The proposed scenario is
+now [`S59`](acceptance/S59-staged-graph-audit-skills.md); present it to the human
+and get explicit confirmation first.
 
 ---
 

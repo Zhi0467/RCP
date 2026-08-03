@@ -161,7 +161,7 @@ it but a browser or a machine we do not have.
 | [S08](S08-human-authority.md) | Human authority, and Sync as the only commit | implemented | pytest + **browser** | backend only |
 | [S10](S10-pause-resume-retry.md) | Agent work is durable | implemented | pytest + **browser** | backend only |
 | [S11](S11-paper-coach.md) | The coach reads and never writes | implemented | pytest + **browser** | partial |
-| [S12](S12-ontology-evolution.md) | Change the ontology without breaking old work | implemented | pytest + browser | covered + driven 2026-07-30 |
+| [S12](S12-ontology-evolution.md) | Keep historical ontology extensions readable | implemented | pytest | covered |
 | [S13](S13-replay-halts.md) | A bad patch stops replay instead of vanishing | implemented | pytest | covered |
 | [S14](S14-remote-state.md) | Canonical state on another machine | implemented | api | partial |
 | [S15](S15-real-agent.md) | One real agent run, end to end | implemented | api | **none** |
@@ -201,6 +201,14 @@ it but a browser or a machine we do not have.
 | [S49](S49-chat-node-reference-links.md) | Open an existing node from a chat answer | implemented | **browser** | covered + driven 2026-08-02 |
 | [S50](S50-minimal-agent-proposal-boundary.md) | Agents propose only decisions and belief changes | implemented | pytest | covered |
 | [S51](S51-live-agent-patch-validation.md) | A Work agent checks the exact semantic patch RCP will apply | implemented | pytest | 2026-08-03 |
+| [S52](S52-explicit-rejection-and-node-removal.md) | Judge explicitly and remove current graph nodes without rewriting history | implemented | pytest + **browser** | covered + driven 2026-08-03 |
+| [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and run surfaces tell one truthful story | implemented | **browser** | covered + driven 2026-08-03 |
+| [S54](S54-paper-preview-and-resizable-node-detail.md) | Read authored Markdown and resize the node being inspected | implemented | **browser** | covered + driven 2026-08-03 |
+| [S55](S55-project-owned-agent-profile.md) | Project Settings owns agent configuration | implemented | pytest + **browser** | covered + driven 2026-08-03 |
+| [S56](S56-plain-language-revision-history.md) | Read what changed between graph revisions | implemented | pytest + **browser** | covered + driven 2026-08-03 |
+| [S57](S57-fixed-product-ontology.md) | Existing ontology extensions remain readable without a schema editor | implemented | pytest + **browser** | covered + driven 2026-08-03 |
+| [S58](S58-inline-glossary-definitions.md) | Definitions appear where a term is read | implemented | **browser** | covered + driven 2026-08-03 |
+| [S59](S59-staged-graph-audit-skills.md) | An agent audits the graph patch it is about to finish | pending — **not human-confirmed** | pytest + **browser** | none |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

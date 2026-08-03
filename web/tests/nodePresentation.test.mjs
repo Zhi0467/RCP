@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { glossaryTermsForNode, nodeTypeLabel, presentNode } from "../src/nodePresentation.ts";
+import { nodeTypeLabel, presentNode } from "../src/nodePresentation.ts";
 
 test("node presentation promotes the claim and human-readable context", () => {
   const node = {
@@ -27,22 +27,4 @@ test("custom nodes keep their extension label even after the definition is remov
     "Mechanism hypothesis",
   );
   assert.equal(nodeTypeLabel({ type: "hypothesis" }), "Hypothesis");
-});
-
-test("only glossary terms actually used in the node are shown", () => {
-  const node = {
-    id: "hyp/example",
-    type: "hypothesis",
-    title: "Retention",
-    statement: "SDFT improves retention without a replay buffer.",
-  };
-  const glossary = {
-    SDFT: { term: "SDFT", plain_definition: "A project-specific training method." },
-    KL: { term: "KL", plain_definition: "A divergence measure." },
-    replay: { term: "replay buffer", plain_definition: "Stored examples reused in training." },
-  };
-  assert.deepEqual(
-    glossaryTermsForNode(node, glossary).map((term) => term.term),
-    ["replay buffer", "SDFT"],
-  );
 });

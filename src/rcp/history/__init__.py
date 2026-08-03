@@ -1,4 +1,11 @@
-from rcp.history.delta import RefreshDelta, RefreshDeltaEntry, build_refresh_delta
+from rcp.history.delta import (
+    RefreshDelta,
+    RefreshDeltaEntry,
+    RevisionSummary,
+    build_refresh_delta,
+    build_revision_summaries,
+    render_revision_summary,
+)
 from rcp.history.manager import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
 
 __all__ = [
@@ -8,5 +15,8 @@ __all__ = [
     "RevisionConflict",
     "RefreshDelta",
     "RefreshDeltaEntry",
+    "RevisionSummary",
     "build_refresh_delta",
+    "build_revision_summaries",
+    "render_revision_summary",
 ]

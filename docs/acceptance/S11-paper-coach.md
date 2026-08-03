@@ -39,8 +39,8 @@ write a `patch.json`, which must go nowhere.
 - `split_position_persists`
 - `draft_survived_reopen`
 - `draft_survived_reload`
-- `agent_config_collapsed_to_provider_name` — at rest, one small provider box:
-  no model, reasoning, machine, or permission summary
+- `agent_config_reduced_to_provider_name` — one small, non-expandable provider
+  box: no model, reasoning, machine, or permission summary
 - `no_placeholder_text` — an empty conversation is simply empty; no sample
   prompts, no instructional copy
 - `no_apply_control_exists`

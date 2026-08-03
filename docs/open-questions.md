@@ -10,6 +10,21 @@ the entry, so the next person does not re-derive it.
 
 ---
 
+## Q4 — Who authors glossary terms after the standalone Glossary surface is removed?
+
+**Status:** open. Raised 2026-08-03. No decision.
+
+Existing glossary entries remain useful as inline hover definitions, but the
+researcher-facing glossary table and ontology editor are being removed. This
+does not decide whether future terms are authored by graph agents, derived from
+node prose, staged by a human correction, or omitted entirely.
+
+Until that authority and lifecycle are decided, inline glossary support only
+renders entries already present in canonical history. It adds no creation,
+editing, or deletion path.
+
+---
+
 ## Q1 — Should `RELATION_SPEC` widen to let evidence reach a blocker or a decision?
 
 **Status:** open. Raised 2026-08-01. No decision.

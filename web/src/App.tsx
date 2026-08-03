@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   ArrowLeft,
-  BookOpenText,
   CircleArrowUp,
   CloudUpload,
   ChevronDown,
@@ -75,11 +74,14 @@ import {
   type DesktopUpdate,
 } from "./desktopRuntime";
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
+import { buildGlossaryIndex } from "./glossary";
+import { nodeDetailSizeStorageKey } from "./floatingWindow";
 import { AgentTaskActivity } from "./components/AgentTaskActivity";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
+import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
 import { RunDialog } from "./components/RunDialog";
 import {
   applyHumanDraft,
@@ -98,7 +100,6 @@ import {
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
-  stageOntology,
   unstageCustomNode,
   unstageNodeRemoval,
   toHumanSyncRequest,
@@ -120,6 +121,7 @@ import type {
   PaperSnapshot,
   ProjectCard,
   ProjectSnapshot,
+  RevisionSummary,
   TrustView,
   ValidationMessage,
   WatcherRecord,
@@ -144,9 +146,6 @@ const DagView = lazy(() =>
 );
 const ExecutionView = lazy(() =>
   import("./views/GraphViews").then((module) => ({ default: module.ExecutionView })),
-);
-const GlossaryView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.GlossaryView })),
 );
 const ScientificView = lazy(() =>
   import("./views/GraphViews").then((module) => ({ default: module.ScientificView })),
@@ -183,11 +182,17 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
-  { view: "glossary", label: "Glossary", icon: <BookOpenText size={14} /> },
   { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
   { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
 ];
+
+export function revisionSummariesUrl(apiBase: string, revision?: number): string {
+  const path = `${apiBase}/history/summaries`;
+  return revision === undefined
+    ? path
+    : `${path}?from_revision=${revision}&to_revision=${revision}`;
+}
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 
@@ -247,6 +252,11 @@ export default function App() {
   const [taskStarting, setTaskStarting] = useState(false);
   const [taskActionId, setTaskActionId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [latestRevisionSummary, setLatestRevisionSummary] = useState<RevisionSummary | null>(null);
+  const [historyRevisionSummaries, setHistoryRevisionSummaries] = useState<RevisionSummary[]>([]);
+  const [historySummariesRevision, setHistorySummariesRevision] = useState<number | null>(null);
+  const [historySummariesError, setHistorySummariesError] = useState<string | null>(null);
+  const [projectHistoryOpen, setProjectHistoryOpen] = useState(false);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const [taskInspectorId, setTaskInspectorId] = useState<string | null>(null);
@@ -485,6 +495,63 @@ export default function App() {
   );
   reloadRef.current = reload;
 
+  useEffect(() => {
+    if (!projectId || !apiBase || project?.id !== projectId) return;
+    const requestedProjectId = projectId;
+    const requestedRevision = graph.revision;
+    if (requestedRevision === 0) {
+      setLatestRevisionSummary(null);
+      return;
+    }
+    let cancelled = false;
+    setLatestRevisionSummary((current) =>
+      current?.to_revision === requestedRevision ? current : null,
+    );
+    void api<RevisionSummary[]>(revisionSummariesUrl(apiBase, requestedRevision))
+      .then((summaries) => {
+        if (cancelled || activeProjectId.current !== requestedProjectId) return;
+        setLatestRevisionSummary(
+          summaries.find((summary) => summary.to_revision === requestedRevision) ?? null,
+        );
+      })
+      .catch((error) => {
+        if (cancelled || activeProjectId.current !== requestedProjectId) return;
+        setLatestRevisionSummary(null);
+        setNotice({
+          kind: "error",
+          text: `Latest project change could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, graph.revision, project?.id, projectId]);
+
+  useEffect(() => {
+    if (!projectHistoryOpen || !projectId || !apiBase || project?.id !== projectId) return;
+    const requestedProjectId = projectId;
+    const requestedRevision = graph.revision;
+    let cancelled = false;
+    setHistorySummariesError(null);
+    void api<RevisionSummary[]>(revisionSummariesUrl(apiBase))
+      .then((summaries) => {
+        if (cancelled || activeProjectId.current !== requestedProjectId) return;
+        setHistoryRevisionSummaries(summaries);
+        setHistorySummariesRevision(requestedRevision);
+      })
+      .catch((error) => {
+        if (cancelled || activeProjectId.current !== requestedProjectId) return;
+        const message = `Project history could not be loaded: ${error instanceof Error ? error.message : String(error)}`;
+        setHistoryRevisionSummaries([]);
+        setHistorySummariesError(message);
+        setHistorySummariesRevision(requestedRevision);
+        setNotice({ kind: "error", text: message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, graph.revision, project?.id, projectHistoryOpen, projectId]);
+
   const refreshDesktopUpdate = useCallback(async () => {
     if (!desktop) return;
     try {
@@ -658,6 +725,11 @@ export default function App() {
     setRetryTask(null);
     setRunScope([]);
     setTasks([]);
+    setLatestRevisionSummary(null);
+    setHistoryRevisionSummaries([]);
+    setHistorySummariesRevision(null);
+    setHistorySummariesError(null);
+    setProjectHistoryOpen(false);
     setWatchers([]);
     setTaskInspectorId(null);
     setInspectedTask(null);
@@ -796,6 +868,10 @@ export default function App() {
     () => (mutationsDisabled ? graph : applyHumanDraft(graph, humanDraft)),
     [graph, humanDraft, mutationsDisabled],
   );
+  const glossaryIndex = useMemo(
+    () => buildGlossaryIndex(presentedGraph.glossary),
+    [presentedGraph.glossary, presentedGraph.revision],
+  );
   const openNode = (node: GraphNode | null) => {
     if (!node) return;
     setDockedNodeIds((current) => current.filter((nodeId) => nodeId !== node.id));
@@ -856,7 +932,6 @@ export default function App() {
     .join("|");
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const draftIsStale = Boolean(humanDraft && humanDraft.base_revision !== graph.revision);
-  const latestTask = tasks[0] ?? null;
   const activityTask = projectActivityTask(tasks, activityTaskId);
   const visibleTask =
     activityTask && !dismissedTaskIds.has(activityTask.operation_id) ? activityTask : null;
@@ -886,6 +961,7 @@ export default function App() {
       chatEntryConversationId(conversations, activityTask, unreadChatTaskIds, selectedChatId);
     selectChat(nextChatId);
     setFloatingChat(null);
+    setSelectedNode(null);
     setView("chats");
   };
 
@@ -1133,13 +1209,10 @@ export default function App() {
     () => Object.values(graph.ambiguities).filter((item) => item.status === "open"),
     [graph],
   );
-  const scientificBlockers = useMemo(
+  const openBlockers = useMemo(
     () =>
       Object.values(presentedGraph.nodes).filter(
-        (node) =>
-          node.type === "blocker" &&
-          node.status === "open" &&
-          ["scientific", "design"].includes(String(node.blocker_type)),
+        (node) => node.type === "blocker" && node.status === "open",
       ),
     [presentedGraph],
   );
@@ -1697,7 +1770,7 @@ export default function App() {
       </div>
     );
 
-  const attentionCount = pendingProposals.length + ambiguities.length + scientificBlockers.length;
+  const attentionCount = pendingProposals.length + ambiguities.length + openBlockers.length;
   const showTrustFilter = view === "scientific" || view === "dag" || view === "execution";
   const runKind = graph.revision === 0 ? "seed" : "refresh";
   const replayWarning = replayFailureLabel(graph);
@@ -1787,9 +1860,12 @@ export default function App() {
             >
               <button
                 className="icon-button task-history-control"
-                disabled={!latestTask}
-                aria-label={activeTask ? "Agent tasks, task in progress" : "Agent tasks"}
-                onClick={() => latestTask && setTaskInspectorId(latestTask.operation_id)}
+                aria-label={activeTask ? "Project history, task in progress" : "Project history"}
+                onClick={() => {
+                  setHistorySummariesRevision(null);
+                  setHistorySummariesError(null);
+                  setProjectHistoryOpen(true);
+                }}
               >
                 <History size={15} />
                 {activeTask ? <span className="activity-pulse" /> : null}
@@ -2005,6 +2081,9 @@ export default function App() {
             <ProjectOverview
               project={projectWithGraph(project, presentedGraph)}
               graph={presentedGraph}
+              latestRevisionSummary={
+                latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
+              }
               onNavigate={setView}
             />
           )}
@@ -2014,6 +2093,7 @@ export default function App() {
                 <AttentionOverview graph={presentedGraph} onSelectNode={openNode} />
                 <ProposalJudgmentSection
                   proposals={pendingProposals}
+                  glossaryIndex={glossaryIndex}
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}
                   onDecision={(proposal, decision) =>
@@ -2023,7 +2103,7 @@ export default function App() {
               </div>
               <AttentionRail
                 ambiguities={ambiguities}
-                blockers={scientificBlockers}
+                blockers={openBlockers}
                 draft={mutationsDisabled ? null : humanDraft}
                 mutationsDisabled={mutationsDisabled}
                 onAmbiguity={(ambiguity, status) =>
@@ -2066,7 +2146,6 @@ export default function App() {
               onSelectNode={openNode}
             />
           )}
-          {view === "glossary" && <GlossaryView graph={presentedGraph} />}
           {view === "paper" && (
             <PaperWorkspace
               apiBase={apiBase}
@@ -2086,15 +2165,9 @@ export default function App() {
               onRefreshUsage={refreshUsage}
               cacheClearDisabled={Boolean(activeTask)}
               writesDisabled={mutationsDisabled}
-              ontology={presentedGraph.ontology}
-              canonicalOntology={graph.ontology}
-              ontologyStaged={Boolean(humanDraft?.ontology)}
               showDisplaySettings={desktop}
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
-              onOntologyChange={(ontology) =>
-                updateHumanDraft((draft) => stageOntology(draft, graph, ontology))
-              }
               onRefreshReadiness={refreshReadiness}
               onCacheMetricsChange={(cacheMetrics) => {
                 setProject((current) =>
@@ -2116,6 +2189,7 @@ export default function App() {
               conversations={conversations}
               selectedChatId={selectedChatId}
               nodes={presentedGraph.nodes}
+              glossaryIndex={glossaryIndex}
               runScope={runScope}
               tasks={tasks}
               activeTask={activeTask}
@@ -2143,10 +2217,11 @@ export default function App() {
           node={presentedGraph.nodes[selectedNode.id] ?? selectedNode}
           edges={Object.values(presentedGraph.edges)}
           allNodes={presentedGraph.nodes}
-          glossary={presentedGraph.glossary}
+          glossaryIndex={glossaryIndex}
           beliefTransitions={graph.belief_transitions}
           validationMessages={graph.validation_messages}
           ontology={presentedGraph.ontology}
+          sizeStorageKey={nodeDetailSizeStorageKey(project.id)}
           mutationsDisabled={mutationsDisabled}
           stagedNewNode={Boolean(humanDraft?.custom_nodes[selectedNode.id])}
           stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(selectedNode.id))}
@@ -2216,6 +2291,7 @@ export default function App() {
               project={project}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
               nodes={presentedGraph.nodes}
+              glossaryIndex={glossaryIndex}
               conversationTitle={
                 conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
                   ?.title
@@ -2262,6 +2338,19 @@ export default function App() {
           busy={taskActionId === retryTask.operation_id}
           onClose={() => setRetryTask(null)}
           onRun={(config) => void retryAgentTask(retryTask, config)}
+        />
+      )}
+      {projectHistoryOpen && (
+        <ProjectHistoryDrawer
+          summaries={historyRevisionSummaries}
+          tasks={tasks}
+          loading={historySummariesRevision !== graph.revision}
+          error={historySummariesError}
+          onInspectTask={(taskId) => {
+            setProjectHistoryOpen(false);
+            setTaskInspectorId(taskId);
+          }}
+          onClose={() => setProjectHistoryOpen(false)}
         />
       )}
       {taskInspectorId && (

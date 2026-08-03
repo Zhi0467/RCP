@@ -73,14 +73,15 @@ Confirmed on 2026-08-02.
   project conversation, or starts an empty project conversation when none
   exists. It does not create a separate chat surface.
 - Chat task banners are scoped to **Chats**. They are never rendered over
-  Overview, Inbox, Research, Runs, Glossary, Paper, or Settings. Outside Chats,
+  Overview, Inbox, Research, Runs, Paper, or Settings. Outside Chats,
   the **Chats** navigation item carries the activity or unread-result indicator.
   Entering Chats makes the chat task banner visible and selects the exact
   conversation it describes instead of opening only the generic task
   inspector. The indicator clears only after that conversation is viewed.
 - Non-chat task banners keep their existing project-wide behavior.
-- Historical completed or failed chats remain in **Chats** and **Runs**, but do
-  not become unsolicited project-entry notifications.
+- Historical completed or failed chats remain in **Chats** and the **Agent
+  tasks** drawer, never in **Runs**, and do not become unsolicited project-entry
+  notifications.
 
 Deliberately not possible: opening chat by destroying the node detail, closing
 chat by cancelling its run, mixing conversations from another project into the
@@ -131,6 +132,7 @@ list, or routing a notification only to a generic task inspector.
 - `viewing_conversation_clears_its_indicator`
 - `non_chat_banner_behavior_is_unchanged`
 - `historical_chat_does_not_interrupt_project_entry`
+- `chat_tasks_do_not_appear_in_runs`
 - `no_console_or_server_errors`
 
 ## Failure means

@@ -556,6 +556,15 @@ def create_app(
         service = _project_service(catalog, project_id)
         return service.history.slice(from_revision, to_revision)
 
+    @app.get("/api/projects/{project_id}/history/summaries")
+    def history_summaries(
+        project_id: str,
+        from_revision: int = 1,
+        to_revision: int | None = None,
+    ):
+        service = _project_service(catalog, project_id)
+        return service.history.revision_summaries(from_revision, to_revision)
+
     @app.get("/api/projects/{project_id}/sources")
     def sources(project_id: str, refresh: bool = False):
         service = _project_service(catalog, project_id)

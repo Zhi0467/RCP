@@ -1,4 +1,4 @@
-import type { GlossaryTerm, GraphNode } from "./types";
+import type { GraphNode } from "./types";
 
 const primaryKey: Record<GraphNode["type"], string> = {
   research_question: "question",
@@ -72,16 +72,6 @@ export function nodeTypeLabel(node: GraphNode): string {
   return humanize(node.extension_type ?? node.type);
 }
 
-export function glossaryTermsForNode(
-  node: GraphNode,
-  glossary: Record<string, GlossaryTerm>,
-): GlossaryTerm[] {
-  const text = collectText(node).toLocaleLowerCase();
-  return Object.values(glossary)
-    .filter((entry) => containsTerm(text, entry.term.toLocaleLowerCase()))
-    .sort((left, right) => left.term.localeCompare(right.term));
-}
-
 export function humanize(key: string): string {
   return key.replaceAll("_", " ").replace(/^./, (character) => character.toUpperCase());
 }
@@ -93,24 +83,4 @@ function readableValue(value: unknown): boolean {
     value !== "" &&
     (!Array.isArray(value) || value.length > 0)
   );
-}
-
-function collectText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(collectText).join(" ");
-  if (value && typeof value === "object") {
-    return Object.entries(value)
-      .filter(([key]) => !["source_refs", "id", "created_rev", "updated_rev"].includes(key))
-      .map(([, item]) => collectText(item))
-      .join(" ");
-  }
-  return "";
-}
-
-function containsTerm(text: string, term: string): boolean {
-  if (!term.trim()) return false;
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const leading = /^\w/.test(term) ? "(?:^|[^a-z0-9_])" : "";
-  const trailing = /\w$/.test(term) ? "(?=$|[^a-z0-9_])" : "";
-  return new RegExp(`${leading}${escaped}${trailing}`, "i").test(text);
 }

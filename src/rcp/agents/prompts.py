@@ -194,6 +194,10 @@ Hard invariants:
 - Write only the semantic Patch fields in the supplied schema. RCP assigns kind, author, revision,
   run scope, cursor, authority, dependency, lifecycle, and admission bookkeeping.
 - Use only fields and nesting in the schema file. Never invent synonymous fields.
+- Write `change_summary` as one ordinary-language sentence per meaningful change. Name research
+  concepts by their reader-facing titles, never ids or Patch operation names, and do not summarize
+  with inventory counts. State only what the Patch records; quote a Proposal card consequence when
+  relevant instead of inventing a causal explanation.
 - Base node ids are `<type-prefix>/<kebab-slug>`: research_question=rq, hypothesis=hyp,
   decision=dec, experiment=exp, evidence=ev, blocker=blk. Extension node ids use
   `<extension_type>/<kebab-slug>`. Ambiguity and proposal ids use amb/ and prop/.
@@ -466,6 +470,10 @@ Optional graph reflection:
 - Write only fields present in that schema. RCP assigns patch kind, agent authorship, revision, run
   scope, Proposal dependencies and base revision, object lifecycle, and admission bookkeeping.
   Record `repositories_read` honestly. Work may not set coverage or cursors.
+- Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
+  research concepts by their reader-facing titles, never ids or Patch operation names, and do not
+  use inventory counts. State only what the Patch records; quote a stored Proposal consequence when
+  relevant instead of inventing a causal explanation.
 - A valid Patch and the Markdown reply are independent outputs. Explain any proposed or applied
   research-state reflection in the reply without claiming RCP accepted it.
 

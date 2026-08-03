@@ -1,13 +1,14 @@
 import { ArrowUpRight } from "lucide-react";
-import type { AppView, GraphNode, GraphState, ProjectSnapshot } from "../types";
+import type { AppView, GraphNode, GraphState, ProjectSnapshot, RevisionSummary } from "../types";
 
 interface Props {
   project: ProjectSnapshot;
   graph: GraphState;
+  latestRevisionSummary?: RevisionSummary | null;
   onNavigate: (view: AppView) => void;
 }
 
-export function ProjectOverview({ project, graph, onNavigate }: Props) {
+export function ProjectOverview({ project, graph, latestRevisionSummary, onNavigate }: Props) {
   const nodes = Object.values(graph.nodes);
   const activeExperiments = nodes.filter(
     (node) =>
@@ -23,6 +24,11 @@ export function ProjectOverview({ project, graph, onNavigate }: Props) {
     project.primary_question?.question ||
     project.primary_question?.title ||
     "No primary research question has been seeded.";
+  const latestRevisionText = latestRevisionSummary?.sentences.slice(0, 2).join(" ").trim();
+  const latestRevisionDetail =
+    latestRevisionSummary && latestRevisionText
+      ? `Revision ${latestRevisionSummary.from_revision} to revision ${latestRevisionSummary.to_revision}`
+      : null;
 
   const rows: Array<{
     number: string;
@@ -53,10 +59,12 @@ export function ProjectOverview({ project, graph, onNavigate }: Props) {
     {
       number: "03",
       prompt: "What changed?",
-      answer: latestNode ? latestNode.title : "No graph changes yet.",
-      detail: project.last_refresh_at
-        ? `Last refresh ${new Date(project.last_refresh_at).toLocaleString()}`
-        : "Never refreshed",
+      answer: latestRevisionText || (latestNode ? latestNode.title : "No graph changes yet."),
+      detail: latestRevisionDetail
+        ? latestRevisionDetail
+        : project.last_refresh_at
+          ? `Last refresh ${new Date(project.last_refresh_at).toLocaleString()}`
+          : "Never refreshed",
       view: "scientific",
     },
     {

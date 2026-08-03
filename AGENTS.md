@@ -572,10 +572,16 @@ carrying forward, and correct an entry when they change their mind.
   enough context-setting sentences, and inline explanations over terse project
   jargon. Relation rows should open a focused one-hop DAG view.
 - The Paper editor/coach split is human-resizable, and the editor begins with
-  authored content rather than a redundant canonical-file banner.
-- Agent launch configuration is collapsible on every surface. In chat and
-  coaching, its resting state is one tiny provider-name box only: no model,
-  reasoning, machine, permission summary, or locked/editable label.
+  authored content rather than a redundant canonical-file banner. The authored
+  Markdown switches between Write and Preview in the same pane, using the chat
+  renderer so unsaved text can be read without creating a second document.
+- Agent configuration is owned by Project Settings. Chat and coaching show one
+  non-expandable provider-name box only: no model, reasoning, machine,
+  permission summary, or locked/editable label. Seed/Refresh keeps its explicit
+  launch controls, and chat keeps Raw truth inputs because those select context,
+  not execution configuration. Settings supplies fresh conversation defaults;
+  an existing native conversation retains the profile it last ran with so
+  continuation does not silently move providers or machines.
 - Chat and coaching surfaces never contain sample prompts, slogans,
   instructional empty-state copy, or textarea placeholder text. An empty
   conversation is simply empty.
@@ -598,9 +604,11 @@ carrying forward, and correct an entry when they change their mind.
   revision label beside the project name. Agent tasks and Refresh are icon-only
   accessible controls; project chat is **Ask**. The attention destination is
   **Inbox** with a colored count, and DAG is a subpanel of **Research**, not a
-  primary destination. Glossary and Paper must not share an icon. Group the
-  header semantically: labeled **Sync / Ask** together, then icon-only
+  primary destination. Group the header semantically: labeled **Sync / Ask**
+  together, then icon-only
   **History / Refresh** together; do not space all four as unrelated peers.
+  Glossary definitions appear inline where terms are read; Glossary has no
+  navigation destination, and glossary authoring remains an open question.
 - A previously opened project must feel immediate even when canonical state is
   remote. Render one rebuildable durable display snapshot first, refresh the
   authoritative state in the background, and keep the cache out of every
@@ -614,10 +622,19 @@ carrying forward, and correct an entry when they change their mind.
   pinch zoom stays anchored at the gesture focal point without turning ordinary
   two-finger scrolling into zoom or disrupting other DAG interactions.
 - The visible projections are **Research** and **Runs**: Research shows
-  question-centered paths with unconnected records separated, while Runs mixes
-  agent tasks and experiments, prioritizes failed/paused/blocked work, nests
-  retries, and reports a truthful as-of time. DAG **Research flow** columns
-  follow semantic stage rather than relation-arrow direction.
+  question-centered paths with unconnected records separated, while Runs shows
+  Seed/Refresh ingestion runs and experiments, prioritizes failed/paused
+  ingestion work and graph blockers, nests ingestion retries, and reports a
+  truthful as-of time. Node chat, project chat, and paper-coach tasks live in
+  the Agent tasks drawer, never in Runs. DAG **Research flow** columns follow
+  semantic stage rather than relation-arrow direction.
+- Node detail is a resizable floating inspection window. Its project-scoped
+  size survives minimize/restore and close/reopen, remains reachable after a
+  viewport change, and closes when the human enters Chats.
+- Human-readable patch prose is governed primarily at the producer prompt and
+  human-action boundary. Deterministic history rendering is a safety net that
+  resolves ids to titles and derives truthful operation fallbacks; it does not
+  invent scientific causality.
 
 ## Repeated failures
 
@@ -677,6 +694,18 @@ longer apply.
   answer. Change directory first, then `exec` the provider.
 - macOS spells `/tmp` as `/private/tmp` after path resolution. Resolve `RCP_DATA_DIR`
   once in `create_app` so cache roots and loaded manifest paths stay comparable.
+- A `null` model on the wire meant provider default to the client but keep the
+  stored value to the resolver, so switching providers launched the previous
+  provider's model. A provider change now clears an inherited model unless the
+  caller supplies the new one explicitly.
+- History id rescue matched arbitrary `word/word` text and rewrote repository
+  paths, while an inventory-style filter silently dropped authored changes.
+  Substitute only identifiers resolved at that revision and preserve every
+  non-empty legacy sentence; style is governed at the producer boundary.
+- Eager full-history prose replay delayed project entry and then reapplied every
+  accepted patch inside the renderer. Load only the latest summary after project
+  state, load the complete projection when History opens, and collect prose from
+  the existing replay observer rather than adding a second pass or a cache.
 - Pause/resume is parent→child, not one operation id. A test that reuses one id
   models nothing: read task state across the chain, and exercise resume through
   `POST …/tasks/{id}/resume` so the child is real. Validate the saved native

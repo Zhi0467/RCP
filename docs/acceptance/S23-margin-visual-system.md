@@ -31,8 +31,8 @@ already specified.
    shadow, and material treatment.
 2. Open RCP's project index and confirm its background, project cards, controls,
    typography, and materials form one restrained system.
-3. Open a project and visit Overview, Inbox, Research, DAG, Runs, Glossary,
-   Paper, and Settings; open Ask and the run dialog.
+3. Open a project and visit Overview, Inbox, Research, DAG, Runs, Paper,
+   Settings, and Chats; open Ask and the run dialog.
 4. Repeat the project index, shell, and one dense workspace at a narrow width.
 
 ## Assert

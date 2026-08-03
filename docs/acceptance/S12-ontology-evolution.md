@@ -2,159 +2,61 @@
 id: S12-ontology-evolution
 status: implemented
 tier: hermetic
-driver: pytest + browser
-covered_by: tests/test_ontology_evolution.py, tests/test_sync.py, web/tests/ontologyEditing.test.mjs, browser 2026-07-30
-last_passed: 2026-07-30
+driver: pytest
+covered_by: tests/test_ontology_evolution.py, tests/test_sync.py
 invariants: [1, 3]
-blueprint: v0.5 §5.6, §5.7
+blueprint: v0.5 §5.6, §5.7 — historical compatibility only
 ---
 
-# Change the ontology without breaking old work
+# Keep historical ontology extensions readable
 
-Implemented and driven on 2026-07-30.
+RCP now ships six product node types and does not expose a schema editor. Older
+projects may nevertheless contain append-only operations that defined custom
+types, fields, and relations. Those records must keep opening, keep meaning what
+they meant, and replay identically.
 
-A team's ontology grows as they do research. Work recorded under the old shape
-must keep opening, keep meaning what it meant, and keep replaying identically.
+This is a compatibility promise, not a current ontology-authoring path. The
+separate browser promise in
+[`S57-fixed-product-ontology.md`](S57-fixed-product-ontology.md) removes the
+editing surface while preserving the behavior below.
 
----
+## Historical compatibility
 
-## UI path — confirmed 2026-07-30
+- A project with no ontology keys still opens under the base schema.
+- A custom type is interpreted using the ontology in force at the revision that
+  created or edited it.
+- Later deprecation or removal does not make earlier records unreadable.
+- Custom fields and relations already present in history continue to
+  materialize and validate.
+- Replay remains byte-for-byte faithful to the recorded node and edge fields.
+- The base ontology cannot be redefined by a historical or newly submitted
+  operation.
 
-### Where it lives
-
-A new **Ontology** section in Project Settings, alongside Truth scope and Agent
-defaults. **Settings is the sole entry point** — there is no ontology editing
-from the graph views, a node detail, or a chat. This is configuration, not
-research.
-
-The **base ontology is not editable.** It is the projection target every
-extension declares a mapping into; making it movable would remove the thing
-extensions are defined against.
-
-### What you can do
-
-- **Add a node type.** Name, plain-language definition, and its fields.
-- **Add a field** to a type, existing or new. Name, kind, optional or required,
-  and whether an agent may write it or only a human.
-- **Add a relation.** Name, which types may be its source, which may be its
-  target, and which layer it belongs to — epistemic or action.
-- **Declare the mapping.** A new type says how it projects onto the base six
-  (§5.7). Without that, the project stops being transferable, so this is
-  required rather than optional.
-
-### Who can change it
-
-**Human Settings and Sync only.** An agent may report that the active ontology
-cannot express a concept and may create an Ambiguity about the missing
-vocabulary, but it may neither apply nor propose an ontology change. Ontology is
-project configuration, not one of the two semantic transitions represented by
-an agent Proposal.
-
-### Deprecation and removal
-
-- **Deprecating a type or field** stops it appearing in pickers; existing nodes
-  keep rendering.
-- **A deprecated type can then be removed outright**, from Settings, as a
-  deliberate human action.
-
-Removal is safe for replay, and the reason matters: the ontology is itself
-materialized from the log, so validating the patch at revision N uses the
-ontology **as of revision N**. A type defined at revision 5, used at revision 6,
-and removed at revision 20 still replays — revision 6 is checked against an
-ontology that still has it. Removal only ever affects what you can author next.
-
-This is the same log-is-authoritative principle as everything else, and it is
-what makes the whole promise work rather than a special case.
-
-### What is still refused
-
-The editor may not express a change that would make the log fail to replay:
-
-- **Making an optional field required**, retroactively — every node authored
-  before it would fail. Allowed only for nodes created after the change.
-- **Narrowing a relation's allowed types** below what the graph already
-  contains.
-
-### How it commits — and the one real constraint
-
-Like every other human authority action: staged in the project draft, committed
-on **Sync**, appended to the log as an operation. Not a code constant, not a
-config file.
-
-An ontology change rides in a normal Sync batch. `Patch.ops` is an open list
-validated by name against
-[`OP_RULES`](../../src/rcp/core/validation/registry.py:43), so this needs a new
-entry there and **no envelope change** — `set_project_truth_scope` is the
-existing precedent for a config-shaped op sitting alongside graph ops.
-
-But there is a constraint that falls out of how validation works, and the UI has
-to respect it:
-
-> **An ontology change and the first use of what it defines cannot be in the
-> same patch.**
-
-[`_validate_operations`](../../src/rcp/core/validation/patch.py:152) runs every
-op against `ctx.state` — the state as it was **before** the patch, not updated
-incrementally. So a batch that defines type X *and* creates a node of type X
-fails: the `create_nodes` validator never sees X.
-
-So Sync must either split such a batch into two patches, ontology first, or
-refuse it with that explanation. Silently failing the whole Sync is the outcome
-to avoid, and it is the default if nobody handles this.
-
----
+Materialization still derives all ontology state from the append-only patch log.
+No compatibility code may hand-edit `graph.json` or another derived file.
 
 ## Drive
 
-1. Open Project Settings → Ontology. Add a node type, a field on an existing
-   type, and a relation. Sync.
-2. Reopen the project. The old graph renders.
-3. Compare it against the recorded `graph.json`.
-4. Add a node of the new type. Sync. Reopen.
-5. Open a node created under the old schema and edit it.
-6. Try to make an optional field required retroactively.
-7. Deprecate the new type, then remove it from Settings. Reopen.
-8. In one draft, define a second new type **and** create a node of it. Sync.
-9. Confirm there is no ontology control anywhere outside Settings.
-10. Have an agent attempt to author or propose an extension. Confirm the patch
-    is refused and the reply directs the human to Settings.
+1. Replay a legacy project with no ontology or extension keys.
+2. Replay a project that defines a custom type, uses it in later revisions, and
+   later removes the type.
+3. Compare every materialized node and edge field with the recorded graph.
+4. Validate existing custom fields and relations against the ontology that was
+   active at each revision.
+5. Attempt to redefine the base ontology or narrow a historical relation past
+   edges that already use it.
 
-## Assert — pytest
+## Assert
 
-- `old_project_opens_under_new_schema`
-- `replay_is_identical` — every field of every node and edge matches the
-  recorded `graph.json`. Not "no errors" — identical.
-- `no_patch_rejected_by_the_new_schema` — tightening must not retroactively
-  invalidate history
-- `ontology_change_is_in_the_log` — an operation, not a code constant; the log
-  stays the single answer to "what does this mean"
-- `validation_uses_the_ontology_as_of_that_revision` — the property the whole
-  promise rests on
-- `removed_type_still_replays` — old patches using it validate against the
-  ontology they were written under
-- `base_ontology_mapping_declared`
-- `base_ontology_not_writable` — no operation can change it
-- `narrowing_change_refused`
-- `agent_cannot_apply_or_propose_ontology` — ontology changes enter the log only
-  through human Settings and Sync
-
-## Assert — browser
-
-- `ontology_editor_reachable_from_settings`
-- `no_ontology_control_outside_settings` — not in graph views, node details, or
-  chat
-- `new_type_appears_in_node_creation`
-- `old_node_still_editable`
-- `deprecated_type_hidden_from_pickers_but_still_renders`
-- `deprecated_type_removable_from_settings`
-- `define_and_use_in_one_batch_is_handled` — split into two patches or refused
-  with the reason, never a silent Sync failure
-- `refused_change_explains_why` — naming the nodes that block it, not a generic
-  error
-- `agent_ontology_gap_does_not_create_a_judgment_queue_proposal`
+- `test_old_project_opens_without_ontology_or_extension_keys`
+- `test_legacy_patch_replay_preserves_every_recorded_node_and_edge_field`
+- `test_validation_uses_the_ontology_in_force_before_each_patch`
+- `test_removed_type_and_fields_remain_readable_during_replay`
+- `test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as_seam`
+- `test_base_ontology_cannot_be_redefined`
+- `test_relation_narrowing_names_the_edges_and_nodes_that_block_it`
 
 ## Failure means
 
-Someone's year of recorded research became unreadable because the schema moved.
-This is the failure that ends trust in the format permanently, and it stays
-invisible until it happens to real data.
+Removing the schema editor made an existing research graph unreadable or
+silently changed its history.

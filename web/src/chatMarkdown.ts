@@ -6,7 +6,8 @@ import {
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { InlineCode, Link, Parent, Root, RootContent, Text } from "mdast";
+import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
+import { segmentGlossaryText, type GlossaryIndex } from "./glossary";
 import type { GraphNode } from "./types";
 
 const NODE_REFERENCE_CANDIDATE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
@@ -17,8 +18,25 @@ const NON_TEXT_CHILDREN = new Set([
   "html",
   "image",
   "imageReference",
+  "inlineCode",
   "link",
   "linkReference",
+]);
+const HTML_VOID_ELEMENTS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
 ]);
 
 type MarkdownLinkProps = ComponentProps<"a"> & { node?: unknown };
@@ -116,6 +134,67 @@ function nodeReferencePlugin(nodeIds: ReadonlySet<string>) {
   };
 }
 
+function glossaryNodes(text: Text, glossaryIndex: GlossaryIndex): RootContent[] {
+  return segmentGlossaryText(text.value, glossaryIndex).map((segment) => {
+    if (segment.kind === "text") return { type: "text", value: segment.text };
+    const definitionNode: Strong = {
+      type: "strong",
+      data: {
+        hName: "dfn",
+        hProperties: {
+          className: ["glossary-definition"],
+          "data-definition": segment.plainDefinition,
+          tabIndex: 0,
+          title: segment.plainDefinition,
+        },
+      },
+      children: [{ type: "text", value: segment.text }],
+    };
+    return definitionNode;
+  });
+}
+
+function transformGlossaryDefinitions(node: Parent, glossaryIndex: GlossaryIndex): void {
+  const children: RootContent[] = [];
+  let htmlDepth = 0;
+  for (const child of node.children) {
+    if (child.type === "html") {
+      htmlDepth = htmlDepthAfter(child.value, htmlDepth);
+      children.push(child);
+    } else if (htmlDepth > 0) {
+      children.push(child);
+    } else if (child.type === "text") {
+      children.push(...glossaryNodes(child, glossaryIndex));
+    } else {
+      if (!NON_TEXT_CHILDREN.has(child.type) && isParent(child)) {
+        transformGlossaryDefinitions(child, glossaryIndex);
+      }
+      children.push(child);
+    }
+  }
+  node.children = children;
+}
+
+function htmlDepthAfter(value: string, initialDepth: number): number {
+  let depth = initialDepth;
+  const tags = value.matchAll(/<\s*(\/)?\s*([A-Za-z][\w:-]*)[^>]*?(\/)?\s*>/g);
+  for (const tag of tags) {
+    const name = tag[2]?.toLowerCase();
+    if (!name || HTML_VOID_ELEMENTS.has(name)) continue;
+    if (tag[1]) depth = Math.max(0, depth - 1);
+    else if (!tag[3]) depth += 1;
+  }
+  return depth;
+}
+
+function glossaryDefinitionPlugin(glossaryIndex?: GlossaryIndex) {
+  return function attachGlossaryDefinitionPlugin() {
+    return function transform(tree: Root): void {
+      if (glossaryIndex) transformGlossaryDefinitions(tree, glossaryIndex);
+    };
+  };
+}
+
 function markdownComponents(
   nodeIds: ReadonlySet<string>,
   onOpenNode?: (nodeId: string) => void,
@@ -163,13 +242,23 @@ interface MarkdownAnswerProps {
   text: string;
   nodes?: Readonly<Record<string, GraphNode>>;
   onOpenNode?: (nodeId: string) => void;
+  glossaryIndex?: GlossaryIndex;
 }
 
-export function MarkdownAnswer({ text, nodes = {}, onOpenNode }: MarkdownAnswerProps) {
+export function MarkdownAnswer({
+  text,
+  nodes = {},
+  onOpenNode,
+  glossaryIndex,
+}: MarkdownAnswerProps) {
   const nodeIds = onOpenNode ? new Set(Object.keys(nodes)) : new Set<string>();
   return createElement(ReactMarkdown, {
     children: text,
-    remarkPlugins: [remarkGfm, nodeReferencePlugin(nodeIds)],
+    remarkPlugins: [
+      remarkGfm,
+      nodeReferencePlugin(nodeIds),
+      glossaryDefinitionPlugin(glossaryIndex),
+    ],
     components: markdownComponents(nodeIds, onOpenNode),
   });
 }

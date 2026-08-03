@@ -21,16 +21,17 @@ the labeled actions **Sync / Ask** sit together, followed by the icon utilities
 **History / Refresh** together. They are not four evenly spaced peers.
 
 The primary navigation reads **Overview**, **Inbox**, **Research**, **Runs**,
-**Glossary**, **Paper**, and **Settings**. Inbox carries its current attention
-count in a colored badge. DAG is not a primary tab: Research owns a compact
-**Research / DAG** subpanel switch. Glossary and Paper use visibly different
-icons.
+**Paper**, **Settings**, and **Chats**. Inbox carries its current attention count
+in a colored badge. DAG is not a primary tab: Research owns a compact
+**Research / DAG** subpanel switch. Glossary terms appear inline where they are
+read rather than as a primary destination.
 
 ## Drive
 
 1. Open a project at desktop and narrow widths.
 2. Inspect the header controls and primary navigation.
-3. Open Inbox and confirm its badge matches the unresolved attention count.
+3. Open Inbox and confirm its badge matches pending Proposals, open Ambiguities,
+   and every open Blocker regardless of subtype.
 4. Open Research, switch to DAG, then switch back to the path projection.
 5. Use the icon-only task and Refresh controls, and open Ask.
 
@@ -41,9 +42,9 @@ icons.
 - `sync_and_ask_form_the_labeled_action_group`
 - `history_and_refresh_form_the_icon_utility_group`
 - `project_chat_is_ask`
-- `inbox_has_colored_attention_count`
+- `inbox_has_colored_attention_count` — the badge includes every open Blocker
 - `dag_is_a_research_subpanel`
-- `glossary_and_paper_icons_are_distinct`
+- `glossary_is_not_a_primary_destination`
 - `narrow_layout_preserves_every_control`
 - `no_console_or_application_request_errors`
 

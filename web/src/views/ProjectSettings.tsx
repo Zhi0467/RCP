@@ -17,7 +17,6 @@ import { useEffect, useMemo, useState } from "react";
 import { api, clearProjectCaches } from "../api";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
-import { OntologyEditor } from "../components/OntologyEditor";
 import {
   deserializeSettingsDraft,
   machineProviderPathUpdates,
@@ -36,7 +35,6 @@ import type {
   ProjectCacheMetrics,
   ProjectSettingsRequest,
   ProjectSnapshot,
-  OntologyState,
   ProviderId,
   ProviderPathResolution,
   ProviderReadiness,
@@ -52,10 +50,6 @@ interface Props {
   onSaved: (project: ProjectSnapshot, preserveReadiness?: boolean) => void;
   onCacheMetricsChange: (metrics: ProjectCacheMetrics) => void;
   onRefreshReadiness: () => Promise<void>;
-  ontology: OntologyState;
-  canonicalOntology: OntologyState;
-  onOntologyChange: (ontology: OntologyState) => void;
-  ontologyStaged?: boolean;
   showDisplaySettings: boolean;
   textScale: number;
   onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
@@ -111,10 +105,6 @@ export function ProjectSettings({
   onSaved,
   onCacheMetricsChange,
   onRefreshReadiness,
-  ontology,
-  canonicalOntology,
-  onOntologyChange,
-  ontologyStaged = false,
   showDisplaySettings,
   textScale,
   onTextScaleChange,
@@ -519,14 +509,6 @@ export function ProjectSettings({
           {saving ? "Saving" : "Save"}
         </button>
       </footer>
-
-      <OntologyEditor
-        ontology={ontology}
-        canonicalOntology={canonicalOntology}
-        disabled={writesDisabled}
-        staged={ontologyStaged}
-        onChange={onOntologyChange}
-      />
     </section>
   );
 }

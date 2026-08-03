@@ -31,6 +31,56 @@ export function clampFloatingPosition(
   };
 }
 
+export function clampFloatingSize(
+  size: Size,
+  viewport: Size,
+  minimum: Size,
+  margin = FLOATING_WINDOW_MARGIN,
+): Size {
+  const maximum = {
+    width: Math.max(0, viewport.width - margin * 2),
+    height: Math.max(0, viewport.height - margin * 2),
+  };
+  return {
+    width: Math.min(maximum.width, Math.max(minimum.width, size.width)),
+    height: Math.min(maximum.height, Math.max(minimum.height, size.height)),
+  };
+}
+
+export function resizedFloatingSize(origin: Size, delta: Point): Size {
+  return {
+    width: origin.width + delta.x,
+    height: origin.height + delta.y,
+  };
+}
+
+export function parseFloatingSize(value: string | null): Size | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("width" in parsed) ||
+      !("height" in parsed) ||
+      typeof parsed.width !== "number" ||
+      typeof parsed.height !== "number" ||
+      !Number.isFinite(parsed.width) ||
+      !Number.isFinite(parsed.height) ||
+      parsed.width <= 0 ||
+      parsed.height <= 0
+    )
+      return null;
+    return { width: parsed.width, height: parsed.height };
+  } catch {
+    return null;
+  }
+}
+
+export function nodeDetailSizeStorageKey(projectId: string): string {
+  return `rcp:node-detail-size:${projectId}`;
+}
+
 export function movedPosition(origin: Point, pointerOrigin: Point, pointer: Point): Point {
   return {
     x: origin.x + pointer.x - pointerOrigin.x,

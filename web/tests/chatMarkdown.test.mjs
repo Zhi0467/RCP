@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
 
-import { MarkdownAnswer } from "../src/chatMarkdown.ts";
+import { buildGlossaryIndex } from "../src/glossary.ts";
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const { MarkdownAnswer } = await server.ssrLoadModule("/src/chatMarkdown.ts");
+
+after(() => server.close());
 
 test("chat Markdown renders formatting and unknown fenced languages as inert code", () => {
   const rendered = renderToStaticMarkup(
@@ -57,4 +69,54 @@ test("chat Markdown links exact graph node ids in prose and inline code", () => 
   );
   assert.match(rendered, /<pre><code class="language-text">exp\/known\n<\/code><\/pre>/);
   assert.match(rendered, /href="https:\/\/example\.test\/exp\/known"/);
+});
+
+test("chat Markdown marks glossary terms only in prose and preserves node links", () => {
+  const glossaryIndex = buildGlossaryIndex({
+    mopd: {
+      term: "MOPD",
+      plain_definition: 'A "matched" distance.',
+    },
+    known: {
+      term: "exp/known",
+      plain_definition: "A graph node that is also a glossary term.",
+    },
+  });
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: [
+        "MOPD and **mopd** appear in prose beside exp/known.",
+        "",
+        "`MOPD` stays code.",
+        "",
+        "```text",
+        "MOPD",
+        "```",
+        "",
+        "[MOPD](https://example.test) stays a link.",
+        "",
+        "![MOPD](https://example.test/image.png)",
+        "",
+        "<span>MOPD</span>",
+      ].join("\n"),
+      nodes: { "exp/known": { id: "exp/known" } },
+      onOpenNode() {},
+      glossaryIndex,
+    }),
+  );
+
+  assert.equal(rendered.match(/<dfn/g)?.length, 2);
+  assert.match(rendered, /<dfn[^>]*class="glossary-definition"/);
+  assert.match(rendered, /data-definition="A &quot;matched&quot; distance\."/);
+  assert.match(rendered, /tabindex="0"/);
+  assert.match(rendered, /title="A &quot;matched&quot; distance\."/);
+  assert.match(rendered, /<dfn[^>]*>MOPD<\/dfn>/);
+  assert.match(rendered, /<strong><dfn[^>]*>mopd<\/dfn><\/strong>/);
+  assert.match(rendered, /<code>MOPD<\/code>/);
+  assert.match(rendered, /<pre><code class="language-text">MOPD\n<\/code><\/pre>/);
+  assert.match(rendered, /<a href="https:\/\/example\.test">MOPD<\/a>/);
+  assert.match(rendered, /alt="MOPD"/);
+  assert.match(rendered, /&lt;span&gt;MOPD&lt;\/span&gt;/);
+  assert.match(rendered, /href="#rcp-node=exp%2Fknown"/);
+  assert.doesNotMatch(rendered, /<dfn[^>]*>exp\/known<\/dfn>/);
 });

@@ -712,8 +712,9 @@ export function ExecutionView({
   const nodes = projectNodes(Object.values(graph.nodes), trustView);
   const openBlockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
   const experiments = nodes.filter((node) => node.type === "experiment");
-  const taskProjection = buildRunTaskProjection(tasks, dismissedTaskIds);
-  const observedAt = latestRunObservation(lastRefreshAt, tasks);
+  const ingestionTasks = tasks.filter((task) => task.kind === "seed" || task.kind === "refresh");
+  const taskProjection = buildRunTaskProjection(ingestionTasks, dismissedTaskIds);
+  const observedAt = latestRunObservation(lastRefreshAt, ingestionTasks);
   const hasRuns =
     openBlockers.length > 0 ||
     experiments.length > 0 ||
@@ -853,33 +854,6 @@ export function ExecutionView({
   );
 }
 
-export function GlossaryView({ graph }: { graph: GraphState }) {
-  const terms = Object.values(graph.glossary);
-  return (
-    <section className="view-panel">
-      <ViewHeading title="Glossary" aside={`${terms.length} terms`} />
-      {terms.length === 0 ? (
-        <EmptyState icon={<GitBranch size={20} />} title="No glossary terms" />
-      ) : (
-        <div className="glossary-table" role="table">
-          <div className="glossary-head" role="row">
-            <span>Term</span>
-            <span>Plain definition</span>
-            <span>Defined at</span>
-          </div>
-          {terms.map((term) => (
-            <div className="glossary-row" role="row" key={term.term}>
-              <strong className="mono">{term.term}</strong>
-              <span>{term.plain_definition}</span>
-              <span className="mono muted">{term.where_defined || "Not recorded"}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustView">) {
   const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
   const ambiguities = Object.values(graph.ambiguities).filter((item) => item.status === "open");
@@ -895,13 +869,7 @@ export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustVie
       <div className="attention-overview-grid">
         <OverviewCard label="Pending proposals" value={proposals.length} />
         <OverviewCard label="Open ambiguities" value={ambiguities.length} />
-        <OverviewCard
-          label="Scientific blockers"
-          value={
-            blockers.filter((node) => ["scientific", "design"].includes(String(node.blocker_type)))
-              .length
-          }
-        />
+        <OverviewCard label="Open blockers" value={blockers.length} />
       </div>
       <h3 className="section-label">Recommended next action</h3>
       {proposals[0] ? (

@@ -811,12 +811,13 @@ class ProjectService:
         self.history.require_writable(state)
         if node_id not in state.nodes:
             raise KeyError(node_id)
+        node = state.nodes[node_id]
         patch = Patch(
             kind="approval",
             author="human",
-            summary=f"Marked {node_id} {request.standing}.",
+            summary=f"Marked “{node.title}” {request.standing}.",
             ops=[{"op": "set_standing", "node_id": node_id, "standing": request.standing}],
-            change_summary=[f"{node_id} is now {request.standing}."],
+            change_summary=[f"“{node.title}” is now {request.standing}."],
         )
         _, result = self.history.append(patch)
         return result.state
@@ -949,9 +950,11 @@ class ProjectService:
                 Patch(
                     kind="approval",
                     author="human",
-                    summary=f"Created custom node {node.id}.",
+                    summary=f"Created “{node.title}”.",
                     ops=[{"op": "create_nodes", "nodes": [prepared.model_dump(mode="json")]}],
-                    change_summary=[f"Created custom node {node.id} as {extension_type}."],
+                    change_summary=[
+                        f"Created “{node.title}” as a {extension_type.replace('_', ' ')}."
+                    ],
                 )
             )
 
@@ -977,14 +980,14 @@ class ProjectService:
                             "experiment loop is active."
                         )
             node_ids = list(request.removed_node_ids)
-            noun = "node" if len(node_ids) == 1 else "nodes"
+            titles = ", ".join(f"“{state.nodes[node_id].title}”" for node_id in node_ids)
             patches.append(
                 Patch(
                     kind="approval",
                     author="human",
-                    summary=f"Removed {noun} {', '.join(node_ids)}.",
+                    summary=f"Removed {titles}.",
                     ops=[{"op": "remove_nodes", "node_ids": node_ids}],
-                    change_summary=[f"Removed {noun} {', '.join(node_ids)}."],
+                    change_summary=[f"Removed {titles}."],
                 )
             )
 
@@ -998,15 +1001,17 @@ class ProjectService:
             stale_from_removal = bool(removed_node_ids.intersection(proposal.related_node_ids))
             if self._proposal_is_stale(state, proposal) or stale_from_removal:
                 reason = (
-                    "Proposal became stale because a related node was removed in this Sync."
+                    f"The proposal “{proposal.title}” became stale because a related research "
+                    "concept was removed in this Sync."
                     if stale_from_removal
-                    else "Proposal was stale and was withdrawn without applying changes."
+                    else f"The proposal “{proposal.title}” was stale and was withdrawn without "
+                    "applying changes."
                 )
                 patches.append(
                     Patch(
                         kind="approval",
                         author="human",
-                        summary=f"Withdrew stale proposal {proposal.id}.",
+                        summary=f"Withdrew stale proposal “{proposal.title}”.",
                         ops=[
                             {
                                 "op": "resolve_proposals",
@@ -1027,7 +1032,7 @@ class ProjectService:
                 Patch(
                     kind="approval",
                     author="human",
-                    summary=f"{staged.decision.title()} proposal {proposal.id}.",
+                    summary=f"{staged.decision.title()} proposal “{proposal.title}”.",
                     ops=[
                         *semantic_ops,
                         {
@@ -1042,7 +1047,7 @@ class ProjectService:
                         },
                         *standing_ops,
                     ],
-                    change_summary=[f"Proposal {proposal.id} was {staged.decision}."],
+                    change_summary=[f"The proposal “{proposal.title}” was {staged.decision}."],
                 )
             )
 
@@ -1056,14 +1061,16 @@ class ProjectService:
                 Patch(
                     kind="approval",
                     author="human",
-                    summary=f"Marked ambiguity {ambiguity.id} {staged.status}.",
+                    summary=f"Marked the open question “{ambiguity.question}” {staged.status}.",
                     ops=[
                         {
                             "op": "resolve_ambiguities",
                             "resolutions": [{"id": ambiguity.id, "status": staged.status}],
                         }
                     ],
-                    change_summary=[f"Ambiguity {ambiguity.id} was {staged.status}."],
+                    change_summary=[
+                        f"The open question “{ambiguity.question}” was {staged.status}."
+                    ],
                 )
             )
 
@@ -1077,6 +1084,7 @@ class ProjectService:
                 )
             ops: list[dict[str, Any]] = []
             change_summary: list[str] = []
+            display_title = str(staged.changes.get("title", node.title))
             if staged.changes:
                 allowed = set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
                 if "extension_fields" in staged.changes:
@@ -1106,7 +1114,7 @@ class ProjectService:
                             ],
                         }
                     )
-                    change_summary.append(f"Updated wording for {node.id}.")
+                    change_summary.append(f"Updated wording for “{display_title}”.")
             if staged.cancel_attempt_ids:
                 ops.append(
                     {
@@ -1124,9 +1132,7 @@ class ProjectService:
                         ],
                     }
                 )
-                change_summary.append(
-                    f"Released {len(staged.cancel_attempt_ids)} open attempt(s) on {node.id}."
-                )
+                change_summary.append(f"Released open experiment attempts for “{display_title}”.")
             if staged.standing is not None and staged.standing != node.standing:
                 ops.append(
                     {
@@ -1135,13 +1141,13 @@ class ProjectService:
                         "standing": staged.standing,
                     }
                 )
-                change_summary.append(f"{node.id} is now {staged.standing}.")
+                change_summary.append(f"“{display_title}” is now {staged.standing}.")
             if ops:
                 patches.append(
                     Patch(
                         kind="approval",
                         author="human",
-                        summary=f"Synced staged changes for {node.id}.",
+                        summary=f"Synced staged changes for “{display_title}”.",
                         ops=ops,
                         change_summary=change_summary,
                     )
@@ -1217,7 +1223,7 @@ class ProjectService:
         patch = Patch(
             kind="approval",
             author="human",
-            summary=f"Edited wording for {node_id}.",
+            summary=f"Edited wording for “{request.changes.get('title', node.title)}”.",
             ops=[
                 {
                     "op": "update_nodes",
@@ -1230,7 +1236,9 @@ class ProjectService:
                     ],
                 }
             ],
-            change_summary=[f"Updated human-authored wording for {node_id}."],
+            change_summary=[
+                f"Updated human-authored wording for “{request.changes.get('title', node.title)}”."
+            ],
         )
         _, result = self.history.append(patch)
         return result.state
@@ -1275,14 +1283,17 @@ class ProjectService:
             patch = Patch(
                 kind="approval",
                 author="human",
-                summary=f"Withdrew stale proposal {proposal_id}.",
+                summary=f"Withdrew stale proposal “{proposal.title}”.",
                 ops=[
                     {
                         "op": "resolve_proposals",
                         "resolutions": [{"id": proposal_id, "status": "withdrawn"}],
                     }
                 ],
-                change_summary=["Proposal was stale and was withdrawn without applying changes."],
+                change_summary=[
+                    f"The proposal “{proposal.title}” was stale and was withdrawn without "
+                    "applying changes."
+                ],
             )
         else:
             standing = "accepted" if request.decision == "approved" else "contested"
@@ -1294,7 +1305,7 @@ class ProjectService:
             patch = Patch(
                 kind="approval",
                 author="human",
-                summary=f"{request.decision.title()} proposal {proposal_id}.",
+                summary=f"{request.decision.title()} proposal “{proposal.title}”.",
                 ops=[
                     *semantic_ops,
                     {
@@ -1309,7 +1320,7 @@ class ProjectService:
                     },
                     *standing_ops,
                 ],
-                change_summary=[f"Proposal {proposal_id} was {request.decision}."],
+                change_summary=[f"The proposal “{proposal.title}” was {request.decision}."],
             )
         _, result = self.history.append(patch)
         return result.state
@@ -1327,6 +1338,8 @@ class ProjectService:
         updates: dict[str, object] = {}
         if provider is not None:
             updates["provider"] = provider
+            if provider != base.provider and model is None:
+                updates["model"] = ""
         if model is not None:
             updates["model"] = model
         if reasoning is not None:

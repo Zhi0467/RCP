@@ -1,16 +1,104 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.core.materialize import MaterializationResult
+from rcp.core.materialize import MaterializationResult, apply_valid_patch
 from rcp.core.models import GraphState, Patch, Standing
 from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
 
 _MAX_TITLE_CHARS = 240
+_GRAPH_ID_RE = re.compile(
+    r"(?<![a-z0-9_/-])[a-z][a-z0-9]*(?:_[a-z0-9]+)*/"
+    r"[a-z0-9]+(?:-[a-z0-9]+)*(?![a-z0-9_/-])"
+)
+_OPERATION_LABELS = {
+    "create_nodes": "added research concepts",
+    "update_nodes": "updated research concepts",
+    "create_edges": "connected research concepts",
+    "remove_edges": "removed graph relationships",
+    "remove_nodes": "removed research concepts",
+    "supersede_nodes": "superseded research concepts",
+    "merge_nodes": "merged research concepts",
+    "create_ambiguities": "recorded open questions",
+    "resolve_ambiguities": "resolved open questions",
+    "create_proposals": "recorded proposals",
+    "resolve_proposals": "resolved proposals",
+    "upsert_glossary": "updated the glossary",
+    "set_coverage": "updated source coverage",
+    "set_standing": "updated review standing",
+    "set_project_truth_scope": "updated the project truth scope",
+    "set_ontology": "updated the project ontology",
+}
+
+
+class RevisionSummary(BaseModel):
+    """Deterministic reader-facing prose for one accepted canonical patch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_revision: int = Field(ge=0)
+    to_revision: int = Field(ge=1)
+    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval"]
+    author: Literal["agent", "human"]
+    created_at: str
+    sentences: list[str] = Field(min_length=1)
+
+
+def build_revision_summaries(
+    patches: Iterable[Patch],
+    materialization: MaterializationResult,
+    *,
+    from_revision: int = 1,
+    to_revision: int | None = None,
+) -> list[RevisionSummary]:
+    """Render accepted append-only history without exposing graph implementation labels."""
+
+    end = to_revision if to_revision is not None else 10**12
+    state = GraphState()
+    summaries: list[RevisionSummary] = []
+
+    for patch in sorted(patches, key=lambda item: item.revision):
+        report = materialization.reports.get(patch.revision)
+        if report is None or report.rejected:
+            continue
+
+        previous_state = state
+        state = apply_valid_patch(state, patch)
+        if not from_revision <= patch.revision <= end:
+            continue
+        summaries.append(render_revision_summary(previous_state, patch, state))
+    return summaries
+
+
+def render_revision_summary(
+    previous_state: GraphState,
+    patch: Patch,
+    state: GraphState,
+) -> RevisionSummary:
+    """Render one successfully applied patch without changing either replay state."""
+
+    labels = _state_labels(previous_state) | _state_labels(state)
+    sentences = [_plain_history_text(item, labels) for item in patch.change_summary if item.strip()]
+    sentences = [item for item in sentences if item]
+    if not sentences:
+        sentences = _operation_fallbacks(patch, previous_state, state, labels)
+    sentences.extend(_proposal_consequence_sentences(patch, state, labels, sentences))
+    sentences = _unique_sentences(_plain_history_text(item, labels) for item in sentences)
+    if not sentences:
+        sentences = ["Recorded a research graph revision."]
+    return RevisionSummary(
+        from_revision=max(0, patch.revision - 1),
+        to_revision=patch.revision,
+        kind=patch.kind,
+        author=patch.author,
+        created_at=patch.created_at.isoformat(),
+        sentences=sentences,
+    )
 
 
 class RefreshDeltaEntry(BaseModel):
@@ -538,3 +626,185 @@ def _omitted_revision_range(
         return None
     revisions = [entry.revision for entry in entries]
     return min(revisions), max(revisions)
+
+
+def _state_labels(state: GraphState) -> dict[str, str]:
+    return {
+        **{node.id: node.title for node in state.nodes.values()},
+        **{proposal.id: proposal.title for proposal in state.proposals.values()},
+        **{ambiguity.id: ambiguity.question for ambiguity in state.ambiguities.values()},
+    }
+
+
+def _operation_fallbacks(
+    patch: Patch,
+    previous_state: GraphState,
+    state: GraphState,
+    labels: dict[str, str],
+) -> list[str]:
+    sentences: list[str] = []
+    for operation in patch.ops:
+        name = operation.get("op")
+        if name == "create_nodes":
+            for node in _dict_items(operation.get("nodes")):
+                title = _object_label(str(node.get("id", "")), labels, str(node.get("title", "")))
+                noun = str(node.get("extension_type") or node.get("type") or "research concept")
+                sentences.append(f"Recorded a {noun.replace('_', ' ')}: {_quoted(title)}.")
+        elif name == "update_nodes":
+            sentences.extend(
+                f"Updated {_quoted(_object_label(str(item.get('id', '')), labels))}."
+                for item in _dict_items(operation.get("nodes"))
+            )
+        elif name == "create_edges":
+            for edge in _dict_items(operation.get("edges")):
+                source = _object_label(str(edge.get("source", "")), labels)
+                target = _object_label(str(edge.get("target", "")), labels)
+                sentences.append(f"Connected {_quoted(source)} with {_quoted(target)}.")
+        elif name == "remove_edges":
+            for edge_id in _string_items(operation.get("edge_ids")):
+                edge = previous_state.edges.get(edge_id) or state.edges.get(edge_id)
+                if edge is None:
+                    sentences.append("Removed a graph relationship.")
+                    continue
+                sentences.append(
+                    f"Removed the relationship between "
+                    f"{_quoted(_object_label(edge.source, labels))} and "
+                    f"{_quoted(_object_label(edge.target, labels))}."
+                )
+        elif name == "remove_nodes":
+            sentences.extend(
+                f"Removed {_quoted(_object_label(node_id, labels))}."
+                for node_id in _string_items(operation.get("node_ids"))
+            )
+        elif name == "supersede_nodes":
+            for item in _dict_items(operation.get("nodes")):
+                current = _quoted(_object_label(str(item.get("id", "")), labels))
+                replacement_id = str(item.get("superseded_by", ""))
+                if replacement_id:
+                    replacement = _quoted(_object_label(replacement_id, labels))
+                    sentences.append(f"Superseded {current} with {replacement}.")
+                else:
+                    sentences.append(f"Superseded {current}.")
+        elif name == "merge_nodes":
+            for item in _dict_items(operation.get("merges")):
+                duplicate = _quoted(_object_label(str(item.get("duplicate", "")), labels))
+                canonical = _quoted(_object_label(str(item.get("canonical", "")), labels))
+                sentences.append(f"Merged {duplicate} into {canonical}.")
+        elif name == "create_ambiguities":
+            for item in _dict_items(operation.get("ambiguities")):
+                label = _object_label(
+                    str(item.get("id", "")), labels, str(item.get("question", ""))
+                )
+                sentences.append(f"Recorded an open question: {_quoted(label)}.")
+        elif name == "resolve_ambiguities":
+            for item in _dict_items(operation.get("resolutions")):
+                label = _quoted(_object_label(str(item.get("id", "")), labels))
+                verb = "Resolved" if item.get("status") == "resolved" else "Dismissed"
+                sentences.append(f"{verb} the open question {label}.")
+        elif name == "create_proposals":
+            for item in _dict_items(operation.get("proposals")):
+                label = _object_label(str(item.get("id", "")), labels, str(item.get("title", "")))
+                sentences.append(f"Recorded a proposal: {_quoted(label)}.")
+        elif name == "resolve_proposals":
+            for item in _dict_items(operation.get("resolutions")):
+                label = _quoted(_object_label(str(item.get("id", "")), labels))
+                status = str(item.get("status", "resolved")).replace("_", " ").title()
+                sentences.append(f"{status} proposal {label}.")
+        elif name == "upsert_glossary":
+            sentences.extend(
+                f"Updated the glossary entry {_quoted(str(item.get('term', '')).strip())}."
+                for item in _dict_items(operation.get("terms"))
+                if str(item.get("term", "")).strip()
+            )
+        elif name == "set_coverage":
+            sentences.append("Updated source coverage.")
+        elif name == "set_standing":
+            label = _quoted(_object_label(str(operation.get("node_id", "")), labels))
+            standing = str(operation.get("standing", "asserted"))
+            sentences.append(f"Marked {label} {standing}.")
+        elif name == "set_project_truth_scope":
+            sentences.append("Updated the project truth scope.")
+        elif name == "set_ontology":
+            sentences.append("Updated the project ontology.")
+        else:
+            sentences.append("Updated the research graph.")
+    return sentences
+
+
+def _proposal_consequence_sentences(
+    patch: Patch,
+    state: GraphState,
+    labels: dict[str, str],
+    existing: list[str],
+) -> list[str]:
+    proposal_ids: list[str] = []
+    for operation in patch.ops:
+        name = operation.get("op")
+        if name == "create_proposals":
+            proposal_ids.extend(
+                str(item.get("id", "")) for item in _dict_items(operation.get("proposals"))
+            )
+        elif name == "resolve_proposals":
+            proposal_ids.extend(
+                str(item.get("id", ""))
+                for item in _dict_items(operation.get("resolutions"))
+                if item.get("status") == "approved"
+            )
+
+    rendered: list[str] = []
+    for proposal_id in dict.fromkeys(proposal_ids):
+        proposal = state.proposals.get(proposal_id)
+        if proposal is None:
+            continue
+        title = proposal.title
+        consequence = proposal.card.consequences
+        plain_consequence = _plain_history_text(consequence, labels)
+        if not plain_consequence or any(plain_consequence in item for item in existing):
+            continue
+        label = _object_label(proposal_id, labels, title)
+        rendered.append(
+            f"The proposal {_quoted(label)} records this consequence: {_quoted(plain_consequence)}"
+        )
+    return rendered
+
+
+def _object_label(identifier: str, labels: dict[str, str], fallback: str = "") -> str:
+    return labels.get(identifier) or fallback.strip() or identifier
+
+
+def _plain_history_text(value: str, labels: dict[str, str]) -> str:
+    def replace_identifier(match: re.Match[str]) -> str:
+        identifier = match.group(0)
+        label = labels.get(identifier)
+        return _strip_internal_tokens(label) if label is not None else identifier
+
+    rendered = _GRAPH_ID_RE.sub(replace_identifier, value.strip())
+    operation_names = "|".join(re.escape(name) for name in _OPERATION_LABELS)
+    rendered = re.sub(
+        rf"\s+(?:through|via|using)\s+(?:{operation_names})\b",
+        "",
+        rendered,
+        flags=re.IGNORECASE,
+    )
+    for operation, label in _OPERATION_LABELS.items():
+        rendered = re.sub(rf"\b{re.escape(operation)}\b", label, rendered)
+    return " ".join(rendered.split())
+
+
+def _strip_internal_tokens(value: str) -> str:
+    rendered = value
+    for operation, label in _OPERATION_LABELS.items():
+        rendered = re.sub(rf"\b{re.escape(operation)}\b", label, rendered)
+    return " ".join(rendered.split())
+
+
+def _quoted(value: str) -> str:
+    return f"“{_strip_internal_tokens(value)}”"
+
+
+def _unique_sentences(sentences: Iterable[str]) -> list[str]:
+    unique: list[str] = []
+    for sentence in sentences:
+        if sentence and sentence not in unique:
+            unique.append(sentence)
+    return unique

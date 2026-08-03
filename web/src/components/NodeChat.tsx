@@ -25,17 +25,16 @@ import {
   taskKindLabel,
 } from "../agentTasks";
 import {
-  chatConfigStorageKey,
   chatDraftStorageKey,
   chatModeStorageKey,
   isConversationModeShortcut,
   latestPersistedChatConfig,
   latestPersistedConversationMode,
   parseConversationMode,
-  parseStoredAgentRunConfig,
   toggleConversationMode,
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
+import type { GlossaryIndex } from "../glossary";
 import {
   downloadDesktopArtifact,
   isDesktopRuntime,
@@ -43,7 +42,6 @@ import {
 } from "../desktopRuntime";
 import type {
   AgentArtifactDescriptor,
-  AgentRunConfig,
   AgentTask,
   ChatMessage,
   ConversationMode,
@@ -57,13 +55,14 @@ import {
   CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../uiConstants";
-import { AgentConfigControls, profileRunConfig } from "./AgentConfigControls";
+import { profileRunConfig } from "./AgentConfigControls";
 import { RepositoryScope } from "./RepositoryScope";
 
 interface Props {
   project: ProjectSnapshot;
   node?: GraphNode | null;
   nodes?: Readonly<Record<string, GraphNode>>;
+  glossaryIndex?: GlossaryIndex;
   conversationTitle?: string;
   runScope: string[];
   tasks: AgentTask[];
@@ -94,6 +93,7 @@ export function NodeChat({
   project,
   node,
   nodes = {},
+  glossaryIndex,
   conversationTitle,
   runScope,
   tasks,
@@ -138,14 +138,15 @@ export function NodeChat({
       ]),
     [historyMessages, pendingTurn, relatedTasks],
   );
-  const configKey = chatConfigStorageKey(project.id, chatId);
-  const [config, setConfig] = useState<AgentRunConfig>(() => {
-    const fallback = profileRunConfig(project.agent_profiles[surface]);
-    return (
-      parseStoredAgentRunConfig(readStorage(configKey)) ??
-      latestPersistedChatConfig(historyMessages, relatedTasks, fallback)
-    );
-  });
+  const config = useMemo(
+    () =>
+      latestPersistedChatConfig(
+        historyMessages,
+        relatedTasks,
+        profileRunConfig(project.agent_profiles[surface]),
+      ),
+    [historyMessages, project.agent_profiles, relatedTasks, surface],
+  );
   const [scope, setScope] = useState(runScope);
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
@@ -189,7 +190,6 @@ export function NodeChat({
     [relatedTasks],
   );
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
-  const locked = transcript.some((line) => line.role === "human");
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady = Boolean(readiness?.installed && readiness?.authenticated);
   const sessionId =
@@ -250,11 +250,6 @@ export function NodeChat({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [presentation, toggleMode]);
-
-  const updateConfig = (next: AgentRunConfig) => {
-    writeStorage(configKey, JSON.stringify(next));
-    setConfig(next);
-  };
 
   const updateMessage = (next: string) => {
     if (next && !modeState.pinned) {
@@ -441,16 +436,13 @@ export function NodeChat({
           </button>
         </header>
       )}
-      <AgentConfigControls
-        project={project}
-        value={config}
-        onChange={updateConfig}
-        runOnLocked
-        locked={locked || Boolean(activeTask) || reviewPending}
-        compact
-        collapsible
-        defaultCollapsed
-      >
+      <div className="chat-context-controls">
+        <div
+          className="agent-provider-label"
+          aria-label={`Chat provider: ${readiness?.label || config.provider}`}
+        >
+          {readiness?.label || config.provider}
+        </div>
         <div className="chat-scope-control">
           <span>Raw truth inputs</span>
           <RepositoryScope
@@ -458,10 +450,10 @@ export function NodeChat({
             projectScope={project.project_truth_scope}
             stateRepository={project.state_repository}
             selected={scope}
-            onChange={locked || activeTask || reviewPending ? () => undefined : setScope}
+            onChange={activeTask || reviewPending ? () => undefined : setScope}
           />
         </div>
-      </AgentConfigControls>
+      </div>
       {liveWatchers.length > 0 && (
         <section className="chat-watchers" aria-label="Active watchers">
           <header>
@@ -514,7 +506,12 @@ export function NodeChat({
               {line.role === "agent" ? (
                 line.text && (
                   <div className="chat-markdown">
-                    <MarkdownAnswer text={line.text} nodes={nodes} onOpenNode={onOpenNode} />
+                    <MarkdownAnswer
+                      text={line.text}
+                      nodes={nodes}
+                      glossaryIndex={glossaryIndex}
+                      onOpenNode={onOpenNode}
+                    />
                   </div>
                 )
               ) : line.role === "human" ? (

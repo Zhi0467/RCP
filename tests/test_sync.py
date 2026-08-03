@@ -388,7 +388,8 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
     ]
     if same_draft:
         assert service.history.load_patches()[-1].change_summary == [
-            "Proposal became stale because a related node was removed in this Sync."
+            "The proposal “Treat replanning as the active hypothesis” became stale because a related "
+            "research concept was removed in this Sync."
         ]
 
 
