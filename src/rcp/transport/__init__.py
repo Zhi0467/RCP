@@ -3,6 +3,9 @@ from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.state import (
     BatchPublishFailed,
     LocalStateWorkspace,
+    RunLockCancelled,
+    RunLockLease,
+    RunLockOwnershipLost,
     SSHStateWorkspace,
     StateUnavailable,
     StateWorkspace,
@@ -12,6 +15,9 @@ from rcp.transport.state import (
 __all__ = [
     "BatchPublishFailed",
     "LocalStateWorkspace",
+    "RunLockCancelled",
+    "RunLockLease",
+    "RunLockOwnershipLost",
     "SSHStateWorkspace",
     "StateUnavailable",
     "StateWorkspace",

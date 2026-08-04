@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -14,6 +17,7 @@ import pytest
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
+from rcp.limits import STATE_LOCK_POLL_INTERVAL_SECONDS
 from rcp.paper import PaperService
 from rcp.storage import AppStore
 from rcp.transport import (
@@ -24,6 +28,14 @@ from rcp.transport import (
     StateUnavailable,
     StateWorkspace,
     repository_access,
+)
+from rcp.transport.state import (
+    RunLockCancelled,
+    RunLockLease,
+    RunLockOwnershipLost,
+    _advisory_lock_holder_arguments,
+    _process_advisory_lock,
+    _remote_advisory_lock_command,
 )
 
 from .helpers import seed_patch
@@ -284,15 +296,435 @@ def test_shared_snapshot_lock_keeps_batch_append_out_of_refresh_and_replay(
     assert published_batches[0].startswith("patches/batch-000002-000002-")
 
 
-def test_second_graph_run_is_refused(tmp_path) -> None:
+def test_local_graph_run_waits_then_acquires_and_reports_once(tmp_path) -> None:
     workspace = LocalStateWorkspace(tmp_path / ".research", str(tmp_path))
+    waiting = threading.Event()
+    acquired = threading.Event()
+    messages: list[str] = []
 
-    with (
-        workspace.run_lock(),
-        pytest.raises(StateUnavailable, match="already in progress"),
-        workspace.run_lock(),
+    def contend() -> None:
+        def on_wait(message: str) -> None:
+            messages.append(message)
+            waiting.set()
+
+        with workspace.run_lock(on_wait=on_wait) as lease:
+            assert isinstance(lease, RunLockLease)
+            lease.assert_owned()
+            acquired.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with workspace.run_lock():
+            future = pool.submit(contend)
+            assert waiting.wait(timeout=5)
+            assert acquired.is_set() is False
+        future.result(timeout=5)
+
+    assert acquired.is_set() is True
+    assert messages == ["Waiting for another graph-writing run to release canonical state."]
+
+
+def test_local_graph_run_wait_can_be_cancelled(tmp_path) -> None:
+    workspace = LocalStateWorkspace(tmp_path / ".research", str(tmp_path))
+    waiting = threading.Event()
+    cancellation = threading.Event()
+
+    with ThreadPoolExecutor(max_workers=1) as pool, workspace.run_lock():
+        future = pool.submit(
+            lambda: _enter_run_lock(
+                workspace,
+                on_wait=lambda _message: waiting.set(),
+                cancelled=cancellation.is_set,
+            )
+        )
+        assert waiting.wait(timeout=5)
+        cancellation.set()
+        with pytest.raises(RunLockCancelled, match="cancelled while waiting"):
+            future.result(timeout=5)
+
+
+def _enter_run_lock(workspace, **kwargs) -> None:
+    with workspace.run_lock(**kwargs):
+        pass
+
+
+def _local_advisory_lock_arguments(path: Path) -> list[str]:
+    return _advisory_lock_holder_arguments(path, python_executable=sys.executable)
+
+
+def _command_lease(path: str, command) -> RunLockLease:
+    return RunLockLease(path, command=command)
+
+
+@pytest.mark.parametrize("name", [".agent-run.lock", ".refresh.lock"])
+def test_process_advisory_lock_waits_then_acquires(name, tmp_path) -> None:
+    path = tmp_path / name
+    arguments = _local_advisory_lock_arguments(path)
+    waiting = threading.Event()
+    acquired = threading.Event()
+    messages: list[str] = []
+
+    def contend() -> None:
+        def on_wait(message: str) -> None:
+            messages.append(message)
+            waiting.set()
+
+        with _process_advisory_lock(arguments, str(path), on_wait=on_wait):
+            acquired.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with _process_advisory_lock(arguments, str(path)):
+            future = pool.submit(contend)
+            assert waiting.wait(timeout=5)
+            assert acquired.is_set() is False
+        future.result(timeout=5)
+
+    assert acquired.is_set() is True
+    assert messages == ["Waiting for another graph-writing run to release canonical state."]
+
+
+def test_process_advisory_lock_acquires_when_contention_resolves_within_one_read() -> None:
+    """A contention that clears fast delivers both statuses in a single read.
+
+    The holder prints `contended`, blocks, then prints `acquired`. When the wait
+    is short, both lines reach the reader together, so a status reader that
+    polls the raw descriptor would never see the second one.
+    """
+
+    coalescing_holder = 'import sys\nsys.stdout.write("contended\\nacquired\\n")\n' + (
+        "sys.stdout.flush()\nfor line in sys.stdin:\n    pass\n"
+    )
+    acquired = threading.Event()
+
+    def acquire() -> None:
+        with _process_advisory_lock(
+            [sys.executable, "-c", coalescing_holder], "probe:/state/.agent-run.lock"
+        ):
+            acquired.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(acquire).result(timeout=10)
+
+    assert acquired.is_set() is True
+
+
+def test_process_advisory_lock_uses_one_waiter_during_long_contention(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / ".agent-run.lock"
+    arguments = _local_advisory_lock_arguments(path)
+    waiting = threading.Event()
+    acquired = threading.Event()
+    real_popen = subprocess.Popen
+    started: list[subprocess.Popen[str]] = []
+
+    def counting_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", counting_popen)
+
+    def contend() -> None:
+        with _process_advisory_lock(
+            arguments,
+            str(path),
+            on_wait=lambda _message: waiting.set(),
+        ):
+            acquired.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with _process_advisory_lock(arguments, str(path)):
+            baseline = len(started)
+            future = pool.submit(contend)
+            assert waiting.wait(timeout=5)
+            time.sleep(STATE_LOCK_POLL_INTERVAL_SECONDS * 3)
+            assert len(started) - baseline == 1
+            assert acquired.is_set() is False
+        future.result(timeout=5)
+
+    assert acquired.is_set() is True
+
+
+def test_process_advisory_lock_wait_can_be_cancelled(tmp_path) -> None:
+    path = tmp_path / ".agent-run.lock"
+    arguments = _local_advisory_lock_arguments(path)
+    waiting = threading.Event()
+    cancellation = threading.Event()
+
+    with ThreadPoolExecutor(max_workers=1) as pool, _process_advisory_lock(arguments, str(path)):
+        future = pool.submit(
+            _enter_process_lock,
+            arguments,
+            path,
+            waiting,
+            cancellation,
+        )
+        assert waiting.wait(timeout=5)
+        cancellation.set()
+        with pytest.raises(RunLockCancelled, match="cancelled while waiting"):
+            future.result(timeout=5)
+
+
+def test_stalled_initial_lock_signal_cancels_promptly(tmp_path, monkeypatch) -> None:
+    cancellation = threading.Event()
+    started = threading.Event()
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        started.set()
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    arguments = [sys.executable, "-c", "import time; time.sleep(60)"]
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            _enter_stalled_process_lock,
+            arguments,
+            tmp_path,
+            cancellation,
+        )
+        assert started.wait(timeout=5)
+        cancelled_at = time.monotonic()
+        cancellation.set()
+        with pytest.raises(RunLockCancelled, match="cancelled while waiting"):
+            future.result(timeout=2)
+
+    assert time.monotonic() - cancelled_at < 2
+
+
+def _enter_stalled_process_lock(
+    arguments: list[str],
+    path: Path,
+    cancellation: threading.Event,
+) -> None:
+    with _process_advisory_lock(
+        arguments,
+        str(path),
+        cancelled=cancellation.is_set,
     ):
         pass
+
+
+def _enter_process_lock(
+    arguments: list[str],
+    path: Path,
+    waiting: threading.Event,
+    cancellation: threading.Event,
+) -> None:
+    with _process_advisory_lock(
+        arguments,
+        str(path),
+        on_wait=lambda _message: waiting.set(),
+        cancelled=cancellation.is_set,
+    ):
+        pass
+
+
+def test_process_advisory_lock_holder_death_releases_ownership(tmp_path) -> None:
+    path = tmp_path / ".agent-run.lock"
+    arguments = _local_advisory_lock_arguments(path)
+    holder = subprocess.Popen(
+        arguments,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline().strip() == "acquired"
+
+    holder.kill()
+    holder.wait(timeout=5)
+
+    with _process_advisory_lock(arguments, str(path)):
+        pass
+
+
+def test_killed_acquired_holder_marks_lease_lost_once(tmp_path, monkeypatch) -> None:
+    path = tmp_path / ".agent-run.lock"
+    arguments = _local_advisory_lock_arguments(path)
+    real_popen = subprocess.Popen
+    holders: list[subprocess.Popen[str]] = []
+    lost = threading.Event()
+    messages: list[str] = []
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        holders.append(process)
+        return process
+
+    def on_lost(message: str) -> None:
+        messages.append(message)
+        lost.set()
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+
+    with (
+        pytest.raises(RunLockOwnershipLost, match="exited unexpectedly"),
+        _process_advisory_lock(arguments, str(path), on_lost=on_lost) as lease,
+    ):
+        holders[-1].kill()
+        assert lost.wait(timeout=5)
+        with pytest.raises(RunLockOwnershipLost, match="exited unexpectedly"):
+            lease.assert_owned()
+        lease.assert_owned()
+
+    assert len(messages) == 1
+
+
+def test_intentional_holder_release_does_not_report_loss(tmp_path) -> None:
+    path = tmp_path / ".agent-run.lock"
+    messages: list[str] = []
+
+    with _process_advisory_lock(
+        _local_advisory_lock_arguments(path),
+        str(path),
+        on_lost=messages.append,
+    ) as lease:
+        lease.assert_owned()
+
+    time.sleep(STATE_LOCK_POLL_INTERVAL_SECONDS * 2)
+    assert messages == []
+
+
+def test_owned_holder_command_applies_staged_commit_and_files(tmp_path) -> None:
+    root = tmp_path / ".research"
+    stage = root / ".publish" / "patch-000001.json"
+    patch = Path("patches/000001.json")
+    for relative, content in ((patch, "patch\n"), (Path("graph.json"), "graph\n")):
+        source = stage / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(content, encoding="utf-8")
+
+    with _process_advisory_lock(
+        _local_advisory_lock_arguments(root / ".refresh.lock"),
+        str(root / ".refresh.lock"),
+    ) as lease:
+        response = lease._run_owned_command(
+            {
+                "op": "apply",
+                "root": str(root),
+                "stage": str(stage),
+                "paths": [patch.as_posix(), "graph.json"],
+                "commit": patch.as_posix(),
+                "commit_is_directory": False,
+            }
+        )
+
+    assert response == {"ok": True, "commit_status": "present"}
+    assert (root / patch).read_text(encoding="utf-8") == "patch\n"
+    assert (root / "graph.json").read_text(encoding="utf-8") == "graph\n"
+    assert stage.exists() is False
+
+
+@pytest.mark.parametrize("name", [".agent-run.lock", ".refresh.lock"])
+def test_process_advisory_lock_ignores_unowned_regular_file(name, tmp_path) -> None:
+    path = tmp_path / name
+    path.write_text("previous holder\n", encoding="utf-8")
+
+    with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)):
+        assert path.read_text(encoding="utf-8") == "previous holder\n"
+
+    assert path.is_file()
+
+
+@pytest.mark.parametrize("name", [".agent-run.lock", ".refresh.lock"])
+def test_process_advisory_lock_reclaims_an_empty_legacy_directory(name, tmp_path) -> None:
+    """A crashed mkdir-era run leaves an empty directory; clearing it is RCP's job."""
+
+    path = tmp_path / name
+    path.mkdir()
+
+    with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)):
+        assert path.is_file()
+
+    assert path.is_file()
+
+
+@pytest.mark.parametrize("name", [".agent-run.lock", ".refresh.lock"])
+def test_process_advisory_lock_preserves_a_populated_legacy_directory(name, tmp_path) -> None:
+    path = tmp_path / name
+    path.mkdir()
+    marker = path / "owner.txt"
+    marker.write_text("unknown owner\n", encoding="utf-8")
+
+    with (
+        pytest.raises(StateUnavailable) as raised,
+        _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)),
+    ):
+        pass
+
+    message = str(raised.value)
+    assert str(path) in message
+    assert "legacy directory RCP could not reclaim" in message
+    assert "RCP preserved it" in message
+    assert "remove manually" not in message
+    assert marker.read_text(encoding="utf-8") == "unknown owner\n"
+
+
+def test_process_advisory_lock_preserves_symlink_instead_of_following_it(tmp_path) -> None:
+    target = tmp_path / "unrelated-state"
+    target.write_text("do not touch\n", encoding="utf-8")
+    path = tmp_path / ".agent-run.lock"
+    path.symlink_to(target)
+
+    with (
+        pytest.raises(StateUnavailable) as raised,
+        _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)),
+    ):
+        pass
+
+    message = str(raised.value)
+    assert "not a regular file" in message
+    assert "RCP preserved it" in message
+    assert path.is_symlink()
+    assert target.read_text(encoding="utf-8") == "do not touch\n"
+
+
+def test_remote_advisory_lock_command_quotes_the_exact_path() -> None:
+    lock_path = "/srv/project with spaces/$(touch nope)/.agent-run.lock"
+
+    arguments = _remote_advisory_lock_command("research.example", lock_path)
+
+    assert arguments[-2] == "research.example"
+    remote_arguments = shlex.split(arguments[-1])
+    assert remote_arguments[0:2] == ["python3", "-c"]
+    assert remote_arguments[-1] == lock_path
+
+
+def test_remote_run_lock_forwards_wait_and_cancellation_hooks(tmp_path, monkeypatch) -> None:
+    workspace = SSHStateWorkspace(tmp_path / ".research", "research.example", "/srv/project")
+    calls: list[tuple[str, object, object, object]] = []
+
+    def on_wait(_message: str) -> None:
+        pass
+
+    def cancelled() -> bool:
+        return False
+
+    def on_lost(_message: str) -> None:
+        pass
+
+    @contextmanager
+    def fake_remote_lock(path, **kwargs):
+        calls.append(
+            (
+                str(path),
+                kwargs.get("on_wait"),
+                kwargs.get("cancelled"),
+                kwargs.get("on_lost"),
+            )
+        )
+        yield RunLockLease(str(path))
+
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+
+    with workspace.run_lock(on_wait=on_wait, cancelled=cancelled, on_lost=on_lost) as lease:
+        lease.assert_owned()
+
+    assert calls == [("/srv/project/.research/.agent-run.lock", on_wait, cancelled, on_lost)]
 
 
 def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
@@ -304,6 +736,8 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
     ssh_calls: list[list[str]] = []
     rsync_calls: list[list[str]] = []
+    lock_calls: list[str] = []
+    commands: list[dict[str, object]] = []
 
     def fake_ssh(arguments):
         ssh_calls.append(arguments)
@@ -313,15 +747,25 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
         rsync_calls.append(arguments)
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        lock_calls.append(str(path))
+
+        def command(payload):
+            commands.append(payload)
+            return {"ok": True, "commit_status": None}
+
+        yield _command_lease(str(path), command)
+
     monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert workspace.refresh() is True
     assert ssh_calls == [
         ["test", "-f", "/srv/project/.research/manifest.toml"],
-        ["mkdir", "/srv/project/.research/.refresh.lock"],
-        ["rmdir", "/srv/project/.research/.refresh.lock"],
     ]
+    assert lock_calls == ["/srv/project/.research/.refresh.lock"]
     assert len([call for call in rsync_calls if "--delete" in call]) == 1
 
     ssh_calls.clear()
@@ -329,11 +773,17 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     with workspace.transaction():
         workspace.publish(["graph.json"])
 
-    assert ssh_calls.count(["mkdir", "/srv/project/.research/.refresh.lock"]) == 1
     assert ssh_calls.count(["test", "-f", "/srv/project/.research/manifest.toml"]) == 1
-    assert ssh_calls[-1] == ["rmdir", "/srv/project/.research/.refresh.lock"]
+    assert lock_calls == [
+        "/srv/project/.research/.refresh.lock",
+        "/srv/project/.research/.refresh.lock",
+    ]
     assert len([call for call in rsync_calls if "--delete" in call]) == 1
     assert len([call for call in rsync_calls if "-aR" in call]) == 1
+    assert len(commands) == 1
+    assert commands[0]["paths"] == ["graph.json"]
+    assert "commit" not in commands[0]
+    assert ".publish/files-" in str(commands[0]["stage"])
 
 
 def test_remote_batch_publication_stages_then_commits_directory_last(tmp_path, monkeypatch) -> None:
@@ -349,18 +799,26 @@ def test_remote_batch_publication_stages_then_commits_directory_last(tmp_path, m
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    ssh_calls = []
     rsync_calls = []
+    commands: list[dict[str, object]] = []
 
-    def fake_ssh(arguments):
-        ssh_calls.append(arguments)
+    def fake_ssh(_arguments):
         return subprocess.CompletedProcess([], 0, "", "")
 
     def fake_run(arguments, **kwargs):
         rsync_calls.append((arguments, kwargs))
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(payload):
+            commands.append(payload)
+            return {"ok": True, "commit_status": "present"}
+
+        yield _command_lease(str(path), command)
+
     monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     workspace.publish_committed_batch(
@@ -370,13 +828,9 @@ def test_remote_batch_publication_stages_then_commits_directory_last(tmp_path, m
 
     assert len(rsync_calls) == 1
     assert ".publish/batch-000002-000003-test" in rsync_calls[0][0][-1]
-    assert ssh_calls[-1][0:2] == ["python3", "-c"]
-    assert ssh_calls[-1][5] == batch.as_posix()
-    apply_script = ssh_calls[-1][2]
-    assert apply_script.index("os.replace(commit_source, commit_target)") < apply_script.index(
-        "os.replace(source, target)"
-    )
-    assert "if source.is_file()" in apply_script
+    assert len(commands) == 1
+    assert commands[0]["commit"] == batch.as_posix()
+    assert commands[0]["commit_is_directory"] is True
     assert workspace.reachable is True
 
 
@@ -390,31 +844,34 @@ def test_remote_patch_publication_commits_file_before_derived_outputs(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("{}", encoding="utf-8")
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    ssh_calls: list[list[str]] = []
     rsync_calls: list[tuple[list[str], dict]] = []
+    commands: list[dict[str, object]] = []
 
-    def fake_ssh(arguments):
-        ssh_calls.append(arguments)
+    def fake_ssh(_arguments):
         return subprocess.CompletedProcess([], 0, "", "")
 
     def fake_run(arguments, **kwargs):
         rsync_calls.append((arguments, kwargs))
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(payload):
+            commands.append(payload)
+            return {"ok": True, "commit_status": "present"}
+
+        yield _command_lease(str(path), command)
+
     monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     workspace.publish_committed_patch([patch, "graph.json"], patch)
 
     assert len(rsync_calls) == 1
     assert ".publish/patch-000001.json" in rsync_calls[0][0][-1]
-    apply = ssh_calls[-1]
-    assert apply[0:2] == ["python3", "-c"]
-    assert apply[5] == patch.as_posix()
-    assert apply[7] == "file"
-    assert apply[2].index("os.replace(commit_source, commit_target)") < apply[2].index(
-        "os.replace(source, target)"
-    )
+    assert commands[0]["commit"] == patch.as_posix()
+    assert commands[0]["commit_is_directory"] is False
 
 
 def test_remote_patch_publish_probes_commit_and_repairs_idempotently(tmp_path, monkeypatch) -> None:
@@ -425,23 +882,27 @@ def test_remote_patch_publish_probes_commit_and_repairs_idempotently(tmp_path, m
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("{}", encoding="utf-8")
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    apply_attempts = 0
-    calls: list[list[str]] = []
+    commands: list[dict[str, object]] = []
 
-    def fake_ssh(arguments):
-        nonlocal apply_attempts
-        calls.append(arguments)
-        if arguments[0:2] == ["python3", "-c"]:
-            apply_attempts += 1
-            return subprocess.CompletedProcess(
-                [],
-                1 if apply_attempts == 1 else 0,
-                "",
-                "derived output failed",
-            )
+    def fake_ssh(_arguments):
         return subprocess.CompletedProcess([], 0, "", "")
 
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(payload):
+            commands.append(payload)
+            if len(commands) == 1:
+                return {
+                    "ok": False,
+                    "commit_status": "present",
+                    "error": "derived output failed",
+                }
+            return {"ok": True, "commit_status": "present"}
+
+        yield _command_lease(str(path), command)
+
     monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -450,8 +911,7 @@ def test_remote_patch_publish_probes_commit_and_repairs_idempotently(tmp_path, m
 
     workspace.publish_committed_patch([patch, "graph.json"], patch)
 
-    assert apply_attempts == 2
-    assert ["test", "-f", "/srv/project/.research/patches/000001.json"] in calls
+    assert len(commands) == 2
     assert workspace.reachable is True
 
 
@@ -467,13 +927,19 @@ def test_remote_patch_publish_reports_unknown_when_commit_probe_fails(
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
 
     def fake_ssh(arguments):
-        if arguments[0:2] == ["python3", "-c"]:
-            return subprocess.CompletedProcess([], 1, "", "apply disconnected")
         if arguments[0:2] == ["test", "-f"]:
             return subprocess.CompletedProcess([], 255, "", "probe disconnected")
         return subprocess.CompletedProcess([], 0, "", "")
 
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(_payload):
+            raise RunLockOwnershipLost("apply disconnected")
+
+        yield _command_lease(str(path), command)
+
     monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -485,6 +951,199 @@ def test_remote_patch_publish_reports_unknown_when_commit_probe_fails(
 
     assert caught.value.commit_status == "unknown"
     assert "probe disconnected" in str(caught.value)
+
+
+def test_holder_death_after_staging_cannot_apply_commit_unfenced(tmp_path, monkeypatch) -> None:
+    cache_root = tmp_path / "cache" / ".research"
+    remote_root = tmp_path / "remote-project" / ".research"
+    patch = Path("patches/000001.json")
+    for relative in (patch, Path("graph.json")):
+        source = cache_root / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("{}\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
+    ssh_calls: list[list[str]] = []
+    holders: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        holders.append(process)
+        return process
+
+    def fake_ssh(arguments):
+        ssh_calls.append(arguments)
+        if arguments[0:2] == ["mkdir", "-p"]:
+            Path(arguments[-1]).mkdir(parents=True, exist_ok=True)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        if arguments[0:2] == ["test", "-f"]:
+            return subprocess.CompletedProcess(
+                arguments,
+                0 if Path(arguments[-1]).is_file() else 1,
+                "",
+                "",
+            )
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    def fake_rsync(arguments, **kwargs):
+        stage = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
+        for relative in (patch, Path("graph.json")):
+            target = stage / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(kwargs["cwd"]) / relative, target)
+        holders[-1].kill()
+        holders[-1].wait(timeout=5)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    @contextmanager
+    def local_remote_lock(path, **_kwargs):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with _process_advisory_lock(
+            _local_advisory_lock_arguments(Path(path)),
+            str(path),
+        ) as lease:
+            yield lease
+
+    monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(subprocess, "run", fake_rsync)
+    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", local_remote_lock)
+
+    with pytest.raises(BatchPublishFailed) as caught:
+        workspace.publish_committed_patch([patch, "graph.json"], patch)
+
+    assert caught.value.commit_status == "absent"
+    assert (remote_root / patch).exists() is False
+    assert (remote_root / ".publish" / "patch-000001.json" / patch).is_file()
+    assert not any(call[0:2] == ["python3", "-c"] for call in ssh_calls)
+
+
+def test_commit_channel_loss_reconciles_present_commit(tmp_path, monkeypatch) -> None:
+    cache_root = tmp_path / "cache" / ".research"
+    remote_root = tmp_path / "remote-project" / ".research"
+    patch = Path("patches/000001.json")
+    for relative in (patch, Path("graph.json")):
+        source = cache_root / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("{}\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
+
+    def fake_ssh(arguments):
+        if arguments[0:2] == ["test", "-f"]:
+            return subprocess.CompletedProcess(
+                arguments,
+                0 if Path(arguments[-1]).is_file() else 1,
+                "",
+                "",
+            )
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    def fake_rsync(arguments, **_kwargs):
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(_payload):
+            target = remote_root / patch
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("committed\n", encoding="utf-8")
+            raise RunLockOwnershipLost("channel died after commit point")
+
+        yield _command_lease(str(path), command)
+
+    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(subprocess, "run", fake_rsync)
+
+    with pytest.raises(BatchPublishFailed) as caught:
+        workspace.publish_committed_patch([patch, "graph.json"], patch)
+
+    assert caught.value.commit_status == "present"
+    assert (remote_root / patch).read_text(encoding="utf-8") == "committed\n"
+
+
+def test_absent_commit_probe_waits_for_old_holder_before_classifying(tmp_path, monkeypatch) -> None:
+    cache_root = tmp_path / "cache" / ".research"
+    remote_root = tmp_path / "remote-project" / ".research"
+    patch = Path("patches/000001.json")
+    for relative in (patch, Path("graph.json")):
+        source = cache_root / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("{}\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
+    lock_entries = 0
+    probes: list[int] = []
+
+    def fake_ssh(arguments):
+        if arguments[0:2] == ["test", "-f"]:
+            return_code = 0 if Path(arguments[-1]).is_file() else 1
+            probes.append(return_code)
+            return subprocess.CompletedProcess(arguments, return_code, "", "")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        nonlocal lock_entries
+        lock_entries += 1
+        if lock_entries == 2:
+            target = remote_root / patch
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("committed by old holder\n", encoding="utf-8")
+
+        def command(_payload):
+            raise RunLockOwnershipLost("channel died before the holder reported its outcome")
+
+        yield _command_lease(str(path), command)
+
+    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+    )
+
+    with pytest.raises(BatchPublishFailed) as caught:
+        workspace.publish_committed_patch([patch, "graph.json"], patch)
+
+    assert probes == [1, 0]
+    assert lock_entries == 2
+    assert caught.value.commit_status == "present"
+
+
+def test_ordinary_publish_channel_loss_requires_full_restage(tmp_path, monkeypatch) -> None:
+    root = tmp_path / ".research"
+    root.mkdir()
+    (root / "graph.json").write_text("{}\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    rsync_calls: list[list[str]] = []
+
+    def fake_ssh(arguments):
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    def fake_rsync(arguments, **_kwargs):
+        rsync_calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(_payload):
+            raise RunLockOwnershipLost("channel died during ordinary apply")
+
+        yield _command_lease(str(path), command)
+
+    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(subprocess, "run", fake_rsync)
+
+    with pytest.raises(RunLockOwnershipLost) as caught:
+        workspace.publish(["graph.json"])
+
+    assert "prefix may have been applied" in str(caught.value)
+    assert "Retry in a new transaction" in str(caught.value)
+    assert len(rsync_calls) == 1
+    assert ".publish/files-" in rsync_calls[0][-1]
+    assert rsync_calls[0][-1] != "research.example:/srv/project/.research/"
 
 
 def test_failed_remote_single_patch_before_commit_rolls_back_local_mirror(manifest) -> None:
@@ -667,21 +1326,23 @@ def test_remote_batch_retries_remaining_outputs_after_commit_point(tmp_path, mon
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("{}", encoding="utf-8")
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    apply_attempts = 0
+    commands: list[dict[str, object]] = []
 
-    def fake_ssh(arguments):
-        nonlocal apply_attempts
-        if arguments[0:2] == ["python3", "-c"]:
-            apply_attempts += 1
-            return subprocess.CompletedProcess(
-                [],
-                1 if apply_attempts == 1 else 0,
-                "",
-                "partial apply",
-            )
+    def fake_ssh(_arguments):
         return subprocess.CompletedProcess([], 0, "", "")
 
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        def command(payload):
+            commands.append(payload)
+            if len(commands) == 1:
+                return {"ok": False, "commit_status": "present", "error": "partial apply"}
+            return {"ok": True, "commit_status": "present"}
+
+        yield _command_lease(str(path), command)
+
     monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -690,7 +1351,7 @@ def test_remote_batch_retries_remaining_outputs_after_commit_point(tmp_path, mon
 
     workspace.publish_committed_batch([batch / "000001.json", "graph.json"], batch)
 
-    assert apply_attempts == 2
+    assert len(commands) == 2
     assert workspace.reachable is True
 
 

@@ -325,7 +325,17 @@ guarantees — surface the conflict instead of working around it.
 8. **One RCP process per data directory**, enforced by an `fcntl` lock in
    [`__main__.py`](src/rcp/__main__.py). Background seed/refresh is
    server-owned; a live run can be paused, a checkpointed attempt resumed, and a
-   paused/interrupted/failed attempt retried.
+   paused/interrupted/failed attempt retried. Remote canonical-state concurrency
+   is also process-owned: `.agent-run.lock` and `.refresh.lock` are regular files
+   held by an OS advisory lock through an SSH holder process. File existence is
+   not ownership; live contention waits rather than failing, and process or
+   connection death releases ownership. Never restore mkdir/rmdir lock ownership
+   or tell the human to remove a lock path. An empty legacy lock directory is
+   reclaimed automatically; a populated directory, symlink, or special entry is
+   preserved and reported because replacing it cannot be proved safe. Remote
+   publication is staged under `.research/.publish/` and applied by the same
+   process holding `.refresh.lock`; never restore a separate unfenced SSH apply
+   after a point-in-time lease check.
 9. **A failed run keeps its scratch folder and its patch text.** The patch is
    persisted before validation runs, and the folder is deleted only after the
    patch applies — otherwise it ages out on a retention window. Recovery is
@@ -564,6 +574,11 @@ carrying forward, and correct an entry when they change their mind.
   surface must not cancel it; one shared activity and notification design
   surfaces progress, completion, failure, resume, and retry while the app stays
   usable.
+- Canonical-state lock recovery belongs to RCP. Dead process-held ownership
+  releases automatically, live contention waits visibly, an empty legacy lock
+  directory is reclaimed rather than reported, and only an entry whose ownership
+  cannot be proved safe is preserved with a concrete diagnostic. The human is
+  never instructed to delete `.research` lock paths.
 - Node wording correction is a literal human edit, not an agent request. Open a
   direct prose editor, stage it in the project draft, clear the draft standing
   to asserted, and never start node chat merely to rewrite text. Canonical
