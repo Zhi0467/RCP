@@ -147,6 +147,67 @@ def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_
     assert snapshot.input_processed.cells[0].task_kind == "refresh"
 
 
+def test_agent_usage_snapshot_counts_latest_input_context_once_per_native_session(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+    now = store.now()
+    tasks = [
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id="project",
+            kind="node_chat",
+            status="succeeded",
+            request={"provider": provider, "model": "model"},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            native_session_id="shared-session",
+        )
+        for operation_id, provider in (
+            ("codex-first", "codex"),
+            ("codex-latest", "codex"),
+            ("claude-latest", "claude"),
+        )
+    ]
+    for task in tasks:
+        store.create_agent_task(task)
+
+    usages = [
+        ("codex-first", "codex.turn.v1", "codex-1", 1_000, 400, 100),
+        ("codex-latest", "codex.turn.v1", "codex-2", 2_000, 1_500, 200),
+        ("claude-latest", "claude.query.v1", "claude-1", 500, 200, 50),
+    ]
+    for operation_id, profile, dedupe_key, input_tokens, cached_tokens, output_tokens in usages:
+        store.record_agent_usage(
+            operation_id,
+            ProviderUsage(
+                provider_profile=profile,
+                provider_event_type="turn.completed",
+                dedupe_key=dedupe_key,
+                processed_input_tokens=input_tokens,
+                generated_tokens=output_tokens,
+                cached_input_tokens=cached_tokens,
+            ),
+        )
+
+    with store.connection() as connection:
+        for index, (operation_id, *_rest) in enumerate(usages):
+            connection.execute(
+                "UPDATE agent_usage SET created_at = ? WHERE operation_id = ?",
+                (f"2026-08-04T00:00:0{index}+00:00", operation_id),
+            )
+
+    snapshot = store.agent_usage_snapshot("project")
+
+    assert snapshot.input_processed.total_tokens == 2_500
+    assert snapshot.input_processed.cached_tokens == 1_700
+    assert snapshot.input_processed.cache_share == 1_700 / 2_500
+    assert snapshot.generated.total_tokens == 350
+    assert snapshot.input_processed.cells[0].counted_records == 1
+    assert snapshot.input_processed.cells[1].counted_records == 1
+    assert {cell.counted_records for cell in snapshot.generated.cells} == {1, 2}
+
+
 @pytest.mark.parametrize("status", ["queued", "running", "pausing"])
 def test_project_record_deletion_refuses_active_task(tmp_path, status) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")

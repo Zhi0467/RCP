@@ -3,9 +3,9 @@ id: S47-agent-usage-ledger
 status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: tests/test_launcher.py::test_provider_usage_is_normalized_at_provider_boundaries; tests/test_storage.py::test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share; tests/test_api.py::test_project_usage_endpoint_returns_counted_and_excluded_records
+covered_by: tests/test_launcher.py::test_provider_usage_is_normalized_at_provider_boundaries; tests/test_storage.py::test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share; tests/test_storage.py::test_agent_usage_snapshot_counts_latest_input_context_once_per_native_session; tests/test_api.py::test_project_usage_endpoint_returns_counted_and_excluded_records
 invariants: []
-last_passed: 2026-08-02 — pytest and browser-driven against an isolated local project
+last_passed: 2026-08-04 — pytest and browser-driven against the local CRLP project
 ---
 
 # See counted provider usage in Settings
@@ -14,7 +14,7 @@ last_passed: 2026-08-02 — pytest and browser-driven against an isolated local 
 
 Open a project and enter **Settings**. The first section, above **Project
 boundary**, is simply two read-only usage widgets side by side: **Input
-processed** and **Generated**. There is no enclosing Agent usage heading,
+context** and **Generated**. There is no enclosing Agent usage heading,
 ledger count, tracking comment, or explanatory strip. The widgets use different
 semantic colors. Each widget
 shows the project total and a task-by-provider mosaic for Seed, Refresh, Node
@@ -58,8 +58,9 @@ recorded rows shows the two zero-total widgets without additional commentary.
 
 - `usage_summary_is_derived_from_counted_records_only`
 - `usage_records_are_idempotent_at_the_provider_boundary`
+- `latest_input_context_is_counted_once_per_native_session`
 - `input_and_generated_totals_are_grouped_by_task_and_provider`
-- `cache_share_is_weighted_over_counted_processed_input`
+- `cache_share_is_weighted_over_latest_counted_input_context`
 - `small_nonzero_cells_render_as_partial_usage`
 - `settings_shows_side_by_side_distinct_usage_widgets`
 - `settings_places_usage_before_project_configuration`
@@ -70,6 +71,7 @@ recorded rows shows the two zero-total widgets without additional commentary.
 
 ## Failure means
 
-An invocation is counted twice, excluded usage changes a total, a provider
-specific field is discarded, a small nonzero cell disappears, or Settings
-cannot show the two usage widgets side by side.
+An invocation is counted twice, a resumed native session contributes every
+turn's repeated input context to the input total, excluded usage changes a
+total, a provider-specific field is discarded, a small nonzero cell disappears,
+or Settings cannot show the two usage widgets side by side.

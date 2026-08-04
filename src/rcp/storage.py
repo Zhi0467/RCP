@@ -1218,9 +1218,38 @@ class AppStore:
     def agent_usage_snapshot(self, project_id: str) -> AgentUsageSnapshot:
         records = self.agent_usage(project_id)
         counted = [record for record in records if record.counted]
+        # Input reports describe the full context of one request. For a resumed
+        # native session, later reports supersede earlier context sizes; generated
+        # output is newly produced content and remains additive.
+        latest_input_by_session: dict[tuple[str, str], AgentUsageRecord] = {}
         input_cells: dict[tuple[AgentTaskKind, str], AgentUsageCell] = {}
         generated_cells: dict[tuple[AgentTaskKind, str], AgentUsageCell] = {}
         for record in counted:
+            task = self.agent_task(record.operation_id)
+            if task is None:
+                continue
+            native_session_id = task.native_session_id or task.request.get("session_id")
+            session_key = (
+                (record.provider, native_session_id)
+                if isinstance(native_session_id, str) and native_session_id
+                else (record.provider, f"usage:{record.usage_id}")
+            )
+            previous = latest_input_by_session.get(session_key)
+            if previous is None or (record.created_at, record.usage_id) > (
+                previous.created_at,
+                previous.usage_id,
+            ):
+                latest_input_by_session[session_key] = record
+
+            key = (task.kind, record.provider)
+            generated_cell = generated_cells.setdefault(
+                key,
+                AgentUsageCell(task_kind=task.kind, provider=record.provider),
+            )
+            generated_cell.generated_tokens += record.generated_tokens
+            generated_cell.counted_records += 1
+
+        for record in latest_input_by_session.values():
             task = self.agent_task(record.operation_id)
             if task is None:
                 continue
@@ -1232,12 +1261,6 @@ class AppStore:
             input_cell.processed_input_tokens += record.processed_input_tokens
             input_cell.cached_input_tokens += record.cached_input_tokens
             input_cell.counted_records += 1
-            generated_cell = generated_cells.setdefault(
-                key,
-                AgentUsageCell(task_kind=task.kind, provider=record.provider),
-            )
-            generated_cell.generated_tokens += record.generated_tokens
-            generated_cell.counted_records += 1
 
         input_total = sum(cell.processed_input_tokens for cell in input_cells.values())
         generated_total = sum(cell.generated_tokens for cell in generated_cells.values())

@@ -65,7 +65,7 @@ export function AgentUsageWidgets({ usage, providers }: Props) {
       <div className="agent-usage-widgets">
         <UsageWidget
           className="input"
-          title="Input processed"
+          title="Input context"
           metric={usage.input_processed}
           providerIds={providerIds}
           providers={providers}

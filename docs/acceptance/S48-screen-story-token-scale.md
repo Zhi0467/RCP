@@ -5,7 +5,7 @@ tier: hermetic
 driver: browser
 covered_by: web/tests/screenStoryComparisons.test.mjs; browser-driven 2026-08-02
 invariants: []
-last_passed: 2026-08-02 — browser-driven against isolated counted and zero-usage projects
+last_passed: 2026-08-04 — browser-driven against the local CRLP project
 ---
 
 # Measure a project's tokens in favorite screen stories
@@ -13,7 +13,7 @@ last_passed: 2026-08-02 — browser-driven against isolated counted and zero-usa
 ## UI path (confirmed 2026-08-02)
 
 Open a project and enter **Settings**. Directly beneath the side-by-side
-**Input processed** and **Generated** widgets, one narrow full-width film-frame
+**Input context** and **Generated** widgets, one narrow full-width film-frame
 strip compares this project's counted token usage with one favorite screen
 story. It has no heading, subtitle, icon, control, explanatory copy, or timed
 rotation.
@@ -24,8 +24,9 @@ combined franchise entry. Television entries name only the series; there are
 no episode or season-range entries. Source coverage and estimation confidence
 remain in the bundled data record rather than appearing as UI commentary.
 
-The comparison uses counted processed input plus counted generated output.
-Cached input is already part of processed input and is not added again. The
+The comparison uses the latest counted input context from each native session
+plus counted generated output. Cached input is already part of each selected
+session context and is not added again. The
 strip chooses one entry once when Settings mounts and keeps it stable while
 Settings remains open; leaving and reopening Settings samples again. It makes
 no network request and stores no screenplay or transcript text.
@@ -57,7 +58,7 @@ only the two zero-total widgets and no comparison strip.
 
 - `comparison_ledger_contains_only_series_and_film_ip_entries`
 - `estimated_tokens_are_derived_from_auditable_source_profiles`
-- `comparison_total_is_processed_input_plus_generated_output`
+- `comparison_total_is_latest_input_context_plus_generated_output`
 - `cached_input_is_not_added_twice`
 - `comparison_is_sampled_once_per_settings_mount`
 - `comparison_copy_uses_unambiguous_ratio_rounding`
