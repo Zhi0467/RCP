@@ -539,6 +539,10 @@ carrying forward, and correct an entry when they change their mind.
   is planned, so disposable Rust build artifacts do not accumulate on disk.
 - Nothing versioned should be hardcoded into instructions; point at the source
   of truth instead.
+- **This repo is single-branch: commit directly to `main`.** Do not create a
+  working branch first and do not suggest one; a branch-first commit only strands
+  the work and forces a merge. Committing still happens only when the human asks,
+  and pushing still requires an explicit request.
 - **Agent-facing prose is written, not accreted.** Every contract opens by saying
   what RCP is and what the agent's role in it is, because the name is otherwise
   unexplained jargon. Say a rule once: a precedence list that restates its own
