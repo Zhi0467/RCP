@@ -15,10 +15,25 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import CHAT_ARTIFACT_MAX_COUNT
 from rcp.providers import classify_terminal_error
 from rcp.service import CoachRequest, GraphUpdateResult, RunRequest
+from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
 
 AgentTaskRequest = RunRequest | CoachRequest
 AgentTaskContinuation = Literal["fresh", "resume", "retry", "handoff", "graph_repair"]
+
+
+def _skill_update(
+    skills: SkillSelection | None,
+    *,
+    mode: Literal["python", "json"] = "python",
+) -> dict[str, object]:
+    """Refresh a continued attempt's recorded packages with what it will stage.
+
+    Every launch re-resolves the selected ids, so a record that kept the earlier
+    attempt's versions would misreport an upgraded package.
+    """
+
+    return {} if skills is None else skills.model_dump(mode=mode)
 
 
 @dataclass
@@ -65,7 +80,15 @@ class AgentTaskOutcome:
 
 
 class TaskPaused(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        messages: list[str] | None = None,
+        artifacts: list[AgentArtifactDescriptor] | None = None,
+    ) -> None:
+        self.messages = list(messages or [])
+        self.artifacts = list(artifacts or [])
+        super().__init__(message)
 
 
 class TaskFailed(RuntimeError):
@@ -156,7 +179,7 @@ class BackgroundAgentTasks:
             return None
         return self._spawn_record(stored, request, continuation="fresh")
 
-    def resume(self, operation_id: str) -> AgentTaskRecord:
+    def resume(self, operation_id: str, *, skills: SkillSelection | None = None) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
         if not previous.can_resume or not previous.native_session_id:
             raise ValueError(
@@ -168,7 +191,7 @@ class BackgroundAgentTasks:
                 "Retry it instead."
             )
         request = self._request_from_record(previous).model_copy(
-            update={"session_id": previous.native_session_id}
+            update={"session_id": previous.native_session_id, **_skill_update(skills)}
         )
         return self._create_and_spawn(
             previous.project_id,
@@ -190,6 +213,7 @@ class BackgroundAgentTasks:
         model: str | None = None,
         reasoning: str | None = None,
         run_on: str | None = None,
+        skills: SkillSelection | None = None,
     ) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
         if not previous.can_retry:
@@ -209,6 +233,7 @@ class BackgroundAgentTasks:
             {
                 **original.model_dump(mode="json"),
                 **updates,
+                **_skill_update(skills, mode="json"),
                 "session_id": None,
             }
         )
@@ -486,8 +511,17 @@ class BackgroundAgentTasks:
         )
         try:
             outcome = asyncio.run(self._consume(record.project_id, record.kind, request, execution))
-        except TaskPaused:
-            self.store.pause_agent_task(operation_id)
+        except TaskPaused as exc:
+            result: dict[str, object] | None = None
+            if exc.messages or exc.artifacts:
+                result = {"messages": exc.messages}
+                if exc.artifacts:
+                    result["artifacts"] = [item.model_dump(mode="json") for item in exc.artifacts]
+            self.store.pause_agent_task(
+                operation_id,
+                detail=str(exc) or None,
+                result=result,
+            )
         except Exception as exc:  # The persisted task is the API error boundary.
             self.store.record_agent_task_receipt(
                 operation_id,
@@ -576,7 +610,7 @@ class BackgroundAgentTasks:
                 if event.event == "error":
                     raise TaskFailed(event.text or "The agent task failed.", messages, artifacts)
                 if event.event == "paused":
-                    raise TaskPaused(event.text)
+                    raise TaskPaused(event.text, messages, artifacts)
                 if event.event == "session" and event.session_id:
                     self.store.checkpoint_agent_task(
                         execution.operation_id,

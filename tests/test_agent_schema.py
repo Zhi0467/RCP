@@ -16,7 +16,14 @@ from tests.helpers import seed_patch
 
 
 def test_agent_patch_schema_accepts_the_canonical_seed_shape() -> None:
-    validate_agent_patch_shape(seed_patch())
+    patch = seed_patch()
+    validate_agent_patch_shape(
+        patch.model_copy(
+            update={
+                "ops": [operation for operation in patch.ops if operation["op"] != "set_coverage"]
+            }
+        )
+    )
 
 
 def test_agent_patch_schema_rejects_invented_node_fields_and_slug_formats() -> None:
@@ -55,7 +62,7 @@ def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects()
 
     assert '"create_nodes"' in rendered
     assert '"remove_nodes"' in rendered
-    assert '"set_coverage"' in rendered
+    assert '"set_coverage"' not in rendered
     assert schema["$defs"]["NewEdge"]["properties"]["relation"]["pattern"].startswith("^")
     assert '"additionalProperties": false' in rendered
     assert "source_id" not in rendered

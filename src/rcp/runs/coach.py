@@ -24,6 +24,7 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import CoachRequest, ProjectService
+from rcp.skills.staging import stage_skill_selection
 from rcp.transport import StateUnavailable
 
 
@@ -64,7 +65,7 @@ def _resolved_coach_request(
         reasoning=request.reasoning or (existing.reasoning if existing else None),
         run_on=request.run_on or (existing.execution_machine if existing else None),
     )
-    return request.model_copy(
+    resolved = request.model_copy(
         update={
             "provider": profile.provider,
             "model": profile.model or None,
@@ -72,6 +73,9 @@ def _resolved_coach_request(
             "run_on": profile.run_on,
         }
     )
+    result = service.resolve_skill_request(resolved)
+    assert isinstance(result, CoachRequest)
+    return result
 
 
 async def stream_coach(
@@ -158,6 +162,12 @@ async def stream_coach(
             )
         )
     try:
+        skill_pointers = stage_skill_selection(
+            service.resolve_skill_selection(request),
+            local_stage=local_stage,
+            remote_stage=None,
+            label=f"rcp-skills-{_task_token(execution)}",
+        )
         if reusing_checkpoint and not request.session_id:
             raise ValueError(
                 "The continued paper-coach task has no native agent session; retry it from a "
@@ -215,6 +225,7 @@ async def stream_coach(
                 ],
                 human_request_path=human_request_path,
                 retry_diagnostics_path=retry_diagnostics_path,
+                skill_pointers=skill_pointers,
             )
             current_contract_path, current_prompt = _stage_task_contract(
                 local_stage,

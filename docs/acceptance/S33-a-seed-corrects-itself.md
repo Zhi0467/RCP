@@ -16,12 +16,11 @@ reason to stop and ask a human. RCP hands the concrete failure back to the
 session that is still holding the analysis, and only stops when continuing
 genuinely cannot help.
 
-Three things must be true for that to work, and today none of them is.
+Three things must be true for that to work.
 
-**RCP names identifiers; agents never derive them.** Coverage keys arrive as a
-staged list of exact keys. The agent never reconstructs a key from a file path,
-because the projected layout orders and escapes its segments differently from
-the canonical key and reversing it is guesswork.
+**RCP owns ingestion bookkeeping.** The agent writes semantic graph operations.
+It does not author per-session cursors or coverage keys; RCP advances the
+project-level ingestion watermark only after a Seed/Refresh patch applies.
 
 **Continuation carries its cause.** Reusing a native session and knowing *why*
 the work is continuing are separate decisions. An interrupted task continues
@@ -30,11 +29,11 @@ with the refusal. A task that reuses a session must never be told the wrong one
 of those.
 
 **Resume uses the context it was resumed from.** A resumed attempt runs against
-the prepared context its original attempt was built from — the same sessions,
-the same coverage boundary, the same staged files. It never quietly assembles a
-different corpus behind the provider's back. If that saved context cannot be
-loaded, or the graph has moved underneath it, the resume fails and says to
-Retry rather than proceeding on a context the provider never saw.
+the prepared context its original attempt was built from — the same provider
+roots, project watermark, graph revision, repository pointers, and human
+request. It never projects native transcripts or silently substitutes a new
+boundary. If that saved context cannot be loaded, or the graph has moved
+underneath it, the resume fails and says to Retry.
 
 A rejected agent patch does not consume a graph revision. Validation happens
 under the append lock and only an accepted patch enters the log, so a seed that
@@ -59,9 +58,8 @@ today.
 A temporary unseeded project and a scripted provider; no real provider or quota
 is used. The scripted provider runs a three-act seed:
 
-1. First launch: writes a patch whose `coverage.sessions_read` uses the
-   projected *path* order instead of the canonical key order.
-2. On being handed the key-format rejection: fixes the keys, but asserts three
+1. First launch: writes a structurally invalid semantic graph operation.
+2. On being handed the schema rejection: fixes the shape, but asserts three
    scientific blockers the graph refuses.
 3. On being handed the graph's refusal: converts them to Proposals and writes a
    patch the graph accepts.
@@ -80,10 +78,8 @@ interrupt path can be driven separately from the correction path.
 
 ## Assert — pytest
 
-- `coverage_keys_are_read_from_the_staged_key_file` — the contract points at
-  `authorized-session-keys.json` and no longer describes a derivable layout
-- `staged_keys_match_the_canonical_index_keys` — exactly, for every session in
-  the run context
+- `ingestion_bookkeeping_is_not_agent_authored` — the agent schema contains no
+  cursor or coverage operation
 - `graph_rejection_returns_to_the_same_session` — a `PatchRejected` becomes a
   correction round, not a terminal error
 - `replay_halt_and_state_failure_remain_terminal` — the uncorrectable classes
@@ -99,8 +95,8 @@ interrupt path can be driven separately from the correction path.
   its predecessor's stage, so that attempt's patch file is still there; a launch
   that writes nothing must not have that file collected as its own work, and the
   substantive refusal stays the visible error
-- `resumed_attempt_uses_the_saved_prepared_context` — same session set, same
-  coverage boundary, same staged files as the attempt it resumed
+- `resumed_attempt_uses_the_saved_prepared_context` — same provider roots,
+  project watermark, graph revision, repository pointers, and human request
 - `resumed_attempt_never_reassembles_context` — `assemble_run` is not called on
   a resumed attempt
 - `resume_without_prepared_context_fails_visibly` — and names Retry

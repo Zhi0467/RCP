@@ -70,8 +70,9 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
+from rcp.skills.staging import stage_skill_selection
 from rcp.storage import WatcherContinuation
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
@@ -249,6 +250,12 @@ async def stream_work_run(
                 remote=remote_stage is not None,
             )
             token = _task_token(execution)
+            skill_pointers = stage_skill_selection(
+                service.resolve_skill_selection(request),
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                label=f"rcp-skills-{token}",
+            )
             validator_mailbox_id = uuid.uuid4().hex
             validator_client_path = _stage_task_input(
                 local_stage,
@@ -382,6 +389,7 @@ async def stream_work_run(
                     patch_kind=request.patch_kind,
                     control_context_path=control_context_path,
                     validator_command=validator_command,
+                    skill_pointers=skill_pointers,
                 )
                 current_contract_path, current_prompt = _stage_task_contract(
                     local_stage,
@@ -557,15 +565,27 @@ async def stream_work_run(
         else:
             while True:
                 if patch_text is not None:
-                    result, failure = _apply_work_patch(
-                        service,
-                        execution,
-                        patch_text,
-                        run_truth_scope=context.run_truth_scope,
-                        patch_kind=request.patch_kind,
-                        control_node_id=request.control_node_id,
-                        control_decision_bundle=request.control_decision_bundle,
-                    )
+                    try:
+                        result, failure = _apply_work_patch(
+                            service,
+                            execution,
+                            patch_text,
+                            run_truth_scope=context.run_truth_scope,
+                            patch_kind=request.patch_kind,
+                            control_node_id=request.control_node_id,
+                            control_decision_bundle=request.control_decision_bundle,
+                        )
+                    except RunLockCancelled:
+                        yield _sse(
+                            AgentEvent(
+                                event="paused",
+                                text=(
+                                    "Paused while waiting for canonical state. The operational "
+                                    "answer and retained patch are preserved."
+                                ),
+                            )
+                        )
+                        return
                     if result is not None:
                         graph_update = result.model_copy(
                             update={"correction_rounds": correction_rounds}
@@ -781,6 +801,9 @@ async def stream_work_run(
                                 for item in request.control_decision_bundle
                             ],
                             control_completion_criteria=request.control_completion_criteria,
+                            workflow_ids=request.workflow_ids or [],
+                            skill_ids=request.skill_ids or [],
+                            resolved_skill_packages=request.resolved_skill_packages or [],
                         ),
                     )
                     armed = await asyncio.to_thread(
@@ -1162,15 +1185,24 @@ async def _stream_work_graph_repair(
             )
         )
         return
-    graph_update, failure = _apply_work_patch(
-        service,
-        execution,
-        patch_text,
-        run_truth_scope=context.run_truth_scope,
-        patch_kind=request.patch_kind,
-        control_node_id=request.control_node_id,
-        control_decision_bundle=request.control_decision_bundle,
-    )
+    try:
+        graph_update, failure = _apply_work_patch(
+            service,
+            execution,
+            patch_text,
+            run_truth_scope=context.run_truth_scope,
+            patch_kind=request.patch_kind,
+            control_node_id=request.control_node_id,
+            control_decision_bundle=request.control_decision_bundle,
+        )
+    except RunLockCancelled:
+        yield _sse(
+            AgentEvent(
+                event="paused",
+                text="Paused while waiting for canonical state. The retained patch is preserved.",
+            )
+        )
+        return
     if graph_update is None:
         assert failure is not None
         graph_update = GraphUpdateResult(
@@ -1350,6 +1382,53 @@ def _validate_work_patch_live(
     )
 
 
+def _record_work_lock_wait(
+    execution: AgentTaskExecution,
+    message: str,
+    location: str,
+) -> None:
+    detail = f"{message} Location: {location}"
+    execution.store.update_agent_task_message(
+        execution.operation_id,
+        detail,
+        phase="waiting",
+        event=True,
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "canonical_state_lock_wait",
+        {"location": location},
+        tier="diagnostic",
+    )
+
+
+def _record_work_lock_lost(
+    execution: AgentTaskExecution,
+    message: str,
+    location: str,
+) -> None:
+    detail = (
+        f"{message} RCP will report the observed outcome of the retained Work patch without "
+        f"repeating operational work. Location: {location}"
+    )
+    execution.store.update_agent_task_message(
+        execution.operation_id,
+        detail,
+        phase="applying",
+    )
+    execution.store.record_agent_task_event(
+        execution.operation_id,
+        detail,
+        level="warning",
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "canonical_state_lock_lost",
+        {"location": location},
+        tier="diagnostic",
+    )
+
+
 def _apply_work_patch(
     service: ProjectService,
     execution: AgentTaskExecution | None,
@@ -1391,7 +1470,17 @@ def _apply_work_patch(
         )
         if not patch.ops:
             return GraphUpdateResult(status="none"), None
-        with service.history.workspace.run_lock():
+        workspace = service.history.workspace
+        with workspace.run_lock(
+            on_wait=(lambda message: _record_work_lock_wait(execution, message, workspace.location))
+            if execution is not None
+            else None,
+            on_lost=(lambda message: _record_work_lock_lost(execution, message, workspace.location))
+            if execution is not None
+            else None,
+            cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
+        ) as lease:
+            lease.assert_owned()
             appended, result = service.history.append(
                 patch,
                 discard_on_reject=True,

@@ -32,8 +32,9 @@ been confirmed.
 
 The authoritative request remains one replay and replaces the display snapshot
 when it arrives. Every concurrent request for that unopened project joins the
-same initialization instead of starting another refresh. Task history and
-provider readiness load independently. All blocking project work — remote
+same initialization instead of starting another refresh. Task history loads
+independently, while provider readiness is app-scoped and loads only when a
+provider-dependent surface needs it. All blocking project work — remote
 refresh, replay, Sync, source reads, paper persistence, and settings writes —
 runs off the web event loop so it cannot stall the cache, health, task history,
 or other UI requests behind it.
@@ -69,7 +70,7 @@ publishing is reserved for a detected materialization repair or a real write.
 - `summary_reuses_the_open_snapshot`
 - `paper_and_graph_reuse_the_open_snapshot`
 - `provider_readiness_does_not_block_first_view`
-- `readiness_eventually_populates_agent_controls`
+- `readiness_populates_agent_controls_on_demand`
 - `canonical_change_is_visible_on_the_next_open`
 - `loading_state_says_opening_not_materializing`
 

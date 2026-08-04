@@ -1,4 +1,4 @@
-import type { AgentRunConfig, AgentSurface, Machine, ProviderId } from "./types";
+import type { AgentRunConfig, AgentSurface, Machine, ProviderId, SkillDefaults } from "./types";
 
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 
@@ -7,6 +7,7 @@ export interface SettingsDraft {
   scope: string[];
   profiles: Record<AgentSurface, AgentRunConfig>;
   providerPaths?: MachineProviderPaths;
+  skillDefaults?: SkillDefaults;
 }
 
 export function settingsDraftStorageKey(projectId: string): string {
@@ -27,6 +28,7 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (!isRecord(parsed.profiles)) return null;
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
+    if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
     return parsed as unknown as SettingsDraft;
   } catch {
     return null;
@@ -70,6 +72,16 @@ function isMachineProviderPaths(value: unknown): value is MachineProviderPaths {
   return Object.values(value).every(
     (providers) =>
       isRecord(providers) && Object.values(providers).every((path) => typeof path === "string"),
+  );
+}
+
+function isSkillDefaults(value: unknown): value is SkillDefaults {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.workflow_ids) &&
+    value.workflow_ids.every((item) => typeof item === "string") &&
+    Array.isArray(value.skill_ids) &&
+    value.skill_ids.every((item) => typeof item === "string")
   );
 }
 

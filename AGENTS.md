@@ -82,10 +82,18 @@ These boundaries are clean seams; parallel agents rarely collide across them.
 | Paper | `src/rcp/paper/` | draft store, canonical introduction, writing sessions |
 | Setup | `src/rcp/setup.py`, `src/rcp/config.py` | manifest rendering, preflight, manifest schema |
 | Providers | `src/rcp/providers.py`, `web/src/providers.ts` | the provider registry: ids, labels, auth probe, model catalog, launch command |
+| Skills | `src/rcp/skill_registry.py`, `src/rcp/skills/` | the official skill/workflow registry: ids, versions, frontmatter dependencies, per-run staging |
 | Web | `web/src/` | React views, components, hooks, API client, types |
 | Desktop | `web/src-tauri/`, `packaging/` | Tauri shell, backend ownership handshake, window lifecycle, PyInstaller sidecar, bundle scripts |
 
-`src/rcp/core/models.py`, `src/rcp/config.py`, `src/rcp/providers.py`, and
+Skill and workflow package folders are non-Python resources, so every packaging
+path must name them explicitly — the wheel force-include in
+[pyproject.toml](pyproject.toml) and the PyInstaller `datas` in
+[rcp_backend.spec](packaging/rcp_backend.spec). `official_registry()` runs on
+project open, so an omitted folder breaks project open in that build only.
+
+`src/rcp/core/models.py`, `src/rcp/config.py`, `src/rcp/providers.py`,
+`src/rcp/skill_registry.py`, and
 `web/src/types.ts` are shared contracts. **Do not parallelize across them** — land the contract change first,
 serially, then fan out the consumers.
 
@@ -416,13 +424,16 @@ guarantees — surface the conflict instead of working around it.
    conversation launches with its scratch workspace writable; canonical state is
    read-only for Discuss, and direct canonical `.research` writes are
    prompt-forbidden for Work.
-10f. **Seed/Refresh source assembly is best effort.** Seed and Refresh are the
-   only paths that assemble conversation-source context, cursors, coverage, and
-   slices. If source metadata or a pointer cannot be assembled, RCP records the
-   exact diagnostic and still launches with provider/source names or roots and
-   the last accounted coverage boundary. The provider may inspect those sources
-   directly. RCP never advances a cursor or claims coverage for input it could
-   not read.
+10f. **Seed/Refresh read provider logs in place.** Seed and Refresh receive the
+   configured provider log roots on their execution machine and the canonical
+   graph's project-level `last_refresh_at` watermark. RCP performs only a bounded
+   existence/readability preflight of those roots. It never parses, indexes,
+   normalizes, slices, hashes, caches, stages, transfers, or projects conversation
+   content, and it never validates agent output against per-log cursors or
+   coverage claims. A source preflight failure is an exact prompt diagnostic and
+   does not block launch. The watermark advances only when a Seed/Refresh patch
+   applies; failed, paused, interrupted, and rejected runs leave it unchanged.
+   It is an overlap-tolerant project timestamp, not an exactly-once record cursor.
 10e. **The answer and preview artifacts are independent.** The labelled final
    assistant message is the Markdown reply. A turn may also leave supported
    files as direct regular children of its exact RCP-created artifact directory;
@@ -569,7 +580,9 @@ carrying forward, and correct an entry when they change their mind.
   directory: Discuss and Work get the graph/current node and exact run-scope
   repository pointers, but no provider-root or prior-transcript input. Those
   pointers bound context, not unrestricted Work permission. Seed and Refresh are
-  the only paths that receive provider-source roots for ingestion.
+  the only paths that receive provider-source roots for ingestion. The agent
+  reads those roots in place after the project watermark; RCP never moves the
+  conversation files.
 - Every agent invocation is durable background work. Closing its launch or chat
   surface must not cancel it; one shared activity and notification design
   surfaces progress, completion, failure, resume, and retry while the app stays
@@ -605,7 +618,18 @@ carrying forward, and correct an entry when they change their mind.
   or other primary UI element. Remove such helper subtitles and descriptive
   microcopy wherever they appear; make the primary wording, hierarchy, shape,
   color, motion, and control state communicate the design. Keep actual errors,
-  conflicts, required warnings, and accessibility labels explicit.
+  conflicts, required warnings, and accessibility labels explicit. When an item
+  genuinely has more to say, a card carries its name and state and an explicit
+  control opens a read-only inspector — never a caption under the card.
+- The official skill/workflow registry is authoritative at launch; a task's
+  recorded packages are a receipt, not an input. A task stores selected ids, and
+  every attempt — first, retry, or resume — re-resolves them and stages its own
+  bundle, so upgrading a package deliberately upgrades the next attempt and can
+  never make an existing task un-retryable.
+- Selecting packages is `/` or `$` in the composer, and it is keyboard-first:
+  arrows highlight, Enter selects the highlight instead of sending, Escape
+  dismisses. Project Settings holds the defaults; a composer selection applies
+  to that turn only.
 - **Share Margin Dev's visual grammar; do not copy its catalog literally.** RCP
   uses a restrained paper, sheet, walnut, and oxblood system, warm rules and
   shadows, compatible typography, and tactile book materials. Project covers
@@ -657,6 +681,10 @@ Condense recurring mistakes here — one line each, cause then correction — so
 next agent does not rediscover them. Keep it short; delete entries that no
 longer apply.
 
+- `pre-commit run --all-files` means all *tracked* files. A green run over a
+  change that adds new files proves nothing about them, and the human's commit
+  is where the hooks finally see them and fail. When a change adds files, run
+  `git add -A` first, then the hooks.
 - Do not copy commands out of the README without running them. `serve --reload`
   was documented there while it exited instantly instead of serving (fixed
   2026-07-28 via the `reload_app` factory).
@@ -685,18 +713,14 @@ longer apply.
   ordinary question before the provider ever launched. Chat now has its own
   graph/repository-only context and prompt; Seed/Refresh retain the separate
   source-ingestion context and deliverable.
-- One unreadable conversation source must not kill Seed/Refresh before launch.
-  `ContextAssembler` drops only the source it cannot assemble, reports the exact
-  diagnostic, names the provider roots and last accounted coverage boundary in
-  the fallback prompt, and leaves the provider to inspect the source. No cursor
-  or coverage claim advances for input RCP did not read.
+- One unreadable provider root must not kill Seed/Refresh before launch. RCP's
+  metadata-only root preflight reports the exact diagnostic, keeps every
+  configured root in the contract, and leaves the provider to inspect the roots
+  it can reach. It does not inspect or move conversation files as a fallback.
 - `codex exec resume` accepts neither `--sandbox` nor `--cd`. A Work Resume must
   still receive `--dangerously-bypass-approvals-and-sandbox`; narrower resumed
   capabilities carry their sandbox mode through `--config`. Check the
   subcommand's own `--help` before assuming a flag carries over from `codex exec`.
-- Materialized files are regenerated from the patch log, so hand-editing
-  `.research/cursors.json` to reproduce a bug does nothing — the next
-  materialization wipes it. Append a patch carrying `processed_cursors` instead.
 - Chat must not be made dependent on source-pointer reachability. A prior chat
   transcript is UI history only; Discuss and Work never resolve, copy, or validate
   it as agent input. A provider session id may continue the provider's native

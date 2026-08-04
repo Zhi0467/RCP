@@ -33,6 +33,7 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.providers import ProviderUsage
+from rcp.skill_registry import SkillReference
 
 
 class ProjectRecord(BaseModel):
@@ -203,6 +204,9 @@ class WatcherContinuation(BaseModel):
     control_revision: int | None = Field(default=None, ge=0)
     control_decision_bundle: list[dict[str, object]] = Field(default_factory=list)
     control_completion_criteria: list[str] = Field(default_factory=list)
+    workflow_ids: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
+    resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
 
 
 class WatcherRecord(BaseModel):
@@ -1790,18 +1794,28 @@ class AppStore:
         assert record is not None
         return record
 
-    def pause_agent_task(self, operation_id: str) -> None:
+    def pause_agent_task(
+        self,
+        operation_id: str,
+        *,
+        detail: str | None = None,
+        result: dict[str, object] | None = None,
+    ) -> None:
         now = self.now()
-        detail = "Paused. Resume from the saved agent session, or retry from the beginning."
+        detail = (
+            detail or "Paused. Resume from the saved agent session, or retry from the beginning."
+        )
+        result_json = self._bounded_result_json(result) if result is not None else None
         with self.connection() as connection:
             connection.execute(
                 """
                 UPDATE graph_runs
                 SET status = 'paused', updated_at = ?, finished_at = ?,
-                    last_activity_at = ?, phase = 'paused', status_message = ?, error = NULL
+                    last_activity_at = ?, phase = 'paused', status_message = ?, error = NULL,
+                    result_json = COALESCE(?, result_json)
                 WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
                 """,
-                (now, now, now, detail, operation_id),
+                (now, now, now, detail, result_json, operation_id),
             )
             self._insert_agent_task_event(
                 connection,

@@ -15,12 +15,10 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
-from urllib.parse import quote
 
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
-from rcp.agents.context import SessionPointer
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, Patch
@@ -598,24 +596,6 @@ def _stage_context_paths(
             updates[field] = str(canonical / Path(raw_path).name)
     updates["facts_dir"] = str(canonical / "facts")
     return updates
-
-
-def _session_bundle_relative_path(
-    session: SessionPointer,
-) -> Path:
-    key = session.key
-    parts = key.split("/", 3)
-    if len(parts) != 4:
-        raise ValueError(f"conversation session key is not reversible: {key!r}")
-    repository, machine, provider, session_id = parts
-    if provider != session.provider:
-        raise ValueError(f"conversation session provider does not match its key: {key!r}")
-    return Path(
-        quote(provider, safe=""),
-        quote(repository, safe=""),
-        quote(machine, safe=""),
-        f"{quote(session_id, safe='')}.jsonl",
-    )
 
 
 def _sse(event: AgentEvent) -> str:

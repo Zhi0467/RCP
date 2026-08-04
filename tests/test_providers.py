@@ -156,7 +156,7 @@ def test_invalidation_during_probe_does_not_restore_stale_capability(monkeypatch
     assert calls == 2
 
 
-def test_readiness_caches_successful_discovery_but_not_failures(monkeypatch) -> None:
+def test_readiness_caches_successful_and_failed_results(monkeypatch) -> None:
     launcher = AgentLauncher()
     calls = 0
     ready = True
@@ -185,9 +185,25 @@ def test_readiness_caches_successful_discovery_but_not_failures(monkeypatch) -> 
     assert calls == 1
 
     ready = False
-    launcher.readiness("claude", binary="/opt/agents/claude")
-    launcher.readiness("claude", binary="/opt/agents/claude")
+    first_failure = launcher.readiness("claude", binary="/opt/agents/claude")
+    second_failure = launcher.readiness("claude", binary="/opt/agents/claude")
+    assert first_failure == second_failure
+    assert calls == 2
+
+    ready = True
+    refreshed = launcher.readiness(
+        "claude",
+        binary="/opt/agents/claude",
+        refresh=True,
+    )
+    assert refreshed.authenticated is True
     assert calls == 3
+
+    ready = False
+    launcher.invalidate_readiness("claude", binary="/opt/agents/claude")
+    after_invalidation = launcher.readiness("claude", binary="/opt/agents/claude")
+    assert after_invalidation.authenticated is False
+    assert calls == 4
 
 
 def test_codex_models_come_from_the_cli_catalog_with_per_model_efforts() -> None:

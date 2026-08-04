@@ -23,11 +23,10 @@ history for the UI after the provider returns. Exact repository scope describes
 the context RCP supplies: Discuss remains read-only, while Work tooling and
 repository access are unrestricted.
 
-Seed and Refresh are separate ingestion runs. If RCP cannot assemble transcript
-metadata, the run remains launchable: the provider receives the named provider
-sources, the last accounted coverage boundary, and an explicit warning so it
-can inspect those sources itself. RCP does not invent coverage for sources it
-could not read.
+Seed and Refresh are separate ingestion runs. RCP gives the provider the raw log
+roots on its execution machine, the project-level last successful ingestion
+time, and any exact root-preflight warnings. The provider reads the logs in
+place. RCP never assembles or projects transcript content for that run.
 
 ## UI path (proposal)
 
@@ -46,8 +45,7 @@ could not read.
 - Discuss can read exact run-scope repositories. Work receives those same
   pointers as context, but they do not limit its unrestricted repository/tooling
   permissions. Neither mode gets provider-root directories through chat.
-- Seed/Refresh launch with an observable source warning and provider/source
-  fallback, including the last accounted boundary; no false coverage is
-  recorded.
+- Seed/Refresh launch with an observable source warning, all configured raw log
+  roots, and the project watermark; no transcript content is staged or copied.
 - The completed chat answer is preserved for the UI as history, but is not fed
   back into the same or later agent context by this path.

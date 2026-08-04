@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from rcp.core.authority import render_agent_graph_authority_contract
 
 _TASK_AUTHORITY_BOUNDARY = """Instruction and trust boundary:
@@ -63,10 +65,53 @@ def _repository_pointers(repositories: list[dict[str, str]]) -> str:
     )
 
 
-def _conversation_pointers(conversation_roots: dict[str, str]) -> str:
-    return "".join(
-        f"- {provider}: `{path}`\n" for provider, path in sorted(conversation_roots.items())
-    )
+def _provider_log_pointers(provider_log_roots: dict[str, list[str]]) -> str:
+    lines = [
+        f"- {provider}: `{path}`\n"
+        for provider, paths in sorted(provider_log_roots.items())
+        for path in paths
+    ]
+    if not lines:
+        return "- none configured\n"
+    return "".join(lines)
+
+
+def _skill_pointers(pointers: list[dict[str, object]] | None) -> str:
+    if not pointers:
+        return "- none selected\n"
+    lines = []
+    for item in pointers:
+        dependencies = item.get("dependencies")
+        dependency_text = (
+            f" dependencies={dependencies}"
+            if isinstance(dependencies, str) and dependencies
+            else ""
+        )
+        lines.append(
+            f"- {item.get('kind', 'skill')} {item.get('id')}@{item.get('version')} — "
+            f"{item.get('label', item.get('id'))}: {item.get('description', '')}; "
+            f"folder=`{item.get('path')}`"
+            f"{dependency_text}\n"
+        )
+    return "".join(lines)
+
+
+def _selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
+    if not pointers:
+        return ""
+    return f"""Selected official RCP skills and workflows (read-only):
+{_skill_pointers(pointers)}
+- These folders contain prompt-level guidance and optional support files. Read them when relevant;
+  do not edit them or treat them as a permission grant.
+- A workflow is staged as a reference document. RCP does not execute its steps or allow it to widen
+  the captured capability for this task.
+"""
+
+
+def _ingestion_watermark(value: datetime | str | None) -> str:
+    if value is None:
+        return "none (no prior successful Seed/Refresh)"
+    return value.isoformat() if isinstance(value, datetime) else value
 
 
 def _retry_context(diagnostics_path: str | None) -> str:
@@ -105,37 +150,29 @@ class PromptFactory:
         ontology_path: str,
         graph_path: str | None,
         research_path: str | None,
-        conversation_roots: dict[str, str],
-        authorized_session_keys_path: str,
-        cursor_path: str,
-        coverage_path: str | None = None,
+        provider_log_roots: dict[str, list[str]],
+        ingestion_watermark: datetime | str | None,
         repositories: list[dict[str, str]],
         patch_path: str,
         output_schema_path: str,
         human_request_path: str | None = None,
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
+        skill_pointers: list[dict[str, object]] | None = None,
     ) -> str:
         task = {
             "seed": (
-                "Read the full available corpus in this run scope, reconcile the latest "
-                "human-reviewed project synthesis with primary artifacts, and produce "
-                "revision-one graph state."
+                "Read the relevant raw provider logs in place, reconcile the latest human-reviewed "
+                "project synthesis with primary artifacts, and produce revision-one graph state."
             ),
             "refresh": (
-                "Read forward from the supplied cursors, reconcile new human corrections and "
-                "synthesis with primary artifacts, and update the project-global graph."
+                "Read the relevant raw provider logs in place after the project ingestion "
+                "watermark, reconcile new human corrections and synthesis with primary artifacts, "
+                "and update the project-global graph."
             ),
         }[kind]
-        source_warning = (
-            "Source assembly warning:\n"
-            + "\n".join(f"- {detail}" for detail in (source_errors or []))
-            + "\n"
-            "The source warning is not a reason to stop. Inspect the named provider roots directly "
-            "when needed, compare them with the last accounted coverage boundary, and do not claim "
-            "coverage for records you did not read.\n"
-            if source_errors
-            else ""
+        source_preflight = (
+            "\n".join(f"- {detail}" for detail in source_errors) if source_errors else "- none"
         )
         return f"""# RCP {kind} task contract
 
@@ -152,33 +189,43 @@ Required ontology pointer:
 
 Required current-state pointers:
 {_pointer("graph", graph_path)}{_pointer("research rendering", research_path)}
-Required provider source roots (Seed/Refresh only):
-{_conversation_pointers(conversation_roots)}- Authorized session keys: `{authorized_session_keys_path}`
-- Cursor state: `{cursor_path}`
-- Last accounted coverage boundary: `{coverage_path or "(included in graph state)"}`
-{source_warning}
+Required provider log roots on the execution machine (Seed/Refresh only):
+{_provider_log_pointers(provider_log_roots)}- Project ingestion watermark: `{_ingestion_watermark(ingestion_watermark)}`
+
+Source-root preflight diagnostics (non-blocking):
+{source_preflight}
+These diagnostics do not prevent launch. Attempt every readable provider root directly and continue
+with the remaining roots if one is unavailable.
 
 Required repository pointers:
-{_repository_pointers(repositories)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
 Relevant objective and recovery inputs when present:
 {_pointer("Human request", human_request_path)}{_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 Required output instructions:
 - Patch JSON Schema: `{output_schema_path}`
 - Write the completed Patch to: `{patch_path}`
 
-Read graph state, ontology, cursor state, provider source roots, repositories, schema, and optional
-human input from the pointed-to files. Do not expect any of their content in a launch message. Each
-successful staged source root contains only normalized slices authorized for this run. Read the authorized
-session-key file as a JSON list of `{{"key": ..., "path": ...}}` entries. For coverage accounting,
-use only the exact `key` values from that file. Never derive a session key from a projected path or
-directory layout.
+Read graph state, ontology, provider logs, repositories, schema, and optional human input from the
+pointed-to locations. Do not expect any of their content in a launch message. Provider log roots are
+the raw provider-owned sources on this execution machine: inspect them in place. RCP has not copied,
+normalized, sliced, or staged their contents for you.
+
+Ingestion boundary:
+- Read relevant provider records after the project ingestion watermark. When it is `none`, there is
+  no prior successful Seed/Refresh boundary.
+- The watermark is a run boundary, not an exactly-once record guarantee. Tolerate overlap around it
+  and deduplicate repeated provider records using stable provider identity when available.
+- Read the optional human request before selecting history. Honor any date or project-history
+  narrowing it specifies, including a narrower starting date for a fresh Seed.
+- Do not manufacture an ingestion claim. RCP advances the project watermark only after it accepts
+  the completed patch.
 
 Preferences:
-- Use provider-owned fan-out into bounded read-only specialists when it helps cover independent
-  evidence questions. Give each specialist only the relevant immutable conversation root,
-  repository pointer, and bounded question; do not make them graph or cursor writers.
-- The parent coordinator reconciles specialist findings, checks graph identity reuse, and remains
-  the sole writer of the final Patch.
+- For a large corpus, use provider-owned fan-out into bounded read-only source-inspection subagents.
+  Give each subagent only the relevant provider log root, repository pointer, time range, and bounded
+  evidence question. Subagents must not write project files or patch files.
+- The parent coordinator reconciles subagent findings, checks graph identity reuse, and remains the
+  sole writer of the final Patch.
 
 Execution environment:
 - Your working directory is an RCP scratch folder and is the only location you may write.
@@ -192,7 +239,7 @@ Execution environment:
 
 Hard invariants:
 - Write only the semantic Patch fields in the supplied schema. RCP assigns kind, author, revision,
-  run scope, cursor, authority, dependency, lifecycle, and admission bookkeeping.
+  run scope, authority, dependency, lifecycle, and admission bookkeeping.
 - Use only fields and nesting in the schema file. Never invent synonymous fields.
 - Write `change_summary` as one ordinary-language sentence per meaningful change. Name research
   concepts by their reader-facing titles, never ids or Patch operation names, and do not summarize
@@ -207,7 +254,6 @@ Hard invariants:
   experiment and a conversation SourceRef.
 - Every Proposal includes all four card fields and exact replay ops. Do not add base revisions,
   affected-node lists, status, or lifecycle fields; RCP derives them from live state.
-- If citing records older than coverage.earliest_timestamp, include set_coverage.
 - Collector dumps are observations at their filename timestamp, never live state.
 - Evidence precedence, separate from instruction precedence: use primary repository artifacts and
   exact source records for factual claims; use explicit human decisions, corrections, and reviewed
@@ -220,8 +266,6 @@ Hard invariants:
 - Write every node for a cold reader: ordinary language, complete sentences, concrete context, and
   technical terms expanded inline. The glossary is supplementary, not a substitute.
 - Record `repositories_read` honestly; RCP supplies the authorized run truth scope.
-- coverage.sessions_read means substantively reconciled. Record deliberately skipped sessions.
-- RCP derives processed cursors from final coverage; do not put cursors in the semantic Patch.
 
 {render_agent_graph_authority_contract()}
 
@@ -248,6 +292,7 @@ Output contract:
         human_request_path: str,
         artifact_path: str,
         retry_diagnostics_path: str | None = None,
+        skill_pointers: list[dict[str, object]] | None = None,
     ) -> str:
         return f"""# RCP Discuss task contract
 
@@ -272,7 +317,7 @@ Required current-state pointers:
 Relevant inputs; read only when the question needs them:
 {_pointer("human introduction", introduction_path)}
 Repository pointers:
-{_repository_pointers(repositories)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
 
 Required objective:
 - Human request: `{human_request_path}`
@@ -328,6 +373,7 @@ Execution environment:
         patch_kind: str = "work",
         control_context_path: str | None = None,
         validator_command: str | None = None,
+        skill_pointers: list[dict[str, object]] | None = None,
     ) -> str:
         control_rules = (
             f"""
@@ -425,7 +471,7 @@ Required current-state pointers:
 Relevant context:
 {_pointer("human introduction", introduction_path)}
 Relevant repository pointers and expected operational targets:
-{_repository_pointers(repositories)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
 Required objective:
 - Human request: `{human_request_path}`
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
@@ -494,6 +540,7 @@ Optional graph reflection:
         repositories: list[dict[str, str]],
         human_request_path: str,
         retry_diagnostics_path: str | None = None,
+        skill_pointers: list[dict[str, object]] | None = None,
     ) -> str:
         return f"""# RCP paper-coach task contract
 
@@ -509,7 +556,7 @@ Required inputs:
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 
 Relevant repository inputs; read only when the coaching request needs them:
-{_repository_pointers(repositories)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.

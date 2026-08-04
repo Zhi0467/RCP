@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -19,6 +20,7 @@ from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactor
 from rcp.agents.context import RepositoryPointer
 from rcp.api import create_app
 from rcp.api.app import (
+    _validate_stored_task_request,
     _validated_task_request,
 )
 from rcp.artifacts import AgentArtifactDescriptor
@@ -38,7 +40,6 @@ from rcp.runs.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.graph import (
     _MAX_CORRECTION_ROUNDS,
-    _project_native_transcripts,
     _record_context_reuse,
     _record_progress_handoff,
     _stage_graph_context,
@@ -53,7 +54,7 @@ from rcp.runs.shared import (
 from rcp.runs.work import stream_work_run
 from rcp.service import CoachRequest, ReviewRequest, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
-from rcp.transport import StateUnavailable
+from rcp.transport import RunLockCancelled, RunLockLease, StateUnavailable
 
 from .helpers import agent_patch_json, gated_patch, refresh_patch, seed_patch, shape_invalid_patch
 
@@ -1216,6 +1217,141 @@ def test_seed_runs_in_background_and_keeps_api_responsive(manifest, tmp_path) ->
     assert completed["applied_revision"] == 1
 
 
+def test_seed_waits_for_live_canonical_owner_without_failing(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    workspace = app.state.service.history.workspace
+    lock_waiting = threading.Event()
+    release_lock = threading.Event()
+    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(seed_patch())}])
+
+    @contextmanager
+    def contended_lock(*, on_wait=None, cancelled=None, on_lost=None):
+        del on_lost
+        if on_wait is not None:
+            on_wait("Waiting for another graph-writing run to release canonical state.")
+        lock_waiting.set()
+        while not release_lock.wait(timeout=0.01):
+            if cancelled is not None and cancelled():
+                raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
+        yield RunLockLease(workspace.location)
+
+    monkeypatch.setattr(workspace, "run_lock", contended_lock)
+    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
+    client = TestClient(app)
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={"run_truth_scope": ["repo-a"]},
+    )
+    operation_id = started.json()["operation_id"]
+
+    try:
+        assert lock_waiting.wait(timeout=2)
+        waiting = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
+        assert waiting["status"] == "running"
+        assert waiting["phase"] == "waiting"
+        assert "Waiting for another graph-writing run" in waiting["status_message"]
+        assert workspace.location in waiting["status_message"]
+        assert launcher.calls == 0
+    finally:
+        release_lock.set()
+
+    completed = _wait_for_run(client, project_id, operation_id)
+    assert completed["status"] == "succeeded"
+    assert launcher.calls == 1
+    assert "canonical_state_lock_wait" in {item["category"] for item in completed["debug_receipts"]}
+
+
+def test_seed_can_pause_while_waiting_for_canonical_owner(manifest, tmp_path, monkeypatch) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    workspace = app.state.service.history.workspace
+    lock_waiting = threading.Event()
+
+    @contextmanager
+    def contended_lock(*, on_wait=None, cancelled=None, on_lost=None):
+        del on_lost
+        if on_wait is not None:
+            on_wait("Waiting for another graph-writing run to release canonical state.")
+        lock_waiting.set()
+        while cancelled is None or not cancelled():
+            time.sleep(0.01)
+        raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
+        yield  # pragma: no cover - makes this function a context manager
+
+    monkeypatch.setattr(workspace, "run_lock", contended_lock)
+    client = TestClient(app)
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={"run_truth_scope": ["repo-a"]},
+    )
+    operation_id = started.json()["operation_id"]
+    assert lock_waiting.wait(timeout=2)
+
+    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
+
+    assert paused_request.status_code == 202
+    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
+    assert paused["error"] is None
+    assert paused["status_message"] == "Paused while waiting for canonical state."
+    assert paused["can_resume"] is False
+
+
+def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    workspace = app.state.service.history.workspace
+    provider_started = threading.Event()
+    release_provider = threading.Event()
+    acquired_lease: list[RunLockLease] = []
+
+    class PausingLauncher(ScriptedLauncher):
+        async def stream(self, *args, **kwargs):
+            async for event in super().stream(*args, **kwargs):
+                if event.event == "done":
+                    provider_started.set()
+                    while not release_provider.is_set():
+                        await asyncio.sleep(0.01)
+                yield event
+
+    @contextmanager
+    def observable_lock(*, on_wait=None, cancelled=None, on_lost=None):
+        del on_wait, cancelled
+        lease = RunLockLease(workspace.location, on_lost=on_lost)
+        acquired_lease.append(lease)
+        yield lease
+
+    launcher = PausingLauncher([{"patch.json": agent_patch_json(seed_patch())}])
+    monkeypatch.setattr(workspace, "run_lock", observable_lock)
+    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
+    client = TestClient(app)
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={"run_truth_scope": ["repo-a"]},
+    )
+    operation_id = started.json()["operation_id"]
+
+    assert provider_started.wait(timeout=2)
+    acquired_lease[0]._mark_lost(
+        f"Canonical-state lock holder for {workspace.location} exited unexpectedly."
+    )
+    release_provider.set()
+
+    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
+    assert paused["error"] is None
+    assert "lock holder" in paused["status_message"]
+    assert "paused before applying further graph changes" in paused["status_message"]
+    assert paused["stage_root"] is not None
+    assert (Path(paused["stage_root"]) / "patch.json").is_file()
+    assert client.get(f"/api/projects/{project_id}").json()["revision"] == 0
+    categories = {item["category"] for item in paused["debug_receipts"]}
+    assert "canonical_state_lock_lost" in categories
+
+
 @pytest.mark.parametrize("kind", ["seed", "refresh"])
 def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, kind) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1302,10 +1438,10 @@ async def test_graph_stream_launches_with_degraded_source_fallback(
     service = app.state.service
     service.history.append(seed_patch())
 
-    def fail_source_assembly(*_args, **_kwargs):
-        raise PermissionError("provider source is unreadable")
-
-    monkeypatch.setattr(service, "index_snapshot", fail_source_assembly)
+    monkeypatch.setattr(
+        "rcp.service.preflight_provider_roots",
+        lambda *_args, **_kwargs: ["laptop/codex source root: provider source is unreadable"],
+    )
     launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
 
     frames = [
@@ -1324,9 +1460,10 @@ async def test_graph_stream_launches_with_degraded_source_fallback(
     contract = next(
         value for name, value in launcher.input_snapshots[0].items() if name.endswith("-initial.md")
     )
-    assert "Source assembly warning" in contract
-    assert "provider roots directly" in contract
-    assert "Last accounted coverage boundary" in contract
+    assert "Source-root preflight diagnostics (non-blocking)" in contract
+    assert "provider source is unreadable" in contract
+    assert "inspect them in place" in contract
+    assert "Project ingestion watermark" in contract
     assert service.manifest.sources.codex_roots[0] in contract
     assert any(
         Path(path) == Path(service.manifest.sources.codex_roots[0])
@@ -1438,10 +1575,6 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     project_id = app.state.default_project_id
     service = app.state.service
     service.history.append(seed_patch())
-    expected_context = service.assemble_run(
-        RunRequest(run_truth_scope=["repo-a"]),
-        "refresh",
-    )
     launcher = ScriptedLauncher(
         [
             {"patch.json": agent_patch_json(gated_patch())},
@@ -1480,16 +1613,11 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     contract = next(
         value for name, value in launcher.input_snapshots[0].items() if name.endswith("initial.md")
     )
-    assert "fan-out into bounded read-only specialists when it helps" in contract
+    assert "provider-owned fan-out into bounded read-only source-inspection subagents" in contract
     assert "sole writer of the final Patch" in contract
     assert "semantic Patch object" in contract
-    authorized_keys = json.loads(launcher.input_snapshots[0]["authorized-session-keys.json"])
-    assert all(set(item) == {"key", "path"} for item in authorized_keys)
-    assert [item["key"] for item in authorized_keys] == [
-        session.key for session in expected_context.sessions
-    ]
-    assert len({item["key"] for item in authorized_keys}) == len(authorized_keys)
-    assert "authorized-session-keys.json" in contract
+    assert "authorized-session-keys.json" not in contract
+    assert "authorized-session-keys.json" not in launcher.input_snapshots[0]
     rejection_diagnostic = next(
         value
         for name, value in launcher.input_snapshots[1].items()
@@ -1757,7 +1885,7 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp
 
     repository_path = manifest.repository_map["repo-a"].path
     assert stage.files == []
-    assert stage.directories == ["conversations"]
+    assert stage.directories == []
     assert staged.graph_path == f"{repository_path}/.research/graph.json"
     assert staged.research_md_path == f"{repository_path}/.research/research.md"
     assert staged.facts_dir == f"{repository_path}/.research/facts"
@@ -1823,67 +1951,6 @@ def test_paper_snapshot_filename_cannot_escape_data_directory(tmp_path) -> None:
     assert target.parent == data_dir / "paper-snapshots"
     assert target.name == "escaped-introduction.md"
     assert not (tmp_path / "escaped-introduction.md").exists()
-
-
-def test_remote_stage_uploads_local_slice_even_when_source_machine_matches(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    raw_path = Path(next(iter(manifest.sources.codex_roots))) / "remote-source.jsonl"
-    raw_path.write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {
-                    "id": "remote-source",
-                    "cwd": manifest.repository_map["repo-a"].path,
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    service = app.state.service
-    context = service.assemble_run(
-        RunRequest(run_truth_scope=["repo-a"]),
-        surface="refresh",
-    )
-    local_slice = Path(context.sessions[0].path)
-    context = context.model_copy(
-        update={
-            "repositories": [
-                repository.model_copy(update={"host": "laptop.example"})
-                for repository in context.repositories
-            ],
-            "sessions": [context.sessions[0].model_copy(update={"machine": "remote-1"})],
-        }
-    )
-
-    class RecordingStage:
-        def __init__(self) -> None:
-            self.root = PurePosixPath("/tmp/rcp-run.test")
-            self.files: list[Path] = []
-            self.directories: dict[str, list[str]] = {}
-
-        def put_file(self, source: Path, label: str) -> str:
-            self.files.append(source)
-            return str(self.root / "inputs" / label)
-
-        def put_directory(self, source: Path, label: str) -> str:
-            self.directories[label] = sorted(path.name for path in source.iterdir())
-            return str(self.root / "inputs" / label)
-
-    stage = RecordingStage()
-    service.history.manifest.machines.append(
-        MachineConfig(alias="remote-1", host="research.example")
-    )
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
-    staged = _stage_graph_context(context, service, stage, "remote-1")
-
-    assert local_slice != raw_path
-    assert "conversations" in stage.directories
-    assert staged.sessions[0].machine == "remote-1"
-    assert staged.sessions[0].path.startswith("/tmp/rcp-run.test/inputs/conversations/")
 
 
 def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
@@ -2375,28 +2442,6 @@ def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_pa
     assert any("Reason: attempt 2 left no retained provider progress" in item for item in messages)
 
 
-def test_local_native_transcript_projection_is_an_immutable_copy(tmp_path) -> None:
-    source = tmp_path / "provider-session.jsonl"
-    source.write_text("first\n", encoding="utf-8")
-    source.chmod(0o600)
-    stage = tmp_path / "run-stage"
-    (stage / "inputs").mkdir(parents=True)
-
-    projected = _project_native_transcripts(
-        stage,
-        None,
-        (str(source),),
-        "native-transcripts",
-    )
-    source.write_text("first\nsecond\n", encoding="utf-8")
-
-    projection = Path(projected[0])
-    assert projection.read_text(encoding="utf-8") == "first\n"
-    assert source.read_text(encoding="utf-8") == "first\nsecond\n"
-    assert source.stat().st_mode & 0o200
-    assert not projection.stat().st_mode & 0o200
-
-
 def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -2416,7 +2461,6 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     class ProviderSwitchLauncher:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
-            self.opened_transcript = ""
 
         async def stream(self, provider, prompt, **kwargs):
             workspace = Path(kwargs["cwd"])
@@ -2457,16 +2501,6 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
                     text="You've hit your limit · resets 5pm (Asia/Shanghai)",
                 )
                 return
-            handoff = json.loads(
-                next(
-                    value
-                    for name, value in self.calls[-1]["inputs"].items()
-                    if name.endswith("handoff.json")
-                )
-            )
-            self.opened_transcript = Path(handoff["native_transcript_paths"][0]).read_text(
-                encoding="utf-8"
-            )
             (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
             yield AgentEvent(event="session", session_id="codex-native-session")
             yield AgentEvent(event="done")
@@ -2536,27 +2570,12 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     retry_prompt = str(launcher.calls[1]["prompt"])
     retry_contract_path = Path(retry_prompt.splitlines()[1])
     assert retry_prompt == PromptFactory.launch_prompt(str(retry_contract_path))
-    retry_inputs = launcher.calls[1]["inputs"]
-    handoff = json.loads(
-        next(value for name, value in retry_inputs.items() if name.endswith("handoff.json"))
-    )
-    assert handoff["prior_provider"] == "claude"
-    assert handoff["prior_error"] == failed["error"]
-    assert handoff["prior_operation_id"] == failed["operation_id"]
     assert completed["parent_operation_id"] == attempt_2.operation_id
-    assert handoff["native_transcript_paths"]
-    assert "partial synthesis from provider A" in launcher.opened_transcript
-    assert "prior_progress_path" in handoff
-    assert "retained_patch" not in handoff
-    assert "prior_progress_messages" not in handoff
+    assert not any(name.endswith("handoff.json") for name in launcher.calls[1]["inputs"])
     completed_categories = {item["category"] for item in completed["debug_receipts"]}
     assert "context_reused" in completed_categories
     assert "context_reuse_unavailable" not in completed_categories
-    assert "progress_handed_off" in completed_categories
-    assert any(
-        "Handing off provider progress from attempt 1" in item["message"]
-        for item in completed["events"]
-    )
+    assert "progress_handoff_unavailable" in completed_categories
     first_base = store.agent_task_contract(failed["operation_id"], "base")
     retry_base = store.agent_task_contract(completed["operation_id"], "base")
     assert first_base is not None
@@ -2567,12 +2586,10 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     assert str(Path(failed["stage_root"]) / "patch.json") not in retry_base
     assert str(retry_workspace / "inputs") in retry_base
     assert f"task-{completed['operation_id']}-patch-schema.json" in retry_base
-    assert f"task-{completed['operation_id']}-authorized-session-keys.json" in retry_base
+    assert "authorized-session-keys.json" not in retry_base
     assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_base
     retry_contract = store.agent_task_contract(completed["operation_id"], "retry")
-    assert retry_contract is not None
-    assert str(retry_contract_path.parent) in retry_contract
-    assert str(Path(failed["stage_root"]) / "inputs" / "task-") not in retry_contract
+    assert retry_contract is None
 
 
 def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
@@ -4263,9 +4280,7 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
     graph_update = _graph_update(frames)
     assert graph_update is not None
     assert graph_update["status"] == "rejected"
-    assert any(
-        "must not set coverage" in message for message in graph_update["validation_messages"]
-    )
+    assert any("set_coverage" in message for message in graph_update["validation_messages"])
     assert service.history.state().revision == revision_before
 
 
@@ -5197,6 +5212,54 @@ async def test_work_patch_is_applied_to_live_state_without_correction(manifest, 
 
 
 @pytest.mark.asyncio
+async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_apply(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    workspace = service.history.workspace
+    work_patch = refresh_patch("rq/lost-lock-work").model_copy(update={"kind": "work"})
+
+    @contextmanager
+    def lost_lock(*, on_wait=None, cancelled=None, on_lost=None):
+        del on_wait, cancelled
+        lease = RunLockLease(workspace.location, on_lost=on_lost)
+        lease._mark_lost(
+            f"Canonical-state lock holder for {workspace.location} exited unexpectedly."
+        )
+        yield lease
+
+    monkeypatch.setattr(workspace, "run_lock", lost_lock)
+    launcher = ScriptedLauncher(
+        [{"patch.json": agent_patch_json(work_patch)}],
+        message="The operational work completed.",
+    )
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Do the work and reflect it.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+
+    frames = [
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+    ]
+
+    assert [event.text for event in _events(frames) if event.event == "answer"] == [
+        "The operational work completed."
+    ]
+    graph_update = _graph_update(frames)
+    assert graph_update is not None
+    assert graph_update["status"] == "rejected"
+    assert graph_update["repairable"] is False
+    assert "lock holder" in graph_update["validation_messages"][0]
+    assert launcher.calls == 1
+    assert service.history.state().revision == 1
+
+
+@pytest.mark.asyncio
 async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_correction(
     manifest, tmp_path
 ) -> None:
@@ -5373,6 +5436,71 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
     assert state.nodes["hyp/replanning-restores-plasticity"].status == "proposed"
     assert "ev/work-activation-result" in state.nodes
     assert "edge/work-activation-support" in state.edges
+
+
+def test_background_work_can_pause_while_waiting_for_canonical_state(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    workspace = service.history.workspace
+    waiting = threading.Event()
+    answer = "The operational work completed."
+    patch_text = agent_patch_json(
+        refresh_patch("rq/paused-work-apply").model_copy(update={"kind": "work"})
+    )
+    launcher = ScriptedLauncher([{"patch.json": patch_text}], message=answer)
+
+    @contextmanager
+    def contended_lock(*, on_wait=None, cancelled=None, on_lost=None):
+        del on_lost
+        if on_wait is not None:
+            on_wait("Waiting for another graph-writing run to release canonical state.")
+        waiting.set()
+        while cancelled is None or not cancelled():
+            time.sleep(0.01)
+        raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
+        yield  # pragma: no cover - makes this function a context manager
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    monkeypatch.setattr(workspace, "run_lock", contended_lock)
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "message": "Do the work and reflect it.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    operation_id = started.json()["operation_id"]
+
+    assert waiting.wait(timeout=2)
+    active = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
+    assert active["status"] == "running"
+    assert active["phase"] == "waiting"
+    assert "Waiting for another graph-writing run" in active["status_message"]
+    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
+
+    assert paused_request.status_code == 202
+    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
+    assert paused["error"] is None
+    assert paused["result"] == {"messages": [answer]}
+    assert "answer and retained patch are preserved" in paused["status_message"]
+    assert app.state.background_tasks.store.agent_task_patch_output(operation_id) == patch_text
+    assert service.history.state().revision == 1
+    categories = {item["category"] for item in paused["debug_receipts"]}
+    assert "canonical_state_lock_wait" in categories
+    assert "operation_paused" in categories
 
 
 def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
@@ -6090,3 +6218,122 @@ def test_a_human_releases_an_attempt_whose_watcher_can_no_longer_answer(manifest
     )
     assert again.status_code == 422
     assert "no open attempt" in again.json()["detail"]
+
+
+def test_seed_stages_its_selected_skills_and_records_what_it_ran(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """S64: the selection is structured task metadata, not text the agent parses."""
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    observed: dict[str, object] = {}
+
+    class InspectingLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            # A succeeded run reclaims its scratch folder, so read it in place.
+            bundle = next((Path(kwargs["cwd"]) / "inputs").glob("rcp-skills-*"))
+            observed["contract"] = _local_task_contract(prompt)
+            observed["staged"] = sorted(
+                str(item.relative_to(bundle)) for item in bundle.rglob("*.md")
+            )
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = InspectingLauncher([{"patch.json": agent_patch_json(seed_patch())}])
+    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
+    client = TestClient(app)
+
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={
+            "run_truth_scope": ["repo-a"],
+            "workflow_ids": ["research-graph-audit"],
+            "skill_ids": [],
+        },
+    )
+    operation_id = started.json()["operation_id"]
+    completed = _wait_for_run(client, project_id, operation_id)
+
+    assert completed["status"] == "succeeded"
+    # The workflow's dependency closure is resolved and recorded with exact versions.
+    assert [
+        (item["kind"], item["id"], item["version"])
+        for item in completed["request"]["resolved_skill_packages"]
+    ] == [
+        ("workflow", "research-graph-audit", "1.0.0"),
+        ("skill", "graph-audit", "1.0.0"),
+        ("skill", "evidence-triage", "1.0.0"),
+    ]
+    # The workflow file and every declared dependency are staged together, alone.
+    assert observed["staged"] == [
+        "skill/evidence-triage/SKILL.md",
+        "skill/graph-audit/SKILL.md",
+        "workflow/research-graph-audit/WORKFLOW.md",
+    ]
+    # The contract points at the staged folders; the bodies stay on disk.
+    contract = observed["contract"]
+    assert "workflow research-graph-audit@1.0.0" in contract
+    assert f"rcp-skills-{operation_id}" in contract
+    assert "Use Graph audit to identify structural gaps" not in contract
+    # Nothing about the selection reaches canonical state.
+    research_dir = app.state.service.manifest.research_dir
+    assert not list(research_dir.rglob("*SKILL.md"))
+    assert not list(research_dir.rglob("*WORKFLOW.md"))
+
+
+def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tmp_path) -> None:
+    """S64: the registry is authoritative; a recorded version is a receipt, not a pin."""
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    stored_request = {
+        "provider": "codex",
+        "run_on": "laptop",
+        "run_truth_scope": ["repo-a"],
+        "skill_ids": ["graph-audit"],
+        # What the earlier attempt ran with, before the package was upgraded.
+        "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
+    }
+
+    selection = _validate_stored_task_request(service, "seed", stored_request)
+
+    assert [(item.id, item.version) for item in selection.resolved_skill_packages] == [
+        ("graph-audit", "1.0.0")
+    ]
+
+
+def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+
+    async def failing_stream(*_args, **_kwargs):
+        yield _event_frame(AgentEvent(event="error", text="Provider exited before writing."))
+
+    ordinary_stream = app.state.background_tasks.stream
+    app.state.background_tasks.stream = failing_stream
+    client = TestClient(app)
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={"run_truth_scope": ["repo-a"], "workflow_ids": ["research-graph-audit"]},
+    )
+    operation_id = started.json()["operation_id"]
+    assert _wait_for_run(client, project_id, operation_id)["status"] == "failed"
+
+    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(seed_patch())}])
+    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
+    app.state.background_tasks.stream = ordinary_stream
+    retried = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/retry", json={})
+
+    assert retried.status_code == 202
+    child = _wait_for_run(client, project_id, retried.json()["operation_id"])
+    assert child["status"] == "succeeded"
+    assert [
+        (item["id"], item["version"]) for item in child["request"]["resolved_skill_packages"]
+    ] == [
+        ("research-graph-audit", "1.0.0"),
+        ("graph-audit", "1.0.0"),
+        ("evidence-triage", "1.0.0"),
+    ]

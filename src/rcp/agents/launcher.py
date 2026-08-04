@@ -268,12 +268,8 @@ class AgentLauncher:
             raise
 
         with self._readiness_lock:
-            if self._readiness_generations.get(key, 0) == generation and self._cacheable_readiness(
-                result, discovery=binary is None
-            ):
+            if self._readiness_generations.get(key, 0) == generation:
                 self._readiness_cache[key] = result.model_copy(deep=True)
-            elif self._readiness_generations.get(key, 0) == generation:
-                self._readiness_cache.pop(key, None)
             probe.result = result.model_copy(deep=True)
             self._readiness_probes.pop(probe_key, None)
             probe.completed.set()
@@ -292,18 +288,6 @@ class AgentLauncher:
             key = (provider, host, binary)
             self._readiness_cache.pop(key, None)
             self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
-
-    @staticmethod
-    def _cacheable_readiness(
-        readiness: ProviderReadiness,
-        *,
-        discovery: bool,
-    ) -> bool:
-        return bool(
-            readiness.installed
-            and readiness.authenticated
-            and (readiness.path_state == "resolved" or discovery)
-        )
 
     def _readiness_uncached(
         self,

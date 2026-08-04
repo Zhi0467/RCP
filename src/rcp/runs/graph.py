@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
-import os
-import shutil
-import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -23,17 +18,13 @@ from rcp.agents import (
     PromptFactory,
     RunContext,
     agent_output_schema,
-    bounded_session_metadata,
-    normalize_processed_cursors,
     prepare_agent_patch,
     validate_agent_patch_shape,
-    validate_session_evidence,
 )
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
-from rcp.core.models import CoverageBoundary
 from rcp.history import PatchRejected, ReplayHalted
-from rcp.providers import classify_terminal_error, profile_for
+from rcp.providers import classify_terminal_error
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
@@ -47,7 +38,6 @@ from rcp.runs.shared import (
     _record_provider_exit,
     _remove_local_tree,
     _safe_stage_name,
-    _session_bundle_relative_path,
     _sse,
     _stage_context_paths,
     _stage_json_task_input,
@@ -58,11 +48,15 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import ProjectService, RunRequest
-from rcp.sources import (
-    ConversationIndex,
-)
+from rcp.skills.staging import stage_skill_selection
 from rcp.storage import AgentTaskRecord
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import (
+    RemoteRunStage,
+    RunLockCancelled,
+    RunLockLease,
+    RunLockOwnershipLost,
+    StateUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 _MAX_CORRECTION_ROUNDS = 2
@@ -70,16 +64,14 @@ _PREPARED_GRAPH_CONTEXT_FILE = "prepared-context.json"
 
 
 class _PreparedGraphContext(BaseModel):
-    version: Literal[1] = 1
+    version: Literal[2] = 2
     project_id: str
     kind: Literal["seed", "refresh"]
     graph_revision: int
     run_truth_scope: list[str]
     execution_host: str
-    source_snapshot_digest: str
     original_contract_path: str | None = None
     context: RunContext
-    previous_coverage: CoverageBoundary
 
 
 @dataclass(frozen=True)
@@ -89,55 +81,9 @@ class _GraphRetryState:
     prepared_parent: AgentTaskRecord | None
     progress_parent: AgentTaskRecord | None
     progress: dict[str, object]
-    transcript_sources: tuple[str, ...] = ()
-    prior_progress_text: str | None = None
     retained_patch_text: str | None = None
     context_reason: str | None = None
     progress_reason: str | None = None
-
-
-def _source_snapshot_digest(
-    index: ConversationIndex,
-    run_truth_scope: list[str],
-    *,
-    exclude_native_session_id: str | None = None,
-    exclude_provider: str | None = None,
-    exclude_native_sessions: set[tuple[str, str]] | None = None,
-) -> str:
-    sessions = index.for_scope(run_truth_scope)
-    excluded = set(exclude_native_sessions or set())
-    if exclude_native_session_id and exclude_provider:
-        excluded.add((exclude_provider, exclude_native_session_id))
-    if excluded:
-        changed = True
-        while changed:
-            changed = False
-            for item in sessions:
-                key = (item.provider, item.session_id)
-                parent_key = (item.provider, item.parent_session_id or "")
-                if key in excluded or parent_key not in excluded:
-                    continue
-                excluded.add(key)
-                changed = True
-    rows = [
-        {
-            "key": item.key,
-            "provider": item.provider,
-            "machine": item.source_machine,
-            "last_uuid": item.last_uuid,
-            "record_count": item.record_count,
-            "first_timestamp": (
-                item.first_timestamp.isoformat() if item.first_timestamp is not None else None
-            ),
-            "last_timestamp": (
-                item.last_timestamp.isoformat() if item.last_timestamp is not None else None
-            ),
-        }
-        for item in sorted(sessions, key=lambda value: value.key)
-        if (item.provider, item.session_id) not in excluded
-    ]
-    payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _read_prepared_graph_context(parent: AgentTaskRecord) -> _PreparedGraphContext:
@@ -236,75 +182,12 @@ def _continuation_graph_context(
     return prepared
 
 
-def _native_session_paths(
-    service: ProjectService,
-    parent: AgentTaskRecord,
-    *,
-    execution_host: str,
-) -> list[str]:
-    if not parent.native_session_id or parent.stage_host != (execution_host or None):
-        return []
-    provider = str(parent.request.get("provider") or "")
-    roots = profile_for(provider).session_roots(
-        service.manifest.sources, remote=bool(execution_host)
-    )
-    if execution_host:
-        return RemoteRunStage(execution_host).find_native_session_files(
-            roots, parent.native_session_id
-        )
-    matches: list[str] = []
-    for declared in roots:
-        root = Path(declared).expanduser()
-        if not root.is_dir():
-            continue
-        for candidate in root.rglob("*.jsonl"):
-            if parent.native_session_id in candidate.stem and candidate.is_file():
-                matches.append(str(candidate.resolve()))
-                if len(matches) >= 8:
-                    return sorted(set(matches))
-    return sorted(set(matches))
-
-
-def _read_prior_progress(execution: AgentTaskExecution, parent: AgentTaskRecord) -> str | None:
-    messages = (parent.result or {}).get("messages", [])
-    if isinstance(messages, list) and messages:
-        return "\n\n".join(str(item) for item in messages[:16])
-    path = next(
-        (
-            receipt.payload.get("path")
-            for receipt in reversed(execution.store.agent_task_receipts(parent.operation_id))
-            if receipt.category == "provider_progress"
-            and isinstance(receipt.payload.get("path"), str)
-        ),
-        None,
-    )
-    if not isinstance(path, str) or not parent.stage_root:
-        return None
-    try:
-        if parent.stage_host:
-            candidate = PurePosixPath(path)
-            if candidate.parent != PurePosixPath(parent.stage_root) / "inputs":
-                return None
-            return (
-                RemoteRunStage(parent.stage_host)
-                .attach(parent.stage_root)
-                .read_input_text(candidate.name)
-            )
-        candidate = Path(path).resolve()
-        if candidate.parent != (Path(parent.stage_root) / "inputs").resolve():
-            return None
-        return candidate.read_text(encoding="utf-8")
-    except (OSError, StateUnavailable, ValueError):
-        return None
-
-
 def _try_reuse_graph_context(
     service: ProjectService,
     execution: AgentTaskExecution | None,
     *,
     kind: str,
     request: RunRequest,
-    execution_machine: str,
     execution_host: str,
 ) -> _GraphRetryState | None:
     lineage = _retry_lineage(execution)
@@ -314,24 +197,10 @@ def _try_reuse_graph_context(
         request.run_truth_scope or service.manifest.agent.default_run_truth_scope
     )
     graph_revision = int(service.graph_snapshot()["revision"])
-    try:
-        index = service.index_snapshot(refresh=True, execution_machine=execution_machine)
-    except Exception as exc:
-        index = ConversationIndex(
-            generated_at=datetime.now(UTC),
-            source_errors=[f"source snapshot unavailable: {type(exc).__name__}: {exc}"],
-        )
-    excluded_sessions = {
-        (str(item.request.get("provider") or ""), item.native_session_id)
-        for item in lineage
-        if item.native_session_id
-    }
     prepared = None
     prepared_parent = None
     context_errors: list[str] = []
     for candidate in lineage:
-        if index.source_errors:
-            break
         try:
             value = _read_prepared_graph_context(candidate)
             if kind not in {"seed", "refresh"} or value.kind != kind:
@@ -346,40 +215,19 @@ def _try_reuse_graph_context(
                 raise ValueError("execution host changed")
             if value.graph_revision != graph_revision:
                 raise ValueError("graph revision changed")
-            if (
-                _source_snapshot_digest(
-                    index,
-                    value.run_truth_scope,
-                    exclude_native_sessions=excluded_sessions,
-                )
-                != value.source_snapshot_digest
-            ):
-                raise ValueError("source snapshot changed")
             prepared = value
             prepared_parent = candidate
             break
         except (OSError, StateUnavailable, ValueError) as exc:
             context_errors.append(f"attempt {candidate.attempt}: {exc}")
-    if index.source_errors:
-        context_errors.extend(f"source snapshot: {detail}" for detail in index.source_errors)
 
     progress_parent = None
     progress: dict[str, object] = {}
-    transcript_sources: tuple[str, ...] = ()
-    prior_progress_text = None
     retained_patch_text = None
     progress_errors: list[str] = []
     for candidate in lineage:
-        try:
-            transcript_sources = tuple(
-                _native_session_paths(service, candidate, execution_host=execution_host)
-            )
-        except (OSError, StateUnavailable, ValueError) as exc:
-            transcript_sources = ()
-            progress_errors.append(f"attempt {candidate.attempt}: {exc}")
-        prior_progress_text = _read_prior_progress(execution, candidate)
         retained_patch_text = execution.store.agent_task_patch_output(candidate.operation_id)
-        if transcript_sources or prior_progress_text or retained_patch_text:
+        if retained_patch_text:
             progress_parent = candidate
             progress = {
                 "prior_operation_id": candidate.operation_id,
@@ -398,8 +246,6 @@ def _try_reuse_graph_context(
         prepared_parent=prepared_parent,
         progress_parent=progress_parent,
         progress=progress,
-        transcript_sources=transcript_sources,
-        prior_progress_text=prior_progress_text if progress_parent else None,
         retained_patch_text=retained_patch_text if progress_parent else None,
         context_reason="; ".join(context_errors)[:1200] if prepared is None else None,
         progress_reason="; ".join(progress_errors)[:1200] if progress_parent is None else None,
@@ -487,10 +333,8 @@ def _stage_prepared_graph_context(
     kind: str,
     graph_revision: int,
     execution_host: str,
-    source_snapshot_digest: str,
     original_contract_path: str,
     context: RunContext,
-    previous_coverage: CoverageBoundary,
 ) -> None:
     prepared = _PreparedGraphContext(
         project_id=project_id,
@@ -498,10 +342,8 @@ def _stage_prepared_graph_context(
         graph_revision=graph_revision,
         run_truth_scope=context.run_truth_scope,
         execution_host=execution_host,
-        source_snapshot_digest=source_snapshot_digest,
         original_contract_path=original_contract_path,
         context=context,
-        previous_coverage=previous_coverage,
     )
     _stage_json_task_input(
         local_stage,
@@ -509,59 +351,6 @@ def _stage_prepared_graph_context(
         _PREPARED_GRAPH_CONTEXT_FILE,
         prepared.model_dump(mode="json"),
     )
-
-
-def _stage_authorized_session_keys(
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    context: RunContext,
-    *,
-    label: str = "authorized-session-keys.json",
-) -> str:
-    return _stage_json_task_input(
-        local_stage,
-        remote_stage,
-        label,
-        [{"key": session.key, "path": session.path} for session in context.sessions],
-    )
-
-
-def _project_native_transcripts(
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    sources: tuple[str, ...],
-    label: str,
-) -> list[str]:
-    if not sources:
-        return []
-    if remote_stage is not None:
-        return remote_stage.project_host_files(list(sources), label)
-    if local_stage is None:
-        raise RuntimeError("local run stage is unavailable")
-    inputs = local_stage / "inputs"
-    target = inputs / _safe_stage_name(label)
-    if target.exists():
-        raise ValueError("immutable native transcript projection already exists")
-    staged = Path(tempfile.mkdtemp(prefix=f".{target.name}-", dir=inputs))
-    try:
-        projected: list[str] = []
-        for index, value in enumerate(sources):
-            source = Path(value).resolve()
-            if not source.is_file():
-                raise ValueError(f"native transcript is unavailable: {source}")
-            destination = staged / f"{index:02d}.jsonl"
-            # This must be a snapshot, not a hard link. A provider may keep
-            # appending to its native transcript, and chmod on a hard link
-            # would also mutate the provider-owned source inode.
-            shutil.copy2(source, destination)
-            destination.chmod(0o400)
-            projected.append(str(target / destination.name))
-        staged.chmod(0o500)
-        os.replace(staged, target)
-        return projected
-    finally:
-        if staged.exists():
-            _remove_local_tree(staged, inputs)
 
 
 async def stream_graph_run(
@@ -603,19 +392,49 @@ async def stream_graph_run(
     execution_host = execution_machine.host
     provider_binary = execution_machine.provider_paths.get(profile.provider)
     remote_stage: RemoteRunStage | None = None
-    run_lock = service.history.workspace.run_lock()
+    workspace = service.history.workspace
+    canonical_state_location = workspace.location
+    run_lock = workspace.run_lock(
+        on_wait=(
+            lambda message: _record_run_lock_wait(execution, message, canonical_state_location)
+        )
+        if execution is not None
+        else None,
+        cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
+        on_lost=(
+            lambda message: _record_run_lock_lost(execution, message, canonical_state_location)
+        )
+        if execution is not None
+        else None,
+    )
+    run_lock_lease: RunLockLease | None = None
     run_lock_acquired = False
-    cache_pin = None
     applied = False
     retry_state: _GraphRetryState | None = None
-    source_snapshot_digest = ""
     graph_revision = 0
     try:
         try:
-            run_lock.__enter__()
+            run_lock_lease = run_lock.__enter__()
             run_lock_acquired = True
+            run_lock_lease.assert_owned()
+        except RunLockCancelled:
+            yield _sse(AgentEvent(event="paused", text="Paused while waiting for canonical state."))
+            return
+        except RunLockOwnershipLost as exc:
+            yield _sse(
+                AgentEvent(
+                    event="paused",
+                    text=f"{exc} The task paused before applying further graph changes.",
+                )
+            )
+            return
         except StateUnavailable as exc:
-            yield _sse(AgentEvent(event="error", text=str(exc)))
+            if execution is not None and execution.control.pause_requested.is_set():
+                yield _sse(
+                    AgentEvent(event="paused", text="Paused while waiting for canonical state.")
+                )
+            else:
+                yield _sse(AgentEvent(event="error", text=str(exc)))
             return
         try:
             continuation_prepared = (
@@ -637,18 +456,15 @@ async def stream_graph_run(
                     execution,
                     kind=kind,
                     request=request,
-                    execution_machine=execution_machine.alias,
                     execution_host=execution_host,
                 )
             )
             if continuation_prepared is not None:
                 context = continuation_prepared.context
-                source_snapshot_digest = continuation_prepared.source_snapshot_digest
                 graph_revision = continuation_prepared.graph_revision
                 _record_context_reuse(execution, reused=True)
             elif retry_state is not None and retry_state.prepared is not None:
                 context = retry_state.prepared.context
-                source_snapshot_digest = retry_state.prepared.source_snapshot_digest
                 graph_revision = retry_state.prepared.graph_revision
                 _record_context_reuse(execution, reused=True)
             else:
@@ -656,60 +472,10 @@ async def stream_graph_run(
                     _record_context_reuse(
                         execution, reused=False, reason=retry_state.context_reason
                     )
-                cache_pin = service.indexer.pin_rebuildable_scope()
-                pin_artifact = cache_pin.__enter__()
-                context = service.assemble_run(
-                    request,
-                    surface,
-                    pin_artifact=pin_artifact,
-                )
+                context = service.assemble_run(request, surface)
                 _record_context_receipt(execution, context, surface=surface)
                 _report_source_errors(execution, context.source_errors)
                 graph_revision = context.graph_revision
-                execution_record = (
-                    execution.store.agent_task(execution.operation_id)
-                    if execution is not None
-                    else None
-                )
-                if execution_record is not None:
-                    try:
-                        source_snapshot_digest = _source_snapshot_digest(
-                            service.index_snapshot(
-                                execution_machine=execution_machine.alias,
-                                pin_artifact=pin_artifact,
-                            ),
-                            context.run_truth_scope,
-                            exclude_native_sessions=(
-                                {
-                                    (
-                                        str(item.request.get("provider") or ""),
-                                        item.native_session_id,
-                                    )
-                                    for item in retry_state.lineage
-                                    if item.native_session_id
-                                }
-                                if retry_state is not None
-                                else None
-                            ),
-                        )
-                    except Exception as exc:
-                        source_snapshot_digest = (
-                            "unavailable:"
-                            + hashlib.sha256(f"{type(exc).__name__}: {exc}".encode()).hexdigest()
-                        )
-            try:
-                current_coverage = CoverageBoundary.model_validate_json(
-                    Path(context.coverage_path).read_text(encoding="utf-8")
-                )
-            except (OSError, ValueError):
-                current_coverage = service.history.state().coverage
-            previous_coverage = (
-                continuation_prepared.previous_coverage
-                if continuation_prepared is not None
-                else retry_state.prepared.previous_coverage
-                if retry_state is not None and retry_state.prepared is not None
-                else current_coverage
-            )
             # One scratch folder per operation, reused by every rung of the recovery
             # ladder so a resumed native session still points at the directory it was
             # originally given. It is never deleted on failure; _sweep_stale_stages
@@ -751,9 +517,6 @@ async def stream_graph_run(
                             "The interrupted local operation has no valid staging checkpoint; "
                             "retry it instead."
                         )
-                    context = _rebind_graph_conversations(
-                        context, local_stage / "inputs" / "conversations"
-                    )
                 elif reuses_native_checkpoint:
                     raise ValueError(
                         "The interrupted local operation has no staging checkpoint; retry it."
@@ -764,11 +527,15 @@ async def stream_graph_run(
                     local_stage.mkdir(parents=True, exist_ok=True)
                     if execution is not None:
                         execution.checkpoint_stage("", str(local_stage))
-                    if retry_state is None or retry_state.prepared is None:
-                        context = _stage_local_graph_conversations(context, local_stage)
                 workspace = local_stage
                 patch_path = str(local_stage / "patch.json")
 
+            skill_pointers = stage_skill_selection(
+                service.resolve_skill_selection(request),
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                label=f"rcp-skills-{_task_token(execution)}",
+            )
             read_dirs = _agent_read_dirs(context, remote_stage, service, execution_machine.alias)
             if (
                 retry_state is not None
@@ -782,8 +549,6 @@ async def stream_graph_run(
                     else Path(retry_state.prepared_parent.stage_root) / "inputs"
                 )
                 read_dirs.append(Path(str(parent_inputs)))
-                for conversation_root in _conversation_roots(context).values():
-                    read_dirs.append(Path(conversation_root))
             token = _task_token(execution)
             if reuses_native_checkpoint and continuation == "resume":
                 if not request.session_id:
@@ -847,26 +612,14 @@ async def stream_graph_run(
                     if execution is not None and execution.retry_feedback
                     else None
                 )
-                authorized_session_keys_path = _stage_authorized_session_keys(
-                    local_stage,
-                    remote_stage,
-                    context,
-                    label=(
-                        "authorized-session-keys.json"
-                        if continuation == "fresh"
-                        else f"task-{token}-authorized-session-keys.json"
-                    ),
-                )
                 base_contract_content = service.graph_task_contract(
                     kind,
                     project_name=context.project_name,
                     ontology_path=f"{context.graph_path}#ontology",
                     graph_path=context.graph_path,
                     research_path=context.research_md_path,
-                    conversation_roots=_conversation_roots(context),
-                    authorized_session_keys_path=authorized_session_keys_path,
-                    cursor_path=str(PurePosixPath(context.coverage_path).with_name("cursors.json")),
-                    coverage_path=context.coverage_path,
+                    provider_log_roots=context.source_roots,
+                    ingestion_watermark=context.ingestion_watermark,
                     repositories=[
                         {"alias": item.alias, "host": item.host, "path": item.path}
                         for item in context.repositories
@@ -876,6 +629,7 @@ async def stream_graph_run(
                     human_request_path=human_request_path,
                     retry_diagnostics_path=retry_diagnostics_path,
                     source_errors=context.source_errors,
+                    skill_pointers=skill_pointers,
                 )
                 base_label = (
                     f"task-{token}-initial.md"
@@ -911,21 +665,6 @@ async def stream_graph_run(
                     )
                 elif retry_state is not None and retry_state.progress_parent is not None:
                     handoff = dict(retry_state.progress)
-                    transcript_paths = _project_native_transcripts(
-                        local_stage,
-                        remote_stage,
-                        retry_state.transcript_sources,
-                        f"task-{token}-native-transcripts",
-                    )
-                    if transcript_paths:
-                        handoff["native_transcript_paths"] = transcript_paths
-                    if retry_state.prior_progress_text:
-                        handoff["prior_progress_path"] = _stage_task_input(
-                            local_stage,
-                            remote_stage,
-                            f"task-{token}-prior-progress.md",
-                            retry_state.prior_progress_text,
-                        )
                     if retry_state.retained_patch_text:
                         handoff["retained_patch_path"] = _stage_task_input(
                             local_stage,
@@ -976,10 +715,8 @@ async def stream_graph_run(
                         kind=kind,
                         graph_revision=graph_revision,
                         execution_host=execution_host,
-                        source_snapshot_digest=source_snapshot_digest,
                         original_contract_path=base_contract_path,
                         context=context,
-                        previous_coverage=previous_coverage,
                     )
         except (ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -994,6 +731,8 @@ async def stream_graph_run(
             else None
         )
         while True:
+            assert run_lock_lease is not None
+            run_lock_lease.assert_owned()
             # Resume and Retry reuse their predecessor's stage, including any
             # retained patch. Fingerprint it rather than deleting it: invariant 9
             # says failed work remains inspectable, but a Retry may not claim an
@@ -1050,29 +789,6 @@ async def stream_graph_run(
                         )
                         execution_record = execution.store.agent_task(execution.operation_id)
                         if streamed.event == "error" and execution_record is not None:
-                            if outcome.trace_messages:
-                                progress_path = _stage_task_input(
-                                    local_stage,
-                                    remote_stage,
-                                    f"task-{token}-provider-progress.md",
-                                    "\n\n".join(outcome.trace_messages),
-                                )
-                                try:
-                                    if remote_stage is not None:
-                                        await asyncio.to_thread(remote_stage.finalize_inputs)
-                                except (OSError, StateUnavailable, ValueError) as exc:
-                                    execution.store.record_agent_task_event(
-                                        execution.operation_id,
-                                        f"Provider progress could not be retained: {exc}",
-                                        level="warning",
-                                    )
-                                else:
-                                    execution.store.record_agent_task_receipt(
-                                        execution.operation_id,
-                                        "provider_progress",
-                                        {"path": progress_path},
-                                        tier="diagnostic",
-                                    )
                             execution.store.record_agent_task_receipt(
                                 execution.operation_id,
                                 "provider_terminal_error",
@@ -1099,6 +815,7 @@ async def stream_graph_run(
                 remote_stage=remote_stage,
             )
             native_session_id = outcome.session_id
+            run_lock_lease.assert_owned()
             if not outcome.completed:
                 if outcome.failed or outcome.paused:
                     return
@@ -1179,13 +896,12 @@ async def stream_graph_run(
                         patch,
                         byte_length=len(patch_text.encode("utf-8")),
                     )
-                    patch = normalize_processed_cursors(context, patch, previous_coverage)
-                    validate_session_evidence(context, patch, previous_coverage)
                 except ValueError as exc:
                     problem = str(exc)
                     last_problem = problem
                 else:
                     try:
+                        run_lock_lease.assert_owned()
                         _appended, result = service.history.append(
                             patch,
                             discard_on_reject=True,
@@ -1268,9 +984,14 @@ async def stream_graph_run(
                 role=f"graph_patch_correction_{rounds}",
             )
             session_id = native_session_id
+    except RunLockOwnershipLost as exc:
+        yield _sse(
+            AgentEvent(
+                event="paused",
+                text=f"{exc} The task paused before applying further graph changes.",
+            )
+        )
     finally:
-        if cache_pin is not None:
-            cache_pin.__exit__(None, None, None)
         if applied:
             if local_stage is not None:
                 with suppress(OSError, ValueError):
@@ -1283,6 +1004,51 @@ async def stream_graph_run(
             run_lock.__exit__(None, None, None)
 
 
+def _record_run_lock_wait(
+    execution: AgentTaskExecution,
+    message: str,
+    location: str,
+) -> None:
+    detail = f"{message} Location: {location}"
+    execution.store.update_agent_task_message(
+        execution.operation_id,
+        detail,
+        phase="waiting",
+        event=True,
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "canonical_state_lock_wait",
+        {"location": location},
+        tier="diagnostic",
+    )
+
+
+def _record_run_lock_lost(
+    execution: AgentTaskExecution,
+    message: str,
+    location: str,
+) -> None:
+    detail = f"{message} The task is pausing before further graph changes. Location: {location}"
+    execution.store.update_agent_task_message(
+        execution.operation_id,
+        detail,
+        phase="pausing",
+    )
+    execution.store.record_agent_task_event(
+        execution.operation_id,
+        detail,
+        level="warning",
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "canonical_state_lock_lost",
+        {"location": location},
+        tier="diagnostic",
+    )
+    execution.control.request_pause()
+
+
 def _record_context_receipt(
     execution: AgentTaskExecution | None,
     context: RunContext,
@@ -1291,18 +1057,22 @@ def _record_context_receipt(
 ) -> None:
     if execution is None:
         return
-    slice_hashes = {session.slice_sha256 for session in context.sessions if session.slice_sha256}
+    source_root_count = sum(len(roots) for roots in context.source_roots.values())
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "context_assembled",
         {
             "surface": surface,
             "repository_count": len(context.repositories),
-            "session_count": len(context.sessions),
-            "session_record_count": sum(session.slice_record_count for session in context.sessions),
-            "unique_slice_count": len(slice_hashes),
+            "source_root_count": source_root_count,
+            "source_warnings": list(context.source_errors),
             "source_error_count": len(context.source_errors),
             "graph_revision": context.graph_revision,
+            "ingestion_watermark": (
+                context.ingestion_watermark.isoformat()
+                if context.ingestion_watermark is not None
+                else None
+            ),
         },
     )
 
@@ -1311,14 +1081,14 @@ def _report_source_errors(
     execution: AgentTaskExecution | None,
     source_errors: list[str],
 ) -> None:
-    """Surface degraded source assembly without turning it into a dead run."""
+    """Surface root-preflight warnings without turning them into launch authority."""
 
     if execution is None:
         return
     for detail in source_errors[:16]:
         execution.store.record_agent_task_event(
             execution.operation_id,
-            f"Source assembly degraded; provider fallback remains available: {detail}",
+            f"Provider log root preflight warning; launch continues: {detail}",
             level="warning",
         )
 
@@ -1348,20 +1118,19 @@ def _agent_read_dirs(
             state_root = Path(state_repository.path) / ".research"
             if str(state_root) not in {str(item) for item in read_dirs}:
                 read_dirs.append(state_root)
-        if context.source_errors:
-            for root in context.source_roots.values():
-                read_dirs.extend(Path(item) for item in root.split("; ") if item)
-        return read_dirs
+        for roots in context.source_roots.values():
+            read_dirs.extend(Path(item) for item in roots)
+        return _deduplicate_paths(read_dirs)
     read_dirs = [item for item in read_dirs if item.exists()]
     read_dirs.append(service.manifest.research_dir)
-    for root in _conversation_roots(context).values():
-        for item in root.split("; "):
-            if not item:
-                continue
-            candidate = Path(item)
-            if candidate.is_dir():
-                read_dirs.append(candidate)
-    return read_dirs
+    for roots in context.source_roots.values():
+        for item in roots:
+            read_dirs.append(Path(item).expanduser())
+    return _deduplicate_paths(read_dirs)
+
+
+def _deduplicate_paths(paths: list[Path]) -> list[Path]:
+    return [Path(value) for value in dict.fromkeys(str(path) for path in paths)]
 
 
 def _stage_graph_context(
@@ -1370,139 +1139,8 @@ def _stage_graph_context(
     stage: RemoteRunStage,
     execution_machine: str,
 ) -> RunContext:
-    """Give a remote agent paths it can actually open.
+    """Rebind only canonical state and repository pointers for a remote run."""
 
-    RCP's materialized state is never copied when the canonical state repository
-    already lives on the execution machine — the agent reads `.research/` there,
-    which is the same bytes RCP validates against because the local tree is an
-    rsync mirror of it and the run lock is held. Only conversation slices are
-    staged, because they are RCP-derived artifacts that exist nowhere else.
-    """
-    updates = _stage_context_paths(context, service, stage, execution_machine)
-    staged_sessions = []
-    with tempfile.TemporaryDirectory(prefix="rcp-session-stage-") as bundle_root:
-        bundle = Path(bundle_root)
-        labels: list[Path] = []
-        created: set[Path] = set()
-        for session in context.sessions:
-            path = Path(session.path)
-            if not path.is_file():
-                raise StateUnavailable(f"Conversation slice is unavailable: {session.path}")
-            label = _session_bundle_relative_path(session)
-            target = bundle / label
-            if label not in created:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.link(path, target)
-                except OSError:
-                    shutil.copy2(path, target)
-                created.add(label)
-            labels.append(label)
-        remote_bundle = PurePosixPath(stage.put_directory(bundle, "conversations"))
-        staged_sessions = [
-            session.model_copy(update={"path": str(remote_bundle / label)})
-            for session, label in zip(context.sessions, labels, strict=True)
-        ]
-    staged_context = context.model_copy(update=updates)
-    inline, omitted = bounded_session_metadata(staged_sessions)
-    return staged_context.model_copy(
-        update={
-            "sessions": staged_sessions,
-            "sessions_inline": inline,
-            "sessions_omitted": omitted,
-            "session_routing_index": None,
-        }
-    )
-
-
-def _stage_local_graph_conversations(context: RunContext, stage: Path) -> RunContext:
-    """Project normalized slices into one reversible directory tree per provider."""
-    inputs = stage / "inputs"
-    inputs.mkdir(mode=0o700, parents=True, exist_ok=True)
-    target_root = inputs / "conversations"
-    if target_root.exists():
-        raise ValueError("immutable graph conversation inputs already exist")
-    staged_root = Path(tempfile.mkdtemp(prefix=".conversations-", dir=inputs))
-    labels: list[Path] = []
-    created: set[Path] = set()
-    try:
-        for session in context.sessions:
-            source = Path(session.path)
-            if not source.is_file():
-                raise StateUnavailable(f"Conversation slice is unavailable: {session.path}")
-            label = _session_bundle_relative_path(session)
-            destination = staged_root / label
-            if label not in created:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.link(source, destination)
-                except OSError:
-                    shutil.copy2(source, destination)
-                destination.chmod(0o400)
-                created.add(label)
-            labels.append(label)
-        for directory in sorted(
-            (item for item in staged_root.rglob("*") if item.is_dir()),
-            key=lambda item: len(item.parts),
-            reverse=True,
-        ):
-            directory.chmod(0o500)
-        staged_root.chmod(0o500)
-        os.replace(staged_root, target_root)
-    finally:
-        if staged_root.exists():
-            _remove_local_tree(staged_root, inputs)
-    staged_sessions = [
-        session.model_copy(update={"path": str(target_root / label)})
-        for session, label in zip(context.sessions, labels, strict=True)
-    ]
-    inline, omitted = bounded_session_metadata(staged_sessions)
     return context.model_copy(
-        update={
-            "sessions": staged_sessions,
-            "sessions_inline": inline,
-            "sessions_omitted": omitted,
-            "session_routing_index": None,
-        }
+        update=_stage_context_paths(context, service, stage, execution_machine)
     )
-
-
-def _rebind_graph_conversations(context: RunContext, root: Path) -> RunContext:
-    if not root.is_dir():
-        raise StateUnavailable(
-            "The saved grouped conversation inputs are unavailable; retry this operation."
-        )
-    staged_sessions = [
-        session.model_copy(update={"path": str(root / _session_bundle_relative_path(session))})
-        for session in context.sessions
-    ]
-    if any(not Path(session.path).is_file() for session in staged_sessions):
-        raise StateUnavailable(
-            "The saved grouped conversation inputs are incomplete; retry this operation."
-        )
-    inline, omitted = bounded_session_metadata(staged_sessions)
-    return context.model_copy(
-        update={
-            "sessions": staged_sessions,
-            "sessions_inline": inline,
-            "sessions_omitted": omitted,
-            "session_routing_index": None,
-        }
-    )
-
-
-def _conversation_roots(context: RunContext) -> dict[str, str]:
-    roots: dict[str, str] = dict(context.source_roots)
-    for session in context.sessions:
-        path = PurePosixPath(session.path)
-        if len(path.parents) < 3:
-            raise ValueError(f"staged conversation path has no provider root: {path}")
-        root = str(path.parents[2])
-        previous = roots.get(session.provider)
-        if previous is None:
-            roots[session.provider] = root
-        elif context.source_errors and root not in previous.split("; "):
-            roots[session.provider] = f"{root}; {previous}"
-        elif not context.source_errors and previous != root:
-            raise ValueError(f"provider {session.provider!r} has more than one visible root")
-    return roots

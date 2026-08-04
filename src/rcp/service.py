@@ -49,7 +49,18 @@ from rcp.limits import (
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.providers import PROVIDER_IDS, ProviderId
-from rcp.sources import AppChatOrigin, ConversationIndex, ConversationIndexer
+from rcp.skill_registry import (
+    SkillDefaults,
+    SkillReference,
+    SkillSelection,
+    official_registry,
+)
+from rcp.sources import (
+    AppChatOrigin,
+    ConversationIndex,
+    ConversationIndexer,
+    preflight_provider_roots,
+)
 from rcp.transport import repository_access as build_repository_access
 
 _SETTINGS_SURFACES: tuple[AgentSurface, ...] = (
@@ -258,6 +269,9 @@ class RunRequest(BaseModel):
     control_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
     control_completion_criteria: list[str] = Field(default_factory=list)
     watcher_ids: list[str] = Field(default_factory=list)
+    workflow_ids: list[str] | None = None
+    skill_ids: list[str] | None = None
+    resolved_skill_packages: list[SkillReference] | None = None
 
 
 class CoachRequest(BaseModel):
@@ -267,6 +281,9 @@ class CoachRequest(BaseModel):
     reasoning: str | None = None
     run_on: str | None = None
     session_id: str | None = None
+    workflow_ids: list[str] | None = None
+    skill_ids: list[str] | None = None
+    resolved_skill_packages: list[SkillReference] | None = None
 
 
 class AgentProfileSettings(BaseModel):
@@ -279,6 +296,7 @@ class AgentProfileSettings(BaseModel):
 class ProjectSettingsRequest(BaseModel):
     default_run_truth_scope: list[str] = Field(min_length=1)
     agent_profiles: dict[AgentSurface, AgentProfileSettings]
+    skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
     # Partial by machine and provider. Omission preserves every recorded path;
     # an empty string explicitly clears one provider's record.
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
@@ -616,6 +634,8 @@ class ProjectService:
             "paper": paper.model_dump(mode="json"),
             "paper_coach": self.manifest.coach.model_dump(mode="json"),
             "agent_profiles": profiles,
+            "skill_catalog": official_registry().catalog(),
+            "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
             "provider_readiness": {},
             "providers": {},
             "cache_metrics": self.indexer.cache_metrics().model_dump(mode="json"),
@@ -729,6 +749,7 @@ class ProjectService:
             request.default_run_truth_scope,
             profiles,
             provider_path_updates,
+            request.skill_defaults,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]
@@ -1360,8 +1381,6 @@ class ProjectService:
         self,
         request: RunRequest,
         surface: AgentSurface = "refresh",
-        *,
-        pin_artifact: Callable[[Path], None] | None = None,
     ) -> RunContext:
         materialization = self.history.current_materialization()
         state = self.history.require_writable(materialization.state)
@@ -1386,33 +1405,19 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        assembler = ContextAssembler(self.manifest, self.indexer)
-        try:
-            index = self.index_snapshot(
-                refresh=surface in {"seed", "refresh"},
-                execution_machine=execution_machine.alias,
-                pin_artifact=pin_artifact,
-            )
-        except Exception as exc:
-            detail = f"source assembly unavailable: {type(exc).__name__}: {exc}"
-            index = ConversationIndex(generated_at=datetime.now(UTC), source_errors=[detail])
+        assembler = ContextAssembler(self.manifest)
+        source_roots = assembler.source_roots(execution_machine.alias)
+        source_errors = preflight_provider_roots(source_roots, execution_machine)
         context = assembler.assemble(
             state,
-            index,
             request.run_truth_scope,
             repository_access=repository_access,
             refresh_delta=(
                 self.history.refresh_delta(materialization) if surface == "refresh" else None
             ),
-            pin_artifact=pin_artifact,
-            source_roots=(
-                assembler.source_roots(execution_machine.alias) if index.source_errors else None
-            ),
+            source_roots=source_roots,
+            source_errors=source_errors,
         )
-        if context.source_errors and not context.source_roots:
-            context = context.model_copy(
-                update={"source_roots": assembler.source_roots(execution_machine.alias)}
-            )
         return context
 
     def graph_task_contract(
@@ -1423,16 +1428,15 @@ class ProjectService:
         ontology_path: str,
         graph_path: str | None,
         research_path: str | None,
-        conversation_roots: dict[str, str],
-        authorized_session_keys_path: str,
-        cursor_path: str,
-        coverage_path: str | None = None,
+        provider_log_roots: dict[str, list[str]],
+        ingestion_watermark: datetime | str | None,
         repositories: list[dict[str, str]],
         patch_path: str,
         output_schema_path: str,
         human_request_path: str | None = None,
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
+        skill_pointers: list[dict[str, object]] | None = None,
     ) -> str:
         return PromptFactory.graph_task_contract(
             kind,
@@ -1440,16 +1444,15 @@ class ProjectService:
             ontology_path=ontology_path,
             graph_path=graph_path,
             research_path=research_path,
-            conversation_roots=conversation_roots,
-            authorized_session_keys_path=authorized_session_keys_path,
-            cursor_path=cursor_path,
-            coverage_path=coverage_path,
+            provider_log_roots=provider_log_roots,
+            ingestion_watermark=ingestion_watermark,
             repositories=repositories,
             patch_path=patch_path,
             output_schema_path=output_schema_path,
             human_request_path=human_request_path,
             retry_diagnostics_path=retry_diagnostics_path,
             source_errors=source_errors or [],
+            skill_pointers=skill_pointers,
         )
 
     def assemble_chat(self, request: RunRequest) -> ChatContext:
@@ -1465,11 +1468,43 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        return ContextAssembler(self.manifest, self.indexer).chat_context(
+        return ContextAssembler(self.manifest).chat_context(
             state,
             node_id=request.node_id if request.chat_scope == "node" else None,
             run_truth_scope=request.run_truth_scope,
             repository_access=repository_access,
+        )
+
+    def resolve_skill_selection(
+        self,
+        request: RunRequest | CoachRequest,
+    ) -> SkillSelection:
+        """Resolve official packages from the requested ids, or the project defaults.
+
+        A request's recorded `resolved_skill_packages` is deliberately ignored:
+        it is the receipt of an earlier attempt, and the registry is what says
+        which version this launch gets.
+        """
+
+        defaults = self.manifest.agent.skill_defaults
+        return official_registry().resolve(
+            workflow_ids=(
+                request.workflow_ids if request.workflow_ids is not None else defaults.workflow_ids
+            ),
+            skill_ids=request.skill_ids if request.skill_ids is not None else defaults.skill_ids,
+        )
+
+    def resolve_skill_request(
+        self,
+        request: RunRequest | CoachRequest,
+    ) -> RunRequest | CoachRequest:
+        selection = self.resolve_skill_selection(request)
+        return request.model_copy(
+            update={
+                "workflow_ids": selection.workflow_ids,
+                "skill_ids": selection.skill_ids,
+                "resolved_skill_packages": selection.resolved_skill_packages,
+            }
         )
 
     def coach_context(

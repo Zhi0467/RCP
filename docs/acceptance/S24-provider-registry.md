@@ -69,11 +69,12 @@ A target is the provider, host, and exact executable path. Projects only map
 their configured machines onto those targets, so opening a project never starts
 provider subprocesses and projects that share a target share one result.
 
-Successful capability remains valid for the app process lifetime. A provider
+Each capability result remains valid for the app process lifetime. A provider
 launch uses it directly instead of repeating version, authentication, and model
 catalog probes. Remote targets are discovered lazily rather than contacted for
 every registered project at startup. Changing a provider path or machine setting,
-or observing a provider launch failure, invalidates that target.
+observing a provider launch failure, or pressing the explicit refresh control
+invalidates that target.
 
 **The refresh control always re-probes the catalog, not just readiness.** It
 bypasses and replaces any app-scoped capability. Installing a new model,
@@ -129,8 +130,9 @@ project setup.
   registry
 - `unreachable_provider_degrades_quietly` — when a CLI is missing, not
   authenticated, or unreachable over SSH, the pickers fall back to the saved
-  manifest values and the readiness line states the problem; the surface does
-  not break or silently discard the saved choice
+  manifest values and the readiness line states the problem; that result stays
+  app-scoped until explicit refresh, and the surface does not break or silently
+  discard the saved choice
 - `no_console_or_application_request_errors`
 
 ## Remote — verified 2026-07-30

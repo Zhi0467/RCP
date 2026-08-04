@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -63,6 +63,7 @@ from rcp.service import (
     RunRequest,
 )
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest
+from rcp.skill_registry import SkillKind, SkillSelection, official_registry
 from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -260,6 +261,9 @@ def create_app(
             control_revision=continuation.control_revision,
             control_decision_bundle=continuation.control_decision_bundle,
             control_completion_criteria=continuation.control_completion_criteria,
+            workflow_ids=continuation.workflow_ids,
+            skill_ids=continuation.skill_ids,
+            resolved_skill_packages=continuation.resolved_skill_packages,
             watcher_ids=watcher_ids,
         )
         service = _project_service(catalog, first.project_id)
@@ -866,8 +870,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="Agent task not found")
         try:
             with experiment_admission(project_id, service, previous.request):
-                _validate_stored_task_request(service, previous.kind, previous.request)
-                return background_tasks.resume(operation_id).model_dump(mode="json")
+                skills = _validate_stored_task_request(service, previous.kind, previous.request)
+                return background_tasks.resume(operation_id, skills=skills).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -905,14 +909,30 @@ def create_app(
                 {**previous.request, **overrides, "session_id": None}
             )
             with experiment_admission(project_id, service, candidate):
-                _validate_stored_task_request(
+                skills = _validate_stored_task_request(
                     service,
                     previous.kind,
                     candidate.model_dump(mode="json"),
                 )
-                return background_tasks.retry(operation_id, **overrides).model_dump(mode="json")
+                return background_tasks.retry(operation_id, skills=skills, **overrides).model_dump(
+                    mode="json"
+                )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/skills/{kind}/{package_id}")
+    def read_skill_package(kind: str, package_id: str) -> dict[str, object]:
+        """The official package's own text, for the read-only Settings inspector."""
+
+        if kind not in {"skill", "workflow"}:
+            raise HTTPException(status_code=404, detail="Package not found")
+        registry = official_registry()
+        try:
+            package = registry.package(cast(SkillKind, kind), package_id)
+            body = registry.package_body(cast(SkillKind, kind), package_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {**package.catalog_entry(), "body": body}
 
     @app.get("/api/projects/{project_id}/paper")
     def get_paper(project_id: str):
@@ -1109,21 +1129,15 @@ def _validate_stored_task_request(
     service: ProjectService,
     kind: AgentTaskKind,
     body: dict[str, object],
-) -> None:
+) -> SkillSelection:
+    """Validate a stored request and return the selection this attempt would get."""
+
     if kind == "paper_coach":
-        request = CoachRequest.model_validate(body)
-        service.resolve_agent_profile(
-            "paper_coach",
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-        )
-        return
+        return service.resolve_skill_selection(CoachRequest.model_validate(body))
     request = RunRequest.model_validate(body)
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
-    _resolved_graph_request(service, kind, request)
+    return service.resolve_skill_selection(_resolved_graph_request(service, kind, request))
 
 
 def _resolved_graph_request(
@@ -1139,7 +1153,7 @@ def _resolved_graph_request(
         reasoning=request.reasoning,
         run_on=request.run_on,
     )
-    return request.model_copy(
+    resolved = request.model_copy(
         update={
             "provider": profile.provider,
             "model": profile.model or None,
@@ -1147,6 +1161,9 @@ def _resolved_graph_request(
             "run_on": profile.run_on,
         }
     )
+    result = service.resolve_skill_request(resolved)
+    assert isinstance(result, RunRequest)
+    return result
 
 
 def default_data_dir() -> Path:

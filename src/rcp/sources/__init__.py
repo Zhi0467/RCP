@@ -14,6 +14,7 @@ from rcp.sources.indexer import (
     ConversationSession,
     ConversationSlice,
 )
+from rcp.sources.preflight import preflight_provider_roots
 
 __all__ = [
     "REMOTE_SOURCE_CACHE_LIMITS",
@@ -26,6 +27,7 @@ __all__ = [
     "ConversationRecord",
     "ConversationSession",
     "ConversationSlice",
+    "preflight_provider_roots",
     "RebuildableCache",
     "RebuildableCacheMetrics",
 ]

@@ -56,6 +56,7 @@ import {
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../uiConstants";
 import { profileRunConfig } from "./AgentConfigControls";
+import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 
 interface Props {
@@ -113,6 +114,8 @@ export function NodeChat({
   onClose,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
+  const skillCatalog = project.skill_catalog ?? [];
+  const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
   const relatedTasks = useMemo(
     () => relatedChatTasks(tasks, surface, node?.id, chatId),
     [chatId, node?.id, surface, tasks],
@@ -173,6 +176,12 @@ export function NodeChat({
   const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const skills = useSkillPicker({
+    catalog: skillCatalog,
+    defaults: skillDefaults,
+    message,
+    setMessage,
+  });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
   const liveWatchers = useMemo(
@@ -207,6 +216,12 @@ export function NodeChat({
         : { ...current, value: derivedMode },
     );
   }, [derivedMode]);
+
+  useEffect(() => {
+    skills.reset();
+    // Settings supplies fresh conversation defaults; an open turn keeps its own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, project.id]);
 
   useEffect(() => {
     if (message) writeStorage(draftKey, message);
@@ -257,6 +272,7 @@ export function NodeChat({
       setModeState({ value: mode, pinned: true });
     }
     setMessage(next);
+    skills.readMessage(next);
     setSubmitError(null);
   };
 
@@ -301,8 +317,11 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
+        workflow_ids: skills.selection.workflow_ids,
+        skill_ids: skills.selection.skill_ids,
       });
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
+      skills.reset();
       selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
@@ -630,12 +649,14 @@ export function NodeChat({
         )}
       </div>
       <div className="chat-composer" data-mode={mode}>
+        <SkillPicker {...skills.props} />
         <textarea
           aria-label="Message"
           aria-keyshortcuts="Shift+Tab"
           value={message}
           onChange={(event) => updateMessage(event.target.value)}
           onKeyDown={(event) => {
+            if (skills.handleKeyDown(event)) return;
             if (isConversationModeShortcut(event.key, event.shiftKey)) {
               if (presentation !== "workspace") {
                 event.preventDefault();

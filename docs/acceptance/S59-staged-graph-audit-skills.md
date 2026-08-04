@@ -17,28 +17,31 @@ come from
 the behavioral choices below answer the questions that handoff deliberately
 left open, but those answers remain proposed rather than settled.
 
-RCP ships independently versioned skill folders as application resources. For
-each initial graph-writing launch, RCP stages the applicable folders into that
-run's scratch workspace and records their id, version, one-line use case, and
-exact path in the immutable task contract. Non-Python skill files are explicit
-wheel/package data: a built-wheel test proves the installed package contains the
-same folders and can stage them without a source checkout. Skills never enter
-`.research`, a project repository, or an ordinary agent session.
+The registry, versioning, and per-run staging this scenario originally proposed
+now ship under
+[S64](S64-project-skill-workflow-selection.md), which settled two of its
+premises differently: packages are staged because a **human selected them**, not
+automatically per graph-writing launch, and the registry records no "permitted
+receiving surfaces" — any package may be selected on any surface, because
+capability comes from the captured Discuss/Work/Seed/Refresh mode alone. Read
+this file only for the part S64 did not decide: whether a *scanner* skill
+becomes a required step inside patch authoring.
 
-The first skill is `graph-scanner`. If Work, Seed, or Refresh writes
-`patch.json` during its initial launch and the skill staged successfully, its
-prompt contract requires the agent to invoke the scanner before finishing. This
-is a known prompt-enforced contract, not an OS or validator boundary: a missing
-invocation is visible, but the existing validator alone decides whether RCP may
-accept the patch. A staging failure is recorded as unavailable and the advisory
-step is omitted rather than blocking the graph-writing launch. Discuss and paper
-coaching receive no graph scanner.
+That part remains a proposal. It would add `graph-scanner`, a package with an
+executable check rather than the prompt-level guidance the registry ships today.
+If Work, Seed, or Refresh writes `patch.json` during its initial launch and the
+scanner was among the staged packages, its prompt contract requires the agent to
+invoke the scanner before finishing. This is a known prompt-enforced contract,
+not an OS or validator boundary: a missing invocation is visible, but the
+existing validator alone decides whether RCP may accept the patch. A staging
+failure is recorded as unavailable and the advisory step is omitted rather than
+blocking the graph-writing launch.
 
 ## UI path (proposal — confirmation required)
 
-1. Start a Work, Seed, or Refresh task and inspect its contract in Agent tasks.
-   The staged skill id and version are visible with the compact pointer, not the
-   skill body.
+1. Select the scanner for a Work, Seed, or Refresh task through the S64 picker,
+   then inspect its contract in Agent tasks. The staged skill id and version are
+   visible with the compact pointer, not the skill body.
 2. The agent writes `patch.json`, invokes the scanner, reads its report, and may
    revise the same file before returning. This consumes no correction round;
    later semantic rejection still has the unchanged bounded correction budget.
@@ -87,8 +90,9 @@ coaching receive no graph scanner.
 
 ## Drive (after confirmation and implementation)
 
-1. Build and inspect the wheel, install it without the source checkout, and
-   stage the registered skill for one local and one fake remote run.
+1. Build and inspect the wheel and the PyInstaller sidecar, run each without the
+   source checkout, and stage the registered scanner for one local and one fake
+   remote run.
 2. Exercise initial Work, Seed, and Refresh launches with clean, findings,
    unavailable, and missing scanner receipts. Submit validator-valid and
    validator-invalid patches in each advisory state.
@@ -100,25 +104,20 @@ coaching receive no graph scanner.
 
 ## Assert
 
-- Skill definitions live as real folders under the RCP package, with a
-  `SKILL.md`, version, and locally testable scripts where needed.
-- Wheel/package-data configuration explicitly includes every non-Python skill
-  file; a built-wheel test fails if any registered folder or file is absent.
-- One registry owns id, label, version, when-to-use text, source folder, and
-  permitted receiving surfaces. Work, Seed, and Refresh callers each request
-  their skills explicitly; no shared staging helper branches on a surface or
-  `kind` discriminator.
-- Local and remote runs stage byte-identical folders through the existing run
-  stage directory transport.
-- Contracts carry compact pointers, never embedded skill bodies.
-- Every task records the exact staged skill versions, invocation state, and
-  advisory outcome; old receipts remain reconstructable after a skill upgrade.
+- A scanner package carries a locally testable script beside its `SKILL.md`,
+  which the prompt-level packages S64 ships do not.
+- Wheel and PyInstaller packaging include every non-Python scanner file; a
+  packaged-resource test fails if any registered folder or file is absent.
+- Every task records the scanner's invocation state and advisory outcome
+  alongside the package versions S64 already records.
 - Ordinary repository sessions cannot discover the staged skills.
 - The scanner reports only clean, findings, or unavailable; runtime and
   transport failure cannot masquerade as a graph finding.
 - Missing or unavailable scanning is visible but never changes the validator
   verdict or correction budget.
-- Work, Seed, and Refresh receive the scanner; Discuss and coach do not.
+- Only a graph-writing surface can act on the scanner's required-invocation
+  contract. Selecting it elsewhere is allowed and simply has no patch to check;
+  the registry never restricts which surface may receive a package.
 - Scanner-driven edits use the original `patch.json` and do not spend a
   correction round.
 - `work_patch_correction` and generic Seed/Refresh correction relaunches do not

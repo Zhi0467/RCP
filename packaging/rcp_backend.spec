@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(SPECPATH).parent
 SOURCE_ROOT = PROJECT_ROOT / "src"
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 RECORD_PARSER = SOURCE_ROOT / "rcp" / "sources" / "record_parsing.py"
+SKILL_REGISTRY = SOURCE_ROOT / "rcp" / "skills"
 RUNTIME_HOOK = PROJECT_ROOT / "packaging" / "hooks" / "validate_frozen_resources.py"
 
 if not (WEB_DIST / "index.html").is_file():
@@ -19,6 +20,7 @@ analysis = Analysis(
     datas=[
         (str(WEB_DIST), "rcp/web_dist"),
         (str(RECORD_PARSER), "rcp/sources"),
+        (str(SKILL_REGISTRY), "rcp/skills"),
     ],
     hiddenimports=collect_submodules("uvicorn"),
     hookspath=[],

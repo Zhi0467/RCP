@@ -8,6 +8,7 @@ import tomlkit
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from rcp.providers import DEFAULT_PROVIDER, AgentCapability, ProviderId
+from rcp.skill_registry import SkillDefaults
 
 
 class MachineConfig(BaseModel):
@@ -76,6 +77,7 @@ class AgentSurfaceConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     default_run_truth_scope: list[str]
+    skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
     seed: AgentSurfaceConfig | None = None
     refresh: AgentSurfaceConfig | None = None
     node_chat: AgentSurfaceConfig | None = None
@@ -357,6 +359,7 @@ def write_agent_settings(
     default_run_truth_scope: list[str],
     profiles: dict[AgentSurface, AgentSurfaceConfig],
     provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
+    skill_defaults: SkillDefaults | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -364,6 +367,11 @@ def write_agent_settings(
         agent = tomlkit.table()
         document.add("agent", agent)
     agent["default_run_truth_scope"] = list(default_run_truth_scope)
+    selected_defaults = skill_defaults or manifest.agent.skill_defaults
+    defaults_table = tomlkit.table()
+    defaults_table.add("workflow_ids", list(selected_defaults.workflow_ids))
+    defaults_table.add("skill_ids", list(selected_defaults.skill_ids))
+    agent["skill_defaults"] = defaults_table
 
     for surface in _AGENT_SURFACES:
         profile = profiles[surface]

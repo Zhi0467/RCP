@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from rcp.core.authority import DECISION_PROPOSAL_FIELDS, HYPOTHESIS_PROPOSAL_FIELDS
 from rcp.core.models import (
-    CoverageBoundary,
     ExperimentAttempt,
     GatedCard,
     Patch,
@@ -186,10 +185,6 @@ class AgentGlossaryTerm(_StrictModel):
     where_defined: str | None = None
 
 
-class AgentCoverageBoundary(CoverageBoundary):
-    model_config = ConfigDict(extra="forbid")
-
-
 class CreateNodesOperation(_StrictModel):
     op: Literal["create_nodes"]
     nodes: list[AgentProjectNode] = Field(min_length=1)
@@ -240,11 +235,6 @@ class UpsertGlossaryOperation(_StrictModel):
     terms: list[AgentGlossaryTerm] = Field(min_length=1)
 
 
-class SetCoverageOperation(_StrictModel):
-    op: Literal["set_coverage"]
-    coverage: AgentCoverageBoundary
-
-
 class ProposalNodeUpdate(NodeUpdate):
     @model_validator(mode="after")
     def validate_agent_authority_shape(self) -> ProposalNodeUpdate:
@@ -289,8 +279,7 @@ AgentOperation = Annotated[
     | CreateAmbiguitiesOperation
     | ResolveAmbiguitiesOperation
     | CreateProposalsOperation
-    | UpsertGlossaryOperation
-    | SetCoverageOperation,
+    | UpsertGlossaryOperation,
     Field(discriminator="op"),
 ]
 
@@ -379,6 +368,7 @@ def prepare_agent_patch(
         run_truth_scope=list(run_truth_scope),
         repositories_read=list(draft.repositories_read),
         change_summary=list(draft.change_summary),
+        processed_cursors={},
     )
 
 

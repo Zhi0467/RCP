@@ -134,8 +134,9 @@ def test_seed_is_asserted_and_accepted_core_starts_empty(manifest) -> None:
     assert result.state.revision == 1
     assert {node.standing for node in result.state.nodes.values()} == {"asserted"}
     assert (manifest.research_dir / "research.md").read_text(encoding="utf-8") == ""
-    assert result.state.coverage.repositories_seen == ["repo-a"]
-    assert result.state.coverage.repositories_never_seen == ["repo-b"]
+    assert result.state.coverage.repositories_seen == []
+    assert result.state.last_refresh_at == patch.created_at
+    assert result.state.coverage.repositories_never_seen == ["repo-a", "repo-b"]
 
 
 def test_successful_patch_materializes_processed_cursors(manifest) -> None:

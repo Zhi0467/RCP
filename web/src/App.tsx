@@ -122,6 +122,7 @@ import type {
   ProjectCard,
   ProjectSnapshot,
   RevisionSummary,
+  SkillDefaults,
   TrustView,
   ValidationMessage,
   WatcherRecord,
@@ -247,6 +248,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
+  const [projectSurfaceReady, setProjectSurfaceReady] = useState(false);
   const [humanDraft, setHumanDraft] = useState<HumanDraft | null>(null);
   const [syncingDraft, setSyncingDraft] = useState(false);
   const [taskStarting, setTaskStarting] = useState(false);
@@ -280,6 +282,7 @@ export default function App() {
   const selectedChatIdRef = useRef<string | null>(null);
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
+  const readinessRequestedProjectIds = useRef(new Set<string>());
   activeProjectId.current = projectId;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
@@ -444,20 +447,6 @@ export default function App() {
         applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
         authoritativeProjectId.current = requestedProjectId;
         setProjectReconciliation("authoritative");
-        void loadProjectReadiness(base)
-          .then((readiness) => {
-            if (activeProjectId.current !== requestedProjectId) return;
-            setProject((current) =>
-              current?.id === nextProject.id ? { ...current, ...readiness } : current,
-            );
-          })
-          .catch((error) => {
-            if (activeProjectId.current !== requestedProjectId) return;
-            setNotice({
-              kind: "error",
-              text: error instanceof Error ? error.message : String(error),
-            });
-          });
       });
       const tasksRequest = includeTasks
         ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
@@ -674,6 +663,34 @@ export default function App() {
     }
   }, [apiBase]);
 
+  const ensureProjectReadiness = useCallback(() => {
+    if (
+      !apiBase ||
+      !projectId ||
+      project?.id !== projectId ||
+      projectReconciliation !== "authoritative" ||
+      readinessRequestedProjectIds.current.has(projectId)
+    )
+      return;
+    const requestedProjectId = projectId;
+    readinessRequestedProjectIds.current.add(requestedProjectId);
+    void loadProjectReadiness(apiBase)
+      .then((readiness) => {
+        if (activeProjectId.current !== requestedProjectId) return;
+        setProject((current) =>
+          current?.id === requestedProjectId ? { ...current, ...readiness } : current,
+        );
+      })
+      .catch((error) => {
+        readinessRequestedProjectIds.current.delete(requestedProjectId);
+        if (activeProjectId.current !== requestedProjectId) return;
+        setNotice({
+          kind: "error",
+          text: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [apiBase, project?.id, projectId, projectReconciliation]);
+
   const refreshUsage = useCallback(async () => {
     if (!apiBase) return;
     try {
@@ -739,6 +756,7 @@ export default function App() {
     setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
     setHumanDraft(null);
     setSyncingDraft(false);
+    setProjectSurfaceReady(false);
     setView("overview");
     if (setupOpen) {
       setLoading(false);
@@ -801,6 +819,24 @@ export default function App() {
     selectChat,
     setupOpen,
   ]);
+
+  const readinessSurfaceOpen =
+    view === "settings" ||
+    view === "paper" ||
+    view === "chats" ||
+    runDialogOpen ||
+    Boolean(retryTask) ||
+    Boolean(floatingChat);
+
+  useEffect(() => {
+    if (projectReconciliation === "authoritative" && view === "overview") {
+      setProjectSurfaceReady(true);
+    }
+  }, [projectReconciliation, view]);
+
+  useEffect(() => {
+    if (projectSurfaceReady && readinessSurfaceOpen) ensureProjectReadiness();
+  }, [ensureProjectReadiness, projectSurfaceReady, readinessSurfaceOpen]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -1426,7 +1462,12 @@ export default function App() {
     }
   };
 
-  const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
+  const runAgent = async (
+    config: AgentRunConfig,
+    scope: string[],
+    message: string | null,
+    skills: SkillDefaults,
+  ) => {
     if (!project || taskStarting || activeTask || mutationsDisabled) return;
     const runKind = graph.revision === 0 ? "seed" : "refresh";
     setRunScope(scope);
@@ -1436,6 +1477,8 @@ export default function App() {
         model: config.model || null,
         run_truth_scope: scope,
         message,
+        workflow_ids: skills.workflow_ids,
+        skill_ids: skills.skill_ids,
       });
       setRunDialogOpen(false);
     } catch (caught) {
@@ -2325,7 +2368,7 @@ export default function App() {
         initialScope={runScope}
         busy={taskStarting}
         onClose={() => setRunDialogOpen(false)}
-        onRun={(config, scope, message) => void runAgent(config, scope, message)}
+        onRun={(config, scope, message, skills) => void runAgent(config, scope, message, skills)}
       />
       {retryTask && retryConfig && (
         <RunDialog
@@ -2335,6 +2378,11 @@ export default function App() {
           project={project}
           initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
+          initialSkills={{
+            workflow_ids:
+              retryTask.request.workflow_ids ?? project.skill_defaults?.workflow_ids ?? [],
+            skill_ids: retryTask.request.skill_ids ?? project.skill_defaults?.skill_ids ?? [],
+          }}
           busy={taskActionId === retryTask.operation_id}
           onClose={() => setRetryTask(null)}
           onRun={(config) => void retryAgentTask(retryTask, config)}

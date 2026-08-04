@@ -331,7 +331,33 @@ export interface AgentTaskRequest {
   control_decision_bundle?: ExperimentDecisionPin[];
   control_completion_criteria?: string[];
   watcher_ids?: string[];
+  workflow_ids?: string[] | null;
+  skill_ids?: string[] | null;
+  resolved_skill_packages?: SkillReference[] | null;
   [key: string]: unknown;
+}
+
+export type SkillKind = "skill" | "workflow";
+
+export interface SkillReference {
+  id: string;
+  kind: SkillKind;
+  version: string;
+}
+
+export interface SkillCatalogEntry extends SkillReference {
+  label: string;
+  description: string;
+  dependencies: SkillReference[];
+}
+
+export interface SkillPackageDetail extends SkillCatalogEntry {
+  body: string;
+}
+
+export interface SkillDefaults {
+  workflow_ids: string[];
+  skill_ids: string[];
 }
 
 export interface GraphUpdateResult {
@@ -567,6 +593,8 @@ export interface ProjectSnapshot {
     default_reasoning: string;
   };
   agent_profiles: Record<AgentSurface, AgentProfile>;
+  skill_catalog: SkillCatalogEntry[];
+  skill_defaults: SkillDefaults;
   provider_readiness: Record<string, Record<ProviderId, ProviderReadiness>>;
   providers: Record<ProviderId, ProviderReadiness>;
   cache_metrics: ProjectCacheMetrics;
@@ -641,6 +669,7 @@ export interface ProjectSetupRequest {
 export interface ProjectSettingsRequest {
   default_run_truth_scope: string[];
   agent_profiles: Record<AgentSurface, AgentRunConfig>;
+  skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
 }
 

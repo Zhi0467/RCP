@@ -14,6 +14,8 @@ import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../a
 import { api } from "../api";
 import { MarkdownAnswer } from "../chatMarkdown";
 import { profileRunConfig } from "../components/AgentConfigControls";
+import { SkillPicker, useSkillPicker } from "../components/SkillPicker";
+import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -159,6 +161,19 @@ export function PaperWorkspace({
     : latestCoachTask && isActiveTask(latestCoachTask)
       ? latestCoachTask
       : null;
+  const skillCatalog = project.skill_catalog ?? [];
+  const skillDefaults = project.skill_defaults ?? EMPTY_SKILL_SELECTION;
+  const skills = useSkillPicker({
+    catalog: skillCatalog,
+    defaults: skillDefaults,
+    message,
+    setMessage,
+  });
+
+  useEffect(() => {
+    skills.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
   useEffect(() => {
     if (!latestCoachTask?.native_session_id || latestCoachTask.status !== "succeeded") return;
     if (handledCoachTask.current === latestCoachTask.operation_id) return;
@@ -227,6 +242,12 @@ export function PaperWorkspace({
     }
   };
 
+  const updateMessage = (next: string) => {
+    setMessage(next);
+    skills.readMessage(next);
+    setSubmitError(null);
+  };
+
   const send = async () => {
     const text = message.trim();
     if (!text || activeTask || coachSubmitting) return;
@@ -238,9 +259,12 @@ export function PaperWorkspace({
         ...config,
         model: config.model || null,
         session_id: activeSession?.native_session_id ?? null,
+        workflow_ids: skills.selection.workflow_ids,
+        skill_ids: skills.selection.skill_ids,
       });
       setPendingCoachTaskId(task.operation_id);
       setMessage("");
+      skills.reset();
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -458,6 +482,7 @@ export function PaperWorkspace({
               setFreshSession(true);
               setPendingCoachTaskId(null);
               setConfig(profileRunConfig(project.agent_profiles.paper_coach));
+              skills.reset();
               setSubmitError(null);
             }}
           >
@@ -538,14 +563,13 @@ export function PaperWorkspace({
           )}
         </div>
         <div className="coach-composer">
+          <SkillPicker {...skills.props} />
           <textarea
             aria-label="Message"
             value={message}
-            onChange={(event) => {
-              setMessage(event.target.value);
-              setSubmitError(null);
-            }}
+            onChange={(event) => updateMessage(event.target.value)}
             onKeyDown={(event) => {
+              if (skills.handleKeyDown(event)) return;
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 void send();

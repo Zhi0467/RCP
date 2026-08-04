@@ -36,6 +36,7 @@ from rcp.history.delta import (
     render_revision_summary,
 )
 from rcp.providers import ProviderId
+from rcp.skill_registry import SkillDefaults
 from rcp.transport import (
     BatchPublishFailed,
     LocalStateWorkspace,
@@ -331,6 +332,7 @@ class HistoryManager:
         default_run_truth_scope: list[str],
         profiles: dict[AgentSurface, AgentSurfaceConfig],
         provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
+        skill_defaults: SkillDefaults | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -341,6 +343,7 @@ class HistoryManager:
                 default_run_truth_scope,
                 profiles,
                 provider_path_updates,
+                skill_defaults,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest

@@ -38,6 +38,7 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import ProjectService, RunRequest
+from rcp.skills.staging import stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 
@@ -133,13 +134,19 @@ async def stream_discuss_run(
                     local_stage, artifact_scope_id, reuse=resuming
                 )
 
+            token = _task_token(execution)
+            skill_pointers = stage_skill_selection(
+                service.resolve_skill_selection(request),
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                label=f"rcp-skills-{token}",
+            )
             read_dirs = _chat_read_dirs(
                 context,
                 remote_stage,
                 service,
                 execution_machine.alias,
             )
-            token = _task_token(execution)
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
                     "The continued chat has no native agent session; retry it from a clean "
@@ -195,6 +202,7 @@ async def stream_discuss_run(
                     human_request_path=human_request_path,
                     artifact_path=str(artifact_directory),
                     retry_diagnostics_path=retry_diagnostics_path,
+                    skill_pointers=skill_pointers,
                 )
                 current_contract_path, current_prompt = _stage_task_contract(
                     local_stage,

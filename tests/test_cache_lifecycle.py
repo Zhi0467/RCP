@@ -7,9 +7,6 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from rcp.agents import ContextAssembler
-from rcp.config import MachineConfig
-from rcp.core.models import GraphState
 from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -296,63 +293,6 @@ def test_indexer_records_source_access_explicitly_without_changing_provider_mtim
 
     assert metrics.oldest_accessed_at == clock.now
     assert cached.stat().st_mtime == 0
-
-
-def test_same_machine_remote_source_builds_slice_without_a_permanent_log_copy(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    manifest.machines.append(MachineConfig(alias="remote-1", host="research.example"))
-    manifest.repositories[0].machine = "remote-1"
-    manifest.repositories[0].path = "/remote/project"
-    cache_root = tmp_path / "data" / "source-cache"
-    indexer = ConversationIndexer(manifest, cache_root)
-
-    def inspect_remote(_host, _root, provider, _machine_alias):
-        if provider != "codex":
-            return []
-        return [
-            {
-                "path": "/remote/sessions/codex.jsonl",
-                "cwd": "/remote/project",
-                "session_id": "remote-session",
-                "first_timestamp": None,
-                "last_timestamp": None,
-                "last_uuid": "last",
-                "record_count": 2,
-            }
-        ]
-
-    monkeypatch.setattr(indexer, "_inspect_remote_root", inspect_remote)
-    index = indexer.build(execution_machine="remote-1")
-    session = index.sessions[0]
-
-    def reconstruct(_session, _from_uuid: str | None, destination: Path) -> None:
-        destination.write_text(
-            '{"uuid":"remote-session","timestamp":null,"role":"unknown",'
-            '"text":"","raw_type":"session_meta:"}\n'
-            '{"uuid":"last","timestamp":null,"role":"assistant",'
-            '"text":"","raw_type":"response_item:message"}\n',
-            encoding="utf-8",
-        )
-        return None
-
-    monkeypatch.setattr(indexer, "_write_remote_slice", reconstruct)
-    evidence_slice = indexer.materialize_slice(session)
-
-    assert Path(evidence_slice.path).is_file()
-    assert evidence_slice.record_count == 2
-    assert not list(cache_root.rglob("*.jsonl"))
-
-    def unavailable(_session, _from_uuid: str | None, _destination: Path) -> None:
-        raise OSError("provider original disappeared")
-
-    monkeypatch.setattr(indexer, "_write_remote_slice", unavailable)
-    context = ContextAssembler(manifest, indexer).assemble(
-        GraphState(project_truth_scope=manifest.project.truth_scope),
-        index,
-    )
-    assert context.sessions == []
-    assert any("provider original disappeared" in error for error in context.source_errors)
 
 
 def test_remote_slice_script_emits_only_the_normalized_increment(tmp_path) -> None:

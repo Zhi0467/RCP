@@ -47,6 +47,7 @@ export function AgentTaskInspector({
   const transcript = task ? reconstructTaskTranscript([task]) : [];
   const promptReceipts = task?.debug_receipts?.filter(isPromptReceipt) ?? [];
   const contracts = task?.contracts ?? [];
+  const resolvedSkillPackages = task?.request.resolved_skill_packages ?? [];
 
   async function copyPrompt(receipt: AgentTaskReceipt) {
     const prompt = receipt.payload.prompt;
@@ -179,6 +180,16 @@ export function AgentTaskInspector({
                       <div>
                         <dt>Node</dt>
                         <dd className="mono">{task.request.node_id}</dd>
+                      </div>
+                    )}
+                    {resolvedSkillPackages.length > 0 && (
+                      <div>
+                        <dt>Guidance</dt>
+                        <dd className="mono">
+                          {resolvedSkillPackages
+                            .map((item) => `${item.kind} ${item.id}@${item.version}`)
+                            .join(", ")}
+                        </dd>
                       </div>
                     )}
                     {task.native_session_id && (

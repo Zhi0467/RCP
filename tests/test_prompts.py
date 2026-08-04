@@ -93,9 +93,10 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
         ontology_path="/state/graph.json#ontology",
         graph_path="/state/graph.json",
         research_path="/state/research.md",
-        conversation_roots={"provider-x": "/stage/inputs/conversations/provider-x"},
-        authorized_session_keys_path="/stage/inputs/authorized-session-keys.json",
-        cursor_path="/state/cursors.json",
+        provider_log_roots={
+            "provider-x": ["/provider/logs/provider-x", "/provider/archive/provider-x"]
+        },
+        ingestion_watermark="2026-07-31T07:00:00-07:00",
         repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
         patch_path="/stage/workspace/patch.json",
         output_schema_path="/stage/inputs/patch-schema.json",
@@ -103,14 +104,13 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
         retry_diagnostics_path="/stage/inputs/retry-diagnostics.json",
     )
 
-    assert "fan-out into bounded read-only specialists when it helps" in contract
+    assert "fan-out into bounded read-only source-inspection subagents" in contract
     assert "sole writer of the final Patch" in contract
-    assert "/stage/inputs/conversations/provider-x" in contract
-    assert "/stage/inputs/authorized-session-keys.json" in contract
-    assert "use only the exact `key` values from that file" in contract
-    assert "Never derive a session key from a projected path" in contract
-    assert "<provider-root>/<repository>/<machine>/<session-id>.jsonl" not in contract
-    assert "/state/cursors.json" in contract
+    assert "/provider/logs/provider-x" in contract
+    assert "- provider-x: `/provider/archive/provider-x`" in contract
+    assert "2026-07-31T07:00:00-07:00" in contract
+    assert "inspect them in place" in contract
+    assert "RCP has not copied,\nnormalized, sliced, or staged their contents" in contract
     assert "/state/graph.json#ontology" in contract
     assert "/stage/inputs/patch-schema.json" in contract
     assert "/stage/inputs/human-request.txt" in contract
@@ -121,7 +121,7 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
         contract,
         task="update the project-global graph",
         authority="sole RCP source of task and authority instructions",
-        inputs="Required provider source roots",
+        inputs="Required provider log roots",
         outputs="Write the completed Patch to: `/stage/workspace/patch.json`",
         failure="Prior-attempt diagnostics: `/stage/inputs/retry-diagnostics.json`",
         may_act_again="only location you may write",

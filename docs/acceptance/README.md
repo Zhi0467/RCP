@@ -188,12 +188,12 @@ it but a browser or a machine we do not have.
 | [S36](S36-updating-never-interrupts-work.md) | An update waits for idle, and never interrupts work without being asked | pending | **desktop** | none |
 | [S37](S37-desktop-text-scale.md) | Text stays readable throughout the desktop app | implemented | **desktop** | covered + driven 2026-07-31 |
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
-| [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | implemented | pytest | passed 2026-08-01 |
+| [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | superseded by S62 | pytest | historical |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
 | [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | none |
 | [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | pending | pytest + **browser** | none |
 | [S43](S43-agent-execution-module-boundaries.md) | Keep agent behavior intact while execution code moves | implemented | pytest | 10 checks |
-| [S44](S44-chat-conversation-projection-permissions.md) | Chat does not ingest transcripts; Seed/Refresh degrade safely | pending | pytest + **browser** | 4 checks |
+| [S44](S44-chat-conversation-projection-permissions.md) | Chat does not ingest transcripts; Seed/Refresh read logs in place | pending | pytest + **browser** | 4 checks |
 | [S45](S45-floating-window-dock.md) | Dock a floating node window without closing it | implemented | **browser** | driven 2026-08-02 |
 | [S46](S46-project-header-and-chat-split.md) | Fold the project utilities and resize the Chats split | implemented | **browser** | driven 2026-08-02 |
 | [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
@@ -209,6 +209,11 @@ it but a browser or a machine we do not have.
 | [S57](S57-fixed-product-ontology.md) | Existing ontology extensions remain readable without a schema editor | implemented | pytest + **browser** | covered + driven 2026-08-03 |
 | [S58](S58-inline-glossary-definitions.md) | Definitions appear where a term is read | implemented | **browser** | covered + driven 2026-08-03 |
 | [S59](S59-staged-graph-audit-skills.md) | An agent audits the graph patch it is about to finish | pending — **not human-confirmed** | pytest + **browser** | none |
+| [S60](S60-plain-language-project-setup.md) | Add a project with plain-language setup steps | pending — **not human-confirmed** | **browser** | none |
+| [S61](S61-app-scoped-provider-readiness.md) | Opening a project does not recheck providers | implemented | pytest + **browser** | driven 2026-08-04 |
+| [S62](S62-direct-provider-log-ingestion.md) | Seed and Refresh point agents at provider logs instead of moving them | implemented | pytest + **browser** | covered + live Seeds 2026-08-04 |
+| [S63](S63-agent-run-lock-recovery.md) | RCP recovers agent-run ownership; the human never removes a lock | implemented | pytest + api | covered |
+| [S64](S64-project-skill-workflow-selection.md) | Choose project workflows and skills, then load them into a run | implemented | pytest + **browser** | 16 checks + driven 2026-08-04 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

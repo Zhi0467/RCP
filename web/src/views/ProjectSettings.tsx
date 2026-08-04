@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   Check,
   GitBranch,
   HardDrive,
@@ -9,14 +10,17 @@ import {
   ScanSearch,
   Save,
   Server,
+  Sparkles,
   Trash2,
   TriangleAlert,
   Type,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, clearProjectCaches } from "../api";
+import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
+import { SkillPackageInspector } from "../components/SkillPackageInspector";
 import {
   deserializeSettingsDraft,
   machineProviderPathUpdates,
@@ -38,6 +42,7 @@ import type {
   ProviderId,
   ProviderPathResolution,
   ProviderReadiness,
+  SkillDefaults,
 } from "../types";
 
 interface Props {
@@ -75,12 +80,23 @@ function profilesFrom(project: ProjectSnapshot): Record<AgentSurface, AgentRunCo
   ) as Record<AgentSurface, AgentRunConfig>;
 }
 
+type SkillCatalogEntry = ProjectSnapshot["skill_catalog"][number];
+
+function skillDefaultsFrom(project: ProjectSnapshot): SkillDefaults {
+  return project.skill_defaults ?? EMPTY_SKILL_SELECTION;
+}
+
+function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
+  return project.skill_catalog ?? [];
+}
+
 /** The staged edits for this project, or the manifest's values when none exist. */
 function stagedOrSaved(project: ProjectSnapshot) {
   const saved = {
     scope: project.default_run_truth_scope,
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
+    skillDefaults: skillDefaultsFrom(project),
   };
   const staged = deserializeSettingsDraft(
     localStorage.getItem(settingsDraftStorageKey(project.id)),
@@ -92,6 +108,7 @@ function stagedOrSaved(project: ProjectSnapshot) {
     scope: staged.scope,
     profiles: { ...saved.profiles, ...staged.profiles },
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
+    skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
   };
 }
 
@@ -109,6 +126,8 @@ export function ProjectSettings({
   textScale,
   onTextScaleChange,
 }: Props) {
+  const skillCatalog = skillCatalogFrom(project);
+  const savedSkillDefaults = skillDefaultsFrom(project);
   const [scope, setScope] = useState<string[]>(() => stagedOrSaved(project).scope);
   const [profiles, setProfiles] = useState<Record<AgentSurface, AgentRunConfig>>(
     () => stagedOrSaved(project).profiles,
@@ -116,6 +135,10 @@ export function ProjectSettings({
   const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
     () => stagedOrSaved(project).providerPaths,
   );
+  const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
+    () => stagedOrSaved(project).skillDefaults,
+  );
+  const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
@@ -131,6 +154,7 @@ export function ProjectSettings({
     setScope(restored.scope);
     setProfiles(restored.profiles);
     setProviderPaths(restored.providerPaths);
+    setSkillDefaults(restored.skillDefaults);
   }, [project.id]);
 
   // Cache metrics are server-owned, so they follow every snapshot.
@@ -148,10 +172,11 @@ export function ProjectSettings({
         scope: project.default_run_truth_scope,
         profiles: profilesFrom(project),
         providerPaths: machineProviderPathsFrom(project.machines),
+        skillDefaults: skillDefaultsFrom(project),
       }),
     [project],
   );
-  const current = JSON.stringify({ scope, profiles, providerPaths });
+  const current = JSON.stringify({ scope, profiles, providerPaths, skillDefaults });
   const dirty = current !== baseline;
 
   // Stage every edit locally so navigating away, or reloading, never loses it.
@@ -161,7 +186,7 @@ export function ProjectSettings({
     if (dirty) {
       localStorage.setItem(
         key,
-        serializeSettingsDraft({ version: 1, scope, profiles, providerPaths }),
+        serializeSettingsDraft({ version: 1, scope, profiles, providerPaths, skillDefaults }),
       );
     } else {
       localStorage.removeItem(key);
@@ -173,6 +198,8 @@ export function ProjectSettings({
   const providerCatalog = Object.values(project.providers).sort((left, right) =>
     (left.label || left.provider).localeCompare(right.label || right.provider),
   );
+  const workflowCatalog = skillCatalog.filter((entry) => entry.kind === "workflow");
+  const directSkillCatalog = skillCatalog.filter((entry) => entry.kind === "skill");
 
   const toggleRepository = (alias: string) => {
     setStatus(null);
@@ -186,10 +213,63 @@ export function ProjectSettings({
     });
   };
 
+  const toggleSkillDefault = (entry: SkillCatalogEntry) => {
+    setStatus(null);
+    setSkillDefaults((currentDefaults) => {
+      const field = entry.kind === "workflow" ? "workflow_ids" : "skill_ids";
+      const selected = currentDefaults[field];
+      return {
+        ...currentDefaults,
+        [field]: selected.includes(entry.id)
+          ? selected.filter((id) => id !== entry.id)
+          : [...selected, entry.id],
+      };
+    });
+  };
+
+  const renderSkillGroup = (title: string, entries: SkillCatalogEntry[], selectedIds: string[]) => (
+    <div className="skill-card-group" role="group" aria-label={title}>
+      <h3>{title}</h3>
+      <div className="skill-card-grid">
+        {entries.map((entry) => {
+          const selected = selectedIds.includes(entry.id);
+          return (
+            <div
+              className={selected ? "skill-card selected" : "skill-card"}
+              key={`${entry.kind}:${entry.id}`}
+            >
+              <button
+                type="button"
+                className="skill-card-select"
+                aria-pressed={selected}
+                disabled={writesDisabled}
+                onClick={() => toggleSkillDefault(entry)}
+              >
+                <span className="settings-check" aria-hidden="true">
+                  {selected && <Check size={12} />}
+                </span>
+                <span>{entry.label}</span>
+              </button>
+              <button
+                type="button"
+                className="icon-button skill-card-inspect"
+                aria-label={`Inspect ${entry.label}`}
+                onClick={() => setInspectedPackage(entry)}
+              >
+                <BookOpen size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   const reset = () => {
     setScope(project.default_run_truth_scope);
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
+    setSkillDefaults(savedSkillDefaults);
     setStatus(null);
   };
 
@@ -200,6 +280,7 @@ export function ProjectSettings({
     const body: ProjectSettingsRequest = {
       default_run_truth_scope: scope,
       agent_profiles: profiles,
+      skill_defaults: skillDefaults,
     };
     const pathUpdates = machineProviderPathUpdates(
       machineProviderPathsFrom(project.machines),
@@ -466,6 +547,19 @@ export function ProjectSettings({
         </div>
       </div>
 
+      <section className="settings-section skill-settings">
+        <header>
+          <span>
+            <Sparkles size={16} />
+          </span>
+          <h2>Skills &amp; workflows</h2>
+        </header>
+        <div className="skill-card-groups">
+          {renderSkillGroup("Workflows", workflowCatalog, skillDefaults.workflow_ids)}
+          {renderSkillGroup("Skills", directSkillCatalog, skillDefaults.skill_ids)}
+        </div>
+      </section>
+
       <section className="settings-section cache-settings">
         <header>
           <span>
@@ -487,6 +581,10 @@ export function ProjectSettings({
           <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
         </div>
       </section>
+
+      {inspectedPackage && (
+        <SkillPackageInspector entry={inspectedPackage} onClose={() => setInspectedPackage(null)} />
+      )}
 
       <footer className="settings-savebar">
         <div className={status ? `settings-save-status ${status.kind}` : "settings-save-status"}>

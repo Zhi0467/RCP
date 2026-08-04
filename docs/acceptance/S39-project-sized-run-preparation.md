@@ -1,6 +1,6 @@
 ---
 id: S39-project-sized-run-preparation
-status: implemented
+status: superseded-by-S62
 tier: hermetic
 driver: pytest
 covered_by:
@@ -20,6 +20,10 @@ last_passed: 2026-08-01 — 455 backend tests passed. Against 1,415 actual Claud
 ---
 
 # Repeated run preparation reuses unchanged source metadata
+
+> Historical contract. S62 supersedes all source-index, normalization, cache,
+> slice, and per-session cursor promises below. The graph-replay optimization
+> remains valid independently.
 
 The first source index remains deliberately exact: RCP reads and normalizes each
 candidate far enough to classify it, and fully validates every matching

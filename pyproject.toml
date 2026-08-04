@@ -33,6 +33,7 @@ packages = ["src/rcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "web/dist" = "rcp/web_dist"
+"src/rcp/skills" = "rcp/skills"
 
 [tool.hatch.version]
 path = "src/rcp/__init__.py"

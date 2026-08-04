@@ -152,15 +152,5 @@ def seed_patch() -> Patch:
                     }
                 ],
             },
-            {
-                "op": "set_coverage",
-                "coverage": {
-                    "repositories_seen": ["repo-a"],
-                    "repositories_never_seen": ["repo-b"],
-                    "sessions_read": [],
-                    "sessions_skipped": [],
-                    "note": "Read the complete repo-a corpus.",
-                },
-            },
         ],
     )
