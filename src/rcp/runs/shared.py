@@ -226,6 +226,38 @@ def _stage_task_input(
     return str(target)
 
 
+def _stage_or_reuse_task_input(
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    label: str,
+    content: str,
+) -> str:
+    """Stage content-addressed immutable input, reusing an identical existing file."""
+
+    if (local_stage is None) == (remote_stage is None):
+        raise ValueError("exactly one task stage must be selected")
+    safe_label = _safe_stage_name(label)
+    if safe_label != label:
+        raise ValueError("task input label contains unsupported characters")
+    if remote_stage is not None:
+        try:
+            existing = remote_stage.read_input_text(label)
+        except ValueError:
+            return _stage_task_input(local_stage, remote_stage, label, content)
+        if existing != content:
+            raise ValueError(f"immutable remote task input already differs: {label}")
+        assert remote_stage.root is not None
+        return str(remote_stage.root / "inputs" / label)
+
+    assert local_stage is not None
+    target = local_stage / "inputs" / label
+    if not target.exists():
+        return _stage_task_input(local_stage, remote_stage, label, content)
+    if target.is_symlink() or not target.is_file() or target.read_text(encoding="utf-8") != content:
+        raise ValueError(f"immutable task input already differs: {label}")
+    return str(target)
+
+
 def _task_token(execution: AgentTaskExecution | None) -> str:
     return _safe_stage_name(execution.operation_id if execution is not None else uuid.uuid4().hex)
 
@@ -505,6 +537,7 @@ def _record_patch_receipt(
         "set_project_truth_scope",
         "create_proposals",
         "resolve_proposals",
+        "withdraw_proposals",
     }
     operation_counts: dict[str, int] = {}
     created_node_count = 0

@@ -59,6 +59,25 @@ export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]
   );
 }
 
+export function taskStatusLabel(task: AgentTask): string {
+  switch (task.status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running in the background";
+    case "pausing":
+      return "Pausing";
+    case "paused":
+      return "Paused at checkpoint";
+    case "succeeded":
+      return task.applied_revision ? `Completed at revision ${task.applied_revision}` : "Completed";
+    case "interrupted":
+      return "Interrupted";
+    default:
+      return "Failed";
+  }
+}
+
 export function projectActivityTask(
   tasks: AgentTask[],
   observedTaskId: string | null,
@@ -132,7 +151,17 @@ export function relatedCoachTasks(tasks: AgentTask[], sessionId: string | null):
 }
 
 export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {
-  return [...tasks].reverse().find((task) => task.status === "paused" && task.can_resume) ?? null;
+  const continuedTaskIds = new Set(
+    tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),
+  );
+  return (
+    [...tasks]
+      .reverse()
+      .find(
+        (task) =>
+          task.status === "paused" && task.can_resume && !continuedTaskIds.has(task.operation_id),
+      ) ?? null
+  );
 }
 
 export function chatTasksMissingFromHistory(

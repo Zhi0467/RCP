@@ -1423,6 +1423,98 @@ def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) ->
     assert not pending.exists()
 
 
+def test_remote_directory_input_is_moved_before_being_protected(tmp_path, monkeypatch) -> None:
+    """Directory inputs must remain writable until the atomic rename completes."""
+
+    root = tmp_path / "stage"
+    (root / "inputs").mkdir(parents=True)
+    (root / "workspace").mkdir()
+    source_directory = tmp_path / "skill-bundle"
+    (source_directory / "skill" / "graph-audit").mkdir(parents=True)
+    (source_directory / "skill" / "graph-audit" / "SKILL.md").write_text(
+        "# Graph audit\n", encoding="utf-8"
+    )
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    real_run = subprocess.run
+
+    def fake_run(arguments, **_kwargs):
+        if arguments[0] == "rsync":
+            source = Path(arguments[-2].rstrip("/"))
+            destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
+            shutil.copytree(source, destination)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        return real_run(arguments, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: real_run(arguments, capture_output=True, text=True, check=False),
+    )
+
+    try:
+        stage.put_directory(source_directory, "rcp-skills-turn-1")
+        stage.finalize_inputs()
+
+        target = root / "inputs" / "rcp-skills-turn-1"
+        assert (target / "skill" / "graph-audit" / "SKILL.md").is_file()
+        assert target.stat().st_mode & 0o777 == 0o500
+        assert (target / "skill" / "graph-audit" / "SKILL.md").stat().st_mode & 0o777 == 0o400
+        assert not any(path.name.startswith(".input-batch-") for path in root.iterdir())
+    finally:
+        stage.close()
+
+
+def test_remote_directory_input_reuses_only_matching_immutable_content(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "stage"
+    (root / "inputs").mkdir(parents=True)
+    (root / "workspace").mkdir()
+    source_directory = tmp_path / "skill-bundle"
+    source_directory.mkdir()
+    (source_directory / "SKILL.md").write_text("# Graph audit\n", encoding="utf-8")
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    real_run = subprocess.run
+    rsync_calls = 0
+
+    def fake_run(arguments, **_kwargs):
+        nonlocal rsync_calls
+        if arguments[0] == "rsync":
+            rsync_calls += 1
+            source = Path(arguments[-2].rstrip("/"))
+            destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
+            shutil.copytree(source, destination)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        return real_run(arguments, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: real_run(arguments, capture_output=True, text=True, check=False),
+    )
+
+    try:
+        first = stage.put_directory(source_directory, "rcp-skills-v1-address", reuse=True)
+        stage.finalize_inputs()
+        second = stage.put_directory(source_directory, "rcp-skills-v1-address", reuse=True)
+        stage.finalize_inputs()
+
+        target = root / "inputs" / "rcp-skills-v1-address"
+        assert first == second == str(target)
+        assert rsync_calls == 1
+        assert sorted(path.name for path in (root / "inputs").iterdir()) == [target.name]
+
+        (target / "SKILL.md").chmod(0o600)
+        with pytest.raises(ValueError, match="writable"):
+            stage.put_directory(source_directory, "rcp-skills-v1-address", reuse=True)
+    finally:
+        stage.close()
+
+
 def test_remote_stage_failed_finalize_cleans_local_pending_inputs(tmp_path, monkeypatch) -> None:
     source = tmp_path / "contract.md"
     source.write_text("Run the task.\n", encoding="utf-8")

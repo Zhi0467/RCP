@@ -5,7 +5,9 @@ import {
   File,
   History,
   Inbox,
+  LoaderCircle,
   MessageCircle,
+  Play,
   RadioTower,
   RotateCcw,
   Send,
@@ -67,7 +69,6 @@ interface Props {
   conversationTitle?: string;
   runScope: string[];
   tasks: AgentTask[];
-  activeTask: AgentTask | null;
   watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
   chatId: string;
@@ -81,6 +82,8 @@ interface Props {
   onOpenNode?: (nodeId: string) => void;
   onStopWatcher?: (watcherId: string) => void;
   onClose: () => void;
+  onResumeTask: (task: AgentTask) => void;
+  onRetryTask: (task: AgentTask) => void;
 }
 
 interface PendingChatTurn {
@@ -98,7 +101,6 @@ export function NodeChat({
   conversationTitle,
   runScope,
   tasks,
-  activeTask,
   watchers = [],
   historyMessages = [],
   chatId,
@@ -112,6 +114,8 @@ export function NodeChat({
   onOpenNode,
   onStopWatcher,
   onClose,
+  onResumeTask,
+  onRetryTask,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
   const skillCatalog = project.skill_catalog ?? [];
@@ -179,8 +183,6 @@ export function NodeChat({
   const skills = useSkillPicker({
     catalog: skillCatalog,
     defaults: skillDefaults,
-    message,
-    setMessage,
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
@@ -200,7 +202,8 @@ export function NodeChat({
   );
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
-  const providerReady = Boolean(readiness?.installed && readiness?.authenticated);
+  const providerReady =
+    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   const sessionId =
     latestNativeSessionId(relatedTasks) ??
     [...historyMessages].reverse().find((message) => message.native_session_id)
@@ -294,7 +297,7 @@ export function NodeChat({
 
   const send = async () => {
     const text = message.trim();
-    if (!text || activeTask || pausedAttempt || submitting || repairingTaskId || reviewPending)
+    if (!text || relatedActive || pausedAttempt || submitting || repairingTaskId || reviewPending)
       return;
     shouldStickToBottomRef.current = true;
     const clientId = `pending-${crypto.randomUUID()}`;
@@ -317,8 +320,8 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
-        workflow_ids: skills.selection.workflow_ids,
-        skill_ids: skills.selection.skill_ids,
+        invoked_workflow_ids: skills.selection.workflow_ids,
+        invoked_skill_ids: skills.selection.skill_ids,
       });
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
@@ -458,9 +461,13 @@ export function NodeChat({
       <div className="chat-context-controls">
         <div
           className="agent-provider-label"
+          aria-busy={readiness === undefined}
           aria-label={`Chat provider: ${readiness?.label || config.provider}`}
         >
           {readiness?.label || config.provider}
+          {readiness === undefined && (
+            <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
+          )}
         </div>
         <div className="chat-scope-control">
           <span>Raw truth inputs</span>
@@ -469,7 +476,7 @@ export function NodeChat({
             projectScope={project.project_truth_scope}
             stateRepository={project.state_repository}
             selected={scope}
-            onChange={activeTask || reviewPending ? () => undefined : setScope}
+            onChange={relatedActive || reviewPending ? () => undefined : setScope}
           />
         </div>
       </div>
@@ -511,6 +518,13 @@ export function NodeChat({
       >
         {transcript.map((line, index) => {
           const messageId = `${line.taskId}:${index}`;
+          const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
+          const activeLineTask = task && isActiveTask(task) ? task : null;
+          const pausedLineTask =
+            task?.status === "paused" && task.can_resume && !continuedTaskIds.has(task.operation_id)
+              ? task
+              : null;
+          const pendingLine = pendingTurn?.clientId === line.taskId;
           const collapsible =
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
@@ -550,8 +564,19 @@ export function NodeChat({
                       {expanded ? "See less" : "See more"}
                     </button>
                   )}
+                  {pausedLineTask ? (
+                    <InlinePausedTask
+                      task={pausedLineTask}
+                      onResume={() => onResumeTask(pausedLineTask)}
+                      onRetry={() => onRetryTask(pausedLineTask)}
+                    />
+                  ) : activeLineTask ? (
+                    <InlineTaskProgress task={activeLineTask} />
+                  ) : pendingLine ? (
+                    <InlineTaskProgress task={null} />
+                  ) : null}
                 </>
-              ) : (
+              ) : pausedLineTask ? null : (
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
@@ -615,7 +640,7 @@ export function NodeChat({
                   taskId={line.taskId}
                   repairBusy={repairingTaskId === line.taskId}
                   repairDisabled={
-                    graphChangesDisabled || Boolean(activeTask) || submitting || reviewPending
+                    graphChangesDisabled || relatedActive || submitting || reviewPending
                   }
                   repairContinued={continuedTaskIds.has(line.taskId)}
                   repairError={repairErrors.get(line.taskId) ?? null}
@@ -628,25 +653,6 @@ export function NodeChat({
           );
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
-        {relatedActive && (
-          <div className="thinking">
-            <i />
-            <i />
-            <i /> {activeTask?.status_message || `${taskKindLabel(surface)} is running`}
-          </div>
-        )}
-        {pausedAttempt && (
-          <div className="chat-task-blocked">
-            This conversation has a paused attempt. Resume it from the task banner, or use Retry
-            before sending another turn.
-          </div>
-        )}
-        {activeTask && !relatedActive && (
-          <div className="chat-task-blocked">
-            Another agent task is active. This conversation remains usable and can continue when
-            that task finishes.
-          </div>
-        )}
       </div>
       <div className="chat-composer" data-mode={mode}>
         <SkillPicker {...skills.props} />
@@ -688,7 +694,7 @@ export function NodeChat({
             className="icon-button primary chat-send-button"
             disabled={
               !message.trim() ||
-              Boolean(activeTask) ||
+              relatedActive ||
               Boolean(pausedAttempt) ||
               submitting ||
               Boolean(repairingTaskId) ||
@@ -703,6 +709,43 @@ export function NodeChat({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function InlineTaskProgress({ task }: { task: AgentTask | null }) {
+  const label = task
+    ? task.status_message || `${taskKindLabel(task.kind)} is running`
+    : "Starting task";
+  return (
+    <div className="chat-task-inline running" role="status" aria-label="Agent task running">
+      <LoaderCircle className="spin" size={12} />
+      <span>{label}</span>
+      <div className="chat-task-progress" role="progressbar" aria-label="Task in progress">
+        <span style={{ width: `${Math.round((task?.progress ?? 0) * 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function InlinePausedTask({
+  task,
+  onResume,
+  onRetry,
+}: {
+  task: AgentTask;
+  onResume: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
+      <span>{task.status_message}</span>
+      <button type="button" className="button compact primary" onClick={onResume}>
+        <Play size={11} /> Resume
+      </button>
+      <button type="button" className="button compact secondary" onClick={onRetry}>
+        <RotateCcw size={11} /> Retry
+      </button>
     </div>
   );
 }

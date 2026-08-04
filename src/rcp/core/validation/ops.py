@@ -550,6 +550,31 @@ def validate_resolve_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
+def validate_withdraw_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
+    if ctx.patch.author != "agent" or ctx.patch.kind == "approval":
+        ctx.report.reject(
+            "human-only-proposal-withdrawal",
+            "Only an agent patch may withdraw a Proposal.",
+            ctx.revision,
+        )
+    for withdrawal in op.get("proposals", []):
+        proposal_id = withdrawal.get("id")
+        proposal = ctx.state.proposals.get(proposal_id)
+        if proposal is None:
+            ctx.report.reject(
+                "unknown-proposal",
+                f"Cannot withdraw missing proposal {proposal_id!r}.",
+                ctx.revision,
+            )
+        elif proposal.status != "pending":
+            ctx.report.reject(
+                "proposal-not-pending",
+                f"Proposal {proposal_id!r} is not pending.",
+                ctx.revision,
+            )
+    return None
+
+
 def validate_set_standing(op: dict[str, Any], ctx: OpContext) -> Any:
     if ctx.patch.kind != "approval":
         ctx.report.reject("agent-set-standing", "Only the human UI may set standing.", ctx.revision)

@@ -268,6 +268,16 @@ class CreateProposalsOperation(_StrictModel):
     proposals: list[AgentProposal] = Field(min_length=1)
 
 
+class AgentProposalWithdrawal(_StrictModel):
+    id: str = Field(pattern=rf"^prop/{_SLUG}$")
+    reason: str = ""
+
+
+class WithdrawProposalsOperation(_StrictModel):
+    op: Literal["withdraw_proposals"]
+    proposals: list[AgentProposalWithdrawal] = Field(min_length=1)
+
+
 AgentOperation = Annotated[
     CreateNodesOperation
     | UpdateNodesOperation
@@ -279,6 +289,7 @@ AgentOperation = Annotated[
     | CreateAmbiguitiesOperation
     | ResolveAmbiguitiesOperation
     | CreateProposalsOperation
+    | WithdrawProposalsOperation
     | UpsertGlossaryOperation,
     Field(discriminator="op"),
 ]
@@ -341,6 +352,7 @@ def prepare_agent_patch(
     *,
     kind: Literal["seed", "refresh", "work", "experiment_loop"],
     run_truth_scope: list[str],
+    source_operation_id: str | None = None,
 ) -> Patch:
     """Wrap one semantic agent deliverable in RCP-owned canonical metadata."""
 
@@ -355,8 +367,13 @@ def prepare_agent_patch(
                     "related_config_keys": [],
                     "base_rev": 0,
                     "status": "pending",
+                    "created_by": "agent",
+                    "created_by_operation_id": source_operation_id,
                     "raised_rev": 0,
                     "resolved_rev": None,
+                    "resolved_by": None,
+                    "resolved_by_operation_id": None,
+                    "resolution_reason": None,
                     "rejection_reason": None,
                 }
             )
@@ -369,6 +386,7 @@ def prepare_agent_patch(
         repositories_read=list(draft.repositories_read),
         change_summary=list(draft.change_summary),
         processed_cursors={},
+        source_operation_id=source_operation_id,
     )
 
 
@@ -407,8 +425,13 @@ def _strip_rcp_bookkeeping(operations: list[dict[str, Any]]) -> list[dict[str, A
                         "related_config_keys",
                         "base_rev",
                         "status",
+                        "created_by",
+                        "created_by_operation_id",
                         "raised_rev",
                         "resolved_rev",
+                        "resolved_by",
+                        "resolved_by_operation_id",
+                        "resolution_reason",
                         "rejection_reason",
                     }
                 }

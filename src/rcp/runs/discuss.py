@@ -6,6 +6,7 @@ from contextlib import aclosing, suppress
 from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import ReplayHalted
@@ -14,12 +15,15 @@ from rcp.runs.chat import (
     _chat_read_dirs,
     _chat_stage_name,
     _clear_stale_patch,
+    _commit_chat_prompt_state,
     _discover_chat_artifacts,
     _logical_chat_turn_operation_id,
+    _prepare_chat_prompt_state,
     _prepare_local_artifact_directory,
     _read_chat_patch,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
+    _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
@@ -38,8 +42,40 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import ProjectService, RunRequest
-from rcp.skills.staging import stage_skill_selection
+from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable
+
+
+def _prepare_discuss_chat_prompt(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    artifact_path: str,
+    master_context: str,
+    stable_values: dict[str, object],
+) -> tuple[str, str]:
+    """Prepare the session baseline behind one Discuss-local seam."""
+
+    if request.message is None:
+        raise ValueError("An ordinary Discuss turn requires a human message.")
+    bootstrap_path, context_delta, retained_master_path = _prepare_chat_prompt_state(
+        execution,
+        request,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        master_context=master_context,
+        contract_key=f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}",
+        values=stable_values,
+    )
+    prompt = PromptFactory.discuss_turn_prompt(
+        artifact_path=artifact_path,
+        human_message=request.message,
+        master_context_path=bootstrap_path,
+        context_delta=context_delta,
+    )
+    return prompt, retained_master_path
 
 
 async def stream_discuss_run(
@@ -135,11 +171,13 @@ async def stream_discuss_run(
                 )
 
             token = _task_token(execution)
+            skill_selection = service.resolve_skill_selection(request)
             skill_pointers = stage_skill_selection(
-                service.resolve_skill_selection(request),
+                skill_selection,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                label=f"rcp-skills-{token}",
+                label=skill_bundle_label(skill_selection),
+                reuse_existing=True,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -170,14 +208,8 @@ async def stream_discuss_run(
                     execution=execution,
                     role="discuss_resume",
                 )
-            else:
+            elif retry_attempt:
                 assert request.message is not None
-                human_request_path = _stage_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-human-request.txt",
-                    request.message,
-                )
                 retry_diagnostics_path = (
                     _stage_json_task_input(
                         local_stage,
@@ -188,30 +220,43 @@ async def stream_discuss_run(
                     if execution is not None and (execution.retry_feedback or retry_attempt)
                     else None
                 )
-                contract = PromptFactory.discuss_task_contract(
-                    project_name=context.project_name,
-                    ontology_path=f"{context.graph_path}#ontology",
-                    graph_path=context.graph_path,
-                    research_path=context.research_md_path,
-                    focused_node_id=str(context.node["id"]) if context.node else None,
-                    repositories=[
-                        {"alias": item.alias, "host": item.host, "path": item.path}
-                        for item in context.repositories
-                    ],
-                    introduction_path=context.introduction_path,
-                    human_request_path=human_request_path,
-                    artifact_path=str(artifact_directory),
-                    retry_diagnostics_path=retry_diagnostics_path,
-                    skill_pointers=skill_pointers,
-                )
-                current_contract_path, current_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
-                    contract,
-                    execution=execution,
-                    role="discuss_retry_base" if retry_attempt else "discuss",
-                )
+                # A retry that still holds its native session already has the contract in the
+                # conversation; it gets a follow-up naming what changed, not a rebuilt contract.
+                resumed_retry = retrying and reusing_checkpoint
+                current_contract_path = None
+                current_prompt = None
+                if not resumed_retry:
+                    human_request_path = _stage_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-human-request.txt",
+                        request.message,
+                    )
+                    contract = PromptFactory.discuss_task_contract(
+                        project_name=context.project_name,
+                        ontology_path=f"{context.graph_path}#ontology",
+                        ontology_extensions=context.ontology_extensions,
+                        graph_path=context.graph_path,
+                        research_path=context.research_md_path,
+                        focused_node_id=str(context.node["id"]) if context.node else None,
+                        repositories=[
+                            {"alias": item.alias, "host": item.host, "path": item.path}
+                            for item in context.repositories
+                        ],
+                        introduction_path=context.introduction_path,
+                        human_request_path=human_request_path,
+                        artifact_path=str(artifact_directory),
+                        retry_diagnostics_path=retry_diagnostics_path,
+                        skill_pointers=skill_pointers,
+                    )
+                    current_contract_path, current_prompt = _stage_task_contract(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
+                        contract,
+                        execution=execution,
+                        role="discuss_retry_base" if retry_attempt else "discuss",
+                    )
                 if retrying:
                     assert execution is not None
                     assert retry_diagnostics_path is not None
@@ -223,6 +268,7 @@ async def stream_discuss_run(
                         current_contract_path=current_contract_path,
                         diagnostics_path=retry_diagnostics_path,
                         mode="retry",
+                        skill_pointers=skill_pointers if resumed_retry else None,
                     )
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
@@ -234,6 +280,76 @@ async def stream_discuss_run(
                     )
                 else:
                     contract_path, prompt = current_contract_path, current_prompt
+            else:
+                assert request.message is not None
+                assert artifact_scope_id is not None
+                patch_inputs = _stage_chat_patch_inputs(
+                    local_stage,
+                    remote_stage,
+                    workspace=workspace,
+                    stage_name=stage_name,
+                )
+                repositories = [
+                    {"alias": item.alias, "host": item.host, "path": item.path}
+                    for item in context.repositories
+                ]
+                focused_node_id = str(context.node["id"]) if context.node else None
+                stable_prompt_values: dict[str, object] = {
+                    "project": {"name": context.project_name},
+                    "settings": {
+                        "provider": request.provider,
+                        "model": request.model,
+                        "reasoning": request.reasoning,
+                        "run_on": request.run_on,
+                    },
+                    "current": {
+                        "ontology_path": f"{context.graph_path}#ontology",
+                        "graph_revision": context.graph_revision,
+                        "graph_path": context.graph_path,
+                        "research_path": context.research_md_path,
+                        "focused_node_id": focused_node_id,
+                        "introduction_path": context.introduction_path,
+                    },
+                    "repositories": repositories,
+                    "skills": {"pointers": skill_pointers},
+                    "patch": {
+                        "path": patch_inputs.patch_path,
+                        "watch_path": patch_inputs.watch_path,
+                        "schema_path": patch_inputs.schema_path,
+                        "validator_command": patch_inputs.validator_command,
+                        "validator_mailbox_id": patch_inputs.validator_mailbox_id,
+                    },
+                    "workspace": {"path": str(workspace)},
+                }
+                master_context = PromptFactory.chat_master_context(
+                    project_name=context.project_name,
+                    ontology_path=f"{context.graph_path}#ontology",
+                    ontology_extensions=context.ontology_extensions,
+                    graph_path=context.graph_path,
+                    research_path=context.research_md_path,
+                    graph_revision=context.graph_revision,
+                    focused_node_id=focused_node_id,
+                    focused_node=context.node,
+                    focused_relations=[item.model_dump(mode="json") for item in context.relations],
+                    repositories=repositories,
+                    introduction_path=context.introduction_path,
+                    patch_path=patch_inputs.patch_path,
+                    workspace_path=str(workspace),
+                    output_schema_path=patch_inputs.schema_path,
+                    validator_command=patch_inputs.validator_command,
+                    watch_path=patch_inputs.watch_path,
+                    skill_pointers=skill_pointers,
+                )
+                prompt, retained_master_path = _prepare_discuss_chat_prompt(
+                    execution,
+                    request,
+                    local_stage=local_stage,
+                    remote_stage=remote_stage,
+                    artifact_path=str(artifact_directory),
+                    master_context=master_context,
+                    stable_values=stable_prompt_values,
+                )
+                contract_path = retained_master_path
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
@@ -300,6 +416,8 @@ async def stream_discuss_run(
                 )
             )
             return
+
+        _commit_chat_prompt_state(execution, request, outcome.session_id)
 
         assert artifact_scope_id is not None
         assert artifact_directory is not None

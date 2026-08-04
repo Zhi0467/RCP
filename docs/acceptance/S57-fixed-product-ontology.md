@@ -11,9 +11,7 @@ last_passed: 2026-08-03
 
 # Existing ontology extensions remain readable without a schema editor
 
-Confirmed by the human through
-[`docs/handoff-ui-fixes-and-graph-skills.md`](../handoff-ui-fixes-and-graph-skills.md)
-on 2026-08-03.
+Confirmed by the human on 2026-08-03.
 
 The six shipped node types are RCP's authoring product. Project Settings does not
 offer custom type, field, or relation editing. This is only a removal of the UI

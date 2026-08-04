@@ -2716,26 +2716,6 @@ button:disabled {
   background: var(--red-soft);
   color: var(--red);
 }
-.run-detail-progress > div:first-child {
-  align-items: baseline;
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.run-detail-progress > div:first-child span {
-  color: var(--muted);
-  font-size: 9px;
-}
-.run-detail-progress > div:first-child strong {
-  font-family: var(--mono);
-  font-size: 16px;
-}
-.run-progress-meta {
-  color: var(--ink-soft);
-  display: block;
-  font-size: 8px;
-  margin-top: 7px;
-}
 .run-contract-list > div {
   grid-template-columns: 92px minmax(0, 1fr);
 }
@@ -3673,14 +3653,44 @@ button:disabled {
   background: var(--amber-soft);
   color: var(--walnut);
 }
-.chat-task-blocked {
+.chat-task-inline {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  width: 100%;
+}
+.chat-task-inline.running {
+  color: color-mix(in srgb, white 78%, var(--cobalt));
+  font-size: 9px;
+}
+.chat-task-inline.paused {
   background: var(--amber-soft);
   border: 1px solid color-mix(in srgb, var(--mustard) 55%, var(--rule));
   color: var(--walnut);
   font-size: 9px;
-  line-height: 1.45;
-  margin: 9px 0;
+  justify-content: flex-start;
   padding: 7px 9px;
+}
+.chat-task-inline.paused > span {
+  flex: 1 1 100%;
+}
+.chat-task-progress {
+  background: color-mix(in srgb, white 30%, transparent);
+  border-radius: 999px;
+  flex: 1 1 100%;
+  height: 3px;
+  min-width: 90px;
+  overflow: hidden;
+}
+.chat-task-progress > span {
+  background: white;
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  transition: width 0.5s ease;
 }
 .thinking {
   align-items: center;
@@ -3716,36 +3726,6 @@ button:disabled {
 .chat-composer textarea:focus-visible {
   border-color: var(--chat-mode-accent);
   outline: 2px solid color-mix(in srgb, var(--chat-mode-accent) 35%, transparent);
-  outline-offset: 1px;
-}
-.chat-skill-chips {
-  display: flex;
-  flex: 1 0 100%;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 8px 10px 0;
-}
-.chat-skill-chip {
-  align-items: center;
-  background: color-mix(in srgb, var(--cobalt-soft) 72%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--cobalt) 38%, var(--line));
-  color: var(--cobalt-dark);
-  display: inline-flex;
-  font: 8px var(--mono);
-  gap: 5px;
-  padding: 4px 5px 4px 7px;
-}
-.chat-skill-chip button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  display: inline-flex;
-  padding: 0;
-}
-.chat-skill-chip button:focus-visible {
-  outline: 2px solid currentColor;
   outline-offset: 1px;
 }
 .chat-skill-menu {
@@ -4416,143 +4396,6 @@ button:disabled {
 }
 .project-notices {
   flex: none;
-}
-.run-activity {
-  align-items: start;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  gap: 11px;
-  grid-template-columns: 20px minmax(280px, 1fr) auto;
-  padding: 10px 24px;
-  position: relative;
-}
-.agent-task-strip {
-  border-left: 5px solid var(--oxblood);
-  box-shadow: 0 7px 20px rgba(65, 46, 29, 0.08);
-}
-.agent-task-strip.active {
-  background-image: repeating-linear-gradient(
-    120deg,
-    transparent 0 18px,
-    rgb(255 255 255 / 24%) 18px 36px
-  );
-}
-.agent-task-strip.succeeded {
-  border-left-color: var(--teal);
-  box-shadow: 0 7px 20px color-mix(in srgb, var(--teal) 10%, transparent);
-}
-.agent-task-strip.paused {
-  border-left-color: var(--amber);
-}
-.agent-task-strip.failed {
-  border-left-color: var(--coral);
-  box-shadow: 0 7px 20px color-mix(in srgb, var(--coral) 10%, transparent);
-}
-.run-activity.active {
-  background: var(--rose-paper);
-  border-bottom-color: color-mix(in srgb, var(--oxblood) 30%, var(--rule));
-}
-.run-activity.succeeded {
-  background: var(--green-soft);
-  border-bottom-color: color-mix(in srgb, var(--teal) 38%, var(--rule));
-}
-.run-activity.paused {
-  background: var(--amber-soft);
-  border-bottom-color: color-mix(in srgb, var(--mustard) 55%, var(--rule));
-}
-.run-activity.failed {
-  background: var(--rose-paper);
-  border-bottom-color: color-mix(in srgb, var(--coral) 50%, var(--rule));
-}
-.run-activity-icon {
-  color: var(--cobalt-dark);
-  padding-top: 2px;
-}
-.run-activity.succeeded .run-activity-icon {
-  color: var(--green);
-}
-.run-activity.paused .run-activity-icon {
-  color: var(--amber);
-}
-.run-activity.failed .run-activity-icon {
-  color: var(--red);
-}
-.run-activity-copy {
-  min-width: 0;
-}
-.run-activity-heading {
-  align-items: baseline;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px 12px;
-}
-.run-activity-heading strong {
-  font-size: 11px;
-}
-.run-activity-heading span {
-  color: var(--muted);
-  font-size: 9px;
-}
-.run-activity-copy p {
-  color: var(--ink-soft);
-  font-size: 10px;
-  line-height: 1.45;
-  margin: 2px 0;
-  overflow-wrap: anywhere;
-}
-.run-activity > .icon-button {
-  background: transparent;
-  border-color: transparent;
-  height: 28px;
-  min-height: 28px;
-  width: 28px;
-}
-.run-progress-row {
-  align-items: center;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(100px, 240px) 30px auto;
-  margin: 6px 0 4px;
-}
-.run-progress-row > span {
-  color: var(--muted);
-  font-size: 8px;
-}
-.run-progress-track {
-  background: color-mix(in srgb, var(--ink-soft) 17%, transparent);
-  border-radius: 999px;
-  height: 4px;
-  overflow: hidden;
-}
-.run-progress-track > span {
-  background: var(--cobalt);
-  border-radius: inherit;
-  display: block;
-  height: 100%;
-  min-width: 2px;
-  transition: width 0.5s ease;
-}
-.run-progress-track.large {
-  height: 6px;
-}
-.run-activity.succeeded .run-progress-track > span {
-  background: var(--green);
-}
-.run-activity.paused .run-progress-track > span {
-  background: var(--amber);
-}
-.run-activity-actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  justify-content: flex-end;
-}
-.run-activity-actions .button {
-  font-size: 9px;
-  min-height: 27px;
-  padding: 0 8px;
 }
 .activity-pulse {
   background: var(--cobalt);
@@ -5454,6 +5297,9 @@ button:disabled {
 }
 .agent-readiness.warning {
   color: var(--red);
+}
+.agent-readiness.pending {
+  color: var(--muted);
 }
 .agent-config.compact {
   padding: 9px 10px;
@@ -6810,13 +6656,6 @@ button:disabled {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
-  .run-activity {
-    grid-template-columns: 20px minmax(0, 1fr);
-  }
-  .run-activity-actions {
-    grid-column: 2;
-    justify-content: flex-start;
-  }
   .research-path {
     grid-template-columns: 1fr 1fr;
   }
@@ -6992,12 +6831,6 @@ button:disabled {
   }
   .settings-save-status {
     grid-column: 1 / -1;
-  }
-  .run-progress-row {
-    grid-template-columns: minmax(80px, 1fr) 28px;
-  }
-  .run-progress-row > span:last-child {
-    display: none;
   }
   .run-inspector-body {
     grid-template-columns: 1fr;

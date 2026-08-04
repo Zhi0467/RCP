@@ -11,11 +11,9 @@ reported_by: human, 2026-08-03
 # An agent audits the graph patch it is about to finish
 
 This scenario is a proposal and is **not yet human-confirmed**. It does not
-authorize implementation until the human confirms it. The delivery decisions
-come from
-[`docs/handoff-ui-fixes-and-graph-skills.md`](../handoff-ui-fixes-and-graph-skills.md);
-the behavioral choices below answer the questions that handoff deliberately
-left open, but those answers remain proposed rather than settled.
+authorize implementation until the human resolves
+[Q5](../open-questions.md#q5--should-graph-writing-agents-be-required-to-run-an-executable-scanner).
+The behavioral choices below remain proposed rather than settled.
 
 The registry, versioning, and per-run staging this scenario originally proposed
 now ship under

@@ -263,6 +263,8 @@ def create_app(
             control_completion_criteria=continuation.control_completion_criteria,
             workflow_ids=continuation.workflow_ids,
             skill_ids=continuation.skill_ids,
+            invoked_workflow_ids=continuation.invoked_workflow_ids,
+            invoked_skill_ids=continuation.invoked_skill_ids,
             resolved_skill_packages=continuation.resolved_skill_packages,
             watcher_ids=watcher_ids,
         )
@@ -277,23 +279,27 @@ def create_app(
 
     watcher_poller = WatcherPoller(store, on_completed=deliver_watcher_group)
 
-    async def warm_local_provider_capabilities() -> None:
+    async def warm_provider_capabilities() -> None:
         try:
-            targets = await asyncio.to_thread(catalog.local_provider_targets)
+            targets = await asyncio.to_thread(catalog.provider_targets)
 
-            def probe(provider: str, binary: str | None) -> None:
-                if binary is None:
-                    launcher.readiness(provider)
-                else:
-                    launcher.readiness(provider, binary=binary)
+            def probe(provider: str, host: str, binary: str | None) -> None:
+                launcher.readiness(provider, host=host, binary=binary)
 
-            await asyncio.gather(
-                *(asyncio.to_thread(probe, provider, binary) for provider, binary in targets)
+            results = await asyncio.gather(
+                *(
+                    asyncio.to_thread(probe, provider, host, binary)
+                    for provider, host, binary in targets
+                ),
+                return_exceptions=True,
             )
+            for target, result in zip(targets, results, strict=True):
+                if isinstance(result, Exception):
+                    logger.warning("Could not warm provider capability %s: %s", target, result)
         except Exception as exc:
-            # Warming is an optimization; the next explicit readiness request
-            # remains authoritative and must still be able to retry.
-            logger.warning("Could not warm local provider capabilities: %s", exc)
+            # Warming is an optimization; readiness remains authoritative and
+            # can retry an individual capability when explicitly requested.
+            logger.warning("Could not warm provider capabilities: %s", exc)
 
     async def sweep_remote_run_stages() -> None:
         try:
@@ -321,7 +327,7 @@ def create_app(
             ).sweep()
             # Scheduling happens before the app becomes available, but the task
             # itself cannot run until control returns to the server after yield.
-            startup_maintenance.append(asyncio.create_task(warm_local_provider_capabilities()))
+            startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
             if default_state_host:
                 startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
             watcher_poller.start()

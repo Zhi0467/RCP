@@ -42,6 +42,7 @@ from rcp.core.validation.ops import (
     validate_set_standing,
     validate_supersede_nodes,
     validate_update_nodes,
+    validate_withdraw_proposals,
 )
 
 OP_RULES: dict[str, OpRule] = {
@@ -87,6 +88,7 @@ OP_RULES: dict[str, OpRule] = {
         authoring_validate=author_create_proposals,
     ),
     "resolve_proposals": OpRule(structural_validate=validate_resolve_proposals),
+    "withdraw_proposals": OpRule(structural_validate=validate_withdraw_proposals),
     "upsert_glossary": OpRule(),
     "set_coverage": OpRule(),
     "set_standing": OpRule(structural_validate=validate_set_standing),

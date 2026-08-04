@@ -4,6 +4,7 @@ import {
   ChevronRight,
   FilePenLine,
   History,
+  LoaderCircle,
   MessageSquarePlus,
   RotateCcw,
   Send,
@@ -30,7 +31,6 @@ interface Props {
   project: ProjectSnapshot;
   initialPaper: PaperSnapshot;
   tasks: AgentTask[];
-  activeTask: AgentTask | null;
   onStartTask: StartAgentTask;
   onPaperChange: (paper: PaperSnapshot) => void;
 }
@@ -81,7 +81,6 @@ export function PaperWorkspace({
   project,
   initialPaper,
   tasks,
-  activeTask,
   onStartTask,
   onPaperChange,
 }: Props) {
@@ -161,13 +160,19 @@ export function PaperWorkspace({
     : latestCoachTask && isActiveTask(latestCoachTask)
       ? latestCoachTask
       : null;
+  const activeCoachTask = tasks.find(
+    (task) =>
+      task.kind === "paper_coach" &&
+      isActiveTask(task) &&
+      (activeSession
+        ? task.native_session_id === activeSession.native_session_id
+        : task.operation_id === pendingCoachTask?.operation_id),
+  );
   const skillCatalog = project.skill_catalog ?? [];
   const skillDefaults = project.skill_defaults ?? EMPTY_SKILL_SELECTION;
   const skills = useSkillPicker({
     catalog: skillCatalog,
     defaults: skillDefaults,
-    message,
-    setMessage,
   });
 
   useEffect(() => {
@@ -250,7 +255,7 @@ export function PaperWorkspace({
 
   const send = async () => {
     const text = message.trim();
-    if (!text || activeTask || coachSubmitting) return;
+    if (!text || activeCoachTask || coachSubmitting) return;
     setSubmitError(null);
     setCoachSubmitting(true);
     try {
@@ -259,8 +264,8 @@ export function PaperWorkspace({
         ...config,
         model: config.model || null,
         session_id: activeSession?.native_session_id ?? null,
-        workflow_ids: skills.selection.workflow_ids,
-        skill_ids: skills.selection.skill_ids,
+        invoked_workflow_ids: skills.selection.workflow_ids,
+        invoked_skill_ids: skills.selection.skill_ids,
       });
       setPendingCoachTaskId(task.operation_id);
       setMessage("");
@@ -287,7 +292,7 @@ export function PaperWorkspace({
     () => (content.trim() ? content.trim().split(/\s+/).length : 0),
     [content],
   );
-  const coachActive = activeTask?.kind === "paper_coach";
+  const coachActive = Boolean(activeCoachTask);
   const constrainEditorShare = (value: number) => {
     const width = workspace.current?.getBoundingClientRect().width ?? 0;
     return clampEditorShare(value, editorShareBoundsForWidth(width));
@@ -522,9 +527,13 @@ export function PaperWorkspace({
 
         <div
           className="agent-provider-label"
+          aria-busy={readiness === undefined}
           aria-label={`Writing coach provider: ${readiness?.label || config.provider}`}
         >
           {readiness?.label || config.provider}
+          {readiness === undefined && (
+            <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
+          )}
         </div>
         {reviewStale && (
           <div className="stale-review">
@@ -532,7 +541,7 @@ export function PaperWorkspace({
             the draft.
           </div>
         )}
-        {!readiness?.authenticated && (
+        {readiness && !readiness.authenticated && (
           <div className="provider-unavailable">
             <WifiOff size={14} /> {readiness?.reason || `${config.provider} is unavailable.`}
           </div>
@@ -552,13 +561,7 @@ export function PaperWorkspace({
             <div className="thinking">
               <i />
               <i />
-              <i /> {activeTask.status_message}
-            </div>
-          )}
-          {activeTask && !coachActive && (
-            <div className="chat-task-blocked">
-              Another agent task is active. You can keep editing and start coaching when it
-              finishes.
+              <i /> {activeCoachTask?.status_message || "Writing coach is running"}
             </div>
           )}
         </div>
@@ -582,7 +585,10 @@ export function PaperWorkspace({
               activeSession ? "Resume session in background" : "Start coach task in background"
             }
             disabled={
-              !message.trim() || Boolean(activeTask) || coachSubmitting || !readiness?.authenticated
+              !message.trim() ||
+              Boolean(activeCoachTask) ||
+              coachSubmitting ||
+              (readiness !== undefined && !readiness.authenticated)
             }
             onClick={() => void send()}
           >

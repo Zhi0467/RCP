@@ -1,5 +1,10 @@
 # Handoff — ontology v0.5 and pre-landing simplification
 
+> Archived 2026-08-04. The implementation and verification work described as
+> outstanding here has since landed; this document is retained only as historical
+> execution context. The canonical design lives in
+> [`docs/research-control-panel-blueprint.md`](../../research-control-panel-blueprint.md).
+
 **Date:** 2026-07-29
 **State:** all landed work is green (`223 passed`, `ruff` clean). **No UI-level
 verification has been done.** Three items are outstanding, listed at the bottom.
@@ -14,8 +19,9 @@ implemented — the blueprint is the target, the code is not there yet.
 
 ### Blueprint
 
-`docs/research-control-panel-blueprint-v0.5.md` (~3,270 lines), superseding v0.4.
-Read §0 for the full changelog. The load-bearing parts:
+The then-current v0.5 blueprint (~3,270 lines), superseding v0.4. Its normative
+content is now consolidated into the canonical blueprint linked above. The
+load-bearing parts recorded at the time were:
 
 - **§1.0 North star** — the three stages (personal OS → multiplayer → federated),
   and an explicit bound on what they may claim from v1: only the ontology's shape

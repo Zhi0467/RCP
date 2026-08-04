@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from rcp.agents import PromptFactory
 from rcp.core.materialize import apply_valid_patch, materialize_patches
 from rcp.core.models import GraphState, OntologyState, Patch
 from rcp.core.validation import proposal_dependencies, validate_patch
@@ -460,3 +461,47 @@ def test_set_ontology_rejects_unknown_operation_keys() -> None:
     op = {"op": "set_ontology", "ontology": _ontology(), "base_types": "replace"}
     report = validate_patch(GraphState(), _approval(1, [op]), [])
     assert "invalid-ontology-operation" in _codes(report)
+
+
+def _work_contract(*, ontology_extensions: bool) -> str:
+    return PromptFactory.work_task_contract(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        ontology_extensions=ontology_extensions,
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        focused_node_id=None,
+        repositories=[],
+        introduction_path=None,
+        human_request_path="/stage/inputs/request.txt",
+        patch_path="/stage/workspace/patch.json",
+        artifact_path="/stage/workspace/artifacts",
+        output_schema_path="/stage/inputs/patch-schema.json",
+        validator_command="python /stage/validator.py /stage/workspace/patch.json",
+    )
+
+
+def test_extension_authoring_rules_appear_only_for_a_project_with_extensions() -> None:
+    with_extensions = _work_contract(ontology_extensions=True)
+    without = _work_contract(ontology_extensions=False)
+
+    assert "materialized ontology carries extension definitions" in with_extensions
+    assert "`extension_fields`" in with_extensions
+    assert "graph.json#ontology" in with_extensions
+
+    # A project that never defined one cannot use them, so it is not told about them.
+    assert "extension" not in without.lower()
+    assert "graph.json#ontology" not in without
+
+
+def test_base_authoring_rules_appear_regardless_of_ontology_state() -> None:
+    for contract in (
+        _work_contract(ontology_extensions=True),
+        _work_contract(ontology_extensions=False),
+    ):
+        assert "Base node ids are" in contract
+        assert "`has_subquestion` ResearchQuestion->ResearchQuestion" in contract
+        assert "`blocked_by` Experiment|Decision|ResearchQuestion->Blocker" in contract
+        assert "Every new Evidence must explicitly set `origin`" in contract
+        assert "Every Experiment connects to a Hypothesis or Decision" in contract
+        assert "an agent may neither apply nor propose `set_ontology`" in contract

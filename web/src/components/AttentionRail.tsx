@@ -41,6 +41,7 @@ export function ProposalJudgmentSection({
         const decision = draft?.proposals[proposal.id]?.decision;
         const approved = decision === "approved";
         const rejected = decision === "rejected";
+        const proposedAction = proposalAction(proposal);
         return (
           <article className={`proposal-card${decision ? " draft-touched" : ""}`} key={proposal.id}>
             <div className="proposal-topline">
@@ -86,14 +87,9 @@ export function ProposalJudgmentSection({
                 </dd>
               </div>
               <div>
-                <dt>Decision needed</dt>
+                <dt>Proposed action</dt>
                 <dd>
-                  <GlossaryText
-                    text={
-                      proposal.card.decision_needed || "Approve or reject the stored operation."
-                    }
-                    glossaryIndex={glossaryIndex}
-                  />
+                  <GlossaryText text={proposedAction} glossaryIndex={glossaryIndex} />
                 </dd>
               </div>
             </dl>
@@ -122,6 +118,31 @@ export function ProposalJudgmentSection({
       })}
     </section>
   );
+}
+
+function proposalAction(proposal: Proposal): string {
+  const operations = Array.isArray(proposal.ops) ? proposal.ops : [];
+  const update = operations.find((operation) => operation.op === "update_nodes");
+  const nodes = update?.nodes;
+  const node = Array.isArray(nodes) && nodes.length === 1 ? asRecord(nodes[0]) : null;
+  const changes = node ? asRecord(node.changes) : null;
+  const selectedOption = changes && stringValue(changes.selected_option);
+  const status = changes && stringValue(changes.status);
+
+  if (selectedOption && status === "decided") {
+    return `Choose “${selectedOption}” and mark the decision decided.`;
+  }
+  if (selectedOption) return `Choose “${selectedOption}” for the decision.`;
+  if (status) return `Change the target status to “${status}”.`;
+  return proposal.card.decision_needed || "Review the stored proposal action.";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function AttentionRail({

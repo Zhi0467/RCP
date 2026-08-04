@@ -19,10 +19,11 @@ invariants: [1, 3, 4, 4b, 9, 10b]
 last_passed: 2026-08-03
 ---
 
-# A Work agent checks the exact semantic patch RCP will apply
+# A patch-producing agent checks the exact semantic patch RCP will apply
 
 An agent describes only the semantic graph change. RCP owns revision, authority,
-dependency, and lifecycle bookkeeping, and gives the running Work session a
+dependency, and lifecycle bookkeeping, and gives every running Seed, Refresh,
+or Work patch-producing session a
 bounded way to ask the canonical validator whether its current `patch.json`
 would apply to the live graph.
 

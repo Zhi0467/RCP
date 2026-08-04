@@ -5,7 +5,7 @@ from typing import Any
 
 from rcp.core.models import Experiment, GraphState, Patch
 
-AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s52-v1"
+AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s69-v1"
 
 DECISION_PROPOSAL_FIELDS = frozenset({"selected_option", "status"})
 HYPOTHESIS_PROPOSAL_FIELDS = frozenset({"status"})
@@ -39,11 +39,11 @@ Proposal-only changes:
 - Do not put any other operation or semantic change in a Proposal.
 
 Human-only authority:
-- Agents never set `standing`; resolve, approve, reject, or withdraw Proposals; change project
-  configuration such as ontology or project truth scope; or authorize an Experiment **Run**.
-  Proposal approval never launches or resumes an Experiment. Only the human pressing **Run** grants
-  RCP permission to launch a separate operational turn. A human request cannot delegate these
-  actions."""
+- Agents never set `standing`, approve, or reject Proposals; they may withdraw any pending Proposal
+  with `withdraw_proposals` when obsolete or duplicated. Withdrawal applies no semantic operations
+  and preserves lifecycle provenance. Agents may not change project configuration or authorize an
+  Experiment **Run**. Approval never launches or resumes an Experiment. Only the human pressing
+  **Run** grants RCP permission to launch. A human request cannot delegate these actions."""
 
 AGENT_GRAPH_AUTHORITY_POLICY_DIGEST = sha256(
     _AGENT_GRAPH_AUTHORITY_BODY.encode("utf-8")

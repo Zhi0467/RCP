@@ -31,7 +31,6 @@ interface Props {
   glossaryIndex: GlossaryIndex;
   runScope: string[];
   tasks: AgentTask[];
-  activeTask: AgentTask | null;
   watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
   unreadTaskIds: ReadonlySet<string>;
@@ -41,6 +40,8 @@ interface Props {
   onSelect: (chatId: string) => void;
   onLoadMore: () => void;
   onStartTask: StartAgentTask;
+  onResumeTask: (task: AgentTask) => void;
+  onRetryTask: (task: AgentTask) => void;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onOpenNode?: (nodeId: string) => void;
@@ -85,7 +86,6 @@ export function ChatsWorkspace({
   glossaryIndex,
   runScope,
   tasks,
-  activeTask,
   watchers,
   graphChangesDisabled,
   unreadTaskIds,
@@ -95,6 +95,8 @@ export function ChatsWorkspace({
   onSelect,
   onLoadMore,
   onStartTask,
+  onResumeTask,
+  onRetryTask,
   onInspectTask,
   onOpenInbox,
   onOpenNode,
@@ -326,13 +328,14 @@ export function ChatsWorkspace({
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
             runScope={runScope}
             tasks={tasks}
-            activeTask={activeTask}
             watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             chatId={selected.chatId}
             presentation="workspace"
             graphChangesDisabled={graphChangesDisabled}
             onStartTask={onStartTask}
+            onResumeTask={onResumeTask}
+            onRetryTask={onRetryTask}
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}
             onRepairGraphUpdate={onRepairGraphUpdate}

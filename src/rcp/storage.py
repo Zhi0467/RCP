@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
@@ -99,6 +100,26 @@ class AgentTaskContractRecord(BaseModel):
     created_at: str
     sha256: str
     content: str
+
+
+class ChatSessionContextRecord(BaseModel):
+    """Durable RCP context baseline bound to one native provider session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
+    execution_machine: str = Field(min_length=1)
+    native_session_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    kind: Literal["node_chat", "project_chat"]
+    chat_id: str = Field(min_length=1)
+    node_id: str | None = None
+    protocol_version: int = Field(ge=1)
+    snapshot_json: str
+    snapshot_sha256: str = Field(min_length=1)
+    committed_operation_id: str = Field(min_length=1)
+    created_at: str
+    updated_at: str
 
 
 class AgentTaskRecord(BaseModel):
@@ -206,6 +227,8 @@ class WatcherContinuation(BaseModel):
     control_completion_criteria: list[str] = Field(default_factory=list)
     workflow_ids: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)
+    invoked_workflow_ids: list[str] = Field(default_factory=list)
+    invoked_skill_ids: list[str] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
 
 
@@ -279,6 +302,26 @@ class AppStore:
                 );
                 CREATE INDEX IF NOT EXISTS writing_sessions_project
                     ON writing_sessions(project_id, last_resumed_at DESC);
+                CREATE TABLE IF NOT EXISTS chat_session_contexts (
+                    provider TEXT NOT NULL,
+                    execution_machine TEXT NOT NULL,
+                    native_session_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    node_id TEXT,
+                    protocol_version INTEGER NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    snapshot_sha256 TEXT NOT NULL,
+                    committed_operation_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(provider, execution_machine, native_session_id)
+                );
+                CREATE INDEX IF NOT EXISTS chat_session_contexts_project
+                    ON chat_session_contexts(project_id);
+                CREATE INDEX IF NOT EXISTS chat_session_contexts_native_session
+                    ON chat_session_contexts(native_session_id);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT PRIMARY KEY,
                     locator TEXT NOT NULL UNIQUE,
@@ -432,13 +475,6 @@ class AppStore:
             self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
-            connection.execute(
-                """
-                CREATE UNIQUE INDEX agent_tasks_active_project
-                ON graph_runs(project_id)
-                WHERE status IN ('queued', 'running', 'pausing')
-                """
-            )
 
     @staticmethod
     def _ensure_column(
@@ -547,6 +583,9 @@ class AppStore:
                     ).rowcount,
                     "writing_sessions": connection.execute(
                         "DELETE FROM writing_sessions WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "chat_session_contexts": connection.execute(
+                        "DELETE FROM chat_session_contexts WHERE project_id = ?", (project_id,)
                     ).rowcount,
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
@@ -672,6 +711,10 @@ class AppStore:
                 (project_id, legacy_id),
             )
             connection.execute(
+                "UPDATE chat_session_contexts SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
                 "UPDATE graph_runs SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
@@ -683,9 +726,12 @@ class AppStore:
     def create_agent_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
         try:
             with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if self._has_active_chat_overlap(connection, record):
+                    raise ValueError("Another task is already active in this conversation.")
                 self._insert_agent_task(connection, record)
         except sqlite3.IntegrityError as exc:
-            raise ValueError("Another agent task is already running for this project.") from exc
+            raise ValueError("Could not create the agent task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
@@ -731,6 +777,28 @@ class AppStore:
                 record.last_activity_at,
             ),
         )
+
+    @staticmethod
+    def _has_active_chat_overlap(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> bool:
+        if record.kind not in {"node_chat", "project_chat"}:
+            return False
+        chat_id = record.request.get("chat_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            return False
+        active = connection.execute(
+            """
+            SELECT 1 FROM graph_runs
+            WHERE project_id = ? AND kind = ?
+              AND json_extract(request_json, '$.chat_id') = ?
+              AND status IN ('queued', 'running', 'pausing')
+            LIMIT 1
+            """,
+            (record.project_id, record.kind, chat_id),
+        ).fetchone()
+        return active is not None
 
     def create_watchers(self, records: list[WatcherRecord]) -> list[WatcherRecord]:
         """Insert one validated watch list atomically."""
@@ -947,8 +1015,8 @@ class AppStore:
     ) -> AgentTaskRecord | None:
         """Queue a wake and mark its completed watchers notified in one transaction.
 
-        A live task wins the project slot. In that case no watcher row changes,
-        and the same completed group can be retried by a later poll.
+        A live task in the same conversation wins its slot. In that case no
+        watcher row changes, and the completed group can be retried later.
         """
 
         ids = list(dict.fromkeys(watcher_ids))
@@ -994,15 +1062,7 @@ class AppStore:
                 }
                 if len(bindings) != 1:
                     raise ValueError("one notification cannot merge incompatible watch lists")
-                active = connection.execute(
-                    """
-                    SELECT 1 FROM graph_runs
-                    WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
-                    LIMIT 1
-                    """,
-                    (record.project_id,),
-                ).fetchone()
-                if active is not None:
+                if self._has_active_chat_overlap(connection, record):
                     return None
                 self._insert_agent_task(connection, record)
                 cursor = connection.execute(
@@ -1053,16 +1113,6 @@ class AppStore:
                 and graph_update.get("status") == "rejected"
                 and graph_update.get("repairable") is True
             )
-            active = connection.execute(
-                """
-                SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
-                LIMIT 1
-                """,
-                (data["project_id"],),
-            ).fetchone()
-            if active is not None:
-                raise ValueError("Another agent task is already running for this project.")
             if not eligible:
                 raise ValueError(
                     "This task has no repairable graph update. Start a new Work turn instead."
@@ -1133,6 +1183,238 @@ class AppStore:
                 (project_id, max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT))),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
+
+    def has_active_chat_task(
+        self,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+    ) -> bool:
+        """Return whether one exact chat already owns an active task."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (project_id, kind, chat_id),
+            ).fetchone()
+        return row is not None
+
+    def has_chat_native_session_origin(
+        self,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        node_id: str | None,
+        provider: str,
+        execution_machine: str,
+        native_session_id: str,
+    ) -> bool:
+        """Prove that RCP previously observed this session on the exact chat binding."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND json_extract(request_json, '$.node_id') IS ?
+                  AND json_extract(request_json, '$.provider') = ?
+                  AND json_extract(request_json, '$.run_on') = ?
+                  AND native_session_id = ?
+                LIMIT 1
+                """,
+                (
+                    project_id,
+                    kind,
+                    chat_id,
+                    node_id,
+                    provider,
+                    execution_machine,
+                    native_session_id,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def chat_session_context(
+        self,
+        provider: str,
+        execution_machine: str,
+        native_session_id: str,
+    ) -> ChatSessionContextRecord | None:
+        """Read the durable baseline for one exact native provider session."""
+
+        with self.connection() as connection:
+            row = self._chat_session_context_row(
+                connection,
+                provider,
+                execution_machine,
+                native_session_id,
+            )
+        return self._chat_session_context_record(row) if row is not None else None
+
+    def validate_chat_session_context_binding(
+        self,
+        provider: str,
+        execution_machine: str,
+        native_session_id: str,
+        *,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        node_id: str | None,
+    ) -> ChatSessionContextRecord | None:
+        """Return an existing baseline only when its complete binding matches."""
+
+        with self.connection() as connection:
+            row = self._chat_session_context_row(
+                connection,
+                provider,
+                execution_machine,
+                native_session_id,
+            )
+            if row is None:
+                return None
+            self._validate_chat_session_context_binding(
+                row,
+                project_id=project_id,
+                kind=kind,
+                chat_id=chat_id,
+                node_id=node_id,
+            )
+        return self._chat_session_context_record(row)
+
+    def commit_chat_session_context(
+        self,
+        *,
+        provider: str,
+        execution_machine: str,
+        native_session_id: str,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        node_id: str | None,
+        protocol_version: int,
+        snapshot_json: str,
+        snapshot_sha256: str,
+        committed_operation_id: str,
+        expected_snapshot_sha256: str | None,
+    ) -> ChatSessionContextRecord:
+        """CAS one session baseline, inserting only when no prior digest is expected."""
+
+        now = self.now()
+        ChatSessionContextRecord.model_validate(
+            {
+                "provider": provider,
+                "execution_machine": execution_machine,
+                "native_session_id": native_session_id,
+                "project_id": project_id,
+                "kind": kind,
+                "chat_id": chat_id,
+                "node_id": node_id,
+                "protocol_version": protocol_version,
+                "snapshot_json": snapshot_json,
+                "snapshot_sha256": snapshot_sha256,
+                "committed_operation_id": committed_operation_id,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        try:
+            json.loads(snapshot_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Chat session context snapshot must be valid JSON.") from exc
+        actual_sha256 = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+        if snapshot_sha256 != actual_sha256:
+            raise ValueError("Chat session context snapshot SHA-256 does not match its JSON.")
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._chat_session_context_row(
+                    connection,
+                    provider,
+                    execution_machine,
+                    native_session_id,
+                )
+                if row is None:
+                    if expected_snapshot_sha256 is not None:
+                        raise ValueError(
+                            "Chat session context compare-and-swap failed: prior baseline is missing."
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO chat_session_contexts (
+                            provider, execution_machine, native_session_id,
+                            project_id, kind, chat_id, node_id, protocol_version,
+                            snapshot_json, snapshot_sha256, committed_operation_id,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            provider,
+                            execution_machine,
+                            native_session_id,
+                            project_id,
+                            kind,
+                            chat_id,
+                            node_id,
+                            protocol_version,
+                            snapshot_json,
+                            snapshot_sha256,
+                            committed_operation_id,
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    self._validate_chat_session_context_binding(
+                        row,
+                        project_id=project_id,
+                        kind=kind,
+                        chat_id=chat_id,
+                        node_id=node_id,
+                    )
+                    if expected_snapshot_sha256 != row["snapshot_sha256"]:
+                        raise ValueError(
+                            "Chat session context compare-and-swap failed: prior digest changed."
+                        )
+                    changed = connection.execute(
+                        """
+                        UPDATE chat_session_contexts
+                        SET protocol_version = ?, snapshot_json = ?, snapshot_sha256 = ?,
+                            committed_operation_id = ?, updated_at = ?
+                        WHERE provider = ? AND execution_machine = ? AND native_session_id = ?
+                          AND snapshot_sha256 = ?
+                        """,
+                        (
+                            protocol_version,
+                            snapshot_json,
+                            snapshot_sha256,
+                            committed_operation_id,
+                            now,
+                            provider,
+                            execution_machine,
+                            native_session_id,
+                            expected_snapshot_sha256,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise ValueError(
+                            "Chat session context compare-and-swap failed: prior digest changed."
+                        )
+            except Exception:
+                connection.rollback()
+                raise
+
+        stored = self.chat_session_context(provider, execution_machine, native_session_id)
+        assert stored is not None
+        return stored
 
     def record_agent_usage(self, operation_id: str, usage: ProviderUsage) -> AgentUsageRecord:
         """Persist one provider usage report and mark duplicate reports excluded."""
@@ -2052,6 +2334,60 @@ class AppStore:
             "receipts": receipts,
             "writing_sessions": len(delete_writing),
         }
+
+    @staticmethod
+    def _chat_session_context_row(
+        connection: sqlite3.Connection,
+        provider: str,
+        execution_machine: str,
+        native_session_id: str,
+    ) -> sqlite3.Row | None:
+        rows = connection.execute(
+            "SELECT * FROM chat_session_contexts WHERE native_session_id = ?",
+            (native_session_id,),
+        ).fetchall()
+        conflicts = [
+            row
+            for row in rows
+            if row["provider"] != provider or row["execution_machine"] != execution_machine
+        ]
+        if conflicts:
+            raise ValueError(
+                "Chat session context provider or execution-machine conflict for native session."
+            )
+        return next(
+            (
+                row
+                for row in rows
+                if row["provider"] == provider and row["execution_machine"] == execution_machine
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _validate_chat_session_context_binding(
+        row: sqlite3.Row,
+        *,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        node_id: str | None,
+    ) -> None:
+        expected = {
+            "project_id": project_id,
+            "kind": kind,
+            "chat_id": chat_id,
+            "node_id": node_id,
+        }
+        conflicts = [name for name, value in expected.items() if row[name] != value]
+        if conflicts:
+            raise ValueError(
+                "Chat session context immutable binding conflict: " + ", ".join(conflicts)
+            )
+
+    @staticmethod
+    def _chat_session_context_record(row: sqlite3.Row) -> ChatSessionContextRecord:
+        return ChatSessionContextRecord.model_validate(dict(row))
 
     @staticmethod
     def _project_record(row: sqlite3.Row) -> ProjectRecord:

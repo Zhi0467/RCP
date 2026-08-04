@@ -105,6 +105,12 @@ test("paused resumable attempts block a new chat turn", () => {
   const paused = task({ operation_id: "paused", status: "paused", can_resume: true });
   assert.equal(resumablePausedChatTask([paused])?.operation_id, "paused");
   assert.equal(resumablePausedChatTask([{ ...paused, can_resume: false }]), null);
+  const resumed = task({
+    operation_id: "resumed",
+    parent_operation_id: "paused",
+    status: "succeeded",
+  });
+  assert.equal(resumablePausedChatTask([paused, resumed]), null);
 });
 
 test("task identity, not repeated prompt text, decides reconstruction", () => {

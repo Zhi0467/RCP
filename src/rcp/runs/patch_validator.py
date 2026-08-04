@@ -14,9 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rcp.background import AgentTaskExecution
 from rcp.limits import (
-    WORK_PATCH_SELF_CHECK_MAX_COUNT,
-    WORK_PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
-    WORK_PATCH_SELF_CHECK_POLL_SECONDS,
+    PATCH_SELF_CHECK_MAX_COUNT,
+    PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
+    PATCH_SELF_CHECK_POLL_SECONDS,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -187,12 +187,10 @@ async def serve_patch_validation_mailbox(
             request_id = _request_id_from_name(name, mailbox_id)
             if request_id is None:
                 continue
-            if count > WORK_PATCH_SELF_CHECK_MAX_COUNT:
+            if count > PATCH_SELF_CHECK_MAX_COUNT:
                 result = PatchValidationResult(
                     status="unavailable",
-                    messages=[
-                        "This Work turn has reached its bounded RCP validator self-check limit."
-                    ],
+                    messages=["This task has reached its bounded RCP validator self-check limit."],
                 )
             else:
                 result = await _answer_request(
@@ -221,7 +219,7 @@ async def serve_patch_validation_mailbox(
         if stop.is_set():
             return
         with suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), timeout=WORK_PATCH_SELF_CHECK_POLL_SECONDS)
+            await asyncio.wait_for(stop.wait(), timeout=PATCH_SELF_CHECK_POLL_SECONDS)
 
 
 def cleanup_patch_validation_mailbox(
@@ -251,6 +249,30 @@ def cleanup_patch_validation_mailbox(
         _record_mailbox_unavailable(execution, f"mailbox cleanup failed: {exc}")
 
 
+def prepare_patch_validation_mailbox(
+    *,
+    mailbox_id: str,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    """Fail closed unless one stable mailbox prefix is clean before provider launch."""
+
+    if re.fullmatch(_MAILBOX_ID, mailbox_id) is None:
+        raise ValueError("validator mailbox id is malformed")
+    for name in _workspace_files(workspace, remote_stage):
+        if not name.startswith(f"rcp-validator-{mailbox_id}-"):
+            continue
+        if not name.endswith((".request.json", ".response.json")):
+            continue
+        if remote_stage is not None:
+            remote_stage.remove_workspace_file(name)
+            continue
+        path = workspace / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"validator mailbox entry is unsafe: {name}")
+        path.unlink()
+
+
 async def _answer_request(
     name: str,
     *,
@@ -262,7 +284,7 @@ async def _answer_request(
 ) -> PatchValidationResult:
     try:
         text = await asyncio.to_thread(_read_workspace_text, workspace, remote_stage, name)
-        if len(text.encode("utf-8")) > WORK_PATCH_SELF_CHECK_MAX_REQUEST_BYTES:
+        if len(text.encode("utf-8")) > PATCH_SELF_CHECK_MAX_REQUEST_BYTES:
             raise ValueError("Patch validator request exceeds the configured size limit.")
         request = _PatchValidationRequest.model_validate_json(text)
         if request.mailbox_id != mailbox_id or request.request_id != request_id:
@@ -343,7 +365,7 @@ def _record_self_check(
     execution.store.record_agent_task_event(
         execution.operation_id,
         (
-            f"Patch self-check {count}/{WORK_PATCH_SELF_CHECK_MAX_COUNT}: "
+            f"Patch self-check {count}/{PATCH_SELF_CHECK_MAX_COUNT}: "
             f"{result.status}"
             + (
                 f" against live graph revision {result.live_revision}"
@@ -359,7 +381,7 @@ def _record_self_check(
         "patch_self_check",
         {
             "count": count,
-            "limit": WORK_PATCH_SELF_CHECK_MAX_COUNT,
+            "limit": PATCH_SELF_CHECK_MAX_COUNT,
             **result.model_dump(mode="json"),
         },
         tier="diagnostic",

@@ -11,9 +11,7 @@ last_passed: 2026-08-03
 
 # Read authored Markdown and resize the node being inspected
 
-Confirmed by the human through
-[`docs/handoff-ui-fixes-and-graph-skills.md`](../handoff-ui-fixes-and-graph-skills.md)
-on 2026-08-03.
+Confirmed by the human on 2026-08-03.
 
 The paper editor has one pane with Write and Preview modes. Preview renders the
 current unsaved Markdown through the same renderer as chat; switching modes does

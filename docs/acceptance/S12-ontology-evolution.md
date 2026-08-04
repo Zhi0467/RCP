@@ -5,7 +5,8 @@ tier: hermetic
 driver: pytest
 covered_by: tests/test_ontology_evolution.py, tests/test_sync.py
 invariants: [1, 3]
-blueprint: v0.5 §5.6, §5.7 — historical compatibility only
+last_passed: 2026-08-05
+blueprint: research-control-panel-blueprint.md#schema-evolution-and-transfer-boundary
 ---
 
 # Keep historical ontology extensions readable
@@ -35,6 +36,20 @@ editing surface while preserving the behavior below.
 Materialization still derives all ontology state from the append-only patch log.
 No compatibility code may hand-edit `graph.json` or another derived file.
 
+## What an agent is told
+
+The base vocabulary — node id prefixes, the fifteen base relations and their
+endpoints, `Evidence.origin`, `Hypothesis.scope`, and the Experiment/Evidence
+connection rules — is how an agent knows what a legal graph edit is. It appears
+in every patch-producing contract regardless of ontology state.
+
+The extension-authoring rules describe how to write a custom type, a custom
+field, and a custom relation. A project that has never defined one cannot use
+them, so they appear only when the project's materialized ontology actually
+carries definitions. A project that does carry them still receives them, which
+is what keeps this compatibility promise true at the prompt as well as at
+replay.
+
 ## Drive
 
 1. Replay a legacy project with no ontology or extension keys.
@@ -45,6 +60,8 @@ No compatibility code may hand-edit `graph.json` or another derived file.
    active at each revision.
 5. Attempt to redefine the base ontology or narrow a historical relation past
    edges that already use it.
+6. Build a patch-producing contract for a project with an empty materialized
+   ontology and for one carrying historical extensions.
 
 ## Assert
 
@@ -55,8 +72,11 @@ No compatibility code may hand-edit `graph.json` or another derived file.
 - `test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as_seam`
 - `test_base_ontology_cannot_be_redefined`
 - `test_relation_narrowing_names_the_edges_and_nodes_that_block_it`
+- `test_extension_authoring_rules_appear_only_for_a_project_with_extensions`
+- `test_base_authoring_rules_appear_regardless_of_ontology_state`
 
 ## Failure means
 
 Removing the schema editor made an existing research graph unreadable or
-silently changed its history.
+silently changed its history, or an agent working in a project with historical
+extensions was never told how to write them.

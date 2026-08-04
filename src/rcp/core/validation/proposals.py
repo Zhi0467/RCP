@@ -233,7 +233,13 @@ def _validate_proposal_ops(
     control_ops = {
         str(op.get("op", ""))
         for op in proposal.ops
-        if op.get("op") in {"create_proposals", "resolve_proposals", "set_standing"}
+        if op.get("op")
+        in {
+            "create_proposals",
+            "resolve_proposals",
+            "withdraw_proposals",
+            "set_standing",
+        }
     }
     if control_ops:
         report.reject(

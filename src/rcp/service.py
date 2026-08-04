@@ -271,6 +271,8 @@ class RunRequest(BaseModel):
     watcher_ids: list[str] = Field(default_factory=list)
     workflow_ids: list[str] | None = None
     skill_ids: list[str] | None = None
+    invoked_workflow_ids: list[str] = Field(default_factory=list)
+    invoked_skill_ids: list[str] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
 
@@ -283,6 +285,8 @@ class CoachRequest(BaseModel):
     session_id: str | None = None
     workflow_ids: list[str] | None = None
     skill_ids: list[str] | None = None
+    invoked_workflow_ids: list[str] = Field(default_factory=list)
+    invoked_skill_ids: list[str] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
 
@@ -1426,6 +1430,7 @@ class ProjectService:
         *,
         project_name: str,
         ontology_path: str,
+        ontology_extensions: bool,
         graph_path: str | None,
         research_path: str | None,
         provider_log_roots: dict[str, list[str]],
@@ -1433,6 +1438,7 @@ class ProjectService:
         repositories: list[dict[str, str]],
         patch_path: str,
         output_schema_path: str,
+        validator_command: str,
         human_request_path: str | None = None,
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
@@ -1442,6 +1448,7 @@ class ProjectService:
             kind,
             project_name=project_name,
             ontology_path=ontology_path,
+            ontology_extensions=ontology_extensions,
             graph_path=graph_path,
             research_path=research_path,
             provider_log_roots=provider_log_roots,
@@ -1452,6 +1459,7 @@ class ProjectService:
             human_request_path=human_request_path,
             retry_diagnostics_path=retry_diagnostics_path,
             source_errors=source_errors or [],
+            validator_command=validator_command,
             skill_pointers=skill_pointers,
         )
 
@@ -1479,7 +1487,7 @@ class ProjectService:
         self,
         request: RunRequest | CoachRequest,
     ) -> SkillSelection:
-        """Resolve official packages from the requested ids, or the project defaults.
+        """Resolve the official packages enabled by the project Settings defaults.
 
         A request's recorded `resolved_skill_packages` is deliberately ignored:
         it is the receipt of an earlier attempt, and the registry is what says
@@ -1487,22 +1495,41 @@ class ProjectService:
         """
 
         defaults = self.manifest.agent.skill_defaults
-        return official_registry().resolve(
-            workflow_ids=(
-                request.workflow_ids if request.workflow_ids is not None else defaults.workflow_ids
-            ),
-            skill_ids=request.skill_ids if request.skill_ids is not None else defaults.skill_ids,
-        )
+        return official_registry().resolve(defaults=defaults)
 
     def resolve_skill_request(
         self,
         request: RunRequest | CoachRequest,
     ) -> RunRequest | CoachRequest:
         selection = self.resolve_skill_selection(request)
+        available = {(item.kind, item.id) for item in selection.resolved_skill_packages}
+        registry = official_registry()
+
+        def validate_invocations(
+            values: list[str], kind: Literal["workflow", "skill"]
+        ) -> list[str]:
+            normalized: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                registry.package(kind, value)
+                if value in seen:
+                    continue
+                if (kind, value) not in available:
+                    raise ValueError(
+                        f"invoked {kind} {value!r} is not enabled in project skill defaults"
+                    )
+                seen.add(value)
+                normalized.append(value)
+            return normalized
+
+        invoked_workflow_ids = validate_invocations(request.invoked_workflow_ids, "workflow")
+        invoked_skill_ids = validate_invocations(request.invoked_skill_ids, "skill")
         return request.model_copy(
             update={
                 "workflow_ids": selection.workflow_ids,
                 "skill_ids": selection.skill_ids,
+                "invoked_workflow_ids": invoked_workflow_ids,
+                "invoked_skill_ids": invoked_skill_ids,
                 "resolved_skill_packages": selection.resolved_skill_packages,
             }
         )

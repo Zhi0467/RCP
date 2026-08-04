@@ -77,6 +77,7 @@ def _task(store: AppStore, operation_id: str, watcher_ids: list[str]) -> AgentTa
         kind="node_chat",
         status="queued",
         request={
+            "chat_id": "chat",
             "mode": "work",
             "trigger": "watcher",
             "watcher_ids": watcher_ids,

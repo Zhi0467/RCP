@@ -12,7 +12,7 @@ covered_by:
   - web/tests/graphAuthority.test.mjs
 last_passed: 2026-07-30
 invariants: [1, 2, 3, 7b]
-blueprint: v0.5 §5.1, §5.4–§5.5, §6.4
+blueprint: research-control-panel-blueprint.md#graph-model-and-ontology
 ---
 
 # Belief changes are grounded and readable

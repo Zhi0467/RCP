@@ -203,6 +203,11 @@ export interface Proposal {
   related_node_ids: string[];
   base_rev: number;
   status: "pending" | "approved" | "rejected" | "withdrawn";
+  created_by?: "agent" | "human";
+  created_by_operation_id?: string | null;
+  resolved_by?: "agent" | "human" | null;
+  resolved_by_operation_id?: string | null;
+  resolution_reason?: string | null;
 }
 
 export interface Ambiguity {
@@ -333,6 +338,8 @@ export interface AgentTaskRequest {
   watcher_ids?: string[];
   workflow_ids?: string[] | null;
   skill_ids?: string[] | null;
+  invoked_workflow_ids?: string[];
+  invoked_skill_ids?: string[];
   resolved_skill_packages?: SkillReference[] | null;
   [key: string]: unknown;
 }

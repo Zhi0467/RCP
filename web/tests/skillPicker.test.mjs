@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -11,14 +13,15 @@ const server = await createServer({
 });
 const {
   addSkillSelection,
-  clearSkillTrigger,
   filterSkillCatalog,
+  filterSkillCatalogToDefaults,
   hasSkillSelection,
   moveSkillHighlight,
   readSkillTrigger,
   removeSkillSelection,
   selectedSkillRefs,
 } = await server.ssrLoadModule("/src/skillPicker.ts");
+const { SkillPicker } = await server.ssrLoadModule("/src/components/SkillPicker.tsx");
 
 after(() => server.close());
 
@@ -43,16 +46,11 @@ const catalog = [
 
 test("a trigger opens only at the end of a word boundary", () => {
   assert.equal(readSkillTrigger("/"), "");
-  assert.equal(readSkillTrigger("$gra"), "gra");
+  assert.equal(readSkillTrigger("$gra"), null);
   assert.equal(readSkillTrigger("check this /graph"), "graph");
   assert.equal(readSkillTrigger("look at src/rcp/runs"), null);
   assert.equal(readSkillTrigger("/graph then more words"), null);
   assert.equal(readSkillTrigger(""), null);
-});
-
-test("choosing an entry removes only the trigger word", () => {
-  assert.equal(clearSkillTrigger("audit the graph /gra"), "audit the graph ");
-  assert.equal(clearSkillTrigger("$"), "");
 });
 
 test("the dropdown filters on id, label, and kind", () => {
@@ -77,6 +75,31 @@ test("the dropdown filters on id, label, and kind", () => {
     filterSkillCatalog(catalog, "graph-audit").map((item) => item.id),
     ["research-graph-audit", "graph-audit"],
   );
+});
+
+test("slash commands expose only packages enabled in Settings", () => {
+  assert.deepEqual(
+    filterSkillCatalogToDefaults(catalog, {
+      workflow_ids: ["research-graph-audit"],
+      skill_ids: [],
+    }).map((item) => item.id),
+    ["research-graph-audit"],
+  );
+});
+
+test("the picker never renders persistent selection chips", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(SkillPicker, {
+      catalog,
+      selection: { workflow_ids: ["research-graph-audit"], skill_ids: [] },
+      entries: [],
+      highlight: 0,
+      onHighlight() {},
+      onChoose() {},
+    }),
+  );
+
+  assert.doesNotMatch(html, /chat-skill-chip/);
 });
 
 test("arrow keys wrap around both ends of the dropdown", () => {

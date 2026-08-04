@@ -35,6 +35,7 @@ class RunContext(BaseModel):
     coverage_path: str
     facts_dir: str
     state_repository: str
+    ontology_extensions: bool = False
     source_errors: list[str]
     source_roots: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -66,6 +67,7 @@ class ChatContext(BaseModel):
     coverage_path: str
     facts_dir: str
     state_repository: str
+    ontology_extensions: bool
     graph_revision: int
     node: dict[str, Any] | None
     relations: list[ChatRelation]
@@ -119,6 +121,7 @@ class ContextAssembler:
             coverage_path=str(root / "coverage.json"),
             facts_dir=str(root / "facts"),
             state_repository=self.manifest.state.repository,
+            ontology_extensions=_has_ontology_extensions(state),
             source_errors=source_errors or [],
             source_roots=source_roots or {},
         )
@@ -166,6 +169,7 @@ class ContextAssembler:
             coverage_path=str(root / "coverage.json"),
             facts_dir=str(root / "facts"),
             state_repository=self.manifest.state.repository,
+            ontology_extensions=_has_ontology_extensions(state),
             graph_revision=state.revision,
             node=state.nodes[node_id].model_dump(mode="json") if node_id else None,
             relations=_one_hop_relations(state, node_id) if node_id else [],
@@ -231,6 +235,13 @@ def validate_work_patch(patch: Patch) -> None:
         raise ValueError(
             "A Work patch must not set coverage; only seed and refresh move the coverage boundary."
         )
+
+
+def _has_ontology_extensions(state: GraphState) -> bool:
+    """Extension authoring rules are dead weight where no extension was ever defined."""
+
+    ontology = state.ontology
+    return bool(ontology.types or ontology.fields or ontology.relations)
 
 
 def _one_hop_relations(state: GraphState, node_id: str) -> list[ChatRelation]:

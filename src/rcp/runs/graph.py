@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import shlex
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
@@ -24,7 +26,15 @@ from rcp.agents import (
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.providers import classify_terminal_error
+from rcp.runs.patch_validator import (
+    VALIDATOR_CLIENT_SOURCE,
+    PatchValidationBudget,
+    PatchValidationResult,
+    cleanup_patch_validation_mailbox,
+    serve_patch_validation_mailbox,
+)
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
@@ -412,6 +422,7 @@ async def stream_graph_run(
     applied = False
     retry_state: _GraphRetryState | None = None
     graph_revision = 0
+    validator_budget = PatchValidationBudget()
     try:
         try:
             run_lock_lease = run_lock.__enter__()
@@ -536,6 +547,24 @@ async def stream_graph_run(
                 remote_stage=remote_stage,
                 label=f"rcp-skills-{_task_token(execution)}",
             )
+            token = _task_token(execution)
+            validator_mailbox_id = uuid.uuid4().hex
+            validator_client_path = _stage_task_input(
+                local_stage,
+                remote_stage,
+                f"task-{token}-validator-client.py",
+                VALIDATOR_CLIENT_SOURCE,
+            )
+            validator_command = shlex.join(
+                [
+                    "python3",
+                    validator_client_path,
+                    patch_path,
+                    validator_mailbox_id,
+                    str(PATCH_SELF_CHECK_TIMEOUT_SECONDS),
+                    str(workspace),
+                ]
+            )
             read_dirs = _agent_read_dirs(context, remote_stage, service, execution_machine.alias)
             if (
                 retry_state is not None
@@ -549,7 +578,6 @@ async def stream_graph_run(
                     else Path(retry_state.prepared_parent.stage_root) / "inputs"
                 )
                 read_dirs.append(Path(str(parent_inputs)))
-            token = _task_token(execution)
             if reuses_native_checkpoint and continuation == "resume":
                 if not request.session_id:
                     raise ValueError(
@@ -564,6 +592,7 @@ async def stream_graph_run(
                     original_contract_path=original_contract_path,
                     mode="resume",
                     patch_path=patch_path,
+                    validator_command=validator_command,
                 )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
@@ -576,31 +605,11 @@ async def stream_graph_run(
             else:
                 if reuses_native_checkpoint and continuation != "retry":
                     raise ValueError(f"Unsupported graph continuation: {continuation}")
-                retry_original_contract_path: str | None = None
-                if reuses_native_checkpoint:
-                    if not request.session_id:
-                        raise ValueError(
-                            "The failed operation has no native agent session; retry it cleanly."
-                        )
-                    assert execution is not None
-                    retry_original_contract_path = _parent_task_contract_path(
-                        execution, local_stage, remote_stage
-                    )
                 schema_path = _stage_json_task_input(
                     local_stage,
                     remote_stage,
                     f"task-{token}-patch-schema.json",
                     agent_output_schema(),
-                )
-                human_request_path = (
-                    _stage_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-human-request.txt",
-                        request.message,
-                    )
-                    if request.message
-                    else None
                 )
                 retry_diagnostics_path = (
                     _stage_json_task_input(
@@ -612,10 +621,52 @@ async def stream_graph_run(
                     if execution is not None and execution.retry_feedback
                     else None
                 )
+            if reuses_native_checkpoint and continuation == "retry":
+                # The live session still holds the original contract, so the retry is a
+                # follow-up naming only what changed for this attempt. Rebuilding and
+                # restating the whole contract would hand the agent its retry framing twice.
+                if not request.session_id:
+                    raise ValueError(
+                        "The failed operation has no native agent session; retry it cleanly."
+                    )
+                assert execution is not None
+                assert retry_diagnostics_path is not None
+                base_contract_path = _parent_task_contract_path(
+                    execution, local_stage, remote_stage
+                )
+                contract = PromptFactory.continuation_task_contract(
+                    original_contract_path=base_contract_path,
+                    mode="retry",
+                    patch_path=patch_path,
+                    diagnostics_path=retry_diagnostics_path,
+                    output_schema_path=schema_path,
+                    validator_command=validator_command,
+                    skill_pointers=skill_pointers,
+                )
+                contract_path, prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-retry.md",
+                    contract,
+                    execution=execution,
+                    role="retry",
+                )
+            elif continuation != "resume":
+                human_request_path = (
+                    _stage_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-human-request.txt",
+                        request.message,
+                    )
+                    if request.message
+                    else None
+                )
                 base_contract_content = service.graph_task_contract(
                     kind,
                     project_name=context.project_name,
                     ontology_path=f"{context.graph_path}#ontology",
+                    ontology_extensions=context.ontology_extensions,
                     graph_path=context.graph_path,
                     research_path=context.research_md_path,
                     provider_log_roots=context.source_roots,
@@ -629,6 +680,7 @@ async def stream_graph_run(
                     human_request_path=human_request_path,
                     retry_diagnostics_path=retry_diagnostics_path,
                     source_errors=context.source_errors,
+                    validator_command=validator_command,
                     skill_pointers=skill_pointers,
                 )
                 base_label = (
@@ -645,25 +697,7 @@ async def stream_graph_run(
                     role="base",
                 )
 
-                if reuses_native_checkpoint:
-                    assert execution is not None
-                    assert retry_original_contract_path is not None
-                    contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=retry_original_contract_path,
-                        mode="retry",
-                        patch_path=patch_path,
-                        diagnostics_path=retry_diagnostics_path,
-                        current_contract_path=base_contract_path,
-                    )
-                    contract_path, prompt = _stage_task_contract(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-retry.md",
-                        contract,
-                        execution=execution,
-                        role="retry",
-                    )
-                elif retry_state is not None and retry_state.progress_parent is not None:
+                if retry_state is not None and retry_state.progress_parent is not None:
                     handoff = dict(retry_state.progress)
                     if retry_state.retained_patch_text:
                         handoff["retained_patch_path"] = _stage_task_input(
@@ -683,6 +717,7 @@ async def stream_graph_run(
                         handoff_path=handoff_path,
                         original_contract_path=base_contract_path,
                         patch_path=patch_path,
+                        validator_command=validator_command,
                     )
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
@@ -766,20 +801,23 @@ async def stream_graph_run(
             # then done.
             outcome = _ProviderOutcome(session_id=native_session_id)
             async with aclosing(
-                _stream_agent_events(
+                _stream_graph_agent_events(
+                    service,
                     launcher,
                     request,
                     prompt,
                     workspace=workspace,
                     session_id=session_id,
                     read_dirs=read_dirs,
-                    write_dirs=[],
                     execution_host=execution_host,
                     execution=execution,
                     remote_stage=remote_stage,
-                    capability="scratch_patch",
                     outcome=outcome,
                     binary=provider_binary,
+                    mailbox_id=validator_mailbox_id,
+                    validator_budget=validator_budget,
+                    kind=kind,
+                    run_truth_scope=context.run_truth_scope,
                 )
             ) as stream:
                 async for frame in stream:
@@ -884,12 +922,12 @@ async def stream_graph_run(
                             level="warning",
                         )
                 try:
-                    draft, _ = service.parse_patch_output([patch_text])
-                    validate_agent_patch_shape(draft)
-                    patch = prepare_agent_patch(
-                        draft,
+                    patch = _prepare_graph_patch_candidate(
+                        service,
+                        patch_text,
                         kind=kind,
                         run_truth_scope=context.run_truth_scope,
+                        source_operation_id=execution.operation_id if execution else None,
                     )
                     _record_patch_receipt(
                         execution,
@@ -974,6 +1012,7 @@ async def stream_graph_run(
                 mode="patch_correction",
                 patch_path=patch_path,
                 diagnostics_path=diagnostics_path,
+                validator_command=validator_command,
             )
             contract_path, prompt = _stage_task_contract(
                 local_stage,
@@ -1002,6 +1041,132 @@ async def stream_graph_run(
                 execution.store.clear_agent_task_stage(execution.operation_id)
         if run_lock_acquired:
             run_lock.__exit__(None, None, None)
+
+
+async def _stream_graph_agent_events(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    prompt: str,
+    *,
+    workspace: Path,
+    session_id: str | None,
+    read_dirs: list[Path],
+    execution_host: str,
+    execution: AgentTaskExecution | None,
+    remote_stage: RemoteRunStage | None,
+    outcome: _ProviderOutcome,
+    binary: str | None,
+    mailbox_id: str,
+    validator_budget: PatchValidationBudget,
+    kind: str,
+    run_truth_scope: list[str],
+) -> AsyncIterator[str]:
+    stop = asyncio.Event()
+    mailbox = asyncio.create_task(
+        serve_patch_validation_mailbox(
+            mailbox_id=mailbox_id,
+            workspace=workspace,
+            remote_stage=remote_stage,
+            execution=execution,
+            validate=lambda text: _validate_graph_patch_live(
+                service,
+                text,
+                kind=kind,
+                run_truth_scope=run_truth_scope,
+                source_operation_id=execution.operation_id if execution else None,
+            ),
+            stop=stop,
+            budget=validator_budget,
+        )
+    )
+    try:
+        async with aclosing(
+            _stream_agent_events(
+                launcher,
+                request,
+                prompt,
+                workspace=workspace,
+                session_id=session_id,
+                read_dirs=read_dirs,
+                write_dirs=[],
+                execution_host=execution_host,
+                execution=execution,
+                remote_stage=remote_stage,
+                capability="scratch_patch",
+                outcome=outcome,
+                binary=binary,
+            )
+        ) as stream:
+            async for frame in stream:
+                yield frame
+    finally:
+        stop.set()
+        try:
+            await mailbox
+        finally:
+            await asyncio.to_thread(
+                cleanup_patch_validation_mailbox,
+                mailbox_id=mailbox_id,
+                workspace=workspace,
+                remote_stage=remote_stage,
+                execution=execution,
+            )
+
+
+def _prepare_graph_patch_candidate(
+    service: ProjectService,
+    patch_text: str,
+    *,
+    kind: str,
+    run_truth_scope: list[str],
+    source_operation_id: str | None = None,
+):
+    draft, _ = service.parse_patch_output([patch_text])
+    validate_agent_patch_shape(draft)
+    return prepare_agent_patch(
+        draft,
+        kind=kind,
+        run_truth_scope=run_truth_scope,
+        source_operation_id=source_operation_id,
+    )
+
+
+def _validate_graph_patch_live(
+    service: ProjectService,
+    patch_text: str,
+    *,
+    kind: str,
+    run_truth_scope: list[str],
+    source_operation_id: str | None = None,
+) -> PatchValidationResult:
+    try:
+        patch = _prepare_graph_patch_candidate(
+            service,
+            patch_text,
+            kind=kind,
+            run_truth_scope=run_truth_scope,
+            source_operation_id=source_operation_id,
+        )
+        prepared, report, state = service.history.validate_candidate(patch)
+    except (ReplayHalted, StateUnavailable, OSError) as exc:
+        return PatchValidationResult(status="unavailable", messages=[str(exc)])
+    except ValueError as exc:
+        return PatchValidationResult(status="invalid", messages=[str(exc)])
+    rejects = [item.message for item in report.messages if item.level == "reject"]
+    if rejects:
+        return PatchValidationResult(
+            status="invalid",
+            messages=rejects,
+            live_revision=state.revision,
+            candidate_revision=prepared.revision,
+        )
+    return PatchValidationResult(
+        status="valid",
+        messages=[item.message for item in report.flags],
+        live_revision=state.revision,
+        candidate_revision=prepared.revision,
+    )
 
 
 def _record_run_lock_wait(

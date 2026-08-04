@@ -53,10 +53,20 @@ from rcp.runs.shared import (
 )
 from rcp.runs.work import stream_work_run
 from rcp.service import CoachRequest, ReviewRequest, RunRequest
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.transport import RunLockCancelled, RunLockLease, StateUnavailable
 
 from .helpers import agent_patch_json, gated_patch, refresh_patch, seed_patch, shape_invalid_patch
+
+
+def _persist_skill_defaults(service, defaults: SkillDefaults) -> None:
+    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+    service.history.update_agent_settings(
+        service.manifest.agent.default_run_truth_scope,
+        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
+        skill_defaults=defaults,
+    )
 
 
 class FakeLauncher:
@@ -85,22 +95,20 @@ def test_create_app_canonicalizes_a_symlinked_data_directory(manifest, tmp_path)
     assert app.state.data_dir == canonical.resolve()
 
 
-def test_local_provider_warmup_starts_after_health_is_available(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, monkeypatch) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     entered = threading.Event()
     release = threading.Event()
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str, str | None]] = []
 
     monkeypatch.setattr(
         app.state.catalog,
-        "local_provider_targets",
-        lambda: [("codex", "/opt/agents/codex")],
+        "provider_targets",
+        lambda: [("codex", "", "/opt/agents/codex")],
     )
 
-    def readiness(provider: str, *, binary: str | None = None):
-        calls.append((provider, binary))
+    def readiness(provider: str, *, host: str = "", binary: str | None = None):
+        calls.append((provider, host, binary))
         entered.set()
         assert release.wait(timeout=3)
         return ProviderReadiness(
@@ -116,7 +124,7 @@ def test_local_provider_warmup_starts_after_health_is_available(
         try:
             assert entered.wait(timeout=1)
             assert client.get("/api/health").status_code == 200
-            assert calls == [("codex", "/opt/agents/codex")]
+            assert calls == [("codex", "", "/opt/agents/codex")]
         finally:
             release.set()
 
@@ -138,7 +146,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
 
     monkeypatch.setattr("rcp.api.app.RemoteRunStage.sweep", blocked_sweep)
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    monkeypatch.setattr(app.state.catalog, "local_provider_targets", lambda: [])
+    monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: [])
 
     assert not entered.is_set()
     with TestClient(app) as client:
@@ -214,7 +222,7 @@ class ScriptedLauncher:
 
 def _local_task_contract(prompt: str) -> str:
     lines = prompt.splitlines()
-    assert len(lines) == 3
+    assert len(lines) >= 2
     return Path(lines[1]).read_text(encoding="utf-8")
 
 
@@ -1460,7 +1468,7 @@ async def test_graph_stream_launches_with_degraded_source_fallback(
     contract = next(
         value for name, value in launcher.input_snapshots[0].items() if name.endswith("-initial.md")
     )
-    assert "Source-root preflight diagnostics (non-blocking)" in contract
+    assert "did not respond to a readability check" in contract
     assert "provider source is unreadable" in contract
     assert "inspect them in place" in contract
     assert "Project ingestion watermark" in contract
@@ -1615,7 +1623,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
     )
     assert "provider-owned fan-out into bounded read-only source-inspection subagents" in contract
     assert "sole writer of the final Patch" in contract
-    assert "semantic Patch object" in contract
+    assert "semantic Patch JSON object" in contract
     assert "authorized-session-keys.json" not in contract
     assert "authorized-session-keys.json" not in launcher.input_snapshots[0]
     rejection_diagnostic = next(
@@ -2681,7 +2689,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
     assert "progress_handoff_unavailable" in categories
 
 
-def test_same_provider_retry_uses_saved_context_and_current_contract(
+def test_same_provider_retry_reuses_its_session_with_a_followup_only(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2769,13 +2777,15 @@ def test_same_provider_retry_uses_saved_context_and_current_contract(
     retry_base = store.agent_task_contract(completed["operation_id"], "base")
     retry_contract = store.agent_task_contract(completed["operation_id"], "retry")
     assert first_base is not None
-    assert retry_base is not None
     assert retry_contract is not None
-    assert retry_base != first_base
-    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_base
-    assert f"task-{failed['operation_id']}-patch-schema.json" not in retry_base
-    assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_base
-    assert f"task-{completed['operation_id']}-base.md" in retry_contract
+    # The session still holds the original contract, so this attempt rebuilds nothing.
+    assert retry_base is None
+    assert "Retry context:" not in retry_contract
+    assert "same native session that ran the previous attempt" in retry_contract
+    assert f"task-{failed['operation_id']}-initial.md" in retry_contract
+    # It names only what changed for this attempt.
+    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_contract
+    assert f"task-{failed['operation_id']}-patch-schema.json" not in retry_contract
     assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_contract
     assert "Patch-only correction authority" not in retry_contract
     assert "provider connection dropped" in next(
@@ -2922,7 +2932,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
     resume_contract = launcher.contracts[1]
     assert "# RCP resume contract" in resume_contract
     assert f"task-{paused['operation_id']}-initial.md" in resume_contract
-    assert "diagnostic" not in resume_contract.lower()
+    assert "Prior-attempt diagnostics" not in resume_contract
     assert "Patch-only correction authority" not in resume_contract
     assert (
         app.state.catalog.store.agent_task_contract(completed["operation_id"], "resume")
@@ -3398,7 +3408,8 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
                 artifact_directory / "preview.html"
             )
             workspace.joinpath("patch.json").write_text(agent_patch_json(refresh_patch()))
-            assert str(artifact_directory) in _local_task_contract(args[1])
+            artifact_template = str(workspace / "turns")
+            assert artifact_template in _local_task_contract(args[1])
             async for event in super().stream(*args, **kwargs):
                 yield event
 
@@ -4228,18 +4239,16 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
     assert "Search-time replanning restores future learning ability." not in prompt
     assert "rq/learning-after-shift" not in prompt
     assert not any(name.endswith("context.json") for name in launcher.input_snapshots[0])
-    contract = next(
-        value for name, value in launcher.input_snapshots[0].items() if name.endswith("initial.md")
-    )
+    contract = Path(prompt.splitlines()[1]).read_text(encoding="utf-8")
     assert "hyp/replanning-restores-plasticity" in contract
     assert str(manifest.research_dir / "graph.json") in contract
-    assert "graph.json#ontology" in contract
-    human_request = next(
-        value
-        for name, value in launcher.input_snapshots[0].items()
-        if name.endswith("human-request.txt")
-    )
-    assert human_request == "What does this claim?"
+    # No project extension was ever defined, so the extension pointer and its
+    # authoring rules stay out; the base vocabulary always ships.
+    assert "graph.json#ontology" not in contract
+    assert "Base node ids are" in contract
+    assert "This is a Discuss turn." in prompt
+    assert prompt.endswith("\n\nWhat does this claim?")
+    assert not any(name.endswith("human-request.txt") for name in launcher.input_snapshots[0])
     # None of the ingest machinery: no evidence slices, no cursors, no coverage
     # bookkeeping, no multi-agent synthesis contract.
     assert "slice_sha256" not in prompt
@@ -4348,9 +4357,11 @@ async def test_unauthorized_chat_patch_is_discarded_not_applied(manifest, tmp_pa
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
     assert service.history.state().revision == revision_before
     prompt = launcher.prompts[0]
-    contract = _local_task_contract(prompt)
+    contract = Path(prompt.splitlines()[1]).read_text(encoding="utf-8")
     assert "This turn has no graph-change channel" in contract
-    assert "Patch JSON Schema" not in contract
+    assert "## Discuss contract" in contract
+    assert "## Work contract" in contract
+    assert "Patch JSON Schema" in contract
 
 
 @pytest.mark.asyncio
@@ -4458,12 +4469,14 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
             self.capabilities: list[str] = []
             self.read_dirs: list[list[Path]] = []
             self.workspaces: list[Path] = []
+            self.prompts: list[str] = []
 
-        async def stream(self, _provider, _prompt, **kwargs):
+        async def stream(self, _provider, prompt, **kwargs):
             self.sessions.append(kwargs.get("session_id"))
             self.capabilities.append(kwargs["capability"])
             self.workspaces.append(Path(kwargs["cwd"]))
             self.read_dirs.append([Path(path) for path in kwargs["read_dirs"]])
+            self.prompts.append(prompt)
             yield AgentEvent(event="session", session_id=session_id)
             if len(self.sessions) == 1:
                 control = kwargs["control"]
@@ -4518,6 +4531,11 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
     assert resumed["request"]["mode"] == "work"
     assert launcher.sessions == [None, session_id]
     assert launcher.capabilities == ["work_auto", "work_auto"]
+    assert "This is a Work turn." in launcher.prompts[0]
+    resume_contract = _local_task_contract(launcher.prompts[1])
+    assert "# RCP resume contract" in resume_contract
+    assert "This is a Work turn." not in launcher.prompts[1]
+    assert not list((launcher.workspaces[1] / "inputs").glob("*human-request.txt"))
     assert not any(path.name == "conversations" for path in launcher.read_dirs[1])
     assert launcher.workspaces[1].is_dir()
     assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [operation_id]
@@ -4927,6 +4945,133 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
     transcript = service.chat_transcript(request.chat_id)
     assert transcript is not None
     assert [message.mode for message in transcript.messages] == ["work", "work"]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelopes(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    launcher = ScriptedLauncher([{}, {}, {}], message="Work answered.")
+
+    async def stream(_project_id, kind, request, execution):
+        assert kind == "project_chat"
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    first_message = "First  Work request.\nKeep this line."
+    first_response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": chat_id,
+            "message": first_message,
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert first_response.status_code == 202, first_response.json()
+    first_operation_id = first_response.json()["operation_id"]
+    assert _wait_for_run(client, project_id, first_operation_id)["status"] == "succeeded"
+    first_prompt = launcher.prompts[0]
+    assert first_prompt.startswith("Open and retain the RCP chat master context at:\n")
+    assert "This is a Work turn.\nArtifact directory for this turn: " in first_prompt
+    assert f"\n\n{first_message}" in first_prompt
+    master_path = Path(first_prompt.splitlines()[1])
+    master = master_path.read_text(encoding="utf-8")
+    assert "## Discuss contract" in master
+    assert "## Work contract" in master
+    assert "named in the envelope" in master
+    workspace = launcher.workspaces[0]
+    prompt_candidate = json.loads(
+        store.agent_task_contract(first_operation_id, "chat_prompt_state") or "{}"
+    )
+    prompt_values = prompt_candidate["snapshot"]["values"]
+    assert set(prompt_values) == {
+        "project",
+        "settings",
+        "current",
+        "repositories",
+        "skills",
+        "patch",
+        "workspace",
+    }
+    assert isinstance(prompt_values["current"]["graph_revision"], int)
+    inputs = master_path.parent
+    assert len(list(inputs.glob("chat-master-v*.md"))) == 1
+    assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1
+    assert len(list(inputs.glob("chat-validator-client-*.py"))) == 1
+    assert not list(inputs.glob("*human-request.txt"))
+    assert not list(inputs.glob("task-*-initial.md"))
+
+    second_message = "/graph-audit Keep  this spacing.\nAnd this line."
+    second_response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": chat_id,
+            "message": second_message,
+            "session_id": launcher.native_session_id,
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert second_response.status_code == 202
+    second_operation_id = second_response.json()["operation_id"]
+    assert _wait_for_run(client, project_id, second_operation_id)["status"] == "succeeded"
+    assert launcher.resumed_sessions == [None, launcher.native_session_id]
+    assert launcher.workspaces == [workspace, workspace]
+    second_artifacts = workspace / "turns" / second_operation_id / "artifacts"
+    assert launcher.prompts[1] == (
+        f"This is a Work turn.\nArtifact directory for this turn: {second_artifacts}"
+        f"\n\n{second_message}"
+    )
+    assert not (workspace / "current-turn.json").exists()
+    assert len(list(inputs.glob("chat-master-v*.md"))) == 1
+    assert not list(inputs.glob("*human-request.txt"))
+    launch_receipt = next(
+        item
+        for item in store.agent_task_receipts(second_operation_id)
+        if item.category == "agent_prompt"
+    )
+    assert launch_receipt.payload["contract_path"] == str(master_path)
+
+    third_message = "Use deeper reasoning for this turn."
+    third_response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": chat_id,
+            "message": third_message,
+            "session_id": launcher.native_session_id,
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+            "reasoning": "high",
+        },
+    )
+    assert third_response.status_code == 202
+    third_operation_id = third_response.json()["operation_id"]
+    assert _wait_for_run(client, project_id, third_operation_id)["status"] == "succeeded"
+    third_prompt = launcher.prompts[2]
+    third_artifacts = workspace / "turns" / third_operation_id / "artifacts"
+    assert third_prompt.startswith(
+        f"This is a Work turn.\nArtifact directory for this turn: {third_artifacts}"
+        f"\n\n{third_message}"
+    )
+    delta = json.loads(third_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
+    assert set(delta) == {"settings"}
+    assert delta["settings"]["reasoning"] == "high"
+    assert len(list(inputs.glob("chat-master-v*.md"))) == 1
 
 
 @pytest.mark.parametrize(
@@ -6227,6 +6372,8 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
+    service = app.state.catalog.open(project_id)
+    _persist_skill_defaults(service, SkillDefaults(workflow_ids=["research-graph-audit"]))
     observed: dict[str, object] = {}
 
     class InspectingLauncher(ScriptedLauncher):
@@ -6248,8 +6395,6 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
         f"/api/projects/{project_id}/tasks/seed",
         json={
             "run_truth_scope": ["repo-a"],
-            "workflow_ids": ["research-graph-audit"],
-            "skill_ids": [],
         },
     )
     operation_id = started.json()["operation_id"]
@@ -6261,23 +6406,30 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
         (item["kind"], item["id"], item["version"])
         for item in completed["request"]["resolved_skill_packages"]
     ] == [
-        ("workflow", "research-graph-audit", "1.0.0"),
-        ("skill", "graph-audit", "1.0.0"),
-        ("skill", "evidence-triage", "1.0.0"),
+        (item.kind, item.id, item.version)
+        for item in official_registry()
+        .resolve(workflow_ids=["research-graph-audit"])
+        .resolved_skill_packages
     ]
     # The workflow file and every declared dependency are staged together, alone.
     assert observed["staged"] == [
         "skill/evidence-triage/SKILL.md",
+        "skill/evidence-triage/references/worked-examples.md",
         "skill/graph-audit/SKILL.md",
         "workflow/research-graph-audit/WORKFLOW.md",
     ]
     # The contract points at the staged folders; the bodies stay on disk.
     contract = observed["contract"]
-    assert "workflow research-graph-audit@1.0.0" in contract
+    workflow_package = official_registry().package("workflow", "research-graph-audit")
+    assert f"Research graph audit (workflow research-graph-audit v{workflow_package.version})" in (
+        contract
+    )
+    # The description is wrapped into the contract, so compare on normalized whitespace.
+    assert workflow_package.description in " ".join(contract.split())
     assert f"rcp-skills-{operation_id}" in contract
-    assert "Use Graph audit to identify structural gaps" not in contract
+    assert "Run the structural review" not in contract
     # Nothing about the selection reaches canonical state.
-    research_dir = app.state.service.manifest.research_dir
+    research_dir = service.manifest.research_dir
     assert not list(research_dir.rglob("*SKILL.md"))
     assert not list(research_dir.rglob("*WORKFLOW.md"))
 
@@ -6286,12 +6438,12 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tm
     """S64: the registry is authoritative; a recorded version is a receipt, not a pin."""
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    service = app.state.catalog.open(app.state.default_project_id)
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"]))
     stored_request = {
         "provider": "codex",
         "run_on": "laptop",
         "run_truth_scope": ["repo-a"],
-        "skill_ids": ["graph-audit"],
         # What the earlier attempt ran with, before the package was upgraded.
         "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
     }
@@ -6299,7 +6451,7 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tm
     selection = _validate_stored_task_request(service, "seed", stored_request)
 
     assert [(item.id, item.version) for item in selection.resolved_skill_packages] == [
-        ("graph-audit", "1.0.0")
+        ("graph-audit", official_registry().package("skill", "graph-audit").version)
     ]
 
 
@@ -6308,6 +6460,8 @@ def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
+    service = app.state.catalog.open(project_id)
+    _persist_skill_defaults(service, SkillDefaults(workflow_ids=["research-graph-audit"]))
 
     async def failing_stream(*_args, **_kwargs):
         yield _event_frame(AgentEvent(event="error", text="Provider exited before writing."))
@@ -6317,7 +6471,7 @@ def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
     client = TestClient(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"], "workflow_ids": ["research-graph-audit"]},
+        json={"run_truth_scope": ["repo-a"]},
     )
     operation_id = started.json()["operation_id"]
     assert _wait_for_run(client, project_id, operation_id)["status"] == "failed"
@@ -6333,7 +6487,8 @@ def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
     assert [
         (item["id"], item["version"]) for item in child["request"]["resolved_skill_packages"]
     ] == [
-        ("research-graph-audit", "1.0.0"),
-        ("graph-audit", "1.0.0"),
-        ("evidence-triage", "1.0.0"),
+        (item.id, item.version)
+        for item in official_registry()
+        .resolve(workflow_ids=["research-graph-audit"])
+        .resolved_skill_packages
     ]

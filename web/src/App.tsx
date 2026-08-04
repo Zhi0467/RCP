@@ -26,7 +26,6 @@ import {
   parseDismissedTaskIds,
   projectActivityTask,
   serializeDismissedTaskIds,
-  taskKindLabel,
   taskNotificationStorageKey,
 } from "./agentTasks";
 import {
@@ -76,7 +75,6 @@ import {
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
 import { nodeDetailSizeStorageKey } from "./floatingWindow";
-import { AgentTaskActivity } from "./components/AgentTaskActivity";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
 import { DetailDrawer } from "./components/DetailDrawer";
@@ -122,7 +120,6 @@ import type {
   ProjectCard,
   ProjectSnapshot,
   RevisionSummary,
-  SkillDefaults,
   TrustView,
   ValidationMessage,
   WatcherRecord,
@@ -248,7 +245,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
-  const [projectSurfaceReady, setProjectSurfaceReady] = useState(false);
   const [humanDraft, setHumanDraft] = useState<HumanDraft | null>(null);
   const [syncingDraft, setSyncingDraft] = useState(false);
   const [taskStarting, setTaskStarting] = useState(false);
@@ -756,7 +752,6 @@ export default function App() {
     setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
     setHumanDraft(null);
     setSyncingDraft(false);
-    setProjectSurfaceReady(false);
     setView("overview");
     if (setupOpen) {
       setLoading(false);
@@ -820,23 +815,9 @@ export default function App() {
     setupOpen,
   ]);
 
-  const readinessSurfaceOpen =
-    view === "settings" ||
-    view === "paper" ||
-    view === "chats" ||
-    runDialogOpen ||
-    Boolean(retryTask) ||
-    Boolean(floatingChat);
-
   useEffect(() => {
-    if (projectReconciliation === "authoritative" && view === "overview") {
-      setProjectSurfaceReady(true);
-    }
-  }, [projectReconciliation, view]);
-
-  useEffect(() => {
-    if (projectSurfaceReady && readinessSurfaceOpen) ensureProjectReadiness();
-  }, [ensureProjectReadiness, projectSurfaceReady, readinessSurfaceOpen]);
+    if (projectReconciliation === "authoritative") ensureProjectReadiness();
+  }, [ensureProjectReadiness, projectReconciliation]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -969,8 +950,6 @@ export default function App() {
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const draftIsStale = Boolean(humanDraft && humanDraft.base_revision !== graph.revision);
   const activityTask = projectActivityTask(tasks, activityTaskId);
-  const visibleTask =
-    activityTask && !dismissedTaskIds.has(activityTask.operation_id) ? activityTask : null;
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -1373,8 +1352,8 @@ export default function App() {
     kind: AgentTaskKind,
     request: AgentTaskRequest,
   ): Promise<AgentTask> => {
-    if (taskStartLock.current || taskStarting || activeTask)
-      throw new Error("Another agent task is already active for this project.");
+    if (taskStartLock.current || taskStarting)
+      throw new Error("Another task start is already being submitted.");
     taskStartLock.current = true;
     setTaskStarting(true);
     try {
@@ -1428,8 +1407,8 @@ export default function App() {
       setNotice({ kind: "error", text: reason });
       return;
     }
-    if (taskStartLock.current || taskStarting || activeTask) {
-      setNotice({ kind: "error", text: "Another agent task is already active for this project." });
+    if (taskStartLock.current || taskStarting) {
+      setNotice({ kind: "error", text: "Another task start is already being submitted." });
       return;
     }
     const chatId = ensureConversation("node_chat", node);
@@ -1462,13 +1441,8 @@ export default function App() {
     }
   };
 
-  const runAgent = async (
-    config: AgentRunConfig,
-    scope: string[],
-    message: string | null,
-    skills: SkillDefaults,
-  ) => {
-    if (!project || taskStarting || activeTask || mutationsDisabled) return;
+  const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
+    if (!project || taskStarting || mutationsDisabled) return;
     const runKind = graph.revision === 0 ? "seed" : "refresh";
     setRunScope(scope);
     try {
@@ -1477,8 +1451,6 @@ export default function App() {
         model: config.model || null,
         run_truth_scope: scope,
         message,
-        workflow_ids: skills.workflow_ids,
-        skill_ids: skills.skill_ids,
       });
       setRunDialogOpen(false);
     } catch (caught) {
@@ -1487,7 +1459,7 @@ export default function App() {
   };
 
   const operateTask = async (task: AgentTask, action: "pause" | "resume" | "retry") => {
-    if (taskActionId || (activeTask && activeTask.operation_id !== task.operation_id)) return;
+    if (taskActionId) return;
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     setTaskActionId(task.operation_id);
     try {
@@ -1515,8 +1487,8 @@ export default function App() {
   };
 
   const repairGraphUpdate = async (operationId: string): Promise<void> => {
-    if (taskStartLock.current || taskStarting || taskActionId || activeTask) {
-      throw new Error("Another agent task is already active for this project.");
+    if (taskStartLock.current || taskStarting || taskActionId) {
+      throw new Error("Another task action is already being submitted.");
     }
     if (mutationsDisabled) {
       throw new Error("Graph repair is unavailable while replay is degraded.");
@@ -1548,7 +1520,7 @@ export default function App() {
   };
 
   const retryAgentTask = async (task: AgentTask, config: AgentRunConfig) => {
-    if (taskActionId || activeTask || mutationsDisabled) return;
+    if (taskActionId || mutationsDisabled) return;
     setTaskActionId(task.operation_id);
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
@@ -1919,16 +1891,9 @@ export default function App() {
                   mutationsDisabled ||
                   projectReconciliation !== "authoritative" ||
                   !project.canonical_state.reachable ||
-                  Boolean(activeTask) ||
                   taskStarting
                 }
-                aria-label={
-                  activeTask
-                    ? `${taskKindLabel(activeTask.kind)} in progress`
-                    : runKind === "seed"
-                      ? "Seed project"
-                      : "Refresh project"
-                }
+                aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
                 onClick={() => setRunDialogOpen(true)}
               >
                 <RefreshCw
@@ -2023,20 +1988,6 @@ export default function App() {
 
       <div className="project-notices">
         {updateSurface}
-        {visibleTask && (!chatIdForTask(visibleTask) || view === "chats") && (
-          <AgentTaskActivity
-            task={visibleTask}
-            actionBusy={Boolean(
-              taskActionId || (activeTask && activeTask.operation_id !== visibleTask.operation_id),
-            )}
-            mutatingActionsDisabled={mutationsDisabled && taskMayMutateGraph(visibleTask)}
-            onPause={() => void operateTask(visibleTask, "pause")}
-            onResume={() => void operateTask(visibleTask, "resume")}
-            onRetry={() => requestRetry(visibleTask)}
-            onInspect={() => setTaskInspectorId(visibleTask.operation_id)}
-            onDismiss={() => dismissTaskNotification(visibleTask.operation_id)}
-          />
-        )}
         {!project.canonical_state.reachable && (
           <div className="coverage-banner state-offline">
             <AlertTriangle size={15} />
@@ -2195,7 +2146,6 @@ export default function App() {
               project={project}
               initialPaper={paper}
               tasks={tasks}
-              activeTask={activeTask}
               onStartTask={startAgentTask}
               onPaperChange={updatePaper}
             />
@@ -2235,7 +2185,6 @@ export default function App() {
               glossaryIndex={glossaryIndex}
               runScope={runScope}
               tasks={tasks}
-              activeTask={activeTask}
               watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
               unreadTaskIds={unreadChatTaskIds}
@@ -2246,6 +2195,8 @@ export default function App() {
               onOpenNode={openNodeById}
               onLoadMore={() => void loadMoreChatSummaries()}
               onStartTask={startAgentTask}
+              onResumeTask={(task) => void operateTask(task, "resume")}
+              onRetryTask={requestRetry}
               onInspectTask={setTaskInspectorId}
               onOpenInbox={() => setView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
@@ -2271,7 +2222,7 @@ export default function App() {
           hasStagedNodeChange={Boolean(humanDraft?.nodes[selectedNode.id])}
           canonicalStanding={graph.nodes[selectedNode.id]?.standing ?? selectedNode.standing}
           experimentControl={selectedExperimentControl}
-          experimentRunDisabled={Boolean(activeTask)}
+          experimentRunDisabled={false}
           experimentRunBusy={taskStarting}
           onUnstage={() => {
             updateHumanDraft((draft) => unstageCustomNode(draft, selectedNode.id));
@@ -2341,13 +2292,14 @@ export default function App() {
               }
               runScope={runScope}
               tasks={tasks}
-              activeTask={activeTask}
               watchers={watchers}
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
               chatId={floatingChat.chatId}
               presentation="floating"
               graphChangesDisabled={mutationsDisabled}
               onStartTask={startAgentTask}
+              onResumeTask={(task) => void operateTask(task, "resume")}
+              onRetryTask={requestRetry}
               onInspectTask={setTaskInspectorId}
               onOpenInbox={() => {
                 setFloatingChat(null);
@@ -2368,7 +2320,7 @@ export default function App() {
         initialScope={runScope}
         busy={taskStarting}
         onClose={() => setRunDialogOpen(false)}
-        onRun={(config, scope, message, skills) => void runAgent(config, scope, message, skills)}
+        onRun={(config, scope, message) => void runAgent(config, scope, message)}
       />
       {retryTask && retryConfig && (
         <RunDialog
@@ -2378,11 +2330,6 @@ export default function App() {
           project={project}
           initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
-          initialSkills={{
-            workflow_ids:
-              retryTask.request.workflow_ids ?? project.skill_defaults?.workflow_ids ?? [],
-            skill_ids: retryTask.request.skill_ids ?? project.skill_defaults?.skill_ids ?? [],
-          }}
           busy={taskActionId === retryTask.operation_id}
           onClose={() => setRetryTask(null)}
           onRun={(config) => void retryAgentTask(retryTask, config)}

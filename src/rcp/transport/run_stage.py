@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -47,6 +49,7 @@ class RemoteRunStage:
         self.host = host
         self.root: PurePosixPath | None = None
         self._pending_inputs: Path | None = None
+        self._reusable_inputs: set[str] = set()
 
     @property
     def workspace(self) -> PurePosixPath:
@@ -150,17 +153,76 @@ for target in glob.glob('/tmp/rcp-run.*'):
         shutil.copyfile(source, pending)
         return str(remote)
 
-    def put_directory(self, source: Path, label: str) -> str:
+    def put_directory(self, source: Path, label: str, *, reuse: bool = False) -> str:
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         safe_label = _safe_label(label)
         remote = self.root / "inputs" / safe_label
+        if reuse and self._remote_directory_matches(source, remote):
+            return str(remote)
         pending = self._pending_input_root() / safe_label
         if pending.exists():
             raise ValueError(f"immutable remote task input already exists: {safe_label}")
         shutil.copytree(source, pending)
         self._make_pending_tree_writable(pending)
+        if reuse:
+            self._reusable_inputs.add(safe_label)
         return str(remote)
+
+    def _remote_directory_matches(self, source: Path, remote: PurePosixPath) -> bool:
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        expected = _directory_fingerprint(source)
+        script = """
+import hashlib,os,stat,sys
+root,target,expected=sys.argv[1:4]
+def fingerprint(root):
+    digest=hashlib.sha256()
+    def field(value):
+        digest.update(len(value).to_bytes(8,'big')); digest.update(value)
+    def visit(path,relative):
+        info=os.lstat(path)
+        if stat.S_ISLNK(info.st_mode): raise ValueError('reusable staged input contains a symlink')
+        if info.st_mode & 0o222: raise ValueError('reusable staged input is writable')
+        if stat.S_ISDIR(info.st_mode):
+            field(b'd'); field(relative.encode('utf-8'))
+            with os.scandir(path) as entries:
+                for entry in sorted(entries,key=lambda item:item.name):
+                    child=relative+'/'+entry.name if relative else entry.name
+                    visit(entry.path,child)
+        elif stat.S_ISREG(info.st_mode):
+            field(b'f'); field(relative.encode('utf-8')); field(str(info.st_size).encode('ascii'))
+            with open(path,'rb') as item:
+                while True:
+                    chunk=item.read(1024*1024)
+                    if not chunk: break
+                    digest.update(chunk)
+        else:
+            raise ValueError('reusable staged input contains a non-regular entry')
+    visit(root,''); return digest.hexdigest()
+inputs=os.path.join(root,'inputs')
+if os.path.islink(root) or not os.path.isdir(root):
+    print('remote run stage is unsafe',file=sys.stderr); raise SystemExit(46)
+if os.path.islink(inputs) or not os.path.isdir(inputs) or os.path.dirname(target)!=inputs:
+    print('remote input root is unsafe',file=sys.stderr); raise SystemExit(46)
+if not os.path.lexists(target): raise SystemExit(45)
+try: actual=fingerprint(target)
+except BaseException as exc:
+    print(str(exc),file=sys.stderr); raise SystemExit(46)
+if actual!=expected:
+    print('reusable staged input does not match its content label',file=sys.stderr)
+    raise SystemExit(47)
+"""
+        result = self._ssh(["python3", "-c", script, str(self.root), str(remote), expected])
+        if result.returncode == 0:
+            return True
+        if result.returncode == 45:
+            return False
+        if result.returncode in {46, 47}:
+            raise ValueError(result.stderr.strip() or "remote reusable input is unsafe")
+        raise StateUnavailable(
+            result.stderr.strip() or f"could not inspect remote reusable input {remote}"
+        )
 
     def finalize_inputs(self) -> None:
         """Transfer and commit all locally queued inputs as one immutable batch."""
@@ -176,26 +238,48 @@ for target in glob.glob('/tmp/rcp-run.*'):
             return
 
         batch = self.root / f".input-batch-{uuid.uuid4().hex}"
+        reusable_labels = sorted(self._reusable_inputs.intersection(labels))
         script = (
             _REMOTE_TREE_HELPERS
             + """
-import json,stat,sys
+import hashlib,json,stat,sys
 root,batch=map(os.path.abspath,sys.argv[1:3])
 labels=json.loads(sys.argv[3]); transferred=sys.argv[4]=='1'
+reusable=set(json.loads(sys.argv[5]))
 inputs=os.path.join(root,'inputs')
-def protect(path):
+def fingerprint(path,immutable=False):
     info=os.lstat(path)
     if stat.S_ISLNK(info.st_mode): raise ValueError('staged input contains a symlink')
+    if immutable and info.st_mode & 0o222:
+        raise ValueError('reusable staged input is writable')
+    if stat.S_ISDIR(info.st_mode):
+        children=[]
+        with os.scandir(path) as entries:
+            for entry in sorted(entries,key=lambda item:item.name):
+                children.append((entry.name,fingerprint(entry.path,immutable)))
+        return ('directory',children)
+    elif stat.S_ISREG(info.st_mode):
+        digest=hashlib.sha256()
+        with open(path,'rb') as source:
+            while True:
+                chunk=source.read(1024*1024)
+                if not chunk: break
+                digest.update(chunk)
+        return ('file',digest.hexdigest())
+    else:
+        raise ValueError('staged input is not a regular file or directory')
+def protect(path):
+    info=os.lstat(path)
     if stat.S_ISDIR(info.st_mode):
         with os.scandir(path) as entries:
             for entry in entries: protect(entry.path)
         os.chmod(path,0o500)
     elif stat.S_ISREG(info.st_mode):
         os.chmod(path,0o400)
-    else:
-        raise ValueError('staged input is not a regular file or directory')
 if not transferred:
     remove_tree(batch); raise SystemExit(44)
+if not reusable.issubset(labels):
+    remove_tree(batch); raise ValueError('reusable input labels are invalid')
 entries=[]
 moved=[]
 try:
@@ -209,14 +293,22 @@ try:
         if label!=os.path.basename(label) or label in ('','.','..'):
             raise ValueError('remote input label is unsafe')
         source=os.path.join(batch,label); target=os.path.join(inputs,label)
-        if os.path.lexists(target): raise FileExistsError(target)
-        protect(source); entries.append((source,target))
+        source_fingerprint=fingerprint(source)
+        if os.path.lexists(target):
+            if label not in reusable: raise FileExistsError(target)
+            if fingerprint(target,True)!=source_fingerprint:
+                raise ValueError('reusable staged input does not match its content label')
+        else:
+            entries.append((source,target))
     for source,target in entries:
         os.replace(source,target); moved.append((source,target))
-    os.rmdir(batch)
+    for _source,target in moved:
+        protect(target)
+    remove_tree(batch)
 except BaseException:
     for source,target in reversed(moved):
-        if os.path.lexists(target) and not os.path.lexists(source): os.replace(target,source)
+        if os.path.lexists(target) and not os.path.lexists(source):
+            make_writable(target); os.replace(target,source)
     remove_tree(batch)
     raise
 """
@@ -247,6 +339,7 @@ except BaseException:
                     str(batch),
                     json.dumps(labels, separators=(",", ":")),
                     "1" if result.returncode == 0 else "0",
+                    json.dumps(reusable_labels, separators=(",", ":")),
                 ]
             )
             if result.returncode:
@@ -271,6 +364,7 @@ except BaseException:
         self._make_pending_tree_writable(self._pending_inputs)
         shutil.rmtree(self._pending_inputs)
         self._pending_inputs = None
+        self._reusable_inputs.clear()
 
     @staticmethod
     def _make_pending_tree_writable(root: Path) -> None:
@@ -702,6 +796,38 @@ def _safe_label(value: str) -> str:
     if not label:
         raise ValueError("remote stage label is empty")
     return label
+
+
+def _directory_fingerprint(root: Path) -> str:
+    digest = hashlib.sha256()
+
+    def field(value: bytes) -> None:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+
+    def visit(path: Path, relative: str) -> None:
+        info = path.lstat()
+        if path.is_symlink():
+            raise ValueError("remote task input contains a symlink")
+        if stat.S_ISDIR(info.st_mode):
+            field(b"d")
+            field(relative.encode("utf-8"))
+            with os.scandir(path) as entries:
+                for entry in sorted(entries, key=lambda item: item.name):
+                    child = f"{relative}/{entry.name}" if relative else entry.name
+                    visit(Path(entry.path), child)
+        elif stat.S_ISREG(info.st_mode):
+            field(b"f")
+            field(relative.encode("utf-8"))
+            field(str(info.st_size).encode("ascii"))
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        else:
+            raise ValueError("remote task input contains a non-regular entry")
+
+    visit(root, "")
+    return digest.hexdigest()
 
 
 def _plain_workspace_file_name(name: str) -> str:

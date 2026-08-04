@@ -8,7 +8,7 @@ covered_by:
   - tests/test_api.py::test_work_patch_adds_decision_edges_to_an_accepted_question_without_correction
   - tests/test_control.py::test_a_loop_proposes_the_belief_change_its_own_evidence_implies
   - tests/test_agent_schema.py::test_agent_created_decisions_and_hypotheses_start_unresolved
-  - tests/test_proposals.py::test_agent_cannot_withdraw_a_pending_proposal_but_historical_replay_can
+  - tests/test_proposals.py::test_agent_withdraws_a_pending_proposal_with_provenance
   - tests/test_proposals.py::test_later_removal_of_a_belief_cause_withdraws_the_stale_proposal
 invariants: [3, 10b]
 last_passed: 2026-08-03
@@ -49,9 +49,11 @@ Proposals, and readiness state.
   that experiment and is grounded by an evidence edge from the same patch.
 - An experiment loop may propose changes only to its pinned governing Decisions
   or to the status of a tested, same-patch-evidence-grounded Hypothesis.
-- `set_standing`, resolving a Proposal, and pressing Experiment **Run** remain
-  human-only actions. Proposal approval never starts or resumes an experiment;
-  the human presses **Run** again.
+- `set_standing`, approving or rejecting a Proposal, and pressing Experiment
+  **Run** remain human-only actions. An agent may withdraw an obsolete pending
+  Proposal with the dedicated lifecycle operation; withdrawal never replays
+  the Proposal's semantic operations. Proposal approval never starts or
+  resumes an experiment; the human presses **Run** again.
 - A belief Proposal's Evidence edge remains a live dependency. If it disappears
   or changes before judgment, the Proposal is stale and is withdrawn instead of
   failing during approval. Creating and then removing the cause in the proposal's
@@ -72,7 +74,7 @@ Proposals, and readiness state.
 - `hypothesis_proposals_require_an_evidence_edge_cause`
 - `experiment_loop_proposals_have_exactly_two_admissible_shapes`
 - `standing_and_run_authority_remain_human_only`
-- `agents_cannot_resolve_or_withdraw_proposals`
+- `agents_cannot_approve_or_reject_proposals`
 - `belief_causes_survive_until_approval_or_make_the_proposal_stale`
 
 ## Failure means

@@ -8,13 +8,13 @@ you are expected to update it as the project changes.
 
 ## What RCP is
 
-RCP is the implementation of the design blueprint in [`docs/`](docs/). The
-blueprint is versioned (`research-control-panel-blueprint-v*.md`); **always read
-the highest version present** rather than a version remembered from an earlier
-session — `ls docs/` first. Note the newer files may be short amendments that
-only supersede named sections, so the section you need may still live in an
-older version. The blueprint is the specification: when code and blueprint
-disagree, say so explicitly instead of silently picking one.
+RCP is the implementation of the single canonical design blueprint at
+[`docs/research-control-panel-blueprint.md`](docs/research-control-panel-blueprint.md).
+Its version lives inside that file. A design change edits that file in place and
+bumps its internal version and changelog; **never create a blueprint amendment,
+delta, or retained snapshot file.** Git history is the archive. The blueprint is
+the specification: when code and blueprint disagree, say so explicitly instead
+of silently picking one.
 
 [`docs/open-questions.md`](docs/open-questions.md) holds design questions that
 are raised and evidenced but **not decided**. Read it before proposing a change
@@ -369,8 +369,7 @@ guarantees — surface the conflict instead of working around it.
    shared helper may take a `kind`, `is_chat`, `surface`, or equivalent parameter,
    because anything that must know which surface it serves is policy and belongs
    in the caller. Leaving some lines duplicated is the correct outcome, not a
-   missed cleanup. (The blueprint still describes one shared mandatory-patch
-   path for chat and ingestion — that section is superseded by this invariant.)
+   missed cleanup.
 10b. **Work is the only conversation mode with graph authority.** The captured
    per-turn `mode="work"` is the authority; there is no separate
    `allow_graph_change` gate, and the agent cannot grant itself authority by
@@ -379,7 +378,8 @@ guarantees — surface the conflict instead of working around it.
    Proposal, revision, scope, and lifecycle bookkeeping. An empty patch spends no
    revision. Never infer mode from the wording of the message.
 
-   Every Work stage contains an RCP-staged Python validator client. It exchanges
+   Every patch-producing Seed, Refresh, or Work stage contains an RCP-staged Python validator
+   client. It exchanges
    bounded request and response files through the writable workspace while RCP
    polls locally or through the existing SSH run stage, prepares the candidate
    against live current state in process, and records each check. Client exits
@@ -412,12 +412,20 @@ guarantees — surface the conflict instead of working around it.
    authorization — so the workspace list/remove operations in
    [run_stage.py](src/rcp/transport/run_stage.py) raise instead of reporting an
    unreachable workspace as an empty one.
-10d. **Chat is not transcript ingestion.** `chat_context` contains the graph,
-   focused node, current request, and exact run-scope repositories. Discuss has
+10d. **Chat is not transcript ingestion.** The first ordinary turn of a native chat session sends
+   one master context containing the graph, focused node, exact run-scope repositories, enabled
+   package pointers, and both mode contracts. Seeing both contracts is not cumulative authority:
+   every later ordinary provider resume carries one explicit Discuss or Work marker plus that turn's
+   resolved artifact directory, and only the matching contract is active. RCP names that directory
+   outright rather than sending an identifier for the agent to substitute into a path template. The
+   unchanged human message follows the marker. Unchanged context
+   is not resent; Settings, contract, repository, or package-pointer changes are appended as compact
+   replacement deltas and become the session baseline only after a successful turn. Discuss has
    those repositories read-only. Work receives the same exact pointers as
    context, but its tooling and repository access are unrestricted; it may return
    its optional semantic `patch.json`. Discuss and Work never read, index, copy,
-   project, prompt with, validate, or authorize from prior chat transcripts. A
+   project, prompt with, validate, or authorize from prior chat transcripts. Discuss has no active
+   Patch channel even though the session master retains the inactive Work contract. A
    provider continuation/session identifier may still be passed to the provider
    for its own native session behavior. The answer may be appended to canonical
    chat history for the UI, but that write is not an input to the turn. Every
@@ -531,6 +539,21 @@ carrying forward, and correct an entry when they change their mind.
   is planned, so disposable Rust build artifacts do not accumulate on disk.
 - Nothing versioned should be hardcoded into instructions; point at the source
   of truth instead.
+- **Agent-facing prose is written, not accreted.** Every contract opens by saying
+  what RCP is and what the agent's role in it is, because the name is otherwise
+  unexplained jargon. Say a rule once: a precedence list that restates its own
+  bullets, a section that re-lists pointers already given, and a heading that
+  renders "- none" are all noise. Describe RCP's internal enforcement only where
+  the agent can act on it. Prefer naming a resolved path over sending an id the
+  agent must substitute into a template.
+- A retry that still holds its native provider session gets a short follow-up
+  naming only what changed for that attempt — diagnostics, output paths, schema,
+  staged packages. It never rebuilds the task contract, because the session
+  already holds it and the agent would receive its retry framing twice. Only a
+  retry in a fresh process rebuilds.
+- Staged skills and workflows reach the agent as one pointer block with id,
+  version, wrapped description, and folder. RCP does not separately mark which
+  package a slash token named: the token is already in the human's message.
 - **Tunables belong in one central place, not scattered as per-file globals.**
   Naming a magic number `_MAX_ENTRIES` at the top of the file that uses it is not
   enough. Limits, timeouts, retention windows, and cache bounds are configuration

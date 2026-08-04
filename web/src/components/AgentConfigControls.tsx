@@ -143,15 +143,27 @@ export function AgentConfigControls({
         <>
           <div
             className={
-              readiness?.authenticated ? "agent-readiness ready" : "agent-readiness warning"
+              readiness === undefined
+                ? "agent-readiness pending"
+                : readiness.authenticated
+                  ? "agent-readiness ready"
+                  : "agent-readiness warning"
             }
           >
-            {readiness?.authenticated ? <CheckCircle2 size={14} /> : <TriangleAlert size={14} />}
+            {readiness === undefined ? (
+              <LoaderCircle className="spin" size={14} />
+            ) : readiness.authenticated ? (
+              <CheckCircle2 size={14} />
+            ) : (
+              <TriangleAlert size={14} />
+            )}
             <span>
-              {readiness?.authenticated
-                ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
-                : readiness?.reason ||
-                  `${value.provider} is not ready on ${machine?.host || "this machine"}`}
+              {readiness === undefined
+                ? `Checking ${value.provider} on ${machine?.host || "this machine"}…`
+                : readiness.authenticated
+                  ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
+                  : readiness?.reason ||
+                    `${value.provider} is not ready on ${machine?.host || "this machine"}`}
             </span>
             {onRefreshReadiness && (
               <button

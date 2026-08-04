@@ -12,9 +12,7 @@ last_passed: 2026-08-03
 
 # Definitions appear where a term is read
 
-Confirmed by the human through
-[`docs/handoff-ui-fixes-and-graph-skills.md`](../handoff-ui-fixes-and-graph-skills.md)
-on 2026-08-03.
+Confirmed by the human on 2026-08-03.
 
 Glossary terms are supplementary reading aids, not a destination. The Glossary
 navigation item and table are gone. Existing terms are matched best-effort as

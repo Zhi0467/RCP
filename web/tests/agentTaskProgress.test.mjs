@@ -11,7 +11,6 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { AgentTaskActivity } = await server.ssrLoadModule("/src/components/AgentTaskActivity.tsx");
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
 
 after(() => server.close());
@@ -40,20 +39,6 @@ function task(status) {
   };
 }
 
-function renderActivity(status) {
-  return renderToStaticMarkup(
-    React.createElement(AgentTaskActivity, {
-      task: task(status),
-      actionBusy: false,
-      onPause() {},
-      onResume() {},
-      onRetry() {},
-      onInspect() {},
-      onDismiss() {},
-    }),
-  );
-}
-
 function renderInspector(status) {
   const selectedTask = task(status);
   return renderToStaticMarkup(
@@ -72,24 +57,20 @@ function renderInspector(status) {
   );
 }
 
-test("active tasks show live progress in the activity card and inspector", () => {
-  const activity = renderActivity("running");
+test("active tasks show status without a progress bar", () => {
   const inspector = renderInspector("running");
 
-  assert.match(activity, /aria-label="Estimated agent progress"/);
-  assert.match(activity, />3%<\/span>/);
-  assert.match(activity, /about 5m left/);
-  assert.match(inspector, /Estimated progress/);
-  assert.match(inspector, />3%<\/strong>/);
-  assert.match(inspector, /about 5m left/);
+  assert.match(inspector, /Running in the background/);
+  assert.doesNotMatch(inspector, /progressbar|Estimated (?:agent )?progress/);
+  assert.doesNotMatch(inspector, />3%<\/(?:span|strong)>/);
+  assert.doesNotMatch(inspector, /about 5m left/);
 });
 
-test("terminal tasks show no live progress in the activity card or inspector", () => {
+test("terminal tasks show no live progress in the inspector", () => {
   for (const status of ["failed", "succeeded", "interrupted", "paused"]) {
-    for (const html of [renderActivity(status), renderInspector(status)]) {
-      assert.doesNotMatch(html, /Estimated (?:agent )?progress/);
-      assert.doesNotMatch(html, />3%<\/(?:span|strong)>/);
-      assert.doesNotMatch(html, /about 5m left/);
-    }
+    const html = renderInspector(status);
+    assert.doesNotMatch(html, /Estimated (?:agent )?progress/);
+    assert.doesNotMatch(html, />3%<\/(?:span|strong)>/);
+    assert.doesNotMatch(html, /about 5m left/);
   }
 });

@@ -1,22 +1,17 @@
-import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
+  EMPTY_SKILL_SELECTION,
   addSkillSelection,
-  clearSkillTrigger,
+  filterSkillCatalogToDefaults,
   filterSkillCatalog,
-  hasSkillSelection,
   moveSkillHighlight,
   readSkillTrigger,
-  removeSkillSelection,
-  selectedSkillRefs,
 } from "../skillPicker";
-import type { SkillCatalogEntry, SkillDefaults, SkillKind } from "../types";
+import type { SkillCatalogEntry, SkillDefaults } from "../types";
 
 interface Options {
   catalog: SkillCatalogEntry[];
   defaults: SkillDefaults;
-  message: string;
-  setMessage: (next: string) => void;
 }
 
 /**
@@ -26,21 +21,28 @@ interface Options {
  * its send shortcut, so an open dropdown claims the arrows, Enter, and Escape
  * instead of sending the turn.
  */
-export function useSkillPicker({ catalog, defaults, message, setMessage }: Options) {
-  const [selection, setSelection] = useState<SkillDefaults>(defaults);
+export function useSkillPicker({ catalog, defaults }: Options) {
+  const [selection, setSelection] = useState<SkillDefaults>(EMPTY_SKILL_SELECTION);
   const [query, setQuery] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(0);
-  const entries = query === null ? [] : filterSkillCatalog(catalog, query);
+  const enabledCatalog = filterSkillCatalogToDefaults(catalog, defaults);
+  const entries = query === null ? [] : filterSkillCatalog(enabledCatalog, query);
   const open = entries.length > 0;
+  const defaultsKey = `${defaults.workflow_ids.join(",")}|${defaults.skill_ids.join(",")}`;
 
   useEffect(() => {
     setHighlight(0);
   }, [query]);
 
+  useEffect(() => {
+    setSelection(EMPTY_SKILL_SELECTION);
+    setQuery(null);
+  }, [defaultsKey]);
+
   const close = () => setQuery(null);
 
   const reset = () => {
-    setSelection(defaults);
+    setSelection(EMPTY_SKILL_SELECTION);
     close();
   };
 
@@ -48,7 +50,6 @@ export function useSkillPicker({ catalog, defaults, message, setMessage }: Optio
   const readMessage = (next: string) => setQuery(readSkillTrigger(next));
 
   const choose = (entry: SkillCatalogEntry) => {
-    setMessage(clearSkillTrigger(message));
     setSelection((current) => addSkillSelection(current, entry));
     close();
   };
@@ -88,44 +89,15 @@ export function useSkillPicker({ catalog, defaults, message, setMessage }: Optio
       highlight: Math.min(highlight, Math.max(entries.length - 1, 0)),
       onHighlight: setHighlight,
       onChoose: choose,
-      onRemove: (kind: SkillKind, id: string) =>
-        setSelection((current) => removeSkillSelection(current, kind, id)),
     },
   };
 }
 
 export type SkillPickerProps = ReturnType<typeof useSkillPicker>["props"];
 
-export function SkillPicker({
-  catalog,
-  selection,
-  entries,
-  highlight,
-  onHighlight,
-  onChoose,
-  onRemove,
-}: SkillPickerProps) {
-  const label = (kind: SkillKind, id: string) =>
-    catalog.find((item) => item.kind === kind && item.id === id)?.label ?? id;
-
+export function SkillPicker({ entries, highlight, onHighlight, onChoose }: SkillPickerProps) {
   return (
     <>
-      {hasSkillSelection(selection) && (
-        <div className="chat-skill-chips" aria-label="Skills selected for this turn">
-          {selectedSkillRefs(selection).map(([kind, id]) => (
-            <span className="chat-skill-chip" key={`${kind}:${id}`}>
-              {label(kind, id)}
-              <button
-                type="button"
-                aria-label={`Remove ${label(kind, id)}`}
-                onClick={() => onRemove(kind, id)}
-              >
-                <X size={11} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
       {entries.length > 0 && (
         <div className="chat-skill-menu" role="listbox" aria-label="Select a skill or workflow">
           {entries.map((item, index) => (

@@ -1,7 +1,6 @@
 import { Clock3, X } from "lucide-react";
-import { taskKindLabel } from "../agentTasks";
+import { taskKindLabel, taskStatusLabel } from "../agentTasks";
 import type { AgentTask, RevisionSummary } from "../types";
-import { taskStatusLabel } from "./AgentTaskActivity";
 
 interface Props {
   summaries: RevisionSummary[];

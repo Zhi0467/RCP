@@ -187,22 +187,19 @@ class ProjectCatalog:
         manifest = load_manifest(record.locator)
         return ProjectService.readiness_for(manifest, self.launcher, refresh=refresh)
 
-    def local_provider_targets(self) -> list[tuple[ProviderId, str | None]]:
-        """Unique local capabilities worth warming after the app is healthy."""
+    def provider_targets(self) -> list[tuple[ProviderId, str, str | None]]:
+        """Unique configured provider capabilities known to this app process."""
 
-        targets: set[tuple[ProviderId, str | None]] = {
-            (provider, None) for provider in PROVIDER_IDS
-        }
+        targets: set[tuple[ProviderId, str, str | None]] = set()
         for record in self.store.projects():
             try:
                 manifest = load_manifest(record.locator)
             except (FileNotFoundError, OSError, ValueError):
                 continue
             for machine in manifest.machines:
-                if machine.host:
-                    continue
-                targets.update(machine.provider_paths.items())
-        return sorted(targets, key=lambda item: (item[0], item[1] or ""))
+                for provider in PROVIDER_IDS:
+                    targets.add((provider, machine.host, machine.provider_paths.get(provider)))
+        return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
     def delete(self, project_id: str) -> ProjectDeletionResult:
         """Forget one RCP registration without touching any research source."""

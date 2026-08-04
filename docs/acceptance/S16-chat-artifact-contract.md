@@ -124,7 +124,8 @@ through the RCP artifact endpoint. Never give the endpoint a filesystem path.
 
 Confirmation of this scenario authorizes these narrow documentation changes:
 
-1. In invariant 4b and blueprint D12, `patch.json` remains the only agent-to-RCP
+1. In invariant 4b and the blueprint's structured-deliverable contract,
+   `patch.json` remains the only agent-to-RCP
    **graph-change** channel, while the per-turn artifact directory becomes an
    optional non-canonical preview channel.
 2. In invariant 10d and S40, Discuss keeps canonical and repository inputs

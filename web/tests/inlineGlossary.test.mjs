@@ -91,6 +91,12 @@ test("proposal prose uses the shared inline glossary treatment", () => {
             consequences: "The plasticity test becomes active.",
             decision_needed: "Approve or reject.",
           },
+          ops: [
+            {
+              op: "update_nodes",
+              nodes: [{ id: "dec/plasticity-test", changes: { selected_option: "matched" } }],
+            },
+          ],
         },
       ],
       glossaryIndex,
@@ -102,6 +108,8 @@ test("proposal prose uses the shared inline glossary treatment", () => {
   assert.equal(html.match(/<dfn/g)?.length, 3);
   assert.match(html, /<h3><dfn[^>]*>Plasticity<\/dfn> decision<\/h3>/);
   assert.match(html, /<dfn[^>]*>Plasticity loss<\/dfn> remains plausible\./);
+  assert.match(html, /Proposed action/);
+  assert.match(html, /Choose “matched” for the decision\./);
 });
 
 test("node chat passes the prebuilt index into Markdown answers", () => {

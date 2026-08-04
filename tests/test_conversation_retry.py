@@ -103,36 +103,36 @@ def _retry_task(
 def _assert_retry_contract(
     launcher: _FailThenSucceedLauncher,
     *,
-    objective: str,
     expected_failure: str,
 ) -> str:
+    """A retry that still holds its native session gets a follow-up, not a rebuilt contract."""
+
     assert launcher.sessions == [None, launcher.native_session_id]
     retry_contract_path = launcher.contract_paths[1]
     retry_contract = launcher.contracts[1]
     prefix = retry_contract_path.name.removesuffix("-retry.md")
-    current_contract_path = retry_contract_path.parent / f"{prefix}-base.md"
-    diagnostics_path = retry_contract_path.parent / f"{prefix}-retry-diagnostics.json"
-    human_request_path = retry_contract_path.parent / f"{prefix}-human-request.txt"
+    stage_inputs = retry_contract_path.parent
+    diagnostics_path = stage_inputs / f"{prefix}-retry-diagnostics.json"
     expected_diagnostics = [f"Attempt 1 (failed) failed with: {expected_failure}"]
 
     assert retry_contract.startswith("# RCP retry contract")
     assert "Exact failure diagnostics" in retry_contract
     assert str(diagnostics_path) in retry_contract
-    assert str(current_contract_path) in retry_contract
     assert str(launcher.contract_paths[0]) in retry_contract
+    assert "same native session that ran the previous attempt" in retry_contract
     assert "Retry authority and side-effect safety" in retry_contract
     assert "inspect the authoritative external state" in retry_contract
     assert "# RCP resume contract" not in retry_contract
     assert "Patch-only correction authority" not in retry_contract
+    # Nothing is rebuilt or restated for this attempt: no base contract, no human request.
+    assert not (stage_inputs / f"{prefix}-base.md").exists()
+    assert f"{prefix}-base.md" not in launcher.input_snapshots[1]
+    assert f"{prefix}-human-request.txt" not in launcher.input_snapshots[1]
+    assert "Retry context:" not in retry_contract
     assert json.loads(launcher.input_snapshots[1][diagnostics_path.name]) == {
         "prior_attempt_diagnostics": expected_diagnostics
     }
-    assert launcher.input_snapshots[1][human_request_path.name] == objective
-    current_contract = launcher.input_snapshots[1][current_contract_path.name]
-    assert "Prior-attempt diagnostics" in current_contract
-    assert str(diagnostics_path) in current_contract
-    assert str(human_request_path) in current_contract
-    return current_contract
+    return launcher.contracts[0]
 
 
 def _assert_retry_receipt(app, operation_id: str) -> None:
@@ -182,10 +182,8 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
         },
     )
 
-    current_contract = _assert_retry_contract(
-        launcher, objective=objective, expected_failure=failure
-    )
-    assert "This turn has no graph-change channel" in current_contract
+    original_contract = _assert_retry_contract(launcher, expected_failure=failure)
+    assert "This turn has no graph-change channel" in original_contract
     assert launcher.workspaces[0] == launcher.workspaces[1]
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
@@ -241,10 +239,8 @@ def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest
         },
     )
 
-    current_contract = _assert_retry_contract(
-        launcher, objective=objective, expected_failure=failure
-    )
-    assert "Operational authority" in current_contract
+    original_contract = _assert_retry_contract(launcher, expected_failure=failure)
+    assert "Operational authority" in original_contract
     assert launcher.workspaces[0] == launcher.workspaces[1]
     workspace = launcher.workspaces[1]
     assert (workspace / "patch.json").read_text(encoding="utf-8") == agent_patch_json(stale_patch)
@@ -408,9 +404,7 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
         {"message": objective},
     )
 
-    current_contract = _assert_retry_contract(
-        launcher, objective=objective, expected_failure=failure
-    )
-    assert "Authorship contract" in current_contract
+    original_contract = _assert_retry_contract(launcher, expected_failure=failure)
+    assert "Authorship contract" in original_contract
     assert launcher.contract_paths[0].parent == launcher.contract_paths[1].parent
     _assert_retry_receipt(app, str(retried["operation_id"]))

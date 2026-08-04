@@ -11,9 +11,13 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
-import { isActiveTask, reconstructTaskTranscript, taskKindLabel } from "../agentTasks";
+import {
+  isActiveTask,
+  reconstructTaskTranscript,
+  taskKindLabel,
+  taskStatusLabel,
+} from "../agentTasks";
 import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../types";
-import { estimateLabel, formatDuration, taskStatusLabel } from "./AgentTaskActivity";
 
 interface Props {
   tasks: AgentTask[];
@@ -136,21 +140,6 @@ export function AgentTaskInspector({
                     <p>{task.error || task.status_message}</p>
                   </div>
                 </section>
-
-                {isActiveTask(task) && (
-                  <section className="run-detail-progress">
-                    <div>
-                      <span>Estimated progress</span>
-                      <strong>{Math.round(task.progress * 100)}%</strong>
-                    </div>
-                    <div className="run-progress-track large">
-                      <span style={{ width: `${Math.round(task.progress * 100)}%` }} />
-                    </div>
-                    <span className="run-progress-meta">
-                      {estimateLabel(task)} · {formatDuration(task.elapsed_seconds)} elapsed
-                    </span>
-                  </section>
-                )}
 
                 <section>
                   <h4>Task contract</h4>

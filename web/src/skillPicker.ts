@@ -1,7 +1,7 @@
 import type { SkillCatalogEntry, SkillDefaults, SkillKind } from "./types";
 
-/** The `/` or `$` trigger word being typed at the end of the composer. */
-const TRIGGER = /(?:^|\s)[/$]([A-Za-z0-9_-]*)$/;
+/** The slash trigger word being typed at the end of the composer. */
+const TRIGGER = /(?:^|\s)\/([A-Za-z0-9_-]*)$/;
 
 export const EMPTY_SKILL_SELECTION: SkillDefaults = { workflow_ids: [], skill_ids: [] };
 
@@ -13,11 +13,6 @@ function skillSelectionKey(kind: SkillKind): keyof SkillDefaults {
 export function readSkillTrigger(message: string): string | null {
   const match = message.match(TRIGGER);
   return match ? match[1] : null;
-}
-
-/** Drop the trigger word once its entry has been chosen. */
-export function clearSkillTrigger(message: string): string {
-  return message.replace(TRIGGER, (match) => (match.startsWith(" ") ? " " : ""));
 }
 
 export function filterSkillCatalog(
@@ -32,6 +27,18 @@ export function filterSkillCatalog(
       item.label.toLowerCase().includes(needle) ||
       item.kind.includes(needle),
   );
+}
+
+/** Slash commands may invoke only packages explicitly enabled in Settings. */
+export function filterSkillCatalogToDefaults(
+  catalog: SkillCatalogEntry[],
+  defaults: SkillDefaults,
+): SkillCatalogEntry[] {
+  const allowed = new Set([
+    ...defaults.workflow_ids.map((id) => `workflow:${id}`),
+    ...defaults.skill_ids.map((id) => `skill:${id}`),
+  ]);
+  return catalog.filter((item) => allowed.has(`${item.kind}:${item.id}`));
 }
 
 /** Wrap the highlight so arrowing past either end returns to the other. */

@@ -9,6 +9,10 @@ from pydantic import ValidationError
 from rcp.agents.prompts import PromptFactory
 from rcp.agents.schema import AgentPatch, agent_output_schema, prepare_agent_patch
 
+_VALIDATOR_COMMAND = (
+    "python3 /run/inputs/validator.py /run/workspace/patch.json token 30 /run/workspace"
+)
+
 
 def test_contract_names_direct_provider_roots_and_project_watermark() -> None:
     watermark = datetime(2026, 7, 31, 14, 0, tzinfo=UTC)
@@ -16,6 +20,7 @@ def test_contract_names_direct_provider_roots_and_project_watermark() -> None:
         "refresh",
         project_name="Recovered project",
         ontology_path="/state/graph.json#ontology",
+        ontology_extensions=True,
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         provider_log_roots={
@@ -29,6 +34,7 @@ def test_contract_names_direct_provider_roots_and_project_watermark() -> None:
         repositories=[{"alias": "repo-a", "host": "gpu.example", "path": "/remote/project"}],
         patch_path="/run/workspace/patch.json",
         output_schema_path="/run/inputs/patch-schema.json",
+        validator_command=_VALIDATOR_COMMAND,
         human_request_path="/run/inputs/human-request.txt",
         source_errors=["claude root is not readable"],
     )
@@ -43,10 +49,11 @@ def test_contract_names_direct_provider_roots_and_project_watermark() -> None:
     assert "/run/inputs/human-request.txt" in contract
     assert "/run/inputs/patch-schema.json" in contract
     assert "/run/workspace/patch.json" in contract
+    assert _VALIDATOR_COMMAND in contract
     assert "claude root is not readable" in contract
-    assert "diagnostics do not prevent launch" in contract
-    assert "raw provider-owned sources" in contract
+    assert "Attempt every readable root and continue past one that is unavailable" in contract
     assert "inspect them in place" in contract
+    assert "read only the parts after that watermark" in contract
     assert "Tolerate overlap" in contract
     assert "deduplicate repeated provider records" in contract
     assert "Honor any date or project-history" in contract
@@ -57,6 +64,7 @@ def test_fresh_seed_has_no_boundary_and_can_delegate_bounded_read_only_inspectio
         "seed",
         project_name="Recovered project",
         ontology_path="/state/graph.json#ontology",
+        ontology_extensions=True,
         graph_path=None,
         research_path=None,
         provider_log_roots={"codex": ["/remote/home/.codex/sessions"]},
@@ -64,6 +72,7 @@ def test_fresh_seed_has_no_boundary_and_can_delegate_bounded_read_only_inspectio
         repositories=[],
         patch_path="/run/workspace/patch.json",
         output_schema_path="/run/inputs/patch-schema.json",
+        validator_command=_VALIDATOR_COMMAND,
     )
 
     assert "none (no prior successful Seed/Refresh)" in contract
@@ -77,6 +86,7 @@ def test_contract_has_no_projected_ingestion_protocol() -> None:
         "refresh",
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
+        ontology_extensions=True,
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         provider_log_roots={"codex": ["/provider/logs"]},
@@ -84,6 +94,7 @@ def test_contract_has_no_projected_ingestion_protocol() -> None:
         repositories=[],
         patch_path="/run/patch.json",
         output_schema_path="/run/schema.json",
+        validator_command=_VALIDATOR_COMMAND,
     ).lower()
 
     for forbidden in (

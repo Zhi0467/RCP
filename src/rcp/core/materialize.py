@@ -164,8 +164,13 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
                     "related_config_keys": related_config_keys,
                     "base_rev": state.revision,
                     "status": "pending",
+                    "created_by": "human" if patch.author == "human" else "agent",
+                    "created_by_operation_id": patch.source_operation_id,
                     "raised_rev": 0,
                     "resolved_rev": None,
+                    "resolved_by": None,
+                    "resolved_by_operation_id": None,
+                    "resolution_reason": None,
                     "rejection_reason": None,
                 }
             )
@@ -341,6 +346,8 @@ def _apply_patch(
                 data["base_rev"] = state.revision
                 data["related_node_ids"] = related_node_ids
                 data["related_config_keys"] = related_config_keys
+                data.setdefault("created_by", "human" if patch.author == "human" else "agent")
+                data.setdefault("created_by_operation_id", patch.source_operation_id)
                 data["raised_rev"] = revision
                 proposal = Proposal.model_validate(data)
                 state.proposals[proposal.id] = proposal
@@ -351,7 +358,22 @@ def _apply_patch(
                     update={
                         "status": resolution["status"],
                         "resolved_rev": revision,
+                        "resolved_by": "human" if patch.author == "human" else "agent",
+                        "resolved_by_operation_id": patch.source_operation_id,
+                        "resolution_reason": resolution.get("reason"),
                         "rejection_reason": resolution.get("reason"),
+                    }
+                )
+        elif name == "withdraw_proposals":
+            for withdrawal in op.get("proposals", []):
+                proposal = state.proposals[withdrawal["id"]]
+                state.proposals[proposal.id] = proposal.model_copy(
+                    update={
+                        "status": "withdrawn",
+                        "resolved_rev": revision,
+                        "resolved_by": "agent",
+                        "resolved_by_operation_id": patch.source_operation_id,
+                        "resolution_reason": withdrawal.get("reason"),
                     }
                 )
         elif name == "upsert_glossary":

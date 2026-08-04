@@ -281,36 +281,63 @@ def test_later_removal_of_a_belief_cause_withdraws_the_stale_proposal(manifest, 
     assert state.nodes["hyp/replanning-restores-plasticity"].status == "proposed"
 
 
-def test_agent_cannot_withdraw_a_pending_proposal_but_historical_replay_can(manifest) -> None:
+def test_agent_withdraws_a_pending_proposal_with_provenance(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    history.append(proposal_patch())
+    history.append(proposal_patch().model_copy(update={"source_operation_id": "task-create"}))
     withdrawal = Patch(
         kind="refresh",
         author="agent",
-        summary="Tried to withdraw a pending human judgment.",
+        summary="Withdrew an obsolete proposal.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        source_operation_id="task-withdraw",
+        ops=[
+            {
+                "op": "withdraw_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/activate-replanning-hypothesis",
+                        "reason": "A revised proposal replaces this one.",
+                    }
+                ],
+            }
+        ],
+    )
+
+    history.append(withdrawal)
+
+    proposal = history.state().proposals["prop/activate-replanning-hypothesis"]
+    assert proposal.status == "withdrawn"
+    assert proposal.created_by == "agent"
+    assert proposal.created_by_operation_id == "task-create"
+    assert proposal.resolved_by == "agent"
+    assert proposal.resolved_by_operation_id == "task-withdraw"
+    assert proposal.resolution_reason == "A revised proposal replaces this one."
+
+
+def test_agent_cannot_resolve_a_pending_proposal_with_human_decision_status(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    history.append(proposal_patch())
+    resolution = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Tried to approve a pending human judgment.",
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
         ops=[
             {
                 "op": "resolve_proposals",
                 "resolutions": [
-                    {"id": "prop/activate-replanning-hypothesis", "status": "withdrawn"}
+                    {"id": "prop/activate-replanning-hypothesis", "status": "approved"}
                 ],
             }
         ],
     )
 
-    replay_report = validate_patch(
-        history.state(),
-        withdrawal.model_copy(update={"revision": 3}),
-        manifest.project.truth_scope,
-        mode="replay",
-    )
-    assert not replay_report.rejected
-
     with pytest.raises(PatchRejected):
-        history.append(withdrawal)
+        history.append(resolution)
 
     assert history.state().proposals["prop/activate-replanning-hypothesis"].status == "pending"
 

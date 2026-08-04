@@ -9,10 +9,10 @@ covered_by:
   - tests/test_api.py::test_an_upgraded_package_never_makes_a_stored_task_un_retryable
   - tests/test_api.py::test_retrying_a_failed_seed_records_the_selection_it_will_stage
   - web/tests/skillPicker.test.mjs
-last_passed: 2026-08-04 — browser drove the Settings card grid, the read-only
-  package inspector, a default save persisted to the manifest, and the keyboard
-  `/` picker (arrows, Enter-selects-without-sending, Escape) in project chat and
-  paper coaching; 626 backend and 165 web checks passed.
+last_passed: 2026-08-04 — Settings showed the enabled package set; browser drove
+  the slash picker in Node chat and Paper, confirmed only enabled entries were
+  offered, preserved the literal `/research` token after selection, and showed
+  no persistent skill chips; 627 backend and 166 web checks passed.
 invariants: [4, 4b, 8, 9, 10, 10b, 10c]
 reported_by: human, 2026-08-04
 ---
@@ -22,8 +22,8 @@ reported_by: human, 2026-08-04
 RCP ships an official, source-versioned registry of skill folders and
 prompt-level workflow folders. The catalog is always available in the app; the
 user does not install, edit, or pull packages back from a run. Project Settings
-stores the selected default ids only. A task may add or remove any number of
-workflows and skills for its current turn.
+stores the package ids that every run may stage. A chat or paper turn may
+explicitly invoke a subset of those packages with slash syntax.
 
 ## UI path
 
@@ -37,21 +37,25 @@ workflows and skills for its current turn.
    import, or authoring action anywhere in this view.
 4. Select a workflow and an additional skill as project defaults, then save.
    The project stores ids, not skill bodies or staged paths.
-5. Open a project or node chat. In the composer, type `/` or `$`. A dropdown
-   shows the official workflows and skills, filtered as the trigger word is
-   typed. Up and down arrows move the highlight, Enter selects the highlighted
-   entry, and Escape closes the dropdown without sending. While the dropdown is
-   open, Enter never sends the turn. Selected entries appear as removable
-   composer chips. These selections apply only to the current turn and do not
-   change the project defaults.
+5. Open a project or node chat. The composer shows no persistent skill or
+   workflow chips. Type `/`. A dropdown shows only workflows and skills
+   enabled in Settings, filtered as the trigger word is typed. Up and down
+   arrows move the highlight, Enter selects the highlighted entry, and Escape
+   closes the dropdown without sending. While the dropdown is open, Enter never
+   sends the turn. The selected entry is transient invocation metadata for this
+   turn; it is not rendered as a removable chip and does not change Settings.
+   The literal slash token remains unchanged in the visible and persisted human
+   message.
 6. Send the turn in either Discuss or Work mode. The captured mode remains the
    authority: selecting a skill never grants graph or repository permissions.
-7. Open the resulting Agent task. Its immutable contract shows the selected
-   workflows, the resolved dependency skills, their versions, and compact
-   pointers to the staged folders. It does not embed their bodies.
-8. Start a Seed or Refresh task. Its launch surface begins with the project
-   defaults and allows the same multi-selection. A selected workflow is
-   preflighted before provider launch; its workflow file and every declared
+7. Open the resulting Agent task. Its immutable contract shows the Settings-
+   enabled workflows, resolved dependency skills, their ids and versions,
+   descriptions, and pointers to the staged folders. It does not embed their
+   bodies, and it does not separately mark which package the slash token named:
+   that token is already in the human message the agent reads.
+8. Start a Seed or Refresh task. It stages only the project defaults from
+   Settings; there is no separate per-run skill selector. A selected workflow
+   is preflighted before provider launch; its workflow file and every declared
    skill dependency are staged together.
 9. Open Paper. The writing-coach composer supports the same current-turn
    workflow and skill picker, without changing the project defaults.
@@ -67,25 +71,36 @@ workflows and skills for its current turn.
 - Multiple workflows are allowed. Shared dependencies are staged once. Two
   selected versions of the same skill fail preflight and require the user to
   choose a coherent set.
-- RCP stages the selected workflow folders and resolved skill folders into the
-  per-run local or remote temporary workspace. The bytes are immutable for the
-  task, are never copied into `.research` or a project repository, and are
-  disposable after successful completion. A failed task retains its stage under
-  the existing recovery policy.
-- Context assembly and the task contract expose compact ids, versions,
-  descriptions, and exact staged paths. The agent reads the files in place;
-  RCP does not parse workflow prose into a second execution engine.
+- RCP stages the Settings-enabled workflow folders and resolved skill folders
+  into the local or remote temporary workspace. Ordinary chat sessions reuse a
+  content-addressed immutable bundle while the enabled ids and versions are
+  unchanged; other tasks retain per-attempt staging. The bytes are never copied
+  into `.research` or a project repository and remain disposable scratch.
+- A slash invocation may name only a workflow or skill enabled directly in
+  Settings. It never stages an additional package and never grants authority.
+  The invocation reaches the agent as the unchanged literal token in the human
+  message; RCP does not restate it as a separate contract section, because the
+  contract already lists every staged package and the message already says which
+  one the human asked for.
+- Without a slash invocation, the task still receives lightweight pointers to
+  every Settings-enabled package so the agent may discover relevant guidance.
+- The first chat master context and non-chat task contracts expose compact ids,
+  versions, descriptions, and exact staged paths. A changed enabled set or
+  package version becomes a compact chat context delta; unchanged pointers are
+  not resent. The agent reads files in place, and RCP does not parse workflow
+  prose into a second execution engine.
 - **The official registry is authoritative, not the task's saved snapshot.** A
   task stores the selected ids; every launch — first attempt, retry, or resume —
   re-resolves those ids against the registry as it stands at launch and stages
   those bytes. Upgrading a package therefore upgrades the next attempt of an
   existing task, deliberately. A stored version is a receipt of what an attempt
   ran with, never an input that could pin, downgrade, or fail a later attempt.
-- Because each attempt stages its own bundle, a resumed native session never
-  reports a version its staged folder does not contain.
-- Discuss, Work, Seed, Refresh, and paper coaching may all select a loaded
-  package. The selection does not alter `permissions_for()` or create another
-  graph-change channel.
+- A resumed native session never reports a version its staged folder does not
+  contain. Package changes stage a new immutable bundle before its delta is sent.
+- Discuss, Work, Seed, Refresh, and paper coaching receive the Settings-enabled
+  package set. Discuss, Work, and paper coaching may explicitly invoke one of
+  those packages with slash syntax. Invocation does not alter `permissions_for()`
+  or create another graph-change channel.
 - v1 contains only official RCP packages. Users cannot author or import skills
   through the UI.
 
@@ -97,10 +112,14 @@ workflows and skills for its current turn.
 - A catalog card shows its name and selection state only; package text is
   reachable through an explicit read-only inspector, never as caption copy
   under the card.
-- The slash/dollar interaction produces structured selection metadata rather
-  than relying on the provider to parse chat text, and it is fully operable
-  from the keyboard: arrows highlight, Enter selects, Escape dismisses, and an
-  open dropdown suppresses send.
+- The slash/dollar interaction produces structured invocation metadata rather
+  than relying on the provider to parse chat text, resolves only to
+  Settings-enabled packages, and is fully operable from the keyboard: arrows
+  highlight, Enter selects, Escape dismisses, and an open dropdown suppresses
+  send.
+- Chat and paper coaching do not render persistent skill/workflow chips. The
+  task contract and inspector remain the visible receipt of staged packages, and
+  the persisted human message is the receipt of what was invoked.
 - Retrying a task after its package was upgraded runs the new version and says
   so, rather than failing on the older recorded version.
 - Workflow dependency preflight catches missing entries, cycles, invalid paths,
@@ -114,9 +133,10 @@ workflows and skills for its current turn.
 
 ## Failure means
 
-The catalog is only decorative, slash selection is lost on the wire or is
-mouse-only, workflow dependencies are silently omitted, an upgraded package
-makes an existing task un-retryable, an attempt reports a version its staged
-folder does not contain, skill content enters `.research`, selected skills
-widen permissions, or the agent must infer selection from the human's raw
-message.
+The catalog is only decorative, slash invocation is lost on the wire or is
+mouse-only, a slash command can stage a package not enabled in Settings,
+workflow dependencies are silently omitted, an upgraded package makes an
+existing task un-retryable, an attempt reports a version its staged folder
+does not contain, skill content enters `.research`, selected skills widen
+permissions, persistent chips misrepresent the defaults, or the agent must
+infer invocation from the human's raw message.

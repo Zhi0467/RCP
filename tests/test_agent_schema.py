@@ -465,7 +465,7 @@ def test_agent_cannot_propose_an_ontology_change() -> None:
     assert '"set_ontology"' not in rendered
 
 
-def test_agent_cannot_resolve_or_withdraw_a_proposal() -> None:
+def test_agent_cannot_resolve_or_reject_a_proposal() -> None:
     patch = Patch(
         kind="refresh",
         author="agent",
@@ -484,6 +484,27 @@ def test_agent_cannot_resolve_or_withdraw_a_proposal() -> None:
         validate_agent_patch_shape(patch)
 
     assert '"resolve_proposals"' not in json.dumps(agent_output_schema())
+
+
+def test_agent_can_withdraw_a_pending_proposal() -> None:
+    patch = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Withdrew an obsolete proposal.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "withdraw_proposals",
+                "proposals": [
+                    {"id": "prop/pending", "reason": "A later proposal supersedes this one."}
+                ],
+            }
+        ],
+    )
+
+    validate_agent_patch_shape(patch)
+    assert '"withdraw_proposals"' in json.dumps(agent_output_schema())
 
 
 @pytest.mark.parametrize(
@@ -562,7 +583,12 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
         }
     )
 
-    patch = prepare_agent_patch(draft, kind="work", run_truth_scope=["repo-a"])
+    patch = prepare_agent_patch(
+        draft,
+        kind="work",
+        run_truth_scope=["repo-a"],
+        source_operation_id="task-create-proposal",
+    )
     proposal = patch.ops[0]["proposals"][0]
 
     assert isinstance(patch, Patch)
@@ -571,11 +597,17 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
     assert patch.revision == 0
     assert patch.run_truth_scope == ["repo-a"]
     assert patch.repositories_read == ["repo-a"]
+    assert patch.source_operation_id == "task-create-proposal"
     assert patch.change_summary == ["Raised a belief transition for review."]
     assert proposal["base_rev"] == 0
     assert proposal["related_node_ids"] == []
     assert proposal["related_config_keys"] == []
     assert proposal["status"] == "pending"
+    assert proposal["created_by"] == "agent"
+    assert proposal["created_by_operation_id"] == "task-create-proposal"
     assert proposal["raised_rev"] == 0
     assert proposal["resolved_rev"] is None
+    assert proposal["resolved_by"] is None
+    assert proposal["resolved_by_operation_id"] is None
+    assert proposal["resolution_reason"] is None
     assert proposal["rejection_reason"] is None

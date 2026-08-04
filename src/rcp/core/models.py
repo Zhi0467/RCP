@@ -347,8 +347,13 @@ class Proposal(BaseModel):
     related_config_keys: list[str] = Field(default_factory=list)
     base_rev: int
     status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
+    created_by: Literal["agent", "human"] = "agent"
+    created_by_operation_id: str | None = None
     raised_rev: int = 0
     resolved_rev: int | None = None
+    resolved_by: Literal["agent", "human"] | None = None
+    resolved_by_operation_id: str | None = None
+    resolution_reason: str | None = None
     rejection_reason: str | None = None
 
 
@@ -432,6 +437,7 @@ class Patch(BaseModel):
     repositories_read: list[str] = Field(default_factory=list)
     processed_cursors: dict[str, str] = Field(default_factory=dict)
     change_summary: list[str] = Field(default_factory=list)
+    source_operation_id: str | None = None
     admission: Literal["accepted", "rejected"] = "accepted"
     admission_messages: list[ValidationMessage] = Field(default_factory=list)
     # RCP stamps these after reading an experiment-loop deliverable. They are

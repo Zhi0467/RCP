@@ -1,6 +1,6 @@
-import { AlertTriangle, Check, Play, X } from "lucide-react";
+import { AlertTriangle, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AgentRunConfig, ProjectSnapshot, SkillDefaults } from "../types";
+import type { AgentRunConfig, ProjectSnapshot } from "../types";
 import { AgentConfigControls, profileRunConfig } from "./AgentConfigControls";
 import { RepositoryScope } from "./RepositoryScope";
 
@@ -10,16 +10,10 @@ interface Props {
   project: ProjectSnapshot;
   initialScope: string[];
   initialConfig?: AgentRunConfig;
-  initialSkills?: SkillDefaults;
   mode?: "start" | "retry";
   busy: boolean;
   onClose: () => void;
-  onRun: (
-    config: AgentRunConfig,
-    scope: string[],
-    message: string | null,
-    skills: SkillDefaults,
-  ) => void;
+  onRun: (config: AgentRunConfig, scope: string[], message: string | null) => void;
 }
 
 export function RunDialog({
@@ -28,25 +22,20 @@ export function RunDialog({
   project,
   initialScope,
   initialConfig,
-  initialSkills,
   mode = "start",
   busy,
   onClose,
   onRun,
 }: Props) {
-  const skillCatalog = project.skill_catalog ?? [];
-  const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
   const [scope, setScope] = useState(initialScope);
   const [config, setConfig] = useState(() => profileRunConfig(project.agent_profiles[kind]));
   const [message, setMessage] = useState("");
-  const [skills, setSkills] = useState<SkillDefaults>(initialSkills || skillDefaults);
 
   useEffect(() => {
     if (!open) return;
     setScope(initialScope);
     setConfig(initialConfig || profileRunConfig(project.agent_profiles[kind]));
-    setSkills(initialSkills || skillDefaults);
-  }, [open, initialConfig, initialScope, initialSkills, kind, project.id]);
+  }, [open, initialConfig, initialScope, kind, project.id]);
 
   useEffect(() => {
     if (open) setMessage("");
@@ -54,7 +43,8 @@ export function RunDialog({
 
   if (!open) return null;
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
-  const providerReady = Boolean(readiness?.installed && readiness?.authenticated);
+  const providerReady =
+    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   const crossMachineRepositories = project.repositories.filter(
     (repository) => scope.includes(repository.alias) && repository.machine !== config.run_on,
   );
@@ -117,49 +107,6 @@ export function RunDialog({
             </div>
           </>
         )}
-        {skillCatalog.length > 0 && (
-          <div className="run-dialog-section">
-            <span className="field-label">Guidance for this run</span>
-            <div>
-              {skillCatalog.map((item) => {
-                const selected = (
-                  item.kind === "workflow" ? skills.workflow_ids : skills.skill_ids
-                ).includes(item.id);
-                return (
-                  <button
-                    className="scope-option"
-                    type="button"
-                    key={`${item.kind}:${item.id}`}
-                    aria-pressed={selected}
-                    disabled={busy || mode === "retry"}
-                    onClick={() =>
-                      setSkills((current) => {
-                        const key = item.kind === "workflow" ? "workflow_ids" : "skill_ids";
-                        const values = current[key];
-                        return {
-                          ...current,
-                          [key]: selected
-                            ? values.filter((id) => id !== item.id)
-                            : [...values, item.id],
-                        };
-                      })
-                    }
-                  >
-                    <span className={`checkbox ${selected ? "checked" : ""}`} aria-hidden="true">
-                      {selected && <Check size={12} />}
-                    </span>
-                    <span>
-                      <strong>{item.label}</strong>
-                      <span className="scope-option-meta">
-                        {item.kind} · {item.description}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
         <AgentConfigControls
           project={project}
           value={config}
@@ -200,7 +147,7 @@ export function RunDialog({
             disabled={
               busy || scope.length === 0 || !providerReady || hostlessRepositories.length > 0
             }
-            onClick={() => onRun(config, scope, message.trim() || null, skills)}
+            onClick={() => onRun(config, scope, message.trim() || null)}
           >
             <Play size={14} />{" "}
             {mode === "retry"

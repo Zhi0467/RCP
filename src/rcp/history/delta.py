@@ -28,6 +28,7 @@ _OPERATION_LABELS = {
     "resolve_ambiguities": "resolved open questions",
     "create_proposals": "recorded proposals",
     "resolve_proposals": "resolved proposals",
+    "withdraw_proposals": "withdrew proposals",
     "upsert_glossary": "updated the glossary",
     "set_coverage": "updated source coverage",
     "set_standing": "updated review standing",
@@ -389,6 +390,25 @@ def _recent_entries(
                             decision=decision,
                         )
                     )
+            elif name == "withdraw_proposals":
+                for withdrawal in operation.get("proposals", []):
+                    proposal_id = str(withdrawal.get("id", ""))
+                    proposal = state.proposals.get(proposal_id)
+                    entries.append(
+                        RefreshDeltaEntry(
+                            category="proposal_decision",
+                            target_id=proposal_id,
+                            target_type="proposal",
+                            title=_bounded_title(proposal.title if proposal else ""),
+                            revision=patch.revision,
+                            author=patch.author,
+                            field_names=sorted(
+                                {"status"}
+                                | ({"resolution_reason"} if "reason" in withdrawal else set())
+                            ),
+                            decision="withdrawn",
+                        )
+                    )
             elif name == "resolve_ambiguities" and patch.author == "human":
                 for resolution in operation.get("resolutions", []):
                     decision = resolution.get("status")
@@ -710,6 +730,10 @@ def _operation_fallbacks(
                 label = _quoted(_object_label(str(item.get("id", "")), labels))
                 status = str(item.get("status", "resolved")).replace("_", " ").title()
                 sentences.append(f"{status} proposal {label}.")
+        elif name == "withdraw_proposals":
+            for item in _dict_items(operation.get("proposals")):
+                label = _quoted(_object_label(str(item.get("id", "")), labels))
+                sentences.append(f"Withdrew proposal {label}.")
         elif name == "upsert_glossary":
             sentences.extend(
                 f"Updated the glossary entry {_quoted(str(item.get('term', '')).strip())}."

@@ -4,11 +4,17 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
-from rcp.agents import ChatContext
+from pydantic import BaseModel, ConfigDict
+
+from rcp.agents import ChatContext, agent_output_schema
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -23,14 +29,332 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
+    PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.runs.patch_validator import VALIDATOR_CLIENT_SOURCE
 from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
+    _stage_or_reuse_task_input,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import AgentTaskKind, AgentTaskReceiptRecord, AgentTaskRecord, AppStore
 from rcp.transport import RemoteRunStage, StateUnavailable
+
+_CHAT_PROMPT_STATE_ROLE = "chat_prompt_state"
+
+
+class _ChatMasterSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    master_context_version: int
+    master_context_path: str
+    contract_key: str
+    values: dict[str, object]
+
+
+class _ChatPromptCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot: _ChatMasterSnapshot
+    expected_snapshot_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class _ChatPatchInputs:
+    patch_path: str
+    watch_path: str
+    schema_path: str
+    validator_command: str
+    validator_mailbox_id: str
+
+
+def _stage_chat_patch_inputs(
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    *,
+    workspace: Path,
+    stage_name: str,
+) -> _ChatPatchInputs:
+    """Stage stable patch tooling once for a persistent native chat session."""
+
+    schema = json.dumps(agent_output_schema(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    schema_digest = hashlib.sha256(schema.encode("utf-8")).hexdigest()[:16]
+    schema_path = _stage_or_reuse_task_input(
+        local_stage,
+        remote_stage,
+        f"chat-patch-schema-{schema_digest}.json",
+        schema,
+    )
+    client_digest = hashlib.sha256(VALIDATOR_CLIENT_SOURCE.encode("utf-8")).hexdigest()[:16]
+    validator_client_path = _stage_or_reuse_task_input(
+        local_stage,
+        remote_stage,
+        f"chat-validator-client-{client_digest}.py",
+        VALIDATOR_CLIENT_SOURCE,
+    )
+    mailbox_id = hashlib.sha256(f"chat-validator:{stage_name}".encode()).hexdigest()[:32]
+    patch_path = str(workspace / "patch.json")
+    validator_command = shlex.join(
+        [
+            "python3",
+            validator_client_path,
+            patch_path,
+            mailbox_id,
+            str(PATCH_SELF_CHECK_TIMEOUT_SECONDS),
+            str(workspace),
+        ]
+    )
+    return _ChatPatchInputs(
+        patch_path=patch_path,
+        watch_path=str(workspace / "watch.json"),
+        schema_path=schema_path,
+        validator_command=validator_command,
+        validator_mailbox_id=mailbox_id,
+    )
+
+
+def _prepare_chat_prompt_state(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    master_context: str,
+    contract_key: str,
+    values: dict[str, object],
+) -> tuple[str | None, dict[str, object] | None, str]:
+    """Persist a candidate baseline and return bootstrap path plus compact delta."""
+
+    previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
+    must_bootstrap = previous is None or previous.contract_key != contract_key
+    if must_bootstrap:
+        digest = hashlib.sha256(master_context.encode("utf-8")).hexdigest()
+        label = f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-{digest[:16]}.md"
+        master_context_path = _stage_or_reuse_task_input(
+            local_stage,
+            remote_stage,
+            label,
+            master_context,
+        )
+    else:
+        master_context_path = previous.master_context_path
+
+    delta = None if previous is None else _chat_context_delta(previous.values, values)
+    bootstrap_path: str | None = master_context_path if previous is None else None
+    if previous is not None and previous.contract_key != contract_key:
+        delta = {
+            **(delta or {}),
+            "master_context": {
+                "version": CHAT_MASTER_CONTEXT_VERSION,
+                "path": master_context_path,
+            },
+        }
+
+    snapshot = _ChatMasterSnapshot(
+        master_context_version=CHAT_MASTER_CONTEXT_VERSION,
+        master_context_path=master_context_path,
+        contract_key=contract_key,
+        values=values,
+    )
+    if execution is not None:
+        candidate = _ChatPromptCandidate(
+            snapshot=snapshot,
+            expected_snapshot_sha256=expected_snapshot_sha256,
+        )
+        content = candidate.model_dump_json(indent=2)
+        execution.store.record_agent_task_contract(
+            execution.operation_id,
+            _CHAT_PROMPT_STATE_ROLE,
+            content,
+            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        )
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "chat_master_context",
+            {
+                "bootstrapped": must_bootstrap,
+                "master_context_version": CHAT_MASTER_CONTEXT_VERSION,
+                "master_context_path": master_context_path,
+                "changed_fields": sorted(delta or {}),
+            },
+            tier="diagnostic",
+        )
+    return bootstrap_path, delta, master_context_path
+
+
+def _committed_chat_prompt_state(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+) -> tuple[_ChatMasterSnapshot | None, str | None]:
+    if (
+        execution is None
+        or request.session_id is None
+        or request.chat_id is None
+        or request.chat_scope is None
+    ):
+        return None, None
+    kind: Literal["node_chat", "project_chat"] = (
+        "node_chat" if request.chat_scope == "node" else "project_chat"
+    )
+    current = execution.store.agent_task(execution.operation_id)
+    if current is None:
+        raise ValueError("The current chat task record is unavailable.")
+    if request.provider is None or request.run_on is None:
+        raise ValueError("The chat provider and execution machine must be pinned before launch.")
+    baseline = execution.store.validate_chat_session_context_binding(
+        request.provider,
+        request.run_on,
+        request.session_id,
+        project_id=current.project_id,
+        kind=kind,
+        chat_id=request.chat_id,
+        node_id=request.node_id,
+    )
+    if baseline is None:
+        if not execution.store.has_chat_native_session_origin(
+            current.project_id,
+            kind,
+            request.chat_id,
+            request.node_id,
+            request.provider,
+            request.run_on,
+            request.session_id,
+        ):
+            raise ValueError(
+                "The supplied native session does not belong to this RCP chat, provider, and "
+                "execution machine. Start a new chat session instead."
+            )
+        return None, None
+    return (
+        _ChatMasterSnapshot.model_validate_json(baseline.snapshot_json),
+        baseline.snapshot_sha256,
+    )
+
+
+def _commit_chat_prompt_state(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    native_session_id: str | None,
+) -> None:
+    """Commit the candidate sent to a provider only after its ordinary turn succeeds."""
+
+    if execution is None or native_session_id is None or request.chat_id is None:
+        return
+    logical_operation_id = (
+        _logical_chat_turn_operation_id(execution.store, execution.operation_id)
+        if execution.continuation == "resume"
+        else execution.operation_id
+    )
+    content = execution.store.agent_task_contract(logical_operation_id, _CHAT_PROMPT_STATE_ROLE)
+    if content is None:
+        return
+    candidate = _ChatPromptCandidate.model_validate_json(content)
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        raise ValueError("The completed chat task record is unavailable.")
+    kind: Literal["node_chat", "project_chat"] = (
+        "node_chat" if request.chat_scope == "node" else "project_chat"
+    )
+    if request.provider is None or request.run_on is None:
+        raise ValueError("The chat provider and execution machine are unavailable at commit.")
+    snapshot_json = candidate.snapshot.model_dump_json()
+    execution.store.commit_chat_session_context(
+        provider=request.provider,
+        execution_machine=request.run_on,
+        native_session_id=native_session_id,
+        project_id=task.project_id,
+        kind=kind,
+        chat_id=request.chat_id,
+        node_id=request.node_id,
+        protocol_version=candidate.snapshot.master_context_version,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest(),
+        committed_operation_id=execution.operation_id,
+        expected_snapshot_sha256=candidate.expected_snapshot_sha256,
+    )
+
+
+def _record_applied_graph_revision(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    native_session_id: str | None,
+    applied_revision: int | None,
+) -> None:
+    """Absorb this conversation's own accepted patch into its committed baseline.
+
+    The baseline is committed before the patch is applied, so without this the next
+    turn would announce the conversation's own revision back to it. The delta must
+    mean the graph moved for some other reason — a human Sync between turns.
+    """
+
+    if (
+        execution is None
+        or native_session_id is None
+        or applied_revision is None
+        or request.chat_id is None
+        or request.provider is None
+        or request.run_on is None
+    ):
+        return
+    # Read the row this turn just committed, not the one the turn started from:
+    # a first turn has no request.session_id to look itself up by.
+    record = execution.store.chat_session_context(
+        request.provider,
+        request.run_on,
+        native_session_id,
+    )
+    if record is None:
+        return
+    baseline = _ChatMasterSnapshot.model_validate_json(record.snapshot_json)
+    current = baseline.values.get("current")
+    if not isinstance(current, dict) or current.get("graph_revision") == applied_revision:
+        return
+    snapshot = baseline.model_copy(
+        update={
+            "values": {
+                **baseline.values,
+                "current": {**current, "graph_revision": applied_revision},
+            }
+        }
+    )
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        return
+    kind: Literal["node_chat", "project_chat"] = (
+        "node_chat" if request.chat_scope == "node" else "project_chat"
+    )
+    snapshot_json = snapshot.model_dump_json()
+    execution.store.commit_chat_session_context(
+        provider=request.provider,
+        execution_machine=request.run_on,
+        native_session_id=native_session_id,
+        project_id=task.project_id,
+        kind=kind,
+        chat_id=request.chat_id,
+        node_id=request.node_id,
+        protocol_version=snapshot.master_context_version,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest(),
+        committed_operation_id=execution.operation_id,
+        expected_snapshot_sha256=record.snapshot_sha256,
+    )
+
+
+def _chat_context_delta(
+    previous: dict[str, object],
+    current: dict[str, object],
+) -> dict[str, object] | None:
+    changed = {
+        key: value
+        for key, value in current.items()
+        if key not in previous or previous[key] != value
+    }
+    removed = sorted(key for key in previous if key not in current)
+    if removed:
+        changed["removed"] = removed
+    return changed or None
 
 
 def _clear_stale_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:

@@ -11,7 +11,7 @@ pins_current_behavior:
   - tests/test_history.py::test_malformed_agent_patch_is_auditable_without_poisoning_replay
   - tests/test_history.py::test_invalid_agent_patch_is_auditable_but_not_materialized
 invariants: [1]
-blueprint: v0.5 §6.4b
+blueprint: research-control-panel-blueprint.md#append-only-history-validation-and-replay
 ---
 
 # A bad patch stops replay instead of vanishing

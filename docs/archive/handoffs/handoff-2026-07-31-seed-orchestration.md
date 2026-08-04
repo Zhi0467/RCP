@@ -1,5 +1,10 @@
 # Handoff — seed/refresh orchestration recovery (S33)
 
+> Archived 2026-08-04. S33 is implemented and passed; later direct-log ingestion
+> replaced its per-session coverage-key mechanism. This document is retained only
+> as historical execution context. The canonical design lives in
+> [`docs/research-control-panel-blueprint.md`](../../research-control-panel-blueprint.md).
+
 **Date:** 2026-07-31
 **State:** design settled and confirmed by the human. **No code has been
 written.** `docs/acceptance/S33-a-seed-corrects-itself.md` is the specification;
@@ -47,8 +52,8 @@ orchestration conflates three separate questions into the single boolean
 
 Cause is currently inferred from resource state. `resume()` and `retry()` both
 call `_create_and_spawn(..., resumed=True)`
-([background.py:128](../src/rcp/background.py:128),
-[background.py:187](../src/rcp/background.py:187)), so downstream nothing can
+([background.py:128](../../../src/rcp/background.py:128),
+[background.py:187](../../../src/rcp/background.py:187)), so downstream nothing can
 tell an interruption from a rejection. That is why attempt 4 reused the session
 and was told "Continue the interrupted task."
 
@@ -81,16 +86,16 @@ Files: `src/rcp/background.py`, and the `AgentTaskExecution` consumers in
 `src/rcp/api/app.py`.
 
 - Replace `AgentTaskExecution.resumed: bool`
-  ([background.py:29](../src/rcp/background.py:29)) with a continuation cause:
+  ([background.py:29](../../../src/rcp/background.py:29)) with a continuation cause:
   `"fresh" | "resume" | "correction" | "handoff"`.
-- `resume()` ([background.py:114](../src/rcp/background.py:114)) → `resume`.
+- `resume()` ([background.py:114](../../../src/rcp/background.py:114)) → `resume`.
 - `retry()`'s `resume_same_provider` branch
-  ([background.py:178](../src/rcp/background.py:178)) → `correction`. It keeps
+  ([background.py:178](../../../src/rcp/background.py:178)) → `correction`. It keeps
   reusing the native session and stage; only the *instruction* changes.
 - Cross-provider / clean retry → `handoff` (today's behavior).
 - Delete the diagnostic-discarding line
   `retry_feedback=() if resumed else self._retry_feedback(record)`
-  ([background.py:362](../src/rcp/background.py:362)). Feedback is dropped only
+  ([background.py:362](../../../src/rcp/background.py:362)). Feedback is dropped only
   for `resume`, never for `correction`.
 
 `_session_is_rcp_owned` and the lineage walk stay as they are — they answer the
@@ -102,13 +107,13 @@ Files: `src/rcp/agents/prompts.py`, the staging helpers in `src/rcp/api/app.py`.
 
 The contract currently tells the agent to derive coverage keys from the
 projected directory layout
-([prompts.py:124-127](../src/rcp/agents/prompts.py:124)). That is unrecoverable:
+([prompts.py:124-127](../../../src/rcp/agents/prompts.py:124)). That is unrecoverable:
 
 - canonical key — `<repository>/<machine>/<provider>/<session_id>`
-  ([indexer.py:160](../src/rcp/sources/indexer.py:160))
+  ([indexer.py:160](../../../src/rcp/sources/indexer.py:160))
 - projected path — `<provider>/<repository>/<machine>/<session_id>.jsonl`, and
   every segment URL-quoted
-  ([app.py:3691](../src/rcp/api/app.py:3691) `_session_bundle_relative_path`)
+  ([app.py:3691](../../../src/rcp/api/app.py:3691) `_session_bundle_relative_path`)
 
 So the path is both reordered *and* lossy. Reversing it is guesswork, and the
 agent guessed wrong for all 83 sessions.
@@ -121,7 +126,7 @@ agent guessed wrong for all 83 sessions.
   values and are never derived from a path.
 - The path must be stable across correction rounds and retries, because
   `base_contract_content` is reused verbatim from a prior attempt
-  ([app.py:1827](../src/rcp/api/app.py:1827)).
+  ([app.py:1827](../../../src/rcp/api/app.py:1827)).
 - The chat contract sets no coverage — leave `chat_task_contract` alone.
 
 ### P2 — resume uses the saved prepared context, or refuses
@@ -129,16 +134,16 @@ agent guessed wrong for all 83 sessions.
 File: `src/rcp/api/app.py`, `_stream_graph_run`.
 
 `_retry_lineage` returns `[]` when the execution is resumed
-([app.py:1081](../src/rcp/api/app.py:1081)), so `_try_reuse_graph_context`
-returns `None` ([app.py:1215](../src/rcp/api/app.py:1215)) and control falls
-into `service.assemble_run` ([app.py:1691](../src/rcp/api/app.py:1691)). The
+([app.py:1081](../../../src/rcp/api/app.py:1081)), so `_try_reuse_graph_context`
+returns `None` ([app.py:1215](../../../src/rcp/api/app.py:1215)) and control falls
+into `service.assemble_run` ([app.py:1691](../../../src/rcp/api/app.py:1691)). The
 resumed run then rebinds that *fresh* context onto the *old* staged files
-([app.py:1769](../src/rcp/api/app.py:1769)). That is the 89-vs-92 split-brain.
+([app.py:1769](../../../src/rcp/api/app.py:1769)). That is the 89-vs-92 split-brain.
 
 The machinery to fix it already exists and is simply not wired up:
 `_PreparedGraphContext` carries the full `RunContext` **and**
-`previous_coverage` ([app.py:110](../src/rcp/api/app.py:110)), and
-`_read_prepared_graph_context` ([app.py:1065](../src/rcp/api/app.py:1065))
+`previous_coverage` ([app.py:110](../../../src/rcp/api/app.py:110)), and
+`_read_prepared_graph_context` ([app.py:1065](../../../src/rcp/api/app.py:1065))
 reads it from a record's stage. On resume the parent's stage *is* the current
 stage, so the file is already there.
 
@@ -149,35 +154,35 @@ stage, so the file is already there.
   mismatch, fail with a message that names Retry. No rebase.
 - On failure to load, fail the same way. Do not fall through.
 - Lift the `if not resuming` guard on `_stage_prepared_graph_context`
-  ([app.py:1949](../src/rcp/api/app.py:1949)) so a third attempt can chain off
+  ([app.py:1949](../../../src/rcp/api/app.py:1949)) so a third attempt can chain off
   the second. **Watch out:** the resumed attempt reuses the same stage, so
   `prepared-context.json` already exists in `inputs/`. Decide overwrite vs.
   skip-if-identical explicitly and record a receipt either way — do not let it
   silently raise the way `_stage_local_graph_conversations` does for an existing
-  projection ([app.py:3620](../src/rcp/api/app.py:3620)).
+  projection ([app.py:3620](../../../src/rcp/api/app.py:3620)).
 
 ### P3 — a graph rejection is correctable
 
 File: `src/rcp/api/app.py`, `_stream_graph_run`.
 
-[app.py:2111-2116](../src/rcp/api/app.py:2111) lumps `PatchRejected` in with
+[app.py:2111-2116](../../../src/rcp/api/app.py:2111) lumps `PatchRejected` in with
 `ReplayHalted` and `StateUnavailable` and terminates, on the reasoning that a
 rejection is a semantic disagreement. It is not: `PatchRejected` carries a
 `ValidationReport` of authoring-level messages
-([manager.py:62](../src/rcp/history/manager.py:62)) — exactly what the session
+([manager.py:62](../../../src/rcp/history/manager.py:62)) — exactly what the session
 still holding the analysis can fix. "These blockers must be Proposals" is a
 deterministic authoring correction.
 
 - Route `PatchRejected` into the existing correction ladder at
-  [app.py:2131](../src/rcp/api/app.py:2131) by setting `problem` from the
+  [app.py:2131](../../../src/rcp/api/app.py:2131) by setting `problem` from the
   reject-level messages.
 - `ReplayHalted` and `StateUnavailable` remain terminal.
-- `_MAX_CORRECTION_ROUNDS = 2` ([app.py:814](../src/rcp/api/app.py:814)) still
+- `_MAX_CORRECTION_ROUNDS = 2` ([app.py:814](../../../src/rcp/api/app.py:814)) still
   bounds it. An agent that never converges fails with the last refusal as its
   visible error.
 - Record the rejection as a receipt on every round; the retained patch text is
   already persisted before validation
-  ([app.py:2073](../src/rcp/api/app.py:2073)) and must stay that way.
+  ([app.py:2073](../../../src/rcp/api/app.py:2073)) and must stay that way.
 
 ### P4 — a rejected agent patch consumes no revision
 
@@ -185,22 +190,22 @@ File: `src/rcp/history/manager.py`.
 
 Today `append` writes the patch file *before* the caller sees the rejection —
 deliberately, per its docstring
-([manager.py:170](../src/rcp/history/manager.py:170)). With P3 looping twice
+([manager.py:170](../../../src/rcp/history/manager.py:170)). With P3 looping twice
 more, a messy seed would land at revision 3.
 
 Add `discard_on_reject: bool = False` to `append`
-([manager.py:161](../src/rcp/history/manager.py:161)). When set and
+([manager.py:161](../../../src/rcp/history/manager.py:161)). When set and
 `report.rejected`, raise `PatchRejected(report)` **before** the write at
-[manager.py:239](../src/rcp/history/manager.py:239) — before `_atomic_text`,
+[manager.py:239](../../../src/rcp/history/manager.py:239) — before `_atomic_text`,
 before `materialize`, before `publish_committed_patch`.
 
 This is clean because `_next_revision` derives the number from files on disk
-([manager.py:475](../src/rcp/history/manager.py:475)): not writing means nothing
+([manager.py:475](../../../src/rcp/history/manager.py:475)): not writing means nothing
 to roll back. Keep it inside the same `_append_lock` so the check stays atomic —
 a validate-then-append across two lock acquisitions reintroduces exactly the
 race that `expected_revision` exists to close.
 
-Call site: [app.py:2107](../src/rcp/api/app.py:2107) switches from
+Call site: [app.py:2107](../../../src/rcp/api/app.py:2107) switches from
 `raise_on_reject=False` plus a manual `report.rejected` check to
 `discard_on_reject=True`, catching `PatchRejected` into `problem`.
 
@@ -212,7 +217,7 @@ File: `src/rcp/agents/launcher.py`.
 
 Attempt 3's first silent exit cannot be explained after the fact: a zero return
 code with no `error` event yields a bare `done`
-([launcher.py:343-347](../src/rcp/agents/launcher.py:343)).
+([launcher.py:343-347](../../../src/rcp/agents/launcher.py:343)).
 
 Record a diagnostic receipt on the clean-exit path too: return code, event
 counts by kind, whether a patch file existed at collection time. Small, but it
@@ -227,17 +232,17 @@ is the difference between diagnosing the next silent exit and guessing at it.
 - **Invariant 8/9** — a failed run keeps its scratch folder and patch text. P2
   and P3 both depend on the stage surviving; do not add cleanup on the
   correction path. Cleanup stays gated on `applied`
-  ([app.py:2177](../src/rcp/api/app.py:2177)).
+  ([app.py:2177](../../../src/rcp/api/app.py:2177)).
 - **Invariant 10** — chat and graph runs stay separate. No shared helper may
   take a `kind` / `is_chat` / `surface` discriminator. The continuation cause is
   *not* such a discriminator — it describes why one run is continuing, not which
   surface it serves — but keep it out of `_stream_chat_run` unless chat needs it
   on its own terms.
-- `_parent_task_contract_path` ([app.py:988](../src/rcp/api/app.py:988))
+- `_parent_task_contract_path` ([app.py:988](../../../src/rcp/api/app.py:988))
   already refuses a contract path outside the saved stage. Correction-mode
   retry must go through the same check.
 - `continuation_task_contract` already supports both `resume` and
-  `patch_correction` modes ([prompts.py:307](../src/rcp/agents/prompts.py:307)).
+  `patch_correction` modes ([prompts.py:307](../../../src/rcp/agents/prompts.py:307)).
   Correction-mode retry reuses `patch_correction` and adds the retained patch
   pointer; no new mode string is needed.
 

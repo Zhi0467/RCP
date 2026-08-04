@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import shlex
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
@@ -15,17 +14,16 @@ from rcp.agents import (
     AgentEvent,
     AgentLauncher,
     PromptFactory,
-    agent_output_schema,
     prepare_agent_patch,
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.history import PatchRejected, ReplayHalted
-from rcp.limits import WORK_PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -33,23 +31,27 @@ from rcp.runs.chat import (
     _chat_stage_name,
     _clear_stale_patch,
     _clear_stale_watch,
+    _commit_chat_prompt_state,
     _discover_chat_artifacts,
     _existing_watch_digest,
     _logical_chat_turn_operation_id,
+    _prepare_chat_prompt_state,
     _prepare_local_artifact_directory,
     _read_chat_patch,
     _read_watch_request,
+    _record_applied_graph_revision,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
+    _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     _work_write_dirs,
 )
 from rcp.runs.patch_validator import (
-    VALIDATOR_CLIENT_SOURCE,
     PatchValidationBudget,
     PatchValidationResult,
     cleanup_patch_validation_mailbox,
+    prepare_patch_validation_mailbox,
     serve_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
@@ -70,7 +72,7 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
-from rcp.skills.staging import stage_skill_selection
+from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import WatcherContinuation
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
@@ -96,6 +98,38 @@ class _PreparedWorkPatch:
     patch: Patch
     change_summary: tuple[str, ...]
     proposal_ids: tuple[str, ...]
+
+
+def _prepare_work_chat_prompt(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    artifact_path: str,
+    master_context: str,
+    stable_values: dict[str, object],
+) -> tuple[str, str]:
+    """Prepare the provisional session baseline behind one Work-local seam."""
+
+    if request.message is None:
+        raise ValueError("An ordinary Work turn requires a human message.")
+    bootstrap_path, context_delta, retained_master_path = _prepare_chat_prompt_state(
+        execution,
+        request,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        master_context=master_context,
+        contract_key=f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}",
+        values=stable_values,
+    )
+    prompt = PromptFactory.work_turn_prompt(
+        artifact_path=artifact_path,
+        human_message=request.message,
+        master_context_path=bootstrap_path,
+        context_delta=context_delta,
+    )
+    return prompt, retained_master_path
 
 
 def _retry_deliverable_is_unchanged(
@@ -158,6 +192,9 @@ async def stream_work_run(
     resuming = continuation == "resume"
     retrying = continuation == "retry"
     retry_attempt = continuation in {"retry", "handoff"}
+    uses_master_protocol = (
+        request.trigger == "human" and request.patch_kind == "work" and not retry_attempt
+    )
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
     try:
         profile = service.resolve_agent_profile(
@@ -203,8 +240,6 @@ async def stream_work_run(
                         )
                     )
                 workspace = Path(str(remote_stage.workspace))
-                patch_path = str(remote_stage.workspace / "patch.json")
-                watch_path = str(remote_stage.workspace / "watch.json")
             else:
                 stage_root = _swept_stage_root(data_dir)
                 expected_stage = stage_root / stage_name
@@ -216,8 +251,17 @@ async def stream_work_run(
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
                 workspace = local_stage
-                patch_path = str(local_stage / "patch.json")
-                watch_path = str(local_stage / "watch.json")
+            patch_inputs = _stage_chat_patch_inputs(
+                local_stage,
+                remote_stage,
+                workspace=workspace,
+                stage_name=stage_name,
+            )
+            patch_path = patch_inputs.patch_path
+            watch_path = patch_inputs.watch_path
+            schema_path = patch_inputs.schema_path
+            validator_command = patch_inputs.validator_command
+            validator_mailbox_id = patch_inputs.validator_mailbox_id
             if not reusing_checkpoint:
                 _clear_stale_patch(workspace, remote_stage)
                 _clear_stale_watch(workspace, remote_stage)
@@ -250,28 +294,13 @@ async def stream_work_run(
                 remote=remote_stage is not None,
             )
             token = _task_token(execution)
+            skill_selection = service.resolve_skill_selection(request)
             skill_pointers = stage_skill_selection(
-                service.resolve_skill_selection(request),
+                skill_selection,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                label=f"rcp-skills-{token}",
-            )
-            validator_mailbox_id = uuid.uuid4().hex
-            validator_client_path = _stage_task_input(
-                local_stage,
-                remote_stage,
-                f"task-{token}-validator-client.py",
-                VALIDATOR_CLIENT_SOURCE,
-            )
-            validator_command = shlex.join(
-                [
-                    "python3",
-                    validator_client_path,
-                    patch_path,
-                    validator_mailbox_id,
-                    str(WORK_PATCH_SELF_CHECK_TIMEOUT_SECONDS),
-                    str(workspace),
-                ]
+                label=skill_bundle_label(skill_selection),
+                reuse_existing=True,
             )
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
@@ -300,28 +329,6 @@ async def stream_work_run(
                 )
             else:
                 assert request.message is not None
-                human_request_path = _stage_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-human-request.txt",
-                    request.message,
-                )
-                schema_path = _stage_json_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-patch-schema.json",
-                    agent_output_schema(),
-                )
-                retry_diagnostics_path = (
-                    _stage_json_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-retry-diagnostics.json",
-                        {"prior_attempt_diagnostics": list(execution.retry_feedback)},
-                    )
-                    if execution is not None and (execution.retry_feedback or retry_attempt)
-                    else None
-                )
                 control_context_path = None
                 if request.patch_kind == "experiment_loop":
                     if not request.control_node_id or request.control_revision is None:
@@ -369,43 +376,133 @@ async def stream_work_run(
                             ),
                         },
                     )
-                contract = PromptFactory.work_task_contract(
-                    project_name=context.project_name,
-                    ontology_path=f"{context.graph_path}#ontology",
-                    graph_path=context.graph_path,
-                    research_path=context.research_md_path,
-                    focused_node_id=str(context.node["id"]) if context.node else None,
-                    repositories=[
-                        {"alias": item.alias, "host": item.host, "path": item.path}
-                        for item in context.repositories
-                    ],
-                    introduction_path=context.introduction_path,
-                    human_request_path=human_request_path,
-                    patch_path=patch_path,
-                    artifact_path=str(artifact_directory),
-                    output_schema_path=schema_path,
-                    retry_diagnostics_path=retry_diagnostics_path,
-                    watch_path=watch_path,
-                    patch_kind=request.patch_kind,
-                    control_context_path=control_context_path,
-                    validator_command=validator_command,
-                    skill_pointers=skill_pointers,
+                repositories = [
+                    {"alias": item.alias, "host": item.host, "path": item.path}
+                    for item in context.repositories
+                ]
+                focused_node_id = str(context.node["id"]) if context.node else None
+                retry_diagnostics_path = (
+                    _stage_json_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-retry-diagnostics.json",
+                        {"prior_attempt_diagnostics": list(execution.retry_feedback)},
+                    )
+                    if execution is not None
+                    and not uses_master_protocol
+                    and (execution.retry_feedback or retry_attempt)
+                    else None
                 )
-                current_contract_path, current_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
-                    contract,
-                    execution=execution,
-                    role="work_retry_base" if retry_attempt else "work",
-                )
-                base_contract_path = current_contract_path
+                # A retry that still holds its native session already has the contract in the
+                # conversation; it gets a follow-up naming what changed, not a rebuilt contract.
+                resumed_retry = retrying and reusing_checkpoint
+                explicit_contract = not uses_master_protocol and not resumed_retry
+                current_contract_path = None
+                current_prompt = None
+                if explicit_contract:
+                    human_request_path = _stage_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-human-request.txt",
+                        request.message,
+                    )
+                    contract = PromptFactory.work_task_contract(
+                        project_name=context.project_name,
+                        ontology_path=f"{context.graph_path}#ontology",
+                        ontology_extensions=context.ontology_extensions,
+                        graph_path=context.graph_path,
+                        research_path=context.research_md_path,
+                        focused_node_id=focused_node_id,
+                        repositories=repositories,
+                        introduction_path=context.introduction_path,
+                        human_request_path=human_request_path,
+                        patch_path=patch_path,
+                        artifact_path=str(artifact_directory),
+                        output_schema_path=schema_path,
+                        retry_diagnostics_path=retry_diagnostics_path,
+                        watch_path=watch_path,
+                        patch_kind=request.patch_kind,
+                        control_context_path=control_context_path,
+                        validator_command=validator_command,
+                        skill_pointers=skill_pointers,
+                    )
+                    current_contract_path, current_prompt = _stage_task_contract(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
+                        contract,
+                        execution=execution,
+                        role="work_retry_base" if retry_attempt else "work",
+                    )
+                    base_contract_path = current_contract_path
+                elif uses_master_protocol:
+                    master_context = PromptFactory.chat_master_context(
+                        project_name=context.project_name,
+                        ontology_path=f"{context.graph_path}#ontology",
+                        ontology_extensions=context.ontology_extensions,
+                        graph_path=context.graph_path,
+                        research_path=context.research_md_path,
+                        graph_revision=context.graph_revision,
+                        focused_node_id=focused_node_id,
+                        focused_node=context.node,
+                        focused_relations=[
+                            item.model_dump(mode="json") for item in context.relations
+                        ],
+                        repositories=repositories,
+                        introduction_path=context.introduction_path,
+                        patch_path=patch_path,
+                        workspace_path=str(workspace),
+                        output_schema_path=schema_path,
+                        validator_command=validator_command,
+                        watch_path=watch_path,
+                        skill_pointers=skill_pointers,
+                    )
+                    stable_prompt_values: dict[str, object] = {
+                        "project": {"name": context.project_name},
+                        "settings": {
+                            "provider": request.provider,
+                            "model": request.model,
+                            "reasoning": request.reasoning,
+                            "run_on": request.run_on,
+                        },
+                        "current": {
+                            "ontology_path": f"{context.graph_path}#ontology",
+                            "graph_revision": context.graph_revision,
+                            "graph_path": context.graph_path,
+                            "research_path": context.research_md_path,
+                            "focused_node_id": focused_node_id,
+                            "introduction_path": context.introduction_path,
+                        },
+                        "repositories": repositories,
+                        "skills": {"pointers": skill_pointers},
+                        "patch": {
+                            "path": patch_path,
+                            "watch_path": watch_path,
+                            "schema_path": schema_path,
+                            "validator_command": validator_command,
+                            "validator_mailbox_id": validator_mailbox_id,
+                        },
+                        "workspace": {"path": str(workspace)},
+                    }
+                    prompt, retained_master_path = _prepare_work_chat_prompt(
+                        execution,
+                        request,
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        artifact_path=str(artifact_directory),
+                        master_context=master_context,
+                        stable_values=stable_prompt_values,
+                    )
+                    contract_path = retained_master_path
+                    base_contract_path = retained_master_path
+
                 if retrying:
                     assert execution is not None
-                    assert retry_diagnostics_path is not None
                     original_contract_path = _parent_task_contract_path(
                         execution, local_stage, remote_stage
                     )
+                    if resumed_retry:
+                        base_contract_path = original_contract_path
                     retry_contract = PromptFactory.continuation_task_contract(
                         original_contract_path=original_contract_path,
                         current_contract_path=current_contract_path,
@@ -414,6 +511,8 @@ async def stream_work_run(
                         watch_path=watch_path,
                         mode="retry",
                         validator_command=validator_command,
+                        output_schema_path=schema_path if resumed_retry else None,
+                        skill_pointers=skill_pointers if resumed_retry else None,
                     )
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
@@ -423,7 +522,7 @@ async def stream_work_run(
                         execution=execution,
                         role="work_retry",
                     )
-                else:
+                elif explicit_contract:
                     contract_path, prompt = current_contract_path, current_prompt
 
             retry_patch_digest: str | None = None
@@ -516,6 +615,9 @@ async def stream_work_run(
                 AgentEvent(event="error", text=f"{request.provider} finished without answering.")
             )
             return
+
+        if uses_master_protocol:
+            _commit_chat_prompt_state(execution, request, outcome.session_id)
 
         assert artifact_scope_id is not None
         assert artifact_directory is not None
@@ -803,6 +905,8 @@ async def stream_work_run(
                             control_completion_criteria=request.control_completion_criteria,
                             workflow_ids=request.workflow_ids or [],
                             skill_ids=request.skill_ids or [],
+                            invoked_workflow_ids=request.invoked_workflow_ids,
+                            invoked_skill_ids=request.invoked_skill_ids,
                             resolved_skill_packages=request.resolved_skill_packages or [],
                         ),
                     )
@@ -969,6 +1073,22 @@ async def stream_work_run(
             watch_text = corrected
             watch_problem = None
 
+        if uses_master_protocol:
+            try:
+                _record_applied_graph_revision(
+                    execution,
+                    request,
+                    outcome.session_id,
+                    graph_update.applied_revision,
+                )
+            except ValueError as exc:
+                if execution is not None:
+                    execution.store.record_agent_task_event(
+                        execution.operation_id,
+                        "This turn's own revision could not be absorbed into the session "
+                        f"baseline; the next turn may re-announce it: {exc}",
+                        level="warning",
+                    )
         try:
             _append_chat_exchange(
                 service,
@@ -1039,12 +1159,17 @@ async def _stream_work_graph_repair(
                 )
             )
             workspace = Path(str(remote_stage.workspace))
-            patch_path = str(remote_stage.workspace / "patch.json")
         else:
             expected_stage = _swept_stage_root(data_dir) / stage_name
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
             workspace = local_stage
-            patch_path = str(local_stage / "patch.json")
+        patch_inputs = _stage_chat_patch_inputs(
+            local_stage,
+            remote_stage,
+            workspace=workspace,
+            stage_name=stage_name,
+        )
+        patch_path = patch_inputs.patch_path
         read_dirs = _chat_read_dirs(
             context,
             remote_stage,
@@ -1069,23 +1194,8 @@ async def _stream_work_graph_repair(
             raise ValueError("Only a rejected Work graph update can be repaired.")
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
         token = _task_token(execution)
-        validator_mailbox_id = uuid.uuid4().hex
-        validator_client_path = _stage_task_input(
-            local_stage,
-            remote_stage,
-            f"task-{token}-validator-client.py",
-            VALIDATOR_CLIENT_SOURCE,
-        )
-        validator_command = shlex.join(
-            [
-                "python3",
-                validator_client_path,
-                patch_path,
-                validator_mailbox_id,
-                str(WORK_PATCH_SELF_CHECK_TIMEOUT_SECONDS),
-                str(workspace),
-            ]
-        )
+        validator_mailbox_id = patch_inputs.validator_mailbox_id
+        validator_command = patch_inputs.validator_command
         diagnostics_path = _stage_json_task_input(
             local_stage,
             remote_stage,
@@ -1259,6 +1369,12 @@ async def _stream_work_agent_events(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> AsyncIterator[str]:
+    await asyncio.to_thread(
+        prepare_patch_validation_mailbox,
+        mailbox_id=mailbox_id,
+        workspace=workspace,
+        remote_stage=remote_stage,
+    )
     stop = asyncio.Event()
     mailbox = asyncio.create_task(
         serve_patch_validation_mailbox(
@@ -1273,6 +1389,7 @@ async def _stream_work_agent_events(
                 patch_kind=patch_kind,
                 control_node_id=control_node_id,
                 control_decision_bundle=control_decision_bundle,
+                source_operation_id=execution.operation_id if execution else None,
             ),
             stop=stop,
             budget=validator_budget,
@@ -1320,6 +1437,7 @@ def _prepare_work_patch_candidate(
     patch_kind: Literal["work", "experiment_loop"],
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin] | None,
+    source_operation_id: str | None = None,
 ) -> _PreparedWorkPatch:
     draft, _ = service.parse_patch_output([patch_text])
     validate_agent_patch_shape(draft)
@@ -1327,6 +1445,7 @@ def _prepare_work_patch_candidate(
         draft,
         kind=patch_kind,
         run_truth_scope=run_truth_scope,
+        source_operation_id=source_operation_id,
     )
     if patch_kind == "experiment_loop":
         patch = patch.model_copy(
@@ -1351,6 +1470,7 @@ def _validate_work_patch_live(
     patch_kind: Literal["work", "experiment_loop"],
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin] | None,
+    source_operation_id: str | None = None,
 ) -> PatchValidationResult:
     try:
         candidate = _prepare_work_patch_candidate(
@@ -1360,6 +1480,7 @@ def _validate_work_patch_live(
             patch_kind=patch_kind,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
+            source_operation_id=source_operation_id,
         )
         prepared, report, state = service.history.validate_candidate(candidate.patch)
     except (ReplayHalted, StateUnavailable, OSError) as exc:
@@ -1459,6 +1580,7 @@ def _apply_work_patch(
             patch_kind=patch_kind,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
+            source_operation_id=execution.operation_id if execution else None,
         )
         patch = candidate.patch
         change_summary = candidate.change_summary

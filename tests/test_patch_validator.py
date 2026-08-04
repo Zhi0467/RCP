@@ -10,18 +10,21 @@ from pathlib import Path
 import pytest
 
 from rcp.history import HistoryManager
-from rcp.limits import WORK_PATCH_SELF_CHECK_MAX_COUNT
+from rcp.limits import PATCH_SELF_CHECK_MAX_COUNT
 from rcp.paper import PaperService
+from rcp.runs.graph import _validate_graph_patch_live
 from rcp.runs.patch_validator import (
     VALIDATOR_CLIENT_SOURCE,
     PatchValidationBudget,
     PatchValidationResult,
+    prepare_patch_validation_mailbox,
     serve_patch_validation_mailbox,
 )
 from rcp.runs.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import ProjectService
 from rcp.storage import AppStore
-from tests.helpers import refresh_patch, seed_patch
+from rcp.transport import StateUnavailable
+from tests.helpers import agent_patch_json, refresh_patch, seed_patch
 
 
 class _RecordingStore:
@@ -142,17 +145,51 @@ async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_pa
     )
     results = [
         await _run_client(workspace, client, mailbox_id)
-        for _ in range(WORK_PATCH_SELF_CHECK_MAX_COUNT + 1)
+        for _ in range(PATCH_SELF_CHECK_MAX_COUNT + 1)
     ]
     stop.set()
     await server
 
-    assert [result.returncode for result in results[:-1]] == [0] * WORK_PATCH_SELF_CHECK_MAX_COUNT
+    assert [result.returncode for result in results[:-1]] == [0] * PATCH_SELF_CHECK_MAX_COUNT
     assert results[-1].returncode == 2
-    assert calls == WORK_PATCH_SELF_CHECK_MAX_COUNT
-    assert budget.count == WORK_PATCH_SELF_CHECK_MAX_COUNT + 1
-    assert len(execution.store.events) == WORK_PATCH_SELF_CHECK_MAX_COUNT + 1
+    assert calls == PATCH_SELF_CHECK_MAX_COUNT
+    assert budget.count == PATCH_SELF_CHECK_MAX_COUNT + 1
+    assert len(execution.store.events) == PATCH_SELF_CHECK_MAX_COUNT + 1
     assert "self-check limit" in results[-1].stdout
+
+
+def test_stable_validator_mailbox_is_cleaned_before_each_provider_pass(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    mailbox_id = uuid.uuid4().hex
+    stale_prefix = f"rcp-validator-{mailbox_id}-{uuid.uuid4().hex}"
+    stale_request = workspace / f"{stale_prefix}.request.json"
+    stale_response = workspace / f"{stale_prefix}.response.json"
+    unrelated = workspace / "keep.txt"
+    stale_request.write_text("{}", encoding="utf-8")
+    stale_response.write_text("{}", encoding="utf-8")
+    unrelated.write_text("keep", encoding="utf-8")
+
+    prepare_patch_validation_mailbox(
+        mailbox_id=mailbox_id,
+        workspace=workspace,
+        remote_stage=None,
+    )
+
+    assert not stale_request.exists()
+    assert not stale_response.exists()
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+def test_stable_validator_mailbox_preparation_fails_when_workspace_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(StateUnavailable, match="workspace .* unavailable"):
+        prepare_patch_validation_mailbox(
+            mailbox_id=uuid.uuid4().hex,
+            workspace=tmp_path / "missing",
+            remote_stage=None,
+        )
 
 
 def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_path: Path) -> None:
@@ -220,3 +257,40 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
     assert failure is not None
     assert "already exists" in failure.message
     assert history.state().revision == 2
+
+
+def test_graph_live_self_check_validates_current_state_without_appending(
+    manifest, tmp_path: Path
+) -> None:
+    history = HistoryManager(manifest)
+    service = ProjectService(
+        manifest,
+        history,
+        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+        data_dir=tmp_path,
+    )
+    semantic_patch = agent_patch_json(seed_patch())
+
+    checked = _validate_graph_patch_live(
+        service,
+        semantic_patch,
+        kind="seed",
+        run_truth_scope=["repo-a"],
+    )
+    assert checked.status == "valid"
+    assert checked.live_revision == 0
+    assert checked.candidate_revision == 1
+    assert history.state().revision == 0
+
+    history.append(seed_patch())
+    rechecked = _validate_graph_patch_live(
+        service,
+        semantic_patch,
+        kind="seed",
+        run_truth_scope=["repo-a"],
+    )
+    assert rechecked.status == "invalid"
+    assert rechecked.live_revision == 1
+    assert rechecked.candidate_revision == 2
+    assert any("already exists" in message for message in rechecked.messages)
+    assert history.state().revision == 1

@@ -342,6 +342,7 @@ def test_graph_and_work_contracts_require_reader_facing_change_summaries() -> No
         "refresh",
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
+        ontology_extensions=True,
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         provider_log_roots={},
@@ -349,10 +350,12 @@ def test_graph_and_work_contracts_require_reader_facing_change_summaries() -> No
         repositories=[],
         patch_path="/stage/patch.json",
         output_schema_path="/stage/schema.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
     )
     work_contract = PromptFactory.work_task_contract(
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
+        ontology_extensions=True,
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         focused_node_id=None,
@@ -362,6 +365,7 @@ def test_graph_and_work_contracts_require_reader_facing_change_summaries() -> No
         patch_path="/stage/patch.json",
         artifact_path="/stage/artifacts",
         output_schema_path="/stage/schema.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
     )
 
     for contract in (graph_contract, work_contract):

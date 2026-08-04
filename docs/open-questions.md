@@ -4,9 +4,9 @@ Design questions that are **raised and evidenced but not decided**. This file is
 deliberately not the blueprint: the blueprint records decisions, `docs/acceptance/`
 records promises, and this file records what is still genuinely undecided.
 
-An entry stays here until it is either decided — at which point it moves into a
-blueprint amendment and is deleted here — or ruled out. Keep the evidence with
-the entry, so the next person does not re-derive it.
+An entry stays here until it is either decided — at which point the canonical
+blueprint is updated in place and the entry is deleted here — or ruled out. Keep
+the evidence with the entry, so the next person does not re-derive it.
 
 ---
 
@@ -28,8 +28,7 @@ editing, or deletion path.
 ## Q1 — Should `RELATION_SPEC` widen to let evidence reach a blocker or a decision?
 
 **Status:** open. Raised 2026-08-01. No decision.
-**Governing section:** [v0.5 §`RELATION_SPEC` — typing and layers](archive/research-control-panel-blueprint-v0.5.md).
-v0.6 does not touch it.
+**Governing section:** [Relations and graph structure](research-control-panel-blueprint.md#relations-and-graph-structure).
 
 ### The question
 
@@ -123,7 +122,7 @@ with a project-custom relation. The flag is the observation the design asked for
 ## Q2 — What belongs in Control v2 after completion-only watchers?
 
 **Status:** open. Raised 2026-08-01. V1 boundary decided; v2 details are not.
-**Governing section:** [v0.7 D29](blueprint-v0.7.md).
+**Governing section:** [Experiment control and watchers](research-control-panel-blueprint.md#experiment-control-and-watchers).
 
 ### Decided boundary
 
@@ -152,9 +151,9 @@ The human wants to drag between nodes to create an edge, choose its relation
 type, and approve, refute, or delete an edge in place. This fits how the app
 already treats human corrections as literal edits rather than agent requests.
 
-Keep it separate from [Q3](#q3--what-exactly-does-the-human-accept-when-an-experiment-produces-evidence).
-Direct manipulation is UI authority; Q3 is about what unit a human accepts when
-a loop reports a result. Building the first must not silently answer the second.
+Keep it separate from Experiment belief acceptance. Direct manipulation is UI
+authority; belief acceptance is the settled Proposal path described in the
+canonical blueprint. Building the first must not silently alter the second.
 
 ### Secondary v2 lifecycle questions
 
@@ -165,100 +164,31 @@ a loop reports a result. Building the first must not silently answer the second.
   the v1 advisory active-loop marker enough? Human authority must remain explicit
   either way.
 
-### Releasing stuck work — decided shape, not yet built
-
-An attempt whose watcher can no longer answer leaves the experiment permanently
-un-runnable: a nonterminal attempt marks the loop active, and `attempts` is not
-human-editable. V1 needs a human release, and the shape is settled:
-
-- **RCP never decides that a watcher is dead.** `degraded` is already mechanical
-  — the last check exited neither 0 nor 1. The node reports the fact and its age
-  ("last answered 3 days ago", plus the last error) and the human reads it. No
-  threshold, no inference; the same reason "unknown" was deleted from the check
-  contract.
-- **One action per object, scoped by what it is attached to.** A watcher armed by
-  an experiment attempt releases through **Stop attempt**, which closes that
-  attempt as `cancelled` and drops its watchers in one human `approval` patch. A
-  watcher armed by an ordinary Work turn has no attempt, and releases through
-  **Stop watching**. Two labels, never two buttons on the same object.
-- **Not an agent path.** Cancelling asserts the external run is finished, which
-  needs knowledge of the machine RCP cannot see — and a broken watcher never
-  wakes an agent to be asked in the first place.
-- **Display is a timeline, not a dashboard.** Attempt rows with their pinned
-  decisions and start/finish, watcher rows with last-answered and last error.
-  Counts appear only inside a gate reason, where they explain a refusal.
-
 Graph-level scheduling across the research frontier is still separately deferred.
 It is not part of this question merely because both features use the word
 "control."
 
 ---
 
-## Q3 — What exactly does the human accept when an experiment produces evidence?
+## Q5 — Should graph-writing agents be required to run an executable scanner?
 
-**Status:** **decided 2026-08-01; implemented by S50.** The human settled it: the
-unit of acceptance is the belief change, not the edge. See "Decision" below;
-the rest of this entry is kept as the reasoning that led there.
-**Governing sections:** [v0.7 D25-D26](blueprint-v0.7.md) and
-[S41](acceptance/S41-bounded-experiment-control.md).
+**Status:** open. Raised 2026-08-03. No decision.
+**Governing scenarios:** [S59](acceptance/S59-staged-graph-audit-skills.md) and
+[S64](acceptance/S64-project-skill-workflow-selection.md).
 
-### Decision
+Settings-owned package selection, immutable staging, compact context pointers,
+and package receipts already ship under S64. What remains undecided is whether
+RCP should add a `graph-scanner` package with an executable advisory check and
+require a graph-writing agent to invoke it before finishing its initial Patch.
 
-What a human accepts is **the belief change**, carrying its evidence edge as the
-cause. Not the edge on its own, and not a second standing model.
+The proposed scanner would report structural quality problems such as likely
+misattachments, duplicates, unexplained jargon, and unusually flat graph
+regions. It would write only a bounded scratch report, never another graph
+channel. Missing or unavailable execution would remain visible but would not
+change the semantic validator's verdict or consume a correction round.
 
-- The evidence node and the epistemic edge are **asserted** by the loop, as they
-  are today. They are facts about a run that happened; the loop is entitled to
-  record them.
-- The **hypothesis status change** is the Inbox item — one proposal, one gated
-  card, one judgment. Approving it applies the status change and records the
-  `BeliefTransition` with the edge as its cause.
-- `Edge` gains no `standing` field. A seeded graph does not acquire hundreds of
-  unaccepted edges.
-
-This resolves the tension noted in resolution 2 below: the loop does *not*
-propose the edge, so nothing about assertion changes. What widens is only the
-loop's proposal scope, by exactly one narrowly checkable shape — target must be a
-hypothesis the bound experiment `tests`, and the ops must be that hypothesis's
-status plus a belief cause naming an edge created in the same patch. Proposing a
-status change does not violate the anchor; the anchor is that the loop may never
-*apply* one.
-
-S50 implements this as the second and only other agent Proposal shape. The shared
-model-facing policy in `src/rcp/core/authority.py` fixes the cause to the evidence
-edge and keeps that wording aligned with agent admission. S41 may remain pending
-for its broader browser and operational-control drive; the graph authority
-contract itself is covered hermetically.
-
-### The mismatch
-
-V0.7 says a successful loop asserts an evidence edge, creates exactly one Inbox
-item, and that human acceptance makes the edge accepted. The current graph has no
-such mechanical state:
-
-- standing belongs to nodes; `Edge` has no standing field;
-- Inbox contains pending proposals, open ambiguities, and open blockers, not
-  asserted edges;
-- accepting a node in its detail drawer is a human action, but it is not an
-  Inbox item and does not itself update a downstream belief.
-
-The v0.7 validator can therefore admit an asserted Evidence node and epistemic
-edge while preserving the rule that the loop cannot change a hypothesis status,
-but it cannot honestly satisfy S41's final acceptance step.
-
-### Plausible resolutions
-
-1. Make the human accept the Evidence node, then separately edit the downstream
-   belief. This uses existing standing but is neither one Inbox item nor one
-   atomic judgment.
-2. Put the evidence, edge, and belief transition inside one Proposal. This uses
-   the existing Inbox and atomic approval path, but the loop would propose the
-   edge rather than assert it, and D26's proposal scope would need to expand
-   beyond upstream decisions.
-3. Add standing and review semantics to edges. This matches the v0.7 wording but
-   creates a second standing model and is the largest change.
-
-Resolution 2 was chosen with one correction: the evidence and edge remain direct
-assertions, while only the belief transition is inside the Proposal. The cause
-is the same-patch evidence edge, so one Inbox judgment moves the belief without
-inventing edge standing.
+The decision is whether this prompt-enforced advisory step is worth its package,
+receipt, protection, and execution machinery given that the uniform live Patch
+validator already enforces graph correctness. S59 retains the proposed detailed
+contract and acceptance drive; it does not authorize implementation until this
+question is decided.

@@ -6,7 +6,7 @@ import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.providers import ProviderUsage
-from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+from rcp.storage import AgentTaskRecord, AppStore, ChatSessionContextRecord, ProjectRecord
 
 
 def _project(project_id: str) -> ProjectRecord:
@@ -34,6 +34,368 @@ def _task(store: AppStore, project_id: str, operation_id: str, status: str) -> N
             status_message=status,
         )
     )
+
+
+def _snapshot(value: str) -> tuple[str, str]:
+    content = json.dumps({"value": value}, separators=(",", ":"), sort_keys=True)
+    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+
+    _task(store, "project", "first-run", "running")
+    _task(store, "project", "second-run", "queued")
+
+    assert store.agent_task("first-run") is not None
+    assert store.agent_task("second-run") is not None
+
+
+def test_has_active_chat_task_is_scoped_to_project_kind_and_chat(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    tasks = [
+        ("project-a-chat-a", "project-a", "project_chat", "chat-a", "running"),
+        ("project-a-chat-b", "project-a", "project_chat", "chat-b", "queued"),
+        ("project-b-chat-a", "project-b", "project_chat", "chat-a", "pausing"),
+        ("finished", "project-a", "node_chat", "finished-chat", "succeeded"),
+    ]
+    for operation_id, project_id, kind, chat_id, status in tasks:
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind=kind,
+                status=status,
+                request={"chat_id": chat_id},
+                created_at=now,
+                updated_at=now,
+                status_message=status,
+            )
+        )
+
+    assert store.has_active_chat_task("project-a", "project_chat", "chat-a")
+    assert store.has_active_chat_task("project-a", "project_chat", "chat-b")
+    assert store.has_active_chat_task("project-b", "project_chat", "chat-a")
+    assert not store.has_active_chat_task("project-a", "node_chat", "chat-a")
+    assert not store.has_active_chat_task("project-a", "node_chat", "finished-chat")
+    assert not store.has_active_chat_task("project-a", "project_chat", "missing")
+
+
+def test_create_chat_task_rejects_only_an_active_turn_in_the_same_conversation(
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+
+    def create(operation_id: str, chat_id: str) -> None:
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id="project",
+                kind="project_chat",
+                status="queued",
+                request={"chat_id": chat_id},
+                created_at=now,
+                updated_at=now,
+                status_message="queued",
+            )
+        )
+
+    create("chat-a-first", "chat-a")
+    create("chat-b", "chat-b")
+
+    with pytest.raises(ValueError, match="already active in this conversation"):
+        create("chat-a-overlap", "chat-a")
+
+    assert store.agent_task("chat-b") is not None
+    assert store.agent_task("chat-a-overlap") is None
+
+
+def test_native_chat_session_origin_requires_the_exact_rcp_binding(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="completed-chat-turn",
+            project_id="project",
+            kind="node_chat",
+            status="succeeded",
+            request={
+                "chat_id": "chat-a",
+                "node_id": "rq/example",
+                "provider": "codex",
+                "run_on": "local",
+            },
+            created_at=now,
+            updated_at=now,
+            status_message="succeeded",
+            native_session_id="native-session",
+        )
+    )
+
+    assert store.has_chat_native_session_origin(
+        "project",
+        "node_chat",
+        "chat-a",
+        "rq/example",
+        "codex",
+        "local",
+        "native-session",
+    )
+    assert not store.has_chat_native_session_origin(
+        "project",
+        "node_chat",
+        "chat-b",
+        "rq/example",
+        "codex",
+        "local",
+        "native-session",
+    )
+
+
+def test_chat_session_context_commit_reads_and_cas_updates_without_task_history(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    first_json, first_digest = _snapshot("first")
+
+    first = store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="project",
+        kind="node_chat",
+        chat_id="chat",
+        node_id="rq/question",
+        protocol_version=1,
+        snapshot_json=first_json,
+        snapshot_sha256=first_digest,
+        committed_operation_id="first-operation",
+        expected_snapshot_sha256=None,
+    )
+
+    assert first == store.chat_session_context("codex", "laptop", "native-session")
+    assert first == store.validate_chat_session_context_binding(
+        "codex",
+        "laptop",
+        "native-session",
+        project_id="project",
+        kind="node_chat",
+        chat_id="chat",
+        node_id="rq/question",
+    )
+    assert first.snapshot_json == first_json
+    assert first.snapshot_sha256 == first_digest
+    assert first.committed_operation_id == "first-operation"
+    assert first.created_at == first.updated_at
+
+    second_json, second_digest = _snapshot("second")
+    second = store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="project",
+        kind="node_chat",
+        chat_id="chat",
+        node_id="rq/question",
+        protocol_version=2,
+        snapshot_json=second_json,
+        snapshot_sha256=second_digest,
+        committed_operation_id="second-operation",
+        expected_snapshot_sha256=first_digest,
+    )
+
+    assert second.created_at == first.created_at
+    assert second.protocol_version == 2
+    assert second.snapshot_json == second_json
+    assert second.snapshot_sha256 == second_digest
+    assert second.committed_operation_id == "second-operation"
+
+
+def test_chat_session_context_cas_rejects_missing_stale_or_invalid_snapshots(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    first_json, first_digest = _snapshot("first")
+
+    with pytest.raises(ValueError, match="prior baseline is missing"):
+        store.commit_chat_session_context(
+            provider="codex",
+            execution_machine="laptop",
+            native_session_id="native-session",
+            project_id="project",
+            kind="project_chat",
+            chat_id="chat",
+            node_id=None,
+            protocol_version=1,
+            snapshot_json=first_json,
+            snapshot_sha256=first_digest,
+            committed_operation_id="operation",
+            expected_snapshot_sha256="missing-digest",
+        )
+
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=first_json,
+        snapshot_sha256=first_digest,
+        committed_operation_id="first-operation",
+        expected_snapshot_sha256=None,
+    )
+    second_json, second_digest = _snapshot("second")
+    with pytest.raises(ValueError, match="prior digest changed"):
+        store.commit_chat_session_context(
+            provider="codex",
+            execution_machine="laptop",
+            native_session_id="native-session",
+            project_id="project",
+            kind="project_chat",
+            chat_id="chat",
+            node_id=None,
+            protocol_version=2,
+            snapshot_json=second_json,
+            snapshot_sha256=second_digest,
+            committed_operation_id="stale-operation",
+            expected_snapshot_sha256="stale-digest",
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        store.commit_chat_session_context(
+            provider="codex",
+            execution_machine="laptop",
+            native_session_id="native-session",
+            project_id="project",
+            kind="project_chat",
+            chat_id="chat",
+            node_id=None,
+            protocol_version=2,
+            snapshot_json=second_json,
+            snapshot_sha256="wrong-digest",
+            committed_operation_id="invalid-operation",
+            expected_snapshot_sha256=first_digest,
+        )
+    assert store.chat_session_context("codex", "laptop", "native-session").snapshot_sha256 == (
+        first_digest
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("project_id", "other-project"),
+        ("kind", "project_chat"),
+        ("chat_id", "other-chat"),
+        ("node_id", "rq/other"),
+    ],
+)
+def test_chat_session_context_rejects_immutable_binding_conflicts(tmp_path, field, value) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    snapshot_json, snapshot_digest = _snapshot("first")
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="project",
+        kind="node_chat",
+        chat_id="chat",
+        node_id="rq/question",
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_digest,
+        committed_operation_id="operation",
+        expected_snapshot_sha256=None,
+    )
+    binding = {
+        "project_id": "project",
+        "kind": "node_chat",
+        "chat_id": "chat",
+        "node_id": "rq/question",
+    }
+    binding[field] = value
+
+    with pytest.raises(ValueError, match=f"immutable binding conflict: {field}"):
+        store.validate_chat_session_context_binding("codex", "laptop", "native-session", **binding)
+    second_json, second_digest = _snapshot("second")
+    with pytest.raises(ValueError, match=f"immutable binding conflict: {field}"):
+        store.commit_chat_session_context(
+            provider="codex",
+            execution_machine="laptop",
+            native_session_id="native-session",
+            **binding,
+            protocol_version=2,
+            snapshot_json=second_json,
+            snapshot_sha256=second_digest,
+            committed_operation_id="conflicting-operation",
+            expected_snapshot_sha256=snapshot_digest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "execution_machine"),
+    [("claude", "laptop"), ("codex", "remote")],
+)
+def test_chat_session_context_rejects_provider_or_machine_conflicts(
+    tmp_path, provider, execution_machine
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    snapshot_json, snapshot_digest = _snapshot("first")
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_digest,
+        committed_operation_id="operation",
+        expected_snapshot_sha256=None,
+    )
+
+    with pytest.raises(ValueError, match="provider or execution-machine conflict"):
+        store.chat_session_context(provider, execution_machine, "native-session")
+    with pytest.raises(ValueError, match="provider or execution-machine conflict"):
+        store.commit_chat_session_context(
+            provider=provider,
+            execution_machine=execution_machine,
+            native_session_id="native-session",
+            project_id="project",
+            kind="project_chat",
+            chat_id="chat",
+            node_id=None,
+            protocol_version=2,
+            snapshot_json=snapshot_json,
+            snapshot_sha256=snapshot_digest,
+            committed_operation_id="conflicting-operation",
+            expected_snapshot_sha256=None,
+        )
+
+
+def test_chat_session_context_record_forbids_extra_fields(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    snapshot_json, snapshot_digest = _snapshot("first")
+    record = store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_digest,
+        committed_operation_id="operation",
+        expected_snapshot_sha256=None,
+    )
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        ChatSessionContextRecord.model_validate({**record.model_dump(), "transcript": []})
 
 
 def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path) -> None:
@@ -72,12 +434,33 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
                     "2026-07-31T00:00:00+00:00",
                 ),
             )
+            snapshot_json, snapshot_digest = _snapshot(project_id)
+            connection.execute(
+                """
+                INSERT INTO chat_session_contexts (
+                    provider, execution_machine, native_session_id, project_id,
+                    kind, chat_id, node_id, protocol_version, snapshot_json,
+                    snapshot_sha256, committed_operation_id, created_at, updated_at
+                ) VALUES ('provider', 'local', ?, ?, 'project_chat', ?, NULL, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"{project_id}-chat-session",
+                    project_id,
+                    f"{project_id}-chat",
+                    snapshot_json,
+                    snapshot_digest,
+                    f"{project_id}-operation",
+                    "2026-07-31T00:00:00+00:00",
+                    "2026-07-31T00:00:00+00:00",
+                ),
+            )
 
     counts = store.delete_project_records("delete-me")
 
     assert counts == {
         "paper_drafts": 1,
         "writing_sessions": 1,
+        "chat_session_contexts": 1,
         "watchers": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
@@ -90,6 +473,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         for table in (
             "paper_drafts",
             "writing_sessions",
+            "chat_session_contexts",
             "graph_runs",
             "graph_run_outputs",
             "graph_run_contracts",
@@ -103,6 +487,39 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     reopened = AppStore(store.path)
     assert reopened.project("delete-me") is None
     assert reopened.project("keep-me") is not None
+
+
+def test_chat_session_context_project_id_migrates_with_legacy_project_data(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    snapshot_json, snapshot_digest = _snapshot("legacy")
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="native-session",
+        project_id="legacy-project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_digest,
+        committed_operation_id="operation",
+        expected_snapshot_sha256=None,
+    )
+
+    store.migrate_legacy_project_data("legacy-project", "stable-project")
+
+    migrated = store.validate_chat_session_context_binding(
+        "codex",
+        "laptop",
+        "native-session",
+        project_id="stable-project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+    )
+    assert migrated is not None
+    assert migrated.project_id == "stable-project"
 
 
 def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_path) -> None:
@@ -305,6 +722,10 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
         "operation_created",
         "operation_interrupted",
     ]
+    with store.connection() as connection:
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(graph_runs)")}
+    assert "graph_runs_active_project" not in indexes
+    assert "agent_tasks_active_project" not in indexes
 
 
 def test_patch_recovery_output_is_bounded(tmp_path) -> None:

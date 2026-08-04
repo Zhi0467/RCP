@@ -11,9 +11,7 @@ last_passed: 2026-08-04
 
 # Read what changed between graph revisions
 
-Confirmed by the human through
-[`docs/handoff-ui-fixes-and-graph-skills.md`](../handoff-ui-fixes-and-graph-skills.md)
-on 2026-08-03.
+Confirmed by the human on 2026-08-03.
 
 Overview explains the latest graph revision in ordinary language. Project
 History presents the same deterministic summaries by revision alongside access

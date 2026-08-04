@@ -303,6 +303,8 @@ docs/acceptance/         User-visible promises and their verification drivers
 examples/demo-project/   Local project fixture
 ```
 
-The highest-numbered blueprint in [`docs/`](docs/) is the design specification. When the
-implementation and blueprint disagree, record the disagreement rather than silently
-choosing one. Acceptance scenarios define what “done” means for user-visible behavior.
+[`docs/research-control-panel-blueprint.md`](docs/research-control-panel-blueprint.md) is
+the single design specification. Its version is maintained inside that file; design changes
+edit it in place rather than creating amendment files. When implementation and blueprint
+disagree, record the disagreement rather than silently choosing one. Acceptance scenarios
+define what “done” means for user-visible behavior.

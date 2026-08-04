@@ -107,8 +107,11 @@ state change. There is no helper subtitle beneath it.
 - `allow_graph_change` is gone rather than decoded: `mode` is the only graph
   authority a request carries, and an old payload still naming the retired
   switch is ignored entirely instead of being honoured as a graph-only turn.
-- Discuss receives no graph-patch path or schema. A stray `patch.json` is kept
-  only as a diagnostic receipt and never validated or applied.
+- Discuss has no active graph-patch channel. Its native-session master may retain
+  the inactive Work contract and stable schema/client pointers for a later mode
+  switch; the Discuss marker and CLI capability grant none of that authority. A
+  stray `patch.json` is kept only as a diagnostic receipt and never validated or
+  applied.
 - Discuss and Work receive no indexed conversation pointers, provider roots, or
   prior chat transcript input. Canonical chat history is written only for the
   Chats UI after the turn completes.

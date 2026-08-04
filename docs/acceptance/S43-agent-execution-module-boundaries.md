@@ -78,7 +78,7 @@ regress is backend dispatch and lifecycle policy, not browser state.
 Discuss permissions, Seed/Refresh and their generic scratch-only correction,
 paper-coach permissions, preview sandboxing, persistence schemas, correction
 limits, API payloads, frontend behavior, and canonical graph semantics outside
-the D29 Work-validator amendment.
+the blueprint's Work live-validation contract.
 
 ## Failure means
 

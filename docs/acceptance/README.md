@@ -214,6 +214,13 @@ it but a browser or a machine we do not have.
 | [S62](S62-direct-provider-log-ingestion.md) | Seed and Refresh point agents at provider logs instead of moving them | implemented | pytest + **browser** | covered + live Seeds 2026-08-04 |
 | [S63](S63-agent-run-lock-recovery.md) | RCP recovers agent-run ownership; the human never removes a lock | implemented | pytest + api | covered |
 | [S64](S64-project-skill-workflow-selection.md) | Choose project workflows and skills, then load them into a run | implemented | pytest + **browser** | 16 checks + driven 2026-08-04 |
+| [S65](S65-concurrent-agent-tasks.md) | Multiple agent tasks can run at once | implemented | pytest + **browser** | covered + driven 2026-08-04 |
+| [S66](S66-no-global-task-banner.md) | Agent tasks do not appear as a global banner | implemented | **browser** | implemented |
+| [S67](S67-proposal-action-legibility.md) | Pending proposals state the exact option or status transition | implemented | pytest + **browser** | covered |
+| [S68](S68-chat-progress-start-feedback.md) | Chat progress appears immediately under a sent message | implemented | **browser** | covered |
+| [S69](S69-agent-proposal-withdrawal.md) | Agents can withdraw obsolete pending proposals | implemented | pytest | covered |
+| [S70](S70-uniform-patch-validation-contract.md) | Patch-producing tasks uniformly self-check through the validator | implemented | pytest | 2026-08-04 |
+| [S71](S71-chat-master-context-and-deltas.md) | Chat sends one master context, then turn markers and compact deltas | implemented | pytest | 2026-08-04 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

@@ -12,9 +12,7 @@ last_passed: 2026-08-03
 
 # Project Settings owns agent configuration
 
-Confirmed by the human through
-[`docs/handoff-ui-fixes-and-graph-skills.md`](../handoff-ui-fixes-and-graph-skills.md)
-on 2026-08-03.
+Confirmed by the human on 2026-08-03.
 
 Provider, model, reasoning, and execution machine are configured in Project
 Settings. Seed and Refresh keep their deliberate launch controls. Chat and the
