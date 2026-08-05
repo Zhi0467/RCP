@@ -13,6 +13,7 @@ export type AgentCapability = "discuss" | "work_auto" | "scratch_patch" | "paper
 
 export interface Health {
   status: string;
+  agent_mode: "provider" | "acceptance";
   version: string;
   instance_id: string;
   data_dir_id: string;
@@ -56,7 +57,7 @@ export interface GraphNode {
   validity?: string;
   origin?: "internal_run" | "external_publication" | "external_instance" | "analytic" | "unknown";
   attempts?: ExperimentAttempt[];
-  attempt_ceiling?: number;
+  invocation_ceiling?: number;
   completion_criteria?: string[];
   draft_touched?: boolean;
   [key: string]: unknown;
@@ -101,11 +102,22 @@ export interface DecisionDrift {
 export interface ExperimentControlState {
   ready: boolean;
   reasons: string[];
-  attempts_used: number;
-  attempt_ceiling: number;
+  invocations_used: number;
+  invocation_ceiling: number;
+  invocations_remaining: number;
+  episode_id: string | null;
+  paused: boolean;
   active: boolean;
   governing_decisions: ExperimentDecisionPin[];
   decision_drift: DecisionDrift[];
+}
+
+export interface WatcherContinuation {
+  patch_kind: "work" | "experiment_loop";
+  control_node_id: string | null;
+  control_episode_id: string | null;
+  control_invocation: number | null;
+  control_invocation_ceiling: number | null;
 }
 
 export interface WatcherRecord {
@@ -118,6 +130,7 @@ export interface WatcherRecord {
   check_command: string;
   log_path: string;
   cwd: string;
+  continuation: WatcherContinuation;
   status: "active" | "degraded" | "completed" | "stopped";
   created_at: string;
   last_checked_at: string | null;

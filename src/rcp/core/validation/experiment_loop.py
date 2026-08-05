@@ -151,22 +151,6 @@ def _validate_attempts(
         )
         return
 
-    if len(attempts) > len(previous) and len(attempts) > experiment.attempt_ceiling:
-        report.reject(
-            "experiment-loop-attempt-ceiling",
-            f"Experiment {experiment.id} is limited to {experiment.attempt_ceiling} attempts.",
-            revision,
-            related_node_ids=[experiment.id],
-        )
-
-    if len(attempts) - len(previous) > 1:
-        report.reject(
-            "experiment-loop-multiple-attempts",
-            f"Experiment loop {experiment.id} may append at most one attempt per patch.",
-            revision,
-            related_node_ids=[experiment.id],
-        )
-
     for before, after in zip(previous, attempts, strict=False):
         before_fixed = before.model_dump(mode="python", exclude=_ATTEMPT_CLOSE_FIELDS)
         after_fixed = after.model_dump(mode="python", exclude=_ATTEMPT_CLOSE_FIELDS)

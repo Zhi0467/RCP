@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from rcp import __version__
-from rcp.agents import AgentLauncher
+from rcp.agents import AcceptanceAgentLauncher, AgentLauncher
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -35,8 +35,8 @@ from rcp.background import (
     BackgroundAgentTasks,
 )
 from rcp.config import AgentSurface
-from rcp.control import derive_experiment_control_state
-from rcp.core.models import Experiment, GraphState
+from rcp.control import admit_experiment_watcher_invocation, derive_experiment_control_state
+from rcp.core.models import Experiment, ExperimentDecisionPin, GraphState
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -48,6 +48,7 @@ from rcp.providers import PROVIDER_IDS, profile_for
 from rcp.runs.chat import _logical_chat_turn_operation_id
 from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
+from rcp.runs.experiment_loop import experiment_watcher_delivery_request
 from rcp.runs.graph import stream_graph_run
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.work import stream_work_run
@@ -69,7 +70,13 @@ from rcp.sources import (
     SESSION_SLICE_CACHE_LIMITS,
     RebuildableCache,
 )
-from rcp.storage import AgentTaskKind, AgentUsageSnapshot, AppStore, WatcherRecord
+from rcp.storage import (
+    AgentTaskKind,
+    AgentUsageSnapshot,
+    AppStore,
+    WatcherClaimConflict,
+    WatcherRecord,
+)
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import WatcherPoller
 from rcp.web_assets import web_dist_path
@@ -119,6 +126,7 @@ def create_app(
     data_dir: Path | None = None,
     *,
     instance_metadata: ServerMetadata | None = None,
+    acceptance_agent: bool = False,
 ) -> FastAPI:
     # macOS exposes /tmp through /private/tmp. Keep every cache and manifest
     # pointer in the same canonical spelling so relative canonical-state paths
@@ -133,7 +141,8 @@ def create_app(
     if identity.data_dir_id != data_dir_identity(app_data):
         raise ValueError("Server metadata does not identify this RCP data directory.")
     store = AppStore(app_data / "rcp.sqlite3")
-    launcher = AgentLauncher()
+    launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
+    agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     catalog = ProjectCatalog(app_data, store, launcher)
     setup = ProjectSetupManager(app_data, catalog, launcher)
     default_record = catalog.register(manifest_path) if manifest_path else None
@@ -239,36 +248,53 @@ def create_app(
         first = group[0]
         continuation = first.continuation
         watcher_ids = [item.watcher_id for item in group]
-        details = "\n".join(f"- watcher `{item.watcher_id}`: `{item.log_path}`" for item in group)
-        request = RunRequest(
-            provider=continuation.provider,
-            model=continuation.model,
-            reasoning=continuation.reasoning,
-            run_on=continuation.run_on,
-            run_truth_scope=continuation.run_truth_scope,
-            chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
-            node_id=first.node_id,
-            message=(
-                "RCP watcher update: the following external work is no longer present in its "
-                f"system. Inspect the named logs and continue the Work turn.\n{details}"
-            ),
-            chat_id=first.chat_id,
-            session_id=None,
-            mode="work",
-            trigger="watcher",
-            patch_kind=continuation.patch_kind,
-            control_node_id=continuation.control_node_id,
-            control_revision=continuation.control_revision,
-            control_decision_bundle=continuation.control_decision_bundle,
-            control_completion_criteria=continuation.control_completion_criteria,
-            workflow_ids=continuation.workflow_ids,
-            skill_ids=continuation.skill_ids,
-            invoked_workflow_ids=continuation.invoked_workflow_ids,
-            invoked_skill_ids=continuation.invoked_skill_ids,
-            resolved_skill_packages=continuation.resolved_skill_packages,
-            watcher_ids=watcher_ids,
-        )
         service = _project_service(catalog, first.project_id)
+        if continuation.patch_kind == "experiment_loop":
+            control_node_id = continuation.control_node_id
+            if control_node_id is None:
+                raise ValueError("An Experiment watcher is missing its control node.")
+            with experiment_operation_lock(first.project_id):
+                state = service.history.state()
+                if not isinstance(state.nodes.get(control_node_id), Experiment):
+                    store.stop_watchers(first.project_id, watcher_ids)
+                    return
+                runtime = store.experiment_loop_runtime(first.project_id, control_node_id)
+                pins = [
+                    ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle
+                ]
+                admission = admit_experiment_watcher_invocation(
+                    state,
+                    control_node_id,
+                    episode_id=runtime.episode_id,
+                    invocations_used=runtime.invocations_used,
+                    invocation_ceiling=runtime.invocation_ceiling,
+                    decision_bundle=pins,
+                    task_active=runtime.task_active,
+                    episode_exited=runtime.episode_exited,
+                )
+                if admission is None:
+                    return
+                if runtime.control_revision is None:
+                    raise ValueError("An Experiment watcher is missing its control revision.")
+                request = experiment_watcher_delivery_request(
+                    group,
+                    trigger="watcher",
+                    episode_id=admission.episode_id,
+                    invocation=admission.invocation,
+                    invocation_ceiling=admission.invocation_ceiling,
+                    control_revision=runtime.control_revision,
+                    decision_bundle=admission.decision_bundle,
+                    completion_criteria=runtime.completion_criteria,
+                )
+                background_tasks.start_watcher_notification(
+                    first.project_id,
+                    first.origin_task_kind,
+                    request,
+                    watcher_ids,
+                )
+            return
+
+        request = _generic_watcher_delivery_request(group)
         with experiment_admission(first.project_id, service, request):
             background_tasks.start_watcher_notification(
                 first.project_id,
@@ -356,6 +382,8 @@ def create_app(
     app.state.background_tasks = background_tasks
     app.state.watcher_poller = watcher_poller
     app.state.instance_metadata = identity
+    app.state.launcher = launcher
+    app.state.agent_mode = agent_mode
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -425,6 +453,7 @@ def create_app(
             "owner_kind": identity.owner_kind,
             "active_agent_tasks": active_agent_tasks,
             "projects": len(catalog.cards()),
+            "agent_mode": agent_mode,
         }
         if default_project_name is not None:
             payload["project"] = default_project_name
@@ -490,13 +519,8 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         snapshot["id"] = project_id
         state = GraphState.model_validate(snapshot["graph"])
-        active_control_ids = _active_experiment_control_ids(store, project_id)
         snapshot["experiment_control"] = {
-            node.id: derive_experiment_control_state(
-                state,
-                node.id,
-                active_control_ids,
-            ).model_dump(mode="json")
+            node.id: _experiment_control_state(store, project_id, state, node.id)
             for node in state.nodes.values()
             if node.type == "experiment"
         }
@@ -588,11 +612,11 @@ def create_app(
                 with experiment_operation_lock(project_id):
                     return service.sync_graph(
                         body,
-                        active_control_node_ids=_active_experiment_control_ids(store, project_id),
+                        active_control_node_ids=store.active_experiment_control_ids(project_id),
                     ).model_dump(mode="json")
             return service.sync_graph(
                 body,
-                active_control_node_ids=_active_experiment_control_ids(store, project_id),
+                active_control_node_ids=store.active_experiment_control_ids(project_id),
             ).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(
@@ -656,10 +680,24 @@ def create_app(
                 node = state.nodes.get(node_id)
                 if not isinstance(node, Experiment):
                     raise HTTPException(status_code=404, detail="Experiment not found")
+                runtime = store.experiment_loop_runtime(project_id, node_id)
                 control = derive_experiment_control_state(
                     state,
                     node_id,
-                    _active_experiment_control_ids(store, project_id),
+                    {node_id} if runtime.active else set(),
+                    episode_id=runtime.episode_id,
+                    invocations_used=runtime.invocations_used,
+                    invocation_ceiling=runtime.invocation_ceiling,
+                    paused=runtime.paused,
+                    detached_work_active=runtime.detached_work_active,
+                    episode_decision_bundle=(
+                        [
+                            ExperimentDecisionPin.model_validate(item)
+                            for item in runtime.decision_bundle
+                        ]
+                        if runtime.episode_id is not None
+                        else None
+                    ),
                 )
                 if not control.ready:
                     raise HTTPException(status_code=409, detail=" ".join(control.reasons))
@@ -667,21 +705,50 @@ def create_app(
                 if not supplied.chat_id:
                     raise ValueError("Run requires a chat_id")
                 uuid.UUID(supplied.chat_id)
+                episode_id = str(uuid.uuid4())
+                pending_group = store.completed_experiment_watcher_group(project_id, node_id)
+                if pending_group is not None:
+                    request = experiment_watcher_delivery_request(
+                        pending_group,
+                        trigger="experiment_run",
+                        episode_id=episode_id,
+                        invocation=1,
+                        invocation_ceiling=node.invocation_ceiling,
+                        control_revision=state.revision,
+                        decision_bundle=control.governing_decisions,
+                        completion_criteria=list(node.completion_criteria),
+                    )
+                    request = _resolved_graph_request(
+                        service,
+                        pending_group[0].origin_task_kind,
+                        request,
+                    )
+                    record = background_tasks.start_watcher_notification(
+                        project_id,
+                        pending_group[0].origin_task_kind,
+                        request,
+                        [item.watcher_id for item in pending_group],
+                    )
+                    if record is None:
+                        raise ValueError(
+                            "The pending watcher completion could not be claimed because its "
+                            "conversation is active."
+                        )
+                    return record.model_dump(mode="json")
                 request = supplied.model_copy(
                     update={
                         "chat_scope": "node",
                         "node_id": node_id,
-                        "message": (
-                            f"Run the bounded control loop for {node_id}. Perform bounded "
-                            "preflight, then either launch and record one attempt, or record one "
-                            "proposal-only attempt when an upstream decision must change."
-                        ),
+                        "message": f"Begin a bounded Experiment-loop episode for {node_id}.",
                         "session_id": None,
                         "mode": "work",
                         "trigger": "experiment_run",
                         "patch_kind": "experiment_loop",
                         "control_node_id": node_id,
                         "control_revision": state.revision,
+                        "control_episode_id": episode_id,
+                        "control_invocation": 1,
+                        "control_invocation_ceiling": node.invocation_ceiling,
                         "control_decision_bundle": control.governing_decisions,
                         "control_completion_criteria": list(node.completion_criteria),
                         "watcher_ids": [],
@@ -716,6 +783,8 @@ def create_app(
             stopped = store.stop_watchers(project_id, [watcher_id])
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Watcher not found") from exc
+        except WatcherClaimConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return stopped[0].model_dump(mode="json")
@@ -724,18 +793,19 @@ def create_app(
     def stop_experiment_watchers(project_id: str, node_id: str) -> list[dict[str, object]]:
         """Release every live watcher a bounded loop armed on one experiment.
 
-        Operational only. The attempt those watchers were following stays open
-        until the human syncs its cancellation, because that is a graph change.
+        This is operational only: stopping observers never creates, closes, or
+        otherwise changes a semantic Experiment attempt.
         """
 
         _require_registered_project(catalog, project_id)
         watcher_ids = store.experiment_watcher_ids(project_id, node_id)
         if not watcher_ids:
             return []
-        return [
-            record.model_dump(mode="json")
-            for record in store.stop_watchers(project_id, watcher_ids)
-        ]
+        try:
+            stopped = store.stop_watchers(project_id, watcher_ids)
+        except WatcherClaimConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return [record.model_dump(mode="json") for record in stopped]
 
     @app.get(
         "/api/projects/{project_id}/chats",
@@ -1032,6 +1102,39 @@ def _load_agent_artifact(
     return descriptor, data
 
 
+def _generic_watcher_delivery_request(group: list[WatcherRecord]) -> RunRequest:
+    first = group[0]
+    continuation = first.continuation
+    if continuation.patch_kind != "work":
+        raise ValueError("A generic watcher cannot carry Experiment-loop authority.")
+    watcher_ids = [item.watcher_id for item in group]
+    details = "\n".join(f"- watcher `{item.watcher_id}`: `{item.log_path}`" for item in group)
+    return RunRequest(
+        provider=continuation.provider,
+        model=continuation.model,
+        reasoning=continuation.reasoning,
+        run_on=continuation.run_on,
+        run_truth_scope=continuation.run_truth_scope,
+        chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
+        node_id=first.node_id,
+        message=(
+            "RCP watcher update: the following external work is no longer present in its "
+            f"system. Inspect the named logs and continue the Work turn.\n{details}"
+        ),
+        chat_id=first.chat_id,
+        session_id=None,
+        mode="work",
+        trigger="watcher",
+        patch_kind="work",
+        workflow_ids=continuation.workflow_ids,
+        skill_ids=continuation.skill_ids,
+        invoked_workflow_ids=continuation.invoked_workflow_ids,
+        invoked_skill_ids=continuation.invoked_skill_ids,
+        resolved_skill_packages=continuation.resolved_skill_packages,
+        watcher_ids=watcher_ids,
+    )
+
+
 def _project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
     try:
         return catalog.open(project_id)
@@ -1041,19 +1144,25 @@ def _project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _active_experiment_control_ids(store: AppStore, project_id: str) -> set[str]:
-    active: set[str] = set()
-    for task in store.agent_tasks(project_id):
-        if task.kind not in {"node_chat", "project_chat"}:
-            continue
-        if task.status not in {"queued", "running", "pausing"}:
-            continue
-        if task.request.get("patch_kind") != "experiment_loop":
-            continue
-        node_id = task.request.get("control_node_id")
-        if isinstance(node_id, str):
-            active.add(node_id)
-    return active
+def _experiment_control_state(
+    store: AppStore,
+    project_id: str,
+    state: GraphState,
+    experiment_id: str,
+) -> dict[str, object]:
+    runtime = store.experiment_loop_runtime(project_id, experiment_id)
+    pins = [ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle]
+    return derive_experiment_control_state(
+        state,
+        experiment_id,
+        {experiment_id} if runtime.active else set(),
+        episode_id=runtime.episode_id,
+        invocations_used=runtime.invocations_used,
+        invocation_ceiling=runtime.invocation_ceiling,
+        paused=runtime.paused,
+        detached_work_active=runtime.detached_work_active,
+        episode_decision_bundle=pins if runtime.episode_id is not None else None,
+    ).model_dump(mode="json")
 
 
 def _experiment_control_node_id(
@@ -1095,6 +1204,9 @@ def _validated_task_request(
             "patch_kind": "work",
             "control_node_id": None,
             "control_revision": None,
+            "control_episode_id": None,
+            "control_invocation": None,
+            "control_invocation_ceiling": None,
             "control_decision_bundle": [],
             "control_completion_criteria": [],
             "watcher_ids": [],

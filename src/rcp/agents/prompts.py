@@ -585,8 +585,6 @@ Execution environment:
         output_schema_path: str,
         retry_diagnostics_path: str | None = None,
         watch_path: str | None = None,
-        patch_kind: str = "work",
-        control_context_path: str | None = None,
         validator_command: str,
         skill_pointers: list[dict[str, object]] | None = None,
         embedded: bool = False,
@@ -596,42 +594,6 @@ Execution environment:
             f"- Human request: `{human_request_path}`"
             if human_request_path is not None
             else "- Human request: the unchanged message following the active turn marker"
-        )
-        control_rules = (
-            f"""
-Experiment-loop authority:
-- Read the RCP-pinned control context at `{control_context_path}` before acting. It identifies the
-  one Experiment, its canonical attempt budget, governing decision bundle, and advisory completion
-  criteria for this turn.
-- A non-empty `decision_drift` means a governing decision moved or has a proposed change since the
-  pinned attempt launched. Say so, and treat the run as possibly answering an obsolete question
-  before you debug it or write evidence from it.
-- RCP wraps any semantic graph reflection as an `experiment_loop` Patch authored by the agent; do
-  not write those bookkeeping fields yourself. Its operations may append or close attempts only on
-  that Experiment, change only that Experiment's status, create evidence or blockers, assert
-  epistemic edges, or create a Proposal against a pinned governing decision. Validation enforces
-  this boundary.
-- Attach what you create to the Experiment in the same patch: `produces` from it to each new
-  evidence node, and `blocked_by` from it to each new blocker. Both are refused for any node this
-  patch did not create, so an unattached evidence node loses the provenance of the run it came
-  from.
-- Assert the evidence edge into the hypothesis, then raise the belief change as a Proposal in the
-  same patch: one `update_nodes` changing only that hypothesis's `status`, with
-  `cause` `{{"kind": "evidence_edge", "ref_id": <the same-patch evidence edge id>}}`. Do not add
-  Proposal dependencies, revisions, status, or lifecycle fields; RCP derives them from the staged
-  graph. You may never change a hypothesis status yourself; the human accepting that one Inbox item
-  is what moves the belief.
-- A launched external run must be reflected by one attempt carrying the exact pinned decision
-  bundle. A proposal-only iteration is explicitly `attempt_kind: proposal_only`, has no job refs,
-  is terminal in the same patch, and also consumes one attempt. Before a mechanical debug retry
-  launches, record its fault, change, and predicted mechanical effect; a disappointing scientific
-  result is not a mechanical fault.
-- If the control context says the attempt ceiling is reached, inspect and report only: do not
-  submit another long-running job. Work retains Bash, so this ceiling rule is a visible prompt
-  contract rather than a shell-command parser.
-"""
-            if patch_kind == "experiment_loop" and control_context_path
-            else ""
         )
         watch_output = (
             f"- Optional watcher request: `{watch_path}`\n" if watch_path is not None else ""
@@ -734,7 +696,7 @@ Optional graph reflection:
 
 {render_agent_graph_authority_contract()}
 
-{control_rules}{watch_rules}
+{watch_rules}
 {_authoring_rules(ontology_extensions)}
 """
 

@@ -150,7 +150,17 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord | None:
         """Atomically consume completed watchers and start their attributed Work turn."""
 
-        if request.trigger != "watcher" or request.mode != "work" or request.session_id:
+        experiment_reauthorization = (
+            request.trigger == "experiment_run"
+            and request.patch_kind == "experiment_loop"
+            and request.control_invocation == 1
+            and bool(request.watcher_ids)
+        )
+        if (
+            (request.trigger != "watcher" and not experiment_reauthorization)
+            or request.mode != "work"
+            or request.session_id
+        ):
             raise ValueError("A watcher notification must be a fresh watcher-attributed Work turn.")
         if request.watcher_ids != watcher_ids:
             raise ValueError("The watcher notification request must name its watcher records.")
@@ -459,13 +469,22 @@ class BackgroundAgentTasks:
                 operation_id,
                 f"{action} task {parent.operation_id[:8]} as attempt {record.attempt}{feedback}.",
             )
-        elif isinstance(request, RunRequest) and request.trigger == "watcher":
+        elif (
+            isinstance(request, RunRequest)
+            and bool(request.watcher_ids)
+            and request.trigger in {"watcher", "experiment_run"}
+        ):
             self.store.record_agent_task_receipt(
                 operation_id,
                 "watcher_notification",
                 {"watcher_ids": request.watcher_ids},
             )
-            self.store.record_agent_task_event(operation_id, "Watcher completion queued.")
+            event = (
+                "Pending watcher completion reauthorized by human Run."
+                if request.trigger == "experiment_run"
+                else "Watcher completion queued."
+            )
+            self.store.record_agent_task_event(operation_id, event)
         else:
             self.store.record_agent_task_event(operation_id, "Agent task queued.")
         control = AgentProcessControl()

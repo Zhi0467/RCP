@@ -79,7 +79,7 @@ class AgentExperiment(AgentNode):
     expected_outcomes: list[str] = Field(default_factory=list)
     interpretation_rules: list[str] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
-    attempt_ceiling: int = Field(default=5, ge=1)
+    invocation_ceiling: int = Field(default=5, ge=1)
     status: Literal[
         "proposed",
         "designing",

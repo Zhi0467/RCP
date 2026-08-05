@@ -305,7 +305,13 @@ class WatcherPoller:
         groups = self.store.completed_watcher_groups()
         if self.on_completed is not None:
             for group in groups:
-                self.on_completed(group)
+                try:
+                    self.on_completed(group)
+                except Exception:
+                    logger.exception(
+                        "Watcher completion callback failed for %s",
+                        [record.watcher_id for record in group],
+                    )
         return groups
 
     def _run(self) -> None:

@@ -33,7 +33,7 @@ def _state(*, attempts: list[ExperimentAttempt] | None = None, ceiling: int = 5)
         type="experiment",
         title="Control loop",
         objective="Test the loop.",
-        attempt_ceiling=ceiling,
+        invocation_ceiling=ceiling,
         attempts=attempts or [],
     )
     decision = Decision(
@@ -161,7 +161,7 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
     state.nodes[blocker.id] = blocker.model_copy(update={"status": "open"})
     experiment = state.nodes[EXPERIMENT_ID]
     state.nodes[EXPERIMENT_ID] = experiment.model_copy(
-        update={"attempt_ceiling": 1, "attempts": [_attempt(status="completed")]}
+        update={"invocation_ceiling": 1, "attempts": [_attempt(status="completed")]}
     )
 
     gated = derive_experiment_control_state(state, EXPERIMENT_ID)
@@ -170,8 +170,9 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
         f"Decision {DECISION_ID} is not decided with a selected option.",
         f"Decision {DECISION_ID} has a pending proposal.",
         "Blocker blk/capacity is open.",
-        "Attempt ceiling reached: 1 of 1 attempts used.",
     ]
+    assert gated.invocations_used == 0
+    assert gated.invocation_ceiling == 1
 
 
 def _belief_patch_ops(
@@ -305,7 +306,14 @@ def test_decision_drift_reports_a_moved_or_contested_pin_without_gating() -> Non
     state.nodes[DECISION_ID] = decision.model_copy(
         update={"selected_option": "8xA100", "updated_rev": 7}
     )
-    moved = derive_experiment_control_state(state, EXPERIMENT_ID)
+    moved = derive_experiment_control_state(
+        state,
+        EXPERIMENT_ID,
+        episode_id="episode-1",
+        invocations_used=1,
+        invocation_ceiling=5,
+        episode_decision_bundle=[PIN],
+    )
     assert moved.ready
     assert [item.decision_id for item in moved.decision_drift] == [DECISION_ID]
     assert moved.decision_drift[0].pinned_option == "4xA100"
@@ -313,7 +321,7 @@ def test_decision_drift_reports_a_moved_or_contested_pin_without_gating() -> Non
     assert not moved.decision_drift[0].proposed
 
 
-def test_active_loop_marker_uses_control_work_or_nonterminal_attempts() -> None:
+def test_active_loop_marker_uses_control_runtime_not_semantic_attempts() -> None:
     state = _state()
     operation_active = derive_experiment_control_state(
         state, EXPERIMENT_ID, active_control_node_ids=[EXPERIMENT_ID]
@@ -323,8 +331,8 @@ def test_active_loop_marker_uses_control_work_or_nonterminal_attempts() -> None:
 
     state = _state(attempts=[_attempt()])
     attempt_active = derive_experiment_control_state(state, EXPERIMENT_ID)
-    assert attempt_active.active
-    assert not attempt_active.ready
+    assert not attempt_active.active
+    assert attempt_active.ready
 
 
 def test_run_pins_the_governing_decision_bundle_in_stable_order() -> None:
@@ -403,7 +411,7 @@ def test_loop_patch_can_append_and_close_its_own_attempt() -> None:
     assert not validate_patch(state, close_after_lowering, ["repo"]).rejected
 
 
-def test_loop_patch_cannot_append_more_than_one_attempt() -> None:
+def test_loop_patch_may_append_multiple_semantically_meaningful_attempts() -> None:
     state = _state()
     first = _attempt(status="completed")
     second = _attempt(attempt_id="attempt-2").model_copy(update={"sequence": 2})
@@ -421,7 +429,7 @@ def test_loop_patch_cannot_append_more_than_one_attempt() -> None:
         ]
     )
 
-    assert "experiment-loop-multiple-attempts" in _codes(validate_patch(state, patch, ["repo"]))
+    assert "experiment-loop-multiple-attempts" not in _codes(validate_patch(state, patch, ["repo"]))
 
 
 def test_loop_patch_cannot_edit_the_pinned_bundle_or_other_graph_authority() -> None:
@@ -443,7 +451,7 @@ def test_loop_patch_cannot_edit_the_pinned_bundle_or_other_graph_authority() -> 
     assert "experiment-loop-operation" in codes
 
 
-def test_loop_patch_cannot_mutate_completion_criteria_or_exceed_ceiling() -> None:
+def test_loop_patch_cannot_mutate_completion_criteria_but_attempts_do_not_spend_budget() -> None:
     state = _state(attempts=[_attempt(status="completed")], ceiling=1)
     second = _attempt(attempt_id="attempt-2", status="running").model_copy(update={"sequence": 2})
     patch = _patch(
@@ -469,7 +477,7 @@ def test_loop_patch_cannot_mutate_completion_criteria_or_exceed_ceiling() -> Non
     )
     codes = _codes(validate_patch(state, patch, ["repo"]))
     assert "experiment-loop-experiment-field" in codes
-    assert "experiment-loop-attempt-ceiling" in codes
+    assert "experiment-loop-attempt-ceiling" not in codes
 
 
 def test_loop_patch_may_create_evidence_blockers_and_epistemic_edges_only() -> None:

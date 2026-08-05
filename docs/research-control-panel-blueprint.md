@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.16
+**Version:** 0.17
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,11 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.17** — changed Experiment control's human-set ceiling from a cap on
+  agent-authored `ExperimentAttempt` records to a per-episode cap on
+  Experiment-loop agent invocations; each human Run starts a fresh episode,
+  watcher wakes consume its budget, and attempt bookkeeping remains semantic
+  agent output.
 - **0.16** — consolidated the complete blueprint into one current document;
   incorporated per-turn Discuss/Work, experiment control and watchers, minimal
   Proposals, live Patch validation, guarded node removal, reader-facing UI,
@@ -148,7 +153,7 @@ Only human actions may:
 - decide a governed Decision;
 - accept a Hypothesis status transition;
 - change project truth-scope membership; or
-- authorize a new bounded Experiment spend envelope.
+- authorize a new bounded Experiment-loop episode.
 
 Contest and Agree are independent visible human controls. Clearing either
 returns standing to `asserted`; selecting the other replaces it. Proposal
@@ -373,36 +378,100 @@ this blueprint.
 ## Experiment control and watchers
 
 Experiment control and generic watchers are separate mechanisms. The Experiment
-loop owns readiness, attempt records, bounded spend, and graph admission. A
-watcher only checks whether named external work remains in its system and wakes
-the conversation that armed it.
+loop owns readiness, bounded invocations, and graph admission; the agent owns the
+meaning of its attempt records. A watcher only checks whether named external
+work remains in its system and requests a wake of the conversation that armed it.
 
-### Readiness and attempt budget
+### Readiness and loop invocation budget
 
 An Experiment's **Run** action is available only when:
 
 1. every `governed_by` Decision is decided with a selected option;
 2. none of those Decisions has a pending Proposal;
 3. no `blocked_by` Blocker is open;
-4. recorded attempts are below canonical `attempt_ceiling`; and
-5. no queued/running loop task or nonterminal attempt already makes the loop
-   active.
+4. no current loop episode still has an automatic invocation available through a
+   queued/running task or a live/pending watcher.
 
 Readiness is derived and never reads `Experiment.status`. Ordinary Work remains
 available while Run is disabled. The active marker suppresses duplicate loops
 but is not a repository lease.
 
-A human pressing Run authorizes one spend envelope. No attempt exists merely
-because the button was pressed. Preflight repair and provider failure before
-launch spend no attempt. Actual external launch appends one attempt with its
-pinned Decision bundle. A proposal-only iteration also spends one attempt so the
-loop cannot evade the ceiling.
+A human pressing Run starts one bounded Experiment-loop episode with a durable
+episode id and invocation 1. Every attributed watcher wake consumes one further
+unit of the human-set `invocation_ceiling`. The button itself creates no semantic
+`ExperimentAttempt`; the agent records and closes attempts only when that is
+useful scientific bookkeeping. Attempt status never gates Run, advances the
+counter, identifies a watcher, or resets an episode.
 
-Debug attempts precommit a mechanical fault, change, and predicted effect.
-Scientific disappointment is not a mechanical fault. Optional completion
-criteria are pinned and shown for interpretation but never mechanically control
-start, retry, or exit. After a Proposal is resolved, spending does not resume
-until the human presses Run again.
+Provider-task Resume and Retry retain the episode id and invocation number of
+the interrupted or failed turn. Live Patch validation, in-session Patch
+correction, watcher-file correction, and a later repair of a rejected graph
+reflection also remain recovery inside that invocation. They never consume a
+second loop unit and must not repeat completed operational side effects.
+Only the newest unresolved operational task in the newest episode may Resume or
+Retry; a successful sibling, a later invocation, or a later human-started episode
+makes an older operational continuation stale. A patch-only graph repair may
+still reflect retained completed work, but it cannot rerun operational work or
+reopen the old episode.
+
+A watcher wake is an incremental continuation of the same bounded episode. It
+may inspect the named work, edit or debug the relevant repository, launch more
+work, and arm more watchers while loop invocations remain. RCP does not infer
+scientific attempt boundaries from watcher rows; the agent records and closes
+`ExperimentAttempt` records when the experiment's meaning calls for it.
+
+When the current episode reaches `invocation_ceiling`, RCP starts no automatic
+wake. Completed watchers remain visibly pending and unconsumed. The next human
+Run starts a fresh episode and, when a completed compatible watcher group is
+pending, atomically claims and delivers that group as invocation 1 with its
+original attribution. This is the only counter reset; creating or resolving a
+Proposal does not reset or resume the loop by itself.
+
+Debug bookkeeping precommits a mechanical fault, change, and predicted effect
+when the agent chooses to record a debug attempt. Scientific disappointment is
+not a mechanical fault. Optional completion criteria are pinned and shown for
+interpretation but never mechanically control start, retry, or exit. A Proposal,
+Blocker, or other human-authority pause is an exit from the current episode;
+after resolution, a human Run starts the next authorized episode.
+
+### Experiment-loop context
+
+Every budgeted invocation is self-sufficient without inventing a second context
+system. The provider receives only the short immutable-contract pointer. The
+staged contract file contains the normal RCP ontology, authority, method,
+focused-node and one-hop context, exact repository pointers, and Patch,
+validator, watcher, schema, and artifact paths.
+
+The contract points to a small per-invocation loop-control JSON file containing
+only the phase, episode id, invocation counts, pinned governing Decision bundle,
+live drift, advisory completion criteria, and delivered watcher ids. Current
+watcher records are staged separately and named by path rather than expanded
+into the contract. Semantic attempts remain in the Experiment in canonical
+`graph.json`, and their agent-facing shape remains part of the existing Patch
+schema; RCP does not stage a duplicate attempt snapshot or schema. It never
+supplies prior chat transcripts.
+
+The Experiment-loop contract builder and invocation-input staging are dedicated
+modules. Generic Work prompt construction contains no Experiment-loop branch or
+fallback wording. A missing or inconsistent Experiment, episode, invocation,
+pinned ceiling, decision bundle, or watcher binding fails closed before provider
+launch; RCP never substitutes semantic attempt counts or a generic Work contract.
+
+An initial Run is marked as the beginning of an episode. A watcher wake is a
+fresh provider session and distinguishes the delivered coalesced watcher group
+from other active, degraded, completed, or stopped Experiment watchers. It never
+interprets one completion as an attempt boundary. Resume and Retry preserve the
+original objective and binding but receive a compact live control file before
+acting. Patch and watcher corrections receive only the retained contract,
+current output paths, and exact diagnostics needed to repair their deliverable.
+When a human Run reauthorizes pending completion, the phase explicitly names
+human reauthorization: it is invocation 1 of the new episode while the staged
+watcher records retain their older origin provenance.
+The validator receives the immutable Experiment, episode, and pinned-decision
+binding and validates against live canonical state; it receives no conversational
+context. No additional loop-context validation layer exists: atomic invocation
+admission and the existing live semantic Patch validator are the enforcement
+boundaries.
 
 The Experiment-loop Patch kind may update its own attempt/status, create
 Evidence and Blockers, assert legal epistemic edges, attach newly created outputs
@@ -413,9 +482,12 @@ status as control.
 
 ### Watch delivery
 
-Work may write one non-empty `watch.json` list. Every strict item contains only a
-self-contained observational `check_command` with literal identifiers, an
-absolute `log_path`, and an absolute `cwd`. RCP binds host, conversation, and
+Ordinary Work may write one non-empty `watch.json` list. Every Experiment-loop
+invocation must write the file: a non-empty list means detached work remains;
+`[]` is valid only when the same Patch explicitly records success, a Proposal,
+or a Blocker that exits or pauses the loop. Every strict non-empty item contains
+only a self-contained observational `check_command` with literal identifiers,
+an absolute `log_path`, and an absolute `cwd`. RCP binds host, conversation, and
 continuation policy from the originating task.
 
 Checks run from a cold login shell with a hard timeout. Exit `0` means gone,
@@ -424,17 +496,48 @@ Initial validation is atomic; one invalid item arms none. After arming, each
 watcher polls independently, records degraded errors without treating them as
 completion, and survives RCP restart.
 
+A missing, malformed, initially uncheckable, or unexplained-empty
+Experiment-loop handoff enters the same native session's loop-handoff correction
+without spending another loop invocation. That correction inspects authoritative
+external state and either writes valid observers for work that exists, or writes
+`[]` plus a success/Proposal/Blocker Patch validated through the existing live
+Patch validator. It cannot resubmit or alter completed operational work. If it
+cannot establish either continuation or explicit exit, the task fails visibly
+and stays Retryable. RCP never silently converts absence into “nothing to
+watch.”
+
 Completed compatible watchers coalesce into one distinctly attributed Work wake.
-Queue creation and their notified ledger commit atomically. A wake never occupies
-the human message slot, never creates an ExperimentAttempt, never widens its
-bound Patch policy, and never races ahead of an active turn in the same
+Queue creation, episode-budget admission, and their notified ledger commit
+atomically. Compatibility is the current delivery policy, not the immutable
+origin episode or invocation, so completions from different invocations of the
+same bound conversation can share one wake while retaining their individual
+provenance. The transaction proves that the queued task still matches the
+watchers' bound project, conversation, node, provider, execution target, and
+control node. It also distinguishes an automatic next invocation from a human
+Run that reauthorizes pending completion as invocation 1 of a fresh episode. A
+wake never occupies the human message slot, never mechanically
+creates or closes an `ExperimentAttempt`, and never widens its bound Patch
+policy. It consumes one Experiment-loop invocation only when the task is
+successfully queued. It never races ahead of an active turn in the same
 conversation.
 
-RCP never infers that a degraded watcher is dead. A human releases an
-Experiment-bound watcher through **Stop attempt**, which closes that attempt as
-cancelled and drops its watchers in one approval Patch. An ordinary Work watcher
-uses **Stop watching**. These are human actions and are shown as timeline events,
-not agent conclusions.
+The final Experiment-loop Patch and watcher disposition are one recoverable
+handoff keyed by the root operation for that invocation. RCP validates both
+before committing either semantic reflection or new observers, uses the Patch's
+source operation as an idempotent canonical commit identity, and gives the
+watcher set deterministic identities. After interruption it reconciles an
+already committed Patch or watcher set instead of appending or arming it again.
+The durable episode-exit receipt is written only after the canonical exit Patch
+is confirmed.
+
+RCP never infers that a degraded watcher is dead. A human may stop an
+Experiment-bound watcher without changing any semantic attempt; an ordinary
+Work watcher has the same operational **Stop watching** authority. Semantic
+attempt changes remain deliberate graph edits. Stop atomically acknowledges any
+unclaimed active, degraded, or just-completed watcher; it cannot race a claimed
+notification into waking afterward. A watcher whose Experiment was removed is
+terminally retired rather than poisoning later delivery passes. These are human
+or lifecycle actions and are shown as timeline events, not agent conclusions.
 
 Live-output delivery, durable output offsets, debounce/batching, repository
 leases, stale-record policy, direct graph manipulation, and graph-wide scheduling

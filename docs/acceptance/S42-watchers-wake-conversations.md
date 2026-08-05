@@ -1,10 +1,18 @@
 ---
 id: S42-watchers-wake-conversations
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: none
+covered_by:
+  - tests/test_acceptance_experiment_watchers.py::test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph
+  - tests/test_acceptance_agent.py
+  - tests/test_watchers.py
+  - web/tests/acceptanceAgentMode.test.mjs
 invariants: [4, 4b, 8, 9, 10c, 11]
+last_passed: 2026-08-05 — a CPU-only served-app browser drive corrected an
+  intentionally malformed two-job handoff in the same session, restored both
+  watchers after backend restart, coalesced their completion into one attributed
+  wake, and left the graph revision unchanged.
 ---
 
 # Watch external work and wake the conversation that armed it

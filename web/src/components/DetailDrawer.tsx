@@ -47,7 +47,8 @@ interface Props {
   hasStagedNodeChange?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
-  onReleaseAttempt?: (attemptId: string) => void;
+  experimentWatcherCount?: number;
+  onStopExperimentWatchers?: () => void;
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   onUnstage?: () => void;
@@ -101,7 +102,8 @@ export function DetailDrawer({
   hasStagedNodeChange = false,
   canonicalStanding = node.standing,
   experimentControl = null,
-  onReleaseAttempt,
+  experimentWatcherCount = 0,
+  onStopExperimentWatchers,
   experimentRunDisabled = false,
   experimentRunBusy = false,
   onUnstage,
@@ -140,6 +142,11 @@ export function DetailDrawer({
   );
   const editInvalid = Object.keys(editErrors).length > 0;
   const nodeMutationDisabled = mutationsDisabled || stagedForRemoval;
+  const detachedExperimentWorkActive = experimentWatcherCount > 0;
+  const experimentControlActive = Boolean(
+    experimentControl?.active || detachedExperimentWorkActive,
+  );
+  const experimentPausedAtLimit = Boolean(experimentControl?.paused && !experimentControlActive);
 
   useEffect(() => {
     if (!editing) {
@@ -347,17 +354,24 @@ export function DetailDrawer({
 
               {node.type === "experiment" && experimentControl && onRunExperiment && (
                 <section
-                  className={`experiment-control${experimentControl.active ? " active" : ""}`}
+                  className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
                 >
                   <div className="experiment-control-heading">
                     <div>
-                      <span className="eyebrow">Attempt budget</span>
+                      <span className="eyebrow">Episode invocations</span>
                       <strong>
-                        {experimentControl.attempts_used} / {experimentControl.attempt_ceiling}
+                        {experimentControl.invocations_used} /{" "}
+                        {experimentControl.invocation_ceiling}
                       </strong>
+                      <span className="experiment-invocations-remaining">
+                        {experimentControl.invocations_remaining} remaining
+                      </span>
                     </div>
-                    {experimentControl.active && (
+                    {experimentControlActive && (
                       <span className="experiment-loop-marker">Active loop</span>
+                    )}
+                    {experimentPausedAtLimit && (
+                      <span className="experiment-loop-marker paused">Paused at limit</span>
                     )}
                     <button
                       className="button primary compact experiment-run-button"
@@ -366,20 +380,39 @@ export function DetailDrawer({
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
-                        experimentControl.active ||
+                        experimentControlActive ||
                         !experimentControl.ready
                       }
                       onClick={onRunExperiment}
                     >
-                      <FlaskConical size={13} /> {experimentRunBusy ? "Starting" : "Run"}
+                      <FlaskConical size={13} />{" "}
+                      {experimentRunBusy
+                        ? "Starting"
+                        : experimentPausedAtLimit
+                          ? "Run pending wake"
+                          : "Run"}
                     </button>
                   </div>
+                  {experimentPausedAtLimit && (
+                    <p className="experiment-loop-resume">
+                      New episode · pending watcher continues as invocation 1
+                    </p>
+                  )}
                   {experimentControl.reasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
                       {experimentControl.reasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>
+                  )}
+                  {experimentWatcherCount > 0 && onStopExperimentWatchers && (
+                    <button
+                      className="button compact experiment-stop-watchers"
+                      type="button"
+                      onClick={onStopExperimentWatchers}
+                    >
+                      Stop {experimentWatcherCount === 1 ? "watcher" : "watchers"}
+                    </button>
                   )}
                   {(node.attempts ?? []).length > 0 && (
                     <ol className="experiment-attempts" aria-label="Attempts">
@@ -396,16 +429,6 @@ export function DetailDrawer({
                                   .join(", ")}
                               </span>
                             )}
-                            {open && onReleaseAttempt && (
-                              <button
-                                className="button compact"
-                                type="button"
-                                disabled={nodeMutationDisabled}
-                                onClick={() => onReleaseAttempt(attempt.id)}
-                              >
-                                Stop attempt
-                              </button>
-                            )}
                           </li>
                         );
                       })}
@@ -416,8 +439,8 @@ export function DetailDrawer({
                       {experimentControl.decision_drift.map((drift) => (
                         <li key={drift.decision_id}>
                           {drift.proposed
-                            ? `${drift.decision_id} has a proposed change. The latest attempt ran under ${drift.pinned_option}.`
-                            : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} since the latest attempt ran under ${drift.pinned_option}.`}
+                            ? `${drift.decision_id} has a proposed change. This episode was pinned to ${drift.pinned_option}.`
+                            : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
                         </li>
                       ))}
                     </ul>

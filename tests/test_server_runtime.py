@@ -130,6 +130,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "active_agent_tasks": 0,
         "projects": 0,
+        "agent_mode": "provider",
     }
 
 

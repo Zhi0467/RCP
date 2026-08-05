@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from rcp.agents import validate_work_patch
+from rcp.agents.experiment_loop_prompt import (
+    experiment_loop_continuation_contract,
+    experiment_loop_task_contract,
+)
 from rcp.agents.prompts import PromptFactory
 from rcp.core.authority import (
     AGENT_GRAPH_AUTHORITY_POLICY_DIGEST,
     AGENT_GRAPH_AUTHORITY_POLICY_VERSION,
     render_agent_graph_authority_contract,
 )
+from rcp.core.models import GraphState
+from rcp.runs.experiment_loop import stage_experiment_loop_context
+from rcp.service import RunRequest
 from tests.helpers import seed_patch
 
 
@@ -265,6 +275,8 @@ def test_work_contract_requires_a_semantic_patch_with_rcp_owned_bookkeeping() ->
     assert "Use the repository list as `run_truth_scope`" not in contract
     assert "only project locations you may change" not in contract
     assert "Do not inspect or mutate sibling or parent paths" not in contract
+    assert "Experiment-loop" not in contract
+    assert "remaining_invocations" not in contract
     _assert_live_validator_contract(contract, validator_command)
     _assert_semantic_probes(
         contract,
@@ -279,36 +291,112 @@ def test_work_contract_requires_a_semantic_patch_with_rcp_owned_bookkeeping() ->
     _assert_fixed_ontology_guidance(contract)
 
 
+@pytest.mark.asyncio
+async def test_experiment_loop_context_fails_closed_without_episode_binding() -> None:
+    request = RunRequest(
+        patch_kind="experiment_loop",
+        control_node_id="exp/example",
+        control_revision=1,
+    )
+
+    with pytest.raises(ValueError, match="episode invocation binding"):
+        await stage_experiment_loop_context(
+            object(),  # type: ignore[arg-type]
+            request,
+            None,
+            None,
+            None,
+            token="missing-binding",
+            continuation="fresh",
+        )
+
+
+@pytest.mark.asyncio
+async def test_pending_completion_context_names_human_reauthorization(tmp_path) -> None:
+    class Store:
+        def agent_task(self, operation_id):
+            assert operation_id == "operation"
+            return SimpleNamespace(project_id="project")
+
+        def watchers(self, project_id):
+            assert project_id == "project"
+            return []
+
+    execution = SimpleNamespace(operation_id="operation", store=Store())
+    service = SimpleNamespace(history=SimpleNamespace(state=lambda: GraphState()))
+    request = RunRequest(
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/example",
+        control_revision=2,
+        control_episode_id="d91bb1b3-a480-4dbf-b5f0-4bd62bf4f779",
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        watcher_ids=["watcher-from-old-episode"],
+    )
+
+    control_path, _ = await stage_experiment_loop_context(
+        service,
+        request,
+        execution,
+        tmp_path / "stage",
+        None,
+        token="reauthorized",
+        continuation="fresh",
+    )
+
+    control = json.loads(Path(control_path).read_text(encoding="utf-8"))
+    assert control["phase"] == "human_reauthorization"
+    assert control["invocation"] == 1
+    assert control["delivered_watcher_ids"] == ["watcher-from-old-episode"]
+
+
 def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() -> None:
     validator_command = "python /stage/validator.py /stage/patch.json"
-    contract = PromptFactory.work_task_contract(
+    contract = experiment_loop_task_contract(
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
         graph_path="/state/graph.json",
         research_path="/state/research.md",
-        focused_node_id="exp/example",
+        focused_experiment_id="exp/example",
         repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
         introduction_path=None,
         human_request_path="/stage/inputs/human-request.txt",
+        loop_control_path="/stage/inputs/experiment-control.json",
+        watcher_state_path="/stage/inputs/experiment-watchers.json",
         patch_path="/stage/patch.json",
         artifact_path="/stage/artifacts",
         output_schema_path="/stage/inputs/patch-schema.json",
         watch_path="/stage/watch.json",
-        patch_kind="experiment_loop",
-        control_context_path="/stage/inputs/experiment-control.json",
         validator_command=validator_command,
     )
 
     compact = " ".join(contract.split())
+    assert contract.startswith("# RCP Experiment-loop task contract")
     assert "one semantic Patch JSON object" in compact
     assert "one `experiment_loop`/`agent` Patch" not in compact
-    assert "attempt ceiling is reached" in compact
-    assert "exact pinned decision bundle" in compact
-    assert "there is no watcher API to call" in contract
-    assert "query the scheduler rather than the process table" in contract
-    assert "grep -Fxq 4471" in contract
-    assert "must never submit, cancel, kill, or modify" in contract
+    assert "No prior chat transcript is an input" in compact
+    assert "/stage/inputs/experiment-control.json" in contract
+    assert "/stage/inputs/experiment-watchers.json" in contract
+    assert "every edge whose source or target is the Experiment" in compact
+    assert "AgentExperimentAttempt" in contract
+    assert "Append multiple attempts" in compact
+    assert "Preserve every existing attempt, its order, and its id" in compact
+    assert "decision_bundle` exactly from the loop-control file" in compact
+    assert "debug.mechanical_fault" in contract
+    assert "first write the planned attempt" in compact
+    assert "update that same not-yet-applied Patch" in compact
+    assert "A watcher completing means only" in compact
+    assert "does not begin, close, or correspond one-to-one with an attempt" in compact
+    assert "remaining_invocations` is zero" in contract
+    assert "pause automatic delivery until a human presses Run" in compact
+    assert "no watcher api to" in contract.casefold()
+    assert "arms the list atomically" in compact
+    assert "exits 1 while the named work remains" in compact
+    assert "exits 1;;" not in contract
+    assert "grep -Fxq" not in contract
+    _assert_live_validator_contract(contract, validator_command)
 
 
 def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority() -> None:
@@ -450,6 +538,26 @@ def test_work_patch_correction_keeps_work_access_and_live_validator_contract() -
         failure="Exact failure diagnostics: `/stage/inputs/correction.json`",
         may_act_again="Do not repeat a submission, experiment, message, or other external side effect",
     )
+
+
+def test_experiment_retry_points_to_fresh_control_without_rebuilding_contract() -> None:
+    retry = experiment_loop_continuation_contract(
+        original_contract_path="/stage/inputs/task-initial.md",
+        mode="retry",
+        patch_path="/stage/patch.json",
+        watch_path="/stage/watch.json",
+        diagnostics_path="/stage/inputs/retry.json",
+        output_schema_path="/stage/inputs/patch-schema.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
+        loop_control_path="/stage/inputs/experiment-control-retry.json",
+    )
+
+    compact = " ".join(retry.split())
+    assert "Fresh loop-control delta" in retry
+    assert "/stage/inputs/experiment-control-retry.json" in retry
+    assert "preserves the same episode and invocation number" in compact
+    assert "Do not rebuild or broaden the original task" in compact
+    assert "same native session that ran the previous attempt" not in compact
 
 
 def test_retry_contract_preserves_objective_but_uses_current_authority_and_outputs() -> None:

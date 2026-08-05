@@ -253,7 +253,10 @@ def test_automatic_launch_reuses_compatible_owner_without_signalling(
         yield
 
     monkeypatch.setattr("rcp.__main__.instance_lock", held)
-    monkeypatch.setattr("rcp.__main__._probe_owner", lambda _: (metadata, {}))
+    monkeypatch.setattr(
+        "rcp.__main__._probe_owner",
+        lambda _: (metadata, {"agent_mode": "provider"}),
+    )
     monkeypatch.setattr("rcp.__main__.os.kill", lambda *_: pytest.fail("sent a signal"))
 
     _launch_automatically(_serve_args(), tmp_path)

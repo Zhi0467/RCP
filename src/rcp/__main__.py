@@ -42,6 +42,7 @@ from rcp.web_assets import WebBuildError, prepared_web_assets
 
 RELOAD_PROJECT_ENV = "RCP_RELOAD_PROJECT"
 RELOAD_METADATA_ENV = "RCP_RELOAD_SERVER_METADATA"
+RELOAD_ACCEPTANCE_AGENT_ENV = "RCP_RELOAD_ACCEPTANCE_AGENT"
 _LOCKED_MESSAGE = "Another RCP process is already using this app data directory."
 
 EXIT_REFUSED_VERSION = 20
@@ -102,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
         )
         if name == "serve":
             command.add_argument(
+                "--acceptance-agent",
+                action="store_true",
+                help=("Use the explicit local CPU-only acceptance agent instead of a provider"),
+            )
+            command.add_argument(
                 "--reload",
                 action="store_true",
                 help="Reload Python and rebuild the frontend when their sources change",
@@ -132,6 +138,7 @@ def reload_app() -> FastAPI:
     return create_app(
         os.environ.get(RELOAD_PROJECT_ENV) or None,
         instance_metadata=metadata,
+        acceptance_agent=os.environ.get(RELOAD_ACCEPTANCE_AGENT_ENV) == "1",
     )
 
 
@@ -179,12 +186,33 @@ def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
         _exit_refused(args, refusal)
 
     try:
-        metadata, _ = _probe_owner(data_dir)
+        metadata, health = _probe_owner(data_dir)
         if metadata.app_version != __version__:
             raise LaunchRefused(
                 "refused-version",
                 EXIT_REFUSED_VERSION,
                 f"The running RCP version is {metadata.app_version}; this app is {__version__}.",
+                metadata=metadata,
+            )
+        requested_agent_mode = (
+            "acceptance" if getattr(args, "acceptance_agent", False) else "provider"
+        )
+        running_agent_mode = health.get("agent_mode")
+        if running_agent_mode not in {"acceptance", "provider"}:
+            raise LaunchRefused(
+                "refused-unavailable",
+                EXIT_REFUSED_UNAVAILABLE,
+                "The running RCP server does not report a recognized agent mode.",
+                metadata=metadata,
+            )
+        if running_agent_mode != requested_agent_mode:
+            raise LaunchRefused(
+                "refused-unavailable",
+                EXIT_REFUSED_UNAVAILABLE,
+                (
+                    f"The running RCP server uses {running_agent_mode!r} agent mode; "
+                    f"this launch requested {requested_agent_mode!r}."
+                ),
                 metadata=metadata,
             )
         if args.project:
@@ -263,6 +291,9 @@ def _run_server(
                 # the environment. Watch only the Python package; Vite owns web.
                 os.environ[RELOAD_PROJECT_ENV] = args.project or ""
                 os.environ[RELOAD_METADATA_ENV] = json.dumps(metadata.as_dict())
+                os.environ[RELOAD_ACCEPTANCE_AGENT_ENV] = (
+                    "1" if getattr(args, "acceptance_agent", False) else "0"
+                )
                 if on_ready:
                     on_ready()
                 uvicorn.run(
@@ -273,7 +304,11 @@ def _run_server(
                     **uvicorn_options,
                 )
                 return
-            app = create_app(args.project, instance_metadata=metadata)
+            app = create_app(
+                args.project,
+                instance_metadata=metadata,
+                acceptance_agent=getattr(args, "acceptance_agent", False),
+            )
             if args.command == "open":
                 url = _project_url(args.host, args.port, app.state.default_project_id)
                 threading.Timer(BROWSER_OPEN_DELAY_SECONDS, lambda: webbrowser.open(url)).start()

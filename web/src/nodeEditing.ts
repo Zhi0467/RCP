@@ -41,8 +41,8 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
     { key: "interpretation_rules", label: "Interpretation rules", kind: "list" },
     { key: "completion_criteria", label: "Completion criteria", kind: "list" },
     {
-      key: "attempt_ceiling",
-      label: "Attempt ceiling",
+      key: "invocation_ceiling",
+      label: "Invocation ceiling",
       kind: "number",
       min: 1,
       integer: true,

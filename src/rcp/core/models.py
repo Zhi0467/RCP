@@ -118,7 +118,7 @@ class Experiment(BaseNode):
     expected_outcomes: list[str] = Field(default_factory=list)
     interpretation_rules: list[str] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
-    attempt_ceiling: int = Field(default=5, ge=1)
+    invocation_ceiling: int = Field(default=5, ge=1)
     status: Literal[
         "proposed",
         "designing",
@@ -134,6 +134,15 @@ class Experiment(BaseNode):
     attempts: list[ExperimentAttempt] = Field(default_factory=list)
     current_summary: str = ""
     next_action: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_attempt_ceiling(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "attempt_ceiling" not in value:
+            return value
+        migrated = dict(value)
+        migrated["invocation_ceiling"] = migrated.pop("attempt_ceiling")
+        return migrated
 
 
 class Evidence(BaseNode):
@@ -177,7 +186,10 @@ HUMAN_EDITABLE_NODE_FIELDS: dict[str, frozenset[str]] = {
             "expected_outcomes",
             "interpretation_rules",
             "completion_criteria",
+            # Replay compatibility for approval patches written before the
+            # invocation-budget rename. New output uses invocation_ceiling.
             "attempt_ceiling",
+            "invocation_ceiling",
             "current_summary",
             "next_action",
         }

@@ -266,6 +266,9 @@ class RunRequest(BaseModel):
     patch_kind: GraphPatchKind = "work"
     control_node_id: str | None = None
     control_revision: int | None = Field(default=None, ge=0)
+    control_episode_id: str | None = None
+    control_invocation: int | None = Field(default=None, ge=1)
+    control_invocation_ceiling: int | None = Field(default=None, ge=1)
     control_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
     control_completion_criteria: list[str] = Field(default_factory=list)
     watcher_ids: list[str] = Field(default_factory=list)

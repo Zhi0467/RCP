@@ -152,6 +152,23 @@ class AgentTaskRecord(BaseModel):
     can_retry: bool = False
 
 
+class ExperimentLoopRuntime(BaseModel):
+    """Operational state of the newest bounded episode for one Experiment."""
+
+    episode_id: str | None = None
+    invocations_used: int = Field(default=0, ge=0)
+    invocation_ceiling: int | None = Field(default=None, ge=1)
+    control_revision: int | None = Field(default=None, ge=0)
+    active: bool = False
+    paused: bool = False
+    task_active: bool = False
+    detached_work_active: bool = False
+    watcher_completion_pending: bool = False
+    episode_exited: bool = False
+    decision_bundle: list[dict[str, object]] = Field(default_factory=list)
+    completion_criteria: list[str] = Field(default_factory=list)
+
+
 AgentUsageCountReason = Literal["counted", "duplicate", "invalid"]
 
 
@@ -210,6 +227,10 @@ class AgentUsageSnapshot(BaseModel):
 WatcherStatus = Literal["active", "degraded", "completed", "stopped"]
 
 
+class WatcherClaimConflict(ValueError):
+    """A watcher delivery already won the atomic claim."""
+
+
 class WatcherContinuation(BaseModel):
     """RCP-bound policy needed to create a fresh Work wake."""
 
@@ -223,6 +244,9 @@ class WatcherContinuation(BaseModel):
     patch_kind: Literal["work", "experiment_loop"] = "work"
     control_node_id: str | None = None
     control_revision: int | None = Field(default=None, ge=0)
+    control_episode_id: str | None = None
+    control_invocation: int | None = Field(default=None, ge=1)
+    control_invocation_ceiling: int | None = Field(default=None, ge=1)
     control_decision_bundle: list[dict[str, object]] = Field(default_factory=list)
     control_completion_criteria: list[str] = Field(default_factory=list)
     workflow_ids: list[str] = Field(default_factory=list)
@@ -741,6 +765,7 @@ class AppStore:
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> None:
+        self._validate_experiment_task_insert(connection, record)
         connection.execute(
             """
             INSERT INTO graph_runs (
@@ -777,6 +802,184 @@ class AppStore:
                 record.last_activity_at,
             ),
         )
+
+    @staticmethod
+    def _validate_experiment_task_insert(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> None:
+        request = record.request
+        if request.get("patch_kind") != "experiment_loop":
+            return
+
+        binding_keys = (
+            "control_node_id",
+            "control_revision",
+            "control_episode_id",
+            "control_invocation",
+            "control_invocation_ceiling",
+            "control_decision_bundle",
+            "control_completion_criteria",
+        )
+        node_id = request.get("control_node_id")
+        control_revision = request.get("control_revision")
+        episode_id = request.get("control_episode_id")
+        invocation = request.get("control_invocation")
+        ceiling = request.get("control_invocation_ceiling")
+        decision_bundle = request.get("control_decision_bundle")
+        completion_criteria = request.get("control_completion_criteria")
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("A bounded experiment-loop task must name its control node.")
+        if not isinstance(control_revision, int) or isinstance(control_revision, bool):
+            raise ValueError("A bounded experiment-loop task must pin its control revision.")
+        if not isinstance(decision_bundle, list):
+            raise ValueError("A bounded experiment-loop task must pin its governing decisions.")
+        if not isinstance(completion_criteria, list) or any(
+            not isinstance(item, str) for item in completion_criteria
+        ):
+            raise ValueError("A bounded experiment-loop task must pin its completion criteria.")
+        if not isinstance(episode_id, str):
+            raise ValueError("A bounded experiment-loop task must name a valid episode id.")
+        try:
+            uuid.UUID(episode_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "A bounded experiment-loop task must name a valid episode id."
+            ) from exc
+        if not isinstance(invocation, int) or isinstance(invocation, bool) or invocation < 1:
+            raise ValueError("A bounded experiment-loop task must name its invocation number.")
+        if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < 1:
+            raise ValueError("A bounded experiment-loop task must pin its invocation ceiling.")
+        if invocation > ceiling:
+            raise ValueError("The experiment-loop invocation exceeds its pinned ceiling.")
+
+        if record.parent_operation_id:
+            parent = connection.execute(
+                """
+                SELECT project_id, kind, status, attempt, request_json, result_json
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (record.parent_operation_id,),
+            ).fetchone()
+            if parent is None:
+                raise ValueError("An experiment-loop recovery task must have its parent task.")
+            if parent["project_id"] != record.project_id or parent["kind"] != record.kind:
+                raise ValueError("An experiment-loop recovery task must preserve its task scope.")
+            parent_request = json.loads(parent["request_json"])
+            if any(parent_request.get(key) != request.get(key) for key in binding_keys):
+                raise ValueError(
+                    "An experiment-loop recovery task must preserve its control binding."
+                )
+            parent_result = json.loads(parent["result_json"]) if parent["result_json"] else None
+            graph_update = (
+                parent_result.get("graph_update") if isinstance(parent_result, dict) else None
+            )
+            patch_only_repair = (
+                request.get("message") is None
+                and parent["status"] == "succeeded"
+                and isinstance(graph_update, dict)
+                and graph_update.get("status") == "rejected"
+                and graph_update.get("repairable") is False
+            )
+            if not patch_only_repair:
+                AppStore._validate_experiment_recovery_claim(
+                    connection,
+                    record,
+                    parent,
+                    parent_request,
+                )
+            return
+
+        trigger = request.get("trigger")
+        if trigger not in {"experiment_run", "watcher"}:
+            raise ValueError("A root experiment-loop task must be a Run or watcher invocation.")
+        rows = connection.execute(
+            """
+            SELECT request_json FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(request_json, '$.control_episode_id') = ?
+            """,
+            (record.project_id, node_id, episode_id),
+        ).fetchall()
+        prior = [json.loads(row["request_json"]) for row in rows]
+        pinned_fields = (
+            "control_revision",
+            "control_invocation_ceiling",
+            "control_decision_bundle",
+            "control_completion_criteria",
+        )
+        if any(item.get(key) != request.get(key) for item in prior for key in pinned_fields):
+            raise ValueError("An experiment-loop episode cannot change its pinned control fields.")
+        expected = max((int(item["control_invocation"]) for item in prior), default=0) + 1
+        if invocation != expected:
+            raise ValueError(
+                f"Experiment-loop invocation {invocation} is out of sequence; expected {expected}."
+            )
+        if invocation == 1 and prior:
+            raise ValueError("An experiment-loop episode may have only one first invocation.")
+        if trigger == "experiment_run" and invocation != 1:
+            raise ValueError("A human Run must start at experiment-loop invocation 1.")
+        if trigger == "watcher" and not prior:
+            raise ValueError("An automatic watcher wake requires an existing loop episode.")
+
+    @staticmethod
+    def _validate_experiment_recovery_claim(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        parent: sqlite3.Row,
+        parent_request: dict[str, object],
+    ) -> None:
+        if parent["status"] not in {"paused", "interrupted", "failed"}:
+            raise ValueError("Only the latest unresolved loop task can be resumed or retried.")
+        if record.attempt != int(parent["attempt"]) + 1:
+            raise ValueError("A loop recovery task must advance its provider-attempt lineage.")
+        child = connection.execute(
+            "SELECT 1 FROM graph_runs WHERE parent_operation_id = ? LIMIT 1",
+            (record.parent_operation_id,),
+        ).fetchone()
+        if child is not None:
+            raise ValueError("This loop task already has a recovery child.")
+        newest_root = connection.execute(
+            """
+            SELECT request_json FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (record.project_id, parent_request["control_node_id"]),
+        ).fetchone()
+        if newest_root is None:
+            raise ValueError("The loop episode root is no longer available.")
+        newest_request = json.loads(newest_root["request_json"])
+        if newest_request.get("control_episode_id") != parent_request.get(
+            "control_episode_id"
+        ) or newest_request.get("control_invocation") != parent_request.get("control_invocation"):
+            raise ValueError("Only the newest loop episode and invocation can be recovered.")
+        newer_attempt = connection.execute(
+            """
+            SELECT 1 FROM graph_runs
+            WHERE project_id = ?
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(request_json, '$.control_episode_id') = ?
+              AND json_extract(request_json, '$.control_invocation') = ?
+              AND attempt > ?
+            LIMIT 1
+            """,
+            (
+                record.project_id,
+                parent_request["control_node_id"],
+                parent_request["control_episode_id"],
+                parent_request["control_invocation"],
+                parent["attempt"],
+            ),
+        ).fetchone()
+        if newer_attempt is not None:
+            raise ValueError("Only the latest unresolved loop task can be recovered.")
 
     @staticmethod
     def _has_active_chat_overlap(
@@ -822,6 +1025,19 @@ class AppStore:
         }
         if len(bindings) != 1:
             raise ValueError("one watch list must share one RCP-bound continuation context")
+        continuation = records[0].continuation
+        if continuation.patch_kind == "experiment_loop":
+            if not all(
+                (
+                    continuation.control_node_id,
+                    continuation.control_episode_id,
+                    continuation.control_invocation,
+                    continuation.control_invocation_ceiling,
+                )
+            ):
+                raise ValueError("an experiment-loop watcher must preserve its control binding")
+            if continuation.control_invocation > continuation.control_invocation_ceiling:
+                raise ValueError("an experiment-loop watcher invocation exceeds its pinned ceiling")
         with self.connection() as connection:
             for record in records:
                 connection.execute(
@@ -910,20 +1126,51 @@ class AppStore:
             raise ValueError("stopping watchers requires at least one watcher id")
         placeholders = ",".join("?" for _ in ids)
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"""
+                SELECT watcher_id, project_id, status, notified, notification_operation_id
+                FROM watchers
+                WHERE watcher_id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+            if {str(row["watcher_id"]) for row in rows} != set(ids) or {
+                str(row["project_id"]) for row in rows
+            } != {project_id}:
+                missing = next(
+                    (
+                        watcher_id
+                        for watcher_id in ids
+                        if watcher_id not in {str(row["watcher_id"]) for row in rows}
+                    ),
+                    ids[0],
+                )
+                raise KeyError(missing)
+            if any(row["notification_operation_id"] is not None for row in rows):
+                raise WatcherClaimConflict("A watcher update was already claimed for delivery.")
+            invalid = [
+                str(row["watcher_id"])
+                for row in rows
+                if row["status"] not in {"active", "degraded", "completed", "stopped"}
+                or (bool(row["notified"]) and row["status"] != "stopped")
+            ]
+            if invalid:
+                raise ValueError(f"Watchers cannot be stopped: {', '.join(sorted(invalid))}.")
             connection.execute(
                 f"""
                 UPDATE watchers
                 SET status = 'stopped', notified = 1
                 WHERE project_id = ? AND watcher_id IN ({placeholders})
-                  AND status IN ('active', 'degraded')
+                  AND status IN ('active', 'degraded', 'completed')
+                  AND notification_operation_id IS NULL
                 """,
                 (project_id, *ids),
             )
-        stopped = []
+        stopped: list[WatcherRecord] = []
         for watcher_id in ids:
             record = self.watcher(watcher_id)
-            if record is None or record.project_id != project_id:
-                raise KeyError(watcher_id)
+            assert record is not None
             stopped.append(record)
         return stopped
 
@@ -933,9 +1180,160 @@ class AppStore:
         return [
             record.watcher_id
             for record in self.watchers(project_id)
-            if record.status in {"active", "degraded"}
+            if (
+                record.status in {"active", "degraded"}
+                or (record.status == "completed" and not record.notified)
+            )
             and record.continuation.control_node_id == control_node_id
         ]
+
+    def experiment_loop_runtime(
+        self,
+        project_id: str,
+        control_node_id: str,
+    ) -> ExperimentLoopRuntime:
+        """Derive the newest episode from root invocations and its watcher ledger."""
+
+        with self.connection() as connection:
+            root = connection.execute(
+                """
+                SELECT request_json FROM graph_runs
+                WHERE project_id = ? AND parent_operation_id IS NULL
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(request_json, '$.control_node_id') = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (project_id, control_node_id),
+            ).fetchone()
+            if root is None:
+                return ExperimentLoopRuntime()
+            root_request = json.loads(root["request_json"])
+            episode_id = root_request.get("control_episode_id")
+            if not isinstance(episode_id, str):
+                raise ValueError("Stored experiment-loop root is missing its episode id.")
+            try:
+                uuid.UUID(episode_id)
+            except ValueError as exc:
+                raise ValueError("Stored experiment-loop root has an invalid episode id.") from exc
+            task_rows = connection.execute(
+                """
+                SELECT status, attempt, request_json, created_at, rowid FROM graph_runs
+                WHERE project_id = ?
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(request_json, '$.control_node_id') = ?
+                  AND json_extract(request_json, '$.control_episode_id') = ?
+                ORDER BY attempt DESC, created_at DESC, rowid DESC
+                """,
+                (project_id, control_node_id, episode_id),
+            ).fetchall()
+            watcher_rows = connection.execute(
+                """
+                SELECT status, notified FROM watchers
+                WHERE project_id = ?
+                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(continuation_json, '$.control_node_id') = ?
+                  AND (status IN ('active', 'degraded')
+                       OR (status = 'completed' AND notified = 0))
+                """,
+                (project_id, control_node_id),
+            ).fetchall()
+            exit_row = connection.execute(
+                """
+                SELECT 1
+                FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS task ON task.operation_id = receipt.operation_id
+                WHERE task.project_id = ?
+                  AND json_extract(task.request_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(task.request_json, '$.control_node_id') = ?
+                  AND json_extract(task.request_json, '$.control_episode_id') = ?
+                  AND receipt.category = 'experiment_loop_exit'
+                LIMIT 1
+                """,
+                (project_id, control_node_id, episode_id),
+            ).fetchone()
+
+        latest_by_invocation: dict[int, sqlite3.Row] = {}
+        for row in task_rows:
+            request = json.loads(row["request_json"])
+            invocation = request.get("control_invocation")
+            if isinstance(invocation, int) and invocation not in latest_by_invocation:
+                latest_by_invocation[invocation] = row
+        ceiling = root_request.get("control_invocation_ceiling")
+        if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < 1:
+            raise ValueError("Stored experiment-loop root is missing its pinned ceiling.")
+        if not latest_by_invocation or min(latest_by_invocation) < 1:
+            raise ValueError("Stored experiment-loop root is missing its invocation number.")
+        invocations_used = max(latest_by_invocation)
+        if set(latest_by_invocation) != set(range(1, invocations_used + 1)):
+            raise ValueError("Stored experiment-loop root invocations are out of sequence.")
+        if invocations_used > ceiling:
+            raise ValueError("Stored experiment-loop root exceeds its pinned ceiling.")
+        unresolved = any(
+            row["status"] in {"queued", "running", "pausing", "paused", "failed", "interrupted"}
+            for row in latest_by_invocation.values()
+        )
+        detached_work_active = any(row["status"] in {"active", "degraded"} for row in watcher_rows)
+        watcher_completion_pending = any(
+            row["status"] == "completed" and not bool(row["notified"]) for row in watcher_rows
+        )
+        has_watcher = detached_work_active or watcher_completion_pending
+        episode_exited = exit_row is not None
+        at_ceiling = invocations_used >= ceiling
+        pins = root_request.get("control_decision_bundle")
+        if not isinstance(pins, list):
+            raise ValueError("Stored experiment-loop root is missing its pinned decision bundle.")
+        control_revision = root_request.get("control_revision")
+        if not isinstance(control_revision, int) or isinstance(control_revision, bool):
+            raise ValueError("Stored experiment-loop root is missing its control revision.")
+        completion_criteria = root_request.get("control_completion_criteria")
+        if not isinstance(completion_criteria, list) or any(
+            not isinstance(item, str) for item in completion_criteria
+        ):
+            raise ValueError("Stored experiment-loop root is missing its completion criteria.")
+        return ExperimentLoopRuntime(
+            episode_id=episode_id,
+            invocations_used=invocations_used,
+            invocation_ceiling=ceiling,
+            control_revision=control_revision,
+            task_active=unresolved,
+            detached_work_active=detached_work_active,
+            watcher_completion_pending=watcher_completion_pending,
+            episode_exited=episode_exited,
+            active=unresolved or (has_watcher and not at_ceiling and not episode_exited),
+            paused=has_watcher and at_ceiling and not unresolved and not episode_exited,
+            decision_bundle=pins,
+            completion_criteria=completion_criteria,
+        )
+
+    def active_experiment_control_ids(self, project_id: str) -> set[str]:
+        """Return Experiments whose newest operational episode is still live."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT json_extract(request_json, '$.control_node_id') AS node_id
+                FROM graph_runs
+                WHERE project_id = ?
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                UNION
+                SELECT json_extract(continuation_json, '$.control_node_id') AS node_id
+                FROM watchers
+                WHERE project_id = ?
+                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+                """,
+                (project_id, project_id),
+            ).fetchall()
+        candidates = {
+            str(row["node_id"])
+            for row in rows
+            if isinstance(row["node_id"], str) and row["node_id"]
+        }
+        return {
+            node_id
+            for node_id in candidates
+            if self.experiment_loop_runtime(project_id, node_id).active
+        }
 
     def record_watcher_check(
         self,
@@ -1003,10 +1401,27 @@ class AppStore:
                 record.chat_id,
                 record.node_id,
                 record.execution_host,
-                record.continuation.model_dump_json(),
+                self._watcher_delivery_policy(record.continuation),
             )
             groups.setdefault(key, []).append(record)
         return list(groups.values())
+
+    def completed_experiment_watcher_group(
+        self,
+        project_id: str,
+        control_node_id: str,
+    ) -> list[WatcherRecord] | None:
+        """Return the oldest pending compatible group for one Experiment."""
+
+        for group in self.completed_watcher_groups():
+            first = group[0]
+            if (
+                first.project_id == project_id
+                and first.continuation.patch_kind == "experiment_loop"
+                and first.continuation.control_node_id == control_node_id
+            ):
+                return group
+        return None
 
     def create_watcher_notification_task(
         self,
@@ -1038,8 +1453,7 @@ class AppStore:
                 connection.execute("BEGIN IMMEDIATE")
                 rows = connection.execute(
                     f"""
-                    SELECT watcher_id, project_id, origin_task_kind, chat_id, node_id,
-                        execution_host, continuation_json
+                    SELECT *
                     FROM watchers
                     WHERE watcher_id IN ({placeholders})
                         AND status = 'completed' AND notified = 0
@@ -1048,20 +1462,22 @@ class AppStore:
                 ).fetchall()
                 if {str(row["watcher_id"]) for row in rows} != set(ids):
                     raise ValueError("watchers are missing, incomplete, or already notified")
-                if {str(row["project_id"]) for row in rows} != {record.project_id}:
+                watchers = [self._watcher_record(row) for row in rows]
+                if {item.project_id for item in watchers} != {record.project_id}:
                     raise ValueError("watchers and notification task belong to different projects")
                 bindings = {
                     (
-                        str(row["origin_task_kind"]),
-                        str(row["chat_id"]),
-                        row["node_id"],
-                        str(row["execution_host"]),
-                        str(row["continuation_json"]),
+                        item.origin_task_kind,
+                        item.chat_id,
+                        item.node_id,
+                        item.execution_host,
+                        self._watcher_delivery_policy(item.continuation),
                     )
-                    for row in rows
+                    for item in watchers
                 }
                 if len(bindings) != 1:
                     raise ValueError("one notification cannot merge incompatible watch lists")
+                self._validate_watcher_notification_scope(connection, record, watchers)
                 if self._has_active_chat_overlap(connection, record):
                     return None
                 self._insert_agent_task(connection, record)
@@ -1081,6 +1497,97 @@ class AppStore:
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    @staticmethod
+    def _watcher_delivery_policy(continuation: WatcherContinuation) -> str:
+        policy = continuation.model_dump(mode="json")
+        for field in (
+            "control_revision",
+            "control_episode_id",
+            "control_invocation",
+            "control_invocation_ceiling",
+            "control_decision_bundle",
+            "control_completion_criteria",
+        ):
+            policy.pop(field, None)
+        return json.dumps(policy, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _validate_watcher_notification_scope(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        watchers: list[WatcherRecord],
+    ) -> None:
+        first = watchers[0]
+        continuation = first.continuation
+        request = record.request
+        expected = {
+            "kind": first.origin_task_kind,
+            "chat_id": first.chat_id,
+            "node_id": first.node_id,
+        }
+        actual = {
+            "kind": record.kind,
+            "chat_id": request.get("chat_id"),
+            "node_id": request.get("node_id"),
+        }
+        mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
+        if mismatched:
+            raise ValueError(
+                f"watcher notification changed immutable scope: {', '.join(mismatched)}"
+            )
+        request_continuation = WatcherContinuation.model_validate(
+            {key: request[key] for key in WatcherContinuation.model_fields if key in request}
+        )
+        if AppStore._watcher_delivery_policy(
+            request_continuation
+        ) != AppStore._watcher_delivery_policy(continuation):
+            raise ValueError("watcher notification changed its immutable delivery policy")
+        trigger = request.get("trigger")
+        if continuation.patch_kind != "experiment_loop":
+            if trigger != "watcher":
+                raise ValueError("a generic watcher notification must use the watcher trigger")
+            return
+        invocation = request.get("control_invocation")
+        episode_id = request.get("control_episode_id")
+        if trigger == "watcher":
+            if not isinstance(invocation, int) or invocation < 2:
+                raise ValueError("an automatic Experiment wake must continue an existing episode")
+            newest = connection.execute(
+                """
+                SELECT request_json FROM graph_runs
+                WHERE project_id = ? AND parent_operation_id IS NULL
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(request_json, '$.control_node_id') = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (record.project_id, continuation.control_node_id),
+            ).fetchone()
+            if (
+                newest is None
+                or json.loads(newest["request_json"]).get("control_episode_id") != episode_id
+            ):
+                raise ValueError("an automatic Experiment wake must use the newest episode")
+            return
+        if trigger != "experiment_run" or invocation != 1:
+            raise ValueError("a human Experiment watcher claim must start a new episode")
+        previous = connection.execute(
+            """
+            SELECT request_json FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (record.project_id, continuation.control_node_id),
+        ).fetchone()
+        if previous is None:
+            raise ValueError("a human watcher claim requires a prior Experiment episode")
+        previous_request = json.loads(previous["request_json"])
+        if previous_request.get("control_episode_id") == episode_id:
+            raise ValueError("a human watcher claim must authorize a fresh episode")
 
     def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
         with self.connection() as connection:

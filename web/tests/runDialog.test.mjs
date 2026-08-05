@@ -148,7 +148,7 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
     source_refs: [],
     extension_fields: {},
     objective: "Test the mechanism",
-    attempt_ceiling: 3,
+    invocation_ceiling: 3,
     attempts: [
       {
         id: "attempt-1",
@@ -178,10 +178,16 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
         ontology: { types: [], fields: [], relations: [] },
         experimentControl: {
           ready: false,
-          reasons: ["Decision decision/data is still open."],
-          attempts_used: 2,
-          attempt_ceiling: 3,
-          active: false,
+          reasons: [
+            "Decision decision/data is still open.",
+            "An experiment loop is already active.",
+          ],
+          invocations_used: 2,
+          invocation_ceiling: 3,
+          invocations_remaining: 1,
+          episode_id: "episode-1",
+          paused: false,
+          active: true,
           governing_decisions: [],
           decision_drift: [
             {
@@ -199,7 +205,8 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
         onStanding() {},
         onStage() {},
         onRunExperiment() {},
-        onReleaseAttempt() {},
+        experimentWatcherCount: 1,
+        onStopExperimentWatchers() {},
         onOpenChat() {},
         onExploreRelations() {},
         onSelectNode() {},
@@ -209,19 +216,98 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
-  assert.match(html, /Attempt budget/);
+  assert.match(html, /Episode invocations/);
   assert.match(html, /2 \/ 3/);
+  assert.match(html, /1 remaining/);
+  assert.match(html, /Active loop/);
+  assert.doesNotMatch(html, /Paused at limit/);
   assert.match(html, /Decision decision\/data is still open\./);
-  assert.match(
-    html,
-    /decision\/resource moved to 8xA100 since the latest attempt ran under 4xA100/,
-  );
+  assert.match(html, /decision\/resource moved to 8xA100 after this episode was pinned to 4xA100/);
   assert.match(html, /<button[^>]*disabled=""[^>]*>.*Run<\/button>/s);
-  // An open attempt is the thing that keeps the loop marked active, so the
-  // human needs a way to release it when its watcher can no longer answer.
+  // Semantic attempts remain visible history but never own loop control.
   assert.match(html, /Train the ablation/);
-  assert.match(html, /Stop attempt/);
+  assert.doesNotMatch(html, /Stop attempt/);
+  assert.match(html, /Stop watcher/);
   assert.match(html, /Ask about this node/);
+});
+
+test("an invocation-limited episode offers a fresh Run for its pending watcher", () => {
+  const node = {
+    id: "experiment/paused",
+    type: "experiment",
+    title: "Paused run",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+    objective: "Test the mechanism",
+    invocation_ceiling: 3,
+    attempts: [
+      {
+        id: "attempt-open",
+        sequence: 1,
+        purpose: "Interpret the pending run",
+        attempt_kind: "external_run",
+        decision_bundle: [],
+        status: "running",
+        job_refs: ["job-1"],
+      },
+    ],
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  let html;
+  let activeWatcherHtml;
+  try {
+    const props = {
+      node,
+      edges: [],
+      allNodes: { [node.id]: node },
+      glossary: {},
+      beliefTransitions: [],
+      validationMessages: [],
+      ontology: { types: [], fields: [], relations: [] },
+      experimentControl: {
+        ready: true,
+        reasons: [],
+        invocations_used: 3,
+        invocation_ceiling: 3,
+        invocations_remaining: 0,
+        episode_id: "episode-1",
+        paused: true,
+        active: false,
+        governing_decisions: [],
+        decision_drift: [],
+      },
+      onClose() {},
+      onBeginEdit() {},
+      onStanding() {},
+      onStage() {},
+      onRunExperiment() {},
+      onStopExperimentWatchers() {},
+      onOpenChat() {},
+      onExploreRelations() {},
+      onSelectNode() {},
+    };
+    html = renderToStaticMarkup(React.createElement(DetailDrawer, props));
+    activeWatcherHtml = renderToStaticMarkup(
+      React.createElement(DetailDrawer, { ...props, experimentWatcherCount: 1 }),
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+  assert.match(html, /Paused at limit/);
+  assert.match(html, /0 remaining/);
+  assert.match(html, /New episode · pending watcher continues as invocation 1/);
+  assert.match(html, /Interpret the pending run/);
+  assert.match(html, /<button[^>]*>.*Run pending wake<\/button>/s);
+  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Run pending wake<\/button>/s);
+  assert.match(activeWatcherHtml, /Active loop/);
+  assert.match(activeWatcherHtml, /Stop watcher/);
+  assert.doesNotMatch(activeWatcherHtml, /Run pending wake/);
+  assert.match(activeWatcherHtml, /<button[^>]*disabled=""[^>]*>.*Run<\/button>/s);
 });
 
 test("node standing presents Contest and Agree as independent three-state toggles", () => {

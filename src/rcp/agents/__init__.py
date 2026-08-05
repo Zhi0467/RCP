@@ -1,3 +1,8 @@
+from rcp.agents.acceptance import (
+    ACCEPTANCE_GENERIC_WATCHER_MARKER,
+    AcceptanceAgentLauncher,
+    AcceptanceLaunchRecord,
+)
 from rcp.agents.context import (
     ChatContext,
     ContextAssembler,
@@ -19,6 +24,9 @@ __all__ = [
     "AgentLauncher",
     "AgentProcessControl",
     "AgentPatch",
+    "ACCEPTANCE_GENERIC_WATCHER_MARKER",
+    "AcceptanceAgentLauncher",
+    "AcceptanceLaunchRecord",
     "ChatContext",
     "ContextAssembler",
     "PromptFactory",

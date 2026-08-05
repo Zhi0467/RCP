@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -483,8 +484,15 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
             kind="node_chat",
             status="queued",
             request={
+                "trigger": "experiment_run",
                 "patch_kind": "experiment_loop",
                 "control_node_id": "exp/active-loop",
+                "control_revision": 1,
+                "control_episode_id": str(uuid.uuid4()),
+                "control_invocation": 1,
+                "control_invocation_ceiling": 5,
+                "control_decision_bundle": [],
+                "control_completion_criteria": [],
             },
             created_at=now,
             updated_at=now,

@@ -6,7 +6,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.core.models import (
-    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     Blocker,
     Decision,
     Experiment,
@@ -17,7 +16,7 @@ from rcp.core.models import (
 
 
 class DecisionDrift(BaseModel):
-    """A governing decision that moved since an attempt pinned it."""
+    """A governing decision that moved since the loop episode pinned it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -34,11 +33,25 @@ class ExperimentControlState(BaseModel):
 
     ready: bool
     reasons: list[str] = Field(default_factory=list)
-    attempts_used: int = Field(ge=0)
-    attempt_ceiling: int = Field(ge=1)
+    invocations_used: int = Field(ge=0)
+    invocation_ceiling: int = Field(ge=1)
+    invocations_remaining: int = Field(ge=0)
+    episode_id: str | None = None
+    paused: bool
     active: bool
     governing_decisions: list[ExperimentDecisionPin] = Field(default_factory=list)
     decision_drift: list[DecisionDrift] = Field(default_factory=list)
+
+
+class ExperimentInvocationAdmission(BaseModel):
+    """The current episode binding for one newly admitted watcher invocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    invocation: int = Field(ge=1)
+    invocation_ceiling: int = Field(ge=1)
+    decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
 
 
 def decision_drift(state: GraphState, pins: Iterable[ExperimentDecisionPin]) -> list[DecisionDrift]:
@@ -96,16 +109,68 @@ def derive_experiment_control_state(
     state: GraphState,
     experiment_id: str,
     active_control_node_ids: Iterable[str] = (),
+    *,
+    episode_id: str | None = None,
+    invocations_used: int = 0,
+    invocation_ceiling: int | None = None,
+    paused: bool = False,
+    detached_work_active: bool = False,
+    episode_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ExperimentControlState:
     node = state.nodes.get(experiment_id)
     if not isinstance(node, Experiment):
         raise ValueError(f"Node {experiment_id!r} is not an Experiment.")
 
-    reasons: list[str] = []
-    governing_ids = _related_targets(state, experiment_id, "governed_by")
+    reasons = experiment_graph_precondition_reasons(state, experiment_id)
     governing = governing_decision_bundle(state, experiment_id)
 
-    for decision_id in governing_ids:
+    active = experiment_id in set(active_control_node_ids)
+    if active:
+        reasons.append("An experiment loop is already active.")
+
+    if episode_id is None:
+        if (
+            invocation_ceiling is not None
+            or invocations_used != 0
+            or episode_decision_bundle is not None
+        ):
+            raise ValueError("Loop runtime fields require an episode id.")
+        ceiling = node.invocation_ceiling
+        pins: list[ExperimentDecisionPin] = []
+    else:
+        if invocation_ceiling is None:
+            raise ValueError("An active loop episode must retain its pinned invocation ceiling.")
+        if invocations_used < 1:
+            raise ValueError("An active loop episode must have at least one invocation.")
+        if episode_decision_bundle is None:
+            raise ValueError("An active loop episode must retain its pinned decision bundle.")
+        ceiling = invocation_ceiling
+        pins = list(episode_decision_bundle)
+    if detached_work_active and invocations_used >= ceiling:
+        reasons.append("Detached Experiment work is still running.")
+    return ExperimentControlState(
+        ready=not reasons,
+        reasons=reasons,
+        invocations_used=invocations_used,
+        invocation_ceiling=ceiling,
+        invocations_remaining=max(ceiling - invocations_used, 0),
+        episode_id=episode_id,
+        paused=paused,
+        active=active,
+        governing_decisions=governing,
+        decision_drift=decision_drift(state, pins),
+    )
+
+
+def experiment_graph_precondition_reasons(state: GraphState, experiment_id: str) -> list[str]:
+    """Return only graph facts that gate a new or automatic loop invocation."""
+
+    node = state.nodes.get(experiment_id)
+    if not isinstance(node, Experiment):
+        raise ValueError(f"Node {experiment_id!r} is not an Experiment.")
+
+    reasons: list[str] = []
+    for decision_id in _related_targets(state, experiment_id, "governed_by"):
         decision = state.nodes.get(decision_id)
         if not isinstance(decision, Decision):
             reasons.append(f"Governing decision {decision_id} is missing.")
@@ -120,30 +185,41 @@ def derive_experiment_control_state(
             reasons.append(f"Blocker {blocker_id} is missing.")
         elif blocker.status == "open":
             reasons.append(f"Blocker {blocker_id} is open.")
+    return reasons
 
-    attempts_used = len(node.attempts)
-    if attempts_used >= node.attempt_ceiling:
-        reasons.append(
-            f"Attempt ceiling reached: {attempts_used} of {node.attempt_ceiling} attempts used."
-        )
 
-    active = experiment_id in set(active_control_node_ids) or any(
-        attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES for attempt in node.attempts
-    )
-    if active:
-        reasons.append("An experiment loop is already active.")
+def admit_experiment_watcher_invocation(
+    state: GraphState,
+    experiment_id: str,
+    *,
+    episode_id: str | None,
+    invocations_used: int,
+    invocation_ceiling: int | None,
+    decision_bundle: Iterable[ExperimentDecisionPin] | None,
+    task_active: bool = False,
+    episode_exited: bool = False,
+) -> ExperimentInvocationAdmission | None:
+    """Admit the next automatic wake, or leave its watcher completion pending."""
 
-    # Drift is reported against the newest attempt's pins, so a finished
-    # experiment still says its result was produced under an older decision.
-    latest = node.attempts[-1] if node.attempts else None
-    return ExperimentControlState(
-        ready=not reasons,
-        reasons=reasons,
-        attempts_used=attempts_used,
-        attempt_ceiling=node.attempt_ceiling,
-        active=active,
-        governing_decisions=governing,
-        decision_drift=decision_drift(state, latest.decision_bundle) if latest else [],
+    if episode_id is None:
+        raise ValueError("An Experiment watcher cannot wake without an authorized episode.")
+    if invocation_ceiling is None:
+        raise ValueError("An Experiment watcher cannot wake without its pinned ceiling.")
+    if invocations_used < 1:
+        raise ValueError("An Experiment watcher cannot wake before invocation 1.")
+    if decision_bundle is None:
+        raise ValueError("An Experiment watcher cannot wake without pinned decisions.")
+    if task_active or episode_exited:
+        return None
+    if invocations_used >= invocation_ceiling:
+        return None
+    if experiment_graph_precondition_reasons(state, experiment_id):
+        return None
+    return ExperimentInvocationAdmission(
+        episode_id=episode_id,
+        invocation=invocations_used + 1,
+        invocation_ceiling=invocation_ceiling,
+        decision_bundle=list(decision_bundle),
     )
 
 

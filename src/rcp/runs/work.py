@@ -18,10 +18,15 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.experiment_loop_prompt import (
+    experiment_loop_continuation_contract,
+    experiment_loop_patch_correction_contract,
+    experiment_loop_task_contract,
+    experiment_loop_watcher_correction_contract,
+)
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
-from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.runs.chat import (
@@ -46,6 +51,12 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     _work_write_dirs,
+)
+from rcp.runs.experiment_loop import (
+    patch_explicitly_exits,
+    persist_experiment_watchers_idempotently,
+    root_experiment_loop_operation_id,
+    stage_experiment_loop_context,
 )
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
@@ -80,6 +91,7 @@ from rcp.watchers import (
     WatcherInitialCheckError,
     arm_watchers,
     parse_watch_json,
+    validate_watch_specs,
 )
 
 _MAX_CORRECTION_ROUNDS = 2
@@ -98,6 +110,17 @@ class _PreparedWorkPatch:
     patch: Patch
     change_summary: tuple[str, ...]
     proposal_ids: tuple[str, ...]
+
+
+def _work_patch_source_operation_id(
+    execution: AgentTaskExecution | None,
+    patch_kind: Literal["work", "experiment_loop"],
+) -> str | None:
+    if execution is None:
+        return None
+    if patch_kind == "experiment_loop":
+        return root_experiment_loop_operation_id(execution)
+    return execution.operation_id
 
 
 def _prepare_work_chat_prompt(
@@ -302,6 +325,25 @@ async def stream_work_run(
                 label=skill_bundle_label(skill_selection),
                 reuse_existing=True,
             )
+            loop_control_path: str | None = None
+            watcher_state_path: str | None = None
+            if request.patch_kind == "experiment_loop":
+                control_node = context.node
+                if (
+                    control_node is None
+                    or control_node.get("id") != request.control_node_id
+                    or control_node.get("type") != "experiment"
+                ):
+                    raise ValueError("Experiment-loop work no longer resolves to its Experiment.")
+                loop_control_path, watcher_state_path = await stage_experiment_loop_context(
+                    service,
+                    request,
+                    execution,
+                    local_stage,
+                    remote_stage,
+                    token=token,
+                    continuation=continuation,
+                )
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
                     "The continued Work turn has no native agent session; retry it from a clean "
@@ -313,12 +355,25 @@ async def stream_work_run(
                     execution, local_stage, remote_stage
                 )
                 base_contract_path = original_contract_path
-                contract = PromptFactory.continuation_task_contract(
-                    original_contract_path=original_contract_path,
-                    mode="resume",
-                    patch_path=patch_path,
-                    validator_command=validator_command,
-                )
+                if request.patch_kind == "experiment_loop":
+                    if not loop_control_path:
+                        raise ValueError("Experiment-loop Resume is missing fresh loop control.")
+                    contract = experiment_loop_continuation_contract(
+                        original_contract_path=original_contract_path,
+                        mode="resume",
+                        loop_control_path=loop_control_path,
+                        patch_path=patch_path,
+                        watch_path=watch_path,
+                        output_schema_path=schema_path,
+                        validator_command=validator_command,
+                    )
+                else:
+                    contract = PromptFactory.continuation_task_contract(
+                        original_contract_path=original_contract_path,
+                        mode="resume",
+                        patch_path=patch_path,
+                        validator_command=validator_command,
+                    )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
                     remote_stage,
@@ -329,53 +384,6 @@ async def stream_work_run(
                 )
             else:
                 assert request.message is not None
-                control_context_path = None
-                if request.patch_kind == "experiment_loop":
-                    if not request.control_node_id or request.control_revision is None:
-                        raise ValueError("Experiment-loop work is missing its RCP control binding.")
-                    control_node = context.node
-                    if (
-                        control_node is None
-                        or control_node.get("id") != request.control_node_id
-                        or control_node.get("type") != "experiment"
-                    ):
-                        raise ValueError(
-                            "Experiment-loop work no longer resolves to its Experiment."
-                        )
-                    attempts = control_node.get("attempts", [])
-                    attempt_ceiling = control_node.get("attempt_ceiling", 5)
-                    # RCP computes the drift rather than leaving the turn to
-                    # notice that its pins no longer match the graph. Reading
-                    # canonical state can touch a remote repository, so it stays
-                    # off the event loop.
-                    drift = await asyncio.to_thread(
-                        lambda: decision_drift(
-                            service.history.state(),
-                            request.control_decision_bundle,
-                        )
-                    )
-                    control_context_path = _stage_json_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-experiment-control.json",
-                        {
-                            "experiment_id": request.control_node_id,
-                            "pinned_graph_revision": request.control_revision,
-                            "decision_bundle": [
-                                item.model_dump(mode="json")
-                                for item in request.control_decision_bundle
-                            ],
-                            "completion_criteria": request.control_completion_criteria,
-                            "decision_drift": [item.model_dump(mode="json") for item in drift],
-                            "attempts_used": len(attempts) if isinstance(attempts, list) else 0,
-                            "attempt_ceiling": attempt_ceiling,
-                            "at_ceiling": (
-                                isinstance(attempt_ceiling, int)
-                                and isinstance(attempts, list)
-                                and len(attempts) >= attempt_ceiling
-                            ),
-                        },
-                    )
                 repositories = [
                     {"alias": item.alias, "host": item.host, "path": item.path}
                     for item in context.repositories
@@ -396,7 +404,10 @@ async def stream_work_run(
                 # A retry that still holds its native session already has the contract in the
                 # conversation; it gets a follow-up naming what changed, not a rebuilt contract.
                 resumed_retry = retrying and reusing_checkpoint
-                explicit_contract = not uses_master_protocol and not resumed_retry
+                loop_retry = request.patch_kind == "experiment_loop" and retrying
+                explicit_contract = (
+                    not uses_master_protocol and not resumed_retry and not loop_retry
+                )
                 current_contract_path = None
                 current_prompt = None
                 if explicit_contract:
@@ -406,26 +417,53 @@ async def stream_work_run(
                         f"task-{token}-human-request.txt",
                         request.message,
                     )
-                    contract = PromptFactory.work_task_contract(
-                        project_name=context.project_name,
-                        ontology_path=f"{context.graph_path}#ontology",
-                        ontology_extensions=context.ontology_extensions,
-                        graph_path=context.graph_path,
-                        research_path=context.research_md_path,
-                        focused_node_id=focused_node_id,
-                        repositories=repositories,
-                        introduction_path=context.introduction_path,
-                        human_request_path=human_request_path,
-                        patch_path=patch_path,
-                        artifact_path=str(artifact_directory),
-                        output_schema_path=schema_path,
-                        retry_diagnostics_path=retry_diagnostics_path,
-                        watch_path=watch_path,
-                        patch_kind=request.patch_kind,
-                        control_context_path=control_context_path,
-                        validator_command=validator_command,
-                        skill_pointers=skill_pointers,
-                    )
+                    if request.patch_kind == "experiment_loop":
+                        if (
+                            not request.control_node_id
+                            or not loop_control_path
+                            or not watcher_state_path
+                        ):
+                            raise ValueError(
+                                "Experiment-loop contract inputs are incomplete after staging."
+                            )
+                        contract = experiment_loop_task_contract(
+                            project_name=context.project_name,
+                            ontology_path=f"{context.graph_path}#ontology",
+                            ontology_extensions=context.ontology_extensions,
+                            graph_path=context.graph_path,
+                            research_path=context.research_md_path,
+                            focused_experiment_id=request.control_node_id,
+                            repositories=repositories,
+                            introduction_path=context.introduction_path,
+                            human_request_path=human_request_path,
+                            loop_control_path=loop_control_path,
+                            watcher_state_path=watcher_state_path,
+                            patch_path=patch_path,
+                            watch_path=watch_path,
+                            artifact_path=str(artifact_directory),
+                            output_schema_path=schema_path,
+                            validator_command=validator_command,
+                            skill_pointers=skill_pointers,
+                        )
+                    else:
+                        contract = PromptFactory.work_task_contract(
+                            project_name=context.project_name,
+                            ontology_path=f"{context.graph_path}#ontology",
+                            ontology_extensions=context.ontology_extensions,
+                            graph_path=context.graph_path,
+                            research_path=context.research_md_path,
+                            focused_node_id=focused_node_id,
+                            repositories=repositories,
+                            introduction_path=context.introduction_path,
+                            human_request_path=human_request_path,
+                            patch_path=patch_path,
+                            artifact_path=str(artifact_directory),
+                            output_schema_path=schema_path,
+                            retry_diagnostics_path=retry_diagnostics_path,
+                            watch_path=watch_path,
+                            validator_command=validator_command,
+                            skill_pointers=skill_pointers,
+                        )
                     current_contract_path, current_prompt = _stage_task_contract(
                         local_stage,
                         remote_stage,
@@ -503,17 +541,33 @@ async def stream_work_run(
                     )
                     if resumed_retry:
                         base_contract_path = original_contract_path
-                    retry_contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=original_contract_path,
-                        current_contract_path=current_contract_path,
-                        diagnostics_path=retry_diagnostics_path,
-                        patch_path=patch_path,
-                        watch_path=watch_path,
-                        mode="retry",
-                        validator_command=validator_command,
-                        output_schema_path=schema_path if resumed_retry else None,
-                        skill_pointers=skill_pointers if resumed_retry else None,
-                    )
+                    if request.patch_kind == "experiment_loop":
+                        if not loop_control_path or not retry_diagnostics_path:
+                            raise ValueError(
+                                "Experiment-loop Retry is missing fresh control or diagnostics."
+                            )
+                        retry_contract = experiment_loop_continuation_contract(
+                            original_contract_path=original_contract_path,
+                            mode="retry",
+                            loop_control_path=loop_control_path,
+                            patch_path=patch_path,
+                            watch_path=watch_path,
+                            output_schema_path=schema_path,
+                            validator_command=validator_command,
+                            diagnostics_path=retry_diagnostics_path,
+                        )
+                    else:
+                        retry_contract = PromptFactory.continuation_task_contract(
+                            original_contract_path=original_contract_path,
+                            current_contract_path=current_contract_path,
+                            diagnostics_path=retry_diagnostics_path,
+                            patch_path=patch_path,
+                            watch_path=watch_path,
+                            mode="retry",
+                            validator_command=validator_command,
+                            output_schema_path=schema_path if resumed_retry else None,
+                            skill_pointers=skill_pointers if resumed_retry else None,
+                        )
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
                         remote_stage,
@@ -662,6 +716,25 @@ async def stream_work_run(
             current_text=patch_text,
         ):
             patch_text = None
+        deferred_loop_patch = request.patch_kind == "experiment_loop" and patch_text is not None
+        if deferred_loop_patch:
+            assert patch_text is not None
+            if execution is not None:
+                execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
+                execution.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "patch_retained",
+                    {
+                        "byte_length": len(patch_text.encode("utf-8")),
+                        "file_name": "patch.json",
+                    },
+                    tier="diagnostic",
+                )
+            patch_text = None
+        if request.patch_kind == "experiment_loop":
+            # Loop graph admission is a joint Patch/watch handoff. Nothing in
+            # the generic pre-handoff path may validate-correct-and-apply it.
+            failure = None
         if patch_text is None and failure is None:
             graph_update = GraphUpdateResult(status="none")
         else:
@@ -856,11 +929,18 @@ async def stream_work_run(
                 patch_text = corrected
 
         watch_correction_rounds = 0
+        max_watch_corrections = 1 if request.patch_kind == "experiment_loop" else 2
+        loop_watch_empty = False
+        pending_loop_handoff = None
         try:
             watch_text = _read_watch_request(workspace, remote_stage)
-        except (OSError, StateUnavailable, ValueError) as exc:
+        except ValueError as exc:
             watch_text = None
-            watch_problem: str | None = f"The watcher request could not be read: {exc}"
+            watch_problem = f"The watcher request could not be read: {exc}"
+            watch_correctable = True
+        except (OSError, StateUnavailable) as exc:
+            watch_text = None
+            watch_problem = f"The watcher request could not be read: {exc}"
             watch_correctable = False
         else:
             watch_problem = None
@@ -872,6 +952,11 @@ async def stream_work_run(
             current_text=watch_text,
         ):
             watch_text = None
+        if request.patch_kind == "experiment_loop" and watch_text is None and watch_problem is None:
+            watch_problem = (
+                "Experiment-loop work must write watch.json: use a non-empty watcher list for "
+                "detached work, or [] only after confirming none remains."
+            )
 
         while watch_text is not None or watch_problem is not None:
             if watch_text is not None:
@@ -881,10 +966,28 @@ async def stream_work_run(
                     origin_task = execution.store.agent_task(execution.operation_id)
                     if origin_task is None:
                         raise ValueError("The originating Work operation is no longer available.")
-                    specs = parse_watch_json(watch_text)
+                    raw_watch = json.loads(watch_text)
+                    if request.patch_kind == "experiment_loop" and raw_watch == []:
+                        exit_patch_text = _read_chat_patch(workspace, remote_stage)
+                        if not request.control_node_id or not patch_explicitly_exits(
+                            exit_patch_text, request.control_node_id
+                        ):
+                            raise ValueError(
+                                "An empty Experiment-loop watch.json requires patch.json to "
+                                "explicitly record success, a Proposal, or a same-Patch Blocker."
+                            )
+                    specs = (
+                        []
+                        if request.patch_kind == "experiment_loop" and raw_watch == []
+                        else parse_watch_json(watch_text)
+                    )
                     binding = WatcherBinding(
                         project_id=origin_task.project_id,
-                        origin_operation_id=execution.operation_id,
+                        origin_operation_id=(
+                            root_experiment_loop_operation_id(execution)
+                            if request.patch_kind == "experiment_loop"
+                            else execution.operation_id
+                        ),
                         origin_task_kind=surface,
                         chat_id=request.chat_id or "",
                         node_id=request.node_id,
@@ -898,6 +1001,9 @@ async def stream_work_run(
                             patch_kind=request.patch_kind,
                             control_node_id=request.control_node_id,
                             control_revision=request.control_revision,
+                            control_episode_id=request.control_episode_id,
+                            control_invocation=request.control_invocation,
+                            control_invocation_ceiling=request.control_invocation_ceiling,
                             control_decision_bundle=[
                                 item.model_dump(mode="json")
                                 for item in request.control_decision_bundle
@@ -910,12 +1016,25 @@ async def stream_work_run(
                             resolved_skill_packages=request.resolved_skill_packages or [],
                         ),
                     )
-                    armed = await asyncio.to_thread(
-                        arm_watchers,
-                        execution.store,
-                        specs,
-                        binding,
-                    )
+                    if specs and request.patch_kind == "experiment_loop":
+                        check_results = await asyncio.to_thread(
+                            validate_watch_specs,
+                            specs,
+                            execution_host,
+                        )
+                        pending_loop_handoff = (specs, check_results, binding)
+                        armed = []
+                    else:
+                        armed = (
+                            await asyncio.to_thread(
+                                arm_watchers,
+                                execution.store,
+                                specs,
+                                binding,
+                            )
+                            if specs
+                            else []
+                        )
                 except WatcherInitialCheckError as exc:
                     watch_problem = str(exc)
                     watch_correctable = True
@@ -926,15 +1045,17 @@ async def stream_work_run(
                     watch_problem = str(exc)
                     watch_correctable = False
                 else:
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "watchers_armed",
-                        {
-                            "watcher_ids": [item.watcher_id for item in armed],
-                            "count": len(armed),
-                            "correction_rounds": watch_correction_rounds,
-                        },
-                    )
+                    loop_watch_empty = request.patch_kind == "experiment_loop" and not specs
+                    if request.patch_kind != "experiment_loop":
+                        execution.store.record_agent_task_receipt(
+                            execution.operation_id,
+                            "watchers_armed",
+                            {
+                                "watcher_ids": [item.watcher_id for item in armed],
+                                "count": len(armed),
+                                "correction_rounds": watch_correction_rounds,
+                            },
+                        )
                     watch_problem = None
                     break
 
@@ -942,7 +1063,7 @@ async def stream_work_run(
                 break
             if (
                 not watch_correctable
-                or watch_correction_rounds >= _MAX_CORRECTION_ROUNDS
+                or watch_correction_rounds >= max_watch_corrections
                 or not native_session_id
             ):
                 if execution is not None:
@@ -960,6 +1081,14 @@ async def stream_work_run(
                         f"Watcher handoff was not armed: {watch_problem}",
                         level="warning",
                     )
+                if request.patch_kind == "experiment_loop":
+                    yield _sse(
+                        AgentEvent(
+                            event="error",
+                            text=f"Experiment-loop watcher handoff failed: {watch_problem}",
+                        )
+                    )
+                    return
                 break
 
             watch_correction_rounds += 1
@@ -982,11 +1111,22 @@ async def stream_work_run(
                 f"task-{token}-watch-correction-{watch_correction_rounds}.json",
                 {"problem": watch_problem},
             )
-            correction_contract = PromptFactory.continuation_task_contract(
-                original_contract_path=base_contract_path,
-                mode="watch_correction",
-                diagnostics_path=diagnostics_path,
-                watch_path=watch_path,
+            correction_contract = (
+                experiment_loop_watcher_correction_contract(
+                    original_contract_path=base_contract_path,
+                    diagnostics_path=diagnostics_path,
+                    watch_path=watch_path,
+                    patch_path=patch_path,
+                    output_schema_path=schema_path,
+                    validator_command=validator_command,
+                )
+                if request.patch_kind == "experiment_loop"
+                else PromptFactory.continuation_task_contract(
+                    original_contract_path=base_contract_path,
+                    mode="watch_correction",
+                    diagnostics_path=diagnostics_path,
+                    watch_path=watch_path,
+                )
             )
             correction_path, correction_prompt = _stage_task_contract(
                 local_stage,
@@ -1018,8 +1158,31 @@ async def stream_work_run(
             )
             correction_outcome = _ProviderOutcome(session_id=native_session_id)
             correction_error: str | None = None
-            async with aclosing(
-                _stream_agent_events(
+            correction_stream = (
+                _stream_work_agent_events(
+                    service,
+                    launcher,
+                    request,
+                    correction_prompt,
+                    workspace=workspace,
+                    session_id=native_session_id,
+                    read_dirs=read_dirs,
+                    write_dirs=write_dirs,
+                    execution_host=execution_host,
+                    execution=execution,
+                    remote_stage=remote_stage,
+                    capability="work_auto",
+                    outcome=correction_outcome,
+                    binary=provider_binary,
+                    mailbox_id=validator_mailbox_id,
+                    validator_budget=validator_budget,
+                    run_truth_scope=context.run_truth_scope,
+                    patch_kind=request.patch_kind,
+                    control_node_id=request.control_node_id,
+                    control_decision_bundle=request.control_decision_bundle,
+                )
+                if request.patch_kind == "experiment_loop"
+                else _stream_agent_events(
                     launcher,
                     request,
                     correction_prompt,
@@ -1034,7 +1197,8 @@ async def stream_work_run(
                     outcome=correction_outcome,
                     binary=provider_binary,
                 )
-            ) as stream:
+            )
+            async with aclosing(correction_stream) as stream:
                 async for frame in stream:
                     event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                     if event.event == "error":
@@ -1049,7 +1213,7 @@ async def stream_work_run(
                     f"{request.provider} produced no watcher correction result."
                 )
                 watch_text = None
-                watch_correction_rounds = _MAX_CORRECTION_ROUNDS
+                watch_correction_rounds = max_watch_corrections
                 continue
             try:
                 corrected = _read_watch_request(workspace, remote_stage)
@@ -1072,6 +1236,240 @@ async def stream_work_run(
                 continue
             watch_text = corrected
             watch_problem = None
+
+        if request.patch_kind == "experiment_loop":
+            try:
+                final_patch_text = _read_chat_patch(workspace, remote_stage)
+            except (OSError, StateUnavailable, ValueError) as exc:
+                yield _sse(
+                    AgentEvent(
+                        event="error",
+                        text=f"The final Experiment-loop patch could not be read: {exc}",
+                    )
+                )
+                return
+            if final_patch_text is None:
+                graph_update = GraphUpdateResult(status="none")
+            else:
+                loop_patch_correction_rounds = 0
+                while True:
+                    if loop_watch_empty and (
+                        not request.control_node_id
+                        or not patch_explicitly_exits(final_patch_text, request.control_node_id)
+                    ):
+                        final_failure = _WorkPatchFailure(
+                            "An empty watch.json requires this Patch to retain an explicit success, "
+                            "Proposal, or same-Patch Blocker.",
+                            correctable=True,
+                        )
+                        final_result = None
+                    else:
+                        try:
+                            final_result, final_failure = _apply_work_patch(
+                                service,
+                                execution,
+                                final_patch_text,
+                                run_truth_scope=context.run_truth_scope,
+                                patch_kind=request.patch_kind,
+                                control_node_id=request.control_node_id,
+                                control_decision_bundle=request.control_decision_bundle,
+                            )
+                        except RunLockCancelled:
+                            yield _sse(
+                                AgentEvent(
+                                    event="paused",
+                                    text=(
+                                        "Paused while waiting for canonical state. The operational "
+                                        "answer and retained patch are preserved."
+                                    ),
+                                )
+                            )
+                            return
+                    if final_result is not None:
+                        graph_update = final_result.model_copy(
+                            update={"correction_rounds": loop_patch_correction_rounds}
+                        )
+                        break
+                    assert final_failure is not None
+                    if (
+                        not final_failure.correctable
+                        or loop_patch_correction_rounds >= _MAX_CORRECTION_ROUNDS
+                        or not native_session_id
+                    ):
+                        if loop_watch_empty:
+                            yield _sse(
+                                AgentEvent(
+                                    event="error",
+                                    text=(
+                                        "Experiment-loop Patch could not be validated after its "
+                                        f"watcher handoff: {final_failure.message}"
+                                    ),
+                                )
+                            )
+                            return
+                        repairable = _work_graph_repairable(
+                            execution,
+                            native_session_id,
+                            final_failure,
+                        )
+                        graph_update = GraphUpdateResult(
+                            status="rejected",
+                            change_summary=list(final_failure.change_summary),
+                            proposal_ids=list(final_failure.proposal_ids),
+                            validation_messages=_bounded_graph_messages(final_failure.message),
+                            correction_rounds=loop_patch_correction_rounds,
+                            repairable=repairable,
+                        )
+                        _record_work_graph_rejection(execution, graph_update)
+                        break
+
+                    loop_patch_correction_rounds += 1
+                    assert execution is not None
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "patch_correction_requested",
+                        {
+                            "round": loop_patch_correction_rounds,
+                            "problem": final_failure.message[:400],
+                        },
+                        tier="diagnostic",
+                    )
+                    diagnostics_path = _stage_json_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.json",
+                        {"kind": "experiment_loop", "problem": final_failure.message},
+                    )
+                    correction_contract = experiment_loop_patch_correction_contract(
+                        original_contract_path=base_contract_path,
+                        diagnostics_path=diagnostics_path,
+                        patch_path=patch_path,
+                        watch_path=watch_path,
+                        validator_command=validator_command,
+                    )
+                    correction_path, correction_prompt = _stage_task_contract(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.md",
+                        correction_contract,
+                        execution=execution,
+                        role=f"experiment_loop_patch_correction_{loop_patch_correction_rounds}",
+                    )
+                    pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
+                    _record_agent_launch_receipt(
+                        execution,
+                        request,
+                        prompt=correction_prompt,
+                        contract_path=correction_path,
+                        remote=bool(execution_host),
+                        resumed=True,
+                        continuation="graph_correction",
+                        extra={
+                            "surface": surface,
+                            "mode": "work",
+                            "capability": "work_auto",
+                            "network_access": True,
+                            "launch_kind": "graph_correction",
+                            "correction_round": loop_patch_correction_rounds,
+                            "write_directory_count": len(write_dirs),
+                            "canonical_state_boundary": "prompt_only",
+                        },
+                    )
+                    correction_outcome = _ProviderOutcome(session_id=native_session_id)
+                    async with aclosing(
+                        _stream_work_agent_events(
+                            service,
+                            launcher,
+                            request,
+                            correction_prompt,
+                            workspace=workspace,
+                            session_id=native_session_id,
+                            read_dirs=read_dirs,
+                            write_dirs=write_dirs,
+                            execution_host=execution_host,
+                            execution=execution,
+                            remote_stage=remote_stage,
+                            capability="work_auto",
+                            outcome=correction_outcome,
+                            binary=provider_binary,
+                            mailbox_id=validator_mailbox_id,
+                            validator_budget=validator_budget,
+                            run_truth_scope=context.run_truth_scope,
+                            patch_kind=request.patch_kind,
+                            control_node_id=request.control_node_id,
+                            control_decision_bundle=request.control_decision_bundle,
+                        )
+                    ) as stream:
+                        async for frame in stream:
+                            yield frame
+                    native_session_id = correction_outcome.session_id or native_session_id
+                    if correction_outcome.paused:
+                        return
+                    if not correction_outcome.completed:
+                        final_failure = _WorkPatchFailure(
+                            f"{request.provider} produced no Patch correction result.",
+                            correctable=True,
+                        )
+                        loop_patch_correction_rounds = _MAX_CORRECTION_ROUNDS
+                        continue
+                    corrected = _read_chat_patch(workspace, remote_stage)
+                    if corrected is None or (
+                        pre_launch_digest is not None
+                        and hashlib.sha256(corrected.encode("utf-8")).hexdigest()
+                        == pre_launch_digest
+                    ):
+                        final_failure = _WorkPatchFailure(
+                            "The loop Patch correction did not rewrite patch.json.",
+                            correctable=True,
+                        )
+                        final_patch_text = ""
+                        continue
+                    final_patch_text = corrected
+
+            if pending_loop_handoff is not None:
+                assert execution is not None
+                specs, check_results, binding = pending_loop_handoff
+                try:
+                    armed = await asyncio.to_thread(
+                        persist_experiment_watchers_idempotently,
+                        execution,
+                        specs,
+                        check_results,
+                        binding,
+                    )
+                except ValueError as exc:
+                    yield _sse(
+                        AgentEvent(
+                            event="error",
+                            text=f"Experiment-loop watcher persistence failed: {exc}",
+                        )
+                    )
+                    return
+                execution.store.record_agent_task_receipt(
+                    root_experiment_loop_operation_id(execution),
+                    "watchers_armed",
+                    {
+                        "watcher_ids": [item.watcher_id for item in armed],
+                        "count": len(armed),
+                        "correction_rounds": watch_correction_rounds,
+                    },
+                )
+            if (
+                execution is not None
+                and request.control_node_id
+                and graph_update.status == "applied"
+                and patch_explicitly_exits(final_patch_text, request.control_node_id)
+            ):
+                execution.store.record_agent_task_receipt(
+                    root_experiment_loop_operation_id(execution),
+                    "experiment_loop_exit",
+                    {
+                        "control_node_id": request.control_node_id,
+                        "episode_id": request.control_episode_id,
+                        "invocation": request.control_invocation,
+                        "applied_revision": graph_update.applied_revision,
+                    },
+                )
 
         if uses_master_protocol:
             try:
@@ -1323,6 +1721,21 @@ async def _stream_work_graph_repair(
             correction_rounds=1,
         )
         _record_work_graph_rejection(execution, graph_update)
+    elif (
+        request.patch_kind == "experiment_loop"
+        and request.control_node_id
+        and patch_explicitly_exits(patch_text, request.control_node_id)
+    ):
+        execution.store.record_agent_task_receipt(
+            root_experiment_loop_operation_id(execution),
+            "experiment_loop_exit",
+            {
+                "control_node_id": request.control_node_id,
+                "episode_id": request.control_episode_id,
+                "invocation": request.control_invocation,
+                "applied_revision": graph_update.applied_revision,
+            },
+        )
     try:
         _append_chat_graph_receipt(
             service,
@@ -1389,7 +1802,7 @@ async def _stream_work_agent_events(
                 patch_kind=patch_kind,
                 control_node_id=control_node_id,
                 control_decision_bundle=control_decision_bundle,
-                source_operation_id=execution.operation_id if execution else None,
+                source_operation_id=_work_patch_source_operation_id(execution, patch_kind),
             ),
             stop=stop,
             budget=validator_budget,
@@ -1572,6 +1985,8 @@ def _apply_work_patch(
         )
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
+    source_operation_id = _work_patch_source_operation_id(execution, patch_kind)
+    canonical_patch: Patch | None = None
     try:
         candidate = _prepare_work_patch_candidate(
             service,
@@ -1580,7 +1995,7 @@ def _apply_work_patch(
             patch_kind=patch_kind,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
-            source_operation_id=execution.operation_id if execution else None,
+            source_operation_id=source_operation_id,
         )
         patch = candidate.patch
         change_summary = candidate.change_summary
@@ -1590,7 +2005,7 @@ def _apply_work_patch(
             patch,
             byte_length=len(patch_text.encode("utf-8")),
         )
-        if not patch.ops:
+        if not patch.ops and patch_kind != "experiment_loop":
             return GraphUpdateResult(status="none"), None
         workspace = service.history.workspace
         with workspace.run_lock(
@@ -1603,10 +2018,41 @@ def _apply_work_patch(
             cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
         ) as lease:
             lease.assert_owned()
-            appended, result = service.history.append(
-                patch,
-                discard_on_reject=True,
-            )
+            if patch_kind == "experiment_loop" and source_operation_id:
+                matches = [
+                    item
+                    for item in service.history.load_patches()
+                    if item.source_operation_id == source_operation_id
+                    and item.admission == "accepted"
+                ]
+                if len(matches) > 1:
+                    raise ValueError(
+                        "Experiment-loop invocation has multiple canonical Patch commits."
+                    )
+                if matches:
+                    canonical_patch = matches[0]
+                    if (
+                        canonical_patch.kind != "experiment_loop"
+                        or canonical_patch.experiment_control_node_id != control_node_id
+                    ):
+                        raise ValueError(
+                            "Experiment-loop invocation source is bound to a different canonical "
+                            "Patch."
+                        )
+                    result = service.history.current_materialization()
+                    appended = canonical_patch
+                elif not patch.ops:
+                    return GraphUpdateResult(status="none"), None
+                else:
+                    appended, result = service.history.append(
+                        patch,
+                        discard_on_reject=True,
+                    )
+            else:
+                appended, result = service.history.append(
+                    patch,
+                    discard_on_reject=True,
+                )
     except PatchRejected as exc:
         messages = [item.message for item in exc.report.messages if item.level == "reject"]
         detail = "; ".join(messages) or str(exc) or "The graph rejected the Work patch."
@@ -1638,12 +2084,15 @@ def _apply_work_patch(
             proposal_ids=proposal_ids,
         )
 
+    if canonical_patch is not None:
+        change_summary = tuple(canonical_patch.change_summary)
+        proposal_ids = tuple(_work_patch_proposal_ids(canonical_patch))
     report = result.reports[appended.revision]
     _record_patch_applied_receipt(execution, result.state)
     return (
         GraphUpdateResult(
             status="applied",
-            applied_revision=result.state.revision,
+            applied_revision=appended.revision,
             change_summary=list(change_summary),
             proposal_ids=list(proposal_ids),
             validation_messages=_bounded_graph_messages(*(item.message for item in report.flags)),

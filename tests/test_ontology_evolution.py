@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from rcp.agents import PromptFactory
 from rcp.core.materialize import apply_valid_patch, materialize_patches
-from rcp.core.models import GraphState, OntologyState, Patch
+from rcp.core.models import Experiment, GraphState, OntologyState, Patch
 from rcp.core.validation import proposal_dependencies, validate_patch
 from tests.helpers import refresh_patch, seed_patch
 
@@ -117,6 +117,21 @@ def test_old_project_opens_without_ontology_or_extension_keys() -> None:
     assert state.ontology == OntologyState()
     assert state.nodes["hyp/legacy"].extension_type is None
     assert state.nodes["hyp/legacy"].extension_fields == {}
+
+
+def test_old_experiment_ceiling_replays_into_the_invocation_field() -> None:
+    current = Experiment(
+        id="experiment/legacy-budget",
+        type="experiment",
+        title="Legacy budget",
+        objective="Keep old graph history readable.",
+        invocation_ceiling=5,
+    ).model_dump(mode="json")
+
+    reopened = Experiment.model_validate({**current, "attempt_ceiling": 7})
+
+    assert reopened.invocation_ceiling == 7
+    assert "attempt_ceiling" not in reopened.model_dump(mode="json")
 
 
 def test_legacy_patch_replay_preserves_every_recorded_node_and_edge_field() -> None:

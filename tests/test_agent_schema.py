@@ -183,6 +183,26 @@ def test_agent_output_schema_omits_nested_rcp_bookkeeping() -> None:
     }.isdisjoint(definitions["AgentProposal"]["properties"])
 
 
+def test_agent_experiment_schema_uses_only_the_invocation_ceiling_name() -> None:
+    experiment = {
+        "id": "experiment/bounded-loop",
+        "type": "experiment",
+        "title": "Bounded loop",
+        "objective": "Run a bounded sequence of agent invocations.",
+        "attempt_ceiling": 5,
+    }
+
+    with pytest.raises(ValidationError, match="attempt_ceiling"):
+        AgentPatch.model_validate(
+            {
+                "summary": "Created an Experiment with a legacy budget field.",
+                "ops": [{"op": "create_nodes", "nodes": [experiment]}],
+            }
+        )
+
+    assert "invocation_ceiling" in agent_output_schema()["$defs"]["AgentExperiment"]["properties"]
+
+
 def test_new_agent_evidence_requires_an_explicit_origin() -> None:
     evidence = {
         "id": "ev/observed-recovery",

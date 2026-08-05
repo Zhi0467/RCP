@@ -129,15 +129,17 @@ human** → then plan and implement → the scenario turning green is done.
 - `packaged` — needs a built application bundle rather than a source checkout,
   and sometimes an account that has granted it nothing. Never runs from `uv`.
 
+## Hermetic served-app agent
+
+`rcp serve --acceptance-agent` explicitly replaces provider launch with the
+deterministic local acceptance agent. It refuses remote projects, uses bounded
+CPU-only fixture jobs, reports `agent_mode: acceptance` from `/api/health`, and
+shows a persistent warning in the UI. Never use it with canonical project data.
+
 ## What does not exist yet
 
-1. **The fake agent.** Scenarios that launch an agent need one that does the
-   identical thing every run. `ScriptedLauncher` in `tests/test_api.py` already
-   does this, but only inside a test process — a served app has no way to use
-   it. Needs an explicit opt-in reported in `/api/health` and shown in the UI,
-   so a fake agent can never be quietly on.
-2. **The check functions** for anything whose `covered_by` is `none`.
-3. **The desktop harness.** No tooling here drives an application window; the
+1. **The check functions** for anything whose `covered_by` is `none`.
+2. **The desktop harness.** No tooling here drives an application window; the
    browser tools cannot attach to one. The intended mechanism is WebdriverIO's
    Tauri service with its embedded macOS driver, and it is unproven in this
    repository — proving it is part of building the shell, not a later chore. A
@@ -190,8 +192,8 @@ it but a browser or a machine we do not have.
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
 | [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | superseded by S62 | pytest | historical |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
-| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | none |
-| [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | pending | pytest + **browser** | none |
+| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | implemented | pytest + **browser** | covered + driven 2026-08-05 |
+| [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | implemented | pytest + **browser** | covered + driven 2026-08-05 |
 | [S43](S43-agent-execution-module-boundaries.md) | Keep agent behavior intact while execution code moves | implemented | pytest | 10 checks |
 | [S44](S44-chat-conversation-projection-permissions.md) | Chat does not ingest transcripts; Seed/Refresh read logs in place | pending | pytest + **browser** | 4 checks |
 | [S45](S45-floating-window-dock.md) | Dock a floating node window without closing it | implemented | **browser** | driven 2026-08-02 |

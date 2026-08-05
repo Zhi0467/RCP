@@ -98,6 +98,36 @@ button:disabled {
   flex-direction: column;
   overflow: hidden;
 }
+.acceptance-agent-indicator {
+  background: var(--walnut);
+  border: 1px solid color-mix(in srgb, var(--mustard) 72%, var(--walnut));
+  border-left: 5px solid var(--mustard);
+  border-radius: 2px 7px 7px 2px;
+  bottom: 12px;
+  box-shadow: 0 8px 24px rgb(43 37 31 / 22%);
+  color: var(--paper);
+  display: grid;
+  gap: 1px;
+  left: 12px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 7px 11px 7px 10px;
+  pointer-events: none;
+  position: fixed;
+  z-index: 60;
+}
+.acceptance-agent-indicator strong {
+  color: #fff9ed;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.015em;
+  line-height: 1.25;
+}
+.acceptance-agent-indicator span {
+  color: color-mix(in srgb, var(--paper) 72%, var(--mustard));
+  font: 650 8px/1.35 var(--mono);
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
 .brand-lockup {
   align-items: center;
   display: flex;
@@ -2420,6 +2450,10 @@ button:disabled {
   background: color-mix(in srgb, var(--mustard) 10%, var(--sheet));
   border-left-color: var(--mustard);
 }
+.experiment-control.paused {
+  background: color-mix(in srgb, var(--coral) 8%, var(--sheet));
+  border-left-color: var(--coral);
+}
 .experiment-control-heading {
   align-items: center;
   display: flex;
@@ -2432,6 +2466,10 @@ button:disabled {
 .experiment-control-heading > div:first-child strong {
   font: 700 18px var(--mono);
 }
+.experiment-invocations-remaining {
+  color: var(--muted);
+  font-size: 9px;
+}
 .experiment-loop-marker {
   background: var(--amber-soft);
   border: 1px solid color-mix(in srgb, var(--mustard) 50%, var(--rule));
@@ -2442,6 +2480,16 @@ button:disabled {
   letter-spacing: 0.06em;
   padding: 4px 7px;
   text-transform: uppercase;
+}
+.experiment-loop-marker.paused {
+  background: var(--rose-paper);
+  border-color: color-mix(in srgb, var(--coral) 45%, var(--rule));
+  color: var(--oxblood-dark);
+}
+.experiment-loop-resume {
+  color: var(--ink-soft);
+  font-size: 10px;
+  margin: 9px 0 0;
 }
 .button.experiment-run-button {
   background: var(--forest);
@@ -2464,6 +2512,9 @@ button:disabled {
   line-height: 1.45;
   margin: 10px 0 0;
   padding-left: 17px;
+}
+.experiment-stop-watchers {
+  margin-top: 10px;
 }
 .experiment-attempts {
   display: grid;

@@ -37,7 +37,7 @@ test("editable fields mirror the human-editable allowlist for every node type", 
     "expected_outcomes",
     "interpretation_rules",
     "completion_criteria",
-    "attempt_ceiling",
+    "invocation_ceiling",
     "current_summary",
     "next_action",
   ]);
@@ -152,7 +152,7 @@ test("blank nullable prose becomes null while an existing null is unchanged", ()
   assert.deepEqual(changedNodeFields(alreadyBlank, nodeEditDraft(alreadyBlank)), {});
 });
 
-test("the experiment attempt ceiling is a positive integer field in the human draft", () => {
+test("the experiment invocation ceiling is a positive integer field in the human draft", () => {
   const experiment = {
     ...hypothesis,
     type: "experiment",
@@ -161,21 +161,21 @@ test("the experiment attempt ceiling is a positive integer field in the human dr
     expected_outcomes: [],
     interpretation_rules: [],
     completion_criteria: [],
-    attempt_ceiling: 5,
+    invocation_ceiling: 5,
     current_summary: "Ready",
     next_action: null,
   };
-  const field = editableNodeFields(experiment).find((item) => item.key === "attempt_ceiling");
+  const field = editableNodeFields(experiment).find((item) => item.key === "invocation_ceiling");
   assert.deepEqual(field, {
-    key: "attempt_ceiling",
-    label: "Attempt ceiling",
+    key: "invocation_ceiling",
+    label: "Invocation ceiling",
     kind: "number",
     min: 1,
     integer: true,
   });
   const draft = nodeEditDraft(experiment);
-  draft.attempt_ceiling = "7";
-  assert.deepEqual(changedNodeFields(experiment, draft), { attempt_ceiling: 7 });
+  draft.invocation_ceiling = "7";
+  assert.deepEqual(changedNodeFields(experiment, draft), { invocation_ceiling: 7 });
 });
 
 test("releasing an attempt stages only that attempt and drops once it closes", () => {

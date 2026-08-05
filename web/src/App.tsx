@@ -93,7 +93,6 @@ import {
   stageAmbiguityDecision,
   stageNodeEdit,
   stageNodeEditStart,
-  stageAttemptRelease,
   stageNodeRemoval,
   stageNodeStanding,
   stageProposalDecision,
@@ -190,6 +189,41 @@ export function revisionSummariesUrl(apiBase: string, revision?: number): string
   return revision === undefined
     ? path
     : `${path}?from_revision=${revision}&to_revision=${revision}`;
+}
+
+export function AcceptanceAgentIndicator({
+  agentMode,
+}: {
+  agentMode: Health["agent_mode"] | null | undefined;
+}) {
+  if (agentMode !== "acceptance") return null;
+  return (
+    <aside className="acceptance-agent-indicator" role="status" aria-live="polite">
+      <strong>Fake acceptance agent active</strong>
+      <span>Acceptance mode · no real provider calls</span>
+    </aside>
+  );
+}
+
+export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): boolean {
+  return Boolean(task.applied_revision) || task.request.patch_kind === "experiment_loop";
+}
+
+export function experimentWatcherStatusTransitioned(
+  current: WatcherRecord[],
+  next: WatcherRecord[],
+): boolean {
+  const previousStatus = new Map(
+    current
+      .filter((watcher) => watcher.continuation.patch_kind === "experiment_loop")
+      .map((watcher) => [watcher.watcher_id, watcher.status]),
+  );
+  return next.some(
+    (watcher) =>
+      watcher.continuation.patch_kind === "experiment_loop" &&
+      previousStatus.has(watcher.watcher_id) &&
+      previousStatus.get(watcher.watcher_id) !== watcher.status,
+  );
 }
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
@@ -874,8 +908,19 @@ export default function App() {
         task.request.patch_kind === "experiment_loop" &&
         task.request.control_node_id === selectedNode.id,
     );
-    return operationActive && !control.active ? { ...control, active: true } : control;
+    return operationActive && (!control.active || control.paused)
+      ? { ...control, active: true, paused: false }
+      : control;
   }, [project, selectedNode, tasks]);
+  const selectedExperimentWatcherCount = useMemo(() => {
+    if (selectedNode?.type !== "experiment") return 0;
+    return watchers.filter(
+      (watcher) =>
+        watcher.continuation.patch_kind === "experiment_loop" &&
+        watcher.continuation.control_node_id === selectedNode.id &&
+        ["active", "degraded"].includes(watcher.status),
+    ).length;
+  }, [selectedNode, watchers]);
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
@@ -1086,7 +1131,7 @@ export default function App() {
             if (!stopped && activeProjectId.current === projectId) setUsage(nextUsage);
           },
         );
-        if (current.status === "succeeded" && current.applied_revision) {
+        if (terminalTaskNeedsAuthoritativeProjectReload(current)) {
           try {
             await reload();
           } catch (error) {
@@ -1140,6 +1185,11 @@ export default function App() {
           api<WatcherRecord[]>(`${base}/watchers`),
           api<AgentTask[]>(`${base}/tasks`),
         ]);
+        const watcherStatusTransitioned = experimentWatcherStatusTransitioned(
+          watchers,
+          nextWatchers,
+        );
+        const nextProject = watcherStatusTransitioned ? await api<ProjectSnapshot>(base) : null;
         if (!stopped && activeProjectId.current === requestedProjectId) {
           const unseenWatcherResults = nextTasks.filter(
             (task) =>
@@ -1149,6 +1199,14 @@ export default function App() {
                 task.status === "failed" ||
                 task.status === "interrupted"),
           );
+          if (nextProject) {
+            applyProjectSnapshot(
+              nextProject,
+              authoritativeProjectId.current === requestedProjectId,
+            );
+            authoritativeProjectId.current = requestedProjectId;
+            setProjectReconciliation("authoritative");
+          }
           setWatchers(nextWatchers);
           setTasks(nextTasks);
           if (unseenWatcherResults.length > 0) {
@@ -1178,7 +1236,7 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [projectId, refreshChatSummaries, watchersAwaitingDelivery]);
+  }, [applyProjectSnapshot, projectId, refreshChatSummaries, watchers, watchersAwaitingDelivery]);
 
   const inspectorSummary = tasks.find((task) => task.operation_id === taskInspectorId);
   const inspectorVersion = inspectorSummary?.updated_at;
@@ -1381,14 +1439,11 @@ export default function App() {
     }
   };
 
-  // Releasing an attempt is two commitments: the watchers stop now because they
-  // are operational, and the attempt closes at Sync because it is graph history.
-  const releaseAttempt = async (node: GraphNode, attemptId: string) => {
-    if (!apiBase || mutationsDisabled) return;
-    updateHumanDraft((draft) => stageAttemptRelease(draft, graph, node.id, attemptId));
+  const stopExperimentWatchers = async (nodeId: string) => {
+    if (!apiBase) return;
     try {
       await api<WatcherRecord[]>(
-        `${apiBase}/experiments/${encodeURIComponent(node.id)}/watchers/stop`,
+        `${apiBase}/experiments/${encodeURIComponent(nodeId)}/watchers/stop`,
         { method: "POST" },
       );
       setWatchers(await api<WatcherRecord[]>(`${apiBase}/watchers`));
@@ -1716,12 +1771,16 @@ export default function App() {
       </section>
     </div>
   ) : null;
+  const acceptanceAgentSurface = (
+    <AcceptanceAgentIndicator agentMode={verifiedHealth?.agent_mode} />
+  );
 
   if (!identityReady)
     return (
       <div className="app-loading">
         <LoaderCircle className="spin" />
         <span>Verifying the RCP backend</span>
+        {acceptanceAgentSurface}
       </div>
     );
   if (identityIssue)
@@ -1739,6 +1798,7 @@ export default function App() {
           {backendReconnectLabel(desktop)}
         </button>
         {updateSurface}
+        {acceptanceAgentSurface}
       </div>
     );
   if (loading)
@@ -1748,6 +1808,7 @@ export default function App() {
         <span>{projectId ? "Opening project" : "Reading the project index"}</span>
         {updateSurface}
         {desktopAccessSurface}
+        {acceptanceAgentSurface}
       </div>
     );
   if (setupOpen)
@@ -1756,6 +1817,7 @@ export default function App() {
         <ProjectSetup onCancel={returnToProjects} onCreated={openProject} />
         {updateSurface}
         {desktopAccessSurface}
+        {acceptanceAgentSurface}
       </>
     );
   if (!projectId)
@@ -1769,6 +1831,7 @@ export default function App() {
         />
         {updateSurface}
         {desktopAccessSurface}
+        {acceptanceAgentSurface}
       </>
     );
   if (!project || !paper)
@@ -1782,6 +1845,7 @@ export default function App() {
         </button>
         {updateSurface}
         {desktopAccessSurface}
+        {acceptanceAgentSurface}
       </div>
     );
 
@@ -1792,6 +1856,7 @@ export default function App() {
 
   return (
     <div className="app-shell overview-shell">
+      {acceptanceAgentSurface}
       {!projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
           <div className="brand-lockup">
@@ -2222,6 +2287,7 @@ export default function App() {
           hasStagedNodeChange={Boolean(humanDraft?.nodes[selectedNode.id])}
           canonicalStanding={graph.nodes[selectedNode.id]?.standing ?? selectedNode.standing}
           experimentControl={selectedExperimentControl}
+          experimentWatcherCount={selectedExperimentWatcherCount}
           experimentRunDisabled={false}
           experimentRunBusy={taskStarting}
           onUnstage={() => {
@@ -2255,9 +2321,7 @@ export default function App() {
           onRunExperiment={() =>
             void runExperiment(presentedGraph.nodes[selectedNode.id] ?? selectedNode)
           }
-          onReleaseAttempt={(attemptId) =>
-            void releaseAttempt(presentedGraph.nodes[selectedNode.id] ?? selectedNode, attemptId)
-          }
+          onStopExperimentWatchers={() => void stopExperimentWatchers(selectedNode.id)}
           onOpenChat={() => {
             const node = presentedGraph.nodes[selectedNode.id] ?? selectedNode;
             const chatId = ensureConversation("node_chat", node);

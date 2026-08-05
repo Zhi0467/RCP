@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import rcp.projects as projects_module
+import rcp.runs.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactory, ProviderReadiness
 from rcp.agents.context import RepositoryPointer
 from rcp.api import create_app
@@ -38,6 +39,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.discuss import stream_discuss_run
+from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.graph import (
     _MAX_CORRECTION_ROUNDS,
     _record_context_reuse,
@@ -56,6 +58,7 @@ from rcp.service import CoachRequest, ReviewRequest, RunRequest
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.transport import RunLockCancelled, RunLockLease, StateUnavailable
+from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
 from .helpers import agent_patch_json, gated_patch, refresh_patch, seed_patch, shape_invalid_patch
 
@@ -5752,7 +5755,11 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert transcript.last_message_preview == "The operational work completed."
 
 
-def _experiment_fixture_patch(experiment_id: str = "exp/bounded-loop") -> Patch:
+def _experiment_fixture_patch(
+    experiment_id: str = "exp/bounded-loop",
+    *,
+    invocation_ceiling: int = 2,
+) -> Patch:
     return Patch(
         kind="refresh",
         author="agent",
@@ -5769,7 +5776,7 @@ def _experiment_fixture_patch(experiment_id: str = "exp/bounded-loop") -> Patch:
                         "title": "Bounded loop",
                         "objective": "Exercise the experiment control contract.",
                         "completion_criteria": ["The detached fixture exits cleanly."],
-                        "attempt_ceiling": 2,
+                        "invocation_ceiling": invocation_ceiling,
                     }
                 ],
             }
@@ -5842,6 +5849,10 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         assert request.patch_kind == "experiment_loop"
         assert request.control_node_id == "exp/bounded-loop"
         assert request.control_revision == 2
+        assert request.control_episode_id is not None
+        uuid.UUID(request.control_episode_id)
+        assert request.control_invocation == 1
+        assert request.control_invocation_ceiling == 2
         assert request.control_completion_criteria == ["The detached fixture exits cleanly."]
         entered.set()
         while not release.is_set():
@@ -5867,6 +5878,9 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         control = snapshot["experiment_control"]["exp/bounded-loop"]
         assert control["active"] is True
         assert control["ready"] is False
+        assert control["invocations_used"] == 1
+        assert control["invocation_ceiling"] == 2
+        assert control["invocations_remaining"] == 1
         assert control["reasons"] == ["An experiment loop is already active."]
 
         duplicate = client.post(
@@ -5881,6 +5895,140 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
     completed = _wait_for_run(client, project_id, response.json()["operation_id"])
     assert completed["status"] == "succeeded"
     assert service.history.state().nodes["exp/bounded-loop"].attempts == []
+
+
+def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch(invocation_ceiling=1))
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    old_episode = str(uuid.uuid4())
+    chat_id = str(uuid.uuid4())
+    now = store.now()
+    old_request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id=chat_id,
+        chat_scope="node",
+        node_id="exp/bounded-loop",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=old_episode,
+        control_invocation=1,
+        control_invocation_ceiling=1,
+        control_decision_bundle=[],
+        control_completion_criteria=["The detached fixture exits cleanly."],
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="old-loop-root",
+            project_id=project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=old_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="complete",
+        )
+    )
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="pending-loop-watcher",
+                project_id=project_id,
+                origin_operation_id="old-loop-root",
+                origin_task_kind="node_chat",
+                chat_id=chat_id,
+                node_id="exp/bounded-loop",
+                check_command="true",
+                log_path="/tmp/pending-loop.log",
+                cwd="/tmp",
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    reasoning="medium",
+                    run_on="laptop",
+                    patch_kind="experiment_loop",
+                    control_node_id="exp/bounded-loop",
+                    control_revision=2,
+                    control_episode_id=old_episode,
+                    control_invocation=1,
+                    control_invocation_ceiling=1,
+                    control_decision_bundle=[],
+                    control_completion_criteria=["The detached fixture exits cleanly."],
+                ),
+                created_at=now,
+            )
+        ]
+    )
+
+    client = TestClient(app)
+    still_running = client.post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+    assert still_running.status_code == 409
+    assert still_running.json()["detail"] == "Detached Experiment work is still running."
+    control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
+        "exp/bounded-loop"
+    ]
+    assert control["active"] is False
+    assert control["paused"] is True
+    assert control["ready"] is False
+    assert control["reasons"] == ["Detached Experiment work is still running."]
+
+    store.record_watcher_check(
+        "pending-loop-watcher",
+        status="completed",
+        exit_code=0,
+        error=None,
+    )
+    assert app.state.watcher_poller.on_completed is not None
+    app.state.watcher_poller.on_completed([store.watcher("pending-loop-watcher")])
+    assert store.watcher("pending-loop-watcher").notified is False
+    completed_control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
+        "exp/bounded-loop"
+    ]
+    assert completed_control["paused"] is True
+    assert completed_control["ready"] is True
+    assert completed_control["reasons"] == []
+
+    async def stream(_project_id, _kind, request, _execution):
+        assert request.message == (
+            "Continue the bounded Experiment loop from its staged watcher state."
+        )
+        assert "/tmp/pending-loop.log" not in request.message
+        yield _sse(AgentEvent(event="answer", text="Inspected the pending result."))
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    response = client.post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 202, response.text
+    request = response.json()["request"]
+    assert request["trigger"] == "experiment_run"
+    assert request["control_invocation"] == 1
+    assert request["control_invocation_ceiling"] == 1
+    assert request["control_episode_id"] != old_episode
+    assert request["watcher_ids"] == ["pending-loop-watcher"]
+    assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
+    assert store.watcher("pending-loop-watcher").notified is True
+    operation_id = response.json()["operation_id"]
+    _wait_for_run(client, project_id, operation_id)
+    assert "watcher_notification" in {
+        receipt.category for receipt in store.agent_task_receipts(operation_id)
+    }
+    assert any(
+        "reauthorized by human Run" in event.message
+        for event in store.agent_task_events(operation_id)
+    )
 
 
 def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
@@ -6018,6 +6166,9 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
         control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
     )
     store = app.state.background_tasks.store
     now = store.now()
@@ -6027,13 +6178,14 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         "repair-graph-update": "removed-experiment-repair",
     }
     for operation_id in operation_ids.values():
+        operation_request = request.model_copy(update={"control_episode_id": str(uuid.uuid4())})
         store.create_agent_task(
             AgentTaskRecord(
                 operation_id=operation_id,
                 project_id=project_id,
                 kind="node_chat",
                 status="paused",
-                request=request.model_dump(mode="json"),
+                request=operation_request.model_dump(mode="json"),
                 created_at=now,
                 updated_at=now,
                 status_message="Paused before the Experiment was removed.",
@@ -6065,6 +6217,9 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
         control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
     )
     watcher = WatcherRecord(
         watcher_id="removed-experiment-watcher",
@@ -6079,13 +6234,15 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         continuation=continuation,
         status="completed",
         created_at=now,
+        completed_at=now,
     )
-    with pytest.raises(
-        ValueError,
-        match="Experiment exp/bounded-loop no longer exists; it cannot be continued",
-    ):
-        assert app.state.watcher_poller.on_completed is not None
-        app.state.watcher_poller.on_completed([watcher])
+    store.create_watchers([watcher])
+    assert app.state.watcher_poller.on_completed is not None
+    app.state.watcher_poller.on_completed([store.watcher(watcher.watcher_id)])
+    retired = store.watcher(watcher.watcher_id)
+    assert retired is not None
+    assert retired.status == "stopped"
+    assert retired.notified is True
 
 
 @pytest.mark.asyncio
@@ -6133,6 +6290,9 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
         control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
         control_completion_criteria=["The detached fixture exits cleanly."],
     )
     execution = _chat_task_execution(
@@ -6141,8 +6301,76 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         project_id=app.state.default_project_id,
         request=request,
     )
+    watcher_now = execution.store.now()
+    execution.store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="stopped-current-episode",
+                project_id=app.state.default_project_id,
+                origin_operation_id=execution.operation_id,
+                origin_task_kind="node_chat",
+                chat_id=request.chat_id,
+                node_id=request.control_node_id,
+                check_command="false",
+                log_path="/tmp/stopped-current.log",
+                cwd="/tmp",
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    run_on="laptop",
+                    patch_kind="experiment_loop",
+                    control_node_id=request.control_node_id,
+                    control_revision=request.control_revision,
+                    control_episode_id=request.control_episode_id,
+                    control_invocation=request.control_invocation,
+                    control_invocation_ceiling=request.control_invocation_ceiling,
+                ),
+                status="stopped",
+                created_at=watcher_now,
+            )
+        ]
+    )
+    execution.store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="stopped-prior-episode",
+                project_id=app.state.default_project_id,
+                origin_operation_id=execution.operation_id,
+                origin_task_kind="node_chat",
+                chat_id=request.chat_id,
+                node_id=request.control_node_id,
+                check_command="false",
+                log_path="/tmp/stopped-prior.log",
+                cwd="/tmp",
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    run_on="laptop",
+                    patch_kind="experiment_loop",
+                    control_node_id=request.control_node_id,
+                    control_revision=request.control_revision,
+                    control_episode_id=str(uuid.uuid4()),
+                    control_invocation=request.control_invocation,
+                    control_invocation_ceiling=request.control_invocation_ceiling,
+                ),
+                status="stopped",
+                created_at=watcher_now,
+            )
+        ]
+    )
     launcher = ScriptedLauncher(
-        [{"patch.json": agent_patch_json(patch)}],
+        [
+            {
+                "patch.json": agent_patch_json(patch),
+                "watch.json": json.dumps(
+                    [
+                        {
+                            "check_command": "false",
+                            "log_path": "/tmp/bounded-loop.log",
+                            "cwd": "/tmp",
+                        }
+                    ]
+                ),
+            }
+        ],
         message="The fixture was launched once.",
     )
 
@@ -6166,8 +6394,473 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     assert persisted.experiment_control_node_id == "exp/bounded-loop"
     assert persisted.experiment_decision_bundle == []
     contract = _local_task_contract(launcher.prompts[0])
-    assert "Experiment-loop authority" in contract
-    assert "Optional watcher handoff" in contract
+    assert contract.startswith("# RCP Experiment-loop task contract")
+    assert "Watcher handoff protocol" in contract
+    control_name = next(
+        name for name in launcher.input_snapshots[0] if "experiment-control-initial_run" in name
+    )
+    watcher_name = next(
+        name for name in launcher.input_snapshots[0] if "experiment-watchers" in name
+    )
+    control = json.loads(launcher.input_snapshots[0][control_name])
+    assert set(control) == {
+        "phase",
+        "episode_id",
+        "invocation",
+        "invocation_ceiling",
+        "remaining_invocations",
+        "decision_bundle",
+        "decision_drift",
+        "completion_criteria",
+        "delivered_watcher_ids",
+        "watcher_state_path",
+    }
+    assert control["phase"] == "initial_run"
+    assert control["invocation"] == 1
+    assert control["remaining_invocations"] == 1
+    watcher_state = json.loads(launcher.input_snapshots[0][watcher_name])
+    assert [item["watcher_id"] for item in watcher_state] == ["stopped-current-episode"]
+    assert "remaining_invocations" not in launcher.prompts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_watch, expected_calls", [("[]", 1), (None, 2)])
+async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
+    manifest, tmp_path, initial_watch, expected_calls
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    patch = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Finished the bounded experiment.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": "exp/bounded-loop", "changes": {"status": "completed"}}],
+            }
+        ],
+    )
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Finish the bounded loop.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="experiment-empty-watch",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    first = {"patch.json": agent_patch_json(patch)}
+    if initial_watch is not None:
+        first["watch.json"] = initial_watch
+    launcher = ScriptedLauncher([first, {"watch.json": "[]"}], message="Finished.")
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not _error_texts(frames)
+    assert _events(frames)[-1].event == "done"
+    assert launcher.calls == expected_calls
+    assert service.history.state().nodes["exp/bounded-loop"].status == "completed"
+    assert any(
+        receipt.category == "experiment_loop_exit"
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_experiment_loop_missing_handoff_fails_without_done_after_one_correction(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Run the bounded loop.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="experiment-missing-watch",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    launcher = ScriptedLauncher([{}], message="Could not establish handoff.")
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert launcher.calls == 2
+    assert any("watcher handoff failed" in text for text in _error_texts(frames))
+    assert all(event.event != "done" for event in _events(frames))
+    assert service.history.state().revision == 2
+
+
+@pytest.mark.asyncio
+async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    invalid_exit = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Finished with an invalid extra update.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/bounded-loop",
+                        "changes": {"status": "completed", "title": "Forbidden rewrite"},
+                    }
+                ],
+            }
+        ],
+    )
+    removed_exit = json.dumps({"summary": "Removed the exit.", "ops": [], "repositories_read": []})
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Finish the bounded loop.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="experiment-exit-recheck",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    launcher = ScriptedLauncher(
+        [
+            {"patch.json": agent_patch_json(invalid_exit), "watch.json": "[]"},
+            {"patch.json": removed_exit},
+        ],
+        message="Finished.",
+    )
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert any("Patch could not be validated" in text for text in _error_texts(frames))
+    assert all(event.event != "done" for event in _events(frames))
+    assert service.history.state().revision == 2
+    assert not any(
+        receipt.category == "experiment_loop_exit"
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_rejected(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    invalid = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Reflected running work with a forbidden rewrite.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/bounded-loop",
+                        "changes": {"status": "running", "title": "Forbidden rewrite"},
+                    }
+                ],
+            }
+        ],
+    )
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Run the bounded loop.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="experiment-rejected-reflection",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    handoff = {
+        "patch.json": agent_patch_json(invalid),
+        "watch.json": json.dumps(
+            [{"check_command": "false", "log_path": "/tmp/loop.log", "cwd": "/tmp"}]
+        ),
+    }
+    launcher = ScriptedLauncher([handoff], message="Detached work is still running.")
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not _error_texts(frames)
+    assert _events(frames)[-1].event == "done"
+    assert _graph_update(frames)["status"] == "rejected"
+    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert service.history.state().revision == 2
+
+
+@pytest.mark.asyncio
+async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    operation_id = "experiment-committed-before-receipt"
+    exit_patch = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Finished before the task receipt was written.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        source_operation_id=operation_id,
+        experiment_control_node_id="exp/bounded-loop",
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": "exp/bounded-loop", "changes": {"status": "completed"}}],
+            }
+        ],
+    )
+    service.history.append(exit_patch)
+    service.history.append(refresh_patch("rq/after-committed-loop"))
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Recover the committed invocation.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id=operation_id,
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    launcher = ScriptedLauncher(
+        [
+            {
+                "patch.json": agent_patch_json(exit_patch),
+                "watch.json": json.dumps(
+                    [
+                        {
+                            "check_command": "false",
+                            "log_path": "/tmp/recovered-loop.log",
+                            "cwd": "/tmp",
+                        }
+                    ]
+                ),
+            }
+        ],
+        message="Recovered the committed result.",
+    )
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not _error_texts(frames)
+    assert _graph_update(frames)["applied_revision"] == 3
+    assert service.history.state().revision == 4
+    assert len(service.history.load_patches()) == 4
+    watchers = execution.store.watchers(app.state.default_project_id)
+    assert len(watchers) == 1
+    stored = watchers[0]
+    repeated = persist_experiment_watchers_idempotently(
+        execution,
+        [
+            WatchSpec(
+                check_command=stored.check_command,
+                log_path=stored.log_path,
+                cwd=stored.cwd,
+            )
+        ],
+        [
+            WatcherCheckResult(
+                state="active",
+                checked_at=stored.last_checked_at or stored.created_at,
+                exit_code=1,
+            )
+        ],
+        WatcherBinding(
+            project_id=stored.project_id,
+            origin_operation_id=stored.origin_operation_id,
+            origin_task_kind=stored.origin_task_kind,
+            chat_id=stored.chat_id,
+            node_id=stored.node_id,
+            execution_host=stored.execution_host,
+            continuation=stored.continuation,
+        ),
+    )
+    assert repeated[0].watcher_id == stored.watcher_id
+    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert any(
+        receipt.category == "experiment_loop_exit"
+        for receipt in execution.store.agent_task_receipts(operation_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_readable_watch_value_error_gets_same_session_correction(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    request = RunRequest(
+        chat_scope="project",
+        message="Launch the detached fixture.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="watch-readable-value-error",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    watch = json.dumps(
+        [
+            {
+                "check_command": "false",
+                "log_path": str(tmp_path / "fixture.log"),
+                "cwd": str(tmp_path),
+            }
+        ]
+    )
+    launcher = ScriptedLauncher(
+        [{"watch.json": watch}, {"watch.json": json.dumps(json.loads(watch), indent=2)}],
+        message="The fixture was launched once.",
+    )
+    original_read = work_module._read_watch_request
+    read_calls = 0
+
+    def flaky_read(*args, **kwargs):
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls == 1:
+            raise ValueError("watch.json is not a direct regular file")
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(work_module, "_read_watch_request", flaky_read)
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not _error_texts(frames)
+    assert launcher.calls == 2
+    assert launcher.resumed_sessions == [None, launcher.native_session_id]
+    assert len(execution.store.watchers(app.state.default_project_id)) == 1
 
 
 @pytest.mark.asyncio
@@ -6308,7 +7001,7 @@ def _stuck_experiment_patch() -> Patch:
     )
 
 
-def test_a_human_releases_an_attempt_whose_watcher_can_no_longer_answer(manifest, tmp_path) -> None:
+def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
@@ -6317,14 +7010,9 @@ def test_a_human_releases_an_attempt_whose_watcher_can_no_longer_answer(manifest
     client = TestClient(app)
 
     control = client.get(f"/api/projects/{project_id}").json()["experiment_control"]["exp/stuck"]
-    assert control["active"] is True
-    assert control["ready"] is False
-    assert "An experiment loop is already active." in control["reasons"]
-    blocked = client.post(
-        f"/api/projects/{project_id}/experiments/exp/stuck/run",
-        json={"chat_id": str(uuid.uuid4())},
-    )
-    assert blocked.status_code == 409
+    assert control["active"] is False
+    assert control["ready"] is True
+    assert control["reasons"] == []
 
     released = client.post(
         f"/api/projects/{project_id}/sync",
