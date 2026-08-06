@@ -65,6 +65,14 @@ export function latestPersistedConversationMode(
   return candidates.at(-1)?.mode ?? "discuss";
 }
 
+/** The transcript records "use the provider default" as a literal sentinel; a
+ *  request records it as an empty string. Continuing a conversation reads the
+ *  transcript, so the sentinel has to be translated back or it is sent to the
+ *  provider as though it were a real model name. */
+function persistedModel(value: string | null | undefined): string {
+  return !value || value === "provider-default" ? "" : value;
+}
+
 export function latestPersistedChatConfig(
   messages: ChatMessage[],
   tasks: AgentTask[],
@@ -83,7 +91,7 @@ export function latestPersistedChatConfig(
         config: {
           ...fallback,
           provider: message.provider,
-          model: message.model ?? "",
+          model: persistedModel(message.model),
           reasoning: message.reasoning ?? fallback.reasoning,
           run_on: message.execution_machine,
         },
@@ -105,7 +113,7 @@ export function latestPersistedChatConfig(
         config: {
           ...fallback,
           provider: request.provider,
-          model: typeof request.model === "string" ? request.model : "",
+          model: typeof request.model === "string" ? persistedModel(request.model) : "",
           reasoning: typeof request.reasoning === "string" ? request.reasoning : fallback.reasoning,
           run_on: request.run_on,
         },

@@ -98,9 +98,12 @@ function stagedOrSaved(project: ProjectSnapshot) {
     providerPaths: machineProviderPathsFrom(project.machines),
     skillDefaults: skillDefaultsFrom(project),
   };
-  const staged = deserializeSettingsDraft(
-    localStorage.getItem(settingsDraftStorageKey(project.id)),
-  );
+  let staged: ReturnType<typeof deserializeSettingsDraft> = null;
+  try {
+    staged = deserializeSettingsDraft(localStorage.getItem(settingsDraftStorageKey(project.id)));
+  } catch {
+    // A staged draft is a convenience; storage failures fall back to the manifest.
+  }
   if (!staged) return saved;
   // Merge over the manifest's profiles so a surface added since the draft was
   // written is still present.
@@ -183,13 +186,17 @@ export function ProjectSettings({
   // Clearing on a clean form is what makes Save and Reset drop the staged copy.
   useEffect(() => {
     const key = settingsDraftStorageKey(project.id);
-    if (dirty) {
-      localStorage.setItem(
-        key,
-        serializeSettingsDraft({ version: 1, scope, profiles, providerPaths, skillDefaults }),
-      );
-    } else {
-      localStorage.removeItem(key);
+    try {
+      if (dirty) {
+        localStorage.setItem(
+          key,
+          serializeSettingsDraft({ version: 1, scope, profiles, providerPaths, skillDefaults }),
+        );
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // Staging edits is a convenience; storage failures must not affect Settings.
     }
   }, [dirty, current, project.id]);
   const machineByAlias = Object.fromEntries(

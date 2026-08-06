@@ -68,9 +68,14 @@ def _wait_for_task(
     project_id: str,
     operation_id: str,
     *,
-    timeout: float = 10.0,
+    # The task runs on its own thread, so this bounds a genuine hang rather than
+    # the expected duration: the loop returns the moment the task is terminal, so
+    # a generous bound costs nothing on success and only a tight one can invent a
+    # failure when the full suite is competing for the CPU.
+    timeout: float = 60.0,
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout
+    task: dict[str, object] | None = None
     while time.monotonic() < deadline:
         response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
         assert response.status_code == 200, response.text
@@ -78,7 +83,13 @@ def _wait_for_task(
         if task["status"] in _TERMINAL_TASK_STATUSES:
             return task
         time.sleep(0.02)
-    raise AssertionError(f"agent task {operation_id} did not finish")
+    raise AssertionError(
+        f"agent task {operation_id} did not finish within {timeout}s; "
+        f"last seen status={task['status']!r} phase={task.get('phase')!r} "
+        f"message={task.get('message')!r}"
+        if task is not None
+        else f"agent task {operation_id} was never observed within {timeout}s"
+    )
 
 
 def _wait_for_new_task(

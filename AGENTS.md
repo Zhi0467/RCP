@@ -31,7 +31,8 @@ Read `pyproject.toml` and `web/package.json` for the authoritative versions.
 
 - Python 3.11+ backend (`src/rcp`): FastAPI, Pydantic v2, SQLite, `uv`.
 - React + Vite + Tailwind frontend (`web/`), served from `web/dist` by the same
-  FastAPI app when that directory exists ([app.py:365](src/rcp/api/app.py:365)).
+  FastAPI app when that directory exists (mounted in [app.py](src/rcp/api/app.py)
+  from the path [web_assets.py](src/rcp/web_assets.py) owns).
 - Agent providers: Codex CLI and Claude Code, launched as subprocesses locally
   or over SSH.
 
@@ -606,14 +607,11 @@ carrying forward, and correct an entry when they change their mind.
   Discuss is plum, Work is dark forest, `Shift+Tab` toggles while the composer is
   focused, and every sent turn keeps an immutable visible mode label. A resumed
   task keeps its original mode regardless of the current composer setting.
-- Work is non-interactive and unrestricted for both providers. Codex uses
-  `--dangerously-bypass-approvals-and-sandbox`; Claude uses
-  `--permission-mode bypassPermissions`. Work graph and watcher corrections retain
-  that same native session and Work permission profile. The direct canonical
-  `.research` prohibition is prompt-enforced for both providers and is recorded
-  as that accepted limitation, never as sandbox enforcement. Discuss,
-  Seed/Refresh and their generic patch correction, and paper coaching retain
-  their existing narrower profiles.
+- Work is non-interactive and unrestricted for both providers; Discuss,
+  Seed/Refresh and their generic patch correction, and paper coaching keep
+  narrower profiles. Invariant 4 states the contract and
+  [providers.py](src/rcp/providers.py) owns the per-provider flags that implement
+  it — do not restate either in prose that will drift.
 - A Work patch is not a universal Proposal. Ordinary legal graph operations
   apply as asserted agent content; only the existing narrow gated operations
   create Proposal records for Inbox.
@@ -625,7 +623,6 @@ carrying forward, and correct an entry when they change their mind.
 - HTML previews keep useful inline JavaScript. Their security boundary is
   isolation from the RCP parent, not literal zero network traffic: a script may
   navigate only its own sandboxed child frame and cause that navigation request.
-- Never copy a repository to make it readable. Give the agent the host and path.
 - Context boundaries are named exactly, never approximated by a containing
   directory: Discuss and Work get the graph/current node and exact run-scope
   repository pointers, but no provider-root or prior-transcript input. Those

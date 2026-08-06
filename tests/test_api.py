@@ -5373,6 +5373,57 @@ async def test_exhausted_work_patch_correction_preserves_successful_answer(
 
 
 @pytest.mark.asyncio
+async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest, tmp_path) -> None:
+    """A correction that writes an undecodable patch must not be told it wrote nothing.
+
+    The two diagnostics send the agent to different fixes, so collapsing the
+    read failure into "you never wrote the file" makes it rewrite the same
+    unreadable bytes and spend the whole correction budget on the wrong problem.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
+
+    class UnreadableCorrectionLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            launch = self.calls
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+            if launch > 0:
+                (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
+
+    launcher = UnreadableCorrectionLauncher([{"patch.json": invalid}], message="The run finished.")
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Run it and reflect the result.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+
+    frames = [
+        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+    ]
+
+    assert not _error_texts(frames)
+    graph_update = _graph_update(frames)
+    assert graph_update is not None
+    assert graph_update["status"] == "rejected"
+    assert graph_update["correction_rounds"] == 2
+    assert service.history.state().revision == 1
+    second_correction = next(
+        content
+        for name, content in launcher.input_snapshots[2].items()
+        if name.endswith("work-correction-2.json")
+    )
+    assert "could not be read" in second_correction
+    assert "without writing patch.json" not in second_correction
+    assert any("could not be read" in item for item in graph_update["validation_messages"])
+
+
+@pytest.mark.asyncio
 async def test_work_patch_is_applied_to_live_state_without_correction(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -6665,6 +6716,86 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
         receipt.category == "experiment_loop_exit"
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
     )
+
+
+@pytest.mark.asyncio
+async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp_path) -> None:
+    """An undecodable loop Patch correction is a diagnostic, not an escaped exception.
+
+    Letting the read raise out of the run aborts before the episode commits its
+    session binding, so a transient read failure would cost the loop its native
+    session instead of one correction round.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch())
+    invalid_exit = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Finished with an invalid extra update.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/bounded-loop",
+                        "changes": {"status": "completed", "title": "Forbidden rewrite"},
+                    }
+                ],
+            }
+        ],
+    )
+    request = RunRequest(
+        node_id="exp/bounded-loop",
+        message="Finish the bounded loop.",
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="experiment-unreadable-correction",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+
+    class UnreadableLoopCorrectionLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            launch = self.calls
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+            if launch > 0:
+                (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
+
+    launcher = UnreadableLoopCorrectionLauncher(
+        [{"patch.json": agent_patch_json(invalid_exit), "watch.json": "[]"}],
+        message="Finished.",
+    )
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert any("could not be read" in text for text in _error_texts(frames))
+    assert service.history.state().revision == 2
 
 
 @pytest.mark.asyncio

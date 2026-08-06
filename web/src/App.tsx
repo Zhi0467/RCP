@@ -279,9 +279,7 @@ export default function App() {
   const [graph, setGraph] = useState<GraphState>(emptyGraph);
   const [paper, setPaper] = useState<PaperSnapshot | null>(null);
   const [view, setView] = useState<AppView>("overview");
-  const [trustView, setTrustView] = useState<TrustView>(
-    () => (localStorage.getItem("rcp:trust-view") as TrustView) || "working",
-  );
+  const [trustView, setTrustView] = useState<TrustView>(readTrustView);
   const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [selectedExperimentRunId, setSelectedExperimentRunId] = useState<string | null>(null);
@@ -301,9 +299,7 @@ export default function App() {
   );
   const [selectedCanonicalChat, setSelectedCanonicalChat] = useState<ChatSummary | null>(null);
   const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
-  const [textScale, setTextScale] = useState(() =>
-    normalizeTextScale(localStorage.getItem(TEXT_SCALE_STORAGE_KEY)),
-  );
+  const [textScale, setTextScale] = useState(readTextScale);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
   const [loading, setLoading] = useState(true);
@@ -898,10 +894,20 @@ export default function App() {
     }
   }, [projectHeaderCollapsed, projectId]);
 
-  useEffect(() => localStorage.setItem("rcp:trust-view", trustView), [trustView]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("rcp:trust-view", trustView);
+    } catch {
+      // The chosen view is a convenience; storage failures must not affect the project.
+    }
+  }, [trustView]);
 
   useEffect(() => {
-    localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
+    try {
+      localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
+    } catch {
+      // Text size is a convenience; storage failures must not affect the project.
+    }
   }, [textScale]);
 
   useEffect(() => {
@@ -1710,7 +1716,11 @@ export default function App() {
   const deleteProject = async (id: string) => {
     await api(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
     setProjects((current) => current.filter((item) => item.id !== id));
-    localStorage.removeItem(humanDraftStorageKey(id));
+    try {
+      localStorage.removeItem(humanDraftStorageKey(id));
+    } catch {
+      // The project is already deleted; a stranded draft key must not fail the action.
+    }
   };
 
   const reconnectBackend = async () => {
@@ -2502,6 +2512,22 @@ function readDismissedTaskIds(projectId: string | null): Set<string> {
     return parseDismissedTaskIds(localStorage.getItem(taskNotificationStorageKey(projectId)));
   } catch {
     return new Set();
+  }
+}
+
+function readTrustView(): TrustView {
+  try {
+    return (localStorage.getItem("rcp:trust-view") as TrustView) || "working";
+  } catch {
+    return "working";
+  }
+}
+
+function readTextScale(): number {
+  try {
+    return normalizeTextScale(localStorage.getItem(TEXT_SCALE_STORAGE_KEY));
+  } catch {
+    return normalizeTextScale(null);
   }
 }
 

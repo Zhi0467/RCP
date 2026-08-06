@@ -228,6 +228,48 @@ test("chat provider configuration follows the persisted conversation over the pr
   );
 });
 
+test("continuing a chat translates the stored provider-default sentinel back to a real default", () => {
+  // The transcript writes "provider-default" where a request writes "". Sending
+  // the sentinel onward makes the provider reject it as an unknown model name.
+  const fallback = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
+  assert.deepEqual(
+    latestPersistedChatConfig(
+      [
+        {
+          provider: "codex",
+          model: "provider-default",
+          reasoning: "medium",
+          execution_machine: "local",
+          timestamp: "2026-08-06T00:01:00Z",
+        },
+      ],
+      [],
+      fallback,
+    ),
+    fallback,
+  );
+  assert.deepEqual(
+    latestPersistedChatConfig(
+      [],
+      [
+        {
+          operation_id: "t1",
+          created_at: "2026-08-06T00:02:00Z",
+          request: {
+            chat_id: "chat",
+            provider: "codex",
+            model: "provider-default",
+            reasoning: "medium",
+            run_on: "local",
+          },
+        },
+      ],
+      fallback,
+    ),
+    fallback,
+  );
+});
+
 test("the next turn derives from the latest explicit mode without relabelling legacy history", () => {
   const messages = [
     { mode: null, timestamp: "2026-07-28T00:00:00Z" },

@@ -40,7 +40,11 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
-    localStorage.setItem("rcp:project-covers", JSON.stringify(covers));
+    try {
+      localStorage.setItem("rcp:project-covers", JSON.stringify(covers));
+    } catch {
+      // Cover choices are a convenience; storage failures must not affect the project list.
+    }
   }, [covers]);
 
   useEffect(() => {
