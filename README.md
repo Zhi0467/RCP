@@ -4,27 +4,26 @@ RCP is a local research control panel for turning agent conversations, repositor
 evidence, experiments, and human decisions into one durable research graph and paper
 workspace.
 
-RCP has a browser entrance and a native macOS entrance. They are not separate
+RCP has a browser interface and a native macOS app. They are not separate
 implementations: both use the same React interface, FastAPI backend, project catalog,
 background tasks, and canonical research state.
 
-> **Desktop status:** the Apple Silicon macOS application builds and runs locally. The
-> current bundle is unsigned and unnotarized, so it is a development release rather than
-> a public download. Signing, notarization, and the update channel still need release
-> infrastructure.
+> **Desktop status:** this repository builds an Apple Silicon macOS application locally.
+> Local bundles are unsigned and unnotarized; the repository does not yet publish a public
+> download or provide a configured update channel.
 
 ## Choose how to run RCP
 
-| Goal | Use | What must be installed |
-|---|---|---|
-| Use the self-contained Mac application | `RCP.app` | Nothing for RCP itself; Codex or Claude only for agent features |
-| Open the current checkout as a normal Mac application | `RCP Dev.app` | This checkout and `uv` |
-| Develop Python and React in a browser | `uv run rcp serve --reload` | Python 3.11+, `uv`, Node.js, and npm |
-| Develop the native shell with live frontend updates | `npm --prefix web run desktop:dev` | The browser-development tools plus Rust |
+| Goal                                                  | Use                                | What must be installed                                          |
+| ----------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------- |
+| Use the self-contained Mac application                | A built `RCP.app`                  | Nothing for RCP itself; Codex or Claude only for agent features |
+| Open the current checkout as a normal Mac application | A built `RCP Dev.app`              | This checkout and `uv`                                          |
+| Develop Python and React in a browser                 | `uv run rcp serve --reload`        | Python 3.11+, `uv`, Node.js, and npm                            |
+| Develop the native shell with live frontend updates   | `npm --prefix web run desktop:dev` | The browser-development tools plus Rust                         |
 
 ## System architecture
 
-The desktop app is a native entrance around the web app, not a rewrite in Rust.
+The desktop app is a native shell around the web app, not a rewrite in Rust.
 
 ```mermaid
 flowchart LR
@@ -60,7 +59,7 @@ Most product work therefore has one implementation:
 - Rust and Tauri own only operating-system behavior: native windows, backend startup,
   file dialogs, previews, external links, Quit, and updates.
 
-## Use the desktop release
+## Use a packaged desktop build
 
 ### Requirements
 
@@ -80,8 +79,10 @@ system webview.
 2. Choose **New project** to connect local or SSH repositories, or open a project that
    is already registered.
 3. Configure Codex or Claude in project settings before starting agent work.
-4. Use **Research** for the project graph, **Inbox** for human decisions, **Runs** for
-   agent and experiment history, **Ask** for project chat, and **Paper** for writing.
+4. Use **Overview** for the project summary, **Inbox** for human decisions, **Research**
+   for the graph, **Runs** for agent and experiment history, **Paper** for writing,
+   **Settings** for project configuration, and **Chats** for project conversations. Use
+   **Ask** in the project header to start a project chat.
 
 Clicking the red window button hides RCP; it does not mean Quit. Reopen it from the Dock
 or launch it again. **Quit RCP** rechecks whether the application still owns the backend:
@@ -105,9 +106,13 @@ authoritative copy.
 Install the source dependencies once:
 
 ```bash
+npm --prefix web ci
+npm --prefix web run build
 uv sync
-npm --prefix web install
 ```
+
+Build the frontend before `uv sync`: `web/dist` is gitignored but is included when the
+Python package is built.
 
 Open the project index:
 
@@ -120,6 +125,9 @@ Or register and open the included demo project:
 ```bash
 uv run rcp open examples/demo-project/state-repo
 ```
+
+The demo project is a real fixture. Copy it before running agents or making graph changes
+if you need to preserve the checked-in example.
 
 `rcp open` builds the frontend when it starts a new source backend. If a healthy,
 compatible RCP backend already owns the same data directory, it reuses that backend and
@@ -180,15 +188,20 @@ Dev bundle after Rust or Tauri configuration changes.
 
 ## Verification
 
-Run the baseline checks from the repository root:
+Run the backend and web checks from the repository root:
 
 ```bash
 uv run pytest
 uv run ruff check src tests
 npm --prefix web run build
 npm --prefix web test
+```
+
+For changes to the Tauri shell or desktop packaging, also run the desktop checks:
+
+```bash
 cargo fmt --manifest-path web/src-tauri/Cargo.toml -- --check
-cargo check --manifest-path web/src-tauri/Cargo.toml --locked
+cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path web/src-tauri/Cargo.toml --locked
 ```
 
@@ -278,7 +291,7 @@ show the same projects and background tasks.
 
 - `.research/patches/` is append-only. Materialized graph and research files are rebuilt
   from that history rather than edited as independent truth.
-- An agent writes a structured `patch.json` in its disposable run workspace. RCP
+- An agent writes a structured `patch.json` in an RCP-created scratch workspace. RCP
   validates it before it can enter canonical history; patches are never parsed out of a
   provider's prose output.
 - Agents may assert or propose. Only human UI actions approve gated operations, set
@@ -287,8 +300,9 @@ show the same projects and background tasks.
   make the invocation request-owned.
 - The paper introduction is human-authored. The writing coach is read-only and has no
   Apply path.
-- Canonical state may live locally or over SSH. Remote cached state can keep the project
-  readable while authority actions wait for reconciliation.
+- Canonical state may live locally or over SSH. For remote projects, a rebuildable local
+  display snapshot can keep a previously opened project readable while RCP reconciles with
+  the remote canonical state; authority actions wait for reconciliation.
 
 ## Repository map
 
