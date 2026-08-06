@@ -31,6 +31,19 @@ def _remove_nodes_patch(
     )
 
 
+def _remove_edges_patch(operation: dict[str, object]) -> Patch:
+    return Patch.model_validate(
+        {
+            "kind": "refresh",
+            "author": "agent",
+            "summary": "Removed edges from the current graph.",
+            "run_truth_scope": ["repo-a"],
+            "repositories_read": ["repo-a"],
+            "ops": [operation],
+        }
+    )
+
+
 def _record_experiment(history: HistoryManager, attempt_status: str | None = None) -> str:
     experiment_id = "exp/bounded-loop"
     node: dict[str, object] = {
@@ -275,6 +288,30 @@ def test_remove_nodes_rejects_unknown_target(manifest) -> None:
         history.append(_remove_nodes_patch("rq/missing"))
 
     assert any(message.code == "unknown-node" for message in caught.value.report.messages)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"op": "remove_edges", "edge_ids": ["edge/one"], "unexpected": True},
+        {"op": "remove_edges", "edge_ids": "edge/one"},
+        {"op": "remove_edges", "edge_ids": [1]},
+    ],
+)
+def test_malformed_remove_edges_is_rejected_before_history_admission(
+    manifest, operation: dict[str, object]
+) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+
+    with pytest.raises(PatchRejected) as caught:
+        history.append(_remove_edges_patch(operation), discard_on_reject=True)
+
+    assert any(
+        message.code == "invalid-remove-edges-operation" for message in caught.value.report.messages
+    )
+    assert history.state().revision == 1
+    assert history.state().replay_status == "complete"
 
 
 @pytest.mark.parametrize("attempt_status", ["planned", "submitted", "running"])

@@ -21,6 +21,11 @@ def test_capability_permissions_are_fixed_and_narrow() -> None:
     assert paper.write_project_files is False
 
 
+def test_unknown_agent_capability_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Unknown agent surface or capability"):
+        permissions_for("unfamiliar")  # type: ignore[arg-type]
+
+
 def test_surface_permissions_default_conversations_to_discuss(manifest) -> None:
     assert manifest.agent_profile("node_chat").permissions == permissions_for("discuss")
     assert manifest.agent_profile("project_chat").permissions == permissions_for("discuss")

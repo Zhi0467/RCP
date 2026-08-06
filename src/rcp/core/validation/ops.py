@@ -271,6 +271,32 @@ def depends_create_edges(op: dict[str, Any], state: GraphState) -> tuple[list[An
 
 
 def validate_remove_edges(op: dict[str, Any], ctx: OpContext) -> Any:
+    if set(op) != {"op", "edge_ids"}:
+        ctx.report.reject(
+            "invalid-remove-edges-operation",
+            "A remove_edges operation may contain only 'op' and 'edge_ids'.",
+            ctx.revision,
+        )
+        return None
+    edge_ids = op.get("edge_ids")
+    if (
+        not isinstance(edge_ids, list)
+        or not edge_ids
+        or any(not isinstance(edge_id, str) or not edge_id for edge_id in edge_ids)
+    ):
+        ctx.report.reject(
+            "invalid-remove-edges-operation",
+            "A remove_edges operation requires at least one non-empty edge id.",
+            ctx.revision,
+        )
+        return None
+    if len(edge_ids) != len(set(edge_ids)):
+        ctx.report.reject(
+            "invalid-remove-edges-operation",
+            "A remove_edges operation cannot name the same edge more than once.",
+            ctx.revision,
+        )
+        return None
     return None
 
 

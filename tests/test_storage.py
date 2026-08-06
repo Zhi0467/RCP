@@ -1,8 +1,10 @@
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 import pytest
@@ -68,6 +70,24 @@ class _TracingAppStore(AppStore):
     def _count_select(self, statement: str) -> None:
         if statement.lstrip().upper().startswith("SELECT"):
             self.select_count += 1
+
+
+class _WriteTracingAppStore(AppStore):
+    """Signal when a store writer reaches its transaction boundary."""
+
+    def __init__(self, path) -> None:
+        self.write_attempted = threading.Event()
+        super().__init__(path)
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        with super().connection() as connection:
+            connection.set_trace_callback(self._trace_statement)
+            yield connection
+
+    def _trace_statement(self, statement: str) -> None:
+        if statement.strip().upper() == "BEGIN IMMEDIATE":
+            self.write_attempted.set()
 
 
 def _create_experiment_runtime_fixture(
@@ -167,6 +187,26 @@ def _create_experiment_runtime_fixture(
             ]
         )
     return episode_id, operation_id
+
+
+def test_brief_database_write_contention_waits_then_succeeds(tmp_path) -> None:
+    store = _WriteTracingAppStore(tmp_path / "rcp.sqlite3")
+
+    with store.connection() as connection:
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with sqlite3.connect(store.path) as blocker:
+            blocker.execute("BEGIN IMMEDIATE")
+            future = executor.submit(_task, store, "project-a", "operation-a", "queued")
+
+            assert store.write_attempted.wait(timeout=2)
+            assert not future.done()
+            blocker.commit()
+
+        future.result(timeout=5)
+
+    assert store.agent_task("operation-a") is not None
 
 
 def test_experiment_runtime_batch_matches_scalar_for_active_stopped_and_empty(

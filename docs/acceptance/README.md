@@ -225,6 +225,7 @@ it but a browser or a machine we do not have.
 | [S71](S71-chat-master-context-and-deltas.md) | Chat sends one master context, then turn markers and compact deltas | implemented | pytest | 2026-08-04 |
 | [S72](S72-runs-operational-hierarchy.md) | Runs leads with live operational state | implemented | **browser** | tests + browser 2026-08-06 |
 | [S73](S73-experiment-loop-native-wake-continuity.md) | Watcher wakes continue one bounded episode session | implemented | pytest | tests + browser 2026-08-06 |
+| [S74](S74-boundary-inputs-fail-closed.md) | Uncommon boundary inputs fail closed without damaging the project | implemented | pytest + browser | tests + browser 2026-08-06 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

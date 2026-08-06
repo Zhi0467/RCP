@@ -23,6 +23,7 @@ import {
   providerOptions,
   reasoningOptions,
 } from "../providers";
+import { stateRepositoryAfterRemoval } from "../projectSetup";
 import type {
   AgentSurface,
   ProviderReadiness,
@@ -286,9 +287,8 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
 
   const removeRepository = (id: number) => {
     setRepositories((current) => {
-      const removed = current.find((repo) => repo.id === id);
       const next = current.filter((repo) => repo.id !== id);
-      if (removed?.alias === stateRepository) setStateRepository(next[0].alias);
+      setStateRepository((selected) => stateRepositoryAfterRemoval(current, id, selected));
       return next;
     });
   };

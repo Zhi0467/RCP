@@ -239,8 +239,16 @@ def permissions_for(target: AgentSurface | AgentCapability) -> AgentPermissions:
         capability = "discuss"
     elif target == "paper_coach":
         capability = "paper_readonly"
+    elif target == "discuss":
+        capability = "discuss"
+    elif target == "work_auto":
+        capability = "work_auto"
+    elif target == "scratch_patch":
+        capability = "scratch_patch"
+    elif target == "paper_readonly":
+        capability = "paper_readonly"
     else:
-        capability = target
+        raise ValueError(f"Unknown agent surface or capability: {target!r}")
 
     if capability == "paper_readonly":
         return AgentPermissions(
@@ -264,16 +272,29 @@ def permissions_for(target: AgentSurface | AgentCapability) -> AgentPermissions:
             write_project_files=False,
             write_paper=False,
         )
-    return AgentPermissions(
-        read_graph=True,
-        read_research_md=True,
-        read_introduction=True,
-        read_repositories="run_scope",
-        read_conversations="run_scope",
-        write_graph_patch=True,
-        write_project_files=capability == "work_auto",
-        write_paper=False,
-    )
+    if capability == "work_auto":
+        return AgentPermissions(
+            read_graph=True,
+            read_research_md=True,
+            read_introduction=True,
+            read_repositories="run_scope",
+            read_conversations="run_scope",
+            write_graph_patch=True,
+            write_project_files=True,
+            write_paper=False,
+        )
+    if capability == "scratch_patch":
+        return AgentPermissions(
+            read_graph=True,
+            read_research_md=True,
+            read_introduction=True,
+            read_repositories="run_scope",
+            read_conversations="run_scope",
+            write_graph_patch=True,
+            write_project_files=False,
+            write_paper=False,
+        )
+    raise ValueError(f"Unknown agent capability: {capability!r}")
 
 
 def resolve_manifest_path(value: str | os.PathLike[str]) -> Path:
