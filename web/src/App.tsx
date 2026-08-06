@@ -209,6 +209,16 @@ export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): bo
   return Boolean(task.applied_revision) || task.request.patch_kind === "experiment_loop";
 }
 
+export function shouldShowCoverageBoundaryWarning(
+  project: Pick<ProjectSnapshot, "coverage" | "last_refresh_at">,
+): boolean {
+  return (
+    (project.coverage.sessions_skipped.length > 0 ||
+      project.coverage.repositories_never_seen.length > 0) &&
+    (!project.last_refresh_at || project.coverage.note !== "No seed has completed.")
+  );
+}
+
 export function failedTaskActionNeedsAuthoritativeProjectReload(
   task: AgentTask,
   action: "pause" | "resume" | "retry",
@@ -2109,16 +2119,14 @@ export default function App() {
             </span>
           </div>
         )}
-        {(project.coverage.sessions_skipped.length > 0 ||
-          project.coverage.repositories_never_seen.length > 0) &&
-          view === "overview" && (
-            <div className="coverage-banner">
-              <AlertTriangle size={15} />
-              <span>
-                <strong>Coverage boundary:</strong> {project.coverage.note}
-              </span>
-            </div>
-          )}
+        {shouldShowCoverageBoundaryWarning(project) && view === "overview" && (
+          <div className="coverage-banner">
+            <AlertTriangle size={15} />
+            <span>
+              <strong>Coverage boundary:</strong> {project.coverage.note}
+            </span>
+          </div>
+        )}
         {rejectedPatches.length > 0 && view === "attention" && (
           <div className="coverage-banner validation-rejected" role="status">
             <AlertTriangle size={15} />

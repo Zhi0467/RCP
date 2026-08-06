@@ -14,7 +14,8 @@ const server = await createServer({
 const { AttentionOverview, ExecutionView } = await server.ssrLoadModule(
   "/src/views/GraphViews.tsx",
 );
-const { humanAttentionBlockers } = await server.ssrLoadModule("/src/App.tsx");
+const { humanAttentionBlockers, shouldShowCoverageBoundaryWarning } =
+  await server.ssrLoadModule("/src/App.tsx");
 const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 
 after(() => server.close());
@@ -117,6 +118,33 @@ test("Inbox counts and lists only asserted open blockers", () => {
   assert.match(html, /3 open/);
   assert.match(html, /Blockers awaiting judgment<\/span><strong>1<\/strong>/);
   assert.doesNotMatch(html, /Open blockers|Scientific blockers/);
+});
+
+test("a successful Seed or Refresh suppresses the unseeded coverage warning", () => {
+  const coverage = {
+    repositories_never_seen: ["repo-a"],
+    sessions_skipped: [],
+  };
+
+  assert.equal(shouldShowCoverageBoundaryWarning({ coverage, last_refresh_at: null }), true);
+  assert.equal(
+    shouldShowCoverageBoundaryWarning({
+      coverage: { ...coverage, note: "No seed has completed." },
+      last_refresh_at: "2026-08-06T10:00:00Z",
+    }),
+    false,
+  );
+  assert.equal(
+    shouldShowCoverageBoundaryWarning({
+      coverage: {
+        ...coverage,
+        note: "One source thread was skipped.",
+        sessions_skipped: ["repo-a/session-1"],
+      },
+      last_refresh_at: "2026-08-06T10:00:00Z",
+    }),
+    true,
+  );
 });
 
 test("staged blocker judgments remain until canonical standing changes", () => {
