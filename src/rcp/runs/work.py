@@ -22,6 +22,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
     experiment_loop_task_contract,
+    experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
@@ -32,6 +33,7 @@ from rcp.history import PatchRejected, ReplayHalted
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
+    _chat_context_delta,
     _chat_read_dirs,
     _chat_stage_name,
     _clear_stale_patch,
@@ -53,8 +55,12 @@ from rcp.runs.chat import (
     _work_write_dirs,
 )
 from rcp.runs.experiment_loop import (
+    commit_experiment_episode_binding,
+    experiment_episode_context_values,
+    experiment_graph_result_summary,
     patch_explicitly_exits,
     persist_experiment_watchers_idempotently,
+    prepare_experiment_episode_context_candidate,
     root_experiment_loop_operation_id,
     stage_experiment_loop_context,
 )
@@ -214,6 +220,10 @@ async def stream_work_run(
     reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     resuming = continuation == "resume"
     retrying = continuation == "retry"
+    # An Experiment-loop watcher wake resumes the episode's native session, but it
+    # is a new turn at the next invocation -- never task Resume, never a retry, and
+    # never a rebuilt master contract.
+    waking = continuation == "watcher_wake"
     retry_attempt = continuation in {"retry", "handoff"}
     uses_master_protocol = (
         request.trigger == "human" and request.patch_kind == "work" and not retry_attempt
@@ -256,12 +266,11 @@ async def stream_work_run(
                 assert remote_stage.root is not None
                 if execution is not None:
                     execution.checkpoint_stage(execution_host, str(remote_stage.root))
-                if not reusing_checkpoint or retrying:
-                    context = context.model_copy(
-                        update=_stage_context_paths(
-                            context, service, remote_stage, execution_machine.alias
-                        )
+                context = context.model_copy(
+                    update=_stage_context_paths(
+                        context, service, remote_stage, execution_machine.alias
                     )
+                )
                 workspace = Path(str(remote_stage.workspace))
             else:
                 stage_root = _swept_stage_root(data_dir)
@@ -285,7 +294,7 @@ async def stream_work_run(
             schema_path = patch_inputs.schema_path
             validator_command = patch_inputs.validator_command
             validator_mailbox_id = patch_inputs.validator_mailbox_id
-            if not reusing_checkpoint:
+            if not reusing_checkpoint or waking:
                 _clear_stale_patch(workspace, remote_stage)
                 _clear_stale_watch(workspace, remote_stage)
             artifact_scope_id = (
@@ -325,6 +334,13 @@ async def stream_work_run(
                 label=skill_bundle_label(skill_selection),
                 reuse_existing=True,
             )
+            repositories = [
+                {"alias": item.alias, "host": item.host, "path": item.path}
+                for item in context.repositories
+            ]
+            episode_context_baseline: dict[str, object] | None = None
+            wake_episode = None
+            context_replacement: dict[str, object] | None = None
             loop_control_path: str | None = None
             watcher_state_path: str | None = None
             if request.patch_kind == "experiment_loop":
@@ -344,6 +360,47 @@ async def stream_work_run(
                     token=token,
                     continuation=continuation,
                 )
+                assert execution is not None
+                ontology = service.history.state().ontology.model_dump(mode="json")
+                episode_context_baseline = prepare_experiment_episode_context_candidate(
+                    execution,
+                    experiment_episode_context_values(
+                        ontology_extensions=context.ontology_extensions,
+                        ontology=ontology,
+                        repositories=repositories,
+                        skill_pointers=skill_pointers,
+                    ),
+                )
+                if waking:
+                    if not request.control_episode_id or request.control_invocation is None:
+                        raise ValueError("Experiment-loop wake is missing its episode invocation.")
+                    wake_episode = execution.store.experiment_episode(request.control_episode_id)
+                    if wake_episode is None or not wake_episode.session_bound:
+                        raise ValueError(
+                            "Experiment-loop wake has no committed episode session to continue."
+                        )
+                    if (
+                        wake_episode.native_session_id != request.session_id
+                        or wake_episode.stage_host != execution.stage_host
+                        or wake_episode.stage_root != execution.stage_root
+                    ):
+                        raise ValueError(
+                            "Experiment-loop wake does not match its committed native session and "
+                            "exact stage."
+                        )
+                    if wake_episode.last_turn_invocation != request.control_invocation - 1:
+                        raise ValueError(
+                            "Experiment-loop wake does not immediately follow the episode's last "
+                            "successful turn."
+                        )
+                    if not wake_episode.last_graph_result:
+                        raise ValueError(
+                            "Experiment-loop wake cannot confirm the preceding graph handoff."
+                        )
+                    context_replacement = _chat_context_delta(
+                        wake_episode.context_baseline,
+                        episode_context_baseline,
+                    )
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
                     "The continued Work turn has no native agent session; retry it from a clean "
@@ -382,12 +439,44 @@ async def stream_work_run(
                     execution=execution,
                     role="work_resume",
                 )
+            elif waking:
+                if (
+                    wake_episode is None
+                    or not request.control_node_id
+                    or request.control_invocation is None
+                    or request.control_invocation_ceiling is None
+                    or not loop_control_path
+                    or not watcher_state_path
+                ):
+                    raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
+                contract = experiment_loop_wake_message(
+                    focused_experiment_id=request.control_node_id,
+                    invocation=request.control_invocation,
+                    invocation_ceiling=request.control_invocation_ceiling,
+                    previous_graph_result=wake_episode.last_graph_result or "",
+                    previous_watcher_ids=wake_episode.last_watcher_ids,
+                    delivered_watcher_ids=request.watcher_ids,
+                    loop_control_path=loop_control_path,
+                    watcher_state_path=watcher_state_path,
+                    graph_path=context.graph_path,
+                    research_path=context.research_md_path,
+                    patch_path=patch_path,
+                    watch_path=watch_path,
+                    output_schema_path=schema_path,
+                    validator_command=validator_command,
+                    context_replacement=context_replacement,
+                )
+                contract_path, prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-watcher-wake.md",
+                    contract,
+                    execution=execution,
+                    role="experiment_loop_wake",
+                )
+                base_contract_path = contract_path
             else:
                 assert request.message is not None
-                repositories = [
-                    {"alias": item.alias, "host": item.host, "path": item.path}
-                    for item in context.repositories
-                ]
                 focused_node_id = str(context.node["id"]) if context.node else None
                 retry_diagnostics_path = (
                     _stage_json_task_input(
@@ -621,7 +710,15 @@ async def stream_work_run(
                 "mode": "work",
                 "capability": "work_auto",
                 "network_access": True,
-                "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
+                "launch_kind": (
+                    "retry"
+                    if retry_attempt
+                    else "resume"
+                    if resuming
+                    else "watcher_wake"
+                    if waking
+                    else "initial"
+                ),
                 "write_directory_count": len(write_dirs),
                 "canonical_state_boundary": "prompt_only",
             },
@@ -667,6 +764,19 @@ async def stream_work_run(
         if not answer:
             yield _sse(
                 AgentEvent(event="error", text=f"{request.provider} finished without answering.")
+            )
+            return
+        if waking and (
+            wake_episode is None or outcome.session_id != wake_episode.native_session_id
+        ):
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text=(
+                        "The automatic Experiment wake did not continue its committed native "
+                        "provider session. The watcher handoff was not accepted."
+                    ),
+                )
             )
             return
 
@@ -932,6 +1042,7 @@ async def stream_work_run(
         max_watch_corrections = 1 if request.patch_kind == "experiment_loop" else 2
         loop_watch_empty = False
         pending_loop_handoff = None
+        accepted_loop_watcher_ids: list[str] = []
         try:
             watch_text = _read_watch_request(workspace, remote_stage)
         except ValueError as exc:
@@ -1009,11 +1120,11 @@ async def stream_work_run(
                                 for item in request.control_decision_bundle
                             ],
                             control_completion_criteria=request.control_completion_criteria,
-                            workflow_ids=request.workflow_ids or [],
-                            skill_ids=request.skill_ids or [],
+                            workflow_ids=skill_selection.workflow_ids,
+                            skill_ids=skill_selection.skill_ids,
                             invoked_workflow_ids=request.invoked_workflow_ids,
                             invoked_skill_ids=request.invoked_skill_ids,
-                            resolved_skill_packages=request.resolved_skill_packages or [],
+                            resolved_skill_packages=skill_selection.resolved_skill_packages,
                         ),
                     )
                     if specs and request.patch_kind == "experiment_loop":
@@ -1454,6 +1565,7 @@ async def stream_work_run(
                         "correction_rounds": watch_correction_rounds,
                     },
                 )
+                accepted_loop_watcher_ids = [item.watcher_id for item in armed]
             if (
                 execution is not None
                 and request.control_node_id
@@ -1470,6 +1582,20 @@ async def stream_work_run(
                         "applied_revision": graph_update.applied_revision,
                     },
                 )
+
+            if execution is None or episode_context_baseline is None:
+                raise ValueError("Experiment-loop handoff lost its durable episode context.")
+            commit_experiment_episode_binding(
+                execution,
+                request,
+                native_session_id=native_session_id,
+                execution_host=execution_host,
+                stage_host=execution.stage_host,
+                stage_root=execution.stage_root,
+                graph_result=experiment_graph_result_summary(graph_update),
+                watcher_ids=accepted_loop_watcher_ids,
+                context_baseline=episode_context_baseline,
+            )
 
         if uses_master_protocol:
             try:
@@ -1516,6 +1642,29 @@ async def stream_work_run(
         # There is no per-turn source cleanup; the reusable native-session stage
         # remains available to the normal stage sweeper.
         pass
+
+
+def _rejected_graph_update_for_repair(execution: AgentTaskExecution) -> GraphUpdateResult:
+    """Find the rejected Work result behind a graph-repair recovery chain."""
+
+    record = execution.store.agent_task(execution.operation_id)
+    seen: set[str] = set()
+    while record is not None and record.parent_operation_id is not None:
+        parent_id = record.parent_operation_id
+        if parent_id in seen:
+            break
+        seen.add(parent_id)
+        record = execution.store.agent_task(parent_id)
+        raw_graph_update = record.result.get("graph_update") if record and record.result else None
+        if isinstance(raw_graph_update, dict):
+            try:
+                graph_update = GraphUpdateResult.model_validate(raw_graph_update)
+            except ValueError:
+                pass
+            else:
+                if graph_update.status == "rejected":
+                    return graph_update
+    raise ValueError("The graph repair has no rejected Work ancestor.")
 
 
 async def _stream_work_graph_repair(
@@ -1580,16 +1729,7 @@ async def _stream_work_graph_repair(
             execution_machine.alias,
             remote=remote_stage is not None,
         )
-        parent = execution.store.agent_task(execution.operation_id)
-        if parent is None or parent.parent_operation_id is None:
-            raise ValueError("The graph repair has no rejected Work parent.")
-        rejected = execution.store.agent_task(parent.parent_operation_id)
-        raw_graph_update = (
-            rejected.result.get("graph_update") if rejected and rejected.result else None
-        )
-        previous = GraphUpdateResult.model_validate(raw_graph_update)
-        if previous.status != "rejected":
-            raise ValueError("Only a rejected Work graph update can be repaired.")
+        previous = _rejected_graph_update_for_repair(execution)
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
         token = _task_token(execution)
         validator_mailbox_id = patch_inputs.validator_mailbox_id
@@ -1736,6 +1876,41 @@ async def _stream_work_graph_repair(
                 "applied_revision": graph_update.applied_revision,
             },
         )
+    if request.patch_kind == "experiment_loop":
+        if not request.control_episode_id:
+            yield _sse(
+                AgentEvent(event="error", text="The graph repair lost its Experiment episode.")
+            )
+            return
+        episode = execution.store.experiment_episode(request.control_episode_id)
+        if episode is None or not episode.session_bound:
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text="The graph repair has no bound Experiment episode to update.",
+                )
+            )
+            return
+        try:
+            commit_experiment_episode_binding(
+                execution,
+                request,
+                native_session_id=outcome.session_id,
+                execution_host=execution_host,
+                stage_host=episode.stage_host,
+                stage_root=episode.stage_root,
+                graph_result=experiment_graph_result_summary(graph_update),
+                watcher_ids=episode.last_watcher_ids,
+                context_baseline=episode.context_baseline,
+            )
+        except ValueError as exc:
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text=f"The graph repair could not update its Experiment handoff: {exc}",
+                )
+            )
+            return
     try:
         _append_chat_graph_receipt(
             service,

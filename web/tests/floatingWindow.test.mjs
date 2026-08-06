@@ -9,7 +9,7 @@ import {
   movedPosition,
   nodeDetailSizeStorageKey,
   parseFloatingSize,
-  resizedFloatingSize,
+  resizedFloatingRect,
 } from "../src/floatingWindow.ts";
 
 test("floating windows clamp to reachable viewport positions", () => {
@@ -29,10 +29,54 @@ test("resizable windows respect their minimum and the live viewport", () => {
     clampFloatingSize({ width: 1200, height: 900 }, { width: 1000, height: 700 }, minimum),
     { width: 976, height: 676 },
   );
-  assert.deepEqual(resizedFloatingSize({ width: 590, height: 720 }, { x: 48, y: -24 }), {
-    width: 638,
-    height: 696,
+});
+
+test("each resize corner keeps its opposite corner fixed", () => {
+  const origin = { position: { x: 300, y: 200 }, size: { width: 400, height: 300 } };
+  const viewport = { width: 1000, height: 700 };
+  const minimum = { width: 360, height: 320 };
+  assert.deepEqual(resizedFloatingRect(origin, { x: 50, y: 40 }, "top-left", viewport, minimum), {
+    position: { x: 340, y: 180 },
+    size: { width: 360, height: 320 },
   });
+  assert.deepEqual(resizedFloatingRect(origin, { x: 50, y: 40 }, "top-right", viewport, minimum), {
+    position: { x: 300, y: 180 },
+    size: { width: 450, height: 320 },
+  });
+  assert.deepEqual(
+    resizedFloatingRect(origin, { x: 50, y: 40 }, "bottom-left", viewport, minimum),
+    {
+      position: { x: 340, y: 200 },
+      size: { width: 360, height: 340 },
+    },
+  );
+  assert.deepEqual(
+    resizedFloatingRect(origin, { x: 50, y: 40 }, "bottom-right", viewport, minimum),
+    {
+      position: { x: 300, y: 200 },
+      size: { width: 450, height: 340 },
+    },
+  );
+});
+
+test("corner resizing preserves its anchor at minimum and viewport bounds", () => {
+  const origin = { position: { x: 300, y: 200 }, size: { width: 400, height: 300 } };
+  const viewport = { width: 1000, height: 700 };
+  const minimum = { width: 360, height: 320 };
+  assert.deepEqual(
+    resizedFloatingRect(origin, { x: -1000, y: -1000 }, "top-left", viewport, minimum),
+    {
+      position: { x: 12, y: 12 },
+      size: { width: 688, height: 488 },
+    },
+  );
+  assert.deepEqual(
+    resizedFloatingRect(origin, { x: 1000, y: 1000 }, "bottom-right", viewport, minimum),
+    {
+      position: { x: 300, y: 200 },
+      size: { width: 688, height: 488 },
+    },
+  );
 });
 
 test("node detail sizes have a project key and reject corrupt stored values", () => {

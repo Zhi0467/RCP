@@ -295,11 +295,17 @@ def _focused_experiment_id(contract: str) -> str | None:
 
 
 def _tested_hypothesis_id(contract: str, focused_experiment_id: str) -> str:
-    prefix = "- Current graph, including the Experiment's attempts: `"
+    prefixes = (
+        "- Current graph, including the Experiment's attempts: `",
+        "- current graph: `",
+    )
     graph_path: Path | None = None
     for line in contract.splitlines():
-        if line.startswith(prefix) and line.endswith("`"):
-            graph_path = Path(line[len(prefix) : -1])
+        for prefix in prefixes:
+            if line.startswith(prefix) and line.endswith("`"):
+                graph_path = Path(line[len(prefix) : -1])
+                break
+        if graph_path is not None:
             break
     if graph_path is None:
         raise ValueError("Acceptance Experiment wake contract has no current graph path.")

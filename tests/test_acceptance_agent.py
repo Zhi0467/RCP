@@ -224,9 +224,12 @@ def test_acceptance_experiment_corrects_watchers_then_completes_with_authority_i
 
     for name in ("job-one", "job-two"):
         (jobs / f"{name}.done").write_text("done\n", encoding="utf-8")
-    wake = asyncio.run(
-        _events(launcher, _prompt(tmp_path, _experiment_contract(graph_path)), tmp_path)
-    )
+    compact_wake = f"""The watched work is ready for another look.
+
+Read the fresh state before acting:
+- current graph: `{graph_path}`
+"""
+    wake = asyncio.run(_events(launcher, _prompt(tmp_path, compact_wake), tmp_path))
 
     assert [event.event for event in wake] == ["session", "answer", "provider_exit", "done"]
     assert json.loads((tmp_path / "watch.json").read_text(encoding="utf-8")) == []

@@ -1,12 +1,23 @@
 import hashlib
 import json
 import sqlite3
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.providers import ProviderUsage
-from rcp.storage import AgentTaskRecord, AppStore, ChatSessionContextRecord, ProjectRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    AppStore,
+    ChatSessionContextRecord,
+    ExperimentLoopRuntime,
+    ProjectRecord,
+    WatcherContinuation,
+    WatcherRecord,
+)
 
 
 def _project(project_id: str) -> ProjectRecord:
@@ -39,6 +50,209 @@ def _task(store: AppStore, project_id: str, operation_id: str, status: str) -> N
 def _snapshot(value: str) -> tuple[str, str]:
     content = json.dumps({"value": value}, separators=(",", ":"), sort_keys=True)
     return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+class _TracingAppStore(AppStore):
+    """Count projection reads without changing the production connection path."""
+
+    def __init__(self, path) -> None:
+        self.select_count = 0
+        super().__init__(path)
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        with super().connection() as connection:
+            connection.set_trace_callback(self._count_select)
+            yield connection
+
+    def _count_select(self, statement: str) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            self.select_count += 1
+
+
+def _create_experiment_runtime_fixture(
+    store: AppStore,
+    *,
+    project_id: str,
+    control_node_id: str,
+    operation_id: str,
+    status: str,
+    arm_watcher: bool = False,
+) -> tuple[str, str]:
+    episode_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{control_node_id}:episode"))
+    chat_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{project_id}:{control_node_id}:chat"))
+    request: dict[str, object] = {
+        "provider": "codex",
+        "model": "",
+        "reasoning": "medium",
+        "run_on": "local",
+        "run_truth_scope": ["repo-a"],
+        "chat_id": chat_id,
+        "node_id": control_node_id,
+        "message": "Continue the bounded experiment.",
+        "mode": "work",
+        "trigger": "experiment_run",
+        "patch_kind": "experiment_loop",
+        "control_node_id": control_node_id,
+        "control_revision": 7,
+        "control_episode_id": episode_id,
+        "control_invocation": 1,
+        "control_invocation_ceiling": 3,
+        "control_decision_bundle": [],
+        "control_completion_criteria": ["Detached work has finished."],
+    }
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            kind="node_chat",
+            status=status,
+            request=request,
+            created_at=now,
+            updated_at=now,
+            status_message=status,
+            phase="agent" if status != "succeeded" else "complete",
+            last_activity_at=now,
+        )
+    )
+    store.commit_experiment_episode_turn(
+        episode_id=episode_id,
+        project_id=project_id,
+        control_node_id=control_node_id,
+        provider="codex",
+        execution_machine="local",
+        execution_host="",
+        native_session_id=f"session-{operation_id}",
+        stage_host=None,
+        stage_root=f"/tmp/{operation_id}",
+        chat_id=chat_id,
+        operation_id=operation_id,
+        invocation=1,
+        graph_result="applied",
+        watcher_ids=[],
+        context_baseline={},
+    )
+    if arm_watcher:
+        store.create_watchers(
+            [
+                WatcherRecord(
+                    watcher_id=f"watcher-{operation_id}",
+                    project_id=project_id,
+                    origin_operation_id=operation_id,
+                    origin_task_kind="node_chat",
+                    chat_id=chat_id,
+                    node_id=control_node_id,
+                    execution_host="",
+                    check_command="true",
+                    log_path=f"/tmp/{operation_id}.log",
+                    cwd="/tmp",
+                    continuation=WatcherContinuation(
+                        provider="codex",
+                        model="",
+                        reasoning="medium",
+                        run_on="local",
+                        run_truth_scope=["repo-a"],
+                        patch_kind="experiment_loop",
+                        control_node_id=control_node_id,
+                        control_revision=7,
+                        control_episode_id=episode_id,
+                        control_invocation=1,
+                        control_invocation_ceiling=3,
+                        control_decision_bundle=[],
+                        control_completion_criteria=["Detached work has finished."],
+                    ),
+                    created_at=now,
+                )
+            ]
+        )
+    return episode_id, operation_id
+
+
+def test_experiment_runtime_batch_matches_scalar_for_active_stopped_and_empty(
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "runtime-project"
+    active_episode, _ = _create_experiment_runtime_fixture(
+        store,
+        project_id=project_id,
+        control_node_id="exp/active",
+        operation_id="active-loop",
+        status="succeeded",
+        arm_watcher=True,
+    )
+    stopped_episode, stopped_operation = _create_experiment_runtime_fixture(
+        store,
+        project_id=project_id,
+        control_node_id="exp/stopped",
+        operation_id="stopped-loop",
+        status="failed",
+    )
+    store.record_experiment_episode_diagnostic(
+        episode_id=stopped_episode,
+        project_id=project_id,
+        control_node_id="exp/stopped",
+        diagnostic="The saved native session is unavailable.",
+    )
+    store.request_experiment_loop_stop(project_id, "exp/stopped")
+
+    runtimes = store.experiment_loop_runtimes(
+        project_id,
+        ["exp/active", "exp/stopped", "exp/empty"],
+    )
+
+    assert runtimes["exp/active"] == store.experiment_loop_runtime(project_id, "exp/active")
+    assert runtimes["exp/stopped"] == store.experiment_loop_runtime(project_id, "exp/stopped")
+    assert (
+        runtimes["exp/empty"]
+        == store.experiment_loop_runtime(project_id, "exp/empty")
+        == ExperimentLoopRuntime()
+    )
+    assert runtimes["exp/active"].episode_id == active_episode
+    assert runtimes["exp/active"].active is True
+    assert runtimes["exp/active"].task_active is False
+    assert runtimes["exp/active"].detached_work_active is True
+    assert runtimes["exp/active"].session_bound is True
+    assert runtimes["exp/active"].model == ""
+    assert runtimes["exp/stopped"].episode_id == stopped_episode
+    assert runtimes["exp/stopped"].active is False
+    assert runtimes["exp/stopped"].task_active is False
+    assert runtimes["exp/stopped"].stop_requested is True
+    assert runtimes["exp/stopped"].stop_settled is True
+    assert "experiment_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(stopped_operation)
+    }
+
+
+def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
+    store = _TracingAppStore(tmp_path / "rcp.sqlite3")
+    project_id = "runtime-project"
+    control_node_ids = []
+    for index in range(12):
+        control_node_id = f"exp/runtime-{index}"
+        control_node_ids.append(control_node_id)
+        _create_experiment_runtime_fixture(
+            store,
+            project_id=project_id,
+            control_node_id=control_node_id,
+            operation_id=f"loop-{index}",
+            status="running",
+        )
+
+    store.select_count = 0
+    store.experiment_loop_runtimes(project_id, control_node_ids[:1])
+    one_experiment_selects = store.select_count
+    store.select_count = 0
+    runtimes = store.experiment_loop_runtimes(project_id, control_node_ids)
+    all_experiment_selects = store.select_count
+
+    assert set(runtimes) == set(control_node_ids)
+    assert one_experiment_selects == all_experiment_selects == 4
+
+    store.select_count = 0
+    assert store.active_experiment_control_ids(project_id) == set(control_node_ids)
+    assert store.select_count == 4
 
 
 def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:
@@ -462,6 +676,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "writing_sessions": 1,
         "chat_session_contexts": 1,
         "watchers": 0,
+        "experiment_episodes": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
         "graph_run_receipts": 1,

@@ -223,6 +223,8 @@ it but a browser or a machine we do not have.
 | [S69](S69-agent-proposal-withdrawal.md) | Agents can withdraw obsolete pending proposals | implemented | pytest | covered |
 | [S70](S70-uniform-patch-validation-contract.md) | Patch-producing tasks uniformly self-check through the validator | implemented | pytest | 2026-08-04 |
 | [S71](S71-chat-master-context-and-deltas.md) | Chat sends one master context, then turn markers and compact deltas | implemented | pytest | 2026-08-04 |
+| [S72](S72-runs-operational-hierarchy.md) | Runs leads with live operational state | implemented | **browser** | tests + browser 2026-08-06 |
+| [S73](S73-experiment-loop-native-wake-continuity.md) | Watcher wakes continue one bounded episode session | implemented | pytest | tests + browser 2026-08-06 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

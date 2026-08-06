@@ -497,7 +497,7 @@ export function NodeChat({
                   : "Not checked yet"}
               </time>
               {watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-              {onStopWatcher && (
+              {onStopWatcher && watcher.continuation?.patch_kind !== "experiment_loop" && (
                 <button
                   className="button compact"
                   type="button"

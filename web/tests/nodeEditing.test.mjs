@@ -44,6 +44,7 @@ test("editable fields mirror the human-editable allowlist for every node type", 
   assert.deepEqual(keys("evidence"), ["title", "observation", "interpretation"]);
   assert.deepEqual(keys("blocker"), [
     "title",
+    "status",
     "description",
     "resolution_condition",
     "recommended_action",
@@ -150,6 +151,36 @@ test("blank nullable prose becomes null while an existing null is unchanged", ()
   assert.deepEqual(changedNodeFields(decision, draft), { rationale: null });
   const alreadyBlank = { ...decision, rationale: null };
   assert.deepEqual(changedNodeFields(alreadyBlank, nodeEditDraft(alreadyBlank)), {});
+});
+
+test("Blocker status is a closed human-labelled choice and stages a normalized change", () => {
+  const blocker = {
+    ...hypothesis,
+    id: "blocker/example",
+    type: "blocker",
+    standing: "asserted",
+    blocker_type: "scientific",
+    status: "open",
+    description: "The measurement is missing.",
+    resolution_condition: "Record the missing measurement.",
+    recommended_action: null,
+  };
+  const field = editableNodeFields(blocker).find((item) => item.key === "status");
+  assert.deepEqual(field, {
+    key: "status",
+    label: "Status",
+    kind: "select",
+    options: [
+      { value: "open", label: "Open" },
+      { value: "resolved", label: "Resolved" },
+      { value: "superseded", label: "Superseded" },
+    ],
+  });
+
+  const draft = nodeEditDraft(blocker);
+  assert.equal(draft.status, "open");
+  draft.status = "  resolved  ";
+  assert.deepEqual(changedNodeFields(blocker, draft), { status: "resolved" });
 });
 
 test("the experiment invocation ceiling is a positive integer field in the human draft", () => {

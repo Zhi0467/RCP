@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from rcp.control import derive_experiment_control_state, governing_decision_bundle
+from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     Blocker,
     Decision,
@@ -430,6 +431,55 @@ def test_loop_patch_may_append_multiple_semantically_meaningful_attempts() -> No
     )
 
     assert "experiment-loop-multiple-attempts" not in _codes(validate_patch(state, patch, ["repo"]))
+
+
+def test_loop_patch_may_refresh_summary_and_next_action_on_its_experiment() -> None:
+    running = _attempt()
+    state = _state(attempts=[running])
+    closed = running.model_copy(update={"status": "completed", "outcome": "Finished."})
+    patch = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": EXPERIMENT_ID,
+                        "changes": {
+                            "attempts": [closed],
+                            "current_summary": "The configured run finished successfully.",
+                            "next_action": None,
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    report = validate_patch(state, patch, ["repo"])
+    assert not report.rejected
+    updated = apply_valid_patch(state, patch).nodes[EXPERIMENT_ID]
+    assert isinstance(updated, Experiment)
+    assert updated.attempts == [closed]
+    assert updated.current_summary == "The configured run finished successfully."
+    assert updated.next_action is None
+
+
+def test_loop_summary_authority_does_not_allow_other_fields_or_foreign_nodes() -> None:
+    patch = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {"id": EXPERIMENT_ID, "changes": {"objective": "Broadened authority."}},
+                    {"id": "hyp/target", "changes": {"current_summary": "Foreign prose."}},
+                ],
+            }
+        ]
+    )
+
+    codes = _codes(validate_patch(_state(), patch, ["repo"]))
+    assert "experiment-loop-experiment-field" in codes
+    assert "experiment-loop-foreign-update" in codes
 
 
 def test_loop_patch_cannot_edit_the_pinned_bundle_or_other_graph_authority() -> None:

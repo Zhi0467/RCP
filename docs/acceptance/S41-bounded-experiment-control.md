@@ -43,10 +43,12 @@ Confirmed by the human on 2026-08-05.
   **Run** is disabled and the exact gating reason is visible. Ordinary Work
   conversation remains available.
 - Press **Run**. RCP opens the first bounded Experiment-loop invocation with the
-  governing decision bundle pinned, assigns a durable episode id, and records
-  invocation 1 of the canonical ceiling. No semantic attempt record exists
-  merely because the button was pressed. While that episode can continue
-  automatically, a second **Run** is refused; ordinary Work remains available.
+  governing decision bundle pinned, assigns a durable episode id and a fresh
+  native provider session, and records invocation 1 of the canonical ceiling. No
+  semantic attempt record exists merely because the button was pressed. Per S72
+  the app navigates to Runs and opens this Experiment's run detail rather than a
+  floating node-chat window. While that episode can continue automatically, a
+  second **Run** is refused; ordinary Work remains available.
 - Inspect the staged contract file. It contains the normal RCP ontology,
   authority, focused-node/one-hop context, repository pointers, and exact Patch,
   validator, watcher, schema, and artifact paths. It points separately to one
@@ -75,13 +77,16 @@ Confirmed by the human on 2026-08-05.
   success/Proposal/Blocker Patch when the loop should exit; it never resubmits.
   If correction cannot establish either state, the task fails visibly and
   remains Retryable instead of silently losing the work.
-- Deliver completion through S42. The attributed watcher invocation reads the
-  newly assembled loop context and logs, then decides whether to continue
-  debugging, record or close an attempt, arm more watchers, create a
-  proposal/blocker, or finish. The context distinguishes the delivered watcher
-  group from other active, degraded, completed, or stopped Experiment watchers,
-  so one completed job is not treated as an attempt boundary. The coalesced wake
-  consumes one invocation; it does not mechanically create an attempt record.
+- Deliver completion through S42's watcher machinery. The attributed watcher
+  invocation reads the newly assembled loop context and logs, then decides
+  whether to continue debugging, record or close an attempt, arm more watchers,
+  create a proposal/blocker, or finish. The context distinguishes the delivered
+  watcher group from other active, degraded, completed, or stopped Experiment
+  watchers, so one completed job is not treated as an attempt boundary. The
+  coalesced wake consumes one invocation; it does not mechanically create an
+  attempt record. Per S73 the wake resumes this episode's native provider session
+  with a compact continuation message rather than starting a fresh session and
+  rebuilding the contract; generic Work watcher wakes stay fresh turns.
 - Pause, Resume, or Retry that watcher turn. Resume and Retry retain its episode
   and invocation number and receive a compact live control update before acting.
   Patch correction and watcher correction receive only the retained contract,
@@ -110,9 +115,10 @@ Confirmed by the human on 2026-08-05.
 - Let compatible watchers armed by different invocations complete together.
   Their immutable origin episode/invocation fields remain visible in watcher
   state, but RCP coalesces them under current delivery policy and spends one
-  invocation. Race **Stop watcher** against a completion: either Stop atomically
-  acknowledges it or an already-claimed wake wins visibly; it never wakes after
-  a successful Stop.
+  invocation. Race S72's **Stop loop** against a completion: either the stop
+  atomically fences the unclaimed watcher or an already-claimed wake wins
+  visibly; nothing wakes after the stop is persisted. An Experiment loop has no
+  per-watcher Stop action; ordinary Work watchers keep theirs.
 - Complete an experiment successfully. The loop asserts the Evidence node and
   evidence edge, then produces exactly one Inbox item for the Hypothesis status
   transition with that same-patch edge as its cause. If optional

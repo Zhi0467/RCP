@@ -1379,6 +1379,46 @@ def test_remote_repository_pointer_keeps_host_and_untouched_path() -> None:
     assert access.path == "/home/research/cot-loop"
 
 
+def test_remote_run_stage_probe_rejects_symlink_and_missing_root(tmp_path, monkeypatch) -> None:
+    stage = RemoteRunStage("research.example")
+    real_run = subprocess.run
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: real_run(arguments, capture_output=True, text=True, check=False),
+    )
+    remote_root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+    try:
+        assert stage.directory_exists(str(remote_root)) is True
+        remote_root.rmdir()
+        target = tmp_path / "replacement"
+        target.mkdir()
+        remote_root.symlink_to(target, target_is_directory=True)
+
+        assert stage.directory_exists(str(remote_root)) is False
+        with pytest.raises(StateUnavailable, match="saved remote staging directory"):
+            stage.attach(str(remote_root))
+
+        remote_root.unlink()
+        assert stage.directory_exists(str(remote_root)) is False
+    finally:
+        if remote_root.is_symlink():
+            remote_root.unlink()
+        elif remote_root.exists():
+            remote_root.rmdir()
+
+
+def test_remote_run_stage_probe_keeps_ssh_failure_transient(monkeypatch) -> None:
+    stage = RemoteRunStage("research.example")
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: subprocess.CompletedProcess(arguments, 255, "", "connection lost"),
+    )
+
+    assert stage.directory_exists("/tmp/rcp-run.saved-stage") is None
+
+
 def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) -> None:
     source_file = tmp_path / "schema.json"
     source_file.write_text('{"type":"object"}\n', encoding="utf-8")

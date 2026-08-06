@@ -99,6 +99,35 @@ export interface DecisionDrift {
   proposed: boolean;
 }
 
+export interface ExperimentSessionBinding {
+  provider: string | null;
+  model: string | null;
+  reasoning: string | null;
+  run_on: string | null;
+  execution_host: string | null;
+  run_truth_scope: string[] | null;
+  native_session_bound: boolean;
+  diagnostic: string | null;
+}
+
+export interface ExperimentOperationalState {
+  task_active: boolean;
+  detached_work_active: boolean;
+  watcher_degraded: boolean;
+  watcher_completion_pending: boolean;
+  episode_exited: boolean;
+  stop_requested: boolean;
+  stop_settled: boolean;
+  chat_id: string | null;
+  current_operation_id: string | null;
+  current_status: string | null;
+  current_phase: string | null;
+  current_status_message: string | null;
+  current_last_activity_at: string | null;
+  current_invocation: number | null;
+  session: ExperimentSessionBinding;
+}
+
 export interface ExperimentControlState {
   ready: boolean;
   reasons: string[];
@@ -110,6 +139,7 @@ export interface ExperimentControlState {
   active: boolean;
   governing_decisions: ExperimentDecisionPin[];
   decision_drift: DecisionDrift[];
+  operational: ExperimentOperationalState;
 }
 
 export interface WatcherContinuation {
@@ -134,6 +164,7 @@ export interface WatcherRecord {
   status: "active" | "degraded" | "completed" | "stopped";
   created_at: string;
   last_checked_at: string | null;
+  last_exit_code: number | null;
   last_error: string | null;
   completed_at: string | null;
   notified: boolean;

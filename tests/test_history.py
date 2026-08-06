@@ -568,6 +568,75 @@ def test_agent_cannot_apply_gated_hypothesis_transition(manifest) -> None:
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 
+def test_agent_updates_blocker_lifecycle_directly_and_resets_accepted_standing(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Recorded an operational blocker.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "blk/missing-capacity",
+                            "type": "blocker",
+                            "title": "Missing capacity",
+                            "description": "The required accelerator is unavailable.",
+                            "status": "open",
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+    history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Accepted the blocker.",
+            ops=[
+                {
+                    "op": "set_standing",
+                    "node_id": "blk/missing-capacity",
+                    "standing": "accepted",
+                }
+            ],
+        )
+    )
+
+    appended, result = history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Resolved the operational blocker.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [
+                        {
+                            "id": "blk/missing-capacity",
+                            "changes": {"status": "resolved"},
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+
+    blocker = result.state.nodes["blk/missing-capacity"]
+    assert appended.admission == "accepted"
+    assert blocker.status == "resolved"
+    assert blocker.standing == "asserted"
+    assert result.state.proposals == {}
+
+
 @pytest.mark.parametrize(
     "changes",
     [

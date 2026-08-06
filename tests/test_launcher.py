@@ -789,6 +789,24 @@ def test_claude_work_bypasses_permissions() -> None:
     assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
 
 
+def test_claude_work_resume_keeps_the_native_session_and_bypasses_permissions() -> None:
+    session_id = "claude-experiment-episode-session"
+    command = AgentLauncher._command(
+        "claude",
+        "continue the bounded experiment turn",
+        cwd=Path("/data/chat-stage"),
+        model=None,
+        reasoning=None,
+        session_id=session_id,
+        read_dirs=[Path("/data/chat-stage/inputs")],
+        write_dirs=[Path("/project/repo-a")],
+        capability="work_auto",
+    )
+
+    assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert command[command.index("--resume") + 1] == session_id
+
+
 def test_claude_discuss_keeps_scratch_writable_without_auto_mode() -> None:
     command = AgentLauncher._command(
         "claude",

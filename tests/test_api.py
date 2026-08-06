@@ -27,7 +27,7 @@ from rcp.api.app import (
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig, load_manifest
-from rcp.core.models import Patch
+from rcp.core.models import Blocker, GraphState, Patch
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.paper import WritingSession
 from rcp.providers import ProviderUsage
@@ -907,6 +907,58 @@ def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch
     assert record.revision == 17
     assert record.primary_question == "Which path remains plastic?"
     assert record.attention_count == 9
+
+
+def test_project_snapshot_counts_only_open_asserted_blockers(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    blockers = [
+        Blocker(
+            id="blk/asserted-open",
+            type="blocker",
+            title="Asserted open blocker",
+            description="Needs human attention.",
+            standing="asserted",
+            status="open",
+        ),
+        Blocker(
+            id="blk/accepted-open",
+            type="blocker",
+            title="Accepted open blocker",
+            description="Remains operationally open.",
+            standing="accepted",
+            status="open",
+        ),
+        Blocker(
+            id="blk/contested-open",
+            type="blocker",
+            title="Contested open blocker",
+            description="Remains operationally open.",
+            standing="contested",
+            status="open",
+        ),
+        Blocker(
+            id="blk/asserted-resolved",
+            type="blocker",
+            title="Resolved asserted blocker",
+            description="No longer operationally open.",
+            standing="asserted",
+            status="resolved",
+        ),
+    ]
+    state = GraphState(nodes={blocker.id: blocker for blocker in blockers})
+
+    snapshot = app.state.service.project_snapshot(state=state)
+
+    assert snapshot["counts"]["open_blockers"] == 1
+    assert {
+        node_id: (node["status"], node["standing"])
+        for node_id, node in snapshot["graph"]["nodes"].items()
+    } == {
+        "blk/asserted-open": ("open", "asserted"),
+        "blk/accepted-open": ("open", "accepted"),
+        "blk/contested-open": ("open", "contested"),
+        "blk/asserted-resolved": ("resolved", "asserted"),
+    }
 
 
 def test_cached_catalog_open_returns_service_without_building_snapshot(
@@ -5910,6 +5962,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     old_request = RunRequest(
         provider="codex",
         run_on="laptop",
+        run_truth_scope=["repo-a"],
         chat_id=chat_id,
         chat_scope="node",
         node_id="exp/bounded-loop",
@@ -5952,6 +6005,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
                     provider="codex",
                     reasoning="medium",
                     run_on="laptop",
+                    run_truth_scope=["repo-a"],
                     patch_kind="experiment_loop",
                     control_node_id="exp/bounded-loop",
                     control_revision=2,

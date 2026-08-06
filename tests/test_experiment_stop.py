@@ -1,0 +1,1472 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from pathlib import Path
+from threading import Event
+
+import pytest
+from fastapi.testclient import TestClient
+
+from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.api import create_app
+from rcp.api.app import _resolved_graph_request
+from rcp.background import BackgroundAgentTasks
+from rcp.core.models import Patch
+from rcp.runs.shared import _sse
+from rcp.service import RunRequest
+from rcp.skill_registry import SkillReference
+from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
+
+from .helpers import seed_patch
+
+EXPERIMENT_ID = "exp/bounded-loop"
+NODE_PATH = "exp%2Fbounded-loop"
+
+
+def _experiment_patch(*, invocation_ceiling: int = 2) -> Patch:
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary="Added an experiment for graceful-stop tests.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": EXPERIMENT_ID,
+                        "type": "experiment",
+                        "title": "Bounded loop",
+                        "objective": "Exercise the graceful-stop contract.",
+                        "completion_criteria": ["The detached fixture exits cleanly."],
+                        "invocation_ceiling": invocation_ceiling,
+                    }
+                ],
+            }
+        ],
+    )
+
+
+class _Loop:
+    """One project holding a bounded Experiment with a persisted loop episode."""
+
+    def __init__(self, app, *, invocation_ceiling: int = 2) -> None:
+        self.app = app
+        self.service = app.state.service
+        self.service.history.append(seed_patch())
+        self.service.history.append(_experiment_patch(invocation_ceiling=invocation_ceiling))
+        self.project_id = app.state.default_project_id
+        self.store: AppStore = app.state.background_tasks.store
+        self.client = TestClient(app)
+        self.chat_id = str(uuid.uuid4())
+        self.episode_id = str(uuid.uuid4())
+        self.invocation_ceiling = invocation_ceiling
+
+    def root_request(self, *, invocation: int = 1) -> RunRequest:
+        return RunRequest(
+            provider="codex",
+            model="gpt-5",
+            reasoning="medium",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+            chat_id=self.chat_id,
+            chat_scope="node",
+            node_id=EXPERIMENT_ID,
+            message="Begin a bounded Experiment-loop episode.",
+            mode="work",
+            trigger="experiment_run",
+            patch_kind="experiment_loop",
+            control_node_id=EXPERIMENT_ID,
+            control_revision=2,
+            control_episode_id=self.episode_id,
+            control_invocation=invocation,
+            control_invocation_ceiling=self.invocation_ceiling,
+            control_decision_bundle=[],
+            control_completion_criteria=["The detached fixture exits cleanly."],
+        )
+
+    def start_episode(self, *, status: str = "succeeded", operation_id: str = "loop-root") -> str:
+        now = self.store.now()
+        self.store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=self.project_id,
+                kind="node_chat",
+                status=status,
+                request=self.root_request().model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Working on the bounded loop.",
+                phase="agent",
+                last_activity_at=now,
+            )
+        )
+        return operation_id
+
+    def bind_session(
+        self,
+        stage_root: Path,
+        *,
+        provider: str = "codex",
+        native_session_id: str = "native-session-abc",
+        operation_id: str = "loop-root",
+    ) -> None:
+        stage_root.mkdir(parents=True, exist_ok=True)
+        self.store.commit_experiment_episode_turn(
+            episode_id=self.episode_id,
+            project_id=self.project_id,
+            control_node_id=EXPERIMENT_ID,
+            provider=provider,
+            execution_machine="laptop",
+            execution_host="",
+            native_session_id=native_session_id,
+            stage_host=None,
+            stage_root=str(stage_root),
+            chat_id=self.chat_id,
+            operation_id=operation_id,
+            invocation=1,
+            graph_result="applied",
+            watcher_ids=[],
+            context_baseline={},
+        )
+
+    def continuation(self, **overrides: object) -> WatcherContinuation:
+        base: dict[str, object] = {
+            "provider": "codex",
+            "model": "gpt-5",
+            "reasoning": "medium",
+            "run_on": "laptop",
+            "run_truth_scope": ["repo-a"],
+            "patch_kind": "experiment_loop",
+            "control_node_id": EXPERIMENT_ID,
+            "control_revision": 2,
+            "control_episode_id": self.episode_id,
+            "control_invocation": 1,
+            "control_invocation_ceiling": self.invocation_ceiling,
+            "control_decision_bundle": [],
+            "control_completion_criteria": ["The detached fixture exits cleanly."],
+        }
+        base.update(overrides)
+        return WatcherContinuation.model_validate(base)
+
+    def arm_watcher(
+        self,
+        watcher_id: str,
+        *,
+        status: str = "active",
+        continuation: WatcherContinuation | None = None,
+        origin_operation_id: str = "loop-root",
+        execution_host: str = "",
+    ) -> WatcherRecord:
+        now = self.store.now()
+        record = WatcherRecord(
+            watcher_id=watcher_id,
+            project_id=self.project_id,
+            origin_operation_id=origin_operation_id,
+            origin_task_kind="node_chat",
+            chat_id=self.chat_id,
+            node_id=EXPERIMENT_ID,
+            execution_host=execution_host,
+            check_command="true",
+            log_path=f"/tmp/{watcher_id}.log",
+            cwd="/tmp",
+            continuation=continuation or self.continuation(),
+            status="active",
+            created_at=now,
+        )
+        self.store.create_watchers([record])
+        if status != "active":
+            self.store.record_watcher_check(
+                watcher_id,
+                status=status,
+                exit_code=0,
+                error=None,
+            )
+        stored = self.store.watcher(watcher_id)
+        assert stored is not None
+        return stored
+
+    def stop(self) -> dict[str, object]:
+        response = self.client.post(f"/api/projects/{self.project_id}/experiments/{NODE_PATH}/stop")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def control(self) -> dict[str, object]:
+        snapshot = self.client.get(f"/api/projects/{self.project_id}").json()
+        return snapshot["experiment_control"][EXPERIMENT_ID]
+
+    def deliver(self, *watcher_ids: str) -> None:
+        deliver = self.app.state.watcher_poller.on_completed
+        assert deliver is not None
+        group = []
+        for watcher_id in watcher_ids:
+            record = self.store.watcher(watcher_id)
+            assert record is not None
+            group.append(record)
+        deliver(group)
+
+    def loop_task_ids(self) -> set[str]:
+        return {
+            record.operation_id
+            for record in self.store.agent_tasks(self.project_id)
+            if record.request.get("patch_kind") == "experiment_loop"
+        }
+
+    def record_answers(self) -> list[RunRequest]:
+        """Replace agent execution with a stub that only records its request."""
+
+        seen: list[RunRequest] = []
+
+        async def stream(_project_id, _kind, request, _execution):
+            seen.append(request)
+            yield _sse(AgentEvent(event="answer", text="Stub turn."))
+            yield _sse(AgentEvent(event="done"))
+
+        self.app.state.background_tasks.stream = stream
+        return seen
+
+
+def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
+    manifest, tmp_path
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(status="running")
+    watcher = loop.arm_watcher("live-watcher")
+
+    control = loop.stop()
+
+    operational = control["operational"]
+    assert operational["stop_requested"] is True
+    assert operational["stop_settled"] is False
+    assert operational["task_active"] is True
+    assert control["ready"] is False
+    assert "A graceful stop is finishing the current loop turn." in control["reasons"]
+    # The authorized turn is untouched, and its observers stay live until it ends.
+    task = loop.store.agent_task("loop-root")
+    assert task is not None and task.status == "running"
+    assert loop.store.watcher(watcher.watcher_id).status == "active"
+    assert watcher.watcher_id not in {
+        record.watcher_id for record in loop.store.pollable_watchers()
+    }
+
+    refused = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+    assert refused.status_code == 409
+    assert "graceful stop" in refused.json()["detail"]
+
+    loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
+    assert loop.store.settle_ready_experiment_loop_stops() == 1
+    assert loop.store.watcher(watcher.watcher_id).status == "stopped"
+
+
+def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(
+    manifest, tmp_path
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode()
+    loop.arm_watcher("still-running")
+    loop.arm_watcher("finished-unclaimed", status="completed")
+
+    control = loop.stop()
+
+    assert control["operational"]["stop_requested"] is True
+    assert control["operational"]["stop_settled"] is True
+    for watcher_id in ("still-running", "finished-unclaimed"):
+        record = loop.store.watcher(watcher_id)
+        # Retained as inspectable history, never deleted and never deliverable.
+        assert record is not None
+        assert record.status == "stopped"
+        assert record.notified is True
+        assert record.notification_operation_id is None
+    assert control["ready"] is True
+    assert control["reasons"] == []
+
+
+def test_stop_is_idempotent(manifest, tmp_path) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode()
+    loop.arm_watcher("finished-unclaimed", status="completed")
+
+    first = loop.stop()
+    episode_after_first = loop.store.experiment_episode(loop.episode_id)
+    watcher_after_first = loop.store.watcher("finished-unclaimed")
+    tasks_after_first = loop.loop_task_ids()
+
+    second = loop.stop()
+
+    assert second == first
+    episode_after_second = loop.store.experiment_episode(loop.episode_id)
+    assert episode_after_second is not None and episode_after_first is not None
+    assert episode_after_second.stop_requested_at == episode_after_first.stop_requested_at
+    assert episode_after_second.stop_settled_at == episode_after_first.stop_settled_at
+    assert loop.store.watcher("finished-unclaimed") == watcher_after_first
+    assert loop.loop_task_ids() == tasks_after_first
+
+
+def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.arm_watcher("finished-unclaimed", status="completed")
+    loop.stop()
+
+    loop.record_answers()
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+
+    assert response.status_code == 202, response.text
+    request = response.json()["request"]
+    assert request["trigger"] == "experiment_run"
+    assert request["control_invocation"] == 1
+    assert request["control_episode_id"] != loop.episode_id
+    # A settled stop leaves no unnotified completion, so this is an ordinary
+    # fresh Run rather than a human reauthorization of pending watcher state.
+    assert request["watcher_ids"] == []
+    assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
+
+
+def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.bind_session(tmp_path / "stage")
+    loop.arm_watcher("finished-unclaimed", status="completed")
+
+    loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    before = loop.loop_task_ids()
+    loop.deliver("finished-unclaimed")
+
+    assert loop.loop_task_ids() == before
+    assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
+    runtime = loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID)
+    # The session was usable; only the stop refused the wake, and no budget moved.
+    assert runtime.session_bound is True
+    assert runtime.invocations_used == 1
+
+
+def test_a_stop_settles_on_the_next_derivation_after_its_turn_ends(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(status="running")
+    loop.arm_watcher("still-running")
+    assert loop.stop()["operational"]["stop_settled"] is False
+
+    # The authorized turn finishes on its own. Nothing replays the stop; the
+    # next derivation reconciles it, which is what survives a restart.
+    loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
+
+    control = loop.control()
+    assert control["operational"]["stop_requested"] is True
+    assert control["operational"]["stop_settled"] is True
+    assert loop.store.watcher("still-running").status == "stopped"
+    assert control["ready"] is True
+
+
+def test_a_wake_without_a_committed_binding_never_claims_or_spends_budget(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.arm_watcher("finished-unclaimed", status="completed")
+
+    before = loop.loop_task_ids()
+    loop.deliver("finished-unclaimed")
+
+    assert loop.loop_task_ids() == before
+    record = loop.store.watcher("finished-unclaimed")
+    assert record.status == "completed"
+    assert record.notified is False
+    control = loop.control()
+    assert control["invocations_used"] == 1
+    assert control["operational"]["session"]["native_session_bound"] is False
+    assert "no validated native provider session" in control["operational"]["session"]["diagnostic"]
+
+
+def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    stage = tmp_path / "stage"
+    loop.bind_session(stage)
+    stage.rmdir()
+    loop.arm_watcher("finished-unclaimed", status="completed")
+
+    before = loop.loop_task_ids()
+    loop.deliver("finished-unclaimed")
+
+    assert loop.loop_task_ids() == before
+    record = loop.store.watcher("finished-unclaimed")
+    assert record.status == "completed"
+    assert record.notified is False
+    diagnostic = loop.control()["operational"]["session"]["diagnostic"]
+    assert diagnostic is not None
+    assert "saved provider workspace is gone" in diagnostic
+    assert loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID).invocations_used == 1
+
+
+def test_an_incompatible_completion_stays_pending_and_visible(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.bind_session(tmp_path / "stage")
+    loop.arm_watcher(
+        "other-provider",
+        status="completed",
+        continuation=loop.continuation(provider="claude"),
+    )
+
+    before = loop.loop_task_ids()
+    loop.deliver("other-provider")
+
+    assert loop.loop_task_ids() == before
+    record = loop.store.watcher("other-provider")
+    assert record.status == "completed"
+    assert record.notified is False
+    # Incompatibility is not a broken episode, so it leaves no durable fault.
+    assert loop.control()["operational"]["session"]["diagnostic"] is None
+
+
+def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.bind_session(tmp_path / "stage")
+    loop.arm_watcher("finished-unclaimed", status="completed")
+
+    loop.record_answers()
+    loop.deliver("finished-unclaimed")
+
+    woken = [
+        record
+        for record in loop.store.agent_tasks(loop.project_id)
+        if record.request.get("trigger") == "watcher"
+    ]
+    assert len(woken) == 1
+    task = woken[0]
+    assert task.request["control_invocation"] == 2
+    assert task.request["control_episode_id"] == loop.episode_id
+    assert task.request["session_id"] == "native-session-abc"
+    assert task.request["watcher_ids"] == ["finished-unclaimed"]
+    assert task.stage_root == str(tmp_path / "stage")
+    assert task.stage_host is None
+    # A wake is a new task at the next invocation, never task Resume.
+    assert task.parent_operation_id is None
+    causes = [
+        receipt.payload.get("continuation_cause")
+        for receipt in loop.store.agent_task_receipts(task.operation_id)
+        if receipt.category == "operation_created"
+    ]
+    assert causes == ["watcher_wake"]
+    assert loop.store.watcher("finished-unclaimed").notified is True
+
+
+def test_control_state_exposes_the_operational_block_without_the_session_id(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(status="running")
+    loop.bind_session(tmp_path / "stage")
+
+    control = loop.control()
+
+    operational = control["operational"]
+    assert operational["current_operation_id"] == "loop-root"
+    assert operational["current_status"] == "running"
+    assert operational["current_phase"] == "agent"
+    assert operational["current_invocation"] == 1
+    assert operational["chat_id"] == loop.chat_id
+    assert operational["current_status_message"] == "Working on the bounded loop."
+    assert operational["current_last_activity_at"] is not None
+    session = operational["session"]
+    assert session == {
+        "provider": "codex",
+        "model": "gpt-5",
+        "reasoning": "medium",
+        "run_on": "laptop",
+        "execution_host": "",
+        "run_truth_scope": ["repo-a"],
+        "native_session_bound": True,
+        "diagnostic": None,
+    }
+    assert "native-session-abc" not in json.dumps(control)
+
+
+def test_stop_on_a_node_that_is_not_an_experiment_is_not_found(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/rq%2Flearning-after-shift/stop"
+    )
+
+    assert response.status_code == 404
+
+
+def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.arm_watcher("still-running")
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/watchers/stop"
+    )
+
+    assert response.status_code == 409, response.text
+    assert "Use Stop loop" in response.json()["detail"]
+    assert loop.store.watcher("still-running").status == "active"
+    assert loop.store.experiment_episode(loop.episode_id) is None
+
+
+def test_individual_stop_rejects_experiment_watcher(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.arm_watcher("loop-watcher")
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/loop-watcher/stop")
+
+    assert response.status_code == 409
+    assert "Use Stop loop" in response.json()["detail"]
+    assert loop.store.watcher("loop-watcher").status == "active"
+
+
+def test_episode_binding_is_immutable_after_first_success(manifest, tmp_path) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode()
+    loop.bind_session(tmp_path / "stage")
+
+    with pytest.raises(ValueError, match="cannot change its native-session binding"):
+        loop.store.commit_experiment_episode_turn(
+            episode_id=loop.episode_id,
+            project_id=loop.project_id,
+            control_node_id=EXPERIMENT_ID,
+            provider="claude",
+            execution_machine="laptop",
+            execution_host="",
+            native_session_id="different-session",
+            stage_host=None,
+            stage_root=str(tmp_path / "other-stage"),
+            chat_id=loop.chat_id,
+            operation_id="loop-root",
+            invocation=1,
+            graph_result="none",
+            watcher_ids=[],
+            context_baseline={},
+        )
+
+
+def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_path) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode()
+    changed = loop.root_request(invocation=2).model_copy(
+        update={"trigger": "watcher", "model": "different-model"}
+    )
+    now = loop.store.now()
+
+    with pytest.raises(ValueError, match="cannot change its pinned configuration"):
+        loop.store.create_agent_task(
+            AgentTaskRecord(
+                operation_id="changed-config",
+                project_id=loop.project_id,
+                kind="node_chat",
+                status="queued",
+                request=changed.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Should not start.",
+            )
+        )
+
+
+def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    stage = tmp_path / "stage"
+    loop.bind_session(stage)
+    loop.arm_watcher("ready", status="completed")
+    request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "wrong-session",
+            "watcher_ids": ["ready"],
+        }
+    )
+    now = loop.store.now()
+    record = AgentTaskRecord(
+        operation_id="wrong-binding",
+        project_id=loop.project_id,
+        kind="node_chat",
+        status="queued",
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="Should not start.",
+        native_session_id="wrong-session",
+        stage_root=str(stage),
+    )
+
+    with pytest.raises(ValueError, match="episode binding"):
+        loop.store.create_watcher_notification_task(record, ["ready"])
+    assert loop.store.watcher("ready").notified is False
+
+    no_session = request.model_copy(update={"session_id": None})
+    with pytest.raises(ValueError, match="session and exact stage"):
+        app.state.background_tasks.start_watcher_notification(
+            loop.project_id,
+            "node_chat",
+            no_session,
+            ["ready"],
+            episode_stage_root=str(stage),
+        )
+
+
+def test_automatic_compatibility_ignores_model_reasoning_and_packages(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.bind_session(tmp_path / "stage")
+    loop.arm_watcher(
+        "old-config",
+        status="completed",
+        continuation=loop.continuation(
+            model="old-model",
+            reasoning="low",
+            resolved_skill_packages=[
+                SkillReference(id="old-package", kind="skill", version="1.0.0")
+            ],
+        ),
+    )
+    loop.arm_watcher(
+        "new-config",
+        status="completed",
+        continuation=loop.continuation(
+            model="new-model",
+            reasoning="high",
+            resolved_skill_packages=[
+                SkillReference(id="new-package", kind="skill", version="2.0.0")
+            ],
+        ),
+    )
+
+    groups = app.state.background_tasks.store.completed_watcher_groups()
+    experiment_group = next(group for group in groups if group[0].watcher_id == "old-config")
+    assert {item.watcher_id for item in experiment_group} == {"old-config", "new-config"}
+
+    loop.record_answers()
+    loop.deliver("old-config", "new-config")
+    task = next(
+        task
+        for task in loop.store.agent_tasks(loop.project_id)
+        if task.request.get("trigger") == "watcher"
+    )
+    assert task.request["model"] == "gpt-5"
+    assert task.request["reasoning"] == "medium"
+
+
+def test_provider_default_model_stays_pinned_after_settings_change(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    root_request = loop.root_request().model_copy(update={"model": ""})
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="loop-root",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=root_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting on the bounded loop.",
+        )
+    )
+    loop.bind_session(tmp_path / "stage")
+    loop.arm_watcher(
+        "provider-default-result",
+        status="completed",
+        continuation=loop.continuation(model=""),
+    )
+    project = loop.client.get(f"/api/projects/{loop.project_id}").json()
+    profiles = {
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+        for surface, profile in project["agent_profiles"].items()
+    }
+    profiles["node_chat"]["model"] = "new-explicit-model"
+    changed = loop.client.put(
+        f"/api/projects/{loop.project_id}/settings",
+        json={
+            "default_run_truth_scope": ["repo-a"],
+            "agent_profiles": profiles,
+        },
+    )
+    assert changed.status_code == 200, changed.text
+
+    loop.record_answers()
+    loop.deliver("provider-default-result")
+    task = next(
+        task
+        for task in loop.store.agent_tasks(loop.project_id)
+        if task.request.get("trigger") == "watcher"
+    )
+    assert task.request["model"] == ""
+
+
+@pytest.mark.parametrize("requested_scope", [None, []])
+def test_default_truth_scope_is_pinned_before_watcher_completion(
+    manifest, tmp_path, requested_scope
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    resolved = _resolved_graph_request(
+        loop.service,
+        "node_chat",
+        loop.root_request().model_copy(update={"run_truth_scope": requested_scope}),
+    )
+    assert resolved.run_truth_scope == ["repo-a"]
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="loop-root",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=resolved.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting on the bounded loop.",
+        )
+    )
+    loop.bind_session(tmp_path / "scope-stage")
+    loop.arm_watcher(
+        "default-scope-result",
+        status="completed",
+        continuation=loop.continuation(run_truth_scope=["repo-a"]),
+    )
+    loop.record_answers()
+
+    loop.deliver("default-scope-result")
+
+    wake = next(
+        task
+        for task in loop.store.agent_tasks(loop.project_id)
+        if task.request.get("trigger") == "watcher"
+    )
+    assert wake.request["run_truth_scope"] == ["repo-a"]
+
+
+def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode(status="running")
+    rejected = {
+        "status": "rejected",
+        "validation_messages": ["The graph update needs repair."],
+        "repairable": True,
+    }
+    loop.store.complete_agent_task(
+        "loop-root",
+        applied_revision=None,
+        result={"messages": ["Operational work completed."], "graph_update": rejected},
+    )
+    stage = tmp_path / "stage"
+    loop.bind_session(stage)
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id="native-session-abc",
+        stage_root=str(stage),
+    )
+    second_request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+        }
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="loop-second",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=second_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Second invocation completed.",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+        )
+    )
+
+    with pytest.raises(ValueError, match="newest Experiment invocation"):
+        loop.store.claim_agent_task_graph_repair("loop-root")
+
+    fresh_request = loop.root_request().model_copy(
+        update={
+            "control_episode_id": str(uuid.uuid4()),
+            "chat_id": str(uuid.uuid4()),
+        }
+    )
+    later = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="fresh-loop-root",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=fresh_request.model_dump(mode="json"),
+            created_at=later,
+            updated_at=later,
+            status_message="Fresh episode completed.",
+        )
+    )
+    with pytest.raises(ValueError, match="newest Experiment episode"):
+        loop.store.claim_agent_task_graph_repair("loop-root")
+
+
+def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(status="running")
+    loop.store.complete_agent_task(
+        "loop-root",
+        applied_revision=None,
+        result={
+            "messages": ["Operational work completed."],
+            "graph_update": {
+                "status": "rejected",
+                "validation_messages": ["Repair the Patch."],
+                "repairable": True,
+            },
+        },
+    )
+    stage = tmp_path / "stopped-repair-stage"
+    loop.bind_session(stage)
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id="native-session-abc",
+        stage_root=str(stage),
+    )
+
+    stopped = loop.stop()
+
+    assert stopped["operational"]["stop_settled"] is True
+    with pytest.raises(ValueError, match="stopped Experiment episode"):
+        loop.store.claim_agent_task_graph_repair("loop-root")
+
+
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [("paused", "resume"), ("failed", "retry")],
+)
+def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, action) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    store: AppStore = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    stage = tmp_path / "repair-stage"
+    stage.mkdir()
+    request = RunRequest(
+        provider="codex",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Complete operational work.",
+        mode="work",
+    )
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="rejected-work",
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Graph update rejected.",
+            native_session_id="repair-session",
+            stage_root=str(stage),
+            result={
+                "messages": ["Operational work completed."],
+                "graph_update": {
+                    "status": "rejected",
+                    "validation_messages": ["Repair the Patch."],
+                    "repairable": False,
+                },
+            },
+        )
+    )
+    repair_request = request.model_copy(update={"message": None, "session_id": "repair-session"})
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="repair-attempt",
+            project_id=project_id,
+            kind="project_chat",
+            status=status,
+            request=repair_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message=f"Repair {status}.",
+            error="provider connection dropped" if status == "failed" else None,
+            attempt=2,
+            parent_operation_id="rejected-work",
+            native_session_id="repair-session",
+            stage_root=str(stage),
+        )
+    )
+    store.record_agent_task_receipt(
+        "repair-attempt",
+        "operation_created",
+        {
+            "kind": "project_chat",
+            "attempt": 2,
+            "has_parent": True,
+            "continuation_cause": "graph_repair",
+            "resumed": True,
+        },
+    )
+    observed = Event()
+    continuations: list[str] = []
+
+    async def stream(_project_id, _kind, _request, execution):
+        continuations.append(execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    recovered = getattr(app.state.background_tasks, action)("repair-attempt")
+
+    assert observed.wait(timeout=2)
+    assert continuations == ["graph_repair"]
+    assert store.agent_task_continuation_cause(recovered.operation_id) == "graph_repair"
+    assert recovered.request["message"] is None
+    assert recovered.native_session_id == "repair-session"
+
+
+@pytest.mark.parametrize(
+    ("failure", "task_status"),
+    [
+        ("session_limit", "failed"),
+        ("missing_stage", "failed"),
+        ("missing_stage", "paused"),
+    ],
+)
+def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
+    manifest, tmp_path, failure, task_status
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    stage = tmp_path / "wake-stage"
+    loop.bind_session(stage)
+    wake_request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+        }
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="failed-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status=task_status,
+            request=wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Automatic wake failed.",
+            error=(
+                "You've hit your session limit"
+                if failure == "session_limit"
+                else None
+                if task_status == "paused"
+                else "provider connection dropped"
+            ),
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+        )
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "failed-wake",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    if failure == "missing_stage":
+        stage.rmdir()
+
+    stopping = loop.stop()
+    assert stopping["operational"]["stop_settled"] is False
+    with pytest.raises(ValueError, match="cannot start a fresh provider session"):
+        app.state.background_tasks.retry("failed-wake")
+
+    assert not [
+        task
+        for task in loop.store.agent_tasks(loop.project_id)
+        if task.parent_operation_id == "failed-wake"
+    ]
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.session_diagnostic is not None
+    assert "Stop loop and press Run" in episode.session_diagnostic
+    settled = loop.control()
+    assert settled["operational"]["stop_settled"] is True
+    assert settled["ready"] is True
+    failed = loop.store.agent_task("failed-wake")
+    assert failed is not None
+    assert failed.can_resume is False
+    assert failed.can_retry is False
+    assert "experiment_recovery_abandoned" in {
+        receipt.category for receipt in loop.store.agent_task_receipts("failed-wake")
+    }
+    if task_status == "paused":
+        assert not loop.store.has_resumable_paused_chat_task(
+            loop.project_id,
+            "node_chat",
+            loop.chat_id,
+        )
+        loop.record_answers()
+        ordinary = loop.client.post(
+            f"/api/projects/{loop.project_id}/tasks/node_chat",
+            json={
+                "chat_id": loop.chat_id,
+                "node_id": EXPERIMENT_ID,
+                "message": "Discuss the preserved stopped-loop history.",
+                "mode": "discuss",
+            },
+        )
+        assert ordinary.status_code == 202, ordinary.text
+
+
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [("paused", "resume"), ("failed", "retry")],
+)
+def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launch(
+    manifest, tmp_path, status, action
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(status=status)
+    stage = tmp_path / "legacy-stage"
+    stage.mkdir()
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id="legacy-session",
+        stage_root=str(stage),
+    )
+    launched = Event()
+
+    async def stream(*_args, **_kwargs):
+        launched.set()
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+
+    with pytest.raises(ValueError, match="no retained episode context candidate"):
+        getattr(app.state.background_tasks, action)("loop-root")
+
+    assert not launched.is_set()
+    assert not [
+        task
+        for task in loop.store.agent_tasks(loop.project_id)
+        if task.parent_operation_id == "loop-root"
+    ]
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.session_diagnostic is not None
+    assert "pre-migration root" in episode.session_diagnostic
+
+    stopped = loop.stop()
+    assert stopped["operational"]["stop_settled"] is True
+    preserved = loop.store.agent_task("loop-root")
+    assert preserved is not None and preserved.status == status
+    assert preserved.can_resume is False
+    assert preserved.can_retry is False
+
+
+def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(status="paused")
+    stage = tmp_path / "legacy-stage"
+    stage.mkdir()
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id="legacy-session",
+        stage_root=str(stage),
+    )
+    retry_request = loop.root_request().model_copy(update={"session_id": "legacy-session"})
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="doomed-retry",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=retry_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="The retained episode context candidate was unavailable.",
+            error="The continued Experiment-loop turn has no retained episode context candidate.",
+            attempt=2,
+            parent_operation_id="loop-root",
+            native_session_id="legacy-session",
+            stage_root=str(stage),
+        )
+    )
+    with loop.store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO experiment_episodes (
+                episode_id, project_id, control_node_id,
+                stop_requested_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                loop.episode_id,
+                loop.project_id,
+                EXPERIMENT_ID,
+                now,
+                now,
+                now,
+            ),
+        )
+
+    before = loop.loop_task_ids()
+    BackgroundAgentTasks(loop.store, app.state.background_tasks.stream)
+
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.stop_settled_at is not None
+    assert episode.session_diagnostic is not None
+    assert "pre-migration root" in episode.session_diagnostic
+    assert loop.loop_task_ids() == before
+    root = loop.store.agent_task("loop-root")
+    retry = loop.store.agent_task("doomed-retry")
+    assert root is not None and root.status == "paused"
+    assert retry is not None and retry.status == "failed"
+    assert retry.can_retry is False
+    assert "experiment_recovery_abandoned" in {
+        receipt.category for receipt in loop.store.agent_task_receipts("doomed-retry")
+    }
+
+    loop.record_answers()
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["request"]["control_episode_id"] != loop.episode_id
+
+
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        "You've hit your session limit",
+        "Usage limit exceeded",
+        "Quota exceeded",
+        "Out of credits",
+    ],
+)
+def test_bound_provider_limit_records_diagnostic_before_direct_stop(
+    manifest, tmp_path, provider_error
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    stage = tmp_path / "bound-stage"
+    loop.bind_session(stage)
+    request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+        }
+    )
+    now = loop.store.now()
+    task = loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="limited-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="queued",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting for the provider.",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+        )
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        task.operation_id,
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+
+    async def stream(*_args, **_kwargs):
+        yield _sse(AgentEvent(event="error", text=provider_error))
+
+    app.state.background_tasks.stream = stream
+    app.state.background_tasks._run(
+        task,
+        request,
+        AgentProcessControl(),
+        "watcher_wake",
+    )
+
+    failed = loop.store.agent_task(task.operation_id)
+    assert failed is not None and failed.status == "failed"
+    assert failed.can_retry is True
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.stop_requested_at is None
+    assert episode.session_diagnostic is not None
+    assert "native provider session reached its limit" in episode.session_diagnostic
+    assert not [
+        item
+        for item in loop.store.agent_tasks(loop.project_id)
+        if item.parent_operation_id == task.operation_id
+    ]
+
+    stopped = loop.stop()
+    assert stopped["operational"]["stop_settled"] is True
+    preserved = loop.store.agent_task(task.operation_id)
+    assert preserved is not None and preserved.status == "failed"
+    assert preserved.can_retry is False
+    assert "experiment_recovery_abandoned" in {
+        receipt.category for receipt in loop.store.agent_task_receipts(task.operation_id)
+    }
+
+    loop.record_answers()
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["request"]["control_episode_id"] != loop.episode_id
+
+
+def test_unbound_initial_provider_limit_remains_clean_retry_eligible(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(status="queued")
+    task = loop.store.agent_task("loop-root")
+    assert task is not None
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        task.operation_id,
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+
+    async def limited_stream(*_args, **_kwargs):
+        yield _sse(AgentEvent(event="session", session_id="unbound-session"))
+        yield _sse(AgentEvent(event="error", text="Quota exceeded"))
+
+    app.state.background_tasks.stream = limited_stream
+    app.state.background_tasks._run(
+        task,
+        loop.root_request(),
+        AgentProcessControl(),
+        "fresh",
+    )
+
+    failed = loop.store.agent_task(task.operation_id)
+    assert failed is not None and failed.status == "failed"
+    assert failed.can_retry is True
+    assert loop.store.experiment_episode(loop.episode_id) is None
+
+    retried = Event()
+
+    async def clean_retry_stream(*_args, **_kwargs):
+        retried.set()
+        yield _sse(AgentEvent(event="answer", text="Clean retry started."))
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = clean_retry_stream
+    child = app.state.background_tasks.retry(task.operation_id)
+
+    assert retried.wait(timeout=2)
+    assert child.parent_operation_id == task.operation_id
+    assert child.request["session_id"] is None
+    assert child.native_session_id is None
+    assert loop.store.agent_task_continuation_cause(child.operation_id) == "handoff"
+
+
+def test_initial_run_uses_current_node_chat_profile_not_client_overrides(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.record_answers()
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "run_truth_scope": ["repo-a"],
+            "provider": "claude",
+            "model": "client-model",
+            "reasoning": "high",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    request = response.json()["request"]
+    assert request["provider"] == "codex"
+    assert request["model"] == ""
+    assert request["reasoning"] == "medium"
+    assert request["run_on"] == "laptop"
+
+
+def test_human_reauthorization_uses_the_frozen_watcher_profile(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.arm_watcher(
+        "other-provider-result",
+        status="completed",
+        continuation=loop.continuation(
+            provider="claude",
+            model="sonnet",
+            reasoning="high",
+        ),
+    )
+    loop.record_answers()
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "run_truth_scope": [],
+            "provider": "codex",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    request = response.json()["request"]
+    assert request["trigger"] == "experiment_run"
+    assert request["control_invocation"] == 1
+    assert request["provider"] == "claude"
+    assert request["model"] == "sonnet"
+    assert request["reasoning"] == "high"
+    assert request["run_on"] == "laptop"
+    assert request["run_truth_scope"] == ["repo-a"]
+    assert request["chat_id"] == loop.chat_id
+    assert request["session_id"] is None
+
+
+def test_experiment_retry_rejects_provider_overrides(manifest, tmp_path) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(status="failed")
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
+        json={"provider": "claude"},
+    )
+
+    assert response.status_code == 409
+    assert "cannot override" in response.json()["detail"]
+
+
+def test_stop_only_terminalizes_current_episode_watchers(manifest, tmp_path) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(operation_id="old-root")
+    loop.arm_watcher("old-watcher", origin_operation_id="old-root")
+    loop.episode_id = str(uuid.uuid4())
+    loop.chat_id = str(uuid.uuid4())
+    loop.start_episode(operation_id="current-root")
+    loop.arm_watcher("current-watcher", origin_operation_id="current-root")
+
+    loop.stop()
+
+    assert loop.store.watcher("current-watcher").status == "stopped"
+    assert loop.store.watcher("old-watcher").status == "active"
+
+
+def test_stop_fences_and_terminalizes_compatible_adopted_watcher(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode(operation_id="old-root")
+    old_episode = loop.episode_id
+    loop.arm_watcher("adopted-watcher", origin_operation_id="old-root")
+    loop.episode_id = str(uuid.uuid4())
+    loop.start_episode(status="running", operation_id="current-root")
+
+    control = loop.stop()
+
+    assert control["operational"]["stop_settled"] is False
+    assert loop.store.watcher("adopted-watcher").status == "active"
+    assert "adopted-watcher" not in {record.watcher_id for record in loop.store.pollable_watchers()}
+    loop.store.complete_agent_task("current-root", applied_revision=None, result={})
+    assert loop.store.settle_ready_experiment_loop_stops() == 1
+    adopted = loop.store.watcher("adopted-watcher")
+    assert adopted is not None and adopted.status == "stopped" and adopted.notified is True
+    assert loop.store.experiment_watcher_compatible_with_episode(
+        "adopted-watcher",
+        loop.episode_id,
+    )
+    assert adopted.continuation.control_episode_id == old_episode
+
+    loop.record_answers()
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["request"]["watcher_ids"] == []
+
+
+def test_final_handoff_is_born_stopped_when_stop_wins_transaction(manifest, tmp_path) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(status="running")
+    loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    now = loop.store.now()
+    desired = WatcherRecord(
+        watcher_id="final-handoff",
+        project_id=loop.project_id,
+        origin_operation_id="loop-root",
+        origin_task_kind="node_chat",
+        chat_id=loop.chat_id,
+        node_id=EXPERIMENT_ID,
+        execution_host="",
+        check_command="true",
+        log_path="/tmp/final-handoff.log",
+        cwd="/tmp",
+        continuation=loop.continuation(),
+        created_at=now,
+    )
+
+    stored = loop.store.persist_experiment_watchers_idempotently([desired])
+
+    assert stored[0].status == "stopped"
+    assert stored[0].notified is True

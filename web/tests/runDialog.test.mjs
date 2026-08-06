@@ -205,8 +205,6 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
         onStanding() {},
         onStage() {},
         onRunExperiment() {},
-        experimentWatcherCount: 1,
-        onStopExperimentWatchers() {},
         onOpenChat() {},
         onExploreRelations() {},
         onSelectNode() {},
@@ -227,7 +225,7 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
   // Semantic attempts remain visible history but never own loop control.
   assert.match(html, /Train the ablation/);
   assert.doesNotMatch(html, /Stop attempt/);
-  assert.match(html, /Stop watcher/);
+  assert.doesNotMatch(html, /Stop watcher/);
   assert.match(html, /Ask about this node/);
 });
 
@@ -258,7 +256,6 @@ test("an invocation-limited episode offers a fresh Run for its pending watcher",
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   let html;
-  let activeWatcherHtml;
   try {
     const props = {
       node,
@@ -285,15 +282,11 @@ test("an invocation-limited episode offers a fresh Run for its pending watcher",
       onStanding() {},
       onStage() {},
       onRunExperiment() {},
-      onStopExperimentWatchers() {},
       onOpenChat() {},
       onExploreRelations() {},
       onSelectNode() {},
     };
     html = renderToStaticMarkup(React.createElement(DetailDrawer, props));
-    activeWatcherHtml = renderToStaticMarkup(
-      React.createElement(DetailDrawer, { ...props, experimentWatcherCount: 1 }),
-    );
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -304,10 +297,7 @@ test("an invocation-limited episode offers a fresh Run for its pending watcher",
   assert.match(html, /Interpret the pending run/);
   assert.match(html, /<button[^>]*>.*Run pending wake<\/button>/s);
   assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Run pending wake<\/button>/s);
-  assert.match(activeWatcherHtml, /Active loop/);
-  assert.match(activeWatcherHtml, /Stop watcher/);
-  assert.doesNotMatch(activeWatcherHtml, /Run pending wake/);
-  assert.match(activeWatcherHtml, /<button[^>]*disabled=""[^>]*>.*Run<\/button>/s);
+  assert.doesNotMatch(html, /Stop watcher/);
 });
 
 test("node standing presents Contest and Agree as independent three-state toggles", () => {
@@ -527,48 +517,56 @@ test("selectable node banner text never starts floating-window drag", () => {
 });
 
 test("conversation watcher status and wake attribution stay operational", () => {
+  const watcher = {
+    watcher_id: "watcher-1",
+    chat_id: "chat",
+    status: "degraded",
+    log_path: "/tmp/train.log",
+    last_checked_at: "2026-08-01T04:00:00Z",
+    last_error: "SSH exited 255",
+  };
+  const props = {
+    project,
+    node: null,
+    runScope: ["repo"],
+    tasks: [],
+    activeTask: null,
+    historyMessages: [
+      {
+        message_id: "message-1",
+        operation_id: "wake-1",
+        role: "assistant",
+        text: "The watched work finished.",
+        timestamp: "2026-08-01T04:01:00Z",
+        native_session_id: null,
+        provider: "codex",
+        model: null,
+        reasoning: null,
+        execution_machine: "local",
+        applied_revision: null,
+        mode: "work",
+        graph_update: null,
+        trigger: "watcher",
+      },
+    ],
+    chatId: "chat",
+    onStartTask() {},
+    onInspectTask() {},
+    onOpenInbox() {},
+    onRepairGraphUpdate() {},
+    onStopWatcher() {},
+    onClose() {},
+  };
   const html = renderToStaticMarkup(
     React.createElement(NodeChat, {
-      project,
-      node: null,
-      runScope: ["repo"],
-      tasks: [],
-      activeTask: null,
-      watchers: [
-        {
-          watcher_id: "watcher-1",
-          chat_id: "chat",
-          status: "degraded",
-          log_path: "/tmp/train.log",
-          last_checked_at: "2026-08-01T04:00:00Z",
-          last_error: "SSH exited 255",
-        },
-      ],
-      historyMessages: [
-        {
-          message_id: "message-1",
-          operation_id: "wake-1",
-          role: "assistant",
-          text: "The watched work finished.",
-          timestamp: "2026-08-01T04:01:00Z",
-          native_session_id: null,
-          provider: "codex",
-          model: null,
-          reasoning: null,
-          execution_machine: "local",
-          applied_revision: null,
-          mode: "work",
-          graph_update: null,
-          trigger: "watcher",
-        },
-      ],
-      chatId: "chat",
-      onStartTask() {},
-      onInspectTask() {},
-      onOpenInbox() {},
-      onRepairGraphUpdate() {},
-      onStopWatcher() {},
-      onClose() {},
+      ...props,
+      watchers: [{ ...watcher, continuation: { patch_kind: "work" } }],
+    }),
+  );
+  const experimentHtml = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      ...props,
+      watchers: [{ ...watcher, continuation: { patch_kind: "experiment_loop" } }],
     }),
   );
   assert.match(html, /1 active watcher/);
@@ -577,6 +575,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
   assert.match(html, /SSH exited 255/);
   assert.match(html, /chat-turn-trigger watcher[^>]*>Watcher/);
   assert.match(html, /Stop watching/);
+  assert.doesNotMatch(experimentHtml, /Stop watching/);
   assert.doesNotMatch(html, /node-chat-line human/);
 });
 

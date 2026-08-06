@@ -28,6 +28,51 @@ class DecisionDrift(BaseModel):
     proposed: bool = False
 
 
+class ExperimentSessionBinding(BaseModel):
+    """What the human can see of the episode's pinned execution and session.
+
+    The native session id itself never leaves the backend; whether one is bound
+    is the only part of it the operational surface needs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str | None = None
+    model: str | None = None
+    reasoning: str | None = None
+    run_on: str | None = None
+    execution_host: str | None = None
+    run_truth_scope: list[str] | None = None
+    native_session_bound: bool = False
+    diagnostic: str | None = None
+
+
+class ExperimentOperationalState(BaseModel):
+    """Live loop lifecycle for the Runs surface, separate from graph meaning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_active: bool = False
+    detached_work_active: bool = False
+    watcher_degraded: bool = False
+    watcher_completion_pending: bool = False
+    episode_exited: bool = False
+    stop_requested: bool = False
+    stop_settled: bool = False
+    chat_id: str | None = None
+    current_operation_id: str | None = None
+    current_status: str | None = None
+    current_phase: str | None = None
+    current_status_message: str | None = None
+    current_last_activity_at: str | None = None
+    current_invocation: int | None = Field(default=None, ge=1)
+    session: ExperimentSessionBinding = Field(default_factory=ExperimentSessionBinding)
+
+    @property
+    def stopping(self) -> bool:
+        return self.stop_requested and not self.stop_settled
+
+
 class ExperimentControlState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -41,6 +86,7 @@ class ExperimentControlState(BaseModel):
     active: bool
     governing_decisions: list[ExperimentDecisionPin] = Field(default_factory=list)
     decision_drift: list[DecisionDrift] = Field(default_factory=list)
+    operational: ExperimentOperationalState = Field(default_factory=ExperimentOperationalState)
 
 
 class ExperimentInvocationAdmission(BaseModel):
@@ -116,6 +162,7 @@ def derive_experiment_control_state(
     paused: bool = False,
     detached_work_active: bool = False,
     episode_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
+    operational: ExperimentOperationalState | None = None,
 ) -> ExperimentControlState:
     node = state.nodes.get(experiment_id)
     if not isinstance(node, Experiment):
@@ -127,6 +174,10 @@ def derive_experiment_control_state(
     active = experiment_id in set(active_control_node_ids)
     if active:
         reasons.append("An experiment loop is already active.")
+    if operational is not None and operational.stopping:
+        # Stop is graceful: the already-authorized turn finishes, and only then
+        # may a human cross the authority boundary with a fresh Run.
+        reasons.append("A graceful stop is finishing the current loop turn.")
 
     if episode_id is None:
         if (
@@ -159,6 +210,7 @@ def derive_experiment_control_state(
         active=active,
         governing_decisions=governing,
         decision_drift=decision_drift(state, pins),
+        operational=operational or ExperimentOperationalState(),
     )
 
 
@@ -198,6 +250,7 @@ def admit_experiment_watcher_invocation(
     decision_bundle: Iterable[ExperimentDecisionPin] | None,
     task_active: bool = False,
     episode_exited: bool = False,
+    stop_requested: bool = False,
 ) -> ExperimentInvocationAdmission | None:
     """Admit the next automatic wake, or leave its watcher completion pending."""
 
@@ -209,7 +262,7 @@ def admit_experiment_watcher_invocation(
         raise ValueError("An Experiment watcher cannot wake before invocation 1.")
     if decision_bundle is None:
         raise ValueError("An Experiment watcher cannot wake without pinned decisions.")
-    if task_active or episode_exited:
+    if task_active or episode_exited or stop_requested:
         return None
     if invocations_used >= invocation_ceiling:
         return None

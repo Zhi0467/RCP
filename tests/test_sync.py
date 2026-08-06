@@ -87,6 +87,106 @@ def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path)
     )
 
 
+@pytest.mark.parametrize(
+    ("initial_status", "initial_standing", "synced_status"),
+    [
+        ("resolved", "accepted", "open"),
+        ("open", "accepted", "resolved"),
+        ("open", "contested", "superseded"),
+    ],
+)
+def test_graph_sync_updates_blocker_lifecycle_directly(
+    manifest, tmp_path, initial_status, initial_standing, synced_status
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Recorded an operational blocker.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "blk/missing-capacity",
+                            "type": "blocker",
+                            "title": "Missing capacity",
+                            "description": "The required accelerator is unavailable.",
+                            "status": initial_status,
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+    service.history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary=f"Marked the operational blocker {initial_standing}.",
+            ops=[
+                {
+                    "op": "set_standing",
+                    "node_id": "blk/missing-capacity",
+                    "standing": initial_standing,
+                }
+            ],
+        )
+    )
+    blocker = service.history.state().nodes["blk/missing-capacity"]
+
+    response = TestClient(app).post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 3,
+            "nodes": [
+                {
+                    "node_id": blocker.id,
+                    "base_updated_rev": blocker.updated_rev,
+                    "changes": {"status": synced_status},
+                }
+            ],
+        },
+    )
+
+    expected_history = f"Updated lifecycle for “Missing capacity”: status is now {synced_status}."
+    expected_history_sentences = [expected_history, "“Missing capacity” is now asserted."]
+    assert response.status_code == 200
+    assert response.json()["nodes"][blocker.id]["status"] == synced_status
+    assert response.json()["nodes"][blocker.id]["standing"] == "asserted"
+    assert service.project_snapshot()["counts"]["open_blockers"] == (
+        1 if synced_status == "open" else 0
+    )
+    stored = service.history.load_patches()[-1]
+    assert stored.kind == "approval"
+    assert stored.ops == [
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": blocker.id,
+                    "base_updated_rev": blocker.updated_rev,
+                    "changes": {"status": synced_status},
+                }
+            ],
+        },
+        {
+            "op": "set_standing",
+            "node_id": blocker.id,
+            "standing": "asserted",
+        },
+    ]
+    assert stored.change_summary == expected_history_sentences
+    assert service.history.revision_summaries(from_revision=4, to_revision=4)[0]["sentences"] == (
+        expected_history_sentences
+    )
+
+
 def test_graph_sync_builds_from_the_single_in_lock_current_replay(
     manifest, tmp_path, monkeypatch
 ) -> None:

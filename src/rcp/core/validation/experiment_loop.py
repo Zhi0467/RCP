@@ -106,12 +106,12 @@ def _validate_updates(
             continue
         if not isinstance(changes, dict):
             continue
-        forbidden = sorted(set(changes) - {"attempts", "status"})
+        forbidden = sorted(set(changes) - {"attempts", "status", "current_summary", "next_action"})
         if forbidden:
             report.reject(
                 "experiment-loop-experiment-field",
-                f"Experiment loop {experiment.id} may update only status and attempts; "
-                f"refused: {', '.join(forbidden)}.",
+                f"Experiment loop {experiment.id} may update only status, attempts, "
+                f"current_summary, and next_action; refused: {', '.join(forbidden)}.",
                 revision,
                 related_node_ids=[experiment.id],
             )

@@ -6,6 +6,12 @@ export interface Size {
   width: number;
   height: number;
 }
+export type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+export interface FloatingRect {
+  position: Point;
+  size: Size;
+}
 
 export const FLOATING_WINDOW_MARGIN = 12;
 export const FLOATING_WINDOW_GAP = 12;
@@ -47,10 +53,39 @@ export function clampFloatingSize(
   };
 }
 
-export function resizedFloatingSize(origin: Size, delta: Point): Size {
+export function resizedFloatingRect(
+  origin: FloatingRect,
+  delta: Point,
+  corner: ResizeCorner,
+  viewport: Size,
+  minimum: Size,
+  margin = FLOATING_WINDOW_MARGIN,
+): FloatingRect {
+  const fromLeft = corner.endsWith("left");
+  const fromTop = corner.startsWith("top");
+  const fixedX = fromLeft ? origin.position.x + origin.size.width : origin.position.x;
+  const fixedY = fromTop ? origin.position.y + origin.size.height : origin.position.y;
+  const requested = {
+    width: origin.size.width + delta.x * (fromLeft ? -1 : 1),
+    height: origin.size.height + delta.y * (fromTop ? -1 : 1),
+  };
+  const viewportSize = clampFloatingSize(requested, viewport, minimum, margin);
+  const size = {
+    width: Math.min(
+      viewportSize.width,
+      Math.max(0, fromLeft ? fixedX - margin : viewport.width - margin - fixedX),
+    ),
+    height: Math.min(
+      viewportSize.height,
+      Math.max(0, fromTop ? fixedY - margin : viewport.height - margin - fixedY),
+    ),
+  };
   return {
-    width: origin.width + delta.x,
-    height: origin.height + delta.y,
+    position: {
+      x: fromLeft ? fixedX - size.width : fixedX,
+      y: fromTop ? fixedY - size.height : fixedY,
+    },
+    size,
   };
 }
 

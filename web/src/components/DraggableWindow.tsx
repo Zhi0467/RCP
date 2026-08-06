@@ -6,15 +6,12 @@ import {
   floatingWindowSize,
   movedPosition,
   parseFloatingSize,
-  resizedFloatingSize,
+  resizedFloatingRect,
   type Point,
+  type ResizeCorner,
   type Size,
 } from "../floatingWindow";
-import {
-  NODE_DETAIL_RESIZE_KEYBOARD_STEP,
-  NODE_DETAIL_RESIZE_MIN_HEIGHT,
-  NODE_DETAIL_RESIZE_MIN_WIDTH,
-} from "../uiConstants";
+import { NODE_DETAIL_RESIZE_MIN_HEIGHT, NODE_DETAIL_RESIZE_MIN_WIDTH } from "../uiConstants";
 
 let topFloatingZIndex = 110;
 
@@ -76,7 +73,12 @@ export function DraggableWindow({
   );
   const [zIndex, setZIndex] = useState(() => ++topFloatingZIndex);
   const drag = useRef<{ origin: Point; pointer: Point } | null>(null);
-  const resize = useRef<{ origin: Size; pointer: Point } | null>(null);
+  const resize = useRef<{
+    corner: ResizeCorner;
+    position: Point;
+    size: Size;
+    pointer: Point;
+  } | null>(null);
 
   const clamp = (next: Point, nextSize?: Size | null) => {
     const bounds = root.current?.getBoundingClientRect();
@@ -87,18 +89,24 @@ export function DraggableWindow({
     );
   };
 
-  const applyUserSize = (requested: Size) => {
-    const next = clampFloatingSize(
-      requested,
+  const applyUserResize = (pointer: Point) => {
+    if (!resize.current) return;
+    const next = resizedFloatingRect(
+      { position: resize.current.position, size: resize.current.size },
+      {
+        x: pointer.x - resize.current.pointer.x,
+        y: pointer.y - resize.current.pointer.y,
+      },
+      resize.current.corner,
       { width: window.innerWidth, height: window.innerHeight },
       detailMinimumSize,
     );
-    preferredSize.current = next;
-    setSize(next);
-    setPosition((current) => clamp(current, next));
+    preferredSize.current = next.size;
+    setSize(next.size);
+    setPosition(next.position);
     if (sizeStorageKey) {
       try {
-        window.localStorage.setItem(sizeStorageKey, JSON.stringify(next));
+        window.localStorage.setItem(sizeStorageKey, JSON.stringify(next.size));
       } catch {
         // Resizing remains usable when browser storage is unavailable.
       }
@@ -160,53 +168,43 @@ export function DraggableWindow({
       }}
     >
       {children}
-      {resizable && size && (
-        <button
-          type="button"
-          className="floating-window-resize-handle"
-          aria-label="Resize node detail window"
-          aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
-          title="Resize node detail window. Use arrow keys for keyboard resizing."
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            resize.current = {
-              origin: size,
-              pointer: { x: event.clientX, y: event.clientY },
-            };
-            event.currentTarget.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={(event) => {
-            if (!resize.current) return;
-            event.stopPropagation();
-            applyUserSize(
-              resizedFloatingSize(resize.current.origin, {
-                x: event.clientX - resize.current.pointer.x,
-                y: event.clientY - resize.current.pointer.y,
-              }),
-            );
-          }}
-          onPointerUp={(event) => {
-            resize.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          onPointerCancel={() => {
-            resize.current = null;
-          }}
-          onKeyDown={(event) => {
-            const delta = {
-              ArrowLeft: { x: -NODE_DETAIL_RESIZE_KEYBOARD_STEP, y: 0 },
-              ArrowRight: { x: NODE_DETAIL_RESIZE_KEYBOARD_STEP, y: 0 },
-              ArrowUp: { x: 0, y: -NODE_DETAIL_RESIZE_KEYBOARD_STEP },
-              ArrowDown: { x: 0, y: NODE_DETAIL_RESIZE_KEYBOARD_STEP },
-            }[event.key];
-            if (!delta) return;
-            event.preventDefault();
-            applyUserSize(resizedFloatingSize(size, delta));
-          }}
-        />
-      )}
+      {resizable &&
+        size &&
+        (["top-left", "top-right", "bottom-left", "bottom-right"] as const).map((corner) => (
+          <div
+            key={corner}
+            className={`floating-window-resize-corner ${corner}`}
+            data-resize-corner={corner}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              resize.current = {
+                corner,
+                position,
+                size,
+                pointer: { x: event.clientX, y: event.clientY },
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              if (!resize.current) return;
+              event.stopPropagation();
+              applyUserResize({ x: event.clientX, y: event.clientY });
+            }}
+            onPointerUp={(event) => {
+              event.stopPropagation();
+              resize.current = null;
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+            }}
+            onPointerCancel={() => {
+              resize.current = null;
+            }}
+            onLostPointerCapture={() => {
+              resize.current = null;
+            }}
+          />
+        ))}
     </div>
   );
 }

@@ -14,6 +14,7 @@ const server = await createServer({
 const { AttentionOverview, ExecutionView } = await server.ssrLoadModule(
   "/src/views/GraphViews.tsx",
 );
+const { humanAttentionBlockers } = await server.ssrLoadModule("/src/App.tsx");
 const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 
 after(() => server.close());
@@ -35,14 +36,14 @@ function graph(overrides = {}) {
   };
 }
 
-function blocker(id, blockerType, status = "open") {
+function blocker(id, blockerType, status = "open", standing = "asserted") {
   return {
     id,
     type: "blocker",
     title: id,
     blocker_type: blockerType,
     status,
-    standing: "asserted",
+    standing,
     created_rev: 1,
     updated_rev: 1,
     source_refs: [],
@@ -72,15 +73,22 @@ function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T
   };
 }
 
-test("Inbox summary counts every open blocker and labels the tile plainly", () => {
+test("Inbox counts and lists only asserted open blockers", () => {
+  const nodes = {
+    asserted: blocker("ASSERTED OPEN", "scientific"),
+    accepted: blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted"),
+    contested: blocker("CONTESTED OPEN", "design", "open", "contested"),
+    resolved: blocker("ASSERTED RESOLVED", "design", "resolved"),
+  };
+  assert.deepEqual(
+    humanAttentionBlockers(Object.values(nodes)).map((node) => node.id),
+    ["ASSERTED OPEN"],
+  );
+
   const html = renderToStaticMarkup(
     React.createElement(AttentionOverview, {
       graph: graph({
-        nodes: {
-          scientific: blocker("Scientific", "scientific"),
-          infrastructure: blocker("Infrastructure", "infrastructure"),
-          closed: blocker("Closed", "design", "resolved"),
-        },
+        nodes,
         proposals: {
           pending: {
             id: "pending",
@@ -106,34 +114,150 @@ test("Inbox summary counts every open blocker and labels the tile plainly", () =
     }),
   );
 
-  assert.match(html, /4 open/);
-  assert.match(html, /Open blockers<\/span><strong>2<\/strong>/);
-  assert.doesNotMatch(html, /Scientific blockers/);
+  assert.match(html, /3 open/);
+  assert.match(html, /Blockers awaiting judgment<\/span><strong>1<\/strong>/);
+  assert.doesNotMatch(html, /Open blockers|Scientific blockers/);
 });
 
-test("Runs projects Seed and Refresh tasks but excludes every chat surface", () => {
+test("staged blocker judgments remain until canonical standing changes", () => {
+  const canonicalNodes = {
+    agree: blocker("STAGED AGREE", "scientific"),
+    contest: blocker("STAGED CONTEST", "design"),
+  };
+  const presentedNodes = {
+    "STAGED AGREE": blocker("STAGED AGREE", "scientific", "open", "accepted"),
+    "STAGED CONTEST": blocker("STAGED CONTEST", "design", "open", "contested"),
+  };
+
+  assert.deepEqual(
+    humanAttentionBlockers(Object.values(canonicalNodes), presentedNodes).map((node) => [
+      node.id,
+      node.standing,
+    ]),
+    [
+      ["STAGED AGREE", "accepted"],
+      ["STAGED CONTEST", "contested"],
+    ],
+  );
+  assert.deepEqual(humanAttentionBlockers(Object.values(presentedNodes), presentedNodes), []);
+});
+
+test("Runs needs action includes only asserted open blockers and excludes generic chat", () => {
   const html = renderToStaticMarkup(
     React.createElement(ExecutionView, {
-      graph: graph(),
-      trustView: "working",
+      graph: graph({
+        nodes: {
+          stagedAccepted: blocker("STAGED ACCEPTED", "scientific", "open", "accepted"),
+          stagedContested: blocker("STAGED CONTESTED", "design", "open", "contested"),
+          stagedResolved: {
+            ...blocker("STAGED RESOLVED", "scientific", "resolved"),
+            draft_touched: true,
+          },
+          stagedReopened: blocker("STAGED REOPENED", "scientific"),
+          accepted: blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted"),
+          contested: blocker("CONTESTED OPEN", "design", "open", "contested"),
+          resolved: blocker("ASSERTED RESOLVED", "design", "resolved"),
+        },
+      }),
+      attentionBlockerIds: new Set(["STAGED ACCEPTED", "STAGED CONTESTED", "STAGED RESOLVED"]),
       tasks: [
         task("refresh", "refresh", "failed", "REFRESH FAILURE", "2026-08-03T01:00:00Z"),
         task("seed", "seed", "succeeded", "SEED COMPLETE"),
+        task("running-refresh", "refresh", "running", "REFRESH RUNNING"),
         task("node-chat", "node_chat", "failed", "NODE CHAT TRACEBACK"),
         task("project-chat", "project_chat", "running", "PROJECT CHAT RUNNING"),
         task("coach", "paper_coach", "failed", "PAPER COACH FAILURE"),
       ],
+      watchers: [],
+      experimentControl: {},
       dismissedTaskIds: new Set(),
-      lastRefreshAt: null,
+      selectedExperimentId: null,
+      focusExperimentId: null,
+      runBusy: false,
+      stopBusyId: null,
       onInspectTask() {},
       onDismissTask() {},
       onSelectNode() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
     }),
   );
 
+  assert.doesNotMatch(html, /Runs &amp; experiments|As of/);
+  assert.ok(html.indexOf(">Running<") < html.indexOf(">Needs action<"));
+  assert.ok(html.indexOf(">Needs action<") < html.indexOf(">Completed<"));
+  assert.match(html, /REFRESH RUNNING/);
   assert.match(html, /REFRESH FAILURE/);
   assert.match(html, /SEED COMPLETE/);
-  assert.doesNotMatch(html, /NODE CHAT TRACEBACK|PROJECT CHAT RUNNING|PAPER COACH FAILURE/);
+  assert.match(html, /STAGED ACCEPTED/);
+  assert.match(html, /STAGED CONTESTED/);
+  assert.match(html, /class="blocker-row draft-touched"[^>]*>.*STAGED RESOLVED/s);
+  assert.doesNotMatch(
+    html,
+    /STAGED REOPENED|ACCEPTED OPEN|CONTESTED OPEN|ASSERTED RESOLVED|NODE CHAT TRACEBACK|PROJECT CHAT RUNNING|PAPER COACH FAILURE/,
+  );
+});
+
+test("Runs renders a legacy cached Experiment control without an operational block", () => {
+  const experiment = {
+    id: "exp/legacy-cache",
+    type: "experiment",
+    title: "Legacy cached experiment",
+    objective: "Keep old cached snapshots renderable.",
+    design: "",
+    expected_outcomes: [],
+    interpretation_rules: [],
+    completion_criteria: [],
+    invocation_ceiling: 2,
+    attempts: [],
+    current_summary: "Cached summary",
+    next_action: null,
+    status: "planned",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: graph({ nodes: { [experiment.id]: experiment } }),
+      attentionBlockerIds: new Set(),
+      tasks: [],
+      watchers: [],
+      experimentControl: {
+        [experiment.id]: {
+          ready: true,
+          reasons: [],
+          invocations_used: 0,
+          invocation_ceiling: 2,
+          invocations_remaining: 2,
+          episode_id: null,
+          paused: false,
+          active: false,
+          governing_decisions: [],
+          decision_drift: [],
+        },
+      },
+      dismissedTaskIds: new Set(),
+      selectedExperimentId: null,
+      focusExperimentId: null,
+      runBusy: false,
+      stopBusyId: null,
+      onInspectTask() {},
+      onDismissTask() {},
+      onSelectNode() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+    }),
+  );
+
+  assert.match(html, /Legacy cached experiment/);
+  assert.match(html, /Cached summary/);
 });
 
 test("Project Settings has no ontology authoring surface", () => {

@@ -109,13 +109,43 @@ for target in glob.glob('/tmp/rcp-run.*'):
     def attach(self, root: str) -> RemoteRunStage:
         if not _safe_root(root):
             raise ValueError("remote run stage is outside the RCP staging boundary")
-        result = self._ssh(["test", "-d", root])
+        result = self._directory_probe(root)
         if result.returncode:
             raise StateUnavailable(
                 "The saved remote staging directory is unavailable; retry this operation instead."
             )
         self.root = PurePosixPath(root)
         return self
+
+    def directory_exists(self, root: str) -> bool | None:
+        """Probe a staging directory, separating "gone" from "could not ask".
+
+        A wake that cannot reach the host must retry later; one whose stage was
+        actually removed must say so instead. `attach` collapses both into
+        unavailability, so a preflight that has to tell them apart probes here.
+        """
+
+        if not _safe_root(root):
+            return False
+        result = self._directory_probe(root)
+        if result.returncode == 0:
+            return True
+        return None if result.returncode == 255 else False
+
+    def _directory_probe(self, root: str) -> subprocess.CompletedProcess[str]:
+        """Check the saved root itself without following a replacement symlink."""
+
+        script = """
+import os,stat,sys
+try:
+    info=os.lstat(sys.argv[1])
+except (FileNotFoundError,NotADirectoryError):
+    raise SystemExit(1)
+except OSError as exc:
+    print(str(exc),file=sys.stderr); raise SystemExit(2)
+raise SystemExit(0 if stat.S_ISDIR(info.st_mode) else 1)
+"""
+        return self._ssh(["python3", "-c", script, root])
 
     def attach_artifact_source(self, root: str) -> RemoteRunStage:
         """Adopt saved provenance; the bounded artifact read performs the SSH check."""

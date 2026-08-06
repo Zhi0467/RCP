@@ -457,6 +457,29 @@ guarantees — surface the conflict instead of working around it.
    inline JavaScript remains useful, it may still navigate its own isolated
    child frame and thereby cause a navigation request; never describe this as a
    zero-network preview.
+10g. **One Experiment episode, one native session, one graceful stop.** Every
+   bounded episode has exactly one validated native-session binding — provider,
+   session id, execution host, and exact reusable stage — committed only by a
+   mechanically successful joint Patch/watcher handoff. A graph-level rejection
+   is still recorded as that turn's accepted operational result. A human Run
+   always starts a fresh episode and a fresh session; an automatic watcher wake resumes that binding as a new task at
+   the next invocation under the explicit `watcher_wake` continuation cause,
+   never as task Resume. Watcher provenance never selects the session; the newest
+   human-authorized episode does. RCP proves the session and stage before the
+   atomic claim and before spending the invocation: transient unavailability and
+   an incompatible group leave the watchers completed and unnotified, a missing
+   or mismatched binding becomes a durable diagnostic, and nothing ever falls back
+   to a fresh session silently. A wake still clears the previous turn's
+   `patch.json` and `watch.json` under invariant 10c. **Stop loop** is idempotent,
+   durable, and restart-safe: intent is persisted before any unclaimed watcher can
+   win a new claim, the already-authorized turn finishes normally, every existing
+   compatible current/adopted and newly emitted watcher is retained as `stopped`,
+   while incompatible historical groups remain pending; Resume/Retry of that
+   turn can never reenable automatic delivery or fall back to a fresh session.
+   If the exact saved continuation becomes unusable, Stop may durably abandon
+   only recovery of that already-terminal task while preserving its Patch and
+   full history, then settle the episode. Generic Work watcher wakes stay fresh
+   turns.
 11. **`answer` is the reply; `message` is a trace.** Providers label their final
    assistant message and RCP preserves that label in `AgentEvent`
    ([launcher.py](src/rcp/agents/launcher.py)). Never treat "the last text the
@@ -688,12 +711,19 @@ carrying forward, and correct an entry when they change their mind.
   pinch zoom stays anchored at the gesture focal point without turning ordinary
   two-finger scrolling into zoom or disrupting other DAG interactions.
 - The visible projections are **Research** and **Runs**: Research shows
-  question-centered paths with unconnected records separated, while Runs shows
-  Seed/Refresh ingestion runs and experiments, prioritizes failed/paused
-  ingestion work and graph blockers, nests ingestion retries, and reports a
-  truthful as-of time. Node chat, project chat, and paper-coach tasks live in
-  the Agent tasks drawer, never in Runs. DAG **Research flow** columns follow
-  semantic stage rather than relation-arrow direction.
+  question-centered paths with unconnected records separated, while Runs is the
+  operational control surface for Seed/Refresh ingestion and bounded Experiments.
+  Runs carries no page title and is ordered **Running**, **Needs action**,
+  **Completed**, first matching state winning; it nests ingestion retries and
+  keeps row timestamps as real metadata. Generic node chat, project chat, and
+  paper-coach tasks live in the Agent tasks drawer, never in Runs — an
+  Experiment-loop task is the one deliberate exception, because its Patch kind
+  and control node make it research execution. Pressing an Experiment's **Run**
+  navigates to Runs and opens its run detail rather than a floating node-chat
+  window; that detail's only loop-level action is **Stop loop**, while
+  invocation-level Pause/Resume/Retry stay in the Agent task inspector. DAG
+  **Research flow** columns follow semantic stage rather than relation-arrow
+  direction.
 - Node detail is a resizable floating inspection window. Its project-scoped
   size survives minimize/restore and close/reopen, remains reachable after a
   viewport change, and closes when the human enters Chats.

@@ -39,9 +39,9 @@ No agent runs during the drive itself.
 
 1. Open the project. The **Research** projection renders — question-centered
    paths, with unconnected records separated out.
-2. Switch to **Runs**. Failed and paused ingestion work plus graph Blockers sort
-   into **Needs action**; retries nest under what they retried. Chat and
-   paper-coach tasks do not appear.
+2. Switch to **Runs**. Failed and paused ingestion work plus asserted open graph
+   Blockers sort into **Needs action**; retries nest under what they retried.
+   Chat and paper-coach tasks do not appear.
 3. Back to Research. Open the DAG's **Research flow** columns.
 4. Drag a node well away from where the layout put it. Pin it.
 5. Switch views and come back.
@@ -58,7 +58,8 @@ No agent runs during the drive itself.
 
 - `both_projections_render`
 - `runs_view_prioritizes_unfinished_ingestion` — failed/paused Seed and Refresh
-  attempts plus graph Blockers appear above the rest; chat tasks stay out
+  attempts plus asserted open graph Blockers appear above the rest; chat tasks
+  stay out
 - `runs_view_as_of_time_is_truthful` — the timestamp reflects the data, not the
   render
 - `research_flow_columns_follow_semantic_stage` — not relation-arrow direction

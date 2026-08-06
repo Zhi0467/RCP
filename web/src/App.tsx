@@ -209,21 +209,38 @@ export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): bo
   return Boolean(task.applied_revision) || task.request.patch_kind === "experiment_loop";
 }
 
-export function experimentWatcherStatusTransitioned(
-  current: WatcherRecord[],
-  next: WatcherRecord[],
+export function failedTaskActionNeedsAuthoritativeProjectReload(
+  task: AgentTask,
+  action: "pause" | "resume" | "retry",
 ): boolean {
-  const previousStatus = new Map(
-    current
-      .filter((watcher) => watcher.continuation.patch_kind === "experiment_loop")
-      .map((watcher) => [watcher.watcher_id, watcher.status]),
-  );
-  return next.some(
-    (watcher) =>
-      watcher.continuation.patch_kind === "experiment_loop" &&
-      previousStatus.has(watcher.watcher_id) &&
-      previousStatus.get(watcher.watcher_id) !== watcher.status,
-  );
+  return task.request.patch_kind === "experiment_loop" && action !== "pause";
+}
+
+export function humanAttentionBlockers(
+  canonicalNodes: GraphNode[],
+  presentedNodes?: GraphState["nodes"],
+): GraphNode[] {
+  return canonicalNodes
+    .filter(
+      (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
+    )
+    .map((node) => presentedNodes?.[node.id] ?? node);
+}
+
+export async function loadExperimentWatcherPoll(
+  fetchJson: <T>(path: string) => Promise<T>,
+  base: string,
+): Promise<{
+  watchers: WatcherRecord[];
+  tasks: AgentTask[];
+  project: ProjectSnapshot;
+}> {
+  const [watchers, tasks, project] = await Promise.all([
+    fetchJson<WatcherRecord[]>(`${base}/watchers`),
+    fetchJson<AgentTask[]>(`${base}/tasks`),
+    fetchJson<ProjectSnapshot>(base),
+  ]);
+  return { watchers, tasks, project };
 }
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
@@ -257,6 +274,9 @@ export default function App() {
   );
   const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [selectedExperimentRunId, setSelectedExperimentRunId] = useState<string | null>(null);
+  const [focusExperimentRunId, setFocusExperimentRunId] = useState<string | null>(null);
+  const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
   const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
   const [floatingChat, setFloatingChat] = useState<{ chatId: string; nodeId: string } | null>(null);
   const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([]);
@@ -755,6 +775,9 @@ export default function App() {
     setGraph(emptyGraph);
     setPaper(null);
     setSelectedNode(null);
+    setSelectedExperimentRunId(null);
+    setFocusExperimentRunId(null);
+    setExperimentStopId(null);
     setDockedNodeIds([]);
     setFloatingChat(null);
     setDraftConversations([]);
@@ -912,15 +935,6 @@ export default function App() {
       ? { ...control, active: true, paused: false }
       : control;
   }, [project, selectedNode, tasks]);
-  const selectedExperimentWatcherCount = useMemo(() => {
-    if (selectedNode?.type !== "experiment") return 0;
-    return watchers.filter(
-      (watcher) =>
-        watcher.continuation.patch_kind === "experiment_loop" &&
-        watcher.continuation.control_node_id === selectedNode.id &&
-        ["active", "degraded"].includes(watcher.status),
-    ).length;
-  }, [selectedNode, watchers]);
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
@@ -1181,15 +1195,11 @@ export default function App() {
     };
     const poll = async () => {
       try {
-        const [nextWatchers, nextTasks] = await Promise.all([
-          api<WatcherRecord[]>(`${base}/watchers`),
-          api<AgentTask[]>(`${base}/tasks`),
-        ]);
-        const watcherStatusTransitioned = experimentWatcherStatusTransitioned(
-          watchers,
-          nextWatchers,
-        );
-        const nextProject = watcherStatusTransitioned ? await api<ProjectSnapshot>(base) : null;
+        const {
+          watchers: nextWatchers,
+          tasks: nextTasks,
+          project: nextProject,
+        } = await loadExperimentWatcherPoll(api, base);
         if (!stopped && activeProjectId.current === requestedProjectId) {
           const unseenWatcherResults = nextTasks.filter(
             (task) =>
@@ -1199,14 +1209,9 @@ export default function App() {
                 task.status === "failed" ||
                 task.status === "interrupted"),
           );
-          if (nextProject) {
-            applyProjectSnapshot(
-              nextProject,
-              authoritativeProjectId.current === requestedProjectId,
-            );
-            authoritativeProjectId.current = requestedProjectId;
-            setProjectReconciliation("authoritative");
-          }
+          applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
+          authoritativeProjectId.current = requestedProjectId;
+          setProjectReconciliation("authoritative");
           setWatchers(nextWatchers);
           setTasks(nextTasks);
           if (unseenWatcherResults.length > 0) {
@@ -1236,7 +1241,7 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [applyProjectSnapshot, projectId, refreshChatSummaries, watchers, watchersAwaitingDelivery]);
+  }, [applyProjectSnapshot, projectId, refreshChatSummaries, watchersAwaitingDelivery]);
 
   const inspectorSummary = tasks.find((task) => task.operation_id === taskInspectorId);
   const inspectorVersion = inspectorSummary?.updated_at;
@@ -1283,11 +1288,12 @@ export default function App() {
     [graph],
   );
   const openBlockers = useMemo(
-    () =>
-      Object.values(presentedGraph.nodes).filter(
-        (node) => node.type === "blocker" && node.status === "open",
-      ),
-    [presentedGraph],
+    () => humanAttentionBlockers(Object.values(graph.nodes), presentedGraph.nodes),
+    [graph.nodes, presentedGraph.nodes],
+  );
+  const attentionBlockerIds = useMemo(
+    () => new Set(openBlockers.map((node) => node.id)),
+    [openBlockers],
   );
   const rejectedPatches = useMemo(
     () =>
@@ -1439,16 +1445,27 @@ export default function App() {
     }
   };
 
-  const stopExperimentWatchers = async (nodeId: string) => {
-    if (!apiBase) return;
+  const stopExperimentLoop = async (nodeId: string) => {
+    if (!apiBase || experimentStopId) return;
+    setExperimentStopId(nodeId);
     try {
-      await api<WatcherRecord[]>(
-        `${apiBase}/experiments/${encodeURIComponent(nodeId)}/watchers/stop`,
+      const control = await api<ExperimentControlState>(
+        `${apiBase}/experiments/${encodeURIComponent(nodeId)}/stop`,
         { method: "POST" },
       );
-      setWatchers(await api<WatcherRecord[]>(`${apiBase}/watchers`));
+      setProject((current) =>
+        current
+          ? {
+              ...current,
+              experiment_control: { ...current.experiment_control, [nodeId]: control },
+            }
+          : current,
+      );
+      await reload();
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setExperimentStopId(null);
     }
   };
 
@@ -1486,8 +1503,19 @@ export default function App() {
         },
       );
       recordStartedTask(task);
-      selectChat(chatId);
-      setFloatingChat({ chatId, nodeId: node.id });
+      setSelectedExperimentRunId(node.id);
+      setFocusExperimentRunId(node.id);
+      setSelectedNode(null);
+      setFloatingChat(null);
+      setView("execution");
+      try {
+        await reload();
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: `The Experiment started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
     } catch (caught) {
       setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
@@ -1535,7 +1563,19 @@ export default function App() {
       });
       setNotice(null);
     } catch (caught) {
-      setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
+      const taskError = caught instanceof Error ? caught.message : String(caught);
+      if (failedTaskActionNeedsAuthoritativeProjectReload(task, action)) {
+        try {
+          await reload();
+        } catch (reloadError) {
+          setNotice({
+            kind: "error",
+            text: `${taskError} Runs could not refresh: ${reloadError instanceof Error ? reloadError.message : String(reloadError)}`,
+          });
+          return;
+        }
+      }
+      setNotice({ kind: "error", text: taskError });
     } finally {
       setTaskActionId(null);
     }
@@ -1850,7 +1890,7 @@ export default function App() {
     );
 
   const attentionCount = pendingProposals.length + ambiguities.length + openBlockers.length;
-  const showTrustFilter = view === "scientific" || view === "dag" || view === "execution";
+  const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = graph.revision === 0 ? "seed" : "refresh";
   const replayWarning = replayFailureLabel(graph);
 
@@ -2149,7 +2189,7 @@ export default function App() {
           {view === "attention" && (
             <div className="attention-page">
               <div className="attention-main">
-                <AttentionOverview graph={presentedGraph} onSelectNode={openNode} />
+                <AttentionOverview graph={graph} onSelectNode={openNode} />
                 <ProposalJudgmentSection
                   proposals={pendingProposals}
                   glossaryIndex={glossaryIndex}
@@ -2196,13 +2236,23 @@ export default function App() {
           {view === "execution" && (
             <ExecutionView
               graph={presentedGraph}
-              trustView={trustView}
+              attentionBlockerIds={attentionBlockerIds}
               tasks={tasks}
+              watchers={watchers}
+              experimentControl={project.experiment_control}
               dismissedTaskIds={dismissedTaskIds}
-              lastRefreshAt={project.last_refresh_at}
+              selectedExperimentId={selectedExperimentRunId}
+              focusExperimentId={focusExperimentRunId}
+              runBusy={taskStarting}
+              stopBusyId={experimentStopId}
+              mutationsDisabled={mutationsDisabled}
               onInspectTask={setTaskInspectorId}
               onDismissTask={dismissTaskNotification}
               onSelectNode={openNode}
+              onSelectExperiment={setSelectedExperimentRunId}
+              onDetailFocused={() => setFocusExperimentRunId(null)}
+              onRunExperiment={(node) => void runExperiment(node)}
+              onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
             />
           )}
           {view === "paper" && (
@@ -2287,7 +2337,6 @@ export default function App() {
           hasStagedNodeChange={Boolean(humanDraft?.nodes[selectedNode.id])}
           canonicalStanding={graph.nodes[selectedNode.id]?.standing ?? selectedNode.standing}
           experimentControl={selectedExperimentControl}
-          experimentWatcherCount={selectedExperimentWatcherCount}
           experimentRunDisabled={false}
           experimentRunBusy={taskStarting}
           onUnstage={() => {
@@ -2321,7 +2370,6 @@ export default function App() {
           onRunExperiment={() =>
             void runExperiment(presentedGraph.nodes[selectedNode.id] ?? selectedNode)
           }
-          onStopExperimentWatchers={() => void stopExperimentWatchers(selectedNode.id)}
           onOpenChat={() => {
             const node = presentedGraph.nodes[selectedNode.id] ?? selectedNode;
             const chatId = ensureConversation("node_chat", node);
@@ -2336,7 +2384,7 @@ export default function App() {
         />
       )}
       {floatingChat && (
-        <DraggableWindow className="node-chat-window" kind="chat">
+        <DraggableWindow className="node-chat-window" kind="chat" resizable>
           <Suspense
             fallback={
               <div className="project-view-loading" aria-label="Loading chat">

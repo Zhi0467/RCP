@@ -1,4 +1,10 @@
-import type { AgentTask } from "./types";
+import type {
+  AgentTask,
+  AgentTaskStatus,
+  ExperimentControlState,
+  GraphNode,
+  WatcherRecord,
+} from "./types";
 
 export interface AgentTaskGroup {
   rootId: string;
@@ -13,8 +19,68 @@ export interface RunTaskProjection {
   completed: AgentTaskGroup[];
 }
 
+export type RunSectionKey = "running" | "actionable" | "completed";
+
+export type ExperimentLoopHealth =
+  | "starting"
+  | "agent_active"
+  | "waiting_on_watchers"
+  | "degraded"
+  | "stopping"
+  | "human_stopped"
+  | "paused_at_limit"
+  | "needs_action"
+  | "completed";
+
+export interface ExperimentRun {
+  node: GraphNode;
+  control: ExperimentControlState | null;
+  taskGroup: AgentTaskGroup | null;
+  currentTask: AgentTask | null;
+  watchers: WatcherRecord[];
+  currentWatchers: WatcherRecord[];
+  health: ExperimentLoopHealth;
+}
+
+export type RunEntry =
+  | { kind: "task"; id: string; observedAt: string | null; group: AgentTaskGroup }
+  | { kind: "experiment"; id: string; observedAt: string | null; experiment: ExperimentRun }
+  | { kind: "blocker"; id: string; observedAt: string | null; node: GraphNode };
+
+export interface RunProjection {
+  running: RunEntry[];
+  actionable: RunEntry[];
+  completed: RunEntry[];
+}
+
+export interface RunProjectionInput {
+  nodes: GraphNode[];
+  tasks: AgentTask[];
+  watchers?: WatcherRecord[];
+  experimentControl?: Record<string, ExperimentControlState>;
+  dismissedTaskIds?: ReadonlySet<string>;
+}
+
 const actionableStatuses = new Set(["failed", "paused", "interrupted"]);
 const runningStatuses = new Set(["queued", "running", "pausing"]);
+const terminalExperimentStatuses = new Set(["completed", "abandoned", "superseded"]);
+const nonGatingOperationalReasons = new Set([
+  "An experiment loop is already active.",
+  "A graceful stop is finishing the current loop turn.",
+  "Detached Experiment work is still running.",
+]);
+
+const healthSections: Record<ExperimentLoopHealth, RunSectionKey> = {
+  starting: "running",
+  agent_active: "running",
+  waiting_on_watchers: "running",
+  degraded: "running",
+  stopping: "running",
+  human_stopped: "actionable",
+  paused_at_limit: "actionable",
+  needs_action: "actionable",
+  completed: "completed",
+};
 
 export function buildRunTaskProjection(
   tasks: AgentTask[],
@@ -34,16 +100,165 @@ export function buildRunTaskProjection(
   };
 }
 
-export function latestRunObservation(
-  lastRefreshAt: string | null | undefined,
+export function isExperimentLoopTask(task: AgentTask): boolean {
+  return (
+    task.request?.patch_kind === "experiment_loop" && Boolean(task.request?.control_node_id ?? null)
+  );
+}
+
+export function experimentRunSection(
+  health: ExperimentLoopHealth,
+  taskStatus: AgentTaskStatus | null = null,
+): RunSectionKey {
+  if (health === "stopping" && taskStatus && actionableStatuses.has(taskStatus)) {
+    return "actionable";
+  }
+  return healthSections[health];
+}
+
+/**
+ * Loop health reads the current task, the control state, the durable stop request, and the
+ * Experiment's own watchers. The Experiment node's semantic `status` only decides the outcome
+ * once no operational state applies.
+ */
+export function deriveExperimentLoopHealth(
+  node: GraphNode,
+  control: ExperimentControlState | null,
+  taskStatus: AgentTaskStatus | null,
+  currentWatchers: WatcherRecord[],
+): ExperimentLoopHealth {
+  const operational = control?.operational;
+  const stopRequested = Boolean(operational?.stop_requested);
+  if (stopRequested && !operational?.stop_settled) return "stopping";
+  if (
+    stopRequested &&
+    operational?.stop_settled &&
+    taskStatus &&
+    actionableStatuses.has(taskStatus)
+  ) {
+    return "human_stopped";
+  }
+  if (taskStatus === "queued") return "starting";
+  if (taskStatus === "running" || taskStatus === "pausing") return "agent_active";
+  if (taskStatus && actionableStatuses.has(taskStatus)) return "needs_action";
+  if (operational?.task_active) return "needs_action";
+
+  const used = control?.invocations_used ?? 0;
+  const remaining = control?.invocations_remaining ?? 0;
+  const completionPending = Boolean(
+    operational?.watcher_completion_pending ||
+    currentWatchers.some((watcher) => watcher.status === "completed" && !watcher.notified),
+  );
+  const detachedWorkActive = Boolean(
+    operational?.detached_work_active ||
+    currentWatchers.some((watcher) => watcher.status === "active" || watcher.status === "degraded"),
+  );
+  const hasGraphGate = Boolean(
+    control?.reasons.some((reason) => !nonGatingOperationalReasons.has(reason)),
+  );
+  const canWake = Boolean(
+    !stopRequested &&
+    remaining > 0 &&
+    !operational?.episode_exited &&
+    !operational?.session.diagnostic &&
+    !hasGraphGate,
+  );
+  if ((completionPending || detachedWorkActive) && remaining <= 0) return "paused_at_limit";
+  if (completionPending && !canWake) return "needs_action";
+  if (detachedWorkActive && !canWake) return "needs_action";
+  if (
+    operational?.watcher_degraded ||
+    currentWatchers.some((watcher) => watcher.status === "degraded")
+  ) {
+    return "degraded";
+  }
+  if (completionPending || detachedWorkActive) return "waiting_on_watchers";
+  if (terminalExperimentStatuses.has(String(node.status ?? ""))) return "completed";
+  if (stopRequested) return "human_stopped";
+  if (remaining <= 0 && used > 0) return "paused_at_limit";
+  return "needs_action";
+}
+
+export function buildExperimentRun(
+  node: GraphNode,
+  control: ExperimentControlState | null,
   tasks: AgentTask[],
-): string | null {
-  const timestamps = [lastRefreshAt, ...tasks.map((task) => task.updated_at)]
+  allWatchers: WatcherRecord[],
+): ExperimentRun {
+  const watchers = allWatchers
     .filter(
-      (value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)),
+      (watcher) =>
+        watcher.continuation.patch_kind === "experiment_loop" &&
+        watcher.continuation.control_node_id === node.id,
     )
-    .sort((left, right) => Date.parse(right) - Date.parse(left));
-  return timestamps[0] ?? null;
+    .sort(
+      (left, right) =>
+        right.created_at.localeCompare(left.created_at) ||
+        left.watcher_id.localeCompare(right.watcher_id),
+    );
+  const currentWatchers = watchers.filter(
+    (watcher) =>
+      Boolean(control?.episode_id) &&
+      watcher.continuation.control_episode_id === control?.episode_id,
+  );
+  const { taskGroup, currentTask } = currentExperimentTaskGroup(node.id, control, tasks);
+  const taskStatus =
+    currentTask?.status ?? asAgentTaskStatus(control?.operational?.current_status ?? null);
+  return {
+    node,
+    control,
+    taskGroup,
+    currentTask,
+    watchers,
+    currentWatchers,
+    health: deriveExperimentLoopHealth(node, control, taskStatus, currentWatchers),
+  };
+}
+
+export function buildRunProjection(input: RunProjectionInput): RunProjection {
+  const watchers = input.watchers ?? [];
+  const experimentControl = input.experimentControl ?? {};
+  const ingestion = buildRunTaskProjection(
+    input.tasks.filter((task) => task.kind === "seed" || task.kind === "refresh"),
+    input.dismissedTaskIds ?? new Set<string>(),
+  );
+  const sections: Record<RunSectionKey, RunEntry[]> = {
+    running: ingestion.running.map(taskEntry),
+    actionable: ingestion.actionable.map(taskEntry),
+    completed: ingestion.completed.map(taskEntry),
+  };
+  input.nodes
+    .filter((node) => node.type === "experiment")
+    .forEach((node) => {
+      const run = buildExperimentRun(
+        node,
+        experimentControl[node.id] ?? null,
+        input.tasks,
+        watchers,
+      );
+      sections[
+        experimentRunSection(
+          run.health,
+          run.currentTask?.status ??
+            asAgentTaskStatus(run.control?.operational?.current_status ?? null),
+        )
+      ].push(experimentEntry(run));
+    });
+  input.nodes
+    .filter((node) => node.type === "blocker" && node.status === "open")
+    .forEach((node) => {
+      sections.actionable.push({
+        kind: "blocker",
+        id: node.id,
+        observedAt: newestTimestamp(node.source_refs.map((source) => source.timestamp)),
+        node,
+      });
+    });
+  return {
+    running: sortRunEntries(sections.running),
+    actionable: sortRunEntries(sections.actionable),
+    completed: sortRunEntries(sections.completed),
+  };
 }
 
 export function groupAgentTasks(tasks: AgentTask[]): AgentTaskGroup[] {
@@ -66,6 +281,84 @@ export function groupAgentTasks(tasks: AgentTask[]): AgentTaskGroup[] {
       };
     })
     .sort((left, right) => compareTaskAscending(right.latest, left.latest));
+}
+
+function currentExperimentTaskGroup(
+  nodeId: string,
+  control: ExperimentControlState | null,
+  tasks: AgentTask[],
+): { taskGroup: AgentTaskGroup | null; currentTask: AgentTask | null } {
+  const nodeTasks = tasks.filter(
+    (task) => isExperimentLoopTask(task) && task.request.control_node_id === nodeId,
+  );
+  const currentOperationId = control?.operational?.current_operation_id ?? null;
+  const currentTask = currentOperationId
+    ? (nodeTasks.find((task) => task.operation_id === currentOperationId) ?? null)
+    : null;
+  const episodeTasks = control?.episode_id
+    ? nodeTasks.filter((task) => taskEpisodeId(task) === control.episode_id)
+    : nodeTasks;
+  const groups = groupAgentTasks(episodeTasks);
+  const taskGroup =
+    (currentOperationId
+      ? groups.find((group) =>
+          group.attempts.some((task) => task.operation_id === currentOperationId),
+        )
+      : null) ??
+    groups[0] ??
+    null;
+  return { taskGroup, currentTask: currentTask ?? taskGroup?.latest ?? null };
+}
+
+function taskEpisodeId(task: AgentTask): string | null {
+  const value = task.request.control_episode_id;
+  return typeof value === "string" && value ? value : null;
+}
+
+function asAgentTaskStatus(value: string | null): AgentTaskStatus | null {
+  return value &&
+    (actionableStatuses.has(value) || runningStatuses.has(value) || value === "succeeded")
+    ? (value as AgentTaskStatus)
+    : null;
+}
+
+function taskEntry(group: AgentTaskGroup): RunEntry {
+  return { kind: "task", id: group.rootId, observedAt: group.latest.updated_at, group };
+}
+
+function experimentEntry(experiment: ExperimentRun): RunEntry {
+  const observedAt = newestTimestamp([
+    experiment.taskGroup?.latest.updated_at,
+    experiment.control?.operational?.current_last_activity_at,
+    ...experiment.watchers.flatMap((watcher) => [
+      watcher.completed_at,
+      watcher.last_checked_at,
+      watcher.created_at,
+    ]),
+  ]);
+  return { kind: "experiment", id: experiment.node.id, observedAt, experiment };
+}
+
+function sortRunEntries(entries: RunEntry[]): RunEntry[] {
+  return [...entries].sort((left, right) => {
+    const leftAt = left.observedAt ? Date.parse(left.observedAt) : Number.NaN;
+    const rightAt = right.observedAt ? Date.parse(right.observedAt) : Number.NaN;
+    const leftKnown = Number.isFinite(leftAt);
+    const rightKnown = Number.isFinite(rightAt);
+    if (leftKnown && rightKnown && leftAt !== rightAt) return rightAt - leftAt;
+    if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function newestTimestamp(values: (string | null | undefined)[]): string | null {
+  return (
+    values
+      .filter(
+        (value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)),
+      )
+      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null
+  );
 }
 
 function logicalRootId(task: AgentTask, byId: Map<string, AgentTask>): string {

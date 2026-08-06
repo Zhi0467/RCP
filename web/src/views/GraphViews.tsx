@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  ArrowUpRight,
   CircleDot,
   Eye,
   EyeOff,
@@ -26,6 +25,7 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type Ref,
 } from "react";
 import {
   buildNodeProjectionEmphasis,
@@ -44,13 +44,22 @@ import {
   type DagPosition,
 } from "../hooks/useForceDag";
 import { buildResearchPaths } from "../researchProjection";
+import { buildRunProjection, type AgentTaskGroup, type RunEntry } from "../runProjection";
 import {
-  buildRunTaskProjection,
-  latestRunObservation,
-  type AgentTaskGroup,
-} from "../runProjection";
+  ExperimentRunDetail,
+  experimentHealthLabel,
+  experimentHealthTone,
+} from "../components/ExperimentRunDetail";
 import { NewCustomNode } from "../components/NewCustomNode";
-import type { AgentTask, Edge, GraphNode, GraphState, TrustView } from "../types";
+import type {
+  AgentTask,
+  Edge,
+  ExperimentControlState,
+  GraphNode,
+  GraphState,
+  TrustView,
+  WatcherRecord,
+} from "../types";
 import { nodeTypeLabel } from "../nodePresentation";
 
 interface Props {
@@ -691,162 +700,102 @@ export function DagView({
   );
 }
 
-interface ExecutionProps extends Props {
+interface ExecutionProps extends Omit<Props, "trustView"> {
+  attentionBlockerIds: ReadonlySet<string>;
   tasks: AgentTask[];
+  watchers: WatcherRecord[];
+  experimentControl: Record<string, ExperimentControlState>;
   dismissedTaskIds: ReadonlySet<string>;
-  lastRefreshAt?: string | null;
+  selectedExperimentId: string | null;
+  focusExperimentId: string | null;
+  runBusy: boolean;
+  stopBusyId: string | null;
+  mutationsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
   onDismissTask: (operationId: string) => void;
+  onSelectExperiment: (nodeId: string | null) => void;
+  onDetailFocused: () => void;
+  onRunExperiment: (node: GraphNode) => void;
+  onStopExperiment: (nodeId: string) => void;
 }
 
 export function ExecutionView({
   graph,
-  trustView,
   onSelectNode,
+  attentionBlockerIds,
   tasks,
+  watchers,
+  experimentControl,
   dismissedTaskIds,
-  lastRefreshAt,
+  selectedExperimentId,
+  focusExperimentId,
+  runBusy,
+  stopBusyId,
+  mutationsDisabled = false,
   onInspectTask,
   onDismissTask,
+  onSelectExperiment,
+  onDetailFocused,
+  onRunExperiment,
+  onStopExperiment,
 }: ExecutionProps) {
-  const nodes = projectNodes(Object.values(graph.nodes), trustView);
-  const openBlockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
-  const experiments = nodes.filter((node) => node.type === "experiment");
-  const ingestionTasks = tasks.filter((task) => task.kind === "seed" || task.kind === "refresh");
-  const taskProjection = buildRunTaskProjection(ingestionTasks, dismissedTaskIds);
-  const observedAt = latestRunObservation(lastRefreshAt, ingestionTasks);
-  const hasRuns =
-    openBlockers.length > 0 ||
-    experiments.length > 0 ||
-    taskProjection.actionable.length > 0 ||
-    taskProjection.running.length > 0 ||
-    taskProjection.completed.length > 0;
+  const selectedDetailRef = useRef<HTMLDivElement>(null);
+  const projection = buildRunProjection({
+    nodes: Object.values(graph.nodes).flatMap((node) => {
+      if (node.type !== "blocker") return [node];
+      return attentionBlockerIds.has(node.id) ? [{ ...node, status: "open" }] : [];
+    }),
+    tasks,
+    watchers,
+    experimentControl,
+    dismissedTaskIds,
+  });
+  const sections = [
+    { key: "running", title: "Running", entries: projection.running },
+    { key: "actionable", title: "Needs action", entries: projection.actionable },
+    { key: "completed", title: "Completed", entries: projection.completed },
+  ] as const;
+  const hasRuns = sections.some((section) => section.entries.length > 0);
+
+  useEffect(() => {
+    if (!focusExperimentId || focusExperimentId !== selectedExperimentId) return;
+    selectedDetailRef.current?.focus();
+    onDetailFocused();
+  }, [focusExperimentId, onDetailFocused, selectedExperimentId]);
+
   return (
-    <section className="view-panel runs-view">
-      <ViewHeading
-        title="Runs & experiments"
-        aside={observedAt ? `As of ${new Date(observedAt).toLocaleString()}` : "No observations"}
-      />
+    <section className="view-panel runs-view" aria-label="Runs">
       {!hasRuns ? (
         <EmptyState icon={<FlaskConical size={20} />} title="No runs or experiments" />
       ) : (
         <div className="operating-sections">
-          {(openBlockers.length > 0 || taskProjection.actionable.length > 0) && (
-            <RunSection
-              title="Needs action"
-              count={openBlockers.length + taskProjection.actionable.length}
-            >
-              {taskProjection.actionable.map((group) => (
-                <AgentRunRow
-                  group={group}
-                  onInspectTask={onInspectTask}
-                  onDismissTask={onDismissTask}
-                  key={group.rootId}
-                />
-              ))}
-              {openBlockers.map((node) => (
-                <button
-                  className={`blocker-row${node.draft_touched ? " draft-touched" : ""}`}
-                  key={node.id}
-                  onClick={() => onSelectNode(node)}
-                >
-                  <AlertCircle size={16} />
-                  <strong>{node.title}</strong>
-                  <span className="status-pill">{node.status}</span>
-                </button>
-              ))}
-            </RunSection>
-          )}
-
-          {taskProjection.running.length > 0 && (
-            <RunSection title="Agent work" count={taskProjection.running.length}>
-              {taskProjection.running.map((group) => (
-                <AgentRunRow
-                  group={group}
-                  onInspectTask={onInspectTask}
-                  onDismissTask={onDismissTask}
-                  key={group.rootId}
-                />
-              ))}
-            </RunSection>
-          )}
-
-          {experiments.length > 0 && (
-            <RunSection title="Experiments" count={experiments.length}>
-              {experiments.map((node) => (
-                <article
-                  className={`run-card${node.draft_touched ? " draft-touched" : ""}`}
-                  key={node.id}
-                >
-                  <button className="run-heading" onClick={() => onSelectNode(node)}>
-                    <span className="run-heading-copy">
-                      <span className="eyebrow">Experiment</span>
-                      <strong>{node.title}</strong>
-                    </span>
-                    <span className="run-heading-meta">
-                      <span className="mono">{node.id}</span>
-                      <span className={`status-pill ${node.status}`}>{node.status}</span>
-                    </span>
-                  </button>
-                  <p>
-                    {String(node.current_summary || node.objective || "No current summary yet.")}
-                  </p>
-                  {(node.attempts ?? []).map((attempt) => (
-                    <div className="attempt-row" key={attempt.id}>
-                      <span className="attempt-seq">
-                        {String(attempt.sequence).padStart(2, "0")}
-                      </span>
-                      <strong>
-                        {attempt.purpose}
-                        {attempt.attempt_kind === "proposal_only" && (
-                          <span className="attempt-kind">Proposal only</span>
-                        )}
-                      </strong>
-                      <span className="attempt-outcome">
-                        {attempt.outcome || attempt.failure_reason || "No outcome recorded"}
-                      </span>
-                      <span className="mono">{attempt.job_refs?.[0] ?? "—"}</span>
-                      <span>{attempt.status}</span>
-                      {(attempt.decision_bundle ?? []).length > 0 && (
-                        <span className="attempt-pins">
-                          {(attempt.decision_bundle ?? []).map((decision) => (
-                            <span key={`${attempt.id}:${decision.decision_id}`}>
-                              {decision.decision_id} · r{decision.decision_revision} ·{" "}
-                              {decision.selected_option}
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                      {attempt.debug && (
-                        <span className="attempt-debug">
-                          <strong>Fault</strong> {attempt.debug.mechanical_fault}
-                          <strong>Change</strong> {attempt.debug.change}
-                          <strong>Predicted effect</strong> {attempt.debug.predicted_effect}
-                        </span>
-                      )}
-                    </div>
+          {sections.map(
+            (section) =>
+              section.entries.length > 0 && (
+                <RunSection title={section.title} count={section.entries.length} key={section.key}>
+                  {section.entries.map((entry) => (
+                    <RunEntryRow
+                      entry={entry}
+                      selectedExperimentId={selectedExperimentId}
+                      detailRef={
+                        entry.kind === "experiment" && entry.id === selectedExperimentId
+                          ? selectedDetailRef
+                          : undefined
+                      }
+                      runBusy={runBusy}
+                      stopBusy={entry.kind === "experiment" && stopBusyId === entry.id}
+                      mutationsDisabled={mutationsDisabled}
+                      onInspectTask={onInspectTask}
+                      onDismissTask={onDismissTask}
+                      onSelectNode={onSelectNode}
+                      onSelectExperiment={onSelectExperiment}
+                      onRunExperiment={onRunExperiment}
+                      onStopExperiment={onStopExperiment}
+                      key={`${entry.kind}:${entry.id}`}
+                    />
                   ))}
-                  {node.next_action && (
-                    <div className="next-action">
-                      <ArrowUpRight size={14} /> Next: {String(node.next_action)}
-                    </div>
-                  )}
-                </article>
-              ))}
-            </RunSection>
-          )}
-
-          {taskProjection.completed.length > 0 && (
-            <RunSection title="Recent agent work" count={taskProjection.completed.length}>
-              {taskProjection.completed.slice(0, 8).map((group) => (
-                <AgentRunRow
-                  group={group}
-                  onInspectTask={onInspectTask}
-                  onDismissTask={onDismissTask}
-                  key={group.rootId}
-                />
-              ))}
-            </RunSection>
+                </RunSection>
+              ),
           )}
         </div>
       )}
@@ -854,11 +803,124 @@ export function ExecutionView({
   );
 }
 
+function RunEntryRow({
+  entry,
+  selectedExperimentId,
+  detailRef,
+  runBusy,
+  stopBusy,
+  mutationsDisabled,
+  onInspectTask,
+  onDismissTask,
+  onSelectNode,
+  onSelectExperiment,
+  onRunExperiment,
+  onStopExperiment,
+}: {
+  entry: RunEntry;
+  selectedExperimentId: string | null;
+  detailRef?: Ref<HTMLDivElement>;
+  runBusy: boolean;
+  stopBusy: boolean;
+  mutationsDisabled: boolean;
+  onInspectTask: (operationId: string) => void;
+  onDismissTask: (operationId: string) => void;
+  onSelectNode: (node: GraphNode) => void;
+  onSelectExperiment: (nodeId: string | null) => void;
+  onRunExperiment: (node: GraphNode) => void;
+  onStopExperiment: (nodeId: string) => void;
+}) {
+  if (entry.kind === "task") {
+    return (
+      <AgentRunRow
+        group={entry.group}
+        onInspectTask={onInspectTask}
+        onDismissTask={onDismissTask}
+      />
+    );
+  }
+  if (entry.kind === "blocker") {
+    return (
+      <button
+        type="button"
+        className={`blocker-row${entry.node.draft_touched ? " draft-touched" : ""}`}
+        onClick={() => onSelectNode(entry.node)}
+      >
+        <AlertCircle size={16} aria-hidden="true" />
+        <strong>{entry.node.title}</strong>
+        <span className="status-pill">{entry.node.status}</span>
+      </button>
+    );
+  }
+
+  const { experiment } = entry;
+  const selected = selectedExperimentId === experiment.node.id;
+  const detailId = `experiment-run-detail-${encodeURIComponent(experiment.node.id)}`;
+  const tone = experimentHealthTone(experiment.health);
+  return (
+    <article
+      className={`experiment-ledger-entry ${tone}${selected ? " selected" : ""}${experiment.node.draft_touched ? " draft-touched" : ""}`}
+    >
+      <button
+        type="button"
+        className="experiment-ledger-row"
+        aria-expanded={selected}
+        aria-controls={detailId}
+        onClick={() => onSelectExperiment(selected ? null : experiment.node.id)}
+      >
+        <span className="experiment-health-rail" aria-hidden="true" />
+        <span className="experiment-ledger-copy">
+          <span className="eyebrow">Experiment</span>
+          <strong>{experiment.node.title}</strong>
+          <span>{experimentRowSummary(experiment)}</span>
+        </span>
+        <span className="experiment-ledger-meta">
+          <span className={`status-pill ${tone}`}>{experimentHealthLabel(experiment.health)}</span>
+          <span className="mono">{experiment.node.id}</span>
+          {entry.observedAt && (
+            <time dateTime={entry.observedAt}>{new Date(entry.observedAt).toLocaleString()}</time>
+          )}
+        </span>
+      </button>
+      {selected && (
+        <div
+          id={detailId}
+          className="experiment-ledger-detail"
+          role="region"
+          aria-label={`${experiment.node.title} run detail`}
+          tabIndex={-1}
+          ref={detailRef}
+        >
+          <ExperimentRunDetail
+            run={experiment}
+            runBusy={runBusy}
+            runDisabled={mutationsDisabled}
+            stopBusy={stopBusy}
+            onRun={() => onRunExperiment(experiment.node)}
+            onStopLoop={() => onStopExperiment(experiment.node.id)}
+            onInspectTask={onInspectTask}
+          />
+        </div>
+      )}
+    </article>
+  );
+}
+
+function experimentRowSummary(experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"]) {
+  return (
+    experiment.currentTask?.status_message ||
+    experiment.control?.operational?.current_status_message ||
+    String(
+      experiment.node.current_summary || experiment.node.objective || "No current summary yet.",
+    )
+  );
+}
+
 export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustView">) {
   const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
   const ambiguities = Object.values(graph.ambiguities).filter((item) => item.status === "open");
   const blockers = Object.values(graph.nodes).filter(
-    (node) => node.type === "blocker" && node.status === "open",
+    (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
   );
   return (
     <section className="view-panel">
@@ -869,7 +931,7 @@ export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustVie
       <div className="attention-overview-grid">
         <OverviewCard label="Pending proposals" value={proposals.length} />
         <OverviewCard label="Open ambiguities" value={ambiguities.length} />
-        <OverviewCard label="Open blockers" value={blockers.length} />
+        <OverviewCard label="Blockers awaiting judgment" value={blockers.length} />
       </div>
       <h3 className="section-label">Recommended next action</h3>
       {proposals[0] ? (
@@ -957,7 +1019,7 @@ function RunSection({
   return (
     <section className="operating-section">
       <header>
-        <h3>{title}</h3>
+        <h2>{title}</h2>
         <span>{count}</span>
       </header>
       <div>{children}</div>

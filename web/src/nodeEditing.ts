@@ -3,7 +3,8 @@ import type { GraphNode, OntologyFieldDefinition, OntologyState } from "./types"
 export interface NodeEditField {
   key: string;
   label: string;
-  kind: "text" | "multiline" | "list" | "number" | "boolean";
+  kind: "text" | "multiline" | "list" | "number" | "boolean" | "select";
+  options?: { value: string; label: string }[];
   nullable?: boolean;
   min?: number;
   integer?: boolean;
@@ -57,6 +58,16 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
   ],
   blocker: [
     title,
+    {
+      key: "status",
+      label: "Status",
+      kind: "select",
+      options: [
+        { value: "open", label: "Open" },
+        { value: "resolved", label: "Resolved" },
+        { value: "superseded", label: "Superseded" },
+      ],
+    },
     { key: "description", label: "Description", kind: "multiline" },
     { key: "resolution_condition", label: "Resolution condition", kind: "multiline" },
     { key: "recommended_action", label: "Recommended action", kind: "multiline", nullable: true },

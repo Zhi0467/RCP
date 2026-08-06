@@ -331,7 +331,7 @@ def _pinned_to_profile(request: _RequestT, profile: AgentSurfaceConfig) -> _Requ
     return request.model_copy(
         update={
             "provider": profile.provider,
-            "model": profile.model or None,
+            "model": profile.model,
             "reasoning": profile.reasoning,
             "run_on": profile.run_on,
         }

@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from rcp.agents import AgentEvent, AgentProcessControl
@@ -17,9 +18,21 @@ from rcp.providers import classify_terminal_error
 from rcp.service import CoachRequest, GraphUpdateResult, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
+from rcp.transport import RemoteRunStage
 
 AgentTaskRequest = RunRequest | CoachRequest
-AgentTaskContinuation = Literal["fresh", "resume", "retry", "handoff", "graph_repair"]
+AgentTaskContinuation = Literal[
+    "fresh", "resume", "retry", "handoff", "graph_repair", "watcher_wake"
+]
+
+# A watcher wake reuses a native session without being task Resume: it is a new
+# task at the next invocation, so it must never inherit Resume's same-invocation
+# parent/child recovery semantics.
+_NATIVE_CHECKPOINT_CONTINUATIONS = frozenset({"resume", "retry", "graph_repair", "watcher_wake"})
+_EXPERIMENT_SESSION_LIMIT_DIAGNOSTIC = (
+    "This continuation cannot start a fresh provider session because the native provider "
+    "session reached its limit. Use Stop loop and press Run to start a fresh episode."
+)
 
 
 def _skill_update(
@@ -48,7 +61,7 @@ class AgentTaskExecution:
 
     @property
     def reuses_native_checkpoint(self) -> bool:
-        return self.continuation in {"resume", "retry", "graph_repair"}
+        return self.continuation in _NATIVE_CHECKPOINT_CONTINUATIONS
 
     def checkpoint_stage(self, host: str, root: str) -> None:
         self.stage_host = host or None
@@ -118,6 +131,7 @@ class BackgroundAgentTasks:
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
         self.store.interrupt_active_agent_tasks()
+        self.store.settle_ready_experiment_loop_stops()
 
     def start(
         self,
@@ -147,8 +161,16 @@ class BackgroundAgentTasks:
         kind: Literal["node_chat", "project_chat"],
         request: RunRequest,
         watcher_ids: list[str],
+        *,
+        episode_stage_host: str | None = None,
+        episode_stage_root: str | None = None,
     ) -> AgentTaskRecord | None:
-        """Atomically consume completed watchers and start their attributed Work turn."""
+        """Atomically consume completed watchers and start their attributed Work turn.
+
+        An Experiment-loop wake carries the episode's native session so the turn
+        continues that bounded session. It is still a new task at the next
+        invocation, so it uses the `watcher_wake` cause rather than Resume.
+        """
 
         experiment_reauthorization = (
             request.trigger == "experiment_run"
@@ -156,12 +178,17 @@ class BackgroundAgentTasks:
             and request.control_invocation == 1
             and bool(request.watcher_ids)
         )
+        experiment_wake = request.trigger == "watcher" and request.patch_kind == "experiment_loop"
         if (
             (request.trigger != "watcher" and not experiment_reauthorization)
             or request.mode != "work"
-            or request.session_id
+            or (request.session_id and not experiment_wake)
         ):
             raise ValueError("A watcher notification must be a fresh watcher-attributed Work turn.")
+        if experiment_wake and (not request.session_id or not episode_stage_root):
+            raise ValueError(
+                "An Experiment watcher wake requires its episode's session and exact stage."
+            )
         if request.watcher_ids != watcher_ids:
             raise ValueError("The watcher notification request must name its watcher records.")
         self._validate_request_type(kind, request)
@@ -178,7 +205,9 @@ class BackgroundAgentTasks:
             created_at=now,
             updated_at=now,
             status_message="Waiting to deliver a watcher update.",
-            native_session_id=None,
+            native_session_id=request.session_id if experiment_wake else None,
+            stage_host=episode_stage_host if experiment_wake else None,
+            stage_root=episode_stage_root if experiment_wake else None,
             estimate_seconds=estimate,
             estimate_samples=samples,
             phase="queued",
@@ -187,7 +216,11 @@ class BackgroundAgentTasks:
         stored = self.store.create_watcher_notification_task(record, watcher_ids)
         if stored is None:
             return None
-        return self._spawn_record(stored, request, continuation="fresh")
+        return self._spawn_record(
+            stored,
+            request,
+            continuation="watcher_wake" if experiment_wake else "fresh",
+        )
 
     def resume(self, operation_id: str, *, skills: SkillSelection | None = None) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
@@ -200,15 +233,21 @@ class BackgroundAgentTasks:
                 "This task's native session was not checkpointed or validated by RCP. "
                 "Retry it instead."
             )
+        self._preflight_experiment_episode_recovery(previous)
         request = self._request_from_record(previous).model_copy(
             update={"session_id": previous.native_session_id, **_skill_update(skills)}
+        )
+        continuation: AgentTaskContinuation = (
+            "graph_repair"
+            if self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
+            else "resume"
         )
         return self._create_and_spawn(
             previous.project_id,
             previous.kind,
             request,
             parent=previous,
-            continuation="resume",
+            continuation=continuation,
             estimate_seconds=previous.estimate_seconds,
             estimate_samples=previous.estimate_samples,
             stage_host=previous.stage_host,
@@ -229,6 +268,15 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        if (
+            isinstance(original, RunRequest)
+            and original.patch_kind == "experiment_loop"
+            and any(value is not None for value in (provider, model, reasoning, run_on))
+        ):
+            raise ValueError(
+                "Experiment-loop Retry cannot override its pinned provider configuration."
+            )
+        self._preflight_experiment_episode_recovery(previous, request=original)
         updates = {
             key: value
             for key, value in {
@@ -256,6 +304,91 @@ class BackgroundAgentTasks:
             and bool(previous.stage_root)
             and self._session_is_rcp_owned(previous)
         )
+        graph_repair = (
+            self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
+        )
+        episode = (
+            self.store.experiment_episode(original.control_episode_id)
+            if isinstance(original, RunRequest)
+            and original.patch_kind == "experiment_loop"
+            and original.control_episode_id
+            else None
+        )
+        must_reuse_episode_session = bool(
+            isinstance(original, RunRequest)
+            and original.patch_kind == "experiment_loop"
+            and (original.trigger == "watcher" or (episode is not None and episode.session_bound))
+        )
+        must_reuse_patch_only_session = graph_repair
+        if must_reuse_episode_session or must_reuse_patch_only_session:
+            problem = None
+            stage_available: bool | None = True
+            if owned_checkpoint and previous.stage_host:
+                stage_available = RemoteRunStage(previous.stage_host).directory_exists(
+                    previous.stage_root or ""
+                )
+            elif owned_checkpoint and previous.stage_root:
+                stage = Path(previous.stage_root)
+                stage_available = stage.is_dir() and not stage.is_symlink()
+            if must_reuse_episode_session and (episode is None or not episode.session_bound):
+                problem = "the episode has no validated native provider session"
+            elif session_limit:
+                problem = "the native provider session reached its limit"
+            elif continuation_context_unavailable:
+                problem = "the saved continuation context is unavailable"
+            elif not same_provider or not same_execution_host:
+                problem = "the pinned provider or execution machine changed"
+            elif not owned_checkpoint:
+                problem = "the prior task has no complete RCP-owned session and stage"
+            elif stage_available is not True:
+                problem = "the saved provider workspace is unavailable"
+            elif episode is not None and (
+                previous.native_session_id != episode.native_session_id
+                or previous.stage_host != episode.stage_host
+                or previous.stage_root != episode.stage_root
+            ):
+                problem = "the task checkpoint no longer matches the episode session and stage"
+            if problem is not None:
+                detail = (
+                    f"This continuation cannot start a fresh provider session because {problem}. "
+                    "Use Stop loop and press Run to start a fresh episode."
+                    if must_reuse_episode_session
+                    else (
+                        f"This patch-only graph repair cannot start a full Work turn because "
+                        f"{problem}. Start a new Work turn instead."
+                    )
+                )
+                if (
+                    must_reuse_episode_session
+                    and isinstance(original, RunRequest)
+                    and original.control_episode_id
+                    and original.control_node_id
+                ):
+                    self.store.record_experiment_episode_diagnostic(
+                        episode_id=original.control_episode_id,
+                        project_id=previous.project_id,
+                        control_node_id=original.control_node_id,
+                        diagnostic=detail,
+                    )
+                    if episode is not None and episode.stop_requested_at is not None:
+                        self.store.settle_experiment_loop_stop(
+                            previous.project_id,
+                            original.control_node_id,
+                        )
+                raise ValueError(detail)
+            assert previous.native_session_id is not None
+            request = request.model_copy(update={"session_id": previous.native_session_id})
+            return self._create_and_spawn(
+                previous.project_id,
+                previous.kind,
+                request,
+                parent=previous,
+                continuation="graph_repair" if graph_repair else "retry",
+                estimate_seconds=previous.estimate_seconds,
+                estimate_samples=previous.estimate_samples,
+                stage_host=previous.stage_host,
+                stage_root=previous.stage_root,
+            )
         retry_same_provider = (
             previous.status == "failed"
             and same_provider
@@ -444,7 +577,7 @@ class BackgroundAgentTasks:
         parent: AgentTaskRecord | None = None,
     ) -> AgentTaskRecord:
         operation_id = record.operation_id
-        reuses_native_checkpoint = continuation in {"resume", "retry", "graph_repair"}
+        reuses_native_checkpoint = continuation in _NATIVE_CHECKPOINT_CONTINUATIONS
         self.store.record_agent_task_receipt(
             operation_id,
             "operation_created",
@@ -553,6 +686,8 @@ class BackgroundAgentTasks:
             result: dict[str, object] = {"messages": partial}
             if artifacts:
                 result["artifacts"] = [item.model_dump(mode="json") for item in artifacts]
+            if isinstance(exc, TaskFailed):
+                self._record_bound_experiment_session_limit(record, request, str(exc))
             self.store.fail_agent_task(
                 operation_id,
                 str(exc),
@@ -589,6 +724,8 @@ class BackgroundAgentTasks:
                     result=result,
                 )
         finally:
+            if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
+                self.store.settle_ready_experiment_loop_stops()
             self._forget_control(operation_id)
 
     async def _consume(
@@ -760,6 +897,67 @@ class BackgroundAgentTasks:
         return classified_receipt or (
             bool(record.error) and classify_terminal_error(record.error or "") == "session_limit"
         )
+
+    def _record_bound_experiment_session_limit(
+        self,
+        record: AgentTaskRecord,
+        request: AgentTaskRequest,
+        error: str,
+    ) -> None:
+        """Persist a bound episode's terminal provider limit before human recovery acts."""
+
+        if (
+            not isinstance(request, RunRequest)
+            or request.patch_kind != "experiment_loop"
+            or not request.control_episode_id
+            or not request.control_node_id
+            or classify_terminal_error(error) != "session_limit"
+        ):
+            return
+        episode = self.store.experiment_episode(request.control_episode_id)
+        if (
+            episode is None
+            or episode.project_id != record.project_id
+            or episode.control_node_id != request.control_node_id
+            or not episode.session_bound
+        ):
+            return
+        self.store.record_experiment_episode_diagnostic(
+            episode_id=request.control_episode_id,
+            project_id=episode.project_id,
+            control_node_id=request.control_node_id,
+            diagnostic=_EXPERIMENT_SESSION_LIMIT_DIAGNOSTIC,
+        )
+
+    def _preflight_experiment_episode_recovery(
+        self,
+        record: AgentTaskRecord,
+        *,
+        request: AgentTaskRequest | None = None,
+    ) -> None:
+        """Refuse a legacy Experiment recovery before it creates or launches a child."""
+
+        original = request or self._request_from_record(record)
+        if not isinstance(original, RunRequest) or original.patch_kind != "experiment_loop":
+            return
+        problem = self.store.experiment_episode_recovery_context_problem(record.operation_id)
+        if problem is None:
+            return
+        assert original.control_episode_id is not None
+        assert original.control_node_id is not None
+        self.store.record_experiment_episode_diagnostic(
+            episode_id=original.control_episode_id,
+            project_id=record.project_id,
+            control_node_id=original.control_node_id,
+            diagnostic=problem,
+        )
+        episode = self.store.experiment_episode(original.control_episode_id)
+        if episode is not None and episode.stop_requested_at is not None:
+            self.store.settle_experiment_loop_stop(
+                record.project_id,
+                original.control_node_id,
+            )
+        raise ValueError(problem)
 
     def _continuation_context_is_unavailable(self, record: AgentTaskRecord) -> bool:
         return any(

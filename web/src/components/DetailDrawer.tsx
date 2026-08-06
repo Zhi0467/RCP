@@ -47,8 +47,6 @@ interface Props {
   hasStagedNodeChange?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
-  experimentWatcherCount?: number;
-  onStopExperimentWatchers?: () => void;
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   onUnstage?: () => void;
@@ -102,8 +100,6 @@ export function DetailDrawer({
   hasStagedNodeChange = false,
   canonicalStanding = node.standing,
   experimentControl = null,
-  experimentWatcherCount = 0,
-  onStopExperimentWatchers,
   experimentRunDisabled = false,
   experimentRunBusy = false,
   onUnstage,
@@ -142,9 +138,10 @@ export function DetailDrawer({
   );
   const editInvalid = Object.keys(editErrors).length > 0;
   const nodeMutationDisabled = mutationsDisabled || stagedForRemoval;
-  const detachedExperimentWorkActive = experimentWatcherCount > 0;
   const experimentControlActive = Boolean(
-    experimentControl?.active || detachedExperimentWorkActive,
+    experimentControl?.active ||
+    experimentControl?.operational?.task_active ||
+    experimentControl?.operational?.detached_work_active,
   );
   const experimentPausedAtLimit = Boolean(experimentControl?.paused && !experimentControlActive);
 
@@ -322,6 +319,19 @@ export function DetailDrawer({
                         </small>
                       )}
                     </>
+                  ) : field.kind === "select" ? (
+                    <select
+                      value={draft[field.key] ?? ""}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, [field.key]: event.target.value }))
+                      }
+                    >
+                      {field.options?.map((option) => (
+                        <option value={option.value} key={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   ) : field.kind === "boolean" ? (
                     <select
                       value={draft[field.key] ?? ""}
@@ -404,15 +414,6 @@ export function DetailDrawer({
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>
-                  )}
-                  {experimentWatcherCount > 0 && onStopExperimentWatchers && (
-                    <button
-                      className="button compact experiment-stop-watchers"
-                      type="button"
-                      onClick={onStopExperimentWatchers}
-                    >
-                      Stop {experimentWatcherCount === 1 ? "watcher" : "watchers"}
-                    </button>
                   )}
                   {(node.attempts ?? []).length > 0 && (
                     <ol className="experiment-attempts" aria-label="Attempts">

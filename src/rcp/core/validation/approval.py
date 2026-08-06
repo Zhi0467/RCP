@@ -69,7 +69,7 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
             return
         report.reject(
             "invalid-standalone-review",
-            "A standalone human patch must review one node or edit one node's prose.",
+            "A standalone human patch must review one node or edit one node directly.",
             revision,
         )
         return
@@ -229,7 +229,7 @@ def _validate_direct_node_edit(
     if not isinstance(changes, dict) or not changes:
         report.reject(
             "empty-node-edit",
-            "A direct node edit must change at least one prose field.",
+            "A direct node edit must change at least one editable field.",
             revision,
         )
         return
@@ -247,6 +247,6 @@ def _validate_direct_node_edit(
     if all(getattr(node, field, object()) == value for field, value in changes.items()):
         report.reject(
             "empty-node-edit",
-            "The submitted node wording is unchanged.",
+            "The submitted node edit is unchanged.",
             revision,
         )

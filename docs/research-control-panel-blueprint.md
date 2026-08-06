@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.17
+**Version:** 0.20
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,20 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.20** — allowed an Experiment-loop invocation to keep its focused
+  Experiment's `current_summary` and `next_action` aligned with attempt changes,
+  without widening authority to any other Experiment field or graph object.
+- **0.19** — defined human attention as pending judgment: after Sync records
+  either accepted or contested standing, an open Blocker leaves Inbox, project
+  attention counts, and Runs **Needs action** without changing its independent
+  operational status or readiness effect; exposed Blocker lifecycle status in
+  the human node editor while preserving direct, non-Proposal agent updates.
+- **0.18** — bound each Experiment-loop episode to one validated native provider
+  session: an automatic watcher wake is a new task and budget unit that resumes
+  that session with a compact continuation message, while every human Run still
+  starts a fresh session; added the graceful episode-level **Stop loop** and made
+  Runs an operational hierarchy ordered Running, Needs action, Completed. Generic
+  Work watcher wakes remain fresh turns.
 - **0.17** — changed Experiment control's human-set ceiling from a cap on
   agent-authored `ExperimentAttempt` records to a per-episode cap on
   Experiment-loop agent invocations; each human Run starts a fresh episode,
@@ -159,6 +173,14 @@ Contest and Agree are independent visible human controls. Clearing either
 returns standing to `asserted`; selecting the other replaces it. Proposal
 Reject and Approve likewise remain staged and reversible until Sync, then become
 terminal historical resolutions.
+
+Blocker standing and lifecycle status are independent. The human node editor may
+set Blocker status to `open`, `resolved`, or `superseded`, and a graph-capable
+agent may update the same field directly. These ordinary Blocker lifecycle edits
+do not create or require a Proposal. Like other edits to judged node content,
+they reset accepted or contested standing to asserted. A resolved or superseded
+Blocker remains outside human attention; reopening it makes the asserted Blocker
+await a fresh judgment.
 
 ### Minimal agent Proposals
 
@@ -419,6 +441,75 @@ may inspect the named work, edit or debug the relevant repository, launch more
 work, and arm more watchers while loop invocations remain. RCP does not infer
 scientific attempt boundaries from watcher rows; the agent records and closes
 `ExperimentAttempt` records when the experiment's meaning calls for it.
+That same focused-Experiment Patch may update `current_summary` and
+`next_action` when an invocation introduces or closes attempts or changes what
+should happen next. The prose must describe the resulting canonical attempt
+ledger and actual next step; it may remain unchanged when still accurate, and
+`next_action` becomes null when no further action remains. This does not widen
+the loop's authority beyond its own Experiment.
+
+### Episode native sessions and graceful stop
+
+Every episode has exactly one validated native-session binding: provider,
+session id, execution host, and the exact reusable chat stage. A human Run always
+starts a fresh episode and a fresh native session — including Proposal or Blocker
+resolution, invocation-limit reauthorization, and restart after **Stop loop** —
+so native context never grows across a human authority boundary. An automatic
+watcher wake instead resumes that binding: it is a new durable RCP task with
+`trigger="watcher"`, the next invocation number, its own answer and handoff, and
+an explicit `watcher_wake` continuation cause that is not task Resume. Task
+Resume continues one paused task at the same invocation.
+
+Watcher provenance never chooses the resumed session; the newest human-authorized
+episode does. An automatic wake may claim only a completed group whose frozen
+provider, execution target, conversation, Experiment, truth scope, and Patch
+authority are compatible with the current binding. An incompatible group stays
+completed, unnotified, and visible until a human Run explicitly reauthorizes it.
+Before the atomic claim and before spending the invocation, RCP validates that
+the bound session and exact stage still exist on the pinned machine. A transient
+unavailability leaves the watchers unnotified for a later pass; a missing or
+mismatched binding becomes an exact Needs-action diagnostic and never silently
+launches a fresh session.
+
+The original session already holds the immutable contract, so an automatic wake
+sends a short continuation message rather than rebuilding it: what RCP accepted
+from the preceding turn, the delivered watcher ids, fresh file pointers, and the
+three valid exits. Provider, model, reasoning, machine, truth scope, and
+authority stay pinned for the episode while graph, research, schema, and output
+pointers refresh every turn. Changed repository, ontology, or package pointers
+are appended as one compact replacement block that becomes the episode baseline
+only after a mechanically successful joint Patch/watcher handoff. A graph-level
+rejection is recorded truthfully and does not erase an otherwise accepted
+operational handoff.
+
+**Stop loop** is an idempotent, durable, restart-safe episode-level action
+meaning "finish the current turn, then disable automatic continuation." RCP
+persists the stop request before returning success and before any unclaimed
+compatible watcher can win a new wake. With no unresolved loop task, it
+terminally stops every compatible current or adopted watcher and settles
+immediately; incompatible historical groups remain pending. Otherwise that task
+is the current turn and finishes normally: its valid Patch and semantic
+bookkeeping apply, and those existing compatible watchers plus every valid
+watcher its final handoff emits are retained as `stopped`. If the turn pauses, fails, or is interrupted, the
+stop remains unsettled while the task stays available for Resume or Retry. A
+claim that committed first wins; otherwise the stop wins and no wake task is
+created. Stop never cancels the current task, kills external work, deletes a
+watcher, edits Experiment status, creates or closes an attempt, or discards a
+valid Patch. Task Resume and Retry remain recovery of the already-authorized
+turn but can never clear the stop intent or reenable automatic delivery, and a
+fresh human Run stays disabled until the turn resolves. The next Run starts a
+fresh episode whose staged watcher state includes the stopped episode's records
+as inspectable context with no delivered trigger.
+
+Recovery of a bound episode never falls back to a fresh provider session. If
+RCP proves the pinned session, exact stage, or continuation context unusable, it
+records the exact diagnostic and rejects Resume or Retry. A subsequent or
+already-persisted **Stop loop** may then abandon only recovery of that
+already-terminal task, with a durable receipt and all task, Patch, watcher, and
+event history preserved; it terminalizes compatible watchers and settles so the
+next human Run can establish a new authority boundary. An in-flight graph repair
+that was created before Stop remains part of the authorized turn and may finish,
+but Stop prevents launching a new repair from an old rejected result.
 
 When the current episode reaches `invocation_ceiling`, RCP starts no automatic
 wake. Completed watchers remain visibly pending and unconsumed. The next human
@@ -457,10 +548,10 @@ fallback wording. A missing or inconsistent Experiment, episode, invocation,
 pinned ceiling, decision bundle, or watcher binding fails closed before provider
 launch; RCP never substitutes semantic attempt counts or a generic Work contract.
 
-An initial Run is marked as the beginning of an episode. A watcher wake is a
-fresh provider session and distinguishes the delivered coalesced watcher group
-from other active, degraded, completed, or stopped Experiment watchers. It never
-interprets one completion as an attempt boundary. Resume and Retry preserve the
+An initial Run is marked as the beginning of an episode. A watcher wake resumes
+the episode's native session and distinguishes the delivered coalesced watcher
+group from other active, degraded, completed, or stopped Experiment watchers. It
+never interprets one completion as an attempt boundary. Resume and Retry preserve the
 original objective and binding but receive a compact live control file before
 acting. Patch and watcher corrections receive only the retained contract,
 current output paths, and exact diagnostics needed to repair their deliverable.
@@ -530,9 +621,19 @@ already committed Patch or watcher set instead of appending or arming it again.
 The durable episode-exit receipt is written only after the canonical exit Patch
 is confirmed.
 
-RCP never infers that a degraded watcher is dead. A human may stop an
-Experiment-bound watcher without changing any semantic attempt; an ordinary
-Work watcher has the same operational **Stop watching** authority. Semantic
+The agent never reads the watcher database. Before each loop turn RCP stages a
+bounded watcher-state file in the exact scratch workspace and points to it from
+loop control and the prompt. Its selection is explicit: an automatic wake stages
+every delivered watcher even after its claim plus the other relevant
+active, degraded, and completed-unnotified records; a fresh initial Run stages no
+delivered ids alongside those observers and the immediately preceding
+human-stopped episode's records; a human reauthorization stages the claimed group
+even though it is now notified. Stopped records are context, never triggers.
+
+RCP never infers that a degraded watcher is dead. Loop-level **Stop loop** is the
+Experiment's operational authority, so Experiment Runs offers no per-watcher Stop
+action; an ordinary Work watcher keeps its individual **Stop watching**
+authority. Neither changes any semantic attempt. Semantic
 attempt changes remain deliberate graph edits. Stop atomically acknowledges any
 unclaimed active, degraded, or just-completed watcher; it cannot race a claimed
 notification into waking afterward. A watcher whose Experiment was removed is
@@ -590,10 +691,24 @@ graceful takeover after recoverable work is paused.
 
 - **Overview** shows current project state and the latest plain-language revision
   summary.
-- **Inbox** contains pending Proposals, open ambiguities, and all open Blockers.
+- **Inbox** contains pending Proposals, open ambiguities, and open Blockers whose
+  standing remains asserted. Accepted and contested open Blockers remain
+  operational graph state but no longer await human judgment.
 - **Research** presents question-centered graph paths and a bounded DAG view.
-- **Runs** contains Seed/Refresh research ingestion, Experiments, and graph
-  Blockers—not chat or coaching task failures.
+- **Runs** is the operational control surface for Seed/Refresh research
+  ingestion, bounded Experiments, and asserted open graph Blockers—not generic
+  chat or coaching tasks. It carries no page title and is ordered by what matters
+  now: **Running**, **Needs action**, then **Completed**, with the first matching
+  state winning. Accepted and contested Blockers leave **Needs action** after
+  Sync without being operationally resolved.
+  An Experiment-loop task is the deliberate exception to the chat exclusion
+  because its Patch kind and control node make it research execution. Pressing an
+  Experiment's Run navigates here and opens its run detail rather than a floating
+  node-chat window. That detail reports loop health, current activity, invocation
+  budget, watcher health and provenance, resolved execution with native-session
+  continuity, and the Experiment's meaning; its one loop-level action is **Stop
+  loop**, while invocation-level Pause, Resume, and Retry stay in the Agent task
+  inspector.
 - **Chats** groups node and project conversations with immutable turn labels,
   inline task progress under the triggering message, and no global task banner.
 - **Paper** provides a human-authored Markdown Write/Preview pane and read-only

@@ -5,7 +5,7 @@ import json
 import math
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -75,6 +75,13 @@ AgentTaskStatus = Literal[
     "interrupted",
 ]
 AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
+
+_EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
+_MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC = (
+    "This Experiment-loop turn cannot be resumed or retried because its pre-migration "
+    "root has no retained episode context candidate. Use Stop loop and press Run to start "
+    "a fresh episode."
+)
 
 
 class AgentTaskEventRecord(BaseModel):
@@ -152,6 +159,51 @@ class AgentTaskRecord(BaseModel):
     can_retry: bool = False
 
 
+class ExperimentEpisodeRecord(BaseModel):
+    """One bounded episode's native-session binding and graceful-stop intent.
+
+    The binding is what an automatic watcher wake resumes. It is committed only
+    by a mechanically successful joint handoff, so a failed first invocation
+    never leaves a session an automatic wake would try to continue. A graph-only
+    rejection is still a truthful accepted operational handoff.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    project_id: str
+    control_node_id: str
+    provider: str | None = None
+    execution_machine: str | None = None
+    execution_host: str = ""
+    native_session_id: str | None = None
+    stage_host: str | None = None
+    stage_root: str | None = None
+    chat_id: str | None = None
+    last_turn_operation_id: str | None = None
+    last_turn_invocation: int | None = Field(default=None, ge=1)
+    last_graph_result: str | None = None
+    last_watcher_ids: list[str] = Field(default_factory=list)
+    context_baseline: dict[str, object] = Field(default_factory=dict)
+    session_diagnostic: str | None = None
+    stop_requested_at: str | None = None
+    stop_settled_at: str | None = None
+    created_at: str
+    updated_at: str
+
+    @property
+    def session_bound(self) -> bool:
+        """Whether an automatic wake has a complete binding to resume."""
+
+        return bool(
+            self.native_session_id
+            and self.provider
+            and self.execution_machine
+            and self.stage_root
+            and self.chat_id
+        )
+
+
 class ExperimentLoopRuntime(BaseModel):
     """Operational state of the newest bounded episode for one Experiment."""
 
@@ -163,10 +215,28 @@ class ExperimentLoopRuntime(BaseModel):
     paused: bool = False
     task_active: bool = False
     detached_work_active: bool = False
+    watcher_degraded: bool = False
     watcher_completion_pending: bool = False
     episode_exited: bool = False
     decision_bundle: list[dict[str, object]] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
+    stop_requested: bool = False
+    stop_settled: bool = False
+    session_bound: bool = False
+    session_diagnostic: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    reasoning: str | None = None
+    run_on: str | None = None
+    execution_host: str | None = None
+    run_truth_scope: list[str] | None = None
+    chat_id: str | None = None
+    current_operation_id: str | None = None
+    current_status: str | None = None
+    current_phase: str | None = None
+    current_status_message: str | None = None
+    current_last_activity_at: str | None = None
+    current_invocation: int | None = Field(default=None, ge=1)
 
 
 AgentUsageCountReason = Literal["counted", "duplicate", "invalid"]
@@ -280,6 +350,29 @@ class WatcherRecord(BaseModel):
     completed_at: str | None = None
     notified: bool = False
     notification_operation_id: str | None = None
+
+
+_EXPERIMENT_EPISODE_PINNED_FIELDS = (
+    "provider",
+    "model",
+    "reasoning",
+    "run_on",
+    "run_truth_scope",
+    "chat_id",
+    "control_node_id",
+    "control_revision",
+    "control_episode_id",
+    "control_invocation_ceiling",
+    "control_decision_bundle",
+    "control_completion_criteria",
+)
+
+
+def _experiment_pinned_value(request: dict[str, object], field: str) -> object:
+    value = request.get(field)
+    if field == "run_truth_scope" and isinstance(value, list):
+        return sorted({str(item) for item in value})
+    return value
 
 
 class AppStore:
@@ -479,6 +572,30 @@ class AppStore:
                     ON watchers(status, created_at);
                 CREATE INDEX IF NOT EXISTS watchers_delivery
                     ON watchers(project_id, origin_operation_id, notified, completed_at);
+                CREATE TABLE IF NOT EXISTS experiment_episodes (
+                    episode_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    control_node_id TEXT NOT NULL,
+                    provider TEXT,
+                    execution_machine TEXT,
+                    execution_host TEXT NOT NULL DEFAULT '',
+                    native_session_id TEXT,
+                    stage_host TEXT,
+                    stage_root TEXT,
+                    chat_id TEXT,
+                    last_turn_operation_id TEXT,
+                    last_turn_invocation INTEGER,
+                    last_graph_result TEXT,
+                    last_watcher_ids_json TEXT NOT NULL DEFAULT '[]',
+                    context_baseline_json TEXT NOT NULL DEFAULT '{}',
+                    session_diagnostic TEXT,
+                    stop_requested_at TEXT,
+                    stop_settled_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS experiment_episodes_control
+                    ON experiment_episodes(project_id, control_node_id, created_at DESC);
                 """
             )
             # Existing v0.2 databases need additive migration before the index
@@ -614,6 +731,9 @@ class AppStore:
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "experiment_episodes": connection.execute(
+                        "DELETE FROM experiment_episodes WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                 }
                 connection.execute("DELETE FROM agent_usage WHERE project_id = ?", (project_id,))
                 for table in (
@@ -746,6 +866,10 @@ class AppStore:
                 "UPDATE watchers SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
+            connection.execute(
+                "UPDATE experiment_episodes SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
 
     def create_agent_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
         try:
@@ -812,15 +936,7 @@ class AppStore:
         if request.get("patch_kind") != "experiment_loop":
             return
 
-        binding_keys = (
-            "control_node_id",
-            "control_revision",
-            "control_episode_id",
-            "control_invocation",
-            "control_invocation_ceiling",
-            "control_decision_bundle",
-            "control_completion_criteria",
-        )
+        recovery_binding_keys = (*_EXPERIMENT_EPISODE_PINNED_FIELDS, "control_invocation")
         node_id = request.get("control_node_id")
         control_revision = request.get("control_revision")
         episode_id = request.get("control_episode_id")
@@ -866,9 +982,14 @@ class AppStore:
             if parent["project_id"] != record.project_id or parent["kind"] != record.kind:
                 raise ValueError("An experiment-loop recovery task must preserve its task scope.")
             parent_request = json.loads(parent["request_json"])
-            if any(parent_request.get(key) != request.get(key) for key in binding_keys):
+            if any(
+                _experiment_pinned_value(parent_request, key)
+                != _experiment_pinned_value(request, key)
+                for key in recovery_binding_keys
+            ):
                 raise ValueError(
-                    "An experiment-loop recovery task must preserve its control binding."
+                    "An experiment-loop recovery task must preserve its control binding and "
+                    "pinned configuration."
                 )
             parent_result = json.loads(parent["result_json"]) if parent["result_json"] else None
             graph_update = (
@@ -888,6 +1009,15 @@ class AppStore:
                     parent,
                     parent_request,
                 )
+            else:
+                AppStore._validate_current_experiment_graph_repair(
+                    connection,
+                    project_id=record.project_id,
+                    control_node_id=node_id,
+                    episode_id=episode_id,
+                    invocation=invocation,
+                    operation_id=record.parent_operation_id,
+                )
             return
 
         trigger = request.get("trigger")
@@ -904,14 +1034,12 @@ class AppStore:
             (record.project_id, node_id, episode_id),
         ).fetchall()
         prior = [json.loads(row["request_json"]) for row in rows]
-        pinned_fields = (
-            "control_revision",
-            "control_invocation_ceiling",
-            "control_decision_bundle",
-            "control_completion_criteria",
-        )
-        if any(item.get(key) != request.get(key) for item in prior for key in pinned_fields):
-            raise ValueError("An experiment-loop episode cannot change its pinned control fields.")
+        if any(
+            _experiment_pinned_value(item, key) != _experiment_pinned_value(request, key)
+            for item in prior
+            for key in _EXPERIMENT_EPISODE_PINNED_FIELDS
+        ):
+            raise ValueError("An experiment-loop episode cannot change its pinned configuration.")
         expected = max((int(item["control_invocation"]) for item in prior), default=0) + 1
         if invocation != expected:
             raise ValueError(
@@ -923,6 +1051,59 @@ class AppStore:
             raise ValueError("A human Run must start at experiment-loop invocation 1.")
         if trigger == "watcher" and not prior:
             raise ValueError("An automatic watcher wake requires an existing loop episode.")
+        if trigger == "watcher":
+            AppStore._validate_experiment_wake_binding(connection, record)
+
+    @staticmethod
+    def _validate_experiment_wake_binding(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> None:
+        """Prove the saved native session before an automatic wake spends budget."""
+
+        request = record.request
+        episode_id = request.get("control_episode_id")
+        session_id = request.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("An automatic Experiment wake requires its episode session id.")
+        if record.native_session_id != session_id or not record.stage_root:
+            raise ValueError(
+                "An automatic Experiment wake requires its exact saved session and stage."
+            )
+        episode = connection.execute(
+            "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if episode is None or episode["stop_requested_at"] is not None:
+            raise ValueError("The automatic Experiment wake has no active episode binding.")
+        expected = {
+            "project_id": record.project_id,
+            "control_node_id": request.get("control_node_id"),
+            "provider": request.get("provider"),
+            "execution_machine": request.get("run_on"),
+            "native_session_id": session_id,
+            "stage_host": record.stage_host or "",
+            "stage_root": record.stage_root,
+            "chat_id": request.get("chat_id"),
+        }
+        actual = {
+            "project_id": episode["project_id"],
+            "control_node_id": episode["control_node_id"],
+            "provider": episode["provider"],
+            "execution_machine": episode["execution_machine"],
+            "native_session_id": episode["native_session_id"],
+            "stage_host": episode["stage_host"] or "",
+            "stage_root": episode["stage_root"],
+            "chat_id": episode["chat_id"],
+        }
+        mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
+        if (episode["execution_host"] or "") != (record.stage_host or ""):
+            mismatched.append("execution_host")
+        if mismatched:
+            raise ValueError(
+                "The automatic Experiment wake no longer matches its episode binding: "
+                + ", ".join(sorted(set(mismatched)))
+            )
 
     @staticmethod
     def _validate_experiment_recovery_claim(
@@ -931,6 +1112,16 @@ class AppStore:
         parent: sqlite3.Row,
         parent_request: dict[str, object],
     ) -> None:
+        abandoned = connection.execute(
+            """
+            SELECT 1 FROM graph_run_receipts
+            WHERE operation_id = ? AND category = 'experiment_recovery_abandoned'
+            LIMIT 1
+            """,
+            (record.parent_operation_id,),
+        ).fetchone()
+        if abandoned is not None:
+            raise ValueError("Stop loop already abandoned recovery of this Experiment task.")
         if parent["status"] not in {"paused", "interrupted", "failed"}:
             raise ValueError("Only the latest unresolved loop task can be resumed or retried.")
         if record.attempt != int(parent["attempt"]) + 1:
@@ -982,6 +1173,63 @@ class AppStore:
             raise ValueError("Only the latest unresolved loop task can be recovered.")
 
     @staticmethod
+    def _validate_current_experiment_graph_repair(
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        control_node_id: str,
+        episode_id: str,
+        invocation: int,
+        operation_id: str,
+    ) -> None:
+        """Keep patch-only repair on the newest episode, invocation, and attempt."""
+
+        newest_root = connection.execute(
+            """
+            SELECT json_extract(request_json, '$.control_episode_id') AS episode_id
+            FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (project_id, control_node_id),
+        ).fetchone()
+        if newest_root is None or newest_root["episode_id"] != episode_id:
+            raise ValueError("Only the newest Experiment episode can repair its graph update.")
+        stopped = connection.execute(
+            "SELECT stop_requested_at FROM experiment_episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if stopped is not None and stopped["stop_requested_at"] is not None:
+            raise ValueError("A stopped Experiment episode cannot repair an old graph update.")
+        latest = connection.execute(
+            """
+            SELECT operation_id,
+                   json_extract(request_json, '$.control_invocation') AS invocation
+            FROM graph_runs
+            WHERE project_id = ?
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(request_json, '$.control_episode_id') = ?
+            ORDER BY CAST(json_extract(request_json, '$.control_invocation') AS INTEGER) DESC,
+                     attempt DESC, created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (project_id, control_node_id, episode_id),
+        ).fetchone()
+        if (
+            latest is None
+            or latest["invocation"] != invocation
+            or latest["operation_id"] != operation_id
+        ):
+            raise ValueError(
+                "Only the newest Experiment invocation and task attempt can repair its graph "
+                "update."
+            )
+
+    @staticmethod
     def _has_active_chat_overlap(
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
@@ -1006,6 +1254,86 @@ class AppStore:
     def create_watchers(self, records: list[WatcherRecord]) -> list[WatcherRecord]:
         """Insert one validated watch list atomically."""
 
+        self._validate_watch_list(records)
+        watcher_ids = [record.watcher_id for record in records]
+        with self.connection() as connection:
+            for record in records:
+                self._insert_watcher(connection, record)
+        stored: list[WatcherRecord] = []
+        for watcher_id in watcher_ids:
+            record = self.watcher(watcher_id)
+            assert record is not None
+            stored.append(record)
+        return stored
+
+    def persist_experiment_watchers_idempotently(
+        self,
+        records: list[WatcherRecord],
+    ) -> list[WatcherRecord]:
+        """Persist one loop handoff atomically with the episode's graceful stop.
+
+        Deterministic watcher ids make Retry and crash recovery safe. The same
+        ``BEGIN IMMEDIATE`` boundary used by Stop loop ensures either the handoff
+        lands first and Stop terminalizes it, or the handoff sees stop intent and
+        is born stopped. No pollable row can be created after a persisted stop.
+        """
+
+        self._validate_watch_list(records)
+        continuation = records[0].continuation
+        if continuation.patch_kind != "experiment_loop":
+            raise ValueError("idempotent Experiment persistence requires loop watchers")
+        episode_id = continuation.control_episode_id
+        assert episode_id is not None
+        watcher_ids = [record.watcher_id for record in records]
+        placeholders = ",".join("?" for _ in watcher_ids)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode = connection.execute(
+                "SELECT project_id, control_node_id, stop_requested_at "
+                "FROM experiment_episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if episode is not None and (
+                episode["project_id"] != records[0].project_id
+                or episode["control_node_id"] != continuation.control_node_id
+            ):
+                raise ValueError("This watcher handoff belongs to a different Experiment episode.")
+            stopped = episode is not None and episode["stop_requested_at"] is not None
+            existing_rows = connection.execute(
+                f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+                watcher_ids,
+            ).fetchall()
+            existing_by_id = {
+                str(row["watcher_id"]): self._watcher_record(row) for row in existing_rows
+            }
+            for desired in records:
+                existing = existing_by_id.get(desired.watcher_id)
+                if existing is not None:
+                    self._validate_idempotent_watcher(existing, desired)
+                    if stopped and (existing.status != "stopped" or not existing.notified):
+                        connection.execute(
+                            "UPDATE watchers SET status = 'stopped', notified = 1 "
+                            "WHERE watcher_id = ?",
+                            (desired.watcher_id,),
+                        )
+                    continue
+                persisted = (
+                    desired.model_copy(update={"status": "stopped", "notified": True})
+                    if stopped
+                    else desired
+                )
+                self._insert_watcher(connection, persisted)
+            stored_rows = connection.execute(
+                f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+                watcher_ids,
+            ).fetchall()
+            stored_by_id = {
+                str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows
+            }
+        return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    @staticmethod
+    def _validate_watch_list(records: list[WatcherRecord]) -> None:
         if not records:
             raise ValueError("a watch list must contain at least one watcher")
         watcher_ids = [record.watcher_id for record in records]
@@ -1026,58 +1354,76 @@ class AppStore:
         if len(bindings) != 1:
             raise ValueError("one watch list must share one RCP-bound continuation context")
         continuation = records[0].continuation
-        if continuation.patch_kind == "experiment_loop":
-            if not all(
-                (
-                    continuation.control_node_id,
-                    continuation.control_episode_id,
-                    continuation.control_invocation,
-                    continuation.control_invocation_ceiling,
-                )
-            ):
-                raise ValueError("an experiment-loop watcher must preserve its control binding")
-            if continuation.control_invocation > continuation.control_invocation_ceiling:
-                raise ValueError("an experiment-loop watcher invocation exceeds its pinned ceiling")
-        with self.connection() as connection:
-            for record in records:
-                connection.execute(
-                    """
-                    INSERT INTO watchers (
-                        watcher_id, project_id, origin_operation_id, origin_task_kind,
-                        chat_id, node_id, execution_host, check_command, log_path, cwd,
-                        continuation_json, status, created_at, last_checked_at,
-                        last_exit_code, last_error, completed_at, notified,
-                        notification_operation_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        record.watcher_id,
-                        record.project_id,
-                        record.origin_operation_id,
-                        record.origin_task_kind,
-                        record.chat_id,
-                        record.node_id,
-                        record.execution_host,
-                        record.check_command,
-                        record.log_path,
-                        record.cwd,
-                        record.continuation.model_dump_json(),
-                        record.status,
-                        record.created_at,
-                        record.last_checked_at,
-                        record.last_exit_code,
-                        record.last_error,
-                        record.completed_at,
-                        int(record.notified),
-                        record.notification_operation_id,
-                    ),
-                )
-        stored: list[WatcherRecord] = []
-        for watcher_id in watcher_ids:
-            record = self.watcher(watcher_id)
-            assert record is not None
-            stored.append(record)
-        return stored
+        if continuation.patch_kind != "experiment_loop":
+            return
+        if not all(
+            (
+                continuation.control_node_id,
+                continuation.control_episode_id,
+                continuation.control_invocation,
+                continuation.control_invocation_ceiling,
+            )
+        ):
+            raise ValueError("an experiment-loop watcher must preserve its control binding")
+        assert continuation.control_invocation is not None
+        assert continuation.control_invocation_ceiling is not None
+        if continuation.control_invocation > continuation.control_invocation_ceiling:
+            raise ValueError("an experiment-loop watcher invocation exceeds its pinned ceiling")
+
+    @staticmethod
+    def _validate_idempotent_watcher(
+        existing: WatcherRecord,
+        desired: WatcherRecord,
+    ) -> None:
+        immutable_fields = (
+            "project_id",
+            "origin_operation_id",
+            "origin_task_kind",
+            "chat_id",
+            "node_id",
+            "execution_host",
+            "check_command",
+            "log_path",
+            "cwd",
+            "continuation",
+        )
+        if any(getattr(existing, field) != getattr(desired, field) for field in immutable_fields):
+            raise ValueError("Experiment-loop watcher identity conflicts with stored state.")
+
+    @staticmethod
+    def _insert_watcher(connection: sqlite3.Connection, record: WatcherRecord) -> None:
+        connection.execute(
+            """
+            INSERT INTO watchers (
+                watcher_id, project_id, origin_operation_id, origin_task_kind,
+                chat_id, node_id, execution_host, check_command, log_path, cwd,
+                continuation_json, status, created_at, last_checked_at,
+                last_exit_code, last_error, completed_at, notified,
+                notification_operation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.watcher_id,
+                record.project_id,
+                record.origin_operation_id,
+                record.origin_task_kind,
+                record.chat_id,
+                record.node_id,
+                record.execution_host,
+                record.check_command,
+                record.log_path,
+                record.cwd,
+                record.continuation.model_dump_json(),
+                record.status,
+                record.created_at,
+                record.last_checked_at,
+                record.last_exit_code,
+                record.last_error,
+                record.completed_at,
+                int(record.notified),
+                record.notification_operation_id,
+            ),
+        )
 
     def watcher(self, watcher_id: str) -> WatcherRecord | None:
         with self.connection() as connection:
@@ -1111,7 +1457,20 @@ class AppStore:
                 ORDER BY created_at, watcher_id
                 """
             ).fetchall()
-        return [self._watcher_record(row) for row in rows]
+            records = [self._watcher_record(row) for row in rows]
+            stopping_contexts: dict[
+                tuple[str, str],
+                tuple[dict[str, object], ExperimentEpisodeRecord] | None,
+            ] = {}
+            return [
+                record
+                for record in records
+                if not self._watcher_suppressed_by_current_stop(
+                    connection,
+                    record,
+                    stopping_contexts,
+                )
+            ]
 
     def stop_watchers(self, project_id: str, watcher_ids: list[str]) -> list[WatcherRecord]:
         """Release watchers the human has given up on.
@@ -1187,6 +1546,493 @@ class AppStore:
             and record.continuation.control_node_id == control_node_id
         ]
 
+    def experiment_episode(self, episode_id: str) -> ExperimentEpisodeRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+        return self._experiment_episode_record(row) if row is not None else None
+
+    def experiment_episode_recovery_context_problem(self, operation_id: str) -> str | None:
+        """Explain why this task lineage cannot retain its episode context on recovery."""
+
+        with self.connection() as connection:
+            return self._experiment_episode_recovery_context_problem(connection, operation_id)
+
+    @staticmethod
+    def _experiment_episode_recovery_context_problem(
+        connection: sqlite3.Connection,
+        operation_id: str,
+    ) -> str | None:
+        """Validate the immutable candidate on an Experiment invocation's lineage root."""
+
+        current_id = operation_id
+        seen: set[str] = set()
+        while True:
+            if current_id in seen:
+                return (
+                    "This Experiment-loop turn cannot be resumed or retried because its task "
+                    "lineage contains a cycle. Use Stop loop and press Run to start a fresh "
+                    "episode."
+                )
+            seen.add(current_id)
+            row = connection.execute(
+                "SELECT parent_operation_id FROM graph_runs WHERE operation_id = ?",
+                (current_id,),
+            ).fetchone()
+            if row is None:
+                return (
+                    "This Experiment-loop turn cannot be resumed or retried because its task "
+                    "lineage is incomplete. Use Stop loop and press Run to start a fresh episode."
+                )
+            parent_id = row["parent_operation_id"]
+            if parent_id is None:
+                break
+            current_id = str(parent_id)
+
+        contract = connection.execute(
+            """
+            SELECT content FROM graph_run_contracts
+            WHERE operation_id = ? AND role = ?
+            """,
+            (current_id, _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE),
+        ).fetchone()
+        if contract is None:
+            return _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC
+        try:
+            candidate = json.loads(contract["content"])
+        except (json.JSONDecodeError, TypeError):
+            candidate = None
+        if not isinstance(candidate, dict):
+            return (
+                "This Experiment-loop turn cannot be resumed or retried because its retained "
+                "episode context candidate is invalid. Use Stop loop and press Run to start a "
+                "fresh episode."
+            )
+        return None
+
+    def previous_experiment_episode(
+        self,
+        project_id: str,
+        control_node_id: str,
+        episode_id: str,
+    ) -> ExperimentEpisodeRecord | None:
+        """Return the episode immediately before this one for the same Experiment.
+
+        Ordering comes from the root invocations, not the episode table, because
+        an episode only gets a row once it binds a session or receives a stop.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT json_extract(request_json, '$.control_episode_id') AS episode_id
+                FROM graph_runs
+                WHERE project_id = ? AND parent_operation_id IS NULL
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(request_json, '$.control_node_id') = ?
+                ORDER BY created_at DESC, rowid DESC
+                """,
+                (project_id, control_node_id),
+            ).fetchall()
+        ordered: list[str] = []
+        for row in rows:
+            value = row["episode_id"]
+            if isinstance(value, str) and value not in ordered:
+                ordered.append(value)
+        if episode_id not in ordered:
+            return None
+        position = ordered.index(episode_id) + 1
+        if position >= len(ordered):
+            return None
+        return self.experiment_episode(ordered[position])
+
+    def commit_experiment_episode_turn(
+        self,
+        *,
+        episode_id: str,
+        project_id: str,
+        control_node_id: str,
+        provider: str,
+        execution_machine: str,
+        execution_host: str,
+        native_session_id: str,
+        stage_host: str | None,
+        stage_root: str,
+        chat_id: str,
+        operation_id: str,
+        invocation: int,
+        graph_result: str,
+        watcher_ids: list[str],
+        context_baseline: dict[str, object],
+    ) -> ExperimentEpisodeRecord:
+        """Bind this episode to the session a later automatic wake resumes.
+
+        Only a mechanically successful joint handoff commits, so a wake never
+        tries to continue a session that never established one, and the context
+        baseline can only move forward with an accepted operational turn. A
+        graph-only rejection is retained as that turn's truthful result.
+        """
+
+        if not native_session_id or not stage_root:
+            raise ValueError("An episode binding requires a native session and its exact stage.")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO experiment_episodes (
+                    episode_id, project_id, control_node_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(episode_id) DO NOTHING
+                """,
+                (episode_id, project_id, control_node_id, now, now),
+            )
+            existing = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if (
+                existing is None
+                or existing["project_id"] != project_id
+                or existing["control_node_id"] != control_node_id
+            ):
+                raise ValueError("This episode id belongs to a different Experiment.")
+            if existing["native_session_id"] is not None:
+                immutable = {
+                    "provider": provider,
+                    "execution_machine": execution_machine,
+                    "execution_host": execution_host,
+                    "native_session_id": native_session_id,
+                    "stage_host": stage_host or "",
+                    "stage_root": stage_root,
+                    "chat_id": chat_id,
+                }
+                conflicts = sorted(
+                    field for field, value in immutable.items() if (existing[field] or "") != value
+                )
+                if conflicts:
+                    raise ValueError(
+                        "An Experiment episode cannot change its native-session binding: "
+                        + ", ".join(conflicts)
+                    )
+            connection.execute(
+                """
+                UPDATE experiment_episodes
+                SET provider = ?, execution_machine = ?, execution_host = ?,
+                    native_session_id = ?, stage_host = ?, stage_root = ?, chat_id = ?,
+                    last_turn_operation_id = ?, last_turn_invocation = ?,
+                    last_graph_result = ?, last_watcher_ids_json = ?,
+                    context_baseline_json = ?, session_diagnostic = NULL, updated_at = ?
+                WHERE episode_id = ?
+                """,
+                (
+                    provider,
+                    execution_machine,
+                    execution_host,
+                    native_session_id,
+                    stage_host,
+                    stage_root,
+                    chat_id,
+                    operation_id,
+                    invocation,
+                    graph_result,
+                    json.dumps(list(watcher_ids), separators=(",", ":")),
+                    json.dumps(context_baseline, sort_keys=True, separators=(",", ":")),
+                    now,
+                    episode_id,
+                ),
+            )
+        stored = self.experiment_episode(episode_id)
+        assert stored is not None
+        return stored
+
+    def record_experiment_episode_diagnostic(
+        self,
+        *,
+        episode_id: str,
+        project_id: str,
+        control_node_id: str,
+        diagnostic: str | None,
+    ) -> None:
+        """Persist why an automatic wake could not use this episode's session.
+
+        The row is created on demand: the episode whose very first turn never
+        bound a session is exactly the one that most needs a diagnostic, and it
+        has nothing else to write a row for it.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO experiment_episodes (
+                    episode_id, project_id, control_node_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(episode_id) DO NOTHING
+                """,
+                (episode_id, project_id, control_node_id, now, now),
+            )
+            connection.execute(
+                "UPDATE experiment_episodes SET session_diagnostic = ?, updated_at = ? "
+                "WHERE episode_id = ? AND project_id = ? AND control_node_id = ?",
+                (diagnostic, now, episode_id, project_id, control_node_id),
+            )
+
+    def request_experiment_loop_stop(
+        self,
+        project_id: str,
+        control_node_id: str,
+    ) -> ExperimentEpisodeRecord | None:
+        """Persist a durable stop for the newest episode before any new claim can win.
+
+        The intent is written under the same write lock a watcher claim takes, so
+        a claim that committed first becomes the current turn and anything later
+        finds the loop already stopped.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode_id = self._newest_experiment_episode_id(connection, project_id, control_node_id)
+            if episode_id is None:
+                return None
+            connection.execute(
+                """
+                INSERT INTO experiment_episodes (
+                    episode_id, project_id, control_node_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(episode_id) DO NOTHING
+                """,
+                (episode_id, project_id, control_node_id, now, now),
+            )
+            connection.execute(
+                """
+                UPDATE experiment_episodes
+                SET stop_requested_at = COALESCE(stop_requested_at, ?), updated_at = ?
+                WHERE episode_id = ?
+                """,
+                (now, now, episode_id),
+            )
+            self._settle_experiment_loop_stop(connection, project_id, control_node_id, episode_id)
+        return self.experiment_episode(episode_id)
+
+    def settle_experiment_loop_stop(
+        self,
+        project_id: str,
+        control_node_id: str,
+    ) -> ExperimentEpisodeRecord | None:
+        """Reconcile a persisted stop once its authorized turn is no longer live."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode_id = self._newest_experiment_episode_id(connection, project_id, control_node_id)
+            if episode_id is None:
+                return None
+            self._settle_experiment_loop_stop(connection, project_id, control_node_id, episode_id)
+        return self.experiment_episode(episode_id)
+
+    def _settle_experiment_loop_stop(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        episode_id: str,
+    ) -> bool:
+        """Terminalize this episode's observers once its authorized turn is resolved.
+
+        "Resolved" is the same predicate the runtime calls `task_active`, not just
+        "not running": a turn that paused or failed is still the authorized turn
+        the human may Resume, so the loop keeps reading Stopping until it reaches
+        a terminal state. A claimed watcher keeps its notification provenance,
+        but becomes stopped once the task it woke has finished successfully.
+        """
+
+        requested = connection.execute(
+            "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if requested is None or requested["stop_requested_at"] is None:
+            return False
+        # A superseded attempt does not count: only the newest attempt of each
+        # invocation is the turn the human can still act on, which is exactly what
+        # `experiment_loop_runtime` reports as `task_active`.
+        unresolved = connection.execute(
+            """
+            SELECT task.operation_id, task.status FROM graph_runs AS task
+            WHERE task.project_id = ?
+              AND json_extract(task.request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(task.request_json, '$.control_node_id') = ?
+              AND json_extract(task.request_json, '$.control_episode_id') = ?
+              AND task.status IN ('queued', 'running', 'pausing', 'paused', 'failed', 'interrupted')
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_runs AS child
+                  WHERE child.parent_operation_id = task.operation_id
+              )
+            """,
+            (project_id, control_node_id, episode_id),
+        ).fetchall()
+        if unresolved:
+            diagnostic = requested["session_diagnostic"]
+            if not diagnostic:
+                diagnostic = next(
+                    (
+                        problem
+                        for row in unresolved
+                        if (
+                            problem := self._experiment_episode_recovery_context_problem(
+                                connection,
+                                str(row["operation_id"]),
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if diagnostic:
+                    now = self.now()
+                    connection.execute(
+                        "UPDATE experiment_episodes SET session_diagnostic = ?, updated_at = ? "
+                        "WHERE episode_id = ?",
+                        (diagnostic, now, episode_id),
+                    )
+            abandonable = bool(diagnostic) and all(
+                row["status"] in {"paused", "failed", "interrupted"} for row in unresolved
+            )
+            if not abandonable:
+                return False
+            now = self.now()
+            for row in unresolved:
+                already_abandoned = connection.execute(
+                    """
+                    SELECT 1 FROM graph_run_receipts
+                    WHERE operation_id = ? AND category = 'experiment_recovery_abandoned'
+                    LIMIT 1
+                    """,
+                    (row["operation_id"],),
+                ).fetchone()
+                if already_abandoned is not None:
+                    continue
+                detail = (
+                    "Stop loop abandoned recovery of this terminal task because its saved "
+                    "episode session cannot be continued. The task and all history remain "
+                    "inspectable."
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    str(row["operation_id"]),
+                    "experiment_recovery_abandoned",
+                    self._bounded_receipt_payload({"episode_id": episode_id, "reason": diagnostic}),
+                    tier="summary",
+                    created_at=now,
+                )
+                self._insert_agent_task_event(
+                    connection,
+                    str(row["operation_id"]),
+                    detail,
+                    level="warning",
+                    created_at=now,
+                )
+        root_request = self._experiment_episode_root_request(
+            connection,
+            project_id,
+            control_node_id,
+            episode_id,
+        )
+        episode = self._experiment_episode_record(requested)
+        watcher_rows = connection.execute(
+            """
+            SELECT * FROM watchers
+            WHERE project_id = ?
+              AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(continuation_json, '$.control_node_id') = ?
+              AND status IN ('active', 'degraded', 'completed')
+            """,
+            (project_id, control_node_id),
+        ).fetchall()
+        watcher_ids = {
+            record.watcher_id
+            for record in (self._watcher_record(row) for row in watcher_rows)
+            if root_request is not None
+            and self._experiment_watcher_matches_current(record, root_request, episode)
+        }
+        claimed_rows = connection.execute(
+            """
+            SELECT watcher_id FROM watchers
+            WHERE project_id = ?
+              AND notification_operation_id IN (
+                  SELECT operation_id FROM graph_runs
+                  WHERE project_id = ?
+                    AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                    AND json_extract(request_json, '$.control_node_id') = ?
+                    AND json_extract(request_json, '$.control_episode_id') = ?
+              )
+            """,
+            (project_id, project_id, control_node_id, episode_id),
+        ).fetchall()
+        watcher_ids.update(str(row["watcher_id"]) for row in claimed_rows)
+        if watcher_ids:
+            placeholders = ",".join("?" for _ in watcher_ids)
+            connection.execute(
+                f"UPDATE watchers SET status = 'stopped', notified = 1 "
+                f"WHERE watcher_id IN ({placeholders})",
+                sorted(watcher_ids),
+            )
+        if requested["stop_settled_at"] is None:
+            now = self.now()
+            connection.execute(
+                "UPDATE experiment_episodes SET stop_settled_at = ?, updated_at = ? "
+                "WHERE episode_id = ?",
+                (now, now, episode_id),
+            )
+        return True
+
+    def settle_ready_experiment_loop_stops(self) -> int:
+        """Reconcile every durable stop that no longer has a recoverable turn."""
+
+        settled = 0
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT episode_id, project_id, control_node_id
+                FROM experiment_episodes
+                WHERE stop_requested_at IS NOT NULL AND stop_settled_at IS NULL
+                ORDER BY created_at, episode_id
+                """
+            ).fetchall()
+            for row in rows:
+                if self._settle_experiment_loop_stop(
+                    connection,
+                    str(row["project_id"]),
+                    str(row["control_node_id"]),
+                    str(row["episode_id"]),
+                ):
+                    settled += 1
+        return settled
+
+    @staticmethod
+    def _newest_experiment_episode_id(
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+    ) -> str | None:
+        row = connection.execute(
+            """
+            SELECT json_extract(request_json, '$.control_episode_id') AS episode_id
+            FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (project_id, control_node_id),
+        ).fetchone()
+        if row is None or not isinstance(row["episode_id"], str):
+            return None
+        return row["episode_id"]
+
     def experiment_loop_runtime(
         self,
         project_id: str,
@@ -1194,71 +2040,166 @@ class AppStore:
     ) -> ExperimentLoopRuntime:
         """Derive the newest episode from root invocations and its watcher ledger."""
 
+        return self.experiment_loop_runtimes(project_id, [control_node_id])[control_node_id]
+
+    def experiment_loop_runtimes(
+        self,
+        project_id: str,
+        control_node_ids: Iterable[str],
+    ) -> dict[str, ExperimentLoopRuntime]:
+        """Derive several Experiment runtimes from one project-scoped projection."""
+
+        requested = tuple(dict.fromkeys(control_node_ids))
+        if not requested:
+            return {}
+        projected = self._project_experiment_loop_runtimes(project_id, set(requested))
+        return {
+            control_node_id: projected.get(control_node_id, ExperimentLoopRuntime())
+            for control_node_id in requested
+        }
+
+    def _project_experiment_loop_runtimes(
+        self,
+        project_id: str,
+        requested: set[str] | None,
+    ) -> dict[str, ExperimentLoopRuntime]:
+        """Load loop ledgers in four bounded reads and group them in memory."""
+
         with self.connection() as connection:
-            root = connection.execute(
-                """
-                SELECT request_json FROM graph_runs
-                WHERE project_id = ? AND parent_operation_id IS NULL
-                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(request_json, '$.control_node_id') = ?
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT 1
-                """,
-                (project_id, control_node_id),
-            ).fetchone()
-            if root is None:
-                return ExperimentLoopRuntime()
-            root_request = json.loads(root["request_json"])
-            episode_id = root_request.get("control_episode_id")
-            if not isinstance(episode_id, str):
-                raise ValueError("Stored experiment-loop root is missing its episode id.")
-            try:
-                uuid.UUID(episode_id)
-            except ValueError as exc:
-                raise ValueError("Stored experiment-loop root has an invalid episode id.") from exc
             task_rows = connection.execute(
                 """
-                SELECT status, attempt, request_json, created_at, rowid FROM graph_runs
+                SELECT operation_id, parent_operation_id, status, attempt, request_json,
+                       created_at, phase, status_message, last_activity_at,
+                       rowid AS storage_rowid
+                FROM graph_runs
                 WHERE project_id = ?
                   AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(request_json, '$.control_node_id') = ?
-                  AND json_extract(request_json, '$.control_episode_id') = ?
-                ORDER BY attempt DESC, created_at DESC, rowid DESC
                 """,
-                (project_id, control_node_id, episode_id),
+                (project_id,),
             ).fetchall()
-            watcher_rows = connection.execute(
+            receipt_rows = connection.execute(
                 """
-                SELECT status, notified FROM watchers
-                WHERE project_id = ?
-                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(continuation_json, '$.control_node_id') = ?
-                  AND (status IN ('active', 'degraded')
-                       OR (status = 'completed' AND notified = 0))
-                """,
-                (project_id, control_node_id),
-            ).fetchall()
-            exit_row = connection.execute(
-                """
-                SELECT 1
+                SELECT receipt.operation_id, receipt.category
                 FROM graph_run_receipts AS receipt
                 JOIN graph_runs AS task ON task.operation_id = receipt.operation_id
                 WHERE task.project_id = ?
                   AND json_extract(task.request_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(task.request_json, '$.control_node_id') = ?
-                  AND json_extract(task.request_json, '$.control_episode_id') = ?
-                  AND receipt.category = 'experiment_loop_exit'
-                LIMIT 1
+                  AND receipt.category IN (
+                      'experiment_loop_exit', 'experiment_recovery_abandoned'
+                  )
                 """,
-                (project_id, control_node_id, episode_id),
-            ).fetchone()
+                (project_id,),
+            ).fetchall()
+            watcher_rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE project_id = ?
+                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+                  AND (status IN ('active', 'degraded')
+                       OR (status = 'completed' AND notified = 0))
+                """,
+                (project_id,),
+            ).fetchall()
+            episode_rows = connection.execute(
+                """
+                SELECT * FROM experiment_episodes
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchall()
 
-        latest_by_invocation: dict[int, sqlite3.Row] = {}
+        tasks_by_control: dict[
+            str,
+            list[tuple[sqlite3.Row, dict[str, object]]],
+        ] = {}
         for row in task_rows:
             request = json.loads(row["request_json"])
+            control_node_id = request.get("control_node_id")
+            if not isinstance(control_node_id, str) or not control_node_id:
+                continue
+            if requested is not None and control_node_id not in requested:
+                continue
+            tasks_by_control.setdefault(control_node_id, []).append((row, request))
+
+        watchers_by_control: dict[str, list[WatcherRecord]] = {}
+        for row in watcher_rows:
+            record = self._watcher_record(row)
+            control_node_id = record.continuation.control_node_id
+            if not control_node_id:
+                continue
+            if requested is not None and control_node_id not in requested:
+                continue
+            watchers_by_control.setdefault(control_node_id, []).append(record)
+
+        receipt_categories: dict[str, set[str]] = {}
+        for row in receipt_rows:
+            receipt_categories.setdefault(str(row["operation_id"]), set()).add(str(row["category"]))
+        episodes = {
+            str(row["episode_id"]): self._experiment_episode_record(row) for row in episode_rows
+        }
+        control_node_ids = (
+            set(tasks_by_control) | set(watchers_by_control) if requested is None else requested
+        )
+        return {
+            control_node_id: self._derive_experiment_loop_runtime(
+                tasks_by_control.get(control_node_id, []),
+                watchers_by_control.get(control_node_id, []),
+                receipt_categories,
+                episodes,
+            )
+            for control_node_id in control_node_ids
+        }
+
+    @classmethod
+    def _derive_experiment_loop_runtime(
+        cls,
+        task_entries: list[tuple[sqlite3.Row, dict[str, object]]],
+        watchers: list[WatcherRecord],
+        receipt_categories: dict[str, set[str]],
+        episodes: dict[str, ExperimentEpisodeRecord],
+    ) -> ExperimentLoopRuntime:
+        """Purely derive one runtime from an already-loaded project ledger."""
+
+        root_entries = [entry for entry in task_entries if entry[0]["parent_operation_id"] is None]
+        if not root_entries:
+            return ExperimentLoopRuntime()
+        _, root_request = max(
+            root_entries,
+            key=lambda entry: (entry[0]["created_at"], entry[0]["storage_rowid"]),
+        )
+        episode_id = root_request.get("control_episode_id")
+        if not isinstance(episode_id, str):
+            raise ValueError("Stored experiment-loop root is missing its episode id.")
+        try:
+            uuid.UUID(episode_id)
+        except ValueError as exc:
+            raise ValueError("Stored experiment-loop root has an invalid episode id.") from exc
+
+        episode_entries = [
+            entry for entry in task_entries if entry[1].get("control_episode_id") == episode_id
+        ]
+        episode_entries.sort(
+            key=lambda entry: (
+                entry[0]["attempt"],
+                entry[0]["created_at"],
+                entry[0]["storage_rowid"],
+            ),
+            reverse=True,
+        )
+        episode = episodes.get(episode_id)
+        compatible_watchers = [
+            record
+            for record in watchers
+            if cls._experiment_watcher_matches_current(record, root_request, episode)
+        ]
+        latest_by_invocation: dict[
+            int,
+            tuple[sqlite3.Row, dict[str, object]],
+        ] = {}
+        for row, request in episode_entries:
             invocation = request.get("control_invocation")
             if isinstance(invocation, int) and invocation not in latest_by_invocation:
-                latest_by_invocation[invocation] = row
+                latest_by_invocation[invocation] = (row, request)
         ceiling = root_request.get("control_invocation_ceiling")
         if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < 1:
             raise ValueError("Stored experiment-loop root is missing its pinned ceiling.")
@@ -1271,14 +2212,22 @@ class AppStore:
             raise ValueError("Stored experiment-loop root exceeds its pinned ceiling.")
         unresolved = any(
             row["status"] in {"queued", "running", "pausing", "paused", "failed", "interrupted"}
-            for row in latest_by_invocation.values()
+            and "experiment_recovery_abandoned"
+            not in receipt_categories.get(str(row["operation_id"]), set())
+            for row, _request in latest_by_invocation.values()
         )
-        detached_work_active = any(row["status"] in {"active", "degraded"} for row in watcher_rows)
+        detached_work_active = any(
+            record.status in {"active", "degraded"} for record in compatible_watchers
+        )
+        watcher_degraded = any(record.status == "degraded" for record in compatible_watchers)
         watcher_completion_pending = any(
-            row["status"] == "completed" and not bool(row["notified"]) for row in watcher_rows
+            record.status == "completed" and not record.notified for record in compatible_watchers
         )
         has_watcher = detached_work_active or watcher_completion_pending
-        episode_exited = exit_row is not None
+        episode_exited = any(
+            "experiment_loop_exit" in receipt_categories.get(str(row["operation_id"]), set())
+            for row, _request in episode_entries
+        )
         at_ceiling = invocations_used >= ceiling
         pins = root_request.get("control_decision_bundle")
         if not isinstance(pins, list):
@@ -1291,6 +2240,11 @@ class AppStore:
             not isinstance(item, str) for item in completion_criteria
         ):
             raise ValueError("Stored experiment-loop root is missing its completion criteria.")
+        current_row, current_request = max(
+            episode_entries,
+            key=lambda entry: (entry[0]["created_at"], entry[0]["storage_rowid"]),
+        )
+        current_invocation = current_request.get("control_invocation")
         return ExperimentLoopRuntime(
             episode_id=episode_id,
             invocations_used=invocations_used,
@@ -1298,41 +2252,206 @@ class AppStore:
             control_revision=control_revision,
             task_active=unresolved,
             detached_work_active=detached_work_active,
+            watcher_degraded=watcher_degraded,
             watcher_completion_pending=watcher_completion_pending,
             episode_exited=episode_exited,
-            active=unresolved or (has_watcher and not at_ceiling and not episode_exited),
-            paused=has_watcher and at_ceiling and not unresolved and not episode_exited,
+            active=unresolved
+            or (
+                has_watcher
+                and not at_ceiling
+                and not episode_exited
+                and not (episode is not None and episode.stop_requested_at is not None)
+            ),
+            paused=has_watcher
+            and at_ceiling
+            and not unresolved
+            and not episode_exited
+            and not (episode is not None and episode.stop_requested_at is not None),
             decision_bundle=pins,
             completion_criteria=completion_criteria,
+            stop_requested=episode is not None and episode.stop_requested_at is not None,
+            stop_settled=episode is not None and episode.stop_settled_at is not None,
+            session_bound=episode is not None and episode.session_bound,
+            session_diagnostic=episode.session_diagnostic if episode else None,
+            provider=_optional_str(root_request.get("provider")),
+            model=(root_request["model"] if isinstance(root_request.get("model"), str) else None),
+            reasoning=_optional_str(root_request.get("reasoning")),
+            run_on=_optional_str(root_request.get("run_on")),
+            execution_host=episode.execution_host if episode else None,
+            run_truth_scope=(
+                [str(item) for item in root_request["run_truth_scope"]]
+                if isinstance(root_request.get("run_truth_scope"), list)
+                else None
+            ),
+            chat_id=_optional_str(root_request.get("chat_id")),
+            current_operation_id=current_row["operation_id"],
+            current_status=current_row["status"],
+            current_phase=current_row["phase"],
+            current_status_message=current_row["status_message"],
+            current_last_activity_at=current_row["last_activity_at"],
+            current_invocation=(
+                current_invocation if isinstance(current_invocation, int) else None
+            ),
+        )
+
+    @staticmethod
+    def _experiment_watcher_matches_current(
+        record: WatcherRecord,
+        root_request: dict[str, object],
+        episode: ExperimentEpisodeRecord | None,
+    ) -> bool:
+        """Whether watcher provenance can automatically wake the current episode.
+
+        Model, reasoning, and package pointers deliberately are not selectors:
+        the current episode owns those values. Human reauthorization uses the
+        frozen full continuation through a separate grouping path.
+        """
+
+        continuation = record.continuation
+        expected_scope = _experiment_pinned_value(root_request, "run_truth_scope")
+        actual_scope = _experiment_pinned_value(
+            continuation.model_dump(mode="json"),
+            "run_truth_scope",
+        )
+        episode_matches = episode is None or (
+            record.project_id == episode.project_id
+            and episode.control_node_id == root_request.get("control_node_id")
+            and (episode.chat_id is None or episode.chat_id == record.chat_id)
+            and (
+                episode.execution_machine is None
+                or (
+                    episode.execution_machine == continuation.run_on
+                    and record.execution_host == episode.execution_host
+                )
+            )
+        )
+        return (
+            continuation.patch_kind == "experiment_loop"
+            and continuation.provider == root_request.get("provider")
+            and continuation.run_on == root_request.get("run_on")
+            and continuation.control_node_id == root_request.get("control_node_id")
+            and record.chat_id == root_request.get("chat_id")
+            and record.node_id == root_request.get("node_id")
+            and expected_scope == actual_scope
+            and episode_matches
+        )
+
+    @staticmethod
+    def _experiment_episode_root_request(
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        episode_id: str,
+    ) -> dict[str, object] | None:
+        row = connection.execute(
+            """
+            SELECT request_json FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(request_json, '$.control_episode_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (project_id, control_node_id, episode_id),
+        ).fetchone()
+        return json.loads(row["request_json"]) if row is not None else None
+
+    @classmethod
+    def _watcher_suppressed_by_current_stop(
+        cls,
+        connection: sqlite3.Connection,
+        record: WatcherRecord,
+        cache: dict[
+            tuple[str, str],
+            tuple[dict[str, object], ExperimentEpisodeRecord] | None,
+        ],
+    ) -> bool:
+        continuation = record.continuation
+        control_node_id = continuation.control_node_id
+        if continuation.patch_kind != "experiment_loop" or not control_node_id:
+            return False
+        key = (record.project_id, control_node_id)
+        if key not in cache:
+            root = connection.execute(
+                """
+                SELECT request_json FROM graph_runs
+                WHERE project_id = ? AND parent_operation_id IS NULL
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(request_json, '$.control_node_id') = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                key,
+            ).fetchone()
+            context = None
+            if root is not None:
+                root_request = json.loads(root["request_json"])
+                episode_id = root_request.get("control_episode_id")
+                episode_row = (
+                    connection.execute(
+                        "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+                        (episode_id,),
+                    ).fetchone()
+                    if isinstance(episode_id, str)
+                    else None
+                )
+                if episode_row is not None and episode_row["stop_requested_at"] is not None:
+                    context = (root_request, cls._experiment_episode_record(episode_row))
+            cache[key] = context
+        context = cache[key]
+        return context is not None and cls._experiment_watcher_matches_current(
+            record,
+            context[0],
+            context[1],
+        )
+
+    def experiment_watcher_compatible_with_episode(
+        self,
+        watcher_id: str,
+        episode_id: str,
+    ) -> bool:
+        """Whether a stopped observer belonged to that episode operationally.
+
+        Watcher origin remains immutable provenance. This derived relation lets
+        a fresh post-stop Run stage compatible adopted observers as history even
+        when an older invocation or episode originally armed them.
+        """
+
+        with self.connection() as connection:
+            watcher_row = connection.execute(
+                "SELECT * FROM watchers WHERE watcher_id = ?",
+                (watcher_id,),
+            ).fetchone()
+            episode_row = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if watcher_row is None or episode_row is None:
+                return False
+            record = self._watcher_record(watcher_row)
+            episode = self._experiment_episode_record(episode_row)
+            root_request = self._experiment_episode_root_request(
+                connection,
+                episode.project_id,
+                episode.control_node_id,
+                episode_id,
+            )
+        return root_request is not None and self._experiment_watcher_matches_current(
+            record,
+            root_request,
+            episode,
         )
 
     def active_experiment_control_ids(self, project_id: str) -> set[str]:
         """Return Experiments whose newest operational episode is still live."""
 
-        with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT json_extract(request_json, '$.control_node_id') AS node_id
-                FROM graph_runs
-                WHERE project_id = ?
-                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                UNION
-                SELECT json_extract(continuation_json, '$.control_node_id') AS node_id
-                FROM watchers
-                WHERE project_id = ?
-                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
-                """,
-                (project_id, project_id),
-            ).fetchall()
-        candidates = {
-            str(row["node_id"])
-            for row in rows
-            if isinstance(row["node_id"], str) and row["node_id"]
-        }
         return {
-            node_id
-            for node_id in candidates
-            if self.experiment_loop_runtime(project_id, node_id).active
+            control_node_id
+            for control_node_id, runtime in self._project_experiment_loop_runtimes(
+                project_id, None
+            ).items()
+            if runtime.active
         }
 
     def record_watcher_check(
@@ -1392,16 +2511,29 @@ class AppStore:
                 ORDER BY completed_at, created_at, watcher_id
                 """
             ).fetchall()
+            records = [self._watcher_record(row) for row in rows]
+            stopping_contexts: dict[
+                tuple[str, str],
+                tuple[dict[str, object], ExperimentEpisodeRecord] | None,
+            ] = {}
+            records = [
+                record
+                for record in records
+                if not self._watcher_suppressed_by_current_stop(
+                    connection,
+                    record,
+                    stopping_contexts,
+                )
+            ]
         groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
-        for row in rows:
-            record = self._watcher_record(row)
+        for record in records:
             key = (
                 record.project_id,
                 record.origin_task_kind,
                 record.chat_id,
                 record.node_id,
                 record.execution_host,
-                self._watcher_delivery_policy(record.continuation),
+                self._automatic_watcher_delivery_policy(record.continuation),
             )
             groups.setdefault(key, []).append(record)
         return list(groups.values())
@@ -1411,17 +2543,35 @@ class AppStore:
         project_id: str,
         control_node_id: str,
     ) -> list[WatcherRecord] | None:
-        """Return the oldest pending compatible group for one Experiment."""
+        """Return the oldest frozen group a human may reauthorize.
 
-        for group in self.completed_watcher_groups():
-            first = group[0]
-            if (
-                first.project_id == project_id
-                and first.continuation.patch_kind == "experiment_loop"
-                and first.continuation.control_node_id == control_node_id
-            ):
-                return group
-        return None
+        Unlike automatic delivery, human reauthorization preserves the full
+        watcher configuration, including model, reasoning, and package pointers.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE project_id = ? AND status = 'completed' AND notified = 0
+                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+                  AND json_extract(continuation_json, '$.control_node_id') = ?
+                ORDER BY completed_at, created_at, watcher_id
+                """,
+                (project_id, control_node_id),
+            ).fetchall()
+        groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
+        for row in rows:
+            record = self._watcher_record(row)
+            key = (
+                record.origin_task_kind,
+                record.chat_id,
+                record.node_id,
+                record.execution_host,
+                self._watcher_delivery_policy(record.continuation),
+            )
+            groups.setdefault(key, []).append(record)
+        return next(iter(groups.values()), None)
 
     def create_watcher_notification_task(
         self,
@@ -1471,13 +2621,19 @@ class AppStore:
                         item.chat_id,
                         item.node_id,
                         item.execution_host,
-                        self._watcher_delivery_policy(item.continuation),
+                        (
+                            self._automatic_watcher_delivery_policy(item.continuation)
+                            if record.request.get("trigger") == "watcher"
+                            else self._watcher_delivery_policy(item.continuation)
+                        ),
                     )
                     for item in watchers
                 }
                 if len(bindings) != 1:
                     raise ValueError("one notification cannot merge incompatible watch lists")
                 self._validate_watcher_notification_scope(connection, record, watchers)
+                if self._experiment_wake_is_stopped(connection, record):
+                    return None
                 if self._has_active_chat_overlap(connection, record):
                     return None
                 self._insert_agent_task(connection, record)
@@ -1499,8 +2655,35 @@ class AppStore:
         return stored
 
     @staticmethod
+    def _experiment_wake_is_stopped(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> bool:
+        """Refuse an automatic wake whose episode already carries a stop request.
+
+        The check runs inside the claim's own write transaction, so a claim either
+        commits before the stop or finds it — there is no window where both win.
+        """
+
+        request = record.request
+        if request.get("patch_kind") != "experiment_loop" or request.get("trigger") != "watcher":
+            return False
+        episode_id = request.get("control_episode_id")
+        if not isinstance(episode_id, str):
+            return False
+        row = connection.execute(
+            "SELECT stop_requested_at FROM experiment_episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        return row is not None and row["stop_requested_at"] is not None
+
+    @staticmethod
     def _watcher_delivery_policy(continuation: WatcherContinuation) -> str:
         policy = continuation.model_dump(mode="json")
+        if continuation.patch_kind == "experiment_loop" and policy.get("model") is None:
+            # Legacy Experiment watchers stored the provider-default sentinel
+            # as null. It is immutable policy, equivalent to today's "".
+            policy["model"] = ""
         for field in (
             "control_revision",
             "control_episode_id",
@@ -1510,6 +2693,21 @@ class AppStore:
             "control_completion_criteria",
         ):
             policy.pop(field, None)
+        return json.dumps(policy, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _automatic_watcher_delivery_policy(continuation: WatcherContinuation) -> str:
+        """Policy key for poller-driven delivery; generic Work stays unchanged."""
+
+        if continuation.patch_kind != "experiment_loop":
+            return AppStore._watcher_delivery_policy(continuation)
+        policy = {
+            "provider": continuation.provider,
+            "run_on": continuation.run_on,
+            "run_truth_scope": sorted(set(continuation.run_truth_scope or [])),
+            "patch_kind": continuation.patch_kind,
+            "control_node_id": continuation.control_node_id,
+        }
         return json.dumps(policy, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
@@ -1536,14 +2734,26 @@ class AppStore:
             raise ValueError(
                 f"watcher notification changed immutable scope: {', '.join(mismatched)}"
             )
-        request_continuation = WatcherContinuation.model_validate(
-            {key: request[key] for key in WatcherContinuation.model_fields if key in request}
-        )
-        if AppStore._watcher_delivery_policy(
-            request_continuation
-        ) != AppStore._watcher_delivery_policy(continuation):
-            raise ValueError("watcher notification changed its immutable delivery policy")
+        request_continuation_data = {
+            key: request[key] for key in WatcherContinuation.model_fields if key in request
+        }
+        for nullable_list in ("workflow_ids", "skill_ids", "resolved_skill_packages"):
+            if request_continuation_data.get(nullable_list) is None:
+                request_continuation_data[nullable_list] = []
+        request_continuation = WatcherContinuation.model_validate(request_continuation_data)
         trigger = request.get("trigger")
+        request_policy = (
+            AppStore._automatic_watcher_delivery_policy(request_continuation)
+            if trigger == "watcher" and continuation.patch_kind == "experiment_loop"
+            else AppStore._watcher_delivery_policy(request_continuation)
+        )
+        continuation_policy = (
+            AppStore._automatic_watcher_delivery_policy(continuation)
+            if trigger == "watcher" and continuation.patch_kind == "experiment_loop"
+            else AppStore._watcher_delivery_policy(continuation)
+        )
+        if request_policy != continuation_policy:
+            raise ValueError("watcher notification changed its immutable delivery policy")
         if continuation.patch_kind != "experiment_loop":
             if trigger != "watcher":
                 raise ValueError("a generic watcher notification must use the watcher trigger")
@@ -1564,11 +2774,25 @@ class AppStore:
                 """,
                 (record.project_id, continuation.control_node_id),
             ).fetchone()
-            if (
-                newest is None
-                or json.loads(newest["request_json"]).get("control_episode_id") != episode_id
-            ):
+            newest_request = json.loads(newest["request_json"]) if newest is not None else None
+            if newest_request is None or newest_request.get("control_episode_id") != episode_id:
                 raise ValueError("an automatic Experiment wake must use the newest episode")
+            episode_row = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            episode = (
+                AppStore._experiment_episode_record(episode_row)
+                if episode_row is not None
+                else None
+            )
+            if any(
+                not AppStore._experiment_watcher_matches_current(item, newest_request, episode)
+                for item in watchers
+            ):
+                raise ValueError(
+                    "completed watchers are incompatible with the current Experiment episode"
+                )
             return
         if trigger != "experiment_run" or invocation != 1:
             raise ValueError("a human Experiment watcher claim must start a new episode")
@@ -1592,7 +2816,16 @@ class AppStore:
     def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+                """
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category = 'experiment_recovery_abandoned'
+                       ) AS recovery_abandoned
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
             ).fetchone()
         return self._agent_task_record(row) if row else None
 
@@ -1623,6 +2856,24 @@ class AppStore:
             if not eligible:
                 raise ValueError(
                     "This task has no repairable graph update. Start a new Work turn instead."
+                )
+            if request.get("patch_kind") == "experiment_loop":
+                control_node_id = request.get("control_node_id")
+                episode_id = request.get("control_episode_id")
+                invocation = request.get("control_invocation")
+                if (
+                    not isinstance(control_node_id, str)
+                    or not isinstance(episode_id, str)
+                    or not isinstance(invocation, int)
+                ):
+                    raise ValueError("The Experiment graph repair lost its control binding.")
+                self._validate_current_experiment_graph_repair(
+                    connection,
+                    project_id=data["project_id"],
+                    control_node_id=control_node_id,
+                    episode_id=episode_id,
+                    invocation=invocation,
+                    operation_id=operation_id,
                 )
             assert isinstance(result, dict)
             assert isinstance(graph_update, dict)
@@ -1682,7 +2933,13 @@ class AppStore:
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM graph_runs
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category = 'experiment_recovery_abandoned'
+                       ) AS recovery_abandoned
+                FROM graph_runs
                 WHERE project_id = ?
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -2109,6 +3366,12 @@ class AppStore:
                         FROM graph_runs AS child
                         WHERE child.parent_operation_id = paused.operation_id
                     )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM graph_run_receipts AS receipt
+                        WHERE receipt.operation_id = paused.operation_id
+                          AND receipt.category = 'experiment_recovery_abandoned'
+                    )
                 LIMIT 1
                 """,
                 (project_id, kind, chat_id),
@@ -2208,6 +3471,29 @@ class AppStore:
             data["payload"] = json.loads(data.pop("payload_json"))
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
+
+    def agent_task_continuation_cause(self, operation_id: str) -> str | None:
+        """Return the durable launch cause for one task attempt.
+
+        Recovery must preserve patch-only graph-repair semantics instead of
+        inferring a full Work turn from the request shape alone.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'operation_created'
+                ORDER BY receipt_id ASC
+                LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row["payload_json"])
+        cause = payload.get("continuation_cause") if isinstance(payload, dict) else None
+        return cause if isinstance(cause, str) and cause else None
 
     def record_agent_task_receipt(
         self,
@@ -2911,8 +4197,16 @@ class AppStore:
         data["notified"] = bool(data["notified"])
         return WatcherRecord.model_validate(data)
 
+    @staticmethod
+    def _experiment_episode_record(row: sqlite3.Row) -> ExperimentEpisodeRecord:
+        data = dict(row)
+        data["last_watcher_ids"] = json.loads(data.pop("last_watcher_ids_json"))
+        data["context_baseline"] = json.loads(data.pop("context_baseline_json"))
+        return ExperimentEpisodeRecord.model_validate(data)
+
     def _agent_task_record(self, row: sqlite3.Row) -> AgentTaskRecord:
         data = dict(row)
+        recovery_abandoned = bool(data.pop("recovery_abandoned", False))
         data["request"] = json.loads(data.pop("request_json"))
         result_json = data.pop("result_json", None)
         data["result"] = json.loads(result_json) if result_json else None
@@ -2939,8 +4233,11 @@ class AppStore:
             status in {"paused", "interrupted"}
             and bool(data.get("native_session_id"))
             and stage_ready
+            and not recovery_abandoned
         )
-        data["can_retry"] = status in {"paused", "interrupted", "failed"} and not active
+        data["can_retry"] = (
+            status in {"paused", "interrupted", "failed"} and not active and not recovery_abandoned
+        )
         return AgentTaskRecord.model_validate(data)
 
     @staticmethod
@@ -2962,3 +4259,7 @@ class AppStore:
     @staticmethod
     def now() -> str:
         return datetime.now(UTC).isoformat()
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None

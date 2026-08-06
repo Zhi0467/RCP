@@ -195,7 +195,9 @@ HUMAN_EDITABLE_NODE_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
     "evidence": frozenset({"title", "observation", "interpretation"}),
-    "blocker": frozenset({"title", "description", "resolution_condition", "recommended_action"}),
+    "blocker": frozenset(
+        {"title", "description", "status", "resolution_condition", "recommended_action"}
+    ),
 }
 
 

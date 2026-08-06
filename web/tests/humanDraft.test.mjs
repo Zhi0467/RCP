@@ -79,6 +79,64 @@ test("wording edits clear an existing judgment and disappear when fully reverted
   assert.equal(humanDraftChangeCount(reverted), 0);
 });
 
+test("Blocker lifecycle edits invalidate prior judgment and can reopen attention", () => {
+  const acceptedOpen = {
+    id: "blocker/accepted-open",
+    type: "blocker",
+    title: "Accepted open blocker",
+    standing: "accepted",
+    status: "open",
+    blocker_type: "scientific",
+    description: "A result is missing.",
+    resolution_condition: "Record the result.",
+    recommended_action: null,
+    created_rev: 2,
+    updated_rev: 4,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const resolvedAsserted = {
+    ...acceptedOpen,
+    id: "blocker/resolved-asserted",
+    title: "Resolved asserted blocker",
+    standing: "asserted",
+    status: "resolved",
+  };
+  const lifecycleGraph = {
+    ...graph,
+    nodes: {
+      ...graph.nodes,
+      [acceptedOpen.id]: acceptedOpen,
+      [resolvedAsserted.id]: resolvedAsserted,
+    },
+  };
+
+  const resolvingStart = stageNodeEditStart(emptyHumanDraft(4), lifecycleGraph, acceptedOpen.id);
+  const resolving = stageNodeEdit(resolvingStart, lifecycleGraph, acceptedOpen.id, {
+    status: "resolved",
+  });
+  assert.deepEqual(resolving.nodes[acceptedOpen.id].changes, { status: "resolved" });
+  assert.equal(resolving.nodes[acceptedOpen.id].standing, "asserted");
+  assert.equal(
+    applyHumanDraft(lifecycleGraph, resolving).nodes[acceptedOpen.id].status,
+    "resolved",
+  );
+
+  const reopeningStart = stageNodeEditStart(
+    emptyHumanDraft(4),
+    lifecycleGraph,
+    resolvedAsserted.id,
+  );
+  assert.equal(reopeningStart.nodes[resolvedAsserted.id].standing, "asserted");
+  const reopening = stageNodeEdit(reopeningStart, lifecycleGraph, resolvedAsserted.id, {
+    status: "open",
+  });
+  assert.deepEqual(reopening.nodes[resolvedAsserted.id].changes, { status: "open" });
+  const reopened = applyHumanDraft(lifecycleGraph, reopening).nodes[resolvedAsserted.id];
+  assert.equal(reopened.status, "open");
+  assert.equal(reopened.standing, "asserted");
+});
+
 test("judgments, proposal decisions, and ambiguity decisions are reversible", () => {
   let draft = stageNodeStanding(emptyHumanDraft(4), graph, "hyp/example", "contested");
   draft = stageProposalDecision(draft, "proposal/1", "approved");

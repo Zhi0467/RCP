@@ -597,7 +597,9 @@ class ProjectService:
         blockers = [
             item
             for item in state.nodes.values()
-            if item.type == "blocker" and item.status == "open"
+            if item.type == "blocker"
+            and item.status == "open"
+            and item.standing == Standing.ASSERTED
         ]
         refresh_profile = self.manifest.agent_profile("refresh")
         profiles = {
@@ -1112,6 +1114,7 @@ class ProjectService:
                 )
             ops: list[dict[str, Any]] = []
             change_summary: list[str] = []
+            changed_fields: set[str] = set()
             display_title = str(staged.changes.get("title", node.title))
             if staged.changes:
                 allowed = set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
@@ -1124,12 +1127,15 @@ class ProjectService:
                         f"Direct edits to {node.id} cannot change: {', '.join(disallowed)}."
                     )
                 current = node.model_dump(mode="python")
-                if any(current[field] != value for field, value in staged.changes.items()):
+                changed_fields = {
+                    field for field, value in staged.changes.items() if current[field] != value
+                }
+                if changed_fields:
                     candidate = {**current, **staged.changes}
                     try:
                         type(node).model_validate(candidate)
                     except ValueError as exc:
-                        raise ValueError(f"Invalid wording for {node.id}: {exc}") from exc
+                        raise ValueError(f"Invalid edit for {node.id}: {exc}") from exc
                     ops.append(
                         {
                             "op": "update_nodes",
@@ -1142,7 +1148,13 @@ class ProjectService:
                             ],
                         }
                     )
-                    change_summary.append(f"Updated wording for “{display_title}”.")
+                    if changed_fields - {"status"}:
+                        change_summary.append(f"Updated wording for “{display_title}”.")
+                    if "status" in changed_fields:
+                        change_summary.append(
+                            f"Updated lifecycle for “{display_title}”: status is now "
+                            f"{staged.changes['status']}."
+                        )
             if staged.cancel_attempt_ids:
                 ops.append(
                     {
@@ -1161,15 +1173,18 @@ class ProjectService:
                     }
                 )
                 change_summary.append(f"Released open experiment attempts for “{display_title}”.")
-            if staged.standing is not None and staged.standing != node.standing:
+            resulting_standing = staged.standing
+            if changed_fields and resulting_standing is None and node.standing != Standing.ASSERTED:
+                resulting_standing = Standing.ASSERTED
+            if resulting_standing is not None and resulting_standing != node.standing:
                 ops.append(
                     {
                         "op": "set_standing",
                         "node_id": node.id,
-                        "standing": staged.standing,
+                        "standing": resulting_standing,
                     }
                 )
-                change_summary.append(f"“{display_title}” is now {staged.standing}.")
+                change_summary.append(f"“{display_title}” is now {resulting_standing}.")
             if ops:
                 patches.append(
                     Patch(

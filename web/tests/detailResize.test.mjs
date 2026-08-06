@@ -16,7 +16,7 @@ const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawe
 
 after(() => server.close());
 
-test("only the node detail gets a persisted keyboard-accessible resize handle", () => {
+test("node detail and chat get four pointer-only resize corners", () => {
   const previousWindow = globalThis.window;
   globalThis.window = {
     innerWidth: 1000,
@@ -63,15 +63,27 @@ test("only the node detail gets a persisted keyboard-accessible resize handle", 
     const chat = renderToStaticMarkup(
       React.createElement(
         DraggableWindow,
-        { className: "node-chat-window", kind: "chat" },
+        { className: "node-chat-window", kind: "chat", resizable: true },
         React.createElement("aside", null, "Chat"),
       ),
     );
 
     assert.match(detail, /width:780px;height:650px/);
-    assert.match(detail, /aria-label="Resize node detail window"/);
-    assert.match(detail, /aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"/);
-    assert.doesNotMatch(chat, /floating-window-resize-handle|Resize node detail window/);
+    for (const markup of [detail, chat]) {
+      assert.equal(markup.match(/data-resize-corner=/g)?.length, 4);
+      for (const corner of ["top-left", "top-right", "bottom-left", "bottom-right"]) {
+        assert.match(
+          markup,
+          new RegExp(
+            `<div class="floating-window-resize-corner ${corner}" data-resize-corner="${corner}"`,
+          ),
+        );
+      }
+      assert.doesNotMatch(
+        markup,
+        /floating-window-resize-handle|aria-keyshortcuts|Resize node detail window/,
+      );
+    }
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
