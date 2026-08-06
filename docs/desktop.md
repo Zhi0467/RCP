@@ -99,18 +99,27 @@ disposable Rust build output:
 cargo clean --manifest-path web/src-tauri/Cargo.toml
 ```
 
-## Publish a release
+## Publish a GitHub preview release
 
-The repository currently produces an unsigned, unnotarized local app. Publishing requires
-all of the following outside the ordinary build:
+GitHub preview releases may distribute the current unsigned, unnotarized app while RCP is
+still stabilizing. Before publishing one:
 
-1. An intentional version bump.
-2. Apple Developer ID signing.
-3. Apple notarization and stapling.
-4. A downloadable archive or installer with checksums.
-5. An updater signing key, HTTPS endpoint, and published manifest.
+1. Choose an intentional version and tag a clean, tested commit.
+2. Build and test the exact application bundle that will be uploaded.
+3. Archive `RCP.app` without discarding its macOS metadata, and publish a SHA-256 checksum.
+4. Mark the GitHub release as a pre-release.
+5. State prominently that the build supports Apple Silicon, is not Apple-notarized, may
+   require explicit approval from macOS, and must be updated manually.
+
+Do not create Tauri updater artifacts for an unsigned preview. Automatic updates remain
+disabled until an updater signing key, HTTPS endpoint, and published manifest exist.
+
+## Publish a signed macOS release
+
+Apple signing is the later stable-distribution gate. In addition to the tested GitHub
+artifact above, it requires Apple Developer ID signing, notarization and stapling, and a
+downloaded-artifact Gatekeeper check on a clean macOS account.
 
 `npm --prefix web run desktop:build-signed` asks Tauri to create updater artifacts, but it
-does not provide the signing identity, notarization credentials, updater configuration, or
-publishing infrastructure. Do not describe a local bundle as a release until the signed,
-notarized, distributed artifact has passed the packaged-app checks above.
+does not provide the Apple signing identity, notarization credentials, updater key,
+endpoint configuration, or publishing infrastructure.
