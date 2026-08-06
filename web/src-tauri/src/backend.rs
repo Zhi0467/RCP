@@ -67,7 +67,7 @@ impl BackendState {
     pub fn update_health(&self, health: &Health) {
         if let Ok(mut inner) = self.inner.lock() {
             if let Some(status) = inner.status.as_mut() {
-                if health.instance_id == status.instance_id {
+                if status.matches_health(health) {
                     status.active_agent_tasks = health.active_agent_tasks;
                     status.owner_kind = health.owner_kind.clone();
                 }
@@ -129,10 +129,7 @@ pub async fn connect(
     let _guard = state.connect_lock.lock().await;
     if let Ok(mut status) = state.status() {
         if let Ok(current) = health(&status).await {
-            if current.instance_id == status.instance_id
-                && current.data_dir_id == status.data_dir_id
-                && current.version == status.version
-            {
+            if status.matches_health(&current) {
                 state.update_health(&current);
                 status.active_agent_tasks = current.active_agent_tasks;
                 status.owner_kind = current.owner_kind;
@@ -245,25 +242,51 @@ pub async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, Strin
     let health = match wait_for_health(&outcome).await {
         Ok(health) => health,
         Err(error) => {
-            if outcome.owned {
-                let cleanup = stop_process(&process, process.pid()).await;
-                return Err(match cleanup {
-                    Ok(false) => error,
-                    Ok(true) => {
-                        format!("{error}; the unready owned backend required forced termination")
-                    }
-                    Err(cleanup_error) => {
-                        format!(
-                            "{error}; its owned process could not be cleaned up: {cleanup_error}"
-                        )
-                    }
-                });
-            }
-            return Err(error);
+            let Some(pid) = failed_start_cleanup_pid(&outcome, None, process.pid()) else {
+                return Err(error);
+            };
+            let cleanup = stop_process(&process, pid).await;
+            return Err(match cleanup {
+                Ok(false) => error,
+                Ok(true) => {
+                    format!("{error}; the unready owned backend required forced termination")
+                }
+                Err(cleanup_error) => {
+                    format!("{error}; its owned process could not be cleaned up: {cleanup_error}")
+                }
+            });
         }
     };
-    let status = DesktopStatus::from_ready(&outcome, &health)?;
+    let status = match DesktopStatus::from_ready(&outcome, &health) {
+        Ok(status) => status,
+        Err(error) => {
+            let Some(pid) = failed_start_cleanup_pid(&outcome, Some(&health), process.pid()) else {
+                return Err(error);
+            };
+            let cleanup = stop_process(&process, pid).await;
+            return Err(match cleanup {
+                Ok(false) => {
+                    format!("{error}; the mismatched owned backend is no longer running")
+                }
+                Ok(true) => {
+                    format!("{error}; the mismatched owned backend required forced termination")
+                }
+                Err(cleanup_error) => format!(
+                    "{error}; the mismatched owned backend could not be cleaned up: {cleanup_error}"
+                ),
+            });
+        }
+    };
     Ok(StartedBackend { status, process })
+}
+
+fn failed_start_cleanup_pid(
+    outcome: &LaunchOutcome,
+    verified_health: Option<&Health>,
+    launcher_pid: u32,
+) -> Option<u32> {
+    (outcome.outcome == "owned" && outcome.owned)
+        .then(|| verified_health.map_or(launcher_pid, |health| health.pid))
 }
 
 fn parse_launch_stdout(
@@ -515,6 +538,18 @@ pub async fn health(status: &DesktopStatus) -> Result<Health, String> {
         .map_err(|error| format!("backend health was invalid: {error}"))
 }
 
+pub(crate) async fn reverify_identity(
+    state: &BackendState,
+    status: &DesktopStatus,
+) -> Result<Health, String> {
+    let current = health(status).await?;
+    if !status.matches_health(&current) {
+        return Err("backend identity changed; reconnect before continuing".into());
+    }
+    state.update_health(&current);
+    Ok(current)
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ShutdownResult {
     pub stopped_owned_backend: bool,
@@ -575,8 +610,11 @@ async fn stop_process(process: &BackendProcess, signal_pid: u32) -> Result<bool,
         return Ok(false);
     }
     send_signal(signal_pid, libc::SIGKILL)?;
-    let _ = process.wait(Duration::from_secs(2)).await;
-    Ok(true)
+    if process.wait(Duration::from_secs(2)).await {
+        Ok(true)
+    } else {
+        Err("owned backend did not exit after forced termination".into())
+    }
 }
 
 fn send_signal(pid: u32, signal: libc::c_int) -> Result<(), String> {
@@ -607,6 +645,29 @@ fn launch_error(stderr: &[u8], fallback: &str) -> String {
 mod tests {
     use super::*;
 
+    fn launch_outcome(outcome: &str, owned: bool) -> LaunchOutcome {
+        LaunchOutcome {
+            outcome: outcome.into(),
+            base_url: "http://127.0.0.1:8421".into(),
+            instance_id: Some("instance-a".into()),
+            version: "0.3.0".into(),
+            owned,
+            reason: None,
+        }
+    }
+
+    fn ready_health(pid: u32) -> Health {
+        Health {
+            status: "ok".into(),
+            pid,
+            version: "0.3.0".into(),
+            instance_id: "instance-a".into(),
+            data_dir_id: "data-a".into(),
+            owner_kind: "desktop".into(),
+            active_agent_tasks: 0,
+        }
+    }
+
     #[test]
     fn launch_stdout_skips_build_output_before_the_machine_result() {
         let mut pending = Vec::new();
@@ -624,5 +685,26 @@ mod tests {
         assert_eq!(outcome.outcome, "owned");
         assert_eq!(outcome.instance_id.as_deref(), Some("instance-a"));
         assert_eq!(diagnostics, b"[stdout] Building frontend...\n");
+    }
+
+    #[test]
+    fn failed_start_cleanup_targets_only_an_owned_backend() {
+        let health = ready_health(7331);
+        assert_eq!(
+            failed_start_cleanup_pid(&launch_outcome("owned", true), Some(&health), 4114),
+            Some(7331)
+        );
+        assert_eq!(
+            failed_start_cleanup_pid(&launch_outcome("owned", true), None, 4114),
+            Some(4114)
+        );
+        assert_eq!(
+            failed_start_cleanup_pid(&launch_outcome("reused", false), Some(&health), 4114),
+            None
+        );
+        assert_eq!(
+            failed_start_cleanup_pid(&launch_outcome("reused", true), Some(&health), 4114),
+            None
+        );
     }
 }

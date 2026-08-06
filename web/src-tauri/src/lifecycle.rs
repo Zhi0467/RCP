@@ -77,12 +77,15 @@ impl DesktopStatus {
         })
     }
 
-    pub fn still_owns(&self, health: &Health) -> bool {
-        self.owned
-            && health.status == "ok"
+    pub(crate) fn matches_health(&self, health: &Health) -> bool {
+        health.status == "ok"
             && health.instance_id == self.instance_id
             && health.data_dir_id == self.data_dir_id
             && health.version == self.version
+    }
+
+    pub fn still_owns(&self, health: &Health) -> bool {
+        self.owned && self.matches_health(health)
     }
 }
 
@@ -132,6 +135,34 @@ mod tests {
         let mut replaced = health();
         replaced.instance_id = "instance-b".into();
         assert!(!status.still_owns(&replaced));
+    }
+
+    #[test]
+    fn cached_status_matches_only_the_full_health_identity() {
+        let outcome = LaunchOutcome::parse(
+            r#"{"outcome":"owned","base_url":"http://127.0.0.1:8421","instance_id":"instance-a","version":"0.3.0","owned":true}"#,
+        )
+        .unwrap();
+        let status = DesktopStatus::from_ready(&outcome, &health()).unwrap();
+        assert!(status.matches_health(&health()));
+
+        let mut mismatches = Vec::new();
+        let mut unhealthy = health();
+        unhealthy.status = "starting".into();
+        mismatches.push(unhealthy);
+        let mut replaced = health();
+        replaced.instance_id = "instance-b".into();
+        mismatches.push(replaced);
+        let mut other_data_dir = health();
+        other_data_dir.data_dir_id = "data-b".into();
+        mismatches.push(other_data_dir);
+        let mut other_version = health();
+        other_version.version = "0.4.0".into();
+        mismatches.push(other_version);
+
+        for mismatch in mismatches {
+            assert!(!status.matches_health(&mismatch));
+        }
     }
 
     #[test]

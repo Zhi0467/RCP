@@ -44,7 +44,7 @@ pub struct ApplyUpdateResult {
 pub async fn desktop_status(state: State<'_, BackendState>) -> Result<DesktopStatus, String> {
     let mut status = state.status()?;
     if let Ok(health) = backend::health(&status).await {
-        if health.instance_id == status.instance_id && health.data_dir_id == status.data_dir_id {
+        if status.matches_health(&health) {
             state.update_health(&health);
             status.active_agent_tasks = health.active_agent_tasks;
             status.owner_kind = health.owner_kind;
@@ -68,7 +68,7 @@ pub async fn desktop_show_ready(
 ) -> Result<ShowResult, String> {
     let status = state.status()?;
     let health = backend::health(&status).await?;
-    if health.instance_id != status.instance_id || health.data_dir_id != status.data_dir_id {
+    if !status.matches_health(&health) {
         let message = "backend identity changed before the desktop window was shown";
         app.emit_to(
             "main",
@@ -100,6 +100,7 @@ pub async fn open_artifact_preview(
         "preview",
     )?;
     ensure_available(&url).await?;
+    backend::reverify_identity(&state, &status).await?;
     windows::open_preview(&app, url, status.base_url)?;
     Ok(OpenResult { opened: true })
 }
@@ -137,6 +138,7 @@ pub async fn download_artifact(
     let path = chosen
         .into_path()
         .map_err(|error| format!("selected destination is not a local file: {error}"))?;
+    backend::reverify_identity(&state, &status).await?;
     let response = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
