@@ -4,22 +4,12 @@ RCP is a local research control panel for turning agent conversations, repositor
 evidence, experiments, and human decisions into one durable research graph and paper
 workspace.
 
-RCP has a browser interface and a native macOS app. They are not separate
-implementations: both use the same React interface, FastAPI backend, project catalog,
-background tasks, and canonical research state.
+RCP currently runs from source in either a browser or a native macOS development shell.
+They are not separate implementations: both use the same React interface, FastAPI
+backend, project catalog, background tasks, and canonical research state.
 
-> **Desktop status:** this repository builds an Apple Silicon macOS application locally.
-> Local bundles are unsigned and unnotarized; the repository does not yet publish a public
-> download or provide a configured update channel.
-
-## Choose how to run RCP
-
-| Goal                                                  | Use                                | What must be installed                                          |
-| ----------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------- |
-| Use the self-contained Mac application                | A built `RCP.app`                  | Nothing for RCP itself; Codex or Claude only for agent features |
-| Open the current checkout as a normal Mac application | A built `RCP Dev.app`              | This checkout and `uv`                                          |
-| Develop Python and React in a browser                 | `uv run rcp serve --reload`        | Python 3.11+, `uv`, Node.js, and npm                            |
-| Develop the native shell with live frontend updates   | `npm --prefix web run desktop:dev` | The browser-development tools plus Rust                         |
+> **Desktop status:** development only. This repository can build `RCP Dev.app` for the
+> current checkout, but it does not publish a distributable release.
 
 ## System architecture
 
@@ -27,9 +17,8 @@ The desktop app is a native shell around the web app, not a rewrite in Rust.
 
 ```mermaid
 flowchart LR
-    Browser["Browser<br/>rcp open"]
-    Dev["RCP Dev.app<br/>Tauri shell"]
-    Release["RCP.app<br/>Tauri shell"]
+    Browser["Browser path<br/>rcp open or serve"]
+    Desktop["Desktop path<br/>tauri dev or RCP Dev.app"]
 
     subgraph Shared["One shared RCP application"]
         UI["React + TypeScript UI"]
@@ -38,13 +27,12 @@ flowchart LR
     end
 
     Browser --> UI
-    Dev --> UI
-    Release --> UI
+    Desktop --> UI
     UI -->|"HTTP and SSE on localhost"| API
     API --> Core
 
-    Dev -. "starts or reuses the source backend" .-> API
-    Release -. "starts or reuses the packaged backend" .-> API
+    Browser -. "starts or reuses the source backend" .-> API
+    Desktop -. "starts or reuses the source backend" .-> API
 
     Core --> AppData["App data<br/>SQLite, task records, caches"]
     Core --> State["Canonical project state<br/>append-only .research history"]
@@ -57,53 +45,21 @@ Most product work therefore has one implementation:
   SSH transport.
 - React owns the interface in both the browser and the desktop window.
 - Rust and Tauri own only operating-system behavior: native windows, backend startup,
-  file dialogs, previews, external links, Quit, and updates.
+  file dialogs, previews, external links, and Quit.
 
-## Use a packaged desktop build
+## Development workflow
 
-### Requirements
+The browser and desktop paths share the backend, frontend, project catalog, and source
+setup. Choose the launch path based on the behavior being tested:
 
-- Apple Silicon Mac running macOS 13 or newer.
-- A built `RCP.app` bundle.
-- Codex CLI or Claude Code, installed and authenticated separately, if agent features
-  are needed.
+| Path    | Use it for                                       | Main command                       |
+| ------- | ------------------------------------------------ | ---------------------------------- |
+| Browser | Python, React, graph, API, and background work   | `uv run rcp serve --reload`        |
+| Desktop | Tauri commands, windows, and macOS-only behavior | `npm --prefix web run desktop:dev` |
 
-The release app does **not** require Python, `uv`, Node.js, npm, React, Rust, or Tauri on
-the user's computer. React is compiled into static assets, Python is frozen into a
-sidecar executable, Tauri is compiled into the application, and macOS supplies the
-system webview.
+### Shared setup
 
-### Open and use it
-
-1. Open `RCP.app` from Finder.
-2. Choose **New project** to connect local or SSH repositories, or open a project that
-   is already registered.
-3. Configure Codex or Claude in project settings before starting agent work.
-4. Use **Overview** for the project summary, **Inbox** for human decisions, **Research**
-   for the graph, **Runs** for agent and experiment history, **Paper** for writing,
-   **Settings** for project configuration, and **Chats** for project conversations. Use
-   **Ask** in the project header to start a project chat.
-
-Clicking the red window button hides RCP; it does not mean Quit. Reopen it from the Dock
-or launch it again. **Quit RCP** rechecks whether the application still owns the backend:
-it gracefully stops only a backend it started and leaves a compatible terminal-started
-backend running.
-
-RCP's local catalog, task records, and rebuildable caches live at:
-
-```text
-~/Library/Application Support/research-control-panel/
-```
-
-Source and test launches can set `RCP_DATA_DIR` before startup to use a different
-app-data directory. A Finder-launched release uses the default unless that environment
-is supplied to the application. Canonical research state still lives in the state
-repository configured for each project; the desktop app does not create a second
-authoritative copy.
-
-## Run from source in a browser
-
-Install the source dependencies once:
+On a fresh checkout, install and build in this order:
 
 ```bash
 npm --prefix web ci
@@ -114,15 +70,25 @@ uv sync
 Build the frontend before `uv sync`: `web/dist` is gitignored but is included when the
 Python package is built.
 
-Open the project index:
+Codex CLI or Claude Code must be installed and authenticated separately to use agent
+features.
+
+### Browser path
+
+Start the normal development loop:
+
+```bash
+uv run rcp serve --reload
+```
+
+Open <http://127.0.0.1:8421>. Python changes restart the backend and frontend changes
+rebuild the served bundle. The frontend watcher is not Vite HMR, so refresh the browser
+after a React or CSS change.
+
+For a non-reloading source launch that opens the browser automatically, use `rcp open`:
 
 ```bash
 uv run rcp open
-```
-
-Or register and open the included demo project:
-
-```bash
 uv run rcp open examples/demo-project/state-repo
 ```
 
@@ -133,27 +99,13 @@ if you need to preserve the checked-in example.
 compatible RCP backend already owns the same data directory, it reuses that backend and
 opens the browser without starting a duplicate.
 
-## Development workflow
-
-### 1. Browser-first development
-
-This is the normal loop for Python, React, graph, API, and background-task work:
-
-```bash
-uv run rcp serve --reload
-```
-
-Open <http://127.0.0.1:8421>. Python changes restart the backend and frontend changes
-rebuild the served bundle. The frontend watcher is not Vite HMR, so refresh the browser
-after a React or CSS change.
-
 Without `--reload`, `rcp serve` is an explicit ownership request. It gracefully replaces
 the current owner after recoverable work is paused. The launch command owns that
 lifecycle; do not hunt for PIDs, delete lock files, or manually kill an RCP process.
 
-### 2. Live native-shell development
+### Desktop path
 
-Use this while editing Tauri commands, windows, navigation, or desktop-only React paths:
+For live native-shell development, run:
 
 ```bash
 npm --prefix web run desktop:dev
@@ -162,29 +114,28 @@ npm --prefix web run desktop:dev
 This runs the React frontend through Vite, compiles the Rust shell in debug mode, and
 starts or reuses the Python backend from the checkout.
 
-To debug the production-like same-origin arrangement without packaging Python, use:
+For same-origin debugging, a Finder-launchable development bundle, packaged-app testing,
+and the release process, see [Desktop testing and release](docs/desktop.md).
 
-```bash
-npm --prefix web run desktop:same-origin
-```
+Clicking the red window button hides RCP; it does not mean Quit. Reopen it from the Dock
+or launch it again. **Quit RCP** gracefully stops only a backend the desktop app started
+and leaves a compatible terminal-started backend running.
 
-### 3. Build the clickable development app
+### Shared application state
 
-```bash
-npm --prefix web run desktop:build-dev
-```
+Both paths show the same projects and application surfaces: **Overview**, **Inbox**,
+**Research**, **Runs**, **Paper**, **Settings**, and **Chats**. **Ask** in the project
+header starts a project chat.
 
-Output:
+RCP's local catalog, task records, and rebuildable caches live at:
 
 ```text
-web/src-tauri/target/debug/bundle/macos/RCP Dev.app
+~/Library/Application Support/research-control-panel/
 ```
 
-`RCP Dev.app` records the checkout and absolute `uv` executable in its `Info.plist`, so
-it can sit beside `RCP.app` and launch source code without freezing Python. A complete
-Quit followed by reopening starts from current source when no compatible backend is
-already running; merely closing its window keeps the existing process alive. Rebuild the
-Dev bundle after Rust or Tauri configuration changes.
+Set `RCP_DATA_DIR` before startup to use a different app-data directory. Canonical
+research state still lives in the state repository configured for each project; app data
+does not create a second authoritative copy.
 
 ## Verification
 
@@ -197,75 +148,22 @@ npm --prefix web run build
 npm --prefix web test
 ```
 
-For changes to the Tauri shell or desktop packaging, also run the desktop checks:
-
-```bash
-cargo fmt --manifest-path web/src-tauri/Cargo.toml -- --check
-cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path web/src-tauri/Cargo.toml --locked
-```
+For changes to the Tauri shell or desktop packaging, follow the relevant native test path
+in [Desktop testing and release](docs/desktop.md). That guide also contains the separate
+release-candidate checklist.
 
 A successful unit suite is only the baseline. For changes to routes, background work,
 desktop lifecycle, or a view's data flow, also run the app and exercise the relevant
 acceptance scenario in [`docs/acceptance/`](docs/acceptance/).
 
-## Build a release candidate
-
-The first desktop target is Apple Silicon macOS. Building it requires the complete
-development toolchain: Python and `uv`, Node.js and npm, and Rust.
-
-```bash
-npm --prefix web run desktop:build
-```
-
-The command performs the complete local packaging pipeline:
-
-1. Typecheck and compile React.
-2. Freeze FastAPI and its Python dependencies with PyInstaller.
-3. Put the compiled web assets inside the packaged backend.
-4. Prepare the target-specific backend sidecar for Tauri.
-5. Compile the Rust shell and assemble `RCP.app`.
-
-Output:
-
-```text
-web/src-tauri/target/release/bundle/macos/RCP.app
-```
-
-Smoke-test the exact packaged backend rather than accidentally relying on a source
-server that the application reused:
-
-```bash
-uv run python packaging/smoke-backend.py \
-  web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
-```
-
-Then open the bundle through Finder and verify the native project index and the changed
-workflow. Source edits made after this build do not affect `RCP.app`; rebuild to create a
-new release candidate.
-
-### Public release work still required
-
-The repository currently creates an unsigned local `.app`. A public release additionally
-needs:
-
-1. An intentional version bump.
-2. Apple Developer ID signing.
-3. Apple notarization and stapling.
-4. A downloadable archive or installer with checksums.
-5. An updater signing key, endpoint, and published manifest.
-
-`npm --prefix web run desktop:build-signed` is reserved for that configured pipeline; it
-is not a substitute for the missing signing and publishing infrastructure.
-
 ## Backend ownership and startup
 
-The browser, Dev app, and release app are allowed to coexist because they converge on one
-backend and continuously verify its identity.
+The browser and desktop development paths can coexist because they converge on one backend
+and continuously verify its identity.
 
 ```mermaid
 flowchart TD
-    Open["Open browser, RCP Dev.app, or RCP.app"] --> Discover["Read lock-owner metadata and probe health"]
+    Open["Start the browser path, tauri dev, or RCP Dev.app"] --> Discover["Read lock-owner metadata and probe health"]
     Discover --> Decision{"What is running?"}
 
     Decision -->|"Compatible RCP backend"| Reuse["Reuse it"]
