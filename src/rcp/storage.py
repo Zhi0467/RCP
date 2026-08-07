@@ -647,7 +647,7 @@ class AppStore:
             rows = connection.execute(
                 """
                 SELECT * FROM projects
-                ORDER BY COALESCE(last_opened_at, added_at) DESC, name COLLATE NOCASE
+                ORDER BY added_at DESC, name COLLATE NOCASE, project_id
                 """
             ).fetchall()
         return [self._project_record(row) for row in rows]

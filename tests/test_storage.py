@@ -54,6 +54,40 @@ def _snapshot(value: str) -> tuple[str, str]:
     return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def test_opening_project_does_not_reorder_catalog(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    older = _project("older")
+    newer = _project("newer")
+    tied_a = _project("tied-a")
+    tied_b = _project("tied-b")
+    older.added_at = "2026-07-30T00:00:00+00:00"
+    newer.added_at = "2026-07-31T00:00:00+00:00"
+    tied_a.added_at = "2026-08-01T00:00:00+00:00"
+    tied_b.added_at = tied_a.added_at
+    tied_a.name = "Same name"
+    tied_b.name = "same name"
+    store.upsert_project(older)
+    store.upsert_project(newer)
+    store.upsert_project(tied_b)
+    store.upsert_project(tied_a)
+
+    expected_order = ["tied-a", "tied-b", "newer", "older"]
+    assert [project.project_id for project in store.projects()] == expected_order
+
+    store.update_project_summary(
+        "older",
+        revision=1,
+        primary_question="Question",
+        attention_count=0,
+        last_refresh_at=None,
+        reachable=True,
+        error=None,
+    )
+
+    assert store.project("older").last_opened_at is not None
+    assert [project.project_id for project in store.projects()] == expected_order
+
+
 class _TracingAppStore(AppStore):
     """Count projection reads without changing the production connection path."""
 
