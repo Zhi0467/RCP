@@ -62,7 +62,9 @@ No agent runs during the drive itself.
   stay out
 - `runs_view_as_of_time_is_truthful` — the timestamp reflects the data, not the
   render
-- `research_flow_columns_follow_semantic_stage` — not relation-arrow direction
+- `research_flow_columns_show_question_depth_then_semantic_stage` — only
+  `has_subquestion` assigns question depth; later nodes follow semantic stage,
+  not general relation-arrow direction
 - `pinned_node_survives_view_switch` — pin state is not lost on remount
 - `release_all_pins_clears_every_pin`
 - `fullscreen_shows_node_details`

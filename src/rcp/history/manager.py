@@ -94,12 +94,14 @@ class HistoryManager:
         self.root = self.workspace.root
         self.patches_dir = self.root / "patches"
         self._process_lock = self.workspace.snapshot_lock
+        self._accepted_revision: int | None = None
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
             self._reload_manifest()
             coherent = self._coherent_materialization()
             if coherent is not None:
+                self._remember_accepted_revision(coherent)
                 return coherent
 
         publishing = False
@@ -108,6 +110,7 @@ class HistoryManager:
                 self._reload_manifest()
                 coherent = self._coherent_materialization()
                 if coherent is not None:
+                    self._remember_accepted_revision(coherent)
                     return coherent
                 self.ensure_layout()
                 result = self.materialize()
@@ -115,6 +118,7 @@ class HistoryManager:
                 publishing = True
                 self.workspace.publish(self._materialized_paths(include_manifest=True))
                 self.workspace.complete_materialization_repair()
+                self._remember_accepted_revision(result)
                 return result
         except StateUnavailable:
             if publishing and self.workspace.remote:
@@ -126,6 +130,7 @@ class HistoryManager:
                 self.ensure_layout()
                 result = self.materialize()
                 self._synchronize_manifest_from_history(result)
+                self._remember_accepted_revision(result)
                 return result
 
     def ensure_layout(self) -> None:
@@ -164,6 +169,18 @@ class HistoryManager:
                 for path in self._patch_paths()
             ]
 
+    def current_accepted_revision(self) -> int:
+        """Return the cached accepted revision without reading canonical patch bodies."""
+
+        with self._process_lock:
+            if self._accepted_revision is None:
+                # Project services call ``initialize`` before exposure. This fallback
+                # keeps a directly constructed HistoryManager correct without making
+                # the steady-state API probe replay or read patch files.
+                self._remember_accepted_revision(self.materialize(write_outputs=False))
+            assert self._accepted_revision is not None
+            return self._accepted_revision
+
     def state(self) -> GraphState:
         return self.current_materialization().state
 
@@ -175,7 +192,9 @@ class HistoryManager:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()
             self._reload_manifest()
-            return self.materialize(write_outputs=False)
+            result = self.materialize(write_outputs=False)
+            self._remember_accepted_revision(result)
+            return result
 
     def require_writable(self, state: GraphState | None = None) -> GraphState:
         """Return the coherent state, or refuse a canonical mutation after replay halts."""
@@ -258,6 +277,7 @@ class HistoryManager:
                     manifest_before=manifest_before,
                 ):
                     raise
+            self._remember_accepted_revision(result)
             if raise_on_reject and result.reports[revision].rejected:
                 raise PatchRejected(result.reports[revision])
             return patch, result
@@ -483,6 +503,7 @@ class HistoryManager:
                         manifest_before=manifest_before,
                     ):
                         raise
+                self._remember_accepted_revision(result)
                 return prepared, result
             finally:
                 if not batch_committed:
@@ -636,6 +657,12 @@ class HistoryManager:
     def _next_revision(self) -> int:
         paths = self._patch_paths()
         return int(paths[-1].stem) + 1 if paths else 1
+
+    def _remember_accepted_revision(self, result: MaterializationResult) -> None:
+        self._accepted_revision = max(
+            (revision for revision, report in result.reports.items() if not report.rejected),
+            default=0,
+        )
 
     def _patch_paths(self) -> list[Path]:
         flat = list(self.patches_dir.glob("[0-9][0-9][0-9][0-9][0-9][0-9].json"))

@@ -41,6 +41,93 @@ test("semantic stages stay left-to-right across reverse-reading relations", () =
   assert.ok(laneById.evidence > laneById.experiment);
 });
 
+test("subquestion chains advance one research-flow column per level", () => {
+  const nodes = ["root", "child", "grandchild"].map((id) => ({
+    id,
+    type: "research_question",
+  }));
+  const edges = [
+    { source: "root", target: "child", relation: "has_subquestion" },
+    { source: "child", target: "grandchild", relation: "has_subquestion" },
+  ];
+
+  const layout = buildSemanticLaneLayout(nodes, edges);
+
+  assert.deepEqual(layout.lanes.slice(0, 3), [["root"], ["child"], ["grandchild"]]);
+});
+
+test("a multi-parent subquestion follows its deepest parent", () => {
+  const nodes = ["root", "middle", "other-root", "child"].map((id) => ({
+    id,
+    type: "research_question",
+  }));
+  const edges = [
+    { source: "root", target: "middle", relation: "has_subquestion" },
+    { source: "middle", target: "child", relation: "has_subquestion" },
+    { source: "other-root", target: "child", relation: "has_subquestion" },
+  ];
+
+  const layout = buildSemanticLaneLayout(nodes, edges);
+  const laneById = laneIndexes(layout.lanes);
+
+  assert.equal(laneById.root, 0);
+  assert.equal(laneById["other-root"], 0);
+  assert.equal(laneById.middle, 1);
+  assert.equal(laneById.child, 2);
+});
+
+test("questions in a hierarchy cycle share one column", () => {
+  const nodes = ["root", "cycle-a", "cycle-b", "child"].map((id) => ({
+    id,
+    type: "research_question",
+  }));
+  const edges = [
+    { source: "root", target: "cycle-a", relation: "has_subquestion" },
+    { source: "cycle-a", target: "cycle-b", relation: "has_subquestion" },
+    { source: "cycle-b", target: "cycle-a", relation: "has_subquestion" },
+    { source: "cycle-b", target: "child", relation: "has_subquestion" },
+  ];
+
+  const laneById = laneIndexes(buildSemanticLaneLayout(nodes, edges).lanes);
+
+  assert.equal(laneById.root, 0);
+  assert.equal(laneById["cycle-a"], 1);
+  assert.equal(laneById["cycle-b"], 1);
+  assert.equal(laneById.child, 2);
+});
+
+test("non-hierarchy relations do not assign question depth", () => {
+  const nodes = ["first", "second"].map((id) => ({ id, type: "research_question" }));
+  const edges = [{ source: "first", target: "second", relation: "contradicts" }];
+
+  const layout = buildSemanticLaneLayout(nodes, edges);
+
+  assert.deepEqual(layout.lanes[0], ["first", "second"]);
+});
+
+test("later research stages begin after the deepest question column", () => {
+  const nodes = [
+    { id: "root", type: "research_question" },
+    { id: "child", type: "research_question" },
+    { id: "hypothesis", type: "hypothesis" },
+    { id: "decision", type: "decision" },
+    { id: "experiment", type: "experiment" },
+    { id: "blocker", type: "blocker" },
+    { id: "evidence", type: "evidence" },
+  ];
+  const edges = [{ source: "root", target: "child", relation: "has_subquestion" }];
+
+  const laneById = laneIndexes(buildSemanticLaneLayout(nodes, edges).lanes);
+
+  assert.equal(laneById.root, 0);
+  assert.equal(laneById.child, 1);
+  assert.equal(laneById.hypothesis, 2);
+  assert.equal(laneById.decision, 2);
+  assert.equal(laneById.experiment, 3);
+  assert.equal(laneById.blocker, 3);
+  assert.equal(laneById.evidence, 4);
+});
+
 test("topology ranks condense cycles and remain deterministic", () => {
   const nodes = ["z", "d", "b", "c", "a"].map((id) => ({ id }));
   const edges = [
@@ -124,6 +211,10 @@ function exhaustiveOverlaps(nodes, collisionWidth, collisionHeight) {
     }
   }
   return overlaps;
+}
+
+function laneIndexes(lanes) {
+  return Object.fromEntries(lanes.flatMap((lane, index) => lane.map((id) => [id, index])));
 }
 
 function countCrossings(layers, edges) {

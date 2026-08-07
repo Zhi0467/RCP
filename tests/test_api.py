@@ -456,6 +456,71 @@ def test_project_open_reuses_its_single_materialization(manifest, tmp_path, monk
     assert payload["providers"] == {}
 
 
+def test_project_revision_probe_is_small_and_does_not_replay_history(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    history = app.state.service.history
+
+    assert client.get(f"/api/projects/{project_id}/revision").json() == {"revision": 0}
+    history.append(seed_patch())
+    rejected, _ = history.append(gated_patch(), raise_on_reject=False)
+    assert rejected.revision == 2
+    assert rejected.admission == "rejected"
+
+    monkeypatch.setattr(
+        history,
+        "materialize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("revision probe must not materialize history")
+        ),
+    )
+    monkeypatch.setattr(
+        history,
+        "_replay",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("revision probe must not replay history")
+        ),
+    )
+    monkeypatch.setattr(
+        history.workspace,
+        "refresh_if_stale",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("revision probe must not refresh canonical state")
+        ),
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("revision probe must not read canonical patch bodies")
+        ),
+    )
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("revision probe must not open canonical patch files")
+        ),
+    )
+
+    response = client.get(f"/api/projects/{project_id}/revision")
+
+    assert response.status_code == 200
+    assert response.json() == {"revision": 1}
+    assert list(response.json()) == ["revision"]
+
+
+def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    response = TestClient(app).get(f"/api/projects/{uuid.uuid4()}/revision")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Project not found"}
+
+
 def test_authoritative_project_get_creates_and_replaces_display_snapshot(
     manifest, tmp_path
 ) -> None:

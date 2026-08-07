@@ -5,6 +5,7 @@ export interface TopologyNode {
 export interface TopologyEdge {
   source: string;
   target: string;
+  relation?: string;
 }
 
 export interface TopologyLayout {
@@ -92,7 +93,7 @@ export function buildTopologyLayout(nodes: TopologyNode[], edges: TopologyEdge[]
   return { layers, rankById };
 }
 
-/** Keeps horizontal stages fixed while borrowing topology only for vertical order. */
+/** Places question hierarchy levels before the fixed later research stages. */
 export function buildSemanticLaneLayout(
   nodes: SemanticLaneNode[],
   edges: TopologyEdge[],
@@ -107,9 +108,25 @@ export function buildSemanticLaneLayout(
     });
   });
 
-  const lanes = Array.from({ length: 4 }, () => [] as string[]);
+  const questionNodes = nodes.filter((node) => node.type === "research_question");
+  const questionIds = new Set(questionNodes.map((node) => node.id));
+  const questionLayout = buildTopologyLayout(
+    questionNodes,
+    edges.filter(
+      (edge) =>
+        edge.relation === "has_subquestion" &&
+        questionIds.has(edge.source) &&
+        questionIds.has(edge.target),
+    ),
+  );
+  const deepestQuestionRank = Math.max(0, ...Object.values(questionLayout.rankById));
+  const lanes = Array.from({ length: deepestQuestionRank + 4 }, () => [] as string[]);
   nodes.forEach((node) => {
-    lanes[RESEARCH_STAGE_BY_NODE_TYPE[node.type]].push(node.id);
+    const lane =
+      node.type === "research_question"
+        ? (questionLayout.rankById[node.id] ?? 0)
+        : RESEARCH_STAGE_BY_NODE_TYPE[node.type] + deepestQuestionRank;
+    lanes[lane].push(node.id);
   });
   lanes.forEach((lane) =>
     lane.sort(

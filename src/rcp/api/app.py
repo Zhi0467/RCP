@@ -663,6 +663,11 @@ def create_app(
     def graph(project_id: str) -> dict[str, object]:
         return _project_service(catalog, project_id).graph_snapshot()
 
+    @app.get("/api/projects/{project_id}/revision")
+    def project_revision(project_id: str) -> dict[str, int]:
+        service = _project_service(catalog, project_id)
+        return {"revision": service.history.current_accepted_revision()}
+
     @app.put("/api/projects/{project_id}/settings")
     def update_project_settings(
         project_id: str,

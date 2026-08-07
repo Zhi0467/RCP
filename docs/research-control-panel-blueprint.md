@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.21
+**Version:** 0.23
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,12 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.23** — made every visible client detect canonical graph revision changes
+  through a lightweight read-only probe and reconcile its project snapshot,
+  without continuous graph replay or repurposing the ingestion Refresh action.
+- **0.22** — made Research flow expose nested Research Questions as successive
+  hierarchy columns before the existing Hypothesis/Decision, Experiment/Blocker,
+  and Evidence stages; only `has_subquestion` determines question depth.
 - **0.21** — gave every user-facing agent surface provider-native public-web
   search and fetch without widening its fixed filesystem, repository, paper, or
   graph authority; kept generic Seed/Refresh Patch correction offline over
@@ -129,6 +135,7 @@ product types.
 Relations are a closed, typed vocabulary. Each relation defines legal endpoint
 types and a reading layer. The core shapes include:
 
+- ResearchQuestion `has_subquestion` ResearchQuestion;
 - ResearchQuestion framing Hypotheses, Decisions, Experiments, and Blockers;
 - Experiment `tests` Hypothesis;
 - Experiment `governed_by` Decision;
@@ -705,6 +712,10 @@ graceful takeover after recoverable work is paused.
   standing remains asserted. Accepted and contested open Blockers remain
   operational graph state but no longer await human judgment.
 - **Research** presents question-centered graph paths and a bounded DAG view.
+  Its Research-flow layout gives each `has_subquestion` depth a successive
+  horizontal column, then places Hypothesis/Decision, Experiment/Blocker, and
+  Evidence in their semantic-stage columns after the deepest visible question.
+  Other relations affect vertical ordering but never question depth.
 - **Runs** is the operational control surface for Seed/Refresh research
   ingestion, bounded Experiments, and asserted open graph Blockers—not generic
   chat or coaching tasks. It carries no page title and is ordered by what matters
@@ -774,6 +785,13 @@ schema constants remain next to the model contract they constrain.
 The frontend is never the owner of background work. Desktop window close, app
 Quit, backend ownership, packaging, and update behavior follow their acceptance
 scenarios and must preserve resumability and ownership truth.
+
+An open project probes only the current accepted canonical graph revision while
+visible. A newer revision triggers the existing authoritative project
+reconciliation, so graph content and Proposals converge across browser and
+desktop clients without manual reload. An unchanged probe neither replays
+history nor returns the graph. Reconciliation preserves client-side human drafts;
+the existing stale-base state exposes conflicts after the graph advances.
 
 ## Verification and change discipline
 

@@ -1,0 +1,76 @@
+---
+id: S81-live-canonical-state
+status: implemented
+tier: hermetic
+driver: api + browser
+covered_by:
+  - tests/test_api.py::test_project_revision_probe_is_small_and_does_not_replay_history
+  - tests/test_api.py::test_project_revision_probe_returns_normal_project_not_found
+  - tests/test_api.py::test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate
+  - web/tests/canonicalRevisionRefresh.test.mjs
+last_passed: 2026-08-07 — two clients against a throwaway acceptance-agent
+  project; client B reconciled revision 8 without reload, preserved its unsynced
+  node draft as a visible stale-base conflict, and both browser consoles and the
+  server traceback log remained clean
+invariants: [1, 2, 3, 6, 10b]
+---
+
+# Canonical graph changes appear without reloading the UI
+
+An open project stays aligned with canonical graph state. When any RCP surface
+applies a graph revision, every visible client for that project notices the new
+revision and reconciles its project snapshot. Newly asserted graph content and
+new Proposals therefore appear without a browser reload, desktop restart, view
+change, or agent Refresh run.
+
+Detection is cheap and read-only. An unchanged project does not repeatedly
+replay canonical history or transfer the full graph. A client fetches the full
+project snapshot only after the backend reports a newer canonical revision.
+Reconciliation preserves unsynced human draft edits; if those edits were based
+on the previous revision, the existing stale-draft state makes that conflict
+visible rather than discarding or silently rebasing the draft.
+
+## UI path
+
+- Keep a project's Research or Inbox view open in the desktop app or browser.
+- Apply a Work patch from that client or another client connected to the same
+  backend.
+- The visible graph and Inbox reconcile automatically within a short bounded
+  interval. There is no new refresh control.
+- The circular project Refresh action keeps its existing meaning: run the
+  Seed/Refresh ingestion agent. It is never repurposed as a display reload.
+- A transient detection or reconciliation failure leaves the last truthful
+  snapshot visible and surfaces the existing connection/error treatment; it
+  never clears the graph or staged human work.
+
+Deliberately not possible: a second canonical state path, a client-side graph
+patch, silent draft loss, or continuous full-project replay while nothing has
+changed.
+
+## Drive
+
+1. Open the same ready-Experiment fixture in two clients against one
+   acceptance-agent server. Leave client B on Research or Inbox.
+2. In client A, run the deterministic Experiment fixture through its watcher
+   completion. Its accepted Work patch creates Evidence and a Proposal.
+3. Do not reload, navigate, hide, or refocus client B.
+4. Repeat while client B has an unsynced human draft based on the old revision.
+5. Observe the lightweight change check while the project remains unchanged.
+
+## Assert
+
+- `canonical_revision_probe_is_small_and_read_only`
+- `unchanged_probe_does_not_replay_or_return_the_graph`
+- `visible_client_detects_a_new_canonical_revision`
+- `new_graph_content_appears_without_manual_reload`
+- `new_proposal_appears_without_manual_reload`
+- `external_client_changes_are_detected`
+- `same_client_work_completion_still_reconciles_immediately`
+- `unsynced_human_draft_is_preserved_and_marked_stale`
+- `refresh_agent_control_keeps_its_existing_meaning`
+- `probe_or_reload_failure_keeps_the_last_snapshot_visible`
+
+## Failure means
+
+The backend has committed a graph change while an open RCP window continues to
+present an older graph or Inbox until the human manually reloads the page.

@@ -191,6 +191,29 @@ export function revisionSummariesUrl(apiBase: string, revision?: number): string
     : `${path}?from_revision=${revision}&to_revision=${revision}`;
 }
 
+export async function loadCanonicalRevision(
+  fetchJson: <T>(path: string) => Promise<T>,
+  apiBase: string,
+): Promise<number> {
+  const snapshot = await fetchJson<{ revision: number }>(`${apiBase}/revision`);
+  return snapshot.revision;
+}
+
+export function canonicalRevisionNeedsReload(
+  observedRevision: number,
+  renderedRevision: number,
+): boolean {
+  return observedRevision > renderedRevision;
+}
+
+export function canonicalRevisionPollDelay(consecutiveFailures: number): number {
+  return Math.min(30_000, 2_000 * 2 ** Math.max(0, consecutiveFailures));
+}
+
+function pageIsHidden(): boolean {
+  return document.visibilityState === "hidden";
+}
+
 export function AcceptanceAgentIndicator({
   agentMode,
 }: {
@@ -331,6 +354,11 @@ export default function App() {
   const activeProjectId = useRef(projectId);
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
+  const authoritativeReloadInFlight = useRef<{
+    projectId: string;
+    request: Promise<void>;
+  } | null>(null);
+  const renderedRevisionRef = useRef(graph.revision);
   const verifiedHealthRef = useRef<Health | null>(null);
   const initialShowHandshake = useRef(false);
   const chatTaskStatuses = useRef<Map<string, AgentTask["status"]>>(new Map());
@@ -340,6 +368,7 @@ export default function App() {
   const chatSummaryRefreshGeneration = useRef(0);
   const readinessRequestedProjectIds = useRef(new Set<string>());
   activeProjectId.current = projectId;
+  renderedRevisionRef.current = graph.revision;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
 
@@ -539,6 +568,87 @@ export default function App() {
     [applyProjectSnapshot, projectId, refreshChatSummaries],
   );
   reloadRef.current = reload;
+
+  const reloadAuthoritativeProject = useCallback(() => {
+    if (!projectId) return Promise.resolve();
+    if (authoritativeReloadInFlight.current?.projectId === projectId) {
+      return authoritativeReloadInFlight.current.request;
+    }
+    const request = reload().finally(() => {
+      if (authoritativeReloadInFlight.current?.request === request) {
+        authoritativeReloadInFlight.current = null;
+      }
+    });
+    authoritativeReloadInFlight.current = { projectId, request };
+    return request;
+  }, [projectId, reload]);
+
+  useEffect(() => {
+    if (
+      !projectId ||
+      !apiBase ||
+      project?.id !== projectId ||
+      projectReconciliation !== "authoritative"
+    )
+      return;
+    const requestedProjectId = projectId;
+    let stopped = false;
+    let checking = false;
+    let timer: number | null = null;
+    let consecutiveFailures = 0;
+
+    const schedule = (delay: number) => {
+      if (stopped || pageIsHidden()) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void check();
+      }, delay);
+    };
+    const check = async () => {
+      if (stopped || checking || pageIsHidden()) return;
+      checking = true;
+      try {
+        const observedRevision = await loadCanonicalRevision(api, apiBase);
+        if (stopped || pageIsHidden() || activeProjectId.current !== requestedProjectId) return;
+        if (canonicalRevisionNeedsReload(observedRevision, renderedRevisionRef.current)) {
+          await reloadAuthoritativeProject();
+        }
+        consecutiveFailures = 0;
+      } catch (error) {
+        if (!stopped && activeProjectId.current === requestedProjectId) {
+          if (consecutiveFailures === 0) {
+            setNotice({
+              kind: "error",
+              text: `Automatic graph refresh is temporarily unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          }
+          consecutiveFailures += 1;
+        }
+      } finally {
+        checking = false;
+        if (!stopped && activeProjectId.current === requestedProjectId) {
+          schedule(canonicalRevisionPollDelay(consecutiveFailures));
+        }
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (pageIsHidden()) {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = null;
+        return;
+      }
+      schedule(0);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    schedule(canonicalRevisionPollDelay(0));
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [apiBase, project?.id, projectId, projectReconciliation, reloadAuthoritativeProject]);
 
   useEffect(() => {
     if (!projectId || !apiBase || project?.id !== projectId) return;
@@ -1166,7 +1276,7 @@ export default function App() {
         );
         if (terminalTaskNeedsAuthoritativeProjectReload(current)) {
           try {
-            await reload();
+            await reloadAuthoritativeProject();
           } catch (error) {
             if (!stopped) {
               setNotice({
@@ -1201,7 +1311,7 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [activeTask, projectId, reload]);
+  }, [activeTask, projectId, reloadAuthoritativeProject]);
 
   useEffect(() => {
     if (!projectId || !watchersAwaitingDelivery) return;
