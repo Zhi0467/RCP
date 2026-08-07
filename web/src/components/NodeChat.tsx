@@ -7,6 +7,7 @@ import {
   Inbox,
   LoaderCircle,
   MessageCircle,
+  MessageCirclePlus,
   Play,
   RadioTower,
   RotateCcw,
@@ -81,6 +82,7 @@ interface Props {
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
   onOpenNode?: (nodeId: string) => void;
   onStopWatcher?: (watcherId: string) => void;
+  onNewSession: () => void;
   onClose: () => void;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
@@ -113,6 +115,7 @@ export function NodeChat({
   onRepairGraphUpdate,
   onOpenNode,
   onStopWatcher,
+  onNewSession,
   onClose,
   onResumeTask,
   onRetryTask,
@@ -470,7 +473,9 @@ export function NodeChat({
           )}
         </div>
         <div className="chat-scope-control">
-          <span>Raw truth inputs</span>
+          <button className="chat-new-session" type="button" onClick={onNewSession}>
+            <MessageCirclePlus size={13} /> New session
+          </button>
           <RepositoryScope
             repositories={project.repositories}
             projectScope={project.project_truth_scope}

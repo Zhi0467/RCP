@@ -47,6 +47,7 @@ interface Props {
   onOpenNode?: (nodeId: string) => void;
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
   onStopWatcher?: (watcherId: string) => void;
+  onNewSession: (conversation: ChatConversation) => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -102,6 +103,7 @@ export function ChatsWorkspace({
   onOpenNode,
   onRepairGraphUpdate,
   onStopWatcher,
+  onNewSession,
 }: Props) {
   const [listWidth, setListWidth] = useState(() => readChatListWidth(project.id));
   const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
@@ -341,6 +343,7 @@ export function ChatsWorkspace({
             onRepairGraphUpdate={onRepairGraphUpdate}
             onOpenNode={onOpenNode}
             onStopWatcher={onStopWatcher}
+            onNewSession={() => onNewSession(selected)}
             onClose={() => undefined}
           />
         ) : null}

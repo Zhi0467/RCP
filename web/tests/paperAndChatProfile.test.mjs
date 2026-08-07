@@ -66,13 +66,16 @@ const chatProps = {
   onInspectTask() {},
   onOpenInbox() {},
   onRepairGraphUpdate() {},
+  onNewSession() {},
   onClose() {},
 };
 
-test("chat shows passive provider identity and keeps Raw truth inputs", () => {
+test("chat shows passive provider identity, New session, and a self-labelling scope picker", () => {
   const fresh = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
   assert.match(fresh, /aria-label="Chat provider: Codex"[^>]*>Codex</);
-  assert.match(fresh, /Raw truth inputs/);
+  assert.match(fresh, /class="chat-new-session"[\s\S]*?New session/);
+  assert.match(fresh, /class="eyebrow">Run reads</);
+  assert.doesNotMatch(fresh, /Raw truth inputs/);
   assert.doesNotMatch(fresh, /agent-config-summary/);
   assert.doesNotMatch(fresh, />Model</);
   assert.doesNotMatch(fresh, />Reasoning</);

@@ -20,7 +20,16 @@ import {
   Settings2,
   X,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   isActiveTask,
   parseDismissedTaskIds,
@@ -75,6 +84,7 @@ import {
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
 import { nodeDetailSizeStorageKey } from "./floatingWindow";
+import type { DagViewport } from "./hooks/dagZoom";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
 import { DetailDrawer } from "./components/DetailDrawer";
@@ -367,6 +377,11 @@ export default function App() {
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
   const readinessRequestedProjectIds = useRef(new Set<string>());
+  const panelRef = useRef<HTMLElement>(null);
+  const panelScrollRef = useRef(new Map<AppView, number>());
+  const viewRef = useRef<AppView>(view);
+  const researchSubviewRef = useRef<AppView>("scientific");
+  const dagViewportRef = useRef<DagViewport | null>(null);
   activeProjectId.current = projectId;
   renderedRevisionRef.current = graph.revision;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
@@ -379,6 +394,13 @@ export default function App() {
     }, NOTICE_TIMEOUT_MS);
     return () => window.clearTimeout(timeoutId);
   }, [notice]);
+
+  // Reading the offset while the outgoing view is still mounted is the only moment it is still true.
+  const changeView = useCallback((next: AppView) => {
+    const panel = panelRef.current;
+    if (panel) panelScrollRef.current.set(viewRef.current, panel.scrollTop);
+    setView(next);
+  }, []);
 
   const selectChat = useCallback((chatId: string | null) => {
     selectedChatIdRef.current = chatId;
@@ -925,6 +947,9 @@ export default function App() {
     setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
     setHumanDraft(null);
     setSyncingDraft(false);
+    panelScrollRef.current.clear();
+    researchSubviewRef.current = "scientific";
+    dagViewportRef.current = null;
     setView("overview");
     if (setupOpen) {
       setLoading(false);
@@ -1165,8 +1190,15 @@ export default function App() {
     selectChat(nextChatId);
     setFloatingChat(null);
     setSelectedNode(null);
-    setView("chats");
+    changeView("chats");
   };
+
+  useLayoutEffect(() => {
+    viewRef.current = view;
+    if (view === "scientific" || view === "dag") researchSubviewRef.current = view;
+    const panel = panelRef.current;
+    if (panel) panel.scrollTop = panelScrollRef.current.get(view) ?? 0;
+  }, [view]);
 
   useEffect(() => {
     if (mutationsDisabled) setRunDialogOpen(false);
@@ -1636,7 +1668,7 @@ export default function App() {
       setFocusExperimentRunId(node.id);
       setSelectedNode(null);
       setFloatingChat(null);
-      setView("execution");
+      changeView("execution");
       try {
         await reload();
       } catch (error) {
@@ -2170,7 +2202,11 @@ export default function App() {
             className={
               view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
             }
-            onClick={() => (item.view === "chats" ? openChats() : setView(item.view))}
+            onClick={() =>
+              item.view === "chats"
+                ? openChats()
+                : changeView(item.view === "scientific" ? researchSubviewRef.current : item.view)
+            }
           >
             {item.icon}
             <span>{item.label}</span>
@@ -2275,6 +2311,7 @@ export default function App() {
 
       <main
         className={view === "paper" ? "project-panel paper" : "project-panel"}
+        ref={panelRef}
         inert={projectReconciliation !== "authoritative"}
         aria-busy={projectReconciliation !== "authoritative"}
       >
@@ -2292,7 +2329,7 @@ export default function App() {
                 role="tab"
                 aria-selected={view === "scientific"}
                 className={view === "scientific" ? "active" : ""}
-                onClick={() => setView("scientific")}
+                onClick={() => changeView("scientific")}
               >
                 <GitBranch size={13} /> Research
               </button>
@@ -2301,7 +2338,7 @@ export default function App() {
                 role="tab"
                 aria-selected={view === "dag"}
                 className={view === "dag" ? "active" : ""}
-                onClick={() => setView("dag")}
+                onClick={() => changeView("dag")}
               >
                 <Network size={13} /> DAG
               </button>
@@ -2314,7 +2351,7 @@ export default function App() {
               latestRevisionSummary={
                 latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
               }
-              onNavigate={setView}
+              onNavigate={changeView}
             />
           )}
           {view === "attention" && (
@@ -2359,6 +2396,7 @@ export default function App() {
               graph={presentedGraph}
               trustView={trustView}
               projectId={project.id}
+              viewportRef={dagViewportRef}
               relationFocusNodeId={dagRelationFocusId}
               onClearRelationFocus={() => setDagRelationFocusId(null)}
               onSelectNode={openNode}
@@ -2444,9 +2482,15 @@ export default function App() {
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
               onInspectTask={setTaskInspectorId}
-              onOpenInbox={() => setView("attention")}
+              onOpenInbox={() => changeView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+              onNewSession={(conversation) => {
+                const node = conversation.nodeId
+                  ? (presentedGraph.nodes[conversation.nodeId] ?? null)
+                  : null;
+                selectChat(startConversation(conversation.kind, node));
+              }}
             />
           )}
         </Suspense>
@@ -2509,7 +2553,7 @@ export default function App() {
           }}
           onExploreRelations={() => {
             setDagRelationFocusId(selectedNode.id);
-            setView("dag");
+            changeView("dag");
           }}
           onSelectNode={openNodeById}
         />
@@ -2546,11 +2590,17 @@ export default function App() {
               onInspectTask={setTaskInspectorId}
               onOpenInbox={() => {
                 setFloatingChat(null);
-                setView("attention");
+                changeView("attention");
               }}
               onRepairGraphUpdate={repairGraphUpdate}
               onOpenNode={openNodeById}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+              onNewSession={() => {
+                const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
+                const chatId = startConversation("node_chat", node);
+                selectChat(chatId);
+                setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
+              }}
               onClose={() => setFloatingChat(null)}
             />
           </Suspense>

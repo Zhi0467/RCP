@@ -17,8 +17,9 @@ Confirmed by the human on 2026-08-03.
 Provider, model, reasoning, and execution machine are configured in Project
 Settings. Seed and Refresh keep their deliberate launch controls. Chat and the
 paper coach show only the provider name and offer no per-conversation agent
-configuration; the chat's Raw truth inputs control remains because it selects
-turn context, not execution configuration.
+configuration; the chat's repository scope picker remains because it selects
+turn context, not execution configuration. New session is a conversation
+control, not agent configuration, so it belongs in the same row.
 
 Changing a provider without explicitly selecting a model clears the previous
 provider's model before launch. A caller may still supply an explicit model for
@@ -33,7 +34,7 @@ already-established provider session.
 2. Change the profile provider to Claude without selecting a Claude model and
    save.
 3. Open a new project and node chat, inspect the resting provider label, change
-   Raw truth inputs, and send a turn.
+   the repository scope, and send a turn.
 4. Open Paper and inspect the coach controls. Resume an existing coach session.
 5. Open Seed/Refresh and Settings again.
 
@@ -48,7 +49,8 @@ already-established provider session.
 
 - Chat and coaching show a non-expandable provider-name label only.
 - Chat offers no provider, model, reasoning, or machine control.
-- Raw truth inputs remains usable.
+- The repository scope picker remains usable and states its own meaning.
+- New session is present and is not agent configuration.
 - Settings still configures all four fields, and Seed/Refresh retains its launch
   configuration.
 - A fresh chat uses the current Settings profile; an existing conversation

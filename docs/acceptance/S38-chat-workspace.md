@@ -19,11 +19,16 @@ covered_by:
   - browser 2026-08-07 — project Ask started a selected empty conversation while
     preserving the existing project conversation; Chats navigation created no
     additional conversation
+  - browser 2026-08-07 — New session in both presentations: the Chats list went
+    from seven conversations to eight with the new empty one selected, and the
+    floating chat swapped to a fresh conversation while its window and the node
+    detail stayed open
 last_passed: 2026-08-07 — drove the changed project Ask path against an existing
   project conversation. The new empty conversation was selected, the existing
   one remained available, returning through Chats kept the selection without
   creating another conversation, and browser/server logs had no application
-  errors.
+  errors. The New session control was driven on the same run in both the Chats
+  workspace and the floating window, with no console or non-200 API traffic.
 invariants: [8, 10, 10b, 10c, 11]
 ---
 
@@ -70,6 +75,15 @@ Confirmed on 2026-08-02; project Ask behavior reconfirmed on 2026-08-07.
 - Discuss/Work mode is the same conversation state in the floating chat and the
   Chats workspace. Minimizing or docking never resets the next-turn mode, and
   historical turn badges render identically in both presentations.
+- The chat's context row carries the provider name, a **New session** control,
+  and the repository scope picker. The picker states its own meaning — "Run
+  reads", *n* of *m* repositories — and carries no separate label above it.
+- **New session** starts a fresh conversation of the same kind and node and moves
+  the current surface to it: in the floating chat it replaces that window's
+  conversation while the node detail stays open, and in **Chats** it becomes the
+  selected conversation. The previous conversation remains in the list,
+  unchanged. It is the node-chat counterpart to what project-header **Ask**
+  already does, so both surfaces can reach a fresh conversation.
 - The project-header **Ask** control always opens **Chats** with a fresh, empty
   project conversation. Existing project conversations remain unchanged in the
   list. Entering **Chats** through project navigation still returns to the
@@ -103,16 +117,20 @@ list, or routing a notification only to a generic task inspector.
 6. Leave Chats again, let the turn complete, and confirm that the unread result
    changes the Chats indicator without rendering a chat banner on that panel.
    Enter Chats and open the completed conversation.
-7. Select an existing project conversation, leave **Chats**, then use the
+7. Press **New session** in the floating chat, then again in **Chats**. Confirm
+   each starts an empty conversation of the same kind and node, that the floating
+   window and node detail stay open, and that the previous conversation is still
+   in the list.
+8. Select an existing project conversation, leave **Chats**, then use the
    project-header **Ask** control. Confirm it opens a fresh, empty project
    conversation while the existing one remains in the list. Send a
    project-level message, leave, and return through **Chats**; confirm navigation
    returns to the selected conversation rather than creating another one. Then
    switch between the project and node conversations.
-8. Reopen the project and inspect an older completed conversation. Confirm the
+9. Reopen the project and inspect an older completed conversation. Confirm the
    transcript starts at its latest turn rather than at the beginning. Scroll up
    and confirm the view stays there while the chat surface otherwise updates.
-9. Use a fixture with more than one page of conversations. Confirm the first
+10. Use a fixture with more than one page of conversations. Confirm the first
    page is usable before requesting the next, then load the next page without
    losing the selected conversation.
 
@@ -132,6 +150,10 @@ list, or routing a notification only to a generic task inspector.
 - `reopening_conversation_starts_at_latest_turn`
 - `manual_transcript_scroll_is_respected`
 - `minimized_chat_keeps_transcript_composer_and_status`
+- `new_session_starts_fresh_conversation_on_both_surfaces`
+- `new_session_preserves_the_previous_conversation`
+- `new_session_keeps_the_floating_window_and_node_detail_open`
+- `chat_context_row_has_no_label_above_the_scope_picker`
 - `project_ask_starts_fresh_project_conversation`
 - `project_ask_preserves_existing_project_conversations`
 - `chats_navigation_does_not_create_conversation`

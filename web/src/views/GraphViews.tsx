@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
   type Ref,
 } from "react";
@@ -35,7 +36,7 @@ import {
   relationFocus,
   type DagOntologyProjection,
 } from "../graphProjection";
-import { zoomDagAtPoint, type DagZoomResult } from "../hooks/dagZoom";
+import { zoomDagAtPoint, type DagViewport, type DagZoomResult } from "../hooks/dagZoom";
 import {
   DAG_NODE_HEIGHT,
   DAG_NODE_WIDTH,
@@ -165,6 +166,8 @@ export function ScientificView({
 
 interface DagProps extends Props {
   projectId: string;
+  /** Session-scoped pan and zoom, owned by the shell so it survives leaving the view. */
+  viewportRef: MutableRefObject<DagViewport | null>;
   relationFocusNodeId?: string | null;
   onClearRelationFocus?: () => void;
 }
@@ -182,6 +185,7 @@ export function DagView({
   trustView,
   onSelectNode,
   projectId,
+  viewportRef,
   relationFocusNodeId,
   onClearRelationFocus,
 }: DagProps) {
@@ -211,7 +215,9 @@ export function DagView({
   const [layoutMode, setLayoutMode] = useState<DagLayoutMode>(readDagLayoutMode);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(() => viewportRef.current?.zoom ?? 1);
+  // An explicit relation focus outranks the remembered viewport: it is a request to look somewhere.
+  const restoringViewportRef = useRef(relationFocusNodeId ? null : viewportRef.current);
   const shellRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -306,11 +312,36 @@ export function DagView({
     pendingZoomScrollRef.current = null;
   }, [zoom]);
 
+  useLayoutEffect(() => {
+    const restored = restoringViewportRef.current;
+    const scroller = scrollRef.current;
+    if (!restored || !scroller) return;
+    scroller.scrollLeft = restored.scrollLeft;
+    scroller.scrollTop = restored.scrollTop;
+  }, []);
+
+  // Read the viewport while the canvas is still mounted; a scroll event may never arrive in time.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    return () => {
+      viewportRef.current = {
+        zoom: zoomRef.current,
+        scrollLeft: scroller.scrollLeft,
+        scrollTop: scroller.scrollTop,
+      };
+    };
+  }, [projection.nodes.length, viewportRef]);
+
   useEffect(() => {
     if (!layoutReady || !focusNodeId) return;
     const frameKey = `${layoutMode}:${focusNodeId}:${projection.nodes.length}:${projection.edges.length}`;
     if (framedLayoutRef.current === frameKey) return;
     framedLayoutRef.current = frameKey;
+    if (restoringViewportRef.current) {
+      restoringViewportRef.current = null;
+      return;
+    }
     const timer = window.setTimeout(
       () => {
         const scroller = scrollRef.current;

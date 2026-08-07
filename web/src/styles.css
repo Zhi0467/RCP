@@ -5808,12 +5808,23 @@ button:disabled {
   justify-content: space-between;
   min-width: 0;
 }
-.chat-scope-control > span {
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.chat-new-session {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink);
+  display: inline-flex;
+  flex: none;
+  font-size: 10px;
+  font-weight: 650;
+  gap: 5px;
+  min-height: 26px;
+  padding: 4px 8px;
+}
+.chat-new-session:hover {
+  background: var(--surface);
+  border-color: var(--ink);
 }
 .chat-scope-control .scope-trigger {
   background: var(--paper);
@@ -5822,7 +5833,11 @@ button:disabled {
   padding: 4px 7px;
 }
 .chat-scope-control .scope-trigger .eyebrow {
-  display: none;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .agent-role-stack {

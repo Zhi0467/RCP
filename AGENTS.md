@@ -854,6 +854,16 @@ longer apply.
   recovery navigation was skipped because the URL had not changed, so a cold
   start stayed blank forever while every warm relaunch looked perfect
   (fixed 2026-08-07, S79).
+- Never make remembered UI state depend on a `scroll` event arriving in time. The
+  browser pane runs with `document.hidden`, so rAF never ticks and scroll events
+  never dispatch — a listener-based recorder silently stores nothing there, and in
+  a real browser it is still a race against the click that navigates away. Read
+  the offset synchronously while the outgoing view is mounted (S82). Related pane
+  quirks: a forced `navigate` can collapse the viewport to 0x0, which makes every
+  scroller report `clientHeight === scrollHeight` — call `resize_window` with an
+  explicit width and height before concluding anything about scrolling. And React
+  batches, so a click and the assertion about its result must be separate
+  `javascript_tool` calls.
 
 ## Maintaining this file
 

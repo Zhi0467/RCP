@@ -7,6 +7,9 @@ export interface DagZoomResult {
   scrollTop: number;
 }
 
+/** Where the DAG was last looked at, so leaving and returning restores the view. */
+export type DagViewport = DagZoomResult;
+
 interface DagZoomInput extends DagZoomResult {
   deltaY: number;
   focalX: number;
