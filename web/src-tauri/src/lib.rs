@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use backend::BackendState;
 use tauri::{
-    menu::{Menu, MenuItem, Submenu},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     Emitter, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
@@ -35,7 +35,21 @@ pub fn run() {
         .menu(|app| {
             let quit = MenuItem::with_id(app, QUIT_MENU_ID, "Quit RCP", true, Some("CmdOrCtrl+Q"))?;
             let application = Submenu::with_items(app, "RCP", true, &[&quit])?;
-            Menu::with_items(app, &[&application])
+            let edit = Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?;
+            Menu::with_items(app, &[&application, &edit])
         })
         .on_menu_event(|app, event| {
             if event.id() == QUIT_MENU_ID {
