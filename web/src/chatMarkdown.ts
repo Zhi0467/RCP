@@ -145,7 +145,6 @@ function glossaryNodes(text: Text, glossaryIndex: GlossaryIndex): RootContent[] 
           className: ["glossary-definition"],
           "data-definition": segment.plainDefinition,
           tabIndex: 0,
-          title: segment.plainDefinition,
         },
       },
       children: [{ type: "text", value: segment.text }],

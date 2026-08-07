@@ -17,7 +17,6 @@ export function GlossaryText({ text, glossaryIndex }: Props) {
         className="glossary-definition"
         data-definition={segment.plainDefinition}
         tabIndex={0}
-        title={segment.plainDefinition}
         key={`${index}:${segment.term}`}
       >
         {segment.text}

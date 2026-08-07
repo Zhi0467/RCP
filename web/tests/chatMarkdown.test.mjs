@@ -109,7 +109,7 @@ test("chat Markdown marks glossary terms only in prose and preserves node links"
   assert.match(rendered, /<dfn[^>]*class="glossary-definition"/);
   assert.match(rendered, /data-definition="A &quot;matched&quot; distance\."/);
   assert.match(rendered, /tabindex="0"/);
-  assert.match(rendered, /title="A &quot;matched&quot; distance\."/);
+  assert.doesNotMatch(rendered, /<dfn[^>]*\stitle=/);
   assert.match(rendered, /<dfn[^>]*>MOPD<\/dfn>/);
   assert.match(rendered, /<strong><dfn[^>]*>mopd<\/dfn><\/strong>/);
   assert.match(rendered, /<code>MOPD<\/code>/);
