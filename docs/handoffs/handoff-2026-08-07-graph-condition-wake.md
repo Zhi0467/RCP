@@ -1,9 +1,9 @@
 # Handoff — graph-condition wake
 
 **Date:** 2026-08-07
-**State:** scope confirmed by the human in a design conversation. The detailed
-contract below is **proposed, not confirmed**, and **no acceptance scenario
-exists yet**. No code has been written.
+**State:** scope and the rulings marked *decided 2026-08-07* are confirmed by the
+human. Everything not marked decided is proposed. **No acceptance scenario has
+been written or confirmed**, and no code exists.
 
 **Order in the program:** piece 2 of 3, after
 [actor identity](handoff-2026-08-07-actor-identity-and-permissions.md) and
@@ -117,65 +117,47 @@ as it decides things, and has no single-exit-declaration semantics to preserve.
 orchestrator as an alternative, and do not expose the command to loops "for
 convenience."
 
-## 6. Design questions still open inside this piece
+## 6. Decisions taken 2026-08-07
 
-1. **Is a graph condition a `WatchSpec` variant or a sibling record?** The
-   external spec's `check_command`, `log_path`, and `cwd` are all meaningless
-   here, and a variant with three dead required fields is worse than two types
-   sharing a binding. Leaning sibling; not decided.
-2. **Does a graph wake cost an invocation unit?** Consistency says yes — every
-   wake spends, which is what makes the budget the real brake. But a condition
-   satisfied by the human's own Sync arguably should not bill the agent. Needs a
-   ruling before implementation.
-3. **Coalescing across kinds.** If an external watcher and a graph condition
-   complete together, they should deliver as one wake. Confirm the claim
-   transaction generalizes cleanly rather than assuming it does.
-4. **Does an Experiment loop arm a graph condition by file or by command?**
+Settled with the human. Do not relitigate.
 
-   Today `watch.json` is the loop's single **exit declaration**, written once at
-   the end of every invocation. A non-empty list means detached work remains.
-   `[]` is legal *only* when the same Patch records success, a Proposal, or a
-   Blocker. Validation is atomic — one invalid item arms none — and a missing,
-   malformed, or unexplained-empty file sends the loop into handoff correction.
+| | Ruling | Why |
+|---|---|---|
+| Does a graph wake spend a budget unit? | **Always — including when the human's own Sync satisfied the condition.** | "Every wake spends" is what makes running out of budget a *termination guarantee*. One free wake and exhaustion stops being provable. |
+| Which conditions exist in v1? | **Two: a node reaching a status, and a Proposal being resolved.** | The second is how auto-research waits for the human, which is the main rhythm of the whole feature. A third condition starts becoming a query language. |
+| Variant of the existing watcher record, or a separate type? | **Separate type, sharing the delivery binding.** | `check_command`, `log_path`, and `cwd` are all meaningless here. A type with three dead required fields is worse than two types sharing a wake path. |
 
-   **Option A — a second item shape inside the same file:**
+Because the two kinds are separate types, the loop's `watch.json` carries **two
+named lists** rather than one heterogeneous list:
 
-   ```json
-   [
-     { "check_command": "…", "log_path": "…", "cwd": "…" },
-     { "graph": { "node_id": "blk/foo", "status_in": ["resolved"] } }
-   ]
-   ```
+```json
+{
+  "external": [{ "check_command": "…", "log_path": "…", "cwd": "…" }],
+  "graph": [{ "node_id": "blk/foo", "status_in": ["resolved"] }]
+}
+```
 
-   Atomicity and the meaning of `[]` both survive untouched.
+The existing all-or-none validation and the meaning of an empty handoff apply to
+the file as a whole: **both lists empty** is the exit declaration that requires a
+success, Proposal, or Blocker in the same Patch.
 
-   **Option B — the loop calls `watch-graph` during its turn.** This breaks two
-   existing guarantees. Arming stops being all-or-none, because a second call
-   failing leaves the first already armed. And `[]` stops meaning "nothing
-   pending, so I must be exiting" — a loop could arm by command and still write
-   `[]`, which is exactly the state the handoff-correction path treats as a
-   failure to declare an exit.
+## 7. Still to verify during implementation
 
-   **The question to settle is therefore narrow: is `watch-graph` available to
-   Experiment loops at all, or is it orchestrator-only?** Leaning
-   orchestrator-only — loops keep the file, which costs nothing and preserves a
-   contract that has careful correction semantics behind it, while the
-   orchestrator gets the command because it arms conditions incrementally and is
-   not bound by a single-exit-declaration contract. One spelling per caller.
-   Two spellings available to the same caller is how the contract drifts.
+**Coalescing across kinds.** If an external watcher and a graph condition
+complete together, they should deliver as one wake. Confirm the existing atomic
+claim transaction generalizes cleanly rather than assuming it does — this is a
+check to run, not a decision to make.
 
-## 6. Proposed acceptance scenario — needs the human's confirmation first
+## 8. Acceptance scenario — written, not yet confirmed
 
-**"An agent can wait on the graph."** Promise: a loop that arms a graph
-condition sleeps until that fact becomes canonical, then wakes exactly once with
-the condition named; a satisfied condition survives an RCP restart; and a halted
-replay never manufactures a wake.
+[S76 — An agent can wait on the graph](../acceptance/S76-graph-condition-wake.md).
 
-Driver: `pytest`. The assertions are backend truth — arming, firing, restart
-recovery, and fail-closed behavior — and nothing about them lives in the
-browser.
+Driver `pytest`, because every assertion is backend truth — arming, firing,
+restart recovery, budget spend, and fail-closed behavior. Nothing about this
+promise lives in the browser. Per [`AGENTS.md`](../../AGENTS.md) step 0, confirm
+it with the human before implementation.
 
-## 7. Do not
+## 9. Do not
 
 - Do not route graph conditions through the shell poller.
 - Do not widen the condition vocabulary to arbitrary graph queries.
