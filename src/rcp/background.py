@@ -786,9 +786,8 @@ class BackgroundAgentTasks:
                     )
                     self.store.update_agent_task_message(
                         execution.operation_id,
-                        "The agent is reading project evidence.",
+                        "Agent task is running.",
                         phase="agent",
-                        event=True,
                     )
                 if event.event == "message":
                     revision = _applied_revision(event.text)

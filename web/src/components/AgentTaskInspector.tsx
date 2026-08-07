@@ -306,7 +306,7 @@ export function AgentTaskInspector({
                 )}
 
                 <section>
-                  <h4>Event trail</h4>
+                  <h4>Task history</h4>
                   <ol className="run-events">
                     {(task.events || []).map((event) => (
                       <li key={event.event_id} className={event.level}>

@@ -1702,6 +1702,9 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
         "patch_correction_requested",
         "operation_completed",
     }.issubset(receipt_categories)
+    event_messages = [event["message"] for event in completed["events"]]
+    assert "Agent task is running." not in event_messages
+    assert "Validating and applying the graph update." in event_messages
 
     context_receipt = next(
         receipt
