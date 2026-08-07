@@ -59,9 +59,14 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
 }
 
 export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): HumanDraft {
+  const next = cloneDraft(draft);
   const removedNodeIds = draft.removed_node_ids.filter((nodeId) => Boolean(graph.nodes[nodeId]));
   if (draft.base_revision !== graph.revision) {
-    return { ...cloneDraft(draft), removed_node_ids: removedNodeIds };
+    const stale = { ...next, removed_node_ids: removedNodeIds };
+    return {
+      ...stale,
+      proposals: proposalDecisionsWithoutDirectChoices(stale, graph),
+    };
   }
   const nodes = Object.fromEntries(
     Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
@@ -104,7 +109,11 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
     }),
   );
   const ontology = sameValue(draft.ontology, graph.ontology) ? null : draft.ontology;
-  return { ...cloneDraft(draft), nodes, removed_node_ids: removedNodeIds, ontology };
+  const normalized = { ...next, nodes, removed_node_ids: removedNodeIds, ontology };
+  return {
+    ...normalized,
+    proposals: proposalDecisionsWithoutDirectChoices(normalized, graph),
+  };
 }
 
 export function stageNodeEdit(
@@ -168,6 +177,54 @@ export function stageNodeStanding(
   return normalizeHumanDraft(next, graph);
 }
 
+export function stageDecisionChoice(
+  draft: HumanDraft,
+  graph: GraphState,
+  nodeId: string,
+  selectedOption: string,
+): HumanDraft {
+  const node = graph.nodes[nodeId];
+  const options = draft.nodes[nodeId]?.changes.options ?? node?.options;
+  if (
+    !node ||
+    node.type !== "decision" ||
+    node.status === "superseded" ||
+    draft.removed_node_ids.includes(nodeId) ||
+    !Array.isArray(options) ||
+    !options.includes(selectedOption)
+  )
+    return draft;
+
+  const existing = draft.nodes[nodeId];
+  const next = cloneDraft(draft);
+  next.nodes[nodeId] = {
+    base_updated_rev: existing?.base_updated_rev ?? node.updated_rev,
+    changes: {
+      ...existing?.changes,
+      selected_option: selectedOption,
+      status: "decided",
+    },
+    standing: "accepted",
+    standing_origin: "judgment",
+    ...(existing?.cancel_attempt_ids?.length
+      ? { cancel_attempt_ids: existing.cancel_attempt_ids }
+      : {}),
+  };
+  return normalizeHumanDraft(next, graph);
+}
+
+export function proposalTargetsNode(
+  proposal: GraphState["proposals"][string],
+  nodeId: string,
+): boolean {
+  return proposal.ops.some(
+    (op) =>
+      op.op === "update_nodes" &&
+      Array.isArray(op.nodes) &&
+      op.nodes.some((update) => isRecord(update) && update.id === nodeId),
+  );
+}
+
 export function stageAttemptRelease(
   draft: HumanDraft,
   graph: GraphState,
@@ -216,13 +273,14 @@ export function unstageNodeRemoval(draft: HumanDraft, nodeId: string): HumanDraf
 
 export function stageProposalDecision(
   draft: HumanDraft,
+  graph: GraphState,
   proposalId: string,
   decision: ProposalDecision | null,
 ): HumanDraft {
   const next = cloneDraft(draft);
   if (decision) next.proposals[proposalId] = { decision };
   else delete next.proposals[proposalId];
-  return next;
+  return normalizeHumanDraft(next, graph);
 }
 
 export function stageAmbiguityDecision(
@@ -418,6 +476,30 @@ function cloneDraft(draft: HumanDraft): HumanDraft {
 
 function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function proposalDecisionsWithoutDirectChoices(
+  draft: HumanDraft,
+  graph: GraphState,
+): HumanDraft["proposals"] {
+  const decisionIds = Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
+    const node = graph.nodes[nodeId];
+    return node?.type === "decision" &&
+      (entry.changes.selected_option !== undefined || entry.changes.status === "decided")
+      ? [nodeId]
+      : [];
+  });
+  if (decisionIds.length === 0) return draft.proposals;
+  return Object.fromEntries(
+    Object.entries(draft.proposals).filter(([proposalId]) => {
+      const proposal = graph.proposals[proposalId];
+      return (
+        !proposal ||
+        proposal.status !== "pending" ||
+        !decisionIds.some((nodeId) => proposalTargetsNode(proposal, nodeId))
+      );
+    }),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

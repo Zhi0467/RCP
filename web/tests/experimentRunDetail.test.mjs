@@ -14,6 +14,7 @@ const server = await createServer({
 const { ExperimentRunDetail } = await server.ssrLoadModule(
   "/src/components/ExperimentRunDetail.tsx",
 );
+const { experimentWatcherDisplayItems } = await server.ssrLoadModule("/src/runProjection.ts");
 
 after(() => server.close());
 
@@ -112,6 +113,7 @@ function watcher(fields = {}) {
     watcher_id: "watcher-1",
     project_id: "project",
     origin_operation_id: "origin-turn",
+    origin_task_kind: "node_chat",
     chat_id: "chat-1",
     node_id: "experiment/detail",
     execution_host: "login.research",
@@ -119,11 +121,24 @@ function watcher(fields = {}) {
     log_path: "/scratch/evaluation.log",
     cwd: "/scratch/run",
     continuation: {
+      provider: "codex",
+      model: "gpt-5.6",
+      reasoning: "high",
+      run_on: "cluster",
+      run_truth_scope: ["repo-a", "repo-b"],
       patch_kind: "experiment_loop",
       control_node_id: "experiment/detail",
+      control_revision: 7,
       control_episode_id: "episode-1",
       control_invocation: 3,
       control_invocation_ceiling: 3,
+      control_decision_bundle: [],
+      control_completion_criteria: [],
+      workflow_ids: [],
+      skill_ids: [],
+      invoked_workflow_ids: [],
+      invoked_skill_ids: [],
+      resolved_skill_packages: [],
     },
     status: "completed",
     created_at: "2026-08-06T01:00:00Z",
@@ -131,16 +146,28 @@ function watcher(fields = {}) {
     last_exit_code: 0,
     last_error: null,
     completed_at: "2026-08-06T04:00:00Z",
+    next_check_at: null,
+    consecutive_error_count: 0,
+    group_id: null,
+    group_label: null,
     notified: false,
     notification_operation_id: null,
+    stopped_by: null,
+    stop_reason: null,
+    stopped_at: null,
+    stop_operation_id: null,
     ...fields,
   };
 }
 
 function render(run) {
+  const withWatcherItems = {
+    ...run,
+    watcherItems: run.watcherItems ?? experimentWatcherDisplayItems(run.watchers),
+  };
   return renderToStaticMarkup(
     React.createElement(ExperimentRunDetail, {
-      run,
+      run: withWatcherItems,
       runBusy: false,
       runDisabled: false,
       stopBusy: false,
@@ -238,4 +265,80 @@ test("a queued notification claim is not presented as proven provider delivery",
 
   assert.match(html, /Delivery claimed/);
   assert.doesNotMatch(html, />Delivered</);
+});
+
+test("grouped watchers show truthful operational counts and preserve member provenance", () => {
+  const watchers = [
+    watcher({
+      watcher_id: "shard-finished",
+      group_id: "group-eval-shards",
+      group_label: "eval-shards",
+    }),
+    watcher({
+      watcher_id: "shard-degraded",
+      status: "degraded",
+      completed_at: null,
+      last_exit_code: null,
+      last_error: "ssh connection timed out",
+      consecutive_error_count: 5,
+      group_id: "group-eval-shards",
+      group_label: "eval-shards",
+    }),
+    watcher({
+      watcher_id: "shard-running",
+      status: "active",
+      completed_at: null,
+      last_exit_code: 1,
+      group_id: "group-eval-shards",
+      group_label: "eval-shards",
+    }),
+    watcher({
+      watcher_id: "shard-retired",
+      status: "stopped",
+      completed_at: null,
+      last_exit_code: null,
+      notified: true,
+      group_id: "group-eval-shards",
+      group_label: "eval-shards",
+      stopped_by: "agent",
+      stop_reason: "Cancelled superseded external job",
+      stopped_at: "2026-08-06T05:00:00Z",
+      stop_operation_id: "wake-turn",
+    }),
+    watcher({
+      watcher_id: "ungrouped-history",
+      group_id: null,
+      group_label: null,
+      log_path: "/scratch/ungrouped.log",
+    }),
+  ];
+  const html = render({
+    node: node(),
+    control: control(),
+    taskGroup: null,
+    currentTask: null,
+    watchers,
+    currentWatchers: watchers,
+    health: "degraded",
+  });
+
+  assert.match(html, /<details>/);
+  assert.equal((html.match(/Watcher group/g) ?? []).length, 1);
+  assert.match(html, /eval-shards/);
+  assert.match(html, /1 finished · 1 degraded · 1 running · 1 stopped/);
+  assert.match(html, /group-eval-shards/);
+  assert.match(html, /shard-finished/);
+  assert.match(html, /shard-degraded/);
+  assert.match(html, /shard-running/);
+  assert.match(html, /shard-retired/);
+  assert.match(html, /Current error/);
+  assert.match(html, /ssh connection timed out/);
+  assert.match(html, /Origin invocation/);
+  assert.match(html, /evaluation\.log/);
+  assert.match(html, /ungrouped-history/);
+  assert.match(html, /ungrouped\.log/);
+  assert.match(html, /Agent stopped/);
+  assert.match(html, /Agent reason/);
+  assert.match(html, /Cancelled superseded external job/);
+  assert.doesNotMatch(html, /Stop watching/);
 });

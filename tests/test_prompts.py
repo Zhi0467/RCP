@@ -351,6 +351,102 @@ async def test_pending_completion_context_names_human_reauthorization(tmp_path) 
     assert control["delivered_watcher_ids"] == ["watcher-from-old-episode"]
 
 
+@pytest.mark.asyncio
+async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path) -> None:
+    def watcher(
+        watcher_id: str,
+        *,
+        status: str,
+        episode_id: str,
+        stopped_by: str | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            watcher_id=watcher_id,
+            origin_operation_id="older-operation",
+            execution_host="",
+            check_command="test -f complete",
+            log_path=f"/tmp/{watcher_id}.log",
+            cwd="/tmp",
+            status=status,
+            created_at="2026-08-07T00:00:00+00:00",
+            last_checked_at="2026-08-07T00:00:00+00:00",
+            last_exit_code=0 if status == "completed" else None,
+            last_error=None,
+            completed_at="2026-08-07T00:00:00+00:00" if status == "completed" else None,
+            next_check_at=None,
+            consecutive_error_count=0,
+            group_id="group/replicas",
+            group_label="replicas",
+            notified=True,
+            notification_operation_id="wake-operation",
+            stopped_by=stopped_by,
+            stop_reason="superseded replica" if stopped_by else None,
+            stopped_at="2026-08-07T00:00:00+00:00" if stopped_by else None,
+            stop_operation_id="older-operation" if stopped_by else None,
+            continuation=SimpleNamespace(
+                patch_kind="experiment_loop",
+                control_node_id="exp/example",
+                control_episode_id=episode_id,
+                control_invocation=1,
+                control_invocation_ceiling=3,
+                control_revision=2,
+                control_decision_bundle=[],
+            ),
+        )
+
+    delivered = watcher("watcher/completed", status="completed", episode_id="old-episode")
+    agent_stopped = watcher(
+        "watcher/agent-stopped",
+        status="stopped",
+        episode_id="even-older-episode",
+        stopped_by="agent",
+    )
+
+    class Store:
+        def agent_task(self, operation_id):
+            assert operation_id == "wake-operation"
+            return SimpleNamespace(project_id="project")
+
+        def watchers(self, project_id):
+            assert project_id == "project"
+            return [delivered, agent_stopped]
+
+    execution = SimpleNamespace(operation_id="wake-operation", store=Store())
+    service = SimpleNamespace(history=SimpleNamespace(state=lambda: GraphState()))
+    request = RunRequest(
+        trigger="watcher",
+        patch_kind="experiment_loop",
+        control_node_id="exp/example",
+        control_revision=2,
+        control_episode_id="new-episode",
+        control_invocation=2,
+        control_invocation_ceiling=3,
+        watcher_ids=["watcher/completed"],
+    )
+
+    control_path, watcher_state_path = await stage_experiment_loop_context(
+        service,
+        request,
+        execution,
+        tmp_path / "stage",
+        None,
+        token="delivered-group",
+        continuation="fresh",
+    )
+
+    control = json.loads(Path(control_path).read_text(encoding="utf-8"))
+    assert control["delivered_watcher_groups"] == [
+        {
+            "group_id": "group/replicas",
+            "label": "replicas",
+            "members": json.loads(Path(watcher_state_path).read_text(encoding="utf-8")),
+        }
+    ]
+    assert {
+        member["watcher_id"] for member in control["delivered_watcher_groups"][0]["members"]
+    } == {"watcher/completed", "watcher/agent-stopped"}
+
+
 def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() -> None:
     validator_command = "python /stage/validator.py /stage/patch.json"
     contract = experiment_loop_task_contract(

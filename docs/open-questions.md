@@ -121,29 +121,35 @@ with a project-custom relation. The flag is the observation the design asked for
 
 ## Q2 — What belongs in Control v2 after completion-only watchers?
 
-**Status:** open. Raised 2026-08-01. V1 boundary decided; v2 details are not.
+**Status:** open. Raised 2026-08-01. V1 boundary decided; output-streaming and
+other v2 details are not.
 **Governing section:** [Experiment control and watchers](research-control-panel-blueprint.md#experiment-control-and-watchers).
 
 ### Decided boundary
 
-V1 watchers are generic, restart-durable completion checks. They do not stream
-live output, interpret outcomes, own external work, or carry experiment-attempt
-semantics. V1 adds no stale-watcher cleanup primitive and no hard repository
-lease.
+V1 watchers are restart-durable observations. They do not stream live output,
+interpret outcomes, own external work, or carry experiment-attempt semantics.
+Generic Work keeps its strict three-field observer list and manual **Stop
+watching**. Experiment-loop handoffs may additionally retire a staged compatible
+observer through a reasoned file disposition after the agent has settled the
+external work with its existing Work tools; that is not a general cleanup
+primitive or proof that RCP cancelled a job. Experiment observers use durable
+backoff and immutable groups: a group wakes once when no member remains active
+and every remaining member is complete or persistently unobservable. A
+persistently unobservable member remains degraded with an unknown outcome. V1
+adds no stale-record cleanup primitive and no hard repository lease.
 
 ### Main Control v2 goal
 
 Add wake-on-new-output while watched work is still running. Follow OpenClaude's
 file-backed output plus durable-offset shape rather than holding logs in memory.
-The unresolved contract is:
+The unresolved output-delivery contract is:
 
 - how a watcher requests completion delivery, output delivery, or both;
 - what constitutes a deliverable output delta;
 - how repeated wakes are batched or debounced;
 - when offsets advance relative to queued and delivered turns;
 - how restart recovery avoids both dropped and repeated output;
-- how a diagnostic turn may stop doomed external work without making the watcher
-  itself the owner of that work.
 
 ### Direct graph manipulation (v2)
 
@@ -159,7 +165,8 @@ canonical blueprint. Building the first must not silently alter the second.
 
 - When, if ever, are permanently degraded or abandoned watcher records cleaned
   up? The rows are cheap, survive app close, and need no v1 user-facing cleanup
-  action.
+  action. Experiment agents may retire only scoped staged observers they have
+  already settled; this does not decide broader retention policy.
 - Does experiment control eventually need an enforceable repository lease, or is
   the v1 advisory active-loop marker enough? Human authority must remain explicit
   either way.

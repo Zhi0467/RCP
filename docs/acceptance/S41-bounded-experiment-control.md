@@ -54,7 +54,7 @@ Confirmed by the human on 2026-08-05.
   validator, watcher, schema, and artifact paths. It points separately to one
   small loop-control JSON file containing only phase, episode and invocation
   counts, pinned decisions, live drift, completion criteria, and delivered
-  watcher ids, plus one watcher-state JSON path. Attempts remain in the
+  watcher or group ids, plus one watcher-state JSON path. Attempts remain in the
   Experiment inside canonical `graph.json` and use the existing Patch schema;
   RCP does not duplicate them into another loop input or schema. No prior chat
   transcript is supplied.
@@ -66,9 +66,11 @@ Confirmed by the human on 2026-08-05.
   semantic attempt with the pinned decisions. The agent follows the staged
   attempt schema and recording protocol, but RCP does not infer attempt
   boundaries from job or watcher counts. Every loop invocation also writes the
-  exact `watch.json`: a non-empty list for remaining detached work or `[]` only
-  when the same Patch explicitly records success, a Proposal, or a Blocker that
-  exits or pauses the loop.
+  exact `watch.json`: strict observers may carry an Experiment-only group label,
+  and a staged compatible observer may be retired with a reasoned stop item.
+  After those dispositions, `[]` or a stop-only list that leaves no live observer
+  is valid only when the same Patch explicitly records success, a Proposal, or a
+  Blocker that exits or pauses the loop.
 - Omit `watch.json`, then provide a malformed or initially uncheckable watcher.
   Separately, provide `[]` without an explicit exit Patch. RCP keeps the same
   episode and invocation and asks the same native session to inspect
@@ -81,9 +83,11 @@ Confirmed by the human on 2026-08-05.
   invocation reads the newly assembled loop context and logs, then decides
   whether to continue debugging, record or close an attempt, arm more watchers,
   create a proposal/blocker, or finish. The context distinguishes the delivered
-  watcher group from other active, degraded, completed, or stopped Experiment
-  watchers, so one completed job is not treated as an attempt boundary. The
-  coalesced wake consumes one invocation; it does not mechanically create an
+  watcher or immutable watcher group from other active, degraded, completed, or
+  stopped Experiment watchers, so one completed job is not treated as an attempt
+  boundary. A labelled group wakes only when no member is still observed active
+  and every remaining member is complete or diagnostically degraded; the
+  coalesced wake consumes one invocation and does not mechanically create an
   attempt record. Per S73 the wake resumes this episode's native provider session
   with a compact continuation message rather than starting a fresh session and
   rebuilding the contract; generic Work watcher wakes stay fresh turns.
@@ -108,17 +112,18 @@ Confirmed by the human on 2026-08-05.
   watcher. When that watcher completes, RCP does not start an over-budget wake or
   mark the completion delivered. The Experiment visibly says the loop is paused
   at its limit. Press **Run**; RCP starts a fresh episode and atomically delivers
-  the pending watcher group as invocation 1 with its original attribution and
+  the pending watcher or ready group as invocation 1 with its original attribution and
   current loop context. The control phase says `human_reauthorization`, rather
   than mislabelling it an automatic wake. Nothing is discarded and the human
   need not raise the ceiling merely to resume from this pause.
-- Let compatible watchers armed by different invocations complete together.
-  Their immutable origin episode/invocation fields remain visible in watcher
-  state, but RCP coalesces them under current delivery policy and spends one
-  invocation. Race S72's **Stop loop** against a completion: either the stop
-  atomically fences the unclaimed watcher or an already-claimed wake wins
-  visibly; nothing wakes after the stop is persisted. An Experiment loop has no
-  per-watcher Stop action; ordinary Work watchers keep theirs.
+- Let compatible ungrouped watchers and ready labelled groups from different
+  invocations become deliverable together. Their immutable origin
+  episode/invocation fields remain visible in watcher state, and compatible
+  delivery may coalesce them into one invocation without splitting a group.
+  Race S72's **Stop loop** or an agent's reasoned staged-observer retirement
+  against notification claim: one atomic winner is visible and nothing wakes
+  after the accepted stop. An Experiment loop has no per-watcher human Stop
+  action; ordinary Work watchers keep theirs.
 - Complete an experiment successfully. The loop asserts the Evidence node and
   evidence edge, then produces exactly one Inbox item for the Hypothesis status
   transition with that same-patch edge as its cause. If optional

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shlex
 import subprocess
@@ -19,7 +20,7 @@ from rcp.limits import (
     WATCHER_ERROR_MAX_CHARS,
     WATCHER_POLL_INTERVAL_SECONDS,
 )
-from rcp.storage import AppStore, WatcherContinuation, WatcherRecord
+from rcp.storage import AppStore, WatcherContinuation, WatcherRecord, WatcherStopRequest
 from rcp.transport.ssh import ssh_arguments
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,33 @@ class WatchSpec(BaseModel):
 
 class WatchList(RootModel[list[WatchSpec]]):
     root: list[WatchSpec] = Field(min_length=1)
+
+
+class ExperimentWatchSpec(WatchSpec):
+    """An Experiment observer may opt into one immutable delivery group."""
+
+    group: str | None = None
+
+    @field_validator("group")
+    @classmethod
+    def group_is_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("group must not be blank")
+        return stripped
+
+
+class ExperimentWatchHandoff(BaseModel):
+    """The Experiment-only mixed observer/retirement watcher file."""
+
+    observers: list[ExperimentWatchSpec]
+    stops: list[WatcherStopRequest]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.observers and not self.stops
 
 
 class WatcherBinding(BaseModel):
@@ -99,6 +127,36 @@ class WatcherInitialCheckError(ValueError):
 
 def parse_watch_json(payload: str) -> list[WatchSpec]:
     return WatchList.model_validate_json(payload).root
+
+
+def parse_experiment_watch_json(payload: str) -> ExperimentWatchHandoff:
+    """Parse the one Experiment-only watcher handoff without loosening Work."""
+
+    raw = json.loads(payload)
+    if not isinstance(raw, list):
+        raise ValueError("Experiment watch.json must contain a JSON list")
+    observers: list[ExperimentWatchSpec] = []
+    stops: list[WatcherStopRequest] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Experiment watch.json items must be objects")
+        if "stop_watcher_id" in item or "reason" in item:
+            stops.append(WatcherStopRequest.model_validate(item))
+        else:
+            observers.append(ExperimentWatchSpec.model_validate(item))
+    stop_ids = [item.stop_watcher_id for item in stops]
+    if len(stop_ids) != len(set(stop_ids)):
+        raise ValueError("Experiment watcher stop ids must be unique")
+    group_sizes: dict[str, int] = {}
+    for observer in observers:
+        if observer.group is not None:
+            group_sizes[observer.group] = group_sizes.get(observer.group, 0) + 1
+    undersized = sorted(label for label, count in group_sizes.items() if count < 2)
+    if undersized:
+        raise ValueError(
+            "an Experiment watcher group requires at least two observers: " + ", ".join(undersized)
+        )
+    return ExperimentWatchHandoff(observers=observers, stops=stops)
 
 
 def run_watcher_check(
@@ -241,6 +299,7 @@ class WatcherPoller:
         timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
         interval: float = WATCHER_POLL_INTERVAL_SECONDS,
         workers: int = WATCHER_CHECK_WORKERS,
+        clock: Callable[[], str] | None = None,
     ) -> None:
         self.store = store
         self.on_completed = on_completed
@@ -248,6 +307,7 @@ class WatcherPoller:
         self.timeout = timeout
         self.interval = interval
         self.workers = max(1, workers)
+        self.clock = clock or store.now
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -267,7 +327,7 @@ class WatcherPoller:
                 self._thread = None
 
     def poll_once(self) -> list[list[WatcherRecord]]:
-        records = self.store.pollable_watchers()
+        records = self.store.pollable_watchers(as_of=self.clock())
         if records:
             with ThreadPoolExecutor(max_workers=min(self.workers, len(records))) as executor:
                 futures = {

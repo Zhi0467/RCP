@@ -60,11 +60,14 @@ const contextOrder = [
 export function presentNode(node: GraphNode) {
   const key = primaryKey[node.type];
   const value = readableValue(node[key]) ? node[key] : node.title;
-  const context = contextOrder.flatMap((field) =>
-    readableValue(node[field])
+  const context = contextOrder.flatMap((field) => {
+    if (node.type === "decision" && (field === "options" || field === "selected_option")) {
+      return [];
+    }
+    return readableValue(node[field])
       ? [{ key: field, label: humanFieldLabels[field] ?? humanize(field), value: node[field] }]
-      : [],
-  );
+      : [];
+  });
   return { key, label: humanFieldLabels[key], value, context };
 }
 

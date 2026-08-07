@@ -46,7 +46,12 @@ Confirmed by the human on 2026-08-01.
   status. The list is never a second permanent fixture of the chat body.
 - Make an armed check fail transiently. That watcher becomes visibly degraded and
   keeps polling; the other watcher is unaffected. The error never produces a
-  completion wake. A later 0 or 1 clears the degraded state.
+  completion wake. A later 1 clears the degraded error and resumes healthy
+  scheduling; a later 0 completes through the existing delivery path.
+- The strict ordinary-Work list never gains Experiment stop items or group
+  labels. Its scheduling is durable: a healthy active check is due after a
+  jittered two-minute interval, while repeated errors back off without changing
+  this scenario's independent completion and coalescing behavior.
 - Close RCP, let both fixture jobs finish, and reopen it. The watcher rows show
   truthful stale timestamps until their first new poll. RCP reloads the records,
   asks again, and detects completion without replaying a missed transition.

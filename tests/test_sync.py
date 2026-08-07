@@ -11,7 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
-from rcp.core.models import Patch, ValidationMessage
+from rcp.core.materialize import apply_valid_patch
+from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, Patch, ValidationMessage
+from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest
 from rcp.storage import AgentTaskRecord
@@ -55,6 +57,92 @@ def custom_hypothesis_payload() -> dict[str, object]:
     }
 
 
+def append_decision_fixture(service, *, with_proposals: bool) -> None:
+    nodes = [
+        {
+            "id": "dec/evaluation-rule",
+            "type": "decision",
+            "title": "Evaluation rule",
+            "question": "Which evaluation rule should govern the experiment?",
+            "options": ["matched", "shifted"],
+        }
+    ]
+    ops: list[dict[str, object]] = [{"op": "create_nodes", "nodes": nodes}]
+    if with_proposals:
+        nodes.append(
+            {
+                "id": "exp/evaluation",
+                "type": "experiment",
+                "title": "Evaluation",
+                "objective": "Evaluate the intervention under the chosen rule.",
+            }
+        )
+        ops.append(
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "source": "exp/evaluation",
+                        "target": "dec/evaluation-rule",
+                        "relation": "governed_by",
+                    }
+                ],
+            }
+        )
+    service.history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Recorded the evaluation Decision.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=ops,
+        )
+    )
+    if not with_proposals:
+        return
+    proposals = []
+    for suffix, option in (("matched", "matched"), ("shifted", "shifted")):
+        proposals.append(
+            {
+                "id": f"prop/evaluation-{suffix}",
+                "title": f"Choose {option}",
+                "card": {
+                    "situation_cold": "The evaluation needs a rule.",
+                    "why_human_now": "Only the human can choose it.",
+                    "consequences": "The experiment will use the selected rule.",
+                    "decision_needed": f"Choose {option}?",
+                },
+                "ops": [
+                    {
+                        "op": "update_nodes",
+                        "nodes": [
+                            {
+                                "id": "dec/evaluation-rule",
+                                "changes": {
+                                    "selected_option": option,
+                                    "status": "decided",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "related_node_ids": ["dec/evaluation-rule"],
+                "base_rev": 2,
+            }
+        )
+    service.history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Proposed two evaluation choices.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[{"op": "create_proposals", "proposals": proposals}],
+        )
+    )
+
+
 def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -85,6 +173,277 @@ def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path)
     assert "Learning after a task shift" in (manifest.research_dir / "research.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_graph_sync_directly_decides_an_ungoverned_decision(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    decision = service.history.state().nodes["dec/evaluation-rule"]
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 2,
+            "nodes": [
+                {
+                    "node_id": decision.id,
+                    "base_updated_rev": decision.updated_rev,
+                    "changes": {
+                        "selected_option": "shifted",
+                        "status": "decided",
+                    },
+                    "standing": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    chosen = response.json()["nodes"][decision.id]
+    assert chosen["selected_option"] == "shifted"
+    assert chosen["status"] == "decided"
+    assert chosen["standing"] == "accepted"
+    assert "selected_option" not in HUMAN_EDITABLE_NODE_FIELDS["decision"]
+    assert "status" not in HUMAN_EDITABLE_NODE_FIELDS["decision"]
+
+
+def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=True)
+    before_sync = service.history.state()
+    decision = before_sync.nodes["dec/evaluation-rule"]
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 3,
+            "nodes": [
+                {
+                    "node_id": decision.id,
+                    "base_updated_rev": decision.updated_rev,
+                    "changes": {
+                        "selected_option": "shifted",
+                        "status": "decided",
+                        "rationale": "The human chose the shifted evaluation directly.",
+                    },
+                    "standing": "accepted",
+                }
+            ],
+            "proposals": [
+                {
+                    "proposal_id": "prop/evaluation-matched",
+                    "decision": "approved",
+                },
+                {
+                    "proposal_id": "prop/evaluation-shifted",
+                    "decision": "rejected",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["revision"] == 4
+    decision_payload = response.json()["nodes"][decision.id]
+    assert decision_payload["selected_option"] == "shifted"
+    assert decision_payload["status"] == "decided"
+    assert decision_payload["standing"] == "accepted"
+    assert {proposal["status"] for proposal in response.json()["proposals"].values()} == {
+        "withdrawn"
+    }
+    stored = service.history.load_patches()[-1]
+    assert [operation["op"] for operation in stored.ops] == [
+        "update_nodes",
+        "resolve_proposals",
+        "set_standing",
+    ]
+    resolutions = stored.ops[1]["resolutions"]
+    assert {item["id"] for item in resolutions} == {
+        "prop/evaluation-matched",
+        "prop/evaluation-shifted",
+    }
+    assert all(item["status"] == "withdrawn" and item["reason"] for item in resolutions)
+    assert all("human decided" in item for item in stored.change_summary if "Proposal" in item)
+    assert not validate_patch(before_sync, stored, ["repo-a"], mode="replay").rejected
+
+
+def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    state = service.history.state()
+    legacy_patch = Patch(
+        revision=state.revision + 1,
+        kind="refresh",
+        author="agent",
+        summary="Recorded a legacy mixed-target Proposal.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/legacy-mixed-target",
+                        "title": "Choose matched and retitle the question",
+                        "card": {"decision_needed": "Approve both legacy changes?"},
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "nodes": [
+                                    {
+                                        "id": "dec/evaluation-rule",
+                                        "changes": {
+                                            "selected_option": "matched",
+                                            "status": "decided",
+                                        },
+                                    },
+                                    {
+                                        "id": "rq/learning-after-shift",
+                                        "changes": {"title": "Retitled by a legacy Proposal"},
+                                    },
+                                ],
+                            }
+                        ],
+                        "related_node_ids": [
+                            "dec/evaluation-rule",
+                            "rq/learning-after-shift",
+                        ],
+                        "base_rev": state.revision,
+                    }
+                ],
+            }
+        ],
+    )
+    replay_report = validate_patch(state, legacy_patch, ["repo-a"], mode="replay")
+    assert not replay_report.rejected
+    state = apply_valid_patch(state, legacy_patch)
+    decision = state.nodes["dec/evaluation-rule"]
+    request = GraphSyncRequest(
+        base_revision=state.revision,
+        nodes=[
+            GraphSyncNodeChange(
+                node_id=decision.id,
+                base_updated_rev=decision.updated_rev,
+                changes={"selected_option": "shifted", "status": "decided"},
+                standing="accepted",
+            )
+        ],
+        proposals=[
+            {
+                "proposal_id": "prop/legacy-mixed-target",
+                "decision": "approved",
+            }
+        ],
+    )
+
+    patches = service._build_sync_patches(request, state, active_control_node_ids=set())
+
+    assert len(patches) == 1
+    resolutions = next(
+        operation["resolutions"]
+        for operation in patches[0].ops
+        if operation["op"] == "resolve_proposals"
+    )
+    assert resolutions[0]["id"] == "prop/legacy-mixed-target"
+    assert resolutions[0]["status"] == "withdrawn"
+    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+
+
+def test_direct_choice_validator_requires_every_targeted_proposal_withdrawal(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=True)
+    state = service.history.state()
+    decision = state.nodes["dec/evaluation-rule"]
+    patch = Patch(
+        kind="approval",
+        author="human",
+        summary="Tried to leave one superseded Proposal pending.",
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": decision.id,
+                        "base_updated_rev": decision.updated_rev,
+                        "changes": {
+                            "selected_option": "shifted",
+                            "status": "decided",
+                        },
+                    }
+                ],
+            },
+            {
+                "op": "resolve_proposals",
+                "resolutions": [
+                    {
+                        "id": "prop/evaluation-shifted",
+                        "status": "withdrawn",
+                        "reason": "The human decided directly.",
+                    }
+                ],
+            },
+        ],
+    )
+
+    report = validate_patch(state, patch, ["repo-a"])
+
+    assert report.rejected
+    assert any(
+        message.code == "invalid-direct-decision-choice"
+        and "prop/evaluation-matched" in message.message
+        for message in report.messages
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"selected_option": "not-listed", "status": "decided"},
+        {"selected_option": "matched"},
+        {"status": "decided"},
+    ],
+)
+def test_graph_sync_rejects_incoherent_direct_decision_choice(manifest, tmp_path, changes) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    decision = service.history.state().nodes["dec/evaluation-rule"]
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 2,
+            "nodes": [
+                {
+                    "node_id": decision.id,
+                    "base_updated_rev": decision.updated_rev,
+                    "changes": changes,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert decision.id in response.text
+    assert service.history.state().revision == 2
 
 
 @pytest.mark.parametrize(

@@ -743,6 +743,14 @@ longer apply.
   change that adds new files proves nothing about them, and the human's commit
   is where the hooks finally see them and fail. When a change adds files, run
   `git add -A` first, then the hooks.
+- Every test builds a fresh SQLite file, so a green suite says nothing about
+  migration. New watcher columns were declared in the `CREATE TABLE IF NOT
+  EXISTS` *and* indexed in the same `executescript`, which on any existing
+  database ran before `_ensure_column` and crashed every start with "no such
+  column" — 785 passing tests over a store that could not open one real file.
+  Index a new column only in the migration block below the `_ensure_column`
+  calls, and verify a schema change by opening a copy of the real store
+  (fixed 2026-08-07).
 - Do not copy commands out of the README without running them. `serve --reload`
   was documented there while it exited instantly instead of serving (fixed
   2026-07-28 via the `reload_app` factory).

@@ -1017,6 +1017,67 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     assert "agent_tasks_active_project" not in indexes
 
 
+def test_existing_watcher_database_opens_and_gains_scheduling_columns(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE watchers (
+                watcher_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                origin_operation_id TEXT NOT NULL,
+                origin_task_kind TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                node_id TEXT,
+                execution_host TEXT NOT NULL,
+                check_command TEXT NOT NULL,
+                log_path TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                continuation_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_checked_at TEXT,
+                last_exit_code INTEGER,
+                last_error TEXT,
+                completed_at TEXT,
+                notified INTEGER NOT NULL DEFAULT 0,
+                notification_operation_id TEXT
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO watchers ("
+            "watcher_id, project_id, origin_operation_id, origin_task_kind, chat_id, node_id,"
+            "execution_host, check_command, log_path, cwd, continuation_json, status, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "old-watcher",
+                "project",
+                "old-operation",
+                "node_chat",
+                "chat",
+                None,
+                "",
+                "squeue -j 1",
+                "/logs/1.out",
+                "/work",
+                json.dumps({"provider": "codex", "run_on": "laptop", "patch_kind": "work"}),
+                "active",
+                "2026-08-01T10:00:00+00:00",
+            ),
+        )
+
+    store = AppStore(path)
+    record = store.watcher("old-watcher")
+
+    assert record is not None
+    assert record.next_check_at is None
+    assert record.consecutive_error_count == 0
+    assert record.group_id is None
+    assert record.stopped_by is None
+    assert store.pollable_watchers() == [record]
+
+
 def test_patch_recovery_output_is_bounded(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()

@@ -6592,11 +6592,13 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         "decision_drift",
         "completion_criteria",
         "delivered_watcher_ids",
+        "delivered_watcher_groups",
         "watcher_state_path",
     }
     assert control["phase"] == "initial_run"
     assert control["invocation"] == 1
     assert control["remaining_invocations"] == 1
+    assert control["delivered_watcher_groups"] == []
     watcher_state = json.loads(launcher.input_snapshots[0][watcher_name])
     assert [item["watcher_id"] for item in watcher_state] == ["stopped-current-episode"]
     assert "remaining_invocations" not in launcher.prompts[0]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -13,14 +14,18 @@ from rcp.storage import (
     WatcherClaimConflict,
     WatcherContinuation,
     WatcherRecord,
+    WatcherStopRequest,
+    watcher_next_check_at,
 )
 from rcp.watchers import (
+    ExperimentWatchSpec,
     WatcherBinding,
     WatcherCheckResult,
     WatcherInitialCheckError,
     WatcherPoller,
     WatchSpec,
     arm_watchers,
+    parse_experiment_watch_json,
     parse_watch_json,
     run_watcher_check,
 )
@@ -173,6 +178,419 @@ def test_watch_json_is_a_nonempty_strict_three_field_list() -> None:
     ):
         with pytest.raises(ValidationError):
             parse_watch_json(payload)
+
+
+def test_experiment_watch_json_accepts_groups_and_staged_stop_items_only() -> None:
+    handoff = parse_experiment_watch_json(
+        "["
+        '{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
+        '{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/b.log","cwd":"/tmp"},'
+        '{"stop_watcher_id":"old-watcher","reason":"Cancelled superseded job"}'
+        "]"
+    )
+
+    assert handoff.observers == [
+        ExperimentWatchSpec(
+            group="eval-shards", check_command="exit 1", log_path="/tmp/a.log", cwd="/tmp"
+        ),
+        ExperimentWatchSpec(
+            group="eval-shards", check_command="exit 1", log_path="/tmp/b.log", cwd="/tmp"
+        ),
+    ]
+    assert handoff.stops == [
+        WatcherStopRequest(stop_watcher_id="old-watcher", reason="Cancelled superseded job")
+    ]
+    with pytest.raises(ValidationError):
+        parse_watch_json(
+            '[{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"}]'
+        )
+    with pytest.raises(ValueError, match="at least two"):
+        parse_experiment_watch_json(
+            '[{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"}]'
+        )
+
+
+def _loop_continuation(episode_id: str, *, invocation: int = 1) -> WatcherContinuation:
+    return _continuation().model_copy(
+        update={
+            "patch_kind": "experiment_loop",
+            "control_node_id": "exp-one",
+            "control_revision": 0,
+            "control_episode_id": episode_id,
+            "control_invocation": invocation,
+            "control_invocation_ceiling": 3,
+            "control_decision_bundle": [],
+            "control_completion_criteria": [],
+        }
+    )
+
+
+def _bound_episode(store: AppStore, episode_id: str, *, operation_id: str = "loop-root") -> None:
+    root = _loop_task(store, operation_id, episode_id=episode_id, invocation=1, ceiling=3)
+    store.create_agent_task(root)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    store.commit_experiment_episode_turn(
+        episode_id=episode_id,
+        project_id="project",
+        control_node_id="exp-one",
+        provider="codex",
+        execution_machine="laptop",
+        execution_host="",
+        native_session_id="native-loop-session",
+        stage_host=None,
+        stage_root="/tmp/loop-stage",
+        chat_id="chat",
+        operation_id=operation_id,
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=[],
+        context_baseline={},
+    )
+
+
+def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    continuation = _loop_continuation(episode_id)
+    binding = _binding("loop-root").model_copy(update={"continuation": continuation})
+    old = _record("old-observer", origin="loop-root").model_copy(
+        update={"continuation": continuation}
+    )
+    store.create_watchers([old])
+    replacement = _record("replacement", origin="loop-root").model_copy(
+        update={"continuation": continuation}
+    )
+
+    armed = store.persist_experiment_watchers_idempotently(
+        [replacement],
+        stops=[
+            WatcherStopRequest(stop_watcher_id="old-observer", reason="Cancelled superseded job")
+        ],
+        binding=binding,
+    )
+
+    stopped = store.watcher("old-observer")
+    assert stopped is not None
+    assert stopped.status == "stopped"
+    assert stopped.notified is True
+    assert stopped.stopped_by == "agent"
+    assert stopped.stop_reason == "Cancelled superseded job"
+    assert stopped.stopped_at is not None
+    assert stopped.stop_operation_id == "loop-root"
+    assert [item.watcher_id for item in armed] == ["replacement"]
+    assert "old-observer" not in {item.watcher_id for item in store.pollable_watchers()}
+    assert all(
+        "old-observer" not in {item.watcher_id for item in group}
+        for group in store.completed_watcher_groups()
+    )
+
+    assert (
+        store.persist_experiment_watchers_idempotently(
+            [replacement],
+            stops=[
+                WatcherStopRequest(
+                    stop_watcher_id="old-observer", reason="Cancelled superseded job"
+                )
+            ],
+            binding=binding,
+        )
+        == armed
+    )
+
+    with pytest.raises(ValueError, match="unknown staged"):
+        store.persist_experiment_watchers_idempotently(
+            [
+                _record("must-not-arm", origin="loop-root").model_copy(
+                    update={"continuation": continuation}
+                )
+            ],
+            stops=[WatcherStopRequest(stop_watcher_id="missing", reason="No longer useful")],
+            binding=binding,
+        )
+    assert store.watcher("must-not-arm") is None
+
+
+def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    continuation = _loop_continuation(episode_id)
+    binding = _binding("loop-root").model_copy(update={"continuation": continuation})
+    observer = _record("observer", origin="loop-root").model_copy(
+        update={"continuation": continuation}
+    )
+    store.create_watchers([observer])
+
+    store.request_experiment_loop_stop("project", "exp-one")
+    stopped_by_loop = store.watcher("observer")
+    assert stopped_by_loop is not None and stopped_by_loop.stopped_by == "loop"
+
+    stops = [WatcherStopRequest(stop_watcher_id="observer", reason="Cancelled the job")]
+    store.validate_experiment_agent_watcher_stops(binding, stops)
+    replacement = _record("replacement", origin="loop-root").model_copy(
+        update={"continuation": continuation}
+    )
+    armed = store.persist_experiment_watchers_idempotently(
+        [replacement], stops=stops, binding=binding
+    )
+
+    retained = store.watcher("observer")
+    assert retained is not None
+    assert (retained.status, retained.stopped_by) == ("stopped", "loop")
+    assert [item.status for item in armed] == ["stopped"]
+    assert store.pollable_watchers() == []
+
+
+def test_watcher_schedule_persists_backoff_and_resets_after_a_healthy_check(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    created_at = "2026-08-01T00:00:00+00:00"
+    armed_due_times = {
+        watcher_next_check_at(f"watcher-{index}", created_at, 0) for index in range(20)
+    }
+    assert len(armed_due_times) > 10
+    for due_at in armed_due_times:
+        delay = datetime.fromisoformat(due_at) - datetime.fromisoformat(created_at)
+        assert 2 * 60 * 0.9 <= delay.total_seconds() <= 2 * 60 * 1.1
+
+    store.create_watchers([_record("scheduled", status="active")])
+    record = store.watcher("scheduled")
+    assert record is not None and record.next_check_at is not None
+    assert store.pollable_watchers(as_of="2026-08-01T00:01:00+00:00") == []
+
+    checked_at = created_at
+    expected_minutes = (2, 4, 8, 15, 30, 30)
+    for error_count, minutes in enumerate(expected_minutes, start=1):
+        record = store.record_watcher_check(
+            "scheduled",
+            status="degraded",
+            exit_code=255,
+            error="transport unavailable",
+            checked_at=checked_at,
+        )
+        assert record.consecutive_error_count == error_count
+        assert record.next_check_at is not None
+        delay = datetime.fromisoformat(record.next_check_at) - datetime.fromisoformat(checked_at)
+        assert minutes * 60 * 0.9 <= delay.total_seconds() <= minutes * 60 * 1.1
+        checked_at = record.next_check_at
+
+    reopened = AppStore(store.path)
+    persisted = reopened.watcher("scheduled")
+    assert persisted is not None and persisted.next_check_at == checked_at
+    assert persisted.consecutive_error_count == 6
+    assert (
+        reopened.pollable_watchers(
+            as_of=(datetime.fromisoformat(checked_at) - timedelta(seconds=1)).isoformat()
+        )
+        == []
+    )
+
+    healthy = reopened.record_watcher_check(
+        "scheduled",
+        status="active",
+        exit_code=1,
+        error=None,
+        checked_at=checked_at,
+    )
+    assert healthy.consecutive_error_count == 0
+    assert healthy.next_check_at == watcher_next_check_at("scheduled", checked_at, 0)
+    assert healthy.last_error is None
+
+
+def test_grouped_watchers_wait_for_all_members_then_claim_once(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    continuation = _loop_continuation(episode_id)
+    first = _record("shard-a", origin="loop-root", status="completed").model_copy(
+        update={
+            "continuation": continuation,
+            "group_id": "eval-group",
+            "group_label": "eval-shards",
+        }
+    )
+    second = _record("shard-b", origin="loop-root").model_copy(
+        update={
+            "continuation": continuation,
+            "group_id": "eval-group",
+            "group_label": "eval-shards",
+        }
+    )
+    store.create_watchers([first, second])
+    assert store.completed_watcher_groups() == []
+
+    store.record_watcher_check(
+        "shard-b",
+        status="completed",
+        exit_code=0,
+        error=None,
+        checked_at="2026-08-01T00:02:00+00:00",
+    )
+    groups = store.completed_watcher_groups()
+    assert [[item.watcher_id for item in group] for group in groups] == [["shard-a", "shard-b"]]
+
+    wake = _loop_task(
+        store,
+        "group-wake",
+        episode_id=episode_id,
+        invocation=2,
+        ceiling=3,
+        watcher_ids=["shard-a", "shard-b"],
+    )
+    wake = wake.model_copy(
+        update={
+            "request": {**wake.request, "session_id": "native-loop-session"},
+            "native_session_id": "native-loop-session",
+            "stage_root": "/tmp/loop-stage",
+        }
+    )
+    assert store.create_watcher_notification_task(wake, ["shard-a", "shard-b"]) is not None
+    assert all(item.notified for item in store.watchers("project"))
+    assert store.completed_watcher_groups() == []
+
+
+def test_agent_stopped_group_members_neither_block_nor_trigger_delivery(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    continuation = _loop_continuation(str(uuid.uuid4()))
+
+    def group_member(watcher_id: str, group_id: str, status: str) -> WatcherRecord:
+        return _record(watcher_id, status=status).model_copy(
+            update={
+                "continuation": continuation,
+                "group_id": group_id,
+                "group_label": group_id,
+                "notified": status == "stopped",
+                "stopped_by": "agent" if status == "stopped" else None,
+                "stop_reason": "Cancelled obsolete shard" if status == "stopped" else None,
+                "stopped_at": ("2026-08-01T00:01:00+00:00" if status == "stopped" else None),
+            }
+        )
+
+    store.create_watchers(
+        [
+            group_member("remaining-complete", "partially-stopped", "completed"),
+            group_member("retired-sibling", "partially-stopped", "stopped"),
+        ]
+    )
+    store.create_watchers(
+        [
+            group_member("retired-a", "fully-stopped", "stopped"),
+            group_member("retired-b", "fully-stopped", "stopped"),
+        ]
+    )
+
+    assert [[item.watcher_id for item in group] for group in store.completed_watcher_groups()] == [
+        ["remaining-complete"]
+    ]
+
+
+def test_fifth_group_observation_error_is_ready_but_remains_degraded(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    completed = _record("shard-complete", status="completed").model_copy(
+        update={
+            "continuation": _loop_continuation(episode_id),
+            "group_id": "diagnostic-group",
+            "group_label": "eval-shards",
+        }
+    )
+    degraded = _record("shard-unknown", status="degraded").model_copy(
+        update={
+            "continuation": _loop_continuation(episode_id),
+            "group_id": "diagnostic-group",
+            "group_label": "eval-shards",
+            "consecutive_error_count": 5,
+            "last_error": "SSH unavailable",
+        }
+    )
+    store.create_watchers([completed, degraded])
+
+    groups = store.completed_watcher_groups()
+
+    assert [{item.watcher_id for item in group} for group in groups] == [
+        {"shard-complete", "shard-unknown"}
+    ]
+    unknown = store.watcher("shard-unknown")
+    assert unknown is not None
+    assert unknown.status == "degraded"
+    assert unknown.consecutive_error_count == 5
+
+
+def test_claimed_diagnostic_group_remains_history_not_live_work(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    completed = _record("shard-complete", origin="loop-root", status="completed").model_copy(
+        update={
+            "continuation": _loop_continuation(episode_id),
+            "group_id": "diagnostic-group",
+            "group_label": "eval-shards",
+        }
+    )
+    degraded = _record("shard-unknown", origin="loop-root", status="degraded").model_copy(
+        update={
+            "continuation": _loop_continuation(episode_id),
+            "group_id": "diagnostic-group",
+            "group_label": "eval-shards",
+            "consecutive_error_count": 5,
+            "last_error": "SSH unavailable",
+        }
+    )
+    store.create_watchers([completed, degraded])
+    wake = _loop_task(
+        store,
+        "diagnostic-wake",
+        episode_id=episode_id,
+        invocation=2,
+        ceiling=3,
+        watcher_ids=["shard-complete", "shard-unknown"],
+    )
+    wake = wake.model_copy(
+        update={
+            "request": {**wake.request, "session_id": "native-loop-session"},
+            "native_session_id": "native-loop-session",
+            "stage_root": "/tmp/loop-stage",
+        }
+    )
+
+    assert (
+        store.create_watcher_notification_task(wake, ["shard-complete", "shard-unknown"])
+        is not None
+    )
+    store.complete_agent_task("diagnostic-wake", applied_revision=None, result={})
+
+    stored = store.watcher("shard-unknown")
+    assert stored is not None
+    assert stored.status == "degraded"
+    assert stored.notified is True
+    assert (
+        store.record_watcher_check(
+            "shard-unknown",
+            status="active",
+            exit_code=1,
+            error=None,
+        )
+        == stored
+    )
+    assert store.pollable_watchers(as_of="2026-08-02T00:00:00+00:00") == []
+    assert store.experiment_watcher_ids("project", "exp-one") == []
+    runtime = store.experiment_loop_runtime("project", "exp-one")
+    assert runtime.detached_work_active is False
+    assert runtime.watcher_degraded is False
+    assert runtime.active is False
+    assert store.completed_watcher_groups() == []
+    with pytest.raises(ValueError, match="missing, unready, or already notified"):
+        store.create_watcher_notification_task(
+            _loop_task(
+                store,
+                "diagnostic-wake-again",
+                episode_id=episode_id,
+                invocation=3,
+                ceiling=3,
+                watcher_ids=["shard-complete", "shard-unknown"],
+            ),
+            ["shard-complete", "shard-unknown"],
+        )
 
 
 def test_check_runs_from_declared_cwd_and_uses_exit_table(tmp_path) -> None:
@@ -388,10 +806,7 @@ def test_a_human_release_takes_a_watcher_out_of_the_polling_set(tmp_path) -> Non
         exit_code=255,
         error="ssh: connect to host gpu01 port 22: No route to host",
     )
-    assert {record.watcher_id for record in store.pollable_watchers()} == {
-        "watch-live",
-        "watch-degraded",
-    }
+    assert {record.watcher_id for record in store.pollable_watchers()} == {"watch-live"}
 
     stopped = store.stop_watchers("project", ["watch-degraded"])
 

@@ -38,9 +38,27 @@ export interface ExperimentRun {
   taskGroup: AgentTaskGroup | null;
   currentTask: AgentTask | null;
   watchers: WatcherRecord[];
+  watcherItems: ExperimentWatcherItem[];
   currentWatchers: WatcherRecord[];
   health: ExperimentLoopHealth;
 }
+
+export interface ExperimentWatcherCounts {
+  finished: number;
+  degraded: number;
+  running: number;
+  stopped: number;
+}
+
+export interface ExperimentWatcherGroup {
+  groupId: string;
+  label: string;
+  watchers: WatcherRecord[];
+  counts: ExperimentWatcherCounts;
+}
+
+export type ExperimentWatcherItem =
+  { kind: "group"; group: ExperimentWatcherGroup } | { kind: "watcher"; watcher: WatcherRecord };
 
 export type RunEntry =
   | { kind: "task"; id: string; observedAt: string | null; group: AgentTaskGroup }
@@ -210,9 +228,49 @@ export function buildExperimentRun(
     taskGroup,
     currentTask,
     watchers,
+    watcherItems: experimentWatcherDisplayItems(watchers),
     currentWatchers,
     health: deriveExperimentLoopHealth(node, control, taskStatus, currentWatchers),
   };
+}
+
+/** Keep an Experiment's immutable watcher group visible as one operational unit. */
+export function experimentWatcherDisplayItems(watchers: WatcherRecord[]): ExperimentWatcherItem[] {
+  const groups = new Map<string, ExperimentWatcherGroup>();
+  const items: ExperimentWatcherItem[] = [];
+  for (const watcher of watchers) {
+    if (!watcher.group_id) {
+      items.push({ kind: "watcher", watcher });
+      continue;
+    }
+    let group = groups.get(watcher.group_id);
+    if (!group) {
+      group = {
+        groupId: watcher.group_id,
+        label: watcher.group_label ?? watcher.group_id,
+        watchers: [],
+        counts: { finished: 0, degraded: 0, running: 0, stopped: 0 },
+      };
+      groups.set(watcher.group_id, group);
+      items.push({ kind: "group", group });
+    }
+    group.watchers.push(watcher);
+    group.counts[watcherGroupCountKey(watcher)] += 1;
+  }
+  return items;
+}
+
+function watcherGroupCountKey(watcher: WatcherRecord): keyof ExperimentWatcherCounts {
+  switch (watcher.status) {
+    case "completed":
+      return "finished";
+    case "active":
+      return "running";
+    case "degraded":
+      return "degraded";
+    case "stopped":
+      return "stopped";
+  }
 }
 
 export function buildRunProjection(input: RunProjectionInput): RunProjection {

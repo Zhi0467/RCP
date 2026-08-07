@@ -111,6 +111,7 @@ function watcher(id, nodeId, episodeId, status, fields = {}) {
     watcher_id: id,
     project_id: "project",
     origin_operation_id: `origin-${id}`,
+    origin_task_kind: "node_chat",
     chat_id: "chat",
     node_id: nodeId,
     execution_host: "",
@@ -118,11 +119,24 @@ function watcher(id, nodeId, episodeId, status, fields = {}) {
     log_path: `/tmp/${id}.log`,
     cwd: "/tmp",
     continuation: {
+      provider: "codex",
+      model: null,
+      reasoning: null,
+      run_on: "local",
+      run_truth_scope: null,
       patch_kind: "experiment_loop",
       control_node_id: nodeId,
+      control_revision: 1,
       control_episode_id: episodeId,
       control_invocation: 1,
       control_invocation_ceiling: 3,
+      control_decision_bundle: [],
+      control_completion_criteria: [],
+      workflow_ids: [],
+      skill_ids: [],
+      invoked_workflow_ids: [],
+      invoked_skill_ids: [],
+      resolved_skill_packages: [],
     },
     status,
     created_at: "2026-08-06T01:00:00Z",
@@ -130,8 +144,16 @@ function watcher(id, nodeId, episodeId, status, fields = {}) {
     last_exit_code: null,
     last_error: null,
     completed_at: null,
+    next_check_at: null,
+    consecutive_error_count: 0,
+    group_id: null,
+    group_label: null,
     notified: false,
     notification_operation_id: null,
+    stopped_by: null,
+    stop_reason: null,
+    stopped_at: null,
+    stop_operation_id: null,
     ...fields,
   };
 }
@@ -219,6 +241,57 @@ test("Runs includes Experiment-loop tasks once and excludes generic chat and coa
     ],
   );
   assert.equal(projection.actionable.length, 0);
+});
+
+test("Experiment watcher projection keeps each immutable group and ungrouped history distinct", () => {
+  const nodeId = "experiment/grouped";
+  const episodeId = "episode-grouped";
+  const run = buildExperimentRun(
+    experiment(nodeId),
+    control({ episode_id: episodeId }),
+    [],
+    [
+      watcher("ungrouped", nodeId, episodeId, "completed"),
+      watcher("shard-finished", nodeId, episodeId, "completed", {
+        group_id: "group-eval-shards",
+        group_label: "eval-shards",
+      }),
+      watcher("shard-degraded", nodeId, episodeId, "degraded", {
+        group_id: "group-eval-shards",
+        group_label: "eval-shards",
+      }),
+      watcher("shard-running", nodeId, episodeId, "active", {
+        group_id: "group-eval-shards",
+        group_label: "eval-shards",
+      }),
+      watcher("shard-retired", nodeId, episodeId, "stopped", {
+        group_id: "group-eval-shards",
+        group_label: "eval-shards",
+        stopped_by: "agent",
+      }),
+    ],
+  );
+
+  const grouped = run.watcherItems.find((item) => item.kind === "group");
+  assert.ok(grouped && grouped.kind === "group");
+  assert.equal(grouped.group.groupId, "group-eval-shards");
+  assert.equal(grouped.group.label, "eval-shards");
+  assert.deepEqual(grouped.group.counts, {
+    finished: 1,
+    degraded: 1,
+    running: 1,
+    stopped: 1,
+  });
+  assert.deepEqual(
+    grouped.group.watchers.map((item) => item.watcher_id),
+    ["shard-degraded", "shard-finished", "shard-retired", "shard-running"],
+  );
+  assert.deepEqual(
+    run.watcherItems
+      .filter((item) => item.kind === "watcher")
+      .map((item) => item.watcher.watcher_id),
+    ["ungrouped"],
+  );
 });
 
 test("Experiment projection follows operational precedence and stop task placement", () => {

@@ -1,20 +1,35 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
+    Decision,
     GraphState,
     Patch,
 )
-from rcp.core.validation.proposals import proposal_is_stale
+from rcp.core.validation.proposals import (
+    decision_transition_error,
+    normalized_decision_proposal_ops,
+    proposal_is_stale,
+    proposal_updates_node,
+)
 from rcp.core.validation.report import ValidationReport
 
 
-def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationReport) -> None:
+def validate_approval_shape(
+    state: GraphState,
+    patch: Patch,
+    report: ValidationReport,
+    *,
+    mode: Literal["admission", "replay"],
+) -> None:
     revision = patch.revision or None
     resolution_ops = [op for op in patch.ops if op.get("op") == "resolve_proposals"]
+    if _is_direct_decision_choice(state, patch, resolution_ops):
+        _validate_direct_decision_choice(state, patch, resolution_ops, report, revision)
+        return
     if not resolution_ops:
         names = [op.get("op") for op in patch.ops]
         if len(patch.ops) == 1 and names[0] in {
@@ -101,12 +116,25 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
     semantic_ops = [
         op for op in patch.ops if op.get("op") not in {"resolve_proposals", "set_standing"}
     ]
-    if status == "approved" and semantic_ops != proposal.ops:
-        report.reject(
-            "proposal-replay-mismatch",
-            "Approval must replay the proposal's stored operations verbatim.",
-            revision,
-        )
+    if status == "approved":
+        normalized_ops = normalized_decision_proposal_ops(state, proposal)
+        is_verbatim = semantic_ops == proposal.ops
+        requires_normalization = normalized_ops != proposal.ops
+        if not is_verbatim and semantic_ops != normalized_ops:
+            report.reject(
+                "proposal-replay-mismatch",
+                "Approval must replay the proposal's stored operations, allowing only the "
+                "implied decided status for a legacy Decision selection.",
+                revision,
+            )
+        elif is_verbatim and requires_normalization and mode == "admission":
+            report.reject(
+                "unnormalized-decision-approval",
+                "A legacy Decision selection approval must add the implied decided status.",
+                revision,
+            )
+        elif not (is_verbatim and requires_normalization):
+            _validate_approved_decision_result(state, semantic_ops, report, revision)
     if status in {"rejected", "withdrawn"} and semantic_ops:
         report.reject(
             "rejected-proposal-has-ops",
@@ -125,6 +153,203 @@ def validate_approval_shape(state: GraphState, patch: Patch, report: ValidationR
             "The human UI may approve or reject a pending proposal.",
             revision,
         )
+
+
+def _is_direct_decision_choice(
+    state: GraphState, patch: Patch, resolution_ops: list[dict[str, Any]]
+) -> bool:
+    update_ops = [op for op in patch.ops if op.get("op") == "update_nodes"]
+    if len(update_ops) != 1:
+        return False
+    updates = update_ops[0].get("nodes")
+    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
+        return False
+    update = updates[0]
+    changes = update.get("changes")
+    if not isinstance(state.nodes.get(update.get("id")), Decision) or not isinstance(changes, dict):
+        return False
+    if not set(changes).intersection({"selected_option", "status"}):
+        return False
+    return not any(
+        resolution.get("status") in {"approved", "rejected"}
+        for operation in resolution_ops
+        for resolution in operation.get("resolutions", [])
+        if isinstance(resolution, dict)
+    )
+
+
+def _validate_direct_decision_choice(
+    state: GraphState,
+    patch: Patch,
+    resolution_ops: list[dict[str, Any]],
+    report: ValidationReport,
+    revision: int | None,
+) -> None:
+    def refuse(message: str, *, node_id: str | None = None) -> None:
+        report.reject(
+            "invalid-direct-decision-choice",
+            message,
+            revision,
+            related_node_ids=[node_id] if node_id else [],
+        )
+
+    names = [op.get("op") for op in patch.ops]
+    if not names or set(names) - {"update_nodes", "resolve_proposals", "set_standing"}:
+        refuse(
+            "A direct Decision choice may only update that Decision, withdraw its Proposals, and review it."
+        )
+        return
+    update_ops = [op for op in patch.ops if op.get("op") == "update_nodes"]
+    standing_ops = [op for op in patch.ops if op.get("op") == "set_standing"]
+    if len(update_ops) != 1 or len(standing_ops) > 1:
+        refuse("A direct Decision choice must update and optionally review exactly one Decision.")
+        return
+    operation = update_ops[0]
+    if set(operation) != {"op", "nodes"}:
+        refuse("A direct Decision choice update may contain only 'op' and 'nodes'.")
+        return
+    updates = operation.get("nodes")
+    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
+        refuse("A direct Decision choice must update exactly one existing Decision.")
+        return
+    update = updates[0]
+    if set(update) != {"id", "base_updated_rev", "changes"}:
+        refuse("A direct Decision choice requires exactly id, base_updated_rev, and changes.")
+        return
+    node = state.nodes.get(update.get("id"))
+    if not isinstance(node, Decision):
+        refuse(f"Cannot choose an option on non-Decision node {update.get('id')!r}.")
+        return
+    if node.status == "superseded":
+        refuse(f"Decision {node.id} is superseded and cannot be decided again.", node_id=node.id)
+    if update.get("base_updated_rev") != node.updated_rev or isinstance(
+        update.get("base_updated_rev"), bool
+    ):
+        refuse(
+            f"{node.id} changed after this choice was staged; reload before saving.",
+            node_id=node.id,
+        )
+    changes = update.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        refuse(
+            f"A direct choice for {node.id} must include selected_option and status.",
+            node_id=node.id,
+        )
+        return
+    allowed = HUMAN_EDITABLE_NODE_FIELDS[node.type] | {
+        "extension_fields",
+        "selected_option",
+        "status",
+    }
+    disallowed = sorted(set(changes) - allowed)
+    if disallowed:
+        refuse(
+            f"Direct choice on {node.id} cannot change: {', '.join(disallowed)}.",
+            node_id=node.id,
+        )
+    selected_option = changes.get("selected_option")
+    options = changes.get("options", node.options)
+    if changes.get("status") != "decided":
+        refuse(f"Direct choice on {node.id} must set status exactly to decided.", node_id=node.id)
+    if (
+        not isinstance(selected_option, str)
+        or not selected_option.strip()
+        or not isinstance(options, list)
+        or selected_option not in options
+    ):
+        refuse(
+            f"Direct choice on {node.id} must select one non-empty option from its current options.",
+            node_id=node.id,
+        )
+    if standing_ops and standing_ops[0].get("node_id") != node.id:
+        refuse(
+            "A direct Decision choice and its staged judgment must target the same Decision.",
+            node_id=node.id,
+        )
+
+    seen_proposals: set[str] = set()
+    for operation in resolution_ops:
+        resolutions = operation.get("resolutions")
+        if not isinstance(resolutions, list) or not resolutions:
+            refuse(f"Proposal withdrawals for {node.id} cannot be empty.", node_id=node.id)
+            continue
+        for resolution in resolutions:
+            if not isinstance(resolution, dict):
+                refuse(f"Proposal withdrawals for {node.id} are malformed.", node_id=node.id)
+                continue
+            proposal_id = resolution.get("id")
+            proposal = state.proposals.get(proposal_id)
+            if proposal_id in seen_proposals:
+                refuse(
+                    f"Proposal {proposal_id!r} is withdrawn more than once for {node.id}.",
+                    node_id=node.id,
+                )
+            elif proposal is None or proposal.status != "pending":
+                refuse(
+                    f"Proposal {proposal_id!r} for {node.id} is not pending.",
+                    node_id=node.id,
+                )
+            elif not proposal_updates_node(proposal, node.id):
+                refuse(
+                    f"Proposal {proposal_id!r} does not target Decision {node.id}.",
+                    node_id=node.id,
+                )
+            seen_proposals.add(proposal_id)
+            if resolution.get("status") != "withdrawn":
+                refuse(
+                    f"Direct choice on {node.id} may only withdraw superseded Proposals.",
+                    node_id=node.id,
+                )
+            if not isinstance(resolution.get("reason"), str) or not resolution["reason"].strip():
+                refuse(
+                    f"Withdrawal of Proposal {proposal_id!r} for {node.id} requires a reason.",
+                    node_id=node.id,
+                )
+    expected_proposals = {
+        proposal.id
+        for proposal in state.proposals.values()
+        if proposal.status == "pending" and proposal_updates_node(proposal, node.id)
+    }
+    if seen_proposals != expected_proposals:
+        missing = sorted(expected_proposals - seen_proposals)
+        unexpected = sorted(seen_proposals - expected_proposals)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected {', '.join(unexpected)}")
+        refuse(
+            f"Direct choice on {node.id} must withdraw every pending Proposal targeting it "
+            f"({'; '.join(details)}).",
+            node_id=node.id,
+        )
+
+
+def _validate_approved_decision_result(
+    state: GraphState,
+    semantic_ops: list[dict[str, Any]],
+    report: ValidationReport,
+    revision: int | None,
+) -> None:
+    for operation in semantic_ops:
+        if operation.get("op") != "update_nodes":
+            continue
+        for update in operation.get("nodes", []):
+            if not isinstance(update, dict):
+                continue
+            node = state.nodes.get(update.get("id"))
+            changes = update.get("changes")
+            if (
+                isinstance(node, Decision)
+                and isinstance(changes, dict)
+                and (error := decision_transition_error(node, changes))
+            ):
+                report.reject(
+                    "incoherent-decision-approval",
+                    error,
+                    revision,
+                    related_node_ids=[node.id],
+                )
 
 
 def _validate_attempt_release(

@@ -102,6 +102,11 @@ Context protocol:
   active, degraded, completed, or stopped watcher in that file. A watcher completing means only
   that its check no longer sees the named work; it does not mean success and does not begin, close,
   or correspond one-to-one with an attempt.
+- `delivered_watcher_groups` in loop control names every delivered group and all of its members.
+  A group wakes only when no member is still observed running. Exit-0 members are gone, not proven
+  successful. A degraded member has unknown external state; inspect it before relaunching,
+  cancelling, or recording an outcome. Group labels and watcher state are operational context, not
+  graph or episode authority.
 
 Operational method:
 - Perform a short preflight specific to the next consequential action: verify the effective config,
@@ -162,17 +167,27 @@ Watcher handoff protocol:
   confirms that no detached work from this Experiment remains to watch and the same Patch explicitly
   records success, a Proposal, or a same-Patch Blocker. A missing file is an invalid handoff and RCP
   will ask this same session to correct it.
-- Every non-empty-list item contains exactly `check_command`, `log_path`, and `cwd`.
-  `log_path` and `cwd` are absolute paths on the execution machine. The command contains literal
+- An observer item contains `check_command`, `log_path`, and `cwd`. It may also contain one
+  non-blank `group` label. Every observer carrying the same label in this handoff forms one
+  immutable group and each such group needs at least two newly armed observers. A group member
+  that completes early does not wake this loop by itself.
+- The same list may contain a stop item with exactly `stop_watcher_id` and a non-blank `reason`.
+  Use it only after you have cancelled or otherwise settled obsolete external work. The id must be
+  a compatible staged watcher in this current Experiment episode; it carries no command or path.
+  Stopping an observer does not prove the job was cancelled and does not request or set **Stop
+  loop**. You may mix stop items and observer items, including retiring old observers while arming
+  replacements.
+- Each observer's `log_path` and `cwd` are absolute paths on the execution machine. Its command contains literal
   job or process identifiers and no variables or shell state inherited from this invocation.
 - Each check is observational. From a fresh login shell in its `cwd`, it exits 1 while the named
   work remains in its system, 0 when that work is gone, and another status only when it cannot
   answer. It never submits, cancels, kills, edits, or otherwise changes external state. Verify the
   detached work outlives this turn and run the exact check from a fresh login shell before handoff.
 - RCP discovers `watch.json` after the turn, validates every check, and arms the list atomically;
-  one invalid item rejects the whole list for in-session correction. There is no watcher API to
-  call. Multiple watchers may observe one attempt, one watcher may cover work relevant to several
-  attempts, and a later wake may rearm watchers after inspecting authoritative state.
+  one invalid observer, group, or stop item rejects the whole list for in-session correction.
+  There is no watcher API to call. Multiple watchers may observe one attempt, one watcher may cover
+  work relevant to several attempts, and a later wake may rearm watchers after inspecting
+  authoritative state.
 - A completed watcher delivered at the ceiling stays pending rather than being discarded. Its log
   and original attribution enter invocation 1 only after a human Run starts a fresh episode.
 
@@ -285,6 +300,12 @@ result. If it refers to work that was already submitted, inspect that work; subm
 only when the authoritative state shows that the earlier submission did not start, or after you
 have recorded the specific mechanical fault and changed relaunch plan required by the Experiment
 attempt protocol.
+
+The fresh loop-control file names any delivered watcher group and every member. That group woke
+only because no member is still observed running: exit-0 members are gone, not proven successful;
+any degraded member has unknown external state and must be inspected before you relaunch, cancel,
+or record an outcome. A member retired by an earlier agent stop is historical context, never a
+trigger.
 
 Read the fresh state before acting:
 - loop control: `{loop_control_path}`

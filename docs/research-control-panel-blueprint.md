@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.23
+**Version:** 0.25
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,17 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.25** — made every non-superseded Decision directly human-decidable through
+  a staged option ballot: Sync records the listed selection, decided status, and
+  accepted standing together while atomically withdrawing competing pending
+  Proposals; required coherent new Decision Proposals while preserving replay of
+  legacy approval history.
+- **0.24** — let an Experiment-loop agent retire its own staged observers through
+  the atomic watcher handoff after it has settled the external work, absorbed
+  into a concurrent graceful **Stop loop** rather than failing that turn; added
+  durable paced polling and immutable grouped Experiment observers whose one
+  ready-or-diagnostic wake is claimed exactly once. Generic Work observers
+  remain strict three-field items with manual **Stop watching**.
 - **0.23** — made every visible client detect canonical graph revision changes
   through a lightweight read-only probe and reconcile its project snapshot,
   without continuous graph replay or repurposing the ingestion Refresh action.
@@ -175,7 +186,7 @@ Only human actions may:
 
 - set node standing;
 - approve or reject a Proposal;
-- decide a governed Decision;
+- decide any non-superseded Decision;
 - accept a Hypothesis status transition;
 - change project truth-scope membership; or
 - authorize a new bounded Experiment-loop episode.
@@ -184,6 +195,13 @@ Contest and Agree are independent visible human controls. Clearing either
 returns standing to `asserted`; selecting the other replaces it. Proposal
 Reject and Approve likewise remain staged and reversible until Sync, then become
 terminal historical resolutions.
+
+A Decision's listed options are a dedicated human authority control, not an
+ordinary node-edit field. On any non-superseded Decision, selecting one option
+stages that `selected_option`, `status: decided`, and accepted standing in the
+project draft. Sync commits them in one approval Patch and atomically withdraws
+every pending Proposal that updates the same Decision. Editing the available
+options remains separate from choosing among them.
 
 Blocker standing and lifecycle status are independent. The human node editor may
 set Blocker status to `open`, `resolved`, or `superseded`, and a graph-capable
@@ -206,9 +224,14 @@ content edits, edges, Evidence, Blockers, merges, supersessions, and removals ar
 not Proposal-only merely because accepted material is nearby. An ordinary agent
 edit to accepted node content returns that node to asserted review.
 
-Agent-created Decisions begin open and unselected. Agent-created Hypotheses begin
-proposed. Agents cannot approve or reject Proposals, but may explicitly withdraw
-any still-pending Proposal that later work proves obsolete or duplicated.
+Agent-created Decisions begin open and unselected. A Decision Proposal that
+selects an option must select from the current list and make an open or revisit
+Decision decided; it cannot declare a Decision decided without a listed
+selection. Approval of an older selection-only Proposal adds that implied status
+for new history, while replay still accepts the exact legacy approval already in
+the append-only log. Agent-created Hypotheses begin proposed. Agents cannot
+approve or reject Proposals, but may explicitly withdraw any still-pending
+Proposal that later work proves obsolete or duplicated.
 Withdrawal replays no semantic operation. RCP records creation and resolution
 provenance, including the originating task when available.
 
@@ -478,10 +501,11 @@ an explicit `watcher_wake` continuation cause that is not task Resume. Task
 Resume continues one paused task at the same invocation.
 
 Watcher provenance never chooses the resumed session; the newest human-authorized
-episode does. An automatic wake may claim only a completed group whose frozen
-provider, execution target, conversation, Experiment, truth scope, and Patch
-authority are compatible with the current binding. An incompatible group stays
-completed, unnotified, and visible until a human Run explicitly reauthorizes it.
+episode does. An automatic wake may claim only a completed watcher or ready
+watcher group whose frozen provider, execution target, conversation, Experiment,
+truth scope, and Patch authority are compatible with the current binding. An
+incompatible watcher or group stays completed or ready, unnotified, and visible
+until a human Run explicitly reauthorizes it.
 Before the atomic claim and before spending the invocation, RCP validates that
 the bound session and exact stage still exist on the pinned machine. A transient
 unavailability leaves the watchers unnotified for a later pass; a missing or
@@ -504,8 +528,8 @@ meaning "finish the current turn, then disable automatic continuation." RCP
 persists the stop request before returning success and before any unclaimed
 compatible watcher can win a new wake. With no unresolved loop task, it
 terminally stops every compatible current or adopted watcher and settles
-immediately; incompatible historical groups remain pending. Otherwise that task
-is the current turn and finishes normally: its valid Patch and semantic
+immediately; incompatible historical watcher work remains pending. An unresolved
+loop task is the current turn and finishes normally: its valid Patch and semantic
 bookkeeping apply, and those existing compatible watchers plus every valid
 watcher its final handoff emits are retained as `stopped`. If the turn pauses, fails, or is interrupted, the
 stop remains unsettled while the task stays available for Resume or Retry. A
@@ -529,11 +553,11 @@ that was created before Stop remains part of the authorized turn and may finish,
 but Stop prevents launching a new repair from an old rejected result.
 
 When the current episode reaches `invocation_ceiling`, RCP starts no automatic
-wake. Completed watchers remain visibly pending and unconsumed. The next human
-Run starts a fresh episode and, when a completed compatible watcher group is
-pending, atomically claims and delivers that group as invocation 1 with its
-original attribution. This is the only counter reset; creating or resolving a
-Proposal does not reset or resume the loop by itself.
+wake. Completed ungrouped watchers and ready groups remain visibly pending and
+unconsumed. The next human Run starts a fresh episode and, when a compatible
+watcher or group is pending, atomically claims and delivers it as invocation 1
+with its original attribution. This is the only counter reset; creating or
+resolving a Proposal does not reset or resume the loop by itself.
 
 Debug bookkeeping precommits a mechanical fault, change, and predicted effect
 when the agent chooses to record a debug attempt. Scientific disappointment is
@@ -552,8 +576,8 @@ validator, watcher, schema, and artifact paths.
 
 The contract points to a small per-invocation loop-control JSON file containing
 only the phase, episode id, invocation counts, pinned governing Decision bundle,
-live drift, advisory completion criteria, and delivered watcher ids. Current
-watcher records are staged separately and named by path rather than expanded
+live drift, advisory completion criteria, and delivered watcher or group ids.
+Current watcher records are staged separately and named by path rather than expanded
 into the contract. Semantic attempts remain in the Experiment in canonical
 `graph.json`, and their agent-facing shape remains part of the existing Patch
 schema; RCP does not stage a duplicate attempt snapshot or schema. It never
@@ -567,8 +591,8 @@ launch; RCP never substitutes semantic attempt counts or a generic Work contract
 
 An initial Run is marked as the beginning of an episode. A watcher wake resumes
 the episode's native session and distinguishes the delivered coalesced watcher
-group from other active, degraded, completed, or stopped Experiment watchers. It
-never interprets one completion as an attempt boundary. Resume and Retry preserve the
+set or immutable watcher group from other active, degraded, completed, or stopped
+Experiment watchers. It never interprets one completion as an attempt boundary. Resume and Retry preserve the
 original objective and binding but receive a compact live control file before
 acting. Patch and watcher corrections receive only the retained contract,
 current output paths, and exact diagnostics needed to repair their deliverable.
@@ -590,19 +614,48 @@ status as control.
 
 ### Watch delivery
 
-Ordinary Work may write one non-empty `watch.json` list. Every Experiment-loop
-invocation must write the file: a non-empty list means detached work remains;
-`[]` is valid only when the same Patch explicitly records success, a Proposal,
-or a Blocker that exits or pauses the loop. Every strict non-empty item contains
-only a self-contained observational `check_command` with literal identifiers,
-an absolute `log_path`, and an absolute `cwd`. RCP binds host, conversation, and
-continuation policy from the originating task.
+Ordinary Work may write one non-empty `watch.json` list. Its items remain strict:
+each contains only a self-contained observational `check_command` with literal
+identifiers, an absolute `log_path`, and an absolute `cwd`. Every
+Experiment-loop invocation must write the file. Its list may mix those observer
+items, an optional non-blank `group` label on an observer, and explicit
+`{stop_watcher_id, reason}` items. A stop item names one staged watcher from the
+bound project, conversation, Experiment, and compatible episode; it has a
+non-blank reason and no command or path. Duplicate, unknown, already-notified,
+or incompatible stop ids reject the complete handoff atomically. An accepted
+stop permanently retires that observer from polling and delivery, retaining its
+agent provenance, reason, and time. It is the agent's statement that it has
+already settled the external work with its existing Work tools, never RCP's
+claim to have cancelled that work. A graceful **Stop loop** that retires those
+same observers first does not invalidate the running turn's stop items: their
+retirement is already satisfied, each record keeps the loop's own disposition,
+and the already-authorized turn finishes normally instead of correcting a race
+it cannot win.
+
+An observer item without `group` keeps independent delivery. Observer items
+with one label in one accepted Experiment-loop handoff form one immutable group
+bound to that operation and label; a group contains at least two newly armed
+observers. Later work creates a new group rather than changing membership.
+Stop items never join a group. A non-empty Experiment handoff means an observer
+continues, an old observer is retired, or both; after applying dispositions,
+`[]` or a stop-only handoff that leaves no live observer is valid only when the
+same Patch explicitly records success, a Proposal, or a Blocker that exits or
+pauses the loop.
+
+RCP binds host, conversation, and continuation policy from the originating task.
 
 Checks run from a cold login shell with a hard timeout. Exit `0` means gone,
 `1` means still present, and any other value means the check cannot answer.
-Initial validation is atomic; one invalid item arms none. After arming, each
-watcher polls independently, records degraded errors without treating them as
-completion, and survives RCP restart.
+Initial validation is atomic; one invalid item arms, retires, or groups none.
+After arming, a healthy active observer schedules its next check two minutes
+later. A timeout, runner or transport error, or other exit schedules durable
+consecutive-error backoff at 2, 4, 8, 15, then 30 minutes; only exit `1` resets
+that error count and healthy interval. Every delay has deterministic identity
+jitter within plus or minus ten percent. `next_check_at` and the error count
+survive restart, so no not-yet-due observer is polled early or reset into a
+burst. Degraded errors never mean completion or automatic retirement, and only
+exit `0` completes an observer. A stopped observer is never selected again,
+regardless of an old due time.
 
 A missing, malformed, initially uncheckable, or unexplained-empty
 Experiment-loop handoff enters the same native session's loop-handoff correction
@@ -614,20 +667,29 @@ cannot establish either continuation or explicit exit, the task fails visibly
 and stays Retryable. RCP never silently converts absence into “nothing to
 watch.”
 
-Completed compatible watchers coalesce into one distinctly attributed Work wake.
-Queue creation, episode-budget admission, and their notified ledger commit
-atomically. Compatibility is the current delivery policy, not the immutable
-origin episode or invocation, so completions from different invocations of the
-same bound conversation can share one wake while retaining their individual
-provenance. The transaction proves that the queued task still matches the
-watchers' bound project, conversation, node, provider, execution target, and
-control node. It also distinguishes an automatic next invocation from a human
-Run that reauthorizes pending completion as invocation 1 of a fresh episode. A
-wake never occupies the human message slot, never mechanically
-creates or closes an `ExperimentAttempt`, and never widens its bound Patch
-policy. It consumes one Experiment-loop invocation only when the task is
-successfully queued. It never races ahead of an active turn in the same
-conversation.
+Completed compatible ungrouped watchers coalesce into one distinctly attributed
+wake: a fresh Work turn outside Experiment control or the next Experiment-loop
+invocation inside it. A grouped observer never enters delivery independently:
+its group is
+ready only when no member remains active and every non-retired member is either
+complete or has reached five consecutive observation errors. The latter is one
+diagnostic readiness condition at the capped backoff tier, not completion,
+failure, or automatic retirement. A fully retired group is historical and never
+wakes. Compatible ready groups may coalesce into one wake, but no group is split
+or merged with another group. Queue creation, group or watcher claim,
+episode-budget admission, and the notified ledger commit atomically, so restart,
+polling races, callback retry, Resume, and Retry cannot create a second wake.
+Compatibility is the current delivery policy, not the immutable origin episode
+or invocation, so ready work from different invocations of the same bound
+conversation can share one wake while retaining its individual provenance. The
+transaction proves that the queued task still matches the watchers' bound
+project, conversation, node, provider, execution target, and control node. It
+also distinguishes an automatic next invocation from a human Run that
+reauthorizes pending completion as invocation 1 of a fresh episode. A wake never
+occupies the human message slot, never mechanically creates or closes an
+`ExperimentAttempt`, and never widens its bound Patch policy. It consumes one
+Experiment-loop invocation only when the task is successfully queued. It never
+races ahead of an active turn in the same conversation.
 
 The final Experiment-loop Patch and watcher disposition are one recoverable
 handoff keyed by the root operation for that invocation. RCP validates both
@@ -640,26 +702,39 @@ is confirmed.
 
 The agent never reads the watcher database. Before each loop turn RCP stages a
 bounded watcher-state file in the exact scratch workspace and points to it from
-loop control and the prompt. Its selection is explicit: an automatic wake stages
-every delivered watcher even after its claim plus the other relevant
-active, degraded, and completed-unnotified records; a fresh initial Run stages no
-delivered ids alongside those observers and the immediately preceding
-human-stopped episode's records; a human reauthorization stages the claimed group
-even though it is now notified. Stopped records are context, never triggers.
+loop control and the prompt. It names immutable group identity and membership,
+per-member status, last error, consecutive-error count, and delivered watcher
+or group ids, and retains a stopped observer's disposition provenance, reason,
+and time. Its selection is explicit: an automatic wake stages every member
+of every delivered group or ungrouped watcher even after its claim plus the
+other relevant active, degraded, and completed-unnotified records; a fresh
+initial Run stages no delivered ids alongside those observers and the immediately
+preceding human-stopped episode's records; a human reauthorization stages the
+claimed group even though it is now notified. Stopped records are context, never
+triggers.
+
+A group wake continuation names the immutable group and every member. It states
+that no member is still observed active; exit-`0` members are only gone, while
+degraded members have unknown external state and must be inspected before the
+agent relaunches, cancels, or records an outcome. This diagnostic prompt changes
+neither the episode-native session, Patch authority, nor invocation accounting.
 
 RCP never infers that a degraded watcher is dead. Loop-level **Stop loop** is the
-Experiment's operational authority, so Experiment Runs offers no per-watcher Stop
-action; an ordinary Work watcher keeps its individual **Stop watching**
-authority. Neither changes any semantic attempt. Semantic
-attempt changes remain deliberate graph edits. Stop atomically acknowledges any
-unclaimed active, degraded, or just-completed watcher; it cannot race a claimed
-notification into waking afterward. A watcher whose Experiment was removed is
-terminally retired rather than poisoning later delivery passes. These are human
-or lifecycle actions and are shown as timeline events, not agent conclusions.
+Experiment's human operational authority, so Experiment Runs offers no
+per-watcher human Stop action; an ordinary Work watcher keeps its individual
+**Stop watching** authority. An Experiment agent may instead retire only a
+staged compatible observer by the explicit file disposition above, after its own
+operational work has settled it. Neither human nor agent observer retirement
+changes any semantic attempt. Human Stop atomically acknowledges any unclaimed
+active, degraded, or just-completed watcher; it cannot race a claimed
+notification into waking afterward. An agent disposition and notification claim
+also have one atomic winner. A watcher whose Experiment was removed is
+terminally retired rather than poisoning later delivery passes. These
+dispositions are shown as timeline events, not scientific conclusions.
 
-Live-output delivery, durable output offsets, debounce/batching, repository
-leases, stale-record policy, direct graph manipulation, and graph-wide scheduling
-remain open in [`open-questions.md`](open-questions.md).
+Live-output delivery, durable output offsets, debounce/batching for output,
+repository leases, stale-record policy, direct graph manipulation, and graph-wide
+scheduling remain open in [`open-questions.md`](open-questions.md).
 
 ## Background tasks, concurrency, and provider readiness
 
@@ -726,10 +801,12 @@ graceful takeover after recoverable work is paused.
   because its Patch kind and control node make it research execution. Pressing an
   Experiment's Run navigates here and opens its run detail rather than a floating
   node-chat window. That detail reports loop health, current activity, invocation
-  budget, watcher health and provenance, resolved execution with native-session
-  continuity, and the Experiment's meaning; its one loop-level action is **Stop
-  loop**, while invocation-level Pause, Resume, and Retry stay in the Agent task
-  inspector.
+  budget, watcher health and provenance, and each immutable watcher group as its
+  own operational unit with per-status summary, member status, and degraded-error
+  detail. It reports resolved execution with native-session continuity and the
+  Experiment's meaning; its one loop-level action is **Stop loop**, while
+  invocation-level Pause, Resume,
+  and Retry stay in the Agent task inspector.
 - **Chats** groups node and project conversations with immutable turn labels,
   inline task progress under the triggering message, and no global task banner.
 - **Paper** provides a human-authored Markdown Write/Preview pane and read-only
@@ -747,7 +824,10 @@ question is decided.
 
 Node detail is a persistent, resizable floating inspection window that clamps to
 the viewport and closes when entering Chats. Chat list width and Paper/editor
-split are likewise adjustable where specified by their acceptance scenarios.
+split are likewise adjustable where specified by their acceptance scenarios. A
+Decision detail promotes its question and deduplicated options into a visually
+distinct, accessible single-choice ballot above prose Context, with lifecycle,
+canonical selection, staged selection, and competing-Proposal state visible.
 
 Revision summaries are producer-authored ordinary prose with titles rather than
 ids, operation names, or inventory counts. Rendering deterministically resolves

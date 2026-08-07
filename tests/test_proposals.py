@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.config import load_manifest, write_project_scope
+from rcp.core.materialize import prepare_patch_bookkeeping
 from rcp.core.models import Patch
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, PatchRejected
@@ -316,6 +317,27 @@ def test_agent_withdraws_a_pending_proposal_with_provenance(manifest) -> None:
     assert proposal.resolution_reason == "A revised proposal replaces this one."
 
 
+def test_human_created_proposal_records_operation_provenance(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    state = history.state()
+    patch = proposal_patch().model_copy(
+        update={
+            "kind": "approval",
+            "author": "human",
+            "run_truth_scope": [],
+            "repositories_read": [],
+            "source_operation_id": "human-create-proposal",
+        }
+    )
+
+    prepared = prepare_patch_bookkeeping(state, patch)
+
+    proposal = prepared.ops[0]["proposals"][0]
+    assert proposal["created_by"] == "human"
+    assert proposal["created_by_operation_id"] == "human-create-proposal"
+
+
 def test_agent_cannot_resolve_a_pending_proposal_with_human_decision_status(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
@@ -449,15 +471,20 @@ def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
 ) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    patch = proposal_patch()
+    patch = proposal_patch().model_copy(update={"source_operation_id": "agent-create-proposal"})
     proposal = patch.ops[0]["proposals"][0]
     bookkeeping = {
         "related_node_ids": ["rq/learning-after-shift"],
         "related_config_keys": ["ontology"],
         "base_rev": 999,
         "status": "approved",
+        "created_by": "human",
+        "created_by_operation_id": "provider-create",
         "raised_rev": 999,
         "resolved_rev": 999,
+        "resolved_by": "human",
+        "resolved_by_operation_id": "provider-resolve",
+        "resolution_reason": "Provider-owned resolution metadata must not survive.",
         "rejection_reason": "Provider-owned bookkeeping must not survive.",
     }
     if legacy_bookkeeping == "missing":
@@ -475,16 +502,44 @@ def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
     assert prepared["related_node_ids"] == ["hyp/replanning-restores-plasticity"]
     assert prepared["related_config_keys"] == []
     assert prepared["status"] == "pending"
+    assert prepared["created_by"] == "agent"
+    assert prepared["created_by_operation_id"] == "agent-create-proposal"
     assert prepared["raised_rev"] == 0
     assert prepared["resolved_rev"] is None
+    assert prepared["resolved_by"] is None
+    assert prepared["resolved_by_operation_id"] is None
+    assert prepared["resolution_reason"] is None
     assert prepared["rejection_reason"] is None
     assert admitted.base_rev == 1
     assert admitted.related_node_ids == ["hyp/replanning-restores-plasticity"]
     assert admitted.related_config_keys == []
     assert admitted.status == "pending"
+    assert admitted.created_by == "agent"
+    assert admitted.created_by_operation_id == "agent-create-proposal"
     assert admitted.raised_rev == 2
     assert admitted.resolved_rev is None
+    assert admitted.resolved_by is None
+    assert admitted.resolved_by_operation_id is None
+    assert admitted.resolution_reason is None
     assert admitted.rejection_reason is None
+
+
+def test_proposal_bookkeeping_derives_removed_edge_dependencies_from_state(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    state = history.state()
+    edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
+    patch = proposal_patch()
+    proposal = patch.ops[0]["proposals"][0]
+    proposal["ops"] = [{"op": "remove_edges", "edge_ids": [edge_id]}]
+    proposal["related_node_ids"] = ["provider/supplied"]
+
+    prepared = prepare_patch_bookkeeping(state, patch)
+
+    assert prepared.ops[0]["proposals"][0]["related_node_ids"] == [
+        "hyp/replanning-restores-plasticity",
+        "rq/learning-after-shift",
+    ]
 
 
 def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) -> None:

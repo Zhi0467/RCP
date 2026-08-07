@@ -96,6 +96,7 @@ from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
     arm_watchers,
+    parse_experiment_watch_json,
     parse_watch_json,
     validate_watch_specs,
 )
@@ -1101,8 +1102,12 @@ async def stream_work_run(
                     origin_task = execution.store.agent_task(execution.operation_id)
                     if origin_task is None:
                         raise ValueError("The originating Work operation is no longer available.")
-                    raw_watch = json.loads(watch_text)
-                    if request.patch_kind == "experiment_loop" and raw_watch == []:
+                    experiment_handoff = (
+                        parse_experiment_watch_json(watch_text)
+                        if request.patch_kind == "experiment_loop"
+                        else None
+                    )
+                    if request.patch_kind == "experiment_loop" and experiment_handoff.is_empty:
                         exit_patch_text = _read_chat_patch(workspace, remote_stage)
                         if not request.control_node_id or not patch_explicitly_exits(
                             exit_patch_text, request.control_node_id
@@ -1112,9 +1117,12 @@ async def stream_work_run(
                                 "explicitly record success, a Proposal, or a same-Patch Blocker."
                             )
                     specs = (
-                        []
-                        if request.patch_kind == "experiment_loop" and raw_watch == []
+                        experiment_handoff.observers
+                        if experiment_handoff is not None
                         else parse_watch_json(watch_text)
+                    )
+                    stop_requests = (
+                        experiment_handoff.stops if experiment_handoff is not None else []
                     )
                     binding = WatcherBinding(
                         project_id=origin_task.project_id,
@@ -1151,13 +1159,22 @@ async def stream_work_run(
                             resolved_skill_packages=skill_selection.resolved_skill_packages,
                         ),
                     )
-                    if specs and request.patch_kind == "experiment_loop":
-                        check_results = await asyncio.to_thread(
-                            validate_watch_specs,
-                            specs,
-                            execution_host,
+                    if stop_requests:
+                        execution.store.validate_experiment_agent_watcher_stops(
+                            binding,
+                            stop_requests,
                         )
-                        pending_loop_handoff = (specs, check_results, binding)
+                    if request.patch_kind == "experiment_loop":
+                        check_results = (
+                            await asyncio.to_thread(
+                                validate_watch_specs,
+                                specs,
+                                execution_host,
+                            )
+                            if specs
+                            else []
+                        )
+                        pending_loop_handoff = (specs, check_results, binding, stop_requests)
                         armed = []
                     else:
                         armed = (
@@ -1180,7 +1197,17 @@ async def stream_work_run(
                     watch_problem = str(exc)
                     watch_correctable = False
                 else:
-                    loop_watch_empty = request.patch_kind == "experiment_loop" and not specs
+                    loop_watch_empty = (
+                        request.patch_kind == "experiment_loop"
+                        and not specs
+                        and (
+                            not stop_requests
+                            or not execution.store.experiment_handoff_has_live_watcher_after_stops(
+                                binding,
+                                [item.stop_watcher_id for item in stop_requests],
+                            )
+                        )
+                    )
                     if request.patch_kind != "experiment_loop":
                         execution.store.record_agent_task_receipt(
                             execution.operation_id,
@@ -1578,7 +1605,7 @@ async def stream_work_run(
 
             if pending_loop_handoff is not None:
                 assert execution is not None
-                specs, check_results, binding = pending_loop_handoff
+                specs, check_results, binding, stop_requests = pending_loop_handoff
                 try:
                     armed = await asyncio.to_thread(
                         persist_experiment_watchers_idempotently,
@@ -1586,6 +1613,7 @@ async def stream_work_run(
                         specs,
                         check_results,
                         binding,
+                        stop_requests,
                     )
                 except ValueError as exc:
                     yield _sse(
@@ -1600,6 +1628,7 @@ async def stream_work_run(
                     "watchers_armed",
                     {
                         "watcher_ids": [item.watcher_id for item in armed],
+                        "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
                         "count": len(armed),
                         "correction_rounds": watch_correction_rounds,
                     },

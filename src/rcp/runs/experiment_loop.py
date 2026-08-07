@@ -14,9 +14,14 @@ from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin
 from rcp.runs.shared import _stage_json_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
-from rcp.storage import ExperimentEpisodeRecord, ExperimentLoopRuntime, WatcherRecord
+from rcp.storage import (
+    ExperimentEpisodeRecord,
+    ExperimentLoopRuntime,
+    WatcherRecord,
+    WatcherStopRequest,
+)
 from rcp.transport import RemoteRunStage
-from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
+from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
 
 _EXIT_STATUSES = frozenset({"completed"})
 _EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
@@ -269,17 +274,20 @@ def root_experiment_loop_operation_id(execution: AgentTaskExecution) -> str:
 
 def persist_experiment_watchers_idempotently(
     execution: AgentTaskExecution,
-    specs: list[WatchSpec],
+    specs: list[ExperimentWatchSpec],
     results: list[WatcherCheckResult],
     binding: WatcherBinding,
+    stops: list[WatcherStopRequest] | None = None,
 ) -> list[WatcherRecord]:
     """Persist one validated handoff once across Retry/crash recovery."""
 
     if len(specs) != len(results):
         raise ValueError("Experiment-loop watcher checks do not match their specifications.")
     created_at = execution.store.now()
+    stop_requests = list(stops or [])
     desired: list[WatcherRecord] = []
     for index, (spec, result) in enumerate(zip(specs, results, strict=True)):
+        group = getattr(spec, "group", None)
         identity = json.dumps(
             {
                 "origin": binding.origin_operation_id,
@@ -287,6 +295,7 @@ def persist_experiment_watchers_idempotently(
                 "check_command": spec.check_command,
                 "log_path": spec.log_path,
                 "cwd": spec.cwd,
+                "group": group,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -310,13 +319,28 @@ def persist_experiment_watchers_idempotently(
                 last_checked_at=result.checked_at,
                 last_exit_code=result.exit_code,
                 completed_at=result.checked_at if completed else None,
+                group_id=(
+                    str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"rcp-experiment-watcher-group:{binding.origin_operation_id}:{spec.group}",
+                        )
+                    )
+                    if group is not None
+                    else None
+                ),
+                group_label=group,
             )
         )
 
     # The store owns the BEGIN IMMEDIATE boundary shared with Stop loop. It
     # atomically deduplicates this deterministic handoff and, when stop intent
     # won the race, persists/returns every watcher as stopped and notified.
-    return execution.store.persist_experiment_watchers_idempotently(desired)
+    return execution.store.persist_experiment_watchers_idempotently(
+        desired,
+        stops=stop_requests,
+        binding=binding,
+    )
 
 
 def _stopped_history_episode_id(
@@ -361,6 +385,12 @@ def _watcher_state(
     if task is None:
         raise ValueError("The Experiment-loop operation is no longer available.")
     delivered = set(delivered_watcher_ids)
+    all_records = execution.store.watchers(task.project_id)
+    delivered_group_ids = {
+        record.group_id
+        for record in all_records
+        if record.watcher_id in delivered and record.group_id is not None
+    }
     stopped_history_episode_id = (
         _stopped_history_episode_id(execution, task.project_id, control_node_id, episode_id)
         if phase == "initial_run"
@@ -368,12 +398,13 @@ def _watcher_state(
     )
     records = [
         record
-        for record in execution.store.watchers(task.project_id)
+        for record in all_records
         if record.continuation.patch_kind == "experiment_loop"
         and record.continuation.control_node_id == control_node_id
         and (
             record.watcher_id in delivered
-            or record.status in {"active", "degraded"}
+            or record.group_id in delivered_group_ids
+            or (record.status in {"active", "degraded"} and not record.notified)
             or (record.status == "completed" and not record.notified)
             or (record.status == "stopped" and record.continuation.control_episode_id == episode_id)
             or (
@@ -400,8 +431,16 @@ def _watcher_state(
             "last_exit_code": record.last_exit_code,
             "last_error": record.last_error,
             "completed_at": record.completed_at,
+            "next_check_at": record.next_check_at,
+            "consecutive_error_count": record.consecutive_error_count,
+            "group_id": record.group_id,
+            "group_label": record.group_label,
             "notified": record.notified,
             "notification_operation_id": record.notification_operation_id,
+            "stopped_by": record.stopped_by,
+            "stop_reason": record.stop_reason,
+            "stopped_at": record.stopped_at,
+            "stop_operation_id": record.stop_operation_id,
             "episode_id": record.continuation.control_episode_id,
             "invocation": record.continuation.control_invocation,
             "invocation_ceiling": record.continuation.control_invocation_ceiling,
@@ -409,6 +448,32 @@ def _watcher_state(
             "decision_bundle": record.continuation.control_decision_bundle,
         }
         for record in records
+    ]
+
+
+def _delivered_watcher_groups(
+    watcher_state: list[dict[str, object]],
+    delivered_watcher_ids: list[str],
+) -> list[dict[str, object]]:
+    """Retain each delivered group's identity and complete staged membership."""
+
+    delivered = set(delivered_watcher_ids)
+    delivered_group_ids = {
+        record["group_id"]
+        for record in watcher_state
+        if isinstance(record.get("group_id"), str) and record.get("watcher_id") in delivered
+    }
+    return [
+        {
+            "group_id": group_id,
+            "label": next(
+                record.get("group_label")
+                for record in watcher_state
+                if record.get("group_id") == group_id
+            ),
+            "members": [record for record in watcher_state if record.get("group_id") == group_id],
+        }
+        for group_id in sorted(delivered_group_ids)
     ]
 
 
@@ -634,6 +699,7 @@ async def stage_experiment_loop_context(
         f"task-{token}-experiment-watchers.json",
         watcher_state,
     )
+    delivered_groups = _delivered_watcher_groups(watcher_state, request.watcher_ids)
     drift = decision_drift(state, request.control_decision_bundle)
     if request.control_invocation > request.control_invocation_ceiling:
         raise ValueError("Experiment-loop invocation exceeds its pinned ceiling.")
@@ -655,6 +721,7 @@ async def stage_experiment_loop_context(
             "decision_drift": [item.model_dump(mode="json") for item in drift],
             "completion_criteria": request.control_completion_criteria,
             "delivered_watcher_ids": request.watcher_ids,
+            "delivered_watcher_groups": delivered_groups,
             "watcher_state_path": watcher_state_path,
         },
     )

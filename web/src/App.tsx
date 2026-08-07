@@ -99,8 +99,10 @@ import {
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
+  proposalTargetsNode,
   serializeHumanDraft,
   stageAmbiguityDecision,
+  stageDecisionChoice,
   stageNodeEdit,
   stageNodeEditStart,
   stageNodeRemoval,
@@ -2364,7 +2366,9 @@ export default function App() {
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}
                   onDecision={(proposal, decision) =>
-                    updateHumanDraft((draft) => stageProposalDecision(draft, proposal.id, decision))
+                    updateHumanDraft((draft) =>
+                      stageProposalDecision(draft, graph, proposal.id, decision),
+                    )
                   }
                 />
               </div>
@@ -2514,6 +2518,17 @@ export default function App() {
           experimentControl={selectedExperimentControl}
           experimentRunDisabled={false}
           experimentRunBusy={taskStarting}
+          pendingDecisionProposalCount={
+            selectedNode.type === "decision"
+              ? pendingProposals.filter((proposal) =>
+                  proposalTargetsNode(proposal, selectedNode.id),
+                ).length
+              : 0
+          }
+          decisionChoiceStaged={Boolean(
+            humanDraft?.nodes[selectedNode.id]?.changes.selected_option !== undefined ||
+            humanDraft?.nodes[selectedNode.id]?.changes.status === "decided",
+          )}
           onUnstage={() => {
             updateHumanDraft((draft) => unstageCustomNode(draft, selectedNode.id));
             setSelectedNode(null);
@@ -2541,6 +2556,11 @@ export default function App() {
           }
           onStage={(changes) =>
             updateHumanDraft((draft) => stageNodeEdit(draft, graph, selectedNode.id, changes))
+          }
+          onDecisionChoice={(selectedOption) =>
+            updateHumanDraft((draft) =>
+              stageDecisionChoice(draft, graph, selectedNode.id, selectedOption),
+            )
           }
           onRunExperiment={() =>
             void runExperiment(presentedGraph.nodes[selectedNode.id] ?? selectedNode)

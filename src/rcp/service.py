@@ -31,6 +31,7 @@ from rcp.control import derive_experiment_control_state
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
+    Decision,
     ExperimentDecisionPin,
     GraphState,
     OntologyState,
@@ -39,7 +40,11 @@ from rcp.core.models import (
     Proposal,
     Standing,
 )
-from rcp.core.validation.proposals import proposal_is_stale
+from rcp.core.validation.proposals import (
+    normalized_decision_proposal_ops,
+    proposal_is_stale,
+    proposal_updates_node,
+)
 from rcp.history import HistoryManager
 from rcp.limits import (
     CHAT_PAGE_DEFAULT_LIMIT,
@@ -1022,10 +1027,27 @@ class ProjectService:
             )
 
         removed_node_ids = set(request.removed_node_ids)
+        direct_choice_node_ids = {
+            staged.node_id
+            for staged in request.nodes
+            if isinstance(state.nodes.get(staged.node_id), Decision)
+            and bool(set(staged.changes).intersection({"selected_option", "status"}))
+        }
+        superseded_proposal_ids = {
+            proposal.id
+            for proposal in state.proposals.values()
+            if proposal.status == "pending"
+            and any(
+                proposal_updates_node(proposal, decision_id)
+                for decision_id in direct_choice_node_ids
+            )
+        }
         for staged in request.proposals:
             proposal = state.proposals.get(staged.proposal_id)
             if proposal is None:
                 raise KeyError(staged.proposal_id)
+            if proposal.id in superseded_proposal_ids:
+                continue
             if proposal.status != "pending":
                 raise NodeEditConflict(f"Proposal {proposal.id} is no longer pending.")
             stale_from_removal = bool(removed_node_ids.intersection(proposal.related_node_ids))
@@ -1053,7 +1075,11 @@ class ProjectService:
                 )
                 continue
             standing = "accepted" if staged.decision == "approved" else "contested"
-            semantic_ops = proposal.ops if staged.decision == "approved" else []
+            semantic_ops = (
+                normalized_decision_proposal_ops(state, proposal)
+                if staged.decision == "approved"
+                else []
+            )
             standing_ops = [
                 {"op": "set_standing", "node_id": node_id, "standing": standing}
                 for node_id in proposal.related_node_ids
@@ -1116,8 +1142,33 @@ class ProjectService:
             change_summary: list[str] = []
             changed_fields: set[str] = set()
             display_title = str(staged.changes.get("title", node.title))
+            is_direct_choice = isinstance(node, Decision) and bool(
+                set(staged.changes).intersection({"selected_option", "status"})
+            )
             if staged.changes:
                 allowed = set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
+                if is_direct_choice:
+                    if node.status == "superseded":
+                        raise ValueError(
+                            f"Decision {node.id} is superseded and cannot be decided again."
+                        )
+                    selected_option = staged.changes.get("selected_option")
+                    effective_options = staged.changes.get("options", node.options)
+                    if staged.changes.get("status") != "decided":
+                        raise ValueError(
+                            f"Direct choice on {node.id} must set status exactly to decided."
+                        )
+                    if (
+                        not isinstance(selected_option, str)
+                        or not selected_option.strip()
+                        or not isinstance(effective_options, list)
+                        or selected_option not in effective_options
+                    ):
+                        raise ValueError(
+                            f"Direct choice on {node.id} must select one non-empty option from "
+                            "its current options."
+                        )
+                    allowed.update({"selected_option", "status"})
                 if "extension_fields" in staged.changes:
                     self._validate_human_extension_fields(state, node, staged.changes)
                     allowed.add("extension_fields")
@@ -1130,7 +1181,7 @@ class ProjectService:
                 changed_fields = {
                     field for field, value in staged.changes.items() if current[field] != value
                 }
-                if changed_fields:
+                if changed_fields or is_direct_choice:
                     candidate = {**current, **staged.changes}
                     try:
                         type(node).model_validate(candidate)
@@ -1148,13 +1199,46 @@ class ProjectService:
                             ],
                         }
                     )
-                    if changed_fields - {"status"}:
+                    ordinary_changed_fields = changed_fields - {"selected_option", "status"}
+                    if ordinary_changed_fields:
                         change_summary.append(f"Updated wording for “{display_title}”.")
-                    if "status" in changed_fields:
+                    if is_direct_choice:
+                        change_summary.append(
+                            f"Selected “{selected_option}” for “{display_title}”."
+                        )
+                    elif "status" in changed_fields:
                         change_summary.append(
                             f"Updated lifecycle for “{display_title}”: status is now "
                             f"{staged.changes['status']}."
                         )
+            if is_direct_choice:
+                withdrawals = [
+                    proposal
+                    for proposal in state.proposals.values()
+                    if proposal.status == "pending" and proposal_updates_node(proposal, node.id)
+                ]
+                if withdrawals:
+                    ops.append(
+                        {
+                            "op": "resolve_proposals",
+                            "resolutions": [
+                                {
+                                    "id": proposal.id,
+                                    "status": "withdrawn",
+                                    "reason": (
+                                        f"The human decided {node.id} directly, making this "
+                                        "Proposal stale."
+                                    ),
+                                }
+                                for proposal in withdrawals
+                            ],
+                        }
+                    )
+                    change_summary.extend(
+                        f"Withdrew Proposal “{proposal.title}” because the human decided "
+                        f"“{display_title}” directly."
+                        for proposal in withdrawals
+                    )
             if staged.cancel_attempt_ids:
                 ops.append(
                     {
@@ -1174,7 +1258,12 @@ class ProjectService:
                 )
                 change_summary.append(f"Released open experiment attempts for “{display_title}”.")
             resulting_standing = staged.standing
-            if changed_fields and resulting_standing is None and node.standing != Standing.ASSERTED:
+            if (
+                changed_fields
+                and not is_direct_choice
+                and resulting_standing is None
+                and node.standing != Standing.ASSERTED
+            ):
                 resulting_standing = Standing.ASSERTED
             if resulting_standing is not None and resulting_standing != node.standing:
                 ops.append(
@@ -1340,7 +1429,11 @@ class ProjectService:
             )
         else:
             standing = "accepted" if request.decision == "approved" else "contested"
-            semantic_ops = proposal.ops if request.decision == "approved" else []
+            semantic_ops = (
+                normalized_decision_proposal_ops(state, proposal)
+                if request.decision == "approved"
+                else []
+            )
             standing_ops = [
                 {"op": "set_standing", "node_id": node_id, "standing": standing}
                 for node_id in proposal.related_node_ids

@@ -10,8 +10,10 @@ import {
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
+  proposalTargetsNode,
   serializeHumanDraft,
   stageAmbiguityDecision,
+  stageDecisionChoice,
   stageNodeEdit,
   stageNodeEditStart,
   stageNodeRemoval,
@@ -139,14 +141,140 @@ test("Blocker lifecycle edits invalidate prior judgment and can reopen attention
 
 test("judgments, proposal decisions, and ambiguity decisions are reversible", () => {
   let draft = stageNodeStanding(emptyHumanDraft(4), graph, "hyp/example", "contested");
-  draft = stageProposalDecision(draft, "proposal/1", "approved");
+  draft = stageProposalDecision(draft, graph, "proposal/1", "approved");
   draft = stageAmbiguityDecision(draft, "ambiguity/1", "resolved");
   assert.equal(humanDraftChangeCount(draft), 3);
 
   draft = stageNodeStanding(draft, graph, "hyp/example", "accepted");
-  draft = stageProposalDecision(draft, "proposal/1", null);
+  draft = stageProposalDecision(draft, graph, "proposal/1", null);
   draft = stageAmbiguityDecision(draft, "ambiguity/1", null);
   assert.equal(humanDraftChangeCount(draft), 0);
+});
+
+test("direct Decision choices merge with wording edits and supersede targeted proposal resolutions", () => {
+  const decision = {
+    id: "dec/resource",
+    type: "decision",
+    title: "Choose resource level",
+    question: "Which resource level should the experiment use?",
+    options: ["Small", "Medium", "Large"],
+    selected_option: null,
+    status: "open",
+    standing: "asserted",
+    created_rev: 2,
+    updated_rev: 4,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const targeted = {
+    id: "proposal/targeted",
+    title: "Use Medium",
+    card: { situation_cold: "", why_human_now: "", consequences: "", decision_needed: "" },
+    ops: [
+      {
+        op: "update_nodes",
+        nodes: [{ id: decision.id, changes: { selected_option: "Medium" } }],
+      },
+    ],
+    related_node_ids: [decision.id],
+    base_rev: 4,
+    status: "pending",
+  };
+  const relatedOnly = {
+    ...targeted,
+    id: "proposal/related-only",
+    title: "Revise the hypothesis",
+    ops: [
+      {
+        op: "update_nodes",
+        nodes: [{ id: "hyp/example", changes: { statement: "Revised by proposal" } }],
+      },
+    ],
+  };
+  const decisionGraph = {
+    ...graph,
+    nodes: { ...graph.nodes, [decision.id]: decision },
+    proposals: { [targeted.id]: targeted, [relatedOnly.id]: relatedOnly },
+  };
+
+  let draft = stageNodeEdit(emptyHumanDraft(4), decisionGraph, decision.id, {
+    title: "Choose the initial resource level",
+  });
+  draft = stageProposalDecision(draft, decisionGraph, targeted.id, "approved");
+  draft = stageProposalDecision(draft, decisionGraph, relatedOnly.id, "rejected");
+  draft = stageDecisionChoice(draft, decisionGraph, decision.id, "Medium");
+
+  assert.deepEqual(draft.nodes[decision.id], {
+    base_updated_rev: 4,
+    changes: {
+      title: "Choose the initial resource level",
+      selected_option: "Medium",
+      status: "decided",
+    },
+    standing: "accepted",
+    standing_origin: "judgment",
+  });
+  assert.deepEqual(draft.proposals, {
+    [relatedOnly.id]: { decision: "rejected" },
+  });
+  assert.equal(proposalTargetsNode(targeted, decision.id), true);
+  assert.equal(proposalTargetsNode(relatedOnly, decision.id), false);
+  assert.equal(humanDraftChangeCount(draft), 5);
+
+  const presented = applyHumanDraft(decisionGraph, draft).nodes[decision.id];
+  assert.equal(presented.selected_option, "Medium");
+  assert.equal(presented.status, "decided");
+  assert.equal(presented.standing, "accepted");
+  assert.equal(presented.draft_touched, true);
+
+  const restored = deserializeHumanDraft(serializeHumanDraft(draft));
+  assert.deepEqual(restored, draft);
+  assert.deepEqual(toHumanSyncRequest(restored), {
+    base_revision: 4,
+    removed_node_ids: [],
+    nodes: [
+      {
+        node_id: decision.id,
+        base_updated_rev: 4,
+        changes: {
+          title: "Choose the initial resource level",
+          selected_option: "Medium",
+          status: "decided",
+        },
+        standing: "accepted",
+      },
+    ],
+    proposals: [{ proposal_id: relatedOnly.id, decision: "rejected" }],
+    ambiguities: [],
+    ontology: null,
+    custom_nodes: [],
+  });
+
+  const replaced = stageDecisionChoice(restored, decisionGraph, decision.id, "Large");
+  assert.equal(replaced.nodes[decision.id].changes.selected_option, "Large");
+  assert.equal(stageDecisionChoice(replaced, decisionGraph, decision.id, "Unlisted"), replaced);
+
+  const editedAfterChoice = stageNodeEdit(replaced, decisionGraph, decision.id, {
+    rationale: "Use the larger run after the pilot.",
+  });
+  assert.equal(editedAfterChoice.nodes[decision.id].changes.selected_option, "Large");
+  assert.equal(editedAfterChoice.nodes[decision.id].changes.status, "decided");
+  assert.equal(editedAfterChoice.nodes[decision.id].standing_origin, undefined);
+
+  let reverseOrder = stageDecisionChoice(emptyHumanDraft(4), decisionGraph, decision.id, "Small");
+  reverseOrder = stageProposalDecision(reverseOrder, decisionGraph, targeted.id, "approved");
+  assert.deepEqual(reverseOrder.proposals, {});
+
+  const restoredWithTargetedResolution = deserializeHumanDraft(
+    serializeHumanDraft({
+      ...reverseOrder,
+      proposals: { [targeted.id]: { decision: "rejected" } },
+    }),
+  );
+  assert.deepEqual(
+    normalizeHumanDraft(restoredWithTargetedResolution, decisionGraph).proposals,
+    {},
+  );
 });
 
 test("serialization survives localStorage round trips and request conversion strips editor metadata", () => {
@@ -154,7 +282,7 @@ test("serialization survives localStorage round trips and request conversion str
     title: "Revised",
     statement: "Sharper statement",
   });
-  draft = stageProposalDecision(draft, "proposal/1", "rejected");
+  draft = stageProposalDecision(draft, graph, "proposal/1", "rejected");
   draft = stageAmbiguityDecision(draft, "ambiguity/1", "dismissed");
   const restored = deserializeHumanDraft(serializeHumanDraft(draft));
   assert.deepEqual(restored, draft);

@@ -44,8 +44,8 @@ allowed.
 
 | Trigger | Episode | Native provider session | Agent-facing phase and prompt | Resolved provider configuration |
 |---|---|---|---|---|
-| First human Run, or human Run after Proposal/Blocker resolution with no completed watcher group | new, invocation 1 | fresh | `initial_run`; full Experiment-loop contract | current Node-chat profile and selected/default truth scope |
-| Automatic watcher completion below the ceiling | same, invocation N+1 | resume the current episode session | `watcher_wake`; compact continuation below | pinned by the episode session |
+| First human Run, or human Run after Proposal/Blocker resolution with no completed ungrouped watcher or ready group | new, invocation 1 | fresh | `initial_run`; full Experiment-loop contract | current Node-chat profile and selected/default truth scope |
+| Automatic ungrouped completion or group readiness below the ceiling | same, invocation N+1 | resume the current episode session | `watcher_wake`; compact continuation below | pinned by the episode session |
 | Task Pause → Resume | same, same invocation | resume the same episode session | `resume`; existing compact task-resume contract | unchanged |
 | Task Retry/correction | same, same invocation | existing explicit task-recovery semantics | `retry` or correction; existing narrow contract | unchanged |
 | Human Run delivering completed watcher state after exit or ceiling | new, invocation 1 | fresh | `human_reauthorization`; full Experiment-loop contract | frozen compatible watcher continuation, preserving provider, machine, scope, and log access |
@@ -58,20 +58,21 @@ watchers. Compatible cross-invocation and older-episode watcher provenance may
 coalesce, but watcher provenance never chooses or changes the native session;
 the newest human-authorized episode does.
 
-An automatic wake may claim only a completed watcher group whose frozen
-provider, execution target, conversation, Experiment, truth scope, and Patch
-authority are compatible with the current episode binding. A watcher from an
-older episode that becomes incompatible because a later human Run selected a
+An automatic wake may claim only a completed ungrouped watcher or ready watcher
+group whose frozen provider, execution target, conversation, Experiment, truth
+scope, and Patch authority are compatible with the current episode binding. A
+watcher from an older episode that becomes incompatible because a later human Run selected a
 different provider, machine, or scope remains completed and unnotified. It is
 visible in Runs and cannot silently switch sessions, consume budget, or
 disappear. Package pointers are current episode context, not watcher authority,
 and follow the compact replacement-delta rule below. A later human Run may
-explicitly reauthorize one compatible pending group into a fresh episode using
-that group's frozen configuration; other incompatible groups remain pending.
+explicitly reauthorize one compatible pending watcher or group into a fresh
+episode using its frozen configuration; other incompatible watchers or groups
+remain pending.
 
-Before atomically claiming a completed watcher group or spending the next
-invocation, RCP validates that the episode session and exact saved stage still
-exist on the pinned execution machine. A transiently unavailable binding leaves
+Before atomically claiming a completed ungrouped watcher or ready group or
+spending the next invocation, RCP validates that the episode session and exact
+saved stage still exist on the pinned execution machine. A transiently unavailable binding leaves
 the watchers completed and unnotified for a later delivery pass. A missing or
 mismatched binding becomes an exact Needs-action diagnostic in S72 and never
 silently launches a fresh session. The human may restore availability, or use
@@ -90,16 +91,20 @@ an empty replacement block renders nothing rather than a heading with “none.�
 ## Watcher storage and per-turn access
 
 The agent still writes only `watch.json`; no MCP or provider tool owns watcher
-authority. RCP validates the complete list after the turn and persists each
-watcher as a durable SQLite `WatcherRecord`, separate from graph state, chat
-history, semantic ExperimentAttempt records, and provider task lineage. The
-record retains:
+authority. An Experiment-loop handoff may contain strict observer items, optional
+group labels, and reasoned retirement items for staged compatible observers;
+ordinary Work retains the strict observer-only list from S42. RCP validates the
+complete list after the turn and persists each watcher as a durable SQLite
+`WatcherRecord`, separate from graph state, chat history, semantic
+ExperimentAttempt records, and provider task lineage. The record retains:
 
 - watcher id, project, Experiment, conversation, and originating operation;
 - execution host, absolute `cwd`, observational `check_command`, and absolute
   `log_path`;
-- `active`, `degraded`, `completed`, or `stopped` status, check timestamps, exit
-  code, error, completion time, delivery claim, and notification task;
+- `active`, `degraded`, `completed`, or `stopped` status, check timestamps, next
+  due time, consecutive-error count, exit code, error, completion time, delivery
+  claim, notification task, and any agent-retirement reason and time;
+- immutable Experiment-group identity and membership when present;
 - the frozen continuation envelope: provider/model/reasoning/machine, truth
   scope, package selection, Patch authority, originating episode/invocation,
   ceiling, control revision, pinned decisions, and completion criteria.
@@ -111,16 +116,21 @@ operational fields the agent can act on: id, origin operation, execution host,
 check, log, cwd, status and timestamps, last exit/error, notified claim, origin
 episode/invocation/ceiling/revision, and pinned decision bundle.
 
-The staged selection is explicit:
+The staged selection is explicit. It includes group identity and every member's
+status, error, and consecutive-error count, so a diagnostic group wake preserves
+unknown external outcomes rather than reporting degraded work as failed:
 
-- **Automatic wake:** every delivered watcher id even after its atomic claim,
-  plus other active/degraded and completed-unnotified watchers relevant to the
-  Experiment. `delivered_watcher_ids` identifies the trigger subset.
+- **Automatic wake:** every delivered ungrouped watcher or every member of each
+  delivered group even after its atomic claim, plus other active/degraded and
+  completed-unnotified watchers relevant to the Experiment.
+  `delivered_watcher_ids` and `delivered_watcher_groups` identify the trigger
+  subset and group membership.
 - **Fresh initial Run:** `delivered_watcher_ids=[]`; include relevant
   active/degraded and completed-unnotified observers plus watcher records from
   the immediately preceding human-stopped episode.
-- **Human reauthorization:** include the atomically claimed completed group even
-  though it now has `notified=true`, plus the other relevant observers.
+- **Human reauthorization:** include the atomically claimed completed watcher or
+  ready group even though it now has `notified=true`, plus the other relevant
+  observers.
 - **Stopped records:** retain and stage them only when they belong to the
   current episode or the immediately preceding S72 human-stopped episode needed
   by a fresh Run. They are context, never triggers.
@@ -145,9 +155,14 @@ same bounded loop in turn {invocation} of {invocation_ceiling}.
 
 RCP accepted the previous turn's handoff:
 - graph update: {previous_graph_result}
-- watchers armed: {previous_watcher_ids_or_none}
+- watcher dispositions: {previous_watcher_ids_or_none}
 
-This turn was triggered by: {delivered_watcher_ids}
+This turn was triggered by: {delivered_watcher_ids_or_groups}
+
+If this is an immutable watcher group, its staged state names every member and
+the group is ready only because none is still observed active. Exit-`0` members
+are only gone; degraded members have unknown external state and must be
+inspected before you relaunch, cancel, or record an outcome.
 
 A completed watcher means only that its check no longer sees the named external work. It does not
 mean the work succeeded and does not begin, close, or correspond one-to-one with a scientific
@@ -185,12 +200,14 @@ For this turn, take whichever path matches the operational state:
      }
    ]
 
-   Each object has exactly `check_command`, `log_path`, and `cwd`. From a cold login shell in
-   `cwd`, the check exits 1 while the named work remains, 0 when it is gone, and another status
-   only when it cannot answer. Verify the literal check before writing it. Once the useful
-   synchronous work and handoff are complete, do not wait or poll for detached work; finish this
-   turn. RCP validates the file, monitors accepted watchers, and resumes this episode session when
-   a watcher is ready.
+   An ungrouped observer object has exactly `check_command`, `log_path`, and `cwd`; an
+   Experiment observer may also carry one non-blank `group` label. An Experiment may retire a
+   staged compatible observer with `{"stop_watcher_id": "...", "reason": "..."}` after it has
+   settled the external work itself. From a cold login shell in `cwd`, the check exits 1 while the
+   named work remains, 0 when it is gone, and another status only when it cannot answer. Verify
+   the literal check before writing it. Once the useful synchronous work and handoff are complete,
+   do not wait or poll for detached work; finish this turn. RCP validates the file, monitors
+   accepted watchers, and resumes this episode session when a watcher or group is ready.
 
 2. You need human input.
 

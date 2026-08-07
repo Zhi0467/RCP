@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -14,6 +15,65 @@ from rcp.core.authority import (
 from rcp.core.models import Decision, GraphState, Hypothesis, Patch, Proposal
 from rcp.core.validation.constants import IDENTIFIER_RE
 from rcp.core.validation.report import ValidationReport
+
+
+def decision_transition_error(decision: Decision, changes: dict[str, Any]) -> str | None:
+    """Return the authority-coherence error for a proposed Decision transition."""
+
+    selected_option = changes.get("selected_option", decision.selected_option)
+    status = changes.get("status", decision.status)
+    if (
+        changes.get("selected_option") is not None
+        and changes["selected_option"] not in decision.options
+    ):
+        return f"Decision {decision.id} can select only an option listed in its current options."
+    if status == "decided" and (selected_option is None or selected_option not in decision.options):
+        return (
+            f"Decision {decision.id} can be decided only with a selected option listed in its "
+            "current options."
+        )
+    if (
+        decision.status in {"open", "revisit"}
+        and changes.get("selected_option") is not None
+        and status != "decided"
+    ):
+        return f"Decision {decision.id} must become decided when a Proposal selects an option."
+    return None
+
+
+def normalized_decision_proposal_ops(state: GraphState, proposal: Proposal) -> list[dict[str, Any]]:
+    """Add the one implied field accepted for legacy Decision Proposal approval."""
+
+    operations = deepcopy(proposal.ops)
+    for operation in operations:
+        if operation.get("op") != "update_nodes":
+            continue
+        for update in operation.get("nodes", []):
+            if not isinstance(update, dict):
+                continue
+            node = state.nodes.get(update.get("id"))
+            changes = update.get("changes")
+            if (
+                isinstance(node, Decision)
+                and isinstance(changes, dict)
+                and changes.get("selected_option") is not None
+                and "status" not in changes
+                and node.status != "decided"
+            ):
+                changes["status"] = "decided"
+    return operations
+
+
+def proposal_updates_node(proposal: Proposal, node_id: str) -> bool:
+    """Whether any semantic node update in a Proposal targets ``node_id``."""
+
+    return any(
+        update.get("id") == node_id
+        for operation in proposal.ops
+        if operation.get("op") == "update_nodes"
+        for update in operation.get("nodes", [])
+        if isinstance(update, dict)
+    )
 
 
 def proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
@@ -184,6 +244,9 @@ def _validate_agent_proposal_boundary(
             return
         if update.get("cause") is not None:
             refuse(f"Decision Proposal {proposal.id} must not carry a belief cause.")
+            return
+        if error := decision_transition_error(node, changes):
+            refuse(f"Decision Proposal {proposal.id} is incoherent: {error}")
             return
         if not decision_is_experiment_input(state, node.id, context_patch):
             refuse(

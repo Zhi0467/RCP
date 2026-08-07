@@ -10,9 +10,9 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
@@ -30,11 +30,18 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     PATCH_OUTPUT_RETENTION_DAYS,
     RUN_TRACE_RETENTION_DAYS,
+    WATCHER_ERROR_BACKOFF_SECONDS,
+    WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
+    WATCHER_HEALTHY_INTERVAL_SECONDS,
+    WATCHER_SCHEDULE_JITTER_RATIO,
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.providers import ProviderUsage
 from rcp.skill_registry import SkillReference
+
+if TYPE_CHECKING:
+    from rcp.watchers import WatcherBinding
 
 
 class ProjectRecord(BaseModel):
@@ -301,6 +308,23 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
+class WatcherStopRequest(BaseModel):
+    """An Experiment agent's narrow request to retire one staged observer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stop_watcher_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+    @field_validator("stop_watcher_id", "reason")
+    @classmethod
+    def is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("watcher stop fields must not be blank")
+        return stripped
+
+
 class WatcherContinuation(BaseModel):
     """RCP-bound policy needed to create a fresh Work wake."""
 
@@ -348,8 +372,41 @@ class WatcherRecord(BaseModel):
     last_exit_code: int | None = None
     last_error: str | None = None
     completed_at: str | None = None
+    next_check_at: str | None = None
+    consecutive_error_count: int = Field(default=0, ge=0)
+    group_id: str | None = None
+    group_label: str | None = None
     notified: bool = False
     notification_operation_id: str | None = None
+    stopped_by: Literal["human", "loop", "agent"] | None = None
+    stop_reason: str | None = None
+    stopped_at: str | None = None
+    stop_operation_id: str | None = None
+
+
+def watcher_next_check_at(
+    watcher_id: str,
+    checked_at: str,
+    consecutive_error_count: int,
+) -> str:
+    """Return one durable, identity-jittered watcher due time."""
+
+    if consecutive_error_count < 0:
+        raise ValueError("watcher error count cannot be negative")
+    try:
+        base = datetime.fromisoformat(checked_at)
+    except ValueError as exc:
+        raise ValueError("watcher check time must be ISO 8601") from exc
+    if consecutive_error_count == 0:
+        delay = WATCHER_HEALTHY_INTERVAL_SECONDS
+    else:
+        delay = WATCHER_ERROR_BACKOFF_SECONDS[
+            min(consecutive_error_count - 1, len(WATCHER_ERROR_BACKOFF_SECONDS) - 1)
+        ]
+    fraction = int.from_bytes(hashlib.sha256(watcher_id.encode("utf-8")).digest()[:8], "big")
+    unit = fraction / ((1 << 64) - 1)
+    jitter = 1 + WATCHER_SCHEDULE_JITTER_RATIO * (2 * unit - 1)
+    return (base + timedelta(seconds=delay * jitter)).isoformat()
 
 
 _EXPERIMENT_EPISODE_PINNED_FIELDS = (
@@ -563,8 +620,16 @@ class AppStore:
                     last_exit_code INTEGER,
                     last_error TEXT,
                     completed_at TEXT,
+                    next_check_at TEXT,
+                    consecutive_error_count INTEGER NOT NULL DEFAULT 0,
+                    group_id TEXT,
+                    group_label TEXT,
                     notified INTEGER NOT NULL DEFAULT 0,
-                    notification_operation_id TEXT
+                    notification_operation_id TEXT,
+                    stopped_by TEXT,
+                    stop_reason TEXT,
+                    stopped_at TEXT,
+                    stop_operation_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS watchers_project
                     ON watchers(project_id, created_at DESC);
@@ -614,6 +679,35 @@ class AppStore:
             self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
             self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
             self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
+            self._ensure_column(connection, "watchers", "next_check_at", "TEXT")
+            self._ensure_column(
+                connection,
+                "watchers",
+                "consecutive_error_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(connection, "watchers", "group_id", "TEXT")
+            self._ensure_column(connection, "watchers", "group_label", "TEXT")
+            self._ensure_column(connection, "watchers", "stopped_by", "TEXT")
+            self._ensure_column(connection, "watchers", "stop_reason", "TEXT")
+            self._ensure_column(connection, "watchers", "stopped_at", "TEXT")
+            self._ensure_column(connection, "watchers", "stop_operation_id", "TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS watchers_due "
+                "ON watchers(status, next_check_at, created_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS watchers_due_unclaimed "
+                "ON watchers(status, notified, next_check_at, created_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS watchers_group_members "
+                "ON watchers(group_id, created_at, watcher_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS watchers_group_delivery_candidates "
+                "ON watchers(notified, status, group_id, consecutive_error_count)"
+            )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
 
@@ -1254,6 +1348,7 @@ class AppStore:
     def create_watchers(self, records: list[WatcherRecord]) -> list[WatcherRecord]:
         """Insert one validated watch list atomically."""
 
+        records = [self._prepare_watcher_for_insert(record) for record in records]
         self._validate_watch_list(records)
         watcher_ids = [record.watcher_id for record in records]
         with self.connection() as connection:
@@ -1269,6 +1364,9 @@ class AppStore:
     def persist_experiment_watchers_idempotently(
         self,
         records: list[WatcherRecord],
+        *,
+        stops: list[WatcherStopRequest] | None = None,
+        binding: WatcherBinding | None = None,
     ) -> list[WatcherRecord]:
         """Persist one loop handoff atomically with the episode's graceful stop.
 
@@ -1278,31 +1376,67 @@ class AppStore:
         is born stopped. No pollable row can be created after a persisted stop.
         """
 
-        self._validate_watch_list(records)
-        continuation = records[0].continuation
+        stop_requests = list(stops or [])
+        if not records and not stop_requests:
+            return []
+        records = [self._prepare_watcher_for_insert(record) for record in records]
+        if records:
+            self._validate_watch_list(records)
+        if binding is None and not records:
+            raise ValueError("a stop-only Experiment handoff requires its bound watcher context")
+        continuation = records[0].continuation if records else binding.continuation
         if continuation.patch_kind != "experiment_loop":
             raise ValueError("idempotent Experiment persistence requires loop watchers")
         episode_id = continuation.control_episode_id
         assert episode_id is not None
+        if (
+            binding is not None
+            and records
+            and any(
+                (
+                    record.project_id != binding.project_id
+                    or record.origin_operation_id != binding.origin_operation_id
+                    or record.origin_task_kind != binding.origin_task_kind
+                    or record.chat_id != binding.chat_id
+                    or record.node_id != binding.node_id
+                    or record.execution_host != binding.execution_host
+                    or record.continuation != binding.continuation
+                )
+                for record in records
+            )
+        ):
+            raise ValueError("Experiment watcher handoff changed its bound continuation context.")
+        stop_ids = [item.stop_watcher_id for item in stop_requests]
+        if len(stop_ids) != len(set(stop_ids)):
+            raise ValueError("Experiment watcher stop ids must be unique")
         watcher_ids = [record.watcher_id for record in records]
-        placeholders = ",".join("?" for _ in watcher_ids)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             episode = connection.execute(
-                "SELECT project_id, control_node_id, stop_requested_at "
-                "FROM experiment_episodes WHERE episode_id = ?",
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
                 (episode_id,),
             ).fetchone()
             if episode is not None and (
-                episode["project_id"] != records[0].project_id
+                episode["project_id"] != (records[0].project_id if records else binding.project_id)
                 or episode["control_node_id"] != continuation.control_node_id
             ):
                 raise ValueError("This watcher handoff belongs to a different Experiment episode.")
+            if stop_requests:
+                assert binding is not None
+                self._validate_and_apply_agent_watcher_stops(
+                    connection,
+                    binding,
+                    stop_requests,
+                    episode,
+                )
             stopped = episode is not None and episode["stop_requested_at"] is not None
-            existing_rows = connection.execute(
-                f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
-                watcher_ids,
-            ).fetchall()
+            existing_rows = []
+            if watcher_ids:
+                placeholders = ",".join("?" for _ in watcher_ids)
+                existing_rows = connection.execute(
+                    f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+                    watcher_ids,
+                ).fetchall()
             existing_by_id = {
                 str(row["watcher_id"]): self._watcher_record(row) for row in existing_rows
             }
@@ -1311,26 +1445,173 @@ class AppStore:
                 if existing is not None:
                     self._validate_idempotent_watcher(existing, desired)
                     if stopped and (existing.status != "stopped" or not existing.notified):
-                        connection.execute(
-                            "UPDATE watchers SET status = 'stopped', notified = 1 "
-                            "WHERE watcher_id = ?",
-                            (desired.watcher_id,),
-                        )
+                        self._stop_watcher_for_loop(connection, desired.watcher_id)
                     continue
                 persisted = (
-                    desired.model_copy(update={"status": "stopped", "notified": True})
+                    desired.model_copy(
+                        update={
+                            "status": "stopped",
+                            "notified": True,
+                            "next_check_at": None,
+                            "stopped_by": "loop",
+                            "stopped_at": self.now(),
+                        }
+                    )
                     if stopped
                     else desired
                 )
                 self._insert_watcher(connection, persisted)
-            stored_rows = connection.execute(
-                f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
-                watcher_ids,
-            ).fetchall()
+            stored_rows = []
+            if watcher_ids:
+                placeholders = ",".join("?" for _ in watcher_ids)
+                stored_rows = connection.execute(
+                    f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+                    watcher_ids,
+                ).fetchall()
             stored_by_id = {
                 str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows
             }
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    def validate_experiment_agent_watcher_stops(
+        self,
+        binding: WatcherBinding,
+        stops: list[WatcherStopRequest],
+    ) -> None:
+        """Fail a malformed stop handoff before its Patch can be accepted."""
+
+        if not stops:
+            return
+        episode_id = binding.continuation.control_episode_id
+        with self.connection() as connection:
+            episode = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            self._validate_and_apply_agent_watcher_stops(
+                connection,
+                binding,
+                stops,
+                episode,
+                apply=False,
+            )
+
+    def _validate_and_apply_agent_watcher_stops(
+        self,
+        connection: sqlite3.Connection,
+        binding: WatcherBinding,
+        stops: list[WatcherStopRequest],
+        episode_row: sqlite3.Row | None,
+        *,
+        apply: bool = True,
+    ) -> None:
+        """Retire only staged compatible observers under the arming transaction."""
+
+        continuation = binding.continuation
+        episode_id = continuation.control_episode_id
+        control_node_id = continuation.control_node_id
+        if episode_row is None or not episode_id or not control_node_id:
+            raise ValueError("An agent watcher stop requires the current Experiment episode.")
+        episode = self._experiment_episode_record(episode_row)
+        root_request = self._experiment_episode_root_request(
+            connection,
+            binding.project_id,
+            control_node_id,
+            episode_id,
+        )
+        if root_request is None:
+            raise ValueError("An agent watcher stop requires the bound Experiment root task.")
+        ids = [item.stop_watcher_id for item in stops]
+        placeholders = ",".join("?" for _ in ids)
+        rows = connection.execute(
+            f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in rows}
+        for stop in stops:
+            record = by_id.get(stop.stop_watcher_id)
+            if record is None:
+                raise ValueError(
+                    f"Watcher stop names an unknown staged watcher: {stop.stop_watcher_id}"
+                )
+            if record.status == "stopped":
+                if (
+                    record.stopped_by == "agent"
+                    and record.stop_operation_id == binding.origin_operation_id
+                    and record.stop_reason == stop.reason
+                ):
+                    continue
+                # Stop loop retires this episode's watchers while its authorized turn is
+                # still running. That turn's retirement is already satisfied, so it
+                # finishes normally instead of correcting a race it cannot win.
+                if episode.stop_requested_at is not None:
+                    continue
+                raise ValueError(f"Watcher stop was already resolved: {stop.stop_watcher_id}")
+            if record.notified or record.notification_operation_id is not None:
+                raise WatcherClaimConflict("A watcher update was already claimed for delivery.")
+            if (
+                record.project_id != binding.project_id
+                or record.chat_id != binding.chat_id
+                or record.node_id != binding.node_id
+                or record.execution_host != binding.execution_host
+                or not self._experiment_watcher_matches_current(record, root_request, episode)
+            ):
+                raise ValueError(
+                    f"Watcher stop is outside the bound Experiment episode: {stop.stop_watcher_id}"
+                )
+            if record.status not in {"active", "degraded", "completed"}:
+                raise ValueError(f"Watcher cannot be retired: {stop.stop_watcher_id}")
+
+        if not apply:
+            return
+        timestamp = self.now()
+        for stop in stops:
+            record = by_id[stop.stop_watcher_id]
+            if record.status == "stopped":
+                continue
+            cursor = connection.execute(
+                """
+                UPDATE watchers
+                SET status = 'stopped', notified = 1, next_check_at = NULL,
+                    stopped_by = 'agent', stop_reason = ?, stopped_at = ?, stop_operation_id = ?
+                WHERE watcher_id = ? AND status IN ('active', 'degraded', 'completed')
+                  AND notified = 0 AND notification_operation_id IS NULL
+                """,
+                (stop.reason, timestamp, binding.origin_operation_id, stop.stop_watcher_id),
+            )
+            if cursor.rowcount != 1:
+                raise WatcherClaimConflict("A watcher update changed during its retirement claim.")
+
+    def _stop_watcher_for_loop(self, connection: sqlite3.Connection, watcher_id: str) -> None:
+        timestamp = self.now()
+        connection.execute(
+            """
+            UPDATE watchers
+            SET status = 'stopped', notified = 1, next_check_at = NULL,
+                stopped_by = COALESCE(stopped_by, 'loop'),
+                stopped_at = COALESCE(stopped_at, ?)
+            WHERE watcher_id = ?
+            """,
+            (timestamp, watcher_id),
+        )
+
+    @staticmethod
+    def _prepare_watcher_for_insert(record: WatcherRecord) -> WatcherRecord:
+        if record.status not in {"active", "degraded"} or record.next_check_at is not None:
+            return record
+        error_count = record.consecutive_error_count
+        if record.status == "degraded" and error_count == 0:
+            error_count = 1
+        checked_at = record.last_checked_at or record.created_at
+        return record.model_copy(
+            update={
+                "consecutive_error_count": error_count,
+                "next_check_at": watcher_next_check_at(
+                    record.watcher_id,
+                    checked_at,
+                    error_count,
+                ),
+            }
+        )
 
     @staticmethod
     def _validate_watch_list(records: list[WatcherRecord]) -> None:
@@ -1354,6 +1635,18 @@ class AppStore:
         if len(bindings) != 1:
             raise ValueError("one watch list must share one RCP-bound continuation context")
         continuation = records[0].continuation
+        grouped = [record for record in records if record.group_id is not None]
+        if any((record.group_id is None) != (record.group_label is None) for record in records):
+            raise ValueError("watcher group identity and label must be stored together")
+        if grouped and continuation.patch_kind != "experiment_loop":
+            raise ValueError("only Experiment-loop watchers may join a watcher group")
+        if grouped:
+            group_counts: dict[str, int] = {}
+            for record in grouped:
+                assert record.group_id is not None
+                group_counts[record.group_id] = group_counts.get(record.group_id, 0) + 1
+            if any(count < 2 for count in group_counts.values()):
+                raise ValueError("an Experiment watcher group requires at least two observers")
         if continuation.patch_kind != "experiment_loop":
             return
         if not all(
@@ -1386,6 +1679,8 @@ class AppStore:
             "log_path",
             "cwd",
             "continuation",
+            "group_id",
+            "group_label",
         )
         if any(getattr(existing, field) != getattr(desired, field) for field in immutable_fields):
             raise ValueError("Experiment-loop watcher identity conflicts with stored state.")
@@ -1398,9 +1693,11 @@ class AppStore:
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
                 chat_id, node_id, execution_host, check_command, log_path, cwd,
                 continuation_json, status, created_at, last_checked_at,
-                last_exit_code, last_error, completed_at, notified,
-                notification_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_exit_code, last_error, completed_at, next_check_at,
+                consecutive_error_count, group_id, group_label, notified,
+                notification_operation_id, stopped_by, stop_reason, stopped_at,
+                stop_operation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -1420,8 +1717,16 @@ class AppStore:
                 record.last_exit_code,
                 record.last_error,
                 record.completed_at,
+                record.next_check_at,
+                record.consecutive_error_count,
+                record.group_id,
+                record.group_label,
                 int(record.notified),
                 record.notification_operation_id,
+                record.stopped_by,
+                record.stop_reason,
+                record.stopped_at,
+                record.stop_operation_id,
             ),
         )
 
@@ -1448,14 +1753,20 @@ class AppStore:
             rows = connection.execute(query, parameters).fetchall()
         return [self._watcher_record(row) for row in rows]
 
-    def pollable_watchers(self) -> list[WatcherRecord]:
+    def pollable_watchers(self, *, as_of: str | None = None) -> list[WatcherRecord]:
+        """Return only active/degraded observers whose durable due time arrived."""
+
+        now = as_of or self.now()
         with self.connection() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM watchers
                 WHERE status IN ('active', 'degraded')
+                  AND notified = 0
+                  AND (next_check_at IS NULL OR next_check_at <= ?)
                 ORDER BY created_at, watcher_id
-                """
+                """,
+                (now,),
             ).fetchall()
             records = [self._watcher_record(row) for row in rows]
             stopping_contexts: dict[
@@ -1519,12 +1830,14 @@ class AppStore:
             connection.execute(
                 f"""
                 UPDATE watchers
-                SET status = 'stopped', notified = 1
+                SET status = 'stopped', notified = 1, next_check_at = NULL,
+                    stopped_by = COALESCE(stopped_by, 'human'),
+                    stopped_at = COALESCE(stopped_at, ?)
                 WHERE project_id = ? AND watcher_id IN ({placeholders})
                   AND status IN ('active', 'degraded', 'completed')
                   AND notification_operation_id IS NULL
                 """,
-                (project_id, *ids),
+                (self.now(), project_id, *ids),
             )
         stopped: list[WatcherRecord] = []
         for watcher_id in ids:
@@ -1540,11 +1853,53 @@ class AppStore:
             record.watcher_id
             for record in self.watchers(project_id)
             if (
-                record.status in {"active", "degraded"}
+                (record.status in {"active", "degraded"} and not record.notified)
                 or (record.status == "completed" and not record.notified)
             )
             and record.continuation.control_node_id == control_node_id
         ]
+
+    def experiment_handoff_has_live_watcher_after_stops(
+        self,
+        binding: WatcherBinding,
+        stop_watcher_ids: list[str],
+    ) -> bool:
+        """Whether a stop-only handoff leaves another compatible wake source."""
+
+        continuation = binding.continuation
+        episode_id = continuation.control_episode_id
+        control_node_id = continuation.control_node_id
+        if not episode_id or not control_node_id:
+            return False
+        stopped = set(stop_watcher_ids)
+        with self.connection() as connection:
+            episode_row = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            if episode_row is None:
+                return False
+            episode = self._experiment_episode_record(episode_row)
+            root = self._experiment_episode_root_request(
+                connection,
+                binding.project_id,
+                control_node_id,
+                episode_id,
+            )
+            if root is None:
+                return False
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE project_id = ? AND status IN ('active', 'degraded', 'completed')
+                  AND notified = 0
+                """,
+                (binding.project_id,),
+            ).fetchall()
+        return any(
+            record.watcher_id not in stopped
+            and self._experiment_watcher_matches_current(record, root, episode)
+            for record in (self._watcher_record(row) for row in rows)
+        )
 
     def experiment_episode(self, episode_id: str) -> ExperimentEpisodeRecord | None:
         with self.connection() as connection:
@@ -1974,9 +2329,11 @@ class AppStore:
         if watcher_ids:
             placeholders = ",".join("?" for _ in watcher_ids)
             connection.execute(
-                f"UPDATE watchers SET status = 'stopped', notified = 1 "
+                f"UPDATE watchers SET status = 'stopped', notified = 1, next_check_at = NULL, "
+                "stopped_by = COALESCE(stopped_by, 'loop'), "
+                "stopped_at = COALESCE(stopped_at, ?) "
                 f"WHERE watcher_id IN ({placeholders})",
-                sorted(watcher_ids),
+                (self.now(), *sorted(watcher_ids)),
             )
         if requested["stop_settled_at"] is None:
             now = self.now()
@@ -2095,8 +2452,8 @@ class AppStore:
                 SELECT * FROM watchers
                 WHERE project_id = ?
                   AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
-                  AND (status IN ('active', 'degraded')
-                       OR (status = 'completed' AND notified = 0))
+                  AND notified = 0
+                  AND status IN ('active', 'degraded', 'completed')
                 """,
                 (project_id,),
             ).fetchall()
@@ -2217,9 +2574,12 @@ class AppStore:
             for row, _request in latest_by_invocation.values()
         )
         detached_work_active = any(
-            record.status in {"active", "degraded"} for record in compatible_watchers
+            record.status in {"active", "degraded"} and not record.notified
+            for record in compatible_watchers
         )
-        watcher_degraded = any(record.status == "degraded" for record in compatible_watchers)
+        watcher_degraded = any(
+            record.status == "degraded" and not record.notified for record in compatible_watchers
+        )
         watcher_completion_pending = any(
             record.status == "completed" and not record.notified for record in compatible_watchers
         )
@@ -2468,75 +2828,155 @@ class AppStore:
         if status != "degraded":
             error = None
         timestamp = checked_at or self.now()
-        completed_at = timestamp if status == "completed" else None
         with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(watcher_id)
+            current = self._watcher_record(row)
+            if current.status not in {"active", "degraded"} or current.notified:
+                return current
+            consecutive_error_count = (
+                current.consecutive_error_count + 1 if status == "degraded" else 0
+            )
+            next_check_at = (
+                watcher_next_check_at(watcher_id, timestamp, consecutive_error_count)
+                if status in {"active", "degraded"}
+                else None
+            )
             cursor = connection.execute(
                 """
                 UPDATE watchers
                 SET status = ?, last_checked_at = ?, last_exit_code = ?, last_error = ?,
+                    next_check_at = ?, consecutive_error_count = ?,
                     completed_at = CASE
                         WHEN ? = 'completed' THEN COALESCE(completed_at, ?)
                         ELSE completed_at
                     END
-                WHERE watcher_id = ? AND status IN ('active', 'degraded')
+                WHERE watcher_id = ? AND status IN ('active', 'degraded') AND notified = 0
                 """,
                 (
                     status,
                     timestamp,
                     exit_code,
                     error,
+                    next_check_at,
+                    consecutive_error_count,
                     status,
-                    completed_at,
+                    timestamp,
                     watcher_id,
                 ),
             )
             if cursor.rowcount == 0:
-                existing = connection.execute(
-                    "SELECT 1 FROM watchers WHERE watcher_id = ?", (watcher_id,)
-                ).fetchone()
-                if existing is None:
-                    raise KeyError(watcher_id)
+                return self._watcher_record(
+                    connection.execute(
+                        "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
+                    ).fetchone()
+                )
         stored = self.watcher(watcher_id)
         assert stored is not None
         return stored
 
     def completed_watcher_groups(self) -> list[list[WatcherRecord]]:
-        """Group completed watchers by conversation and compatible continuation policy."""
+        """Return compatible ready delivery units without splitting Experiment groups."""
 
         with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM watchers
-                WHERE status = 'completed' AND notified = 0
-                ORDER BY completed_at, created_at, watcher_id
-                """
-            ).fetchall()
-            records = [self._watcher_record(row) for row in rows]
-            stopping_contexts: dict[
-                tuple[str, str],
-                tuple[dict[str, object], ExperimentEpisodeRecord] | None,
-            ] = {}
-            records = [
-                record
-                for record in records
-                if not self._watcher_suppressed_by_current_stop(
-                    connection,
-                    record,
-                    stopping_contexts,
-                )
-            ]
+            units = self._ready_watcher_delivery_units(connection)
         groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
-        for record in records:
+        for unit in units:
+            first = unit[0]
             key = (
-                record.project_id,
-                record.origin_task_kind,
-                record.chat_id,
-                record.node_id,
-                record.execution_host,
-                self._automatic_watcher_delivery_policy(record.continuation),
+                first.project_id,
+                first.origin_task_kind,
+                first.chat_id,
+                first.node_id,
+                first.execution_host,
+                self._automatic_watcher_delivery_policy(first.continuation),
             )
-            groups.setdefault(key, []).append(record)
+            groups.setdefault(key, []).extend(unit)
         return list(groups.values())
+
+    def _ready_watcher_delivery_units(
+        self,
+        connection: sqlite3.Connection,
+    ) -> list[list[WatcherRecord]]:
+        """Build indivisible ready groups plus ordinary completed observer units."""
+
+        ungrouped_rows = connection.execute(
+            """
+            SELECT * FROM watchers
+            WHERE group_id IS NULL AND status = 'completed' AND notified = 0
+            ORDER BY completed_at, created_at, watcher_id
+            """
+        ).fetchall()
+        grouped_rows = connection.execute(
+            """
+            SELECT * FROM watchers
+            WHERE group_id IN (
+                SELECT DISTINCT group_id FROM watchers
+                WHERE group_id IS NOT NULL AND notified = 0
+                  AND (
+                    status = 'completed'
+                    OR (
+                        status = 'degraded'
+                        AND consecutive_error_count >= ?
+                    )
+                  )
+            )
+            ORDER BY completed_at, created_at, watcher_id
+            """,
+            (WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,),
+        ).fetchall()
+        ungrouped = [self._watcher_record(row) for row in ungrouped_rows]
+        grouped_records = [self._watcher_record(row) for row in grouped_rows]
+        stopping_contexts: dict[
+            tuple[str, str], tuple[dict[str, object], ExperimentEpisodeRecord] | None
+        ] = {}
+        units: list[list[WatcherRecord]] = []
+        grouped: dict[str, list[WatcherRecord]] = {}
+        for record in ungrouped:
+            if self._watcher_suppressed_by_current_stop(connection, record, stopping_contexts):
+                continue
+            units.append([record])
+        for record in grouped_records:
+            assert record.group_id is not None
+            grouped.setdefault(record.group_id, []).append(record)
+        for members in grouped.values():
+            ready = self._ready_group_members(members)
+            if not ready:
+                continue
+            if self._watcher_suppressed_by_current_stop(connection, ready[0], stopping_contexts):
+                continue
+            units.append(ready)
+        return units
+
+    @staticmethod
+    def _ready_group_members(members: list[WatcherRecord]) -> list[WatcherRecord] | None:
+        """Return deliverable members only when a durable group is collectively ready."""
+
+        if not members or any(item.group_id is None for item in members):
+            return None
+        if any(item.status == "stopped" and item.stopped_by != "agent" for item in members):
+            return None
+        deliverable = [
+            item
+            for item in members
+            if not (item.status == "stopped" and item.stopped_by == "agent")
+        ]
+        if not deliverable or any(item.notified for item in deliverable):
+            return None
+        if any(
+            item.status == "active"
+            or (
+                item.status == "degraded"
+                and item.consecutive_error_count < WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
+            )
+            or item.status not in {"completed", "degraded"}
+            for item in deliverable
+        ):
+            return None
+        return deliverable
 
     def completed_experiment_watcher_group(
         self,
@@ -2550,27 +2990,24 @@ class AppStore:
         """
 
         with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM watchers
-                WHERE project_id = ? AND status = 'completed' AND notified = 0
-                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(continuation_json, '$.control_node_id') = ?
-                ORDER BY completed_at, created_at, watcher_id
-                """,
-                (project_id, control_node_id),
-            ).fetchall()
+            units = self._ready_watcher_delivery_units(connection)
         groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
-        for row in rows:
-            record = self._watcher_record(row)
+        for unit in units:
+            first = unit[0]
+            if (
+                first.project_id != project_id
+                or first.continuation.patch_kind != "experiment_loop"
+                or first.continuation.control_node_id != control_node_id
+            ):
+                continue
             key = (
-                record.origin_task_kind,
-                record.chat_id,
-                record.node_id,
-                record.execution_host,
-                self._watcher_delivery_policy(record.continuation),
+                first.origin_task_kind,
+                first.chat_id,
+                first.node_id,
+                first.execution_host,
+                self._watcher_delivery_policy(first.continuation),
             )
-            groups.setdefault(key, []).append(record)
+            groups.setdefault(key, []).extend(unit)
         return next(iter(groups.values()), None)
 
     def create_watcher_notification_task(
@@ -2606,13 +3043,14 @@ class AppStore:
                     SELECT *
                     FROM watchers
                     WHERE watcher_id IN ({placeholders})
-                        AND status = 'completed' AND notified = 0
+                        AND status IN ('completed', 'degraded') AND notified = 0
                     """,
                     ids,
                 ).fetchall()
                 if {str(row["watcher_id"]) for row in rows} != set(ids):
-                    raise ValueError("watchers are missing, incomplete, or already notified")
+                    raise ValueError("watchers are missing, unready, or already notified")
                 watchers = [self._watcher_record(row) for row in rows]
+                self._validate_watcher_notification_members(connection, watchers)
                 if {item.project_id for item in watchers} != {record.project_id}:
                     raise ValueError("watchers and notification task belong to different projects")
                 bindings = {
@@ -2642,7 +3080,7 @@ class AppStore:
                     UPDATE watchers
                     SET notified = 1, notification_operation_id = ?
                     WHERE watcher_id IN ({placeholders})
-                        AND status = 'completed' AND notified = 0
+                        AND status IN ('completed', 'degraded') AND notified = 0
                     """,
                     [record.operation_id, *ids],
                 )
@@ -2653,6 +3091,31 @@ class AppStore:
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    def _validate_watcher_notification_members(
+        self,
+        connection: sqlite3.Connection,
+        watchers: list[WatcherRecord],
+    ) -> None:
+        """Require a delivery claim to contain every ready member of each group."""
+
+        requested = {item.watcher_id for item in watchers}
+        group_ids = {item.group_id for item in watchers if item.group_id is not None}
+        for watcher in watchers:
+            if watcher.group_id is None and watcher.status != "completed":
+                raise ValueError("an ungrouped watcher must complete before delivery")
+        for group_id in group_ids:
+            assert group_id is not None
+            rows = connection.execute(
+                "SELECT * FROM watchers WHERE group_id = ? ORDER BY created_at, watcher_id",
+                (group_id,),
+            ).fetchall()
+            ready = self._ready_group_members([self._watcher_record(row) for row in rows])
+            if ready is None:
+                raise ValueError("a watcher group is not ready for delivery")
+            ready_ids = {item.watcher_id for item in ready}
+            if ready_ids != (requested & {item.watcher_id for item in ready}):
+                raise ValueError("a watcher group must be claimed as one delivery unit")
 
     @staticmethod
     def _experiment_wake_is_stopped(

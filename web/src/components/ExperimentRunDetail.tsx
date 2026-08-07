@@ -1,5 +1,5 @@
 import { FlaskConical } from "lucide-react";
-import type { ExperimentLoopHealth, ExperimentRun } from "../runProjection";
+import type { ExperimentLoopHealth, ExperimentRun, ExperimentWatcherGroup } from "../runProjection";
 import type { WatcherRecord } from "../types";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
@@ -192,9 +192,13 @@ export function ExperimentRunDetail({
           <p className="experiment-run-empty">No detached work has been handed off.</p>
         ) : (
           <ul className="experiment-run-watchers" aria-label="Experiment watchers">
-            {watchers.map((watcher) => (
-              <WatcherDetail watcher={watcher} key={watcher.watcher_id} />
-            ))}
+            {run.watcherItems.map((item) =>
+              item.kind === "group" ? (
+                <WatcherGroupDetail group={item.group} key={item.group.groupId} />
+              ) : (
+                <WatcherDetail watcher={item.watcher} key={item.watcher.watcher_id} />
+              ),
+            )}
           </ul>
         )}
       </section>
@@ -333,6 +337,31 @@ export function ExperimentRunDetail({
   );
 }
 
+function WatcherGroupDetail({ group }: { group: ExperimentWatcherGroup }) {
+  return (
+    <li className="experiment-run-watcher-group">
+      <details>
+        <summary>
+          <span>
+            <span className="eyebrow">Watcher group</span>
+            <strong>{group.label}</strong>
+          </span>
+          <span className="experiment-run-watcher-group-counts">{watcherGroupSummary(group)}</span>
+        </summary>
+        <p className="experiment-run-watcher-group-id">
+          <span className="eyebrow">Group ID</span>
+          <code>{group.groupId}</code>
+        </p>
+        <ul className="experiment-run-watcher-group-members" aria-label={`${group.label} watchers`}>
+          {group.watchers.map((watcher) => (
+            <WatcherDetail watcher={watcher} key={watcher.watcher_id} />
+          ))}
+        </ul>
+      </details>
+    </li>
+  );
+}
+
 function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
@@ -343,7 +372,7 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
       </div>
       <dl className="experiment-run-watcher-facts">
         <div>
-          <dt>Origin</dt>
+          <dt>Origin invocation</dt>
           <dd className="mono experiment-run-breakable">{watcher.origin_operation_id}</dd>
         </div>
         <div>
@@ -363,6 +392,12 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
           <dd>{watcher.last_exit_code ?? "—"}</dd>
         </div>
         <div>
+          <dt>Current error</dt>
+          <dd className={watcher.last_error ? "experiment-run-watcher-current-error" : undefined}>
+            {watcher.last_error ?? "—"}
+          </dd>
+        </div>
+        <div>
           <dt>Completed</dt>
           <dd>{formatMoment(watcher.completed_at)}</dd>
         </div>
@@ -376,6 +411,12 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
             {watcher.notification_operation_id ?? "—"}
           </dd>
         </div>
+        {watcher.status === "stopped" && (
+          <div>
+            <dt>Stopped by</dt>
+            <dd>{watcherStopDisposition(watcher)}</dd>
+          </div>
+        )}
       </dl>
       <div className="experiment-run-watcher-command">
         <span className="eyebrow">Check command</span>
@@ -391,9 +432,10 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
           <code>{watcher.cwd}</code>
         </span>
       </div>
-      {watcher.last_error && (
-        <p className="experiment-run-watcher-error" role="status">
-          {watcher.last_error}
+      {watcher.stop_reason && (
+        <p className="experiment-run-watcher-stop-reason">
+          <strong>{watcher.stopped_by === "agent" ? "Agent reason" : "Stop reason"}</strong>
+          {watcher.stop_reason}
         </p>
       )}
     </li>
@@ -442,11 +484,28 @@ function watcherDeliveryLabel(watcher: WatcherRecord): string {
   return "Not delivered";
 }
 
+function watcherGroupSummary(group: ExperimentWatcherGroup): string {
+  const { finished, degraded, running, stopped } = group.counts;
+  const summary = [`${finished} finished`, `${degraded} degraded`, `${running} running`];
+  if (stopped > 0) summary.push(`${stopped} stopped`);
+  return summary.join(" · ");
+}
+
 function watcherProvenance(watcher: WatcherRecord): string {
   const episode = watcher.continuation.control_episode_id ?? "—";
   const invocation = watcher.continuation.control_invocation ?? "—";
   const ceiling = watcher.continuation.control_invocation_ceiling;
   return `episode ${episode} · invocation ${invocation}${ceiling ? ` / ${ceiling}` : ""}`;
+}
+
+function watcherStopDisposition(watcher: WatcherRecord): string {
+  const actor = watcher.stopped_by ? `${capitalize(watcher.stopped_by)} stopped` : "Stopped";
+  const stoppedAt = formatMoment(watcher.stopped_at);
+  return stoppedAt === "—" ? actor : `${actor} · ${stoppedAt}`;
+}
+
+function capitalize(value: string): string {
+  return `${value[0].toUpperCase()}${value.slice(1)}`;
 }
 
 function taskInvocation(task: ExperimentRun["currentTask"]): number | null {

@@ -120,7 +120,7 @@ def _validate_patch(
         report.reject("delete-forbidden", "Graph objects are never deleted.", ctx.revision)
 
     if patch.kind == "approval":
-        validate_approval_shape(state, patch, report)
+        validate_approval_shape(state, patch, report, mode=mode)
 
     oldest_ref = _validate_operations(ctx)
     _validate_created_proposal_liveness(ctx)

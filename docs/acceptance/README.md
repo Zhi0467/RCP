@@ -229,6 +229,10 @@ it but a browser or a machine we do not have.
 | [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | blocked-external | pytest + **browser** | provider commands + Codex browser 2026-08-07 |
 | [S80](S80-question-hierarchy-flow-columns.md) | Read question hierarchy from the Research flow columns | implemented | **browser** | layout tests + driven 2026-08-07 |
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without reloading the UI | implemented | api + **browser** | tests + driven 2026-08-07 |
+| [S83](S83-agent-retires-experiment-watchers.md) | Let an Experiment agent retire observers for work it cancelled | implemented | pytest | covered |
+| [S84](S84-watchers-poll-with-persistent-backoff.md) | Poll watchers patiently with durable error backoff | implemented | pytest | covered |
+| [S85](S85-grouped-watchers-wake-once.md) | Wake once when every watcher in a group is finished or persistently degraded | implemented | pytest + **browser** | tests + driven 2026-08-07 |
+| [S86](S86-human-decides-a-decision.md) | Decide a Decision by clicking an option | implemented | pytest + **browser** | tests + driven 2026-08-07 |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

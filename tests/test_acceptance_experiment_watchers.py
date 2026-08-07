@@ -142,6 +142,13 @@ def _watcher_spec(record: WatcherRecord) -> tuple[str, str, str]:
     return record.check_command, record.log_path, record.cwd
 
 
+def _poll_after_due(app, watchers: list[WatcherRecord]) -> None:
+    # This hermetic fixture needs repeated short polls after jobs finish at
+    # different instants. Production still reads the durable real clock.
+    del watchers
+    app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
+
+
 def _wait_for_fixture_jobs(watchers: list[WatcherRecord], *, timeout: float = 30.0) -> None:
     """Let every detached fixture job finish before a poller can observe the group.
 
@@ -226,6 +233,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     # Reopening the same data directory proves the active watcher ledger is durable.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
+    _poll_after_due(reopened, armed)
     reopened_store = reopened.state.background_tasks.store
     with TestClient(reopened) as reopened_client:
         persisted = reopened_store.watchers(project_id, chat_id=chat_id)
@@ -315,6 +323,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
     # Persist the active watchers across a process-shaped reopen before completion delivery.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
+    _poll_after_due(reopened, armed)
     reopened_store = reopened.state.background_tasks.store
     with TestClient(reopened) as reopened_client:
         persisted = reopened_store.watchers(project_id, chat_id=chat_id)

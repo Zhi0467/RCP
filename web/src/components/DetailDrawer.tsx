@@ -49,6 +49,8 @@ interface Props {
   experimentControl?: ExperimentControlState | null;
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
+  pendingDecisionProposalCount?: number;
+  decisionChoiceStaged?: boolean;
   onUnstage?: () => void;
   onRemove?: () => void;
   onUndoRemoval?: () => void;
@@ -57,6 +59,7 @@ interface Props {
   onBeginEdit: () => void;
   onStanding: (standing: GraphNode["standing"]) => void;
   onStage: (changes: Record<string, DraftNodeValue>) => void;
+  onDecisionChoice?: (selectedOption: string) => void;
   onRunExperiment?: () => void;
   onOpenChat: () => void;
   onExploreRelations: () => void;
@@ -102,6 +105,8 @@ export function DetailDrawer({
   experimentControl = null,
   experimentRunDisabled = false,
   experimentRunBusy = false,
+  pendingDecisionProposalCount = 0,
+  decisionChoiceStaged = false,
   onUnstage,
   onRemove,
   onUndoRemoval,
@@ -110,6 +115,7 @@ export function DetailDrawer({
   onBeginEdit,
   onStanding,
   onStage,
+  onDecisionChoice,
   onRunExperiment,
   onOpenChat,
   onExploreRelations,
@@ -219,8 +225,22 @@ export function DetailDrawer({
     ...presentation.context.map((item) => item.key),
   ]);
   const details = Object.entries(node).filter(
-    ([key, value]) => !ignored.has(key) && !presentedKeys.has(key) && hasValue(value),
+    ([key, value]) =>
+      !ignored.has(key) &&
+      !presentedKeys.has(key) &&
+      !(node.type === "decision" && ["options", "selected_option", "status"].includes(key)) &&
+      hasValue(value),
   );
+  const decisionOptions =
+    node.type === "decision" && Array.isArray(node.options)
+      ? [...new Set(node.options.filter((option): option is string => typeof option === "string"))]
+      : [];
+  const selectedDecisionOption =
+    node.type === "decision" && typeof node.selected_option === "string"
+      ? node.selected_option
+      : null;
+  const decisionChoiceDisabled =
+    nodeMutationDisabled || node.status === "superseded" || !onDecisionChoice;
   const fullscreenTarget = typeof document === "undefined" ? null : document.fullscreenElement;
   const drawer = (
     <DraggableWindow
@@ -357,10 +377,61 @@ export function DetailDrawer({
             </form>
           ) : (
             <>
-              <section className="node-lead">
-                <span className="eyebrow">{presentation.label}</span>
-                <p>{formatValue(presentation.value, glossaryIndex)}</p>
-              </section>
+              {node.type === "decision" ? (
+                <section className="decision-choice-section">
+                  <div className="decision-choice-heading">
+                    <span className="eyebrow">Decision</span>
+                    <span className={`decision-choice-status ${node.status ?? "open"}`}>
+                      {humanize(node.status ?? "open")}
+                      {decisionChoiceStaged ? " · staged" : ""}
+                    </span>
+                  </div>
+                  <fieldset disabled={decisionChoiceDisabled}>
+                    <legend id={`decision-question-${node.id}`}>
+                      {formatValue(presentation.value, glossaryIndex)}
+                    </legend>
+                    <div className="decision-choice-options">
+                      {decisionOptions.map((option) => {
+                        const selected = option === selectedDecisionOption;
+                        return (
+                          <label
+                            className={`decision-choice-option${selected ? " selected" : ""}${selected && decisionChoiceStaged ? " staged" : ""}`}
+                            key={option}
+                          >
+                            <input
+                              type="radio"
+                              name={`decision-choice-${node.id}`}
+                              value={option}
+                              checked={selected}
+                              onChange={() => onDecisionChoice?.(option)}
+                            />
+                            <span className="decision-choice-option-label">
+                              <GlossaryText text={option} glossaryIndex={glossaryIndex} />
+                            </span>
+                            {selected && (
+                              <span className="decision-choice-option-state">
+                                <Check size={13} />
+                                {decisionChoiceStaged ? "Staged selection" : "Selected"}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                  {pendingDecisionProposalCount > 0 && (
+                    <div className="decision-proposal-count" role="status">
+                      {pendingDecisionProposalCount} pending proposal
+                      {pendingDecisionProposalCount === 1 ? "" : "s"} target this decision
+                    </div>
+                  )}
+                </section>
+              ) : (
+                <section className="node-lead">
+                  <span className="eyebrow">{presentation.label}</span>
+                  <p>{formatValue(presentation.value, glossaryIndex)}</p>
+                </section>
+              )}
 
               {node.type === "experiment" && experimentControl && onRunExperiment && (
                 <section

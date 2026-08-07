@@ -143,17 +143,31 @@ export interface ExperimentControlState {
 }
 
 export interface WatcherContinuation {
+  provider: string;
+  model: string | null;
+  reasoning: string | null;
+  run_on: string;
+  run_truth_scope: string[] | null;
   patch_kind: "work" | "experiment_loop";
   control_node_id: string | null;
+  control_revision: number | null;
   control_episode_id: string | null;
   control_invocation: number | null;
   control_invocation_ceiling: number | null;
+  control_decision_bundle: Record<string, unknown>[];
+  control_completion_criteria: string[];
+  workflow_ids: string[];
+  skill_ids: string[];
+  invoked_workflow_ids: string[];
+  invoked_skill_ids: string[];
+  resolved_skill_packages: SkillReference[];
 }
 
 export interface WatcherRecord {
   watcher_id: string;
   project_id: string;
   origin_operation_id: string;
+  origin_task_kind: "node_chat" | "project_chat";
   chat_id: string;
   node_id: string | null;
   execution_host: string;
@@ -167,8 +181,16 @@ export interface WatcherRecord {
   last_exit_code: number | null;
   last_error: string | null;
   completed_at: string | null;
+  next_check_at: string | null;
+  consecutive_error_count: number;
+  group_id: string | null;
+  group_label: string | null;
   notified: boolean;
   notification_operation_id: string | null;
+  stopped_by: "human" | "loop" | "agent" | null;
+  stop_reason: string | null;
+  stopped_at: string | null;
+  stop_operation_id: string | null;
 }
 
 export interface Edge {
