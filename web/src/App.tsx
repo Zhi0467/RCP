@@ -1031,9 +1031,7 @@ export default function App() {
     setTextScale((current) => changeTextScale(current, action));
   };
 
-  const ensureConversation = (kind: ChatKind, node: GraphNode | null = null): string => {
-    const existing = latestConversation(conversations, kind, node?.id ?? null);
-    if (existing) return existing.chatId;
+  const startConversation = (kind: ChatKind, node: GraphNode | null = null): string => {
     const chatId = window.crypto.randomUUID();
     const draft: DraftConversation = {
       chatId,
@@ -1043,6 +1041,11 @@ export default function App() {
     };
     setDraftConversations((current) => [draft, ...current]);
     return chatId;
+  };
+
+  const ensureConversation = (kind: ChatKind, node: GraphNode | null = null): string => {
+    const existing = latestConversation(conversations, kind, node?.id ?? null);
+    return existing?.chatId ?? startConversation(kind, node);
   };
 
   const openChats = (preferredChatId?: string | null) => {
@@ -1986,7 +1989,7 @@ export default function App() {
                 className="button secondary"
                 disabled={projectReconciliation !== "authoritative"}
                 onClick={() => {
-                  const chatId = ensureConversation("project_chat");
+                  const chatId = startConversation("project_chat");
                   openChats(chatId);
                 }}
               >

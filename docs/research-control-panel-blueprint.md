@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.20
+**Version:** 0.21
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,10 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.21** — gave every user-facing agent surface provider-native public-web
+  search and fetch without widening its fixed filesystem, repository, paper, or
+  graph authority; kept generic Seed/Refresh Patch correction offline over
+  staged local inputs.
 - **0.20** — allowed an Experiment-loop invocation to keep its focused
   Experiment's `current_summary` and `next_action` aligned with attempt changes,
   without widening authority to any other Experiment field or graph object.
@@ -289,6 +293,12 @@ manifest or a skill:
   Work capability, with instruction changed to avoid repeating completed side
   effects; and
 - **Paper coach** — read-only coaching with no graph or file-authoring channel.
+
+Every user-facing agent surface — Seed/Refresh, Discuss, Work, and Paper coach —
+has provider-native public-web search and fetch. That access does not widen the
+surface's fixed filesystem, repository, paper, or graph authority. Generic
+Seed/Refresh Patch-correction continuation remains instruction-constrained to
+staged local inputs and offline operation.
 
 Codex Work bypasses approval and sandbox enforcement. Claude Work uses its
 non-interactive bypass-permissions mode. The canonical `.research` prohibition

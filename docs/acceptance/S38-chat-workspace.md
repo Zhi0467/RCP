@@ -16,13 +16,14 @@ covered_by:
   - browser 2026-07-31 — draggable detail/chat, docking, draft preservation,
     project Ask routing, canonical transcript rendering, and isolated synthetic
     active-to-unread banner routing
-last_passed: 2026-08-02 — reopened a long existing conversation and confirmed
-  the transcript landed at the latest turn, with no browser-console or server
-  errors. The earlier isolated browser drive covered independent floating
-  detail/chat and draft preservation, then loaded a 205-conversation fixture as
-  200 + 5 without changing the selected transcript. Canonical pagination,
-  deletion/race reconciliation, and notification scoping passed in the 455
-  backend and 109 web tests.
+  - browser 2026-08-07 — project Ask started a selected empty conversation while
+    preserving the existing project conversation; Chats navigation created no
+    additional conversation
+last_passed: 2026-08-07 — drove the changed project Ask path against an existing
+  project conversation. The new empty conversation was selected, the existing
+  one remained available, returning through Chats kept the selection without
+  creating another conversation, and browser/server logs had no application
+  errors.
 invariants: [8, 10, 10b, 10c, 11]
 ---
 
@@ -39,7 +40,7 @@ on the left and the selected transcript and composer on the right.
 
 ## UI path
 
-Confirmed on 2026-08-02.
+Confirmed on 2026-08-02; project Ask behavior reconfirmed on 2026-08-07.
 
 - **Chats** is a project navigation panel immediately to the right of
   **Settings**, equal in hierarchy to the other project panels.
@@ -69,9 +70,11 @@ Confirmed on 2026-08-02.
 - Discuss/Work mode is the same conversation state in the floating chat and the
   Chats workspace. Minimizing or docking never resets the next-turn mode, and
   historical turn badges render identically in both presentations.
-- The project-header **Ask** control opens **Chats** and selects the existing
-  project conversation, or starts an empty project conversation when none
-  exists. It does not create a separate chat surface.
+- The project-header **Ask** control always opens **Chats** with a fresh, empty
+  project conversation. Existing project conversations remain unchanged in the
+  list. Entering **Chats** through project navigation still returns to the
+  selected or otherwise relevant existing conversation. **Ask** does not create
+  a separate chat surface.
 - Chat task banners are scoped to **Chats**. They are never rendered over
   Overview, Inbox, Research, Runs, Paper, or Settings. Outside Chats,
   the **Chats** navigation item carries the activity or unread-result indicator.
@@ -100,7 +103,11 @@ list, or routing a notification only to a generic task inspector.
 6. Leave Chats again, let the turn complete, and confirm that the unread result
    changes the Chats indicator without rendering a chat banner on that panel.
    Enter Chats and open the completed conversation.
-7. Use the project-header **Ask** control, send a project-level message, then
+7. Select an existing project conversation, leave **Chats**, then use the
+   project-header **Ask** control. Confirm it opens a fresh, empty project
+   conversation while the existing one remains in the list. Send a
+   project-level message, leave, and return through **Chats**; confirm navigation
+   returns to the selected conversation rather than creating another one. Then
    switch between the project and node conversations.
 8. Reopen the project and inspect an older completed conversation. Confirm the
    transcript starts at its latest turn rather than at the beginning. Scroll up
@@ -125,7 +132,9 @@ list, or routing a notification only to a generic task inspector.
 - `reopening_conversation_starts_at_latest_turn`
 - `manual_transcript_scroll_is_respected`
 - `minimized_chat_keeps_transcript_composer_and_status`
-- `project_ask_routes_to_project_conversation`
+- `project_ask_starts_fresh_project_conversation`
+- `project_ask_preserves_existing_project_conversations`
+- `chats_navigation_does_not_create_conversation`
 - `chat_banner_is_visible_only_inside_chats`
 - `chats_indicator_reports_activity_and_unread_result`
 - `opening_chats_routes_to_exact_conversation`

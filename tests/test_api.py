@@ -4028,7 +4028,13 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path
     assert completed["kind"] == "paper_coach"
     assert completed["result"] == {"messages": [answer]}
     assert completed["applied_revision"] is None
+    launch = next(
+        receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
+    )
+    assert launch["payload"]["capability"] == "paper_readonly"
+    assert launch["payload"]["network_access"] is True
     assert isinstance(launcher.last_kwargs["control"], AgentProcessControl)
+    assert launcher.last_kwargs["capability"] == "paper_readonly"
     assert service.paper.sessions()[0].native_session_id == session_id
 
 

@@ -231,6 +231,9 @@ class CodexProfile(ProviderProfile):
         command.extend(
             ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]
         )
+        # Live retrieval is a provider tool, independent of whether command
+        # execution is read-only or has workspace-write network access.
+        command.extend(["--config", 'web_search="live"'])
         if capability == "work_auto":
             command.append("--dangerously-bypass-approvals-and-sandbox")
         else:
@@ -360,8 +363,8 @@ class ClaudeProfile(ProviderProfile):
         # normalizes it to `default` and denies both scratch and repository
         # writes. Work bypasses permission prompts so it can execute unattended;
         # scratch-patch runs retain acceptEdits and the paper coach remains
-        # plan-only. No tool allowlist -- the agent needs Bash, Task, and
-        # WebSearch.
+        # plan-only. Native public-web retrieval is pre-authorized explicitly
+        # on non-bypass launches without broadening Bash permissions.
         permission_mode = {
             "discuss": "acceptEdits",
             "work_auto": "bypassPermissions",
@@ -377,6 +380,8 @@ class ClaudeProfile(ProviderProfile):
             "--permission-mode",
             permission_mode,
         ]
+        if capability != "work_auto":
+            command.extend(["--allowedTools", "WebSearch", "WebFetch"])
         if session_id:
             command.extend(["--resume", session_id])
         # Deduplicate while preserving first-seen order: one --add-dir per source

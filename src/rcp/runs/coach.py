@@ -286,7 +286,7 @@ async def stream_coach(
         extra={
             "surface": "paper_coach",
             "capability": "paper_readonly",
-            "network_access": False,
+            "network_access": True,
             "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
         },
     )

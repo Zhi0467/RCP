@@ -581,6 +581,7 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     assert command[:4] == ["codex", "exec", "resume", "--json"]
     assert "--sandbox" not in command
     assert 'sandbox_mode="workspace-write"' in command
+    assert 'web_search="live"' in command
     assert "sandbox_workspace_write.network_access=true" in command
     # No --cd on resume: the writable root is the process working directory.
     assert "--cd" not in command
@@ -606,6 +607,7 @@ def test_codex_new_session_writes_only_into_its_scratch_folder() -> None:
     assert command[command.index("--cd") + 1] == str(scratch)
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
+    assert 'web_search="live"' in command
     assert "sandbox_workspace_write.network_access=true" in command
     assert 'approval_policy="never"' in command
     assert "--output-schema" not in command
@@ -632,6 +634,7 @@ def test_codex_discuss_keeps_networked_writes_inside_conversation_scratch() -> N
     assert command[command.index("--sandbox") + 1] == "workspace-write"
     assert command[command.index("--cd") + 1] == str(scratch)
     assert 'approval_policy="never"' in command
+    assert 'web_search="live"' in command
     assert "sandbox_workspace_write.network_access=true" in command
     assert "--add-dir" not in command
     assert not any("/project/repo-a" in argument for argument in command)
@@ -652,6 +655,7 @@ def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
 
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert command[command.index("--cd") + 1] == str(research_dir)
+    assert 'web_search="live"' in command
     assert "sandbox_workspace_write.network_access=true" not in command
     assert 'approval_policy="never"' in command
 
@@ -671,6 +675,7 @@ def test_codex_work_bypasses_approvals_and_sandbox() -> None:
 
     assert "--sandbox" not in command
     assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert 'web_search="live"' in command
     assert not any(item.startswith("sandbox_mode=") for item in command)
     assert not any(item.startswith("approval_policy=") for item in command)
     assert not any(item.startswith("approvals_reviewer=") for item in command)
@@ -698,6 +703,7 @@ def test_codex_work_resume_bypasses_approvals_and_sandbox() -> None:
     assert "--sandbox" not in command
     assert not any(item.startswith("sandbox_mode=") for item in command)
     assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert 'web_search="live"' in command
     assert not any(item.startswith("approval_policy=") for item in command)
     assert not any(item.startswith("approvals_reviewer=") for item in command)
     assert not any(item.startswith("default_permissions=") for item in command)
@@ -723,11 +729,12 @@ def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
     assert "--sandbox" not in command
     assert "--cd" not in command
     assert 'sandbox_mode="read-only"' in command
+    assert 'web_search="live"' in command
     assert "sandbox_workspace_write.network_access=true" not in command
     assert command[-2:] == [session_id, "-"]
 
 
-def test_claude_scratch_patch_keeps_accept_edits_without_a_tool_allowlist() -> None:
+def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
     command = AgentLauncher._command(
         "claude",
         "write patch.json",
@@ -749,7 +756,8 @@ def test_claude_scratch_patch_keeps_accept_edits_without_a_tool_allowlist() -> N
     assert command[command.index("--model") + 1] == "claude-test"
     assert command[command.index("--effort") + 1] == "high"
     assert "--tools" not in command
-    assert "--allowedTools" not in command
+    allowed_index = command.index("--allowedTools")
+    assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert "--json-schema" not in command
     # One --add-dir per distinct directory: duplicates used to blow the argv limit.
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
@@ -770,6 +778,8 @@ def test_claude_read_only_command_keeps_plan_permission_mode() -> None:
 
     assert command[command.index("--permission-mode") + 1] == "plan"
     assert "acceptEdits" not in command
+    allowed_index = command.index("--allowedTools")
+    assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert command[command.index("--resume") + 1] == "paper-session"
 
 
@@ -787,6 +797,7 @@ def test_claude_work_bypasses_permissions() -> None:
     )
 
     assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--allowedTools" not in command
 
 
 def test_claude_work_resume_keeps_the_native_session_and_bypasses_permissions() -> None:
@@ -804,6 +815,7 @@ def test_claude_work_resume_keeps_the_native_session_and_bypasses_permissions() 
     )
 
     assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--allowedTools" not in command
     assert command[command.index("--resume") + 1] == session_id
 
 
@@ -820,6 +832,8 @@ def test_claude_discuss_keeps_scratch_writable_without_auto_mode() -> None:
     )
 
     assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+    allowed_index = command.index("--allowedTools")
+    assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert "auto" not in command
 
 
