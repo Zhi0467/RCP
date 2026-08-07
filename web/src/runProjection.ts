@@ -339,6 +339,11 @@ function experimentEntry(experiment: ExperimentRun): RunEntry {
   return { kind: "experiment", id: experiment.node.id, observedAt, experiment };
 }
 
+/** An Experiment-loop watcher is released by Stop loop, never one watcher at a time. */
+export function watcherIsIndividuallyStoppable(watcher: WatcherRecord): boolean {
+  return watcher.continuation?.patch_kind !== "experiment_loop";
+}
+
 function sortRunEntries(entries: RunEntry[]): RunEntry[] {
   return [...entries].sort((left, right) => {
     const leftAt = left.observedAt ? Date.parse(left.observedAt) : Number.NaN;

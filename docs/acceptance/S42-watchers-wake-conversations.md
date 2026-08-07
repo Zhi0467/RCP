@@ -39,9 +39,11 @@ Confirmed by the human on 2026-08-01.
   same provider session with the exact diagnostic, and permits only a bounded
   rewrite of `watch.json`. It never repeats the launched work merely to repair
   the watcher handoff.
-- Arm the corrected list. The originating conversation shows the number of active
-  watchers, their last-check time, and any current check error without implying
-  experiment status.
+- Arm the corrected list. The originating conversation carries exactly one
+  watcher control — the count beside the floating chat's close control, or in the
+  context row where there is no header. Pressing it discloses each watcher's
+  last-check time and any current check error, without implying experiment
+  status. The list is never a second permanent fixture of the chat body.
 - Make an armed check fail transiently. That watcher becomes visibly degraded and
   keeps polling; the other watcher is unaffected. The error never produces a
   completion wake. A later 0 or 1 clears the degraded state.
@@ -88,6 +90,9 @@ Confirmed by the human on 2026-08-01.
 - `provider_task_retry_does_not_refire_the_watcher`
 - `patch_json_remains_the_only_graph_change_channel`
 - `watcher_rows_never_mutate_experiment_attempts`
+- `one_watcher_control_per_conversation` — the count and the list are never both
+  standing fixtures of the same chat
+- `watcher_list_is_disclosed_by_its_count_control`
 - `no_console_failed_request_or_server_error_during_the_browser_drive`
 
 ## Deliberately not possible in v1

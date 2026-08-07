@@ -44,7 +44,7 @@ export function RepositoryScope({
           <span className="eyebrow">Run reads</span>
           <strong>
             {selected.length === projectScope.length
-              ? "All project repositories"
+              ? "All repositories"
               : `${selected.length} of ${projectScope.length} repositories`}
           </strong>
         </span>

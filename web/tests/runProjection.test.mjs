@@ -6,6 +6,7 @@ import {
   buildRunProjection,
   buildRunTaskProjection,
   experimentRunSection,
+  watcherIsIndividuallyStoppable,
 } from "../src/runProjection.ts";
 
 function task(
@@ -481,4 +482,13 @@ test("entries remain newest first within each section", () => {
     projection.running.map((entry) => entry.id),
     ["newer", "older"],
   );
+});
+
+test("only a generic watcher can be stopped on its own", () => {
+  assert.equal(watcherIsIndividuallyStoppable({ continuation: { patch_kind: "work" } }), true);
+  assert.equal(
+    watcherIsIndividuallyStoppable({ continuation: { patch_kind: "experiment_loop" } }),
+    false,
+  );
+  assert.equal(watcherIsIndividuallyStoppable({}), true);
 });

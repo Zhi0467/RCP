@@ -142,6 +142,26 @@ def _watcher_spec(record: WatcherRecord) -> tuple[str, str, str]:
     return record.check_command, record.log_path, record.cwd
 
 
+def _wait_for_fixture_jobs(watchers: list[WatcherRecord], *, timeout: float = 30.0) -> None:
+    """Let every detached fixture job finish before a poller can observe the group.
+
+    Each job is its own process sleeping from its own start, so under load one
+    ``.done`` file can land a poll interval ahead of the other. Delivering a wake
+    for the watcher that genuinely finished first is correct — coalescing joins
+    the watchers already complete at delivery, it does not wait for stragglers —
+    so a test about one coalesced wake must settle the jobs before polling starts.
+    """
+
+    deadline = time.monotonic() + timeout
+    pending = [Path(watcher.log_path).with_suffix(".done") for watcher in watchers]
+    while time.monotonic() < deadline:
+        if all(path.is_file() for path in pending):
+            return
+        time.sleep(0.02)
+    missing = [str(path) for path in pending if not path.is_file()]
+    raise AssertionError(f"detached fixture jobs did not finish within {timeout}s: {missing}")
+
+
 def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
     for watcher in watchers:
         log_path = Path(watcher.log_path)
@@ -198,6 +218,10 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     finally:
         client.close()
         app.state.background_tasks.shutdown()
+
+    # Both jobs must be finished before the poller starts, or the group coalesces
+    # a real subset and this test's single-wake assertion becomes load-dependent.
+    _wait_for_fixture_jobs(armed)
 
     # Reopening the same data directory proves the active watcher ledger is durable.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)

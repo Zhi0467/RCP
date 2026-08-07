@@ -76,8 +76,9 @@ Confirmed on 2026-08-02; project Ask behavior reconfirmed on 2026-08-07.
   Chats workspace. Minimizing or docking never resets the next-turn mode, and
   historical turn badges render identically in both presentations.
 - The chat's context row carries the provider name, a **New session** control,
-  and the repository scope picker. The picker states its own meaning — "Run
-  reads", *n* of *m* repositories — and carries no separate label above it.
+  and the repository scope picker, all one height on one baseline. The picker
+  names its own current state — **All repositories**, or *n* of *m* — with no
+  label above it and no eyebrow inside it.
 - **New session** starts a fresh conversation of the same kind and node and moves
   the current surface to it: in the floating chat it replaces that window's
   conversation while the node detail stays open, and in **Chats** it becomes the
@@ -154,6 +155,7 @@ list, or routing a notification only to a generic task inspector.
 - `new_session_preserves_the_previous_conversation`
 - `new_session_keeps_the_floating_window_and_node_detail_open`
 - `chat_context_row_has_no_label_above_the_scope_picker`
+- `chat_context_row_controls_share_one_height_and_baseline`
 - `project_ask_starts_fresh_project_conversation`
 - `project_ask_preserves_existing_project_conversations`
 - `chats_navigation_does_not_create_conversation`

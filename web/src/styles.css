@@ -3689,24 +3689,22 @@ button:disabled {
   border-radius: 999px;
   color: var(--cobalt-dark);
   display: inline-flex;
+  flex: none;
   font: 700 9px var(--mono);
   gap: 4px;
-  padding: 4px 7px;
+  padding: 4px 9px;
+}
+.chat-watcher-count:hover,
+.chat-watcher-count.is-open {
+  background: color-mix(in srgb, var(--cobalt) 20%, var(--sheet));
+  border-color: var(--cobalt);
 }
 .chat-watchers {
   background: var(--paper-deep);
   border-bottom: 1px solid var(--line);
   max-height: 150px;
   overflow: auto;
-  padding: 7px 10px 8px;
-}
-.chat-watchers > header {
-  align-items: center;
-  color: var(--cobalt-dark);
-  display: flex;
-  font-size: 9px;
-  gap: 6px;
-  margin-bottom: 5px;
+  padding: 6px 10px 8px;
 }
 .chat-watcher-row {
   align-items: baseline;
@@ -5776,17 +5774,15 @@ button:disabled {
   min-width: 0;
 }
 .chat-context-controls {
-  align-items: center;
+  align-items: stretch;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: none;
   gap: 9px;
-  justify-content: space-between;
   padding: 6px 10px;
 }
 .agent-provider-label {
   align-items: center;
-  align-self: flex-start;
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 4px;
@@ -5798,14 +5794,14 @@ button:disabled {
   padding: 4px 7px;
 }
 .coach-column > .agent-provider-label {
+  align-self: flex-start;
+}
+.coach-column > .agent-provider-label {
   margin: 6px 10px;
 }
 .chat-scope-control {
-  align-items: center;
   display: flex;
-  flex: 1;
-  gap: 10px;
-  justify-content: space-between;
+  margin-left: auto;
   min-width: 0;
 }
 .chat-new-session {
@@ -5826,18 +5822,28 @@ button:disabled {
   background: var(--surface);
   border-color: var(--ink);
 }
+.chat-scope-control .scope-picker,
+.chat-scope-control .scope-trigger {
+  min-width: 0;
+}
 .chat-scope-control .scope-trigger {
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 4px 7px;
+  gap: 6px;
+  min-height: 26px;
+  padding: 4px 8px;
+}
+.chat-scope-control .scope-trigger strong {
+  font-size: 10px;
+  font-weight: 650;
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-scope-control .scope-trigger .eyebrow {
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  display: none;
 }
 
 .agent-role-stack {

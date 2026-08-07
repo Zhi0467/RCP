@@ -38,6 +38,7 @@ import {
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
 import type { GlossaryIndex } from "../glossary";
+import { watcherIsIndividuallyStoppable } from "../runProjection";
 import {
   downloadDesktopArtifact,
   isDesktopRuntime,
@@ -183,6 +184,7 @@ export function NodeChat({
   const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [watchersOpen, setWatchersOpen] = useState(false);
   const skills = useSkillPicker({
     catalog: skillCatalog,
     defaults: skillDefaults,
@@ -434,6 +436,18 @@ export function NodeChat({
     }
   };
 
+  const watcherToggle = liveWatchers.length > 0 && (
+    <button
+      className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
+      type="button"
+      aria-expanded={watchersOpen}
+      aria-label={`${liveWatchers.length} active watcher${liveWatchers.length === 1 ? "" : "s"}`}
+      onClick={() => setWatchersOpen((open) => !open)}
+    >
+      <RadioTower size={12} /> {liveWatchers.length}
+    </button>
+  );
+
   return (
     <div
       className={`chat-dock ${presentation}`}
@@ -447,11 +461,7 @@ export function NodeChat({
         <header data-drag-handle="true">
           <MessageCircle size={17} />
           <strong>{chatTitle}</strong>
-          {liveWatchers.length > 0 && (
-            <span className="chat-watcher-count">
-              <RadioTower size={12} /> {liveWatchers.length}
-            </span>
-          )}
+          {watcherToggle}
           <button
             className="icon-button"
             onClick={onClose}
@@ -472,10 +482,11 @@ export function NodeChat({
             <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
           )}
         </div>
+        <button className="chat-new-session" type="button" onClick={onNewSession}>
+          <MessageCirclePlus size={13} /> New session
+        </button>
+        {presentation === "workspace" && watcherToggle}
         <div className="chat-scope-control">
-          <button className="chat-new-session" type="button" onClick={onNewSession}>
-            <MessageCirclePlus size={13} /> New session
-          </button>
           <RepositoryScope
             repositories={project.repositories}
             projectScope={project.project_truth_scope}
@@ -485,14 +496,8 @@ export function NodeChat({
           />
         </div>
       </div>
-      {liveWatchers.length > 0 && (
+      {liveWatchers.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Active watchers">
-          <header>
-            <RadioTower size={13} />
-            <strong>
-              {liveWatchers.length} active watcher{liveWatchers.length === 1 ? "" : "s"}
-            </strong>
-          </header>
           {liveWatchers.map((watcher) => (
             <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
               <strong>{fileName(watcher.log_path)}</strong>
@@ -502,7 +507,7 @@ export function NodeChat({
                   : "Not checked yet"}
               </time>
               {watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-              {onStopWatcher && watcher.continuation?.patch_kind !== "experiment_loop" && (
+              {onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
                 <button
                   className="button compact"
                   type="button"

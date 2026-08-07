@@ -569,13 +569,15 @@ test("conversation watcher status and wake attribution stay operational", () => 
       watchers: [{ ...watcher, continuation: { patch_kind: "experiment_loop" } }],
     }),
   );
-  assert.match(html, /1 active watcher/);
-  assert.match(html, /train\.log/);
-  assert.match(html, /Checked/);
-  assert.match(html, /SSH exited 255/);
+  // The watcher list is disclosed by the count control, so it is absent until opened.
+  assert.match(html, /class="chat-watcher-count"[^>]*aria-expanded="false"/);
+  assert.match(html, /aria-label="1 active watcher"/);
+  assert.doesNotMatch(html, /train\.log/);
+  assert.doesNotMatch(html, /SSH exited 255/);
+  assert.doesNotMatch(html, /chat-watchers/);
+  assert.equal(html.match(/chat-watcher-count/g).length, 1);
+  assert.equal(experimentHtml.match(/chat-watcher-count/g).length, 1);
   assert.match(html, /chat-turn-trigger watcher[^>]*>Watcher/);
-  assert.match(html, /Stop watching/);
-  assert.doesNotMatch(experimentHtml, /Stop watching/);
   assert.doesNotMatch(html, /node-chat-line human/);
 });
 
