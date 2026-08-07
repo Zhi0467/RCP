@@ -561,6 +561,10 @@ carrying forward, and correct an entry when they change their mind.
   pre-push/release verification. After that verification, run
   `cargo clean --manifest-path web/src-tauri/Cargo.toml` unless more Tauri work
   is planned, so disposable Rust build artifacts do not accumulate on disk.
+  `tauri build --debug` is not a diagnostics flag: `debug_assertions` is what
+  selects the checkout backend, source web assets, and dev navigation policy, so
+  `RCP Dev.app` cannot be built without it. Shrink the cache through
+  `[profile.dev]` in [Cargo.toml](web/src-tauri/Cargo.toml) instead.
 - Nothing versioned should be hardcoded into instructions; point at the source
   of truth instead.
 - **This repo is single-branch: commit directly to `main`.** Do not create a
@@ -844,6 +848,12 @@ longer apply.
   the handshake does not arrive, and startup milestones go to stderr. Verify a
   desktop change by reading those milestones or `lsappinfo front`, not by the
   process still being alive.
+- A desktop launch must be verified **cold**, with nothing on 8421. A warm
+  backend answers instantly and hides every startup ordering bug: the window
+  aimed itself at the backend origin before that origin existed, and the
+  recovery navigation was skipped because the URL had not changed, so a cold
+  start stayed blank forever while every warm relaunch looked perfect
+  (fixed 2026-08-07, S79).
 
 ## Maintaining this file
 

@@ -110,7 +110,10 @@ fn start_backend(app: tauri::AppHandle) {
 fn finish_startup(app: &tauri::AppHandle, status: lifecycle::DesktopStatus) {
     if let Some(target) = windows::navigation_target(&status.base_url) {
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.navigate(target);
+            eprintln!("[rcp] main window navigating to {target}");
+            if let Err(error) = window.navigate(target) {
+                eprintln!("[rcp] the main window could not navigate: {error}");
+            }
         }
     }
     let _ = windows::prepare_show(app, &status, "startup");

@@ -1,6 +1,6 @@
 [package]
 name = "rcp-desktop"
-version = "0.3.0"
+version = "0.3.1"
 description = "Desktop entrance for Research Control Panel"
 authors = ["RCP contributors"]
 edition = "2021"
@@ -32,6 +32,12 @@ tauri-plugin-updater = "2"
 tokio = { version = "1", features = ["sync", "time"] }
 tempfile = "3"
 url = "2"
+
+[profile.dev]
+# `tauri build --debug` keeps debug_assertions, which RCP Dev.app needs to launch
+# the backend from the checkout. The debug symbols are separable, and dropping
+# them keeps target/debug from growing several GB per dev bundle.
+debug = 0
 
 [profile.release]
 codegen-units = 1

@@ -4,12 +4,14 @@ RCP is a local research control panel for turning agent conversations, repositor
 evidence, experiments, and human decisions into one durable research graph and paper
 workspace.
 
-RCP currently runs from source in either a browser or a native macOS development shell.
-They are not separate implementations: both use the same React interface, FastAPI
-backend, project catalog, background tasks, and canonical research state.
+RCP runs from source in either a browser or a native macOS shell. They are not separate
+implementations: both use the same React interface, FastAPI backend, project catalog,
+background tasks, and canonical research state.
 
-> **Desktop status:** development only. This repository can build `RCP Dev.app` for the
-> current checkout, but it does not publish a distributable release.
+> **Desktop pre-release:** [GitHub Releases](https://github.com/Zhi0467/RCP/releases)
+> provides an Apple Silicon macOS preview. It is unsigned and unnotarized, so macOS may
+> require explicit approval on first launch. Updates are manual; download each new
+> pre-release from GitHub.
 
 ## System architecture
 
@@ -114,8 +116,14 @@ npm --prefix web run desktop:dev
 This runs the React frontend through Vite, compiles the Rust shell in debug mode, and
 starts or reuses the Python backend from the checkout.
 
-For same-origin debugging, a Finder-launchable development bundle, packaged-app testing,
-and the release process, see [Desktop testing and release](docs/desktop.md).
+To build a Finder-launchable development bundle from the current checkout, run:
+
+```bash
+npm --prefix web run desktop:build-dev
+```
+
+For same-origin debugging, the bundle location, packaged-app testing, and detailed release
+steps, see [Desktop testing and release](docs/desktop.md).
 
 Clicking the red window button hides RCP; it does not mean Quit. Reopen it from the Dock
 or launch it again. **Quit RCP** gracefully stops only a backend the desktop app started
