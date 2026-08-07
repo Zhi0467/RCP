@@ -568,3 +568,354 @@ The permission gymnastics, which are genuinely unsolved:
 Do not generalize the orchestrator's star mail into peer mail because the
 plumbing happens to allow it. The plumbing is the easy half; the budget and
 consent questions above are the reason to wait.
+
+---
+
+## Q10 — How should a human attach files or images to a chat turn?
+
+**Status:** open. Raised 2026-08-07. Proposed as the next chat-input capability;
+no design decision or implementation yet.
+**Governing sections:** [Discuss, Work, and native chat context](research-control-panel-blueprint.md#discuss-work-and-native-chat-context),
+[Conversation scratch and artifacts](research-control-panel-blueprint.md#conversation-scratch-and-artifacts).
+**Related scenarios:** [S16 artifact contract](acceptance/S16-chat-artifact-contract.md),
+[S18 remote artifacts](acceptance/S18-remote-artifact-preview.md),
+[S71 master context and deltas](acceptance/S71-chat-master-context-and-deltas.md).
+**Relevant invariants:** 3, 4, 4b, 6, 10, 10b, 10c, 10d, 10e.
+
+### The question
+
+Both the full Chats panel and a floating node chat use the same composer, but
+that composer accepts text only. A researcher should be able to add an image or
+file to one human turn and ask the active provider to inspect it. The provider
+may be running beside the RCP server or on the project's configured SSH machine.
+
+The feature is not accurately described as “put the local path in the prompt.”
+A browser file picker normally supplies a name, media type, and bytes, not the
+human machine's trustworthy absolute path. Even when a desktop picker can expose
+a local path, that path does not exist on an SSH execution host. RCP must own the
+input boundary: receive the bytes, validate them, stage an immutable copy on the
+execution machine, and tell the provider the execution-machine path.
+
+An attached file is also a different research object from an agent-created
+preview artifact:
+
+- an **input attachment** is selected by the human and is required for the turn
+  to mean what the human asked;
+- an **output artifact** is optional agent output whose failure cannot change
+  the answer, task verdict, or graph; and
+- neither one is canonical project truth merely because its bytes passed through
+  a conversation scratch folder.
+
+That first distinction means attachment transfer may not degrade silently. If a
+required input cannot be staged or verified, the provider must not start.
+
+### Current behavior
+
+There is no human-to-agent attachment path today.
+
+- `NodeChat` submits one JSON `message` string plus turn configuration.
+- `RunRequest` has no attachment descriptors or upload claim.
+- `AgentLauncher` writes the assembled prompt to provider stdin.
+- A conversation already owns one reusable local or remote run stage, and each
+  turn already owns a separate output-artifact directory.
+- `RemoteRunStage` can already queue immutable files or directories, transfer
+  them with the configured SSH channel, commit the input batch atomically, and
+  protect the remote result read-only. This should be reused rather than adding
+  a second `scp` path.
+- RCP discovers agent-created HTML and raster images after a turn, but that
+  output-only contract provides no way to feed a file into a turn.
+
+### Provider contracts verified on 2026-08-07
+
+These facts were checked against the installed binaries, not inferred from the
+model modalities. Re-probe them before implementation because CLI contracts can
+change.
+
+| Provider    | Version checked | Image input                                                                                                                           | General local-file input                                                                                                                             |
+| ----------- | --------------: | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex CLI   |       `0.146.1` | `codex exec` accepts repeatable `-i, --image <FILE>...`; `codex exec resume` also accepts `-i, --image <FILE>` for the resumed prompt | no equivalent general `--file` flag; give the agent an execution-host path it can read with its tools                                                |
+| Claude Code |       `2.1.223` | no local-path image attachment flag was established by the CLI reference                                                              | `--add-dir` grants filesystem access; the installed `--file` expects provider resources in `file_id:relative_path` form, not an arbitrary local path |
+
+OpenAI's model documentation records image as an input modality for the
+Codex-oriented model:
+<https://developers.openai.com/api/docs/models/codex-mini-latest>. Claude Code's
+official CLI reference documents piped text, resumed prompts, and `--add-dir`
+filesystem access:
+<https://code.claude.com/docs/en/cli-usage>.
+
+The provider-neutral contract therefore cannot be “add one file flag.” It has
+two delivery modes:
+
+1. **True provider attachment.** For a supported Codex raster image, RCP stages
+   the image and passes the execution-host path through `--image`. The model
+   receives image input rather than merely a sentence containing a pathname.
+2. **Path-backed task input.** For text, source, tables, PDFs, and providers
+   without a verified image flag, RCP stages the file and names its exact path in
+   the RCP turn envelope. The agent chooses the appropriate read or analysis
+   tool. The bytes are not expanded into the prompt automatically.
+
+Claude image behavior still needs a live provider probe. A model's vision
+capability does not prove that a particular non-interactive CLI invocation will
+turn a local image path into the intended multimodal content.
+
+### Proposed UI path
+
+The full Chats panel and floating node chat should expose the same behavior
+through their shared `NodeChat` composer.
+
+- Add one paperclip action beside the message field.
+- Accept file-picker selection, drag-and-drop onto the composer, and pasting an
+  image from the clipboard. Pasted plain text remains ordinary message text.
+- Show one removable chip per attachment with display name, type, size, and
+  state: **Preparing**, **Ready**, **Transferring to _machine_**, or a visible
+  error.
+- Keep **Send** disabled while any required attachment is unready or failed.
+- Removing a chip before Send releases its unclaimed upload.
+- Preserve the selected Discuss or Work mode. Attaching a file does not select
+  Work, widen permissions, or grant graph authority.
+- Initially continue to require a non-empty human message. An attachment-only
+  turn is a separate product choice, not a reason to smuggle a generated prompt
+  such as “analyze this” into the transcript.
+- After Send, render attachment descriptors with the human turn. The descriptor
+  may later say **Expired**; the assistant answer remains intact.
+
+Do not add separate attachment behavior to the floating and workspace
+presentations. A divergence here would recreate the exact class of chat-state
+bugs that the shared component avoids.
+
+### Proposed data flow
+
+#### 1. Receive bytes without trusting a client path
+
+The web client uploads selected bytes to an RCP endpoint as multipart data. The
+backend returns an opaque upload-set id and validated descriptors. The task-start
+request carries only that opaque id; it never accepts a client-chosen server
+path.
+
+An upload set is scoped to the current RCP instance, project, chat, and human
+client. It is unclaimed until Send. A short retention sweep removes abandoned
+sets from cancelled picks, closed windows, and failed clients.
+
+A single multipart task-start endpoint would remove the claim step, but it would
+also couple potentially slow transfer to task creation and make retry semantics
+harder to observe. The two-step upload-and-claim shape is the leading proposal,
+not yet a decision.
+
+#### 2. Claim the exact upload set as part of task creation
+
+Task creation atomically changes the upload set from unclaimed to owned by one
+operation id. A set cannot be claimed by two turns or moved between projects,
+chats, users, or RCP instances. The task request persists descriptors and hashes,
+not arbitrary paths supplied by the browser.
+
+The local ingress copy remains available through the task's Retry/Handoff
+recovery window. That matters even for an SSH turn: a later authorized handoff
+may need to stage the identical bytes on another execution machine. Deleting the
+only local copy immediately after the first SSH transfer would make “same input”
+unprovable.
+
+#### 3. Stage one immutable per-turn attachment batch
+
+Before provider launch, RCP creates a content-bound attachment directory such as
+`inputs/attachments-<logical-turn-id>/` inside the conversation stage. Display
+names live in a descriptor; storage names are generated and collision-free.
+
+For local execution, RCP copies by descriptor into a temporary sibling, flushes
+the bytes, changes the file read-only, and atomically renames it into the exact
+stage boundary. It never points the provider back at the user's original file.
+
+For SSH execution, RCP queues the directory through `RemoteRunStage`, transfers
+the batch through its existing rsync-over-SSH configuration, verifies the batch
+shape and content identity, atomically moves it under `inputs/`, and protects it
+read-only. The host is the resolved project `run_on` machine; an attachment may
+not name or redirect transfer to another host.
+
+Only after every required file has reached its final execution-host path may the
+provider process start. A missing SSH host, timeout, checksum mismatch, unsafe
+remote replacement, or partial transfer fails the task before launch and leaves
+a visible retryable diagnostic.
+
+#### 4. Preserve the human message and add a separate turn-input block
+
+The byte-for-byte human message remains unchanged, as required by the native
+chat protocol. Attachment paths are RCP-authored context in the turn envelope,
+not text prepended to the human's words. Conceptually:
+
+```text
+This is a Discuss turn.
+Logical turn id: <id>
+
+Attachments for this turn:
+- plot.png — image/png — 184233 bytes — /execution/stage/inputs/.../01.png
+- results.csv — text/csv — 9120 bytes — /execution/stage/inputs/.../02.csv
+
+Human message, unchanged:
+What could explain the outlier in this plot?
+```
+
+For Codex images, the same verified staged path also appears in the provider
+argv as `--image <path>`. A path written only into the message is not a
+substitute for that provider attachment.
+
+The attachment block is per-turn transient context. It is not part of the
+master context baseline and does not create a Settings or repository delta. A
+later ordinary turn lists only its own new attachments; it does not resend every
+prior file merely because the native provider session is resumed.
+
+### Local and SSH semantics
+
+| Case                                | Source of bytes                                             | Provider-visible path                                               | Required behavior                                               |
+| ----------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Browser or desktop, local agent     | multipart upload received by RCP                            | local conversation-stage path                                       | copy and protect before launch                                  |
+| Browser or desktop, SSH agent       | multipart upload received by RCP                            | path under the remote conversation stage                            | transfer, verify, atomically commit, then launch                |
+| Retry or Resume of the same attempt | claimed ingress bytes plus validated saved stage            | the exact prior attachment batch                                    | reuse only after host, stage, descriptor, and hash validation   |
+| Provider handoff                    | claimed ingress bytes                                       | a newly staged path on the handoff machine                          | preserve content identity; never reuse a path from another host |
+| Next ordinary chat turn             | only files newly selected for that turn                     | a new per-turn batch                                                | do not inherit old attachments automatically                    |
+| Watcher wake or correction          | none unless already part of the originating authorized turn | validated existing inputs only when that continuation requires them | never pick up unclaimed or later UI uploads                     |
+
+### Required guardrails
+
+#### File boundary
+
+- Accept direct regular files only. No directory upload, symlink, socket, device,
+  named pipe, or implicit filesystem traversal.
+- Do not extract archives, execute macros, follow document links, or recursively
+  discover sibling files.
+- Sanitize display names and never use them as authority-bearing paths.
+- Validate media type from bounded content inspection as well as extension and
+  advertised browser type. A mismatch is visible and refused, not silently
+  normalized.
+- The first version should use an explicit allowlist. A plausible initial set is
+  raster images (`png`, `jpeg`, `webp`), plain text and source, `csv`, `tsv`,
+  `json`, Markdown, and PDF. GIF, SVG, HTML, office documents, notebooks, and
+  archives need separate decisions because they carry active content, nested
+  resources, multiple files, or rendering ambiguity.
+- Reusing the existing output-artifact bounds — at most 8 files, 16 MiB each,
+  32 MiB total — is the simplest starting proposal. Inbound limits should get
+  their own constants even if the initial values match, because input failure is
+  task-fatal while output-artifact failure is optional.
+
+#### Transport and lifecycle
+
+- Hash every accepted file before task creation and verify the same bytes at the
+  final stage. Record SHA-256, byte size, detected media type, execution host,
+  and storage descriptor in task receipts.
+- Finalize the complete attachment batch atomically. The provider sees all
+  required files or none.
+- Retain claimed ingress bytes long enough to support the existing
+  Pause/Resume/Retry/Handoff recovery contract; sweep unclaimed and terminal
+  inputs on explicit, documented schedules.
+- Resume attaches only to the persisted host and exact saved conversation stage.
+  It never recomputes an attachment path from a client UUID.
+- If the stage or claimed bytes needed to prove identical retry input are gone,
+  fail with an exact diagnostic. Do not continue without the attachment and do
+  not ask the provider to guess from the transcript.
+- Record transfer progress without persisting file content in receipts, logs, or
+  errors.
+
+#### Authority and research truth
+
+- An attachment is untrusted human-supplied turn context. It does not widen
+  Discuss or Work permissions.
+- Discuss may inspect attachments but still has no graph-change channel.
+- Work may use an attachment for the operational action the human requested,
+  under its existing unrestricted tooling authority. The attachment itself does
+  not create graph authority.
+- A transient upload may not silently become canonical Evidence, a source
+  reference, a project repository file, or durable chat storage. If a Work agent
+  proposes a graph claim based only on an expiring attachment, RCP lacks durable
+  provenance for replay and later inspection. The leading safe rule is to refuse
+  attachment-only graph evidence until a separate human action places the source
+  in a durable truth repository or explicitly promotes it through a future
+  provenance design.
+- Never infer mode from the file type, filename, or message wording.
+- Treat file contents as data, not instructions that can grant more access.
+  Provider contracts should tell agents not to execute attached programs,
+  scripts, macros, or archives unless the unchanged human message explicitly
+  asks for that operation and the captured mode already authorizes it.
+
+#### Privacy and visibility
+
+- Before Send, make remote transfer visible: the attachment chip should state
+  the configured execution machine, not merely “uploaded.”
+- Never expose the original local absolute path to the provider, transcript, or
+  task receipts.
+- Do not retain attachment bytes in canonical chat history. Persist only the
+  human-visible descriptor and task provenance; temporary bytes may expire just
+  like preview artifacts.
+- An expired attachment changes neither the recorded assistant reply nor the
+  task verdict. It only removes later preview/download availability.
+- Upload and preview endpoints must resolve bytes through owned descriptors, not
+  through path parameters supplied by the client.
+
+### What blocks a decision
+
+1. **Transient context versus durable evidence.** A researcher will naturally
+   attach a plot or result and then ask Work to update the graph. Refusing that
+   provenance path is safe but may make the feature feel artificially weak.
+   Allowing it requires deciding where source bytes live durably and how a human
+   grants truth membership without turning chat upload into a second ingest
+   channel.
+2. **Claude image delivery.** Path-backed file reading is established; true
+   multimodal delivery through the installed non-interactive Claude CLI is not.
+   The provider contract must be probed directly before the UI promises image
+   parity.
+3. **Supported file set.** PDFs and tables are immediately useful. Office files,
+   notebooks, SVG, HTML, archives, and directories each imply parsing,
+   extraction, active content, or multi-file semantics that RCP should not adopt
+   accidentally.
+4. **Retention needed for handoff.** The local ingress copy makes content-stable
+   handoff possible but creates a new temporary store of potentially sensitive
+   research files. Its deletion schedule, disk bound, and task-visible expiry
+   need explicit values.
+5. **Attachment-only turns.** Requiring text keeps the current chat contract and
+   avoids generated transcript text. Whether “send this image” without a typed
+   message is valuable enough to define a canonical empty-message meaning is
+   undecided.
+6. **Browser and desktop parity.** Multipart bytes give both surfaces one
+   contract. A desktop-only optimization that passes a local path would be
+   faster for large local files but would create different security, mutation,
+   and SSH behavior. The optimization is not justified until measured.
+7. **Cost and context control.** A staged file does not itself spend model
+   context, but an agent may read an entire large PDF or table. Whether RCP needs
+   per-attachment analysis budgets or only byte bounds is untested.
+
+### Cheapest provider and transport probe
+
+Before writing an acceptance scenario or product code, run one bounded contract
+probe against the exact supported provider versions:
+
+1. Prepare a tiny PNG with information available only in its pixels, a short
+   UTF-8 text file, and a small CSV.
+2. For Codex, test fresh and resumed non-interactive turns with the staged PNG
+   passed through `--image` and the other files referenced by execution-host
+   path. Confirm the reply distinguishes pixel content from filename text.
+3. For Claude, test fresh and resumed non-interactive turns with the same staged
+   files and exact path block. Record whether image inspection is genuinely
+   multimodal, tool-mediated, refused, or model-dependent.
+4. Repeat on one reachable SSH host using `RemoteRunStage` input transfer. Prove
+   that the prompt contains remote paths only, the bytes and hashes match, and a
+   partial transfer prevents provider launch.
+5. Interrupt and Retry one attempt. Prove the retry uses the identical batch and
+   that removing or replacing the saved stage fails closed.
+6. Measure staging time, remote transfer time, retained disk, and tokens consumed
+   when each provider chooses to inspect the text, CSV, and image.
+
+This probe settles the provider seam and gives real values for the limits. Only
+then should a pending acceptance scenario decide the UI path and the transient
+context versus durable evidence rule.
+
+### Do not do in the meantime
+
+- Do not put base64 or complete file contents into the human message.
+- Do not rewrite the human message to include attachment paths.
+- Do not send a local absolute path to a remote provider.
+- Do not trust a browser filename as a server or execution-host path.
+- Do not reuse the optional output-artifact directory as required input storage.
+- Do not add an independent `scp` implementation beside `RemoteRunStage`.
+- Do not treat Claude's `file_id:relative_path` resource flag as a local file
+  picker contract.
+- Do not automatically copy uploads into repositories, canonical chat history,
+  `.research/`, or durable app storage.
+- Do not let an expiring chat attachment become canonical graph evidence without
+  an explicit human-owned provenance design.
