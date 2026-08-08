@@ -21,11 +21,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { removeChatAttachment, uploadChatAttachment } from "../api";
 import {
   artifactUrl,
-  chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
   isActiveTask,
   latestNativeSessionId,
   orderTranscriptLines,
+  reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
@@ -161,7 +161,7 @@ export function NodeChat({
   const transcript = useMemo(
     () =>
       orderTranscriptLines([
-        ...historyMessages.map(chatMessageTranscriptLine),
+        ...reconcileChatHistoryArtifacts(historyMessages, relatedTasks),
         ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, historyMessages)),
         ...(pendingTurn
           ? [

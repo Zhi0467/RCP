@@ -191,6 +191,30 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
   };
 }
 
+export function reconcileChatHistoryArtifacts(
+  messages: ChatMessage[],
+  tasks: AgentTask[],
+): TaskTranscriptLine[] {
+  const lines = messages.map(chatMessageTranscriptLine);
+  const answerLineByOperationId = new Map<string, number>();
+  messages.forEach((message, index) => {
+    if (
+      message.role === "assistant" &&
+      message.operation_id &&
+      !answerLineByOperationId.has(message.operation_id)
+    ) {
+      answerLineByOperationId.set(message.operation_id, index);
+    }
+  });
+  tasks.forEach((task) => {
+    const artifacts = taskArtifacts(task);
+    const lineIndex = answerLineByOperationId.get(task.operation_id);
+    if (!artifacts.length || lineIndex === undefined) return;
+    lines[lineIndex] = { ...lines[lineIndex], artifacts };
+  });
+  return lines;
+}
+
 export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLine[] {
   return [...tasks].sort(compareTaskTime).flatMap((task) => {
     const lines: TaskTranscriptLine[] = [];

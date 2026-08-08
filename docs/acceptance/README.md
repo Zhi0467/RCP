@@ -183,7 +183,7 @@ it but a browser or a machine we do not have.
 | [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | implemented | pytest | covered |
 | [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | implemented | **desktop** | live desktop + browser drive |
 | [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | **desktop** | reused path passed; owned/timeout paths pending |
-| [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | live drive blocked by missing artifact card |
+| [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | artifact card fixed; native preview/download drive pending |
 | [S33](S33-a-seed-corrects-itself.md) | A seed that goes wrong corrects itself | implemented | pytest + **browser** | covered + driven 2026-07-31 |
 | [S34](S34-packaged-app-needs-no-toolchain.md) | A dev shell that loads the checkout, and a release app that needs nothing | implemented | **desktop** | partial drive 2026-07-31 |
 | [S35](S35-packaged-environment-parity.md) | RCP knows where your tools are, and you can see and correct it | blocked-external | **desktop** | none |

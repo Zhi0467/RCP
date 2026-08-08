@@ -9,6 +9,7 @@ import {
   orderTranscriptLines,
   parseDismissedTaskIds,
   projectActivityTask,
+  reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
@@ -328,6 +329,44 @@ test("artifacts stay attached to the answer when a later task error is present",
     ],
   );
   assert.deepEqual(transcript[1].artifacts, artifacts);
+});
+
+test("persisted chat reconciliation keeps task artifacts on the assistant answer", () => {
+  const artifacts = [
+    { artifact_id: "b".repeat(24), name: "preview.html", media_type: "text/html" },
+  ];
+  const completed = task({
+    operation_id: "artifact-turn",
+    request: { chat_id: "chat", message: "Build a preview" },
+    result: { messages: ["Preview ready."], artifacts },
+  });
+  const messages = [
+    {
+      message_id: "human-message",
+      operation_id: "artifact-turn",
+      role: "user",
+      text: "Build a preview",
+      timestamp: "2026-07-28T00:00:01Z",
+      mode: "discuss",
+      graph_update: null,
+      attachments: [],
+      trigger: "human",
+    },
+    {
+      message_id: "agent-message",
+      operation_id: "artifact-turn",
+      role: "assistant",
+      text: "Preview ready.",
+      timestamp: "2026-07-28T00:00:02Z",
+      mode: "discuss",
+      graph_update: null,
+      attachments: [],
+      trigger: "human",
+    },
+  ];
+
+  assert.deepEqual(chatTasksMissingFromHistory([completed], messages), []);
+  assert.deepEqual(reconcileChatHistoryArtifacts(messages, [completed])[1].artifacts, artifacts);
 });
 
 test("conversation reconstruction preserves immutable mode and graph receipt metadata", () => {

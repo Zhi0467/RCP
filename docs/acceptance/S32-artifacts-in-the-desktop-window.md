@@ -3,12 +3,13 @@ id: S32-artifacts-in-the-desktop-window
 status: pending
 tier: hermetic
 driver: desktop
-covered_by: none
+covered_by:
+  - web/tests/agentTasks.test.mjs
+  - browser 2026-08-08 — durable transcript reload retained the HTML artifact card
 invariants: [10e]
-last_checked: 2026-08-08 — a remote Discuss fixture produced one valid HTML
-  descriptor and one correctly ignored unsupported file, but the completed chat
-  rendered no artifact card or Open/Download control, so the native drive could
-  not proceed and this scenario remains pending
+last_checked: 2026-08-08 — the completed remote Discuss fixture now keeps its
+  HTML artifact card and Open/Download controls after durable chat reconciliation;
+  the native preview, download, and isolation drive remains pending
 ---
 
 # A preview opens and a download lands, and the isolation is stronger than the browser's
