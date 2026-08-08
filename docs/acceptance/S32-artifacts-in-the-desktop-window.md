@@ -5,6 +5,10 @@ tier: hermetic
 driver: desktop
 covered_by: none
 invariants: [10e]
+last_checked: 2026-08-08 — a remote Discuss fixture produced one valid HTML
+  descriptor and one correctly ignored unsupported file, but the completed chat
+  rendered no artifact card or Open/Download control, so the native drive could
+  not proceed and this scenario remains pending
 ---
 
 # A preview opens and a download lands, and the isolation is stronger than the browser's

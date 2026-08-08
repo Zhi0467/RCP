@@ -3,8 +3,14 @@ id: S31-quit-stops-what-it-started
 status: pending
 tier: hermetic
 driver: desktop
-covered_by: none
+covered_by:
+  - web/src-tauri/src/backend.rs
+  - web/src-tauri/src/lib.rs
+  - desktop 2026-08-08 — reused-backend Quit path
 invariants: [8, 9]
+last_checked: 2026-08-08 — quitting the desktop shell removed its sole process
+  while the reused CLI backend stayed healthy at the same PID; owned-sidecar,
+  takeover, and forced-timeout paths remain outstanding
 ---
 
 # Quit stops what it started, and nothing else

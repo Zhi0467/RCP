@@ -181,9 +181,9 @@ it but a browser or a machine we do not have.
 | [S27](S27-agent-task-explains-and-recovers.md) | Every launch has one task, authority contract, and recovery cause | implemented | pytest + **browser** | `test_prompts.py`, `test_conversation_retry.py`, `test_api.py`, `test_proposal_boundary.py`, `runDialog.test.mjs`, browser 2026-08-03 |
 | [S28](S28-one-backend-two-entrances.md) | One backend, two entrances | implemented | pytest + api | covered + driven 2026-07-31 |
 | [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | implemented | pytest | covered |
-| [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | pending | **desktop** | none |
-| [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | **desktop** | none |
-| [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | none |
+| [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | implemented | **desktop** | live desktop + browser drive |
+| [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | **desktop** | reused path passed; owned/timeout paths pending |
+| [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | live drive blocked by missing artifact card |
 | [S33](S33-a-seed-corrects-itself.md) | A seed that goes wrong corrects itself | implemented | pytest + **browser** | covered + driven 2026-07-31 |
 | [S34](S34-packaged-app-needs-no-toolchain.md) | A dev shell that loads the checkout, and a release app that needs nothing | implemented | **desktop** | partial drive 2026-07-31 |
 | [S35](S35-packaged-environment-parity.md) | RCP knows where your tools are, and you can see and correct it | blocked-external | **desktop** | none |
@@ -236,7 +236,7 @@ it but a browser or a machine we do not have.
 | [S88](S88-node-attached-agent-authority.md) | Let permitted agents maintain resources attached to a node | implemented | pytest + **browser** | covered + driven 2026-08-08 |
 | [S89](S89-provider-native-skill-inventory.md) | Offer provider-native skills beside RCP packages | implemented | pytest + **browser** + ssh | covered + driven 2026-08-08 |
 | [S90](S90-desktop-chat-dictation.md) | Turn one spoken segment into an editable chat draft | pending | **desktop** | native + span tests + desktop control; live audio pending |
-| [S91](S91-chat-input-attachments.md) | Send bounded temporary files with one chat turn | pending | pytest + **browser** + ssh | tests + local browser; SSH pending |
+| [S91](S91-chat-input-attachments.md) | Send bounded temporary files with one chat turn | implemented | pytest + **browser** + ssh | tests + remote browser/SSH drive |
 | [S92](S92-actor-identity-and-permission-checks.md) | Bound an agent by its owning person's authority | pending — **not human-confirmed** | pytest + **browser** | none |
 
 Ids are never reused. Gaps are retired scenarios or promises folded into another

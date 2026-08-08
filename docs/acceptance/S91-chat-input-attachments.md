@@ -1,6 +1,6 @@
 ---
 id: S91-chat-input-attachments
-status: pending
+status: implemented
 tier: live
 driver: pytest + browser + ssh
 covered_by:
@@ -9,9 +9,12 @@ covered_by:
   - tests/test_prompts.py
   - web/tests/agentTasks.test.mjs
   - web/tests/api.test.mjs
-  - browser 2026-08-08 — local ingress, paste, rejection, claim, transcript; SSH outstanding
+  - browser + ssh 2026-08-08 — remote-1 Discuss turn staged, read, and retained metadata
 invariants: [3, 4b, 6, 10, 10b, 10c, 10d, 10e]
 reported_by: human, 2026-08-08
+last_passed: 2026-08-08 — browser drove a text attachment through a Discuss turn
+  on remote-1; the provider returned the file token, the human message remained
+  unchanged, and task history showed the immutable execution-host path and metadata
 ---
 
 # A file follows one human turn to the agent and nowhere else

@@ -1,10 +1,16 @@
 ---
 id: S30-desktop-window-is-not-the-app
-status: pending
+status: implemented
 tier: hermetic
 driver: desktop
-covered_by: none
+covered_by:
+  - web/src-tauri/src/lib.rs
+  - web/src-tauri/src/windows.rs
+  - desktop 2026-08-08 — live close, reopen, browser-start, and second-launch drive
 invariants: [8]
+last_passed: 2026-08-08 — a desktop-started Codex Discuss task stayed active after
+  Close and completed while hidden; reopen showed the result, a second launch kept
+  one shell and backend, and a browser-started task appeared on desktop reopen
 ---
 
 # Closing the desktop window never cancels agent work
