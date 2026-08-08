@@ -741,6 +741,8 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   focusExperimentId: string | null;
   runBusy: boolean;
   stopBusyId: string | null;
+  taskActionId: string | null;
+  providerLabels?: Record<string, string>;
   mutationsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
   onDismissTask: (operationId: string) => void;
@@ -748,6 +750,8 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   onDetailFocused: () => void;
   onRunExperiment: (node: GraphNode) => void;
   onStopExperiment: (nodeId: string) => void;
+  onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
+  onSwitchExperimentProvider: (task: AgentTask) => void;
 }
 
 export function ExecutionView({
@@ -762,6 +766,8 @@ export function ExecutionView({
   focusExperimentId,
   runBusy,
   stopBusyId,
+  taskActionId,
+  providerLabels = {},
   mutationsDisabled = false,
   onInspectTask,
   onDismissTask,
@@ -769,6 +775,8 @@ export function ExecutionView({
   onDetailFocused,
   onRunExperiment,
   onStopExperiment,
+  onRecoverExperiment,
+  onSwitchExperimentProvider,
 }: ExecutionProps) {
   const selectedDetailRef = useRef<HTMLDivElement>(null);
   const projection = buildRunProjection({
@@ -815,6 +823,8 @@ export function ExecutionView({
                       }
                       runBusy={runBusy}
                       stopBusy={entry.kind === "experiment" && stopBusyId === entry.id}
+                      taskActionId={taskActionId}
+                      providerLabels={providerLabels}
                       mutationsDisabled={mutationsDisabled}
                       onInspectTask={onInspectTask}
                       onDismissTask={onDismissTask}
@@ -822,6 +832,8 @@ export function ExecutionView({
                       onSelectExperiment={onSelectExperiment}
                       onRunExperiment={onRunExperiment}
                       onStopExperiment={onStopExperiment}
+                      onRecoverExperiment={onRecoverExperiment}
+                      onSwitchExperimentProvider={onSwitchExperimentProvider}
                       key={`${entry.kind}:${entry.id}`}
                     />
                   ))}
@@ -840,6 +852,8 @@ function RunEntryRow({
   detailRef,
   runBusy,
   stopBusy,
+  taskActionId,
+  providerLabels,
   mutationsDisabled,
   onInspectTask,
   onDismissTask,
@@ -847,12 +861,16 @@ function RunEntryRow({
   onSelectExperiment,
   onRunExperiment,
   onStopExperiment,
+  onRecoverExperiment,
+  onSwitchExperimentProvider,
 }: {
   entry: RunEntry;
   selectedExperimentId: string | null;
   detailRef?: Ref<HTMLDivElement>;
   runBusy: boolean;
   stopBusy: boolean;
+  taskActionId: string | null;
+  providerLabels: Record<string, string>;
   mutationsDisabled: boolean;
   onInspectTask: (operationId: string) => void;
   onDismissTask: (operationId: string) => void;
@@ -860,6 +878,8 @@ function RunEntryRow({
   onSelectExperiment: (nodeId: string | null) => void;
   onRunExperiment: (node: GraphNode) => void;
   onStopExperiment: (nodeId: string) => void;
+  onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
+  onSwitchExperimentProvider: (task: AgentTask) => void;
 }) {
   if (entry.kind === "task") {
     return (
@@ -925,16 +945,34 @@ function RunEntryRow({
           <ExperimentRunDetail
             run={experiment}
             runBusy={runBusy}
-            runDisabled={mutationsDisabled}
+            runDisabled={mutationsDisabled || Boolean(taskActionId)}
             stopBusy={stopBusy}
+            recoveryBusy={Boolean(
+              experiment.currentTask && taskActionId === experiment.currentTask.operation_id,
+            )}
+            providerLabel={experimentProviderLabel(experiment, providerLabels)}
             onRun={() => onRunExperiment(experiment.node)}
             onStopLoop={() => onStopExperiment(experiment.node.id)}
-            onInspectTask={onInspectTask}
+            onRecover={(action) => {
+              if (experiment.currentTask) onRecoverExperiment(experiment.currentTask, action);
+            }}
+            onSwitchProvider={() => {
+              if (experiment.currentTask) onSwitchExperimentProvider(experiment.currentTask);
+            }}
           />
         </div>
       )}
     </article>
   );
+}
+
+function experimentProviderLabel(
+  experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"],
+  providerLabels: Record<string, string>,
+): string | undefined {
+  const provider =
+    experiment.currentTask?.request.provider || experiment.control?.operational?.session.provider;
+  return provider ? providerLabels[provider] || provider : undefined;
 }
 
 function experimentRowSummary(experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"]) {
@@ -949,7 +987,9 @@ function experimentRowSummary(experiment: Extract<RunEntry, { kind: "experiment"
 
 export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustView">) {
   const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
-  const ambiguities = Object.values(graph.ambiguities).filter((item) => item.status === "open");
+  const decisions = Object.values(graph.nodes).filter(
+    (node) => node.type === "decision" && (node.status === "ready" || node.status === "revisit"),
+  );
   const blockers = Object.values(graph.nodes).filter(
     (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
   );
@@ -957,11 +997,11 @@ export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustVie
     <section className="view-panel">
       <ViewHeading
         title="Attention view"
-        aside={`${proposals.length + ambiguities.length + blockers.length} open`}
+        aside={`${proposals.length + decisions.length + blockers.length} open`}
       />
       <div className="attention-overview-grid">
         <OverviewCard label="Pending proposals" value={proposals.length} />
-        <OverviewCard label="Open ambiguities" value={ambiguities.length} />
+        <OverviewCard label="Decisions awaiting choice" value={decisions.length} />
         <OverviewCard label="Blockers awaiting judgment" value={blockers.length} />
       </div>
       <h3 className="section-label">Recommended next action</h3>
@@ -970,11 +1010,11 @@ export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustVie
           <CircleDot size={17} />
           <strong>Understand and decide “{proposals[0].title}”</strong>
         </div>
-      ) : ambiguities[0] ? (
-        <div className="recommended-action">
+      ) : decisions[0] ? (
+        <button className="recommended-action" onClick={() => onSelectNode(decisions[0])}>
           <CircleDot size={17} />
-          <strong>Resolve “{ambiguities[0].question}”</strong>
-        </div>
+          <strong>Choose “{decisions[0].title}”</strong>
+        </button>
       ) : blockers[0] ? (
         <button className="recommended-action" onClick={() => onSelectNode(blockers[0])}>
           <CircleDot size={17} />

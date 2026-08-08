@@ -96,7 +96,6 @@ export interface DecisionDrift {
   pinned_revision: number;
   current_option: string | null;
   current_status: string | null;
-  proposed: boolean;
 }
 
 export interface ExperimentSessionBinding {
@@ -696,7 +695,7 @@ export interface ProjectSnapshot {
   experiment_control: Record<string, ExperimentControlState>;
   counts: {
     pending_proposals: number;
-    open_ambiguities: number;
+    decisions_awaiting_choice: number;
     open_blockers: number;
     asserted: number;
     accepted: number;

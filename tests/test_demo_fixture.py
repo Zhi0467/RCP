@@ -56,9 +56,11 @@ def test_demo_fixture_still_offers_the_work_the_scenarios_open_it_for(
         HistoryManager(load_manifest(demo_state / ".research" / "manifest.toml")).initialize().state
     )
 
-    # S08 approves a pending proposal and resolves an ambiguity.
+    # S08 approves a pending Proposal. S94 keeps the historical Ambiguity as a
+    # replay-compatibility fixture even though Ambiguities no longer render or
+    # admit new authoring operations.
     assert state.proposals, "S08 needs a proposal waiting on judgment"
-    assert state.ambiguities, "S08 needs an ambiguity waiting on judgment"
+    assert state.ambiguities, "S94 needs a historical Ambiguity replay fixture"
 
     # S11 coaches against an existing introduction.
     introduction = demo_state / ".research" / "paper" / "introduction.md"

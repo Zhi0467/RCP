@@ -13,6 +13,8 @@ const server = await createServer({
 });
 const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
 const { presentNode } = await server.ssrLoadModule("/src/nodePresentation.ts");
+const { changedNodeFields, editableNodeFields, nodeEditDraft } =
+  await server.ssrLoadModule("/src/nodeEditing.ts");
 
 after(() => server.close());
 
@@ -42,6 +44,7 @@ const commonProps = {
   beliefTransitions: [],
   validationMessages: [],
   ontology: { types: [], fields: [], relations: [] },
+  detailSlot: "original",
   onClose() {},
   onDock() {},
   onBeginEdit() {},
@@ -49,7 +52,7 @@ const commonProps = {
   onStage() {},
   onDecisionChoice() {},
   onOpenChat() {},
-  onExploreRelations() {},
+  onOpenRelatedNode() {},
   onSelectNode() {},
 };
 
@@ -66,7 +69,6 @@ function renderDrawer(props = {}) {
 
 test("Decision detail renders one accessible staged ballot above Context", () => {
   const html = renderDrawer({
-    pendingDecisionProposalCount: 2,
     decisionChoiceStaged: true,
   });
 
@@ -82,13 +84,38 @@ test("Decision detail renders one accessible staged ballot above Context", () =>
     html,
     /class="decision-choice-option selected staged"[\s\S]*value="Medium"[\s\S]*Staged selection/,
   );
-  assert.match(html, /2 pending proposals target this decision/);
+  assert.doesNotMatch(html, /pending proposals? target this decision/);
   assert.ok(html.indexOf("decision-choice-section") < html.indexOf("node-context"));
   assert.equal(html.match(/>Medium</g)?.length, 1);
   assert.doesNotMatch(html, /Options considered|Selected option/);
 
   const contextKeys = presentNode(decision).context.map((item) => item.key);
   assert.deepEqual(contextKeys, ["rationale", "consequences"]);
+});
+
+test("Decision editor exposes queue status only, including the ready to open path", () => {
+  const readyDecision = { ...decision, status: "ready", selected_option: null };
+  const statusField = editableNodeFields(readyDecision).find((field) => field.key === "status");
+
+  assert.deepEqual(statusField?.options, [
+    { value: "open", label: "Open" },
+    { value: "ready", label: "Ready" },
+    { value: "revisit", label: "Revisit" },
+  ]);
+  assert.equal(
+    editableNodeFields(readyDecision).some((field) => field.key === "selected_option"),
+    false,
+  );
+
+  const draft = nodeEditDraft(readyDecision);
+  assert.equal(draft.status, "ready");
+  assert.deepEqual(changedNodeFields(readyDecision, { ...draft, status: "open" }), {
+    status: "open",
+  });
+  assert.equal(
+    statusField.options.some((option) => option.value === "decided"),
+    false,
+  );
 });
 
 test("Decision choices disable for superseded, globally disabled, and removal-staged records", () => {

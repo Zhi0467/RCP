@@ -710,6 +710,7 @@ async def stream_work_run(
         context_replacement: dict[str, object] | None = None
         loop_control_path: str | None = None
         watcher_state_path: str | None = None
+        provider_switch_recovery = False
         if request.patch_kind == "experiment_loop":
             control_node = context.node
             if (
@@ -728,6 +729,14 @@ async def stream_work_run(
                 continuation=continuation,
             )
             assert execution is not None
+            episode = (
+                execution.store.experiment_episode(request.control_episode_id)
+                if request.control_episode_id
+                else None
+            )
+            provider_switch_recovery = bool(
+                continuation == "handoff" and episode is not None and episode.session_bound
+            )
             ontology = service.history.state().ontology.model_dump(mode="json")
             episode_context_baseline = prepare_experiment_episode_context_candidate(
                 execution,
@@ -916,6 +925,9 @@ async def stream_work_run(
                         output_schema_path=schema_path,
                         validator_command=validator_command,
                         execution_host=execution_host,
+                        recovery_diagnostics_path=(
+                            retry_diagnostics_path if provider_switch_recovery else None
+                        ),
                         skill_pointers=skill_pointers,
                         invoked_skill_pointers=invoked_package_pointers(
                             skill_pointers,

@@ -24,13 +24,11 @@ last_passed: 2026-08-08 — direct choice, replacement, and the legacy selected-
 
 # A human decides a Decision by clicking the option
 
-A Decision node exists to record a choice a human made. Until now the human
-could not make it. `selected_option` and `status` were reachable only through an
-agent Proposal, so the only way to decide was to wait for an agent to guess an
-option and then approve or reject that one guess. A Decision with three listed
-options and no Proposal was unanswerable: the options rendered as one more prose
-block in **Context**, indistinguishable from Reasoning and Consequences, and
-nothing on the screen could be clicked.
+A Decision node exists to record a choice a human made. Its outcome has one
+producer: the direct human Decision-choice action. Agents may frame a Decision
+as `open`, queue it as `ready`, or reopen a settled choice as `revisit`, but they
+cannot write `selected_option` or `status: decided` and cannot create a new
+Decision-targeting Proposal.
 
 The options are the point of the node, so they get their own control. Selecting
 one is a direct human authority action, staged and Synced through the same
@@ -48,10 +46,10 @@ permission system.
 1. In every Decision's detail window, the question and options appear in a
    dedicated choice section above **Context**. Each option is a full clickable
    row in one accessible single-choice group, visually distinct from Reasoning
-   and Consequences. The current **Open**, **Decided**, **Revisit**, or
-   **Superseded** status is readable beside the choice.
-2. On an Open or Revisit Decision, one click on an option stages that option as
-   `selected_option` and stages `status: decided`. On a decided Decision,
+   and Consequences. The current **Open**, **Ready**, **Decided**, **Revisit**,
+   or **Superseded** status is readable beside the choice.
+2. On an Open, Ready, or Revisit Decision, one click on an option stages that
+   option as `selected_option` and stages `status: decided`. On a decided Decision,
    clicking a different option replaces the choice. Exactly one row is selected
    at a time, and the selected row remains unmistakable without relying on
    color alone. A Superseded Decision remains historical and is not selectable.
@@ -64,13 +62,12 @@ permission system.
    rather than being a second click. This is a judgment, not an edit — it never
    goes through the standing-reset path that ordinary content edits use. **Agree**
    and **Contest** remain the controls for a later independent judgment.
-5. If one or more pending Proposals target the same Decision, the choice section
-   says so. Staging a direct choice supersedes any separately staged resolution
-   for those Proposals. Sync commits the human choice and withdraws every still-
-   pending Proposal for that Decision atomically as stale, rather than leaving
-   the Inbox able to re-decide a question the human already answered. This is a
-   withdrawal, not an approval or rejection: the human chose directly and did
-   not implicitly judge the agent's rationale.
+5. A project restored from historical patches may still contain pending legacy
+   Proposals targeting the same Decision. Staging a direct choice supersedes any
+   separately staged resolution for those Proposals. Sync commits the human
+   choice and withdraws every still-pending legacy Proposal for that Decision
+   atomically as stale. This is a withdrawal, not an approval or rejection: the
+   human chose directly and did not implicitly judge the historical rationale.
 6. An option the human wants but the agent did not list is added through **Edit
    node**, which already owns `options`. Selection chooses among the listed
    options only.
@@ -83,19 +80,19 @@ permission system.
    that same option. This is the one click that stages only a status move, and
    both the click and the Sync must accept it; otherwise the Decision is stuck
    open forever and every Experiment governed by it stays un-runnable.
-9. The same semantic rule closes an existing hole on the Proposal path. New
-   Decision Proposals must describe a coherent transition: choosing a listed
-   option means `status: decided`. When approving an already-recorded Proposal
-   that selects an option but omitted status, RCP records the implied
-   `status: decided` in the approval rather than preserving an open-but-selected
-   state. A Proposal that says `decided` without a listed selection is refused.
+9. Historical Decision Proposals remain replayable and resolvable. When
+   approving an already-recorded legacy Proposal that selects an option but
+   omitted status, RCP records the implied `status: decided` rather than
+   preserving an open-but-selected state. New Decision-targeting Proposals are
+   refused at admission.
 
 ## Assert
 
 - Direct Decision choice is a dedicated human-authority transition. It is
   accepted through the service and approval validator without adding
-  `selected_option` or Decision status to the ordinary node editor's field set.
-  The backend, not the presence of a button, enforces that authority boundary.
+  `selected_option` to the ordinary node editor's field set. The ordinary
+  status control may queue `open`, `ready`, or `revisit`, but cannot set
+  `decided`; the backend, not the presence of a button, enforces that boundary.
 - A staged selection whose value is not one of the node's current `options` is
   rejected with a diagnostic naming the node. The effective option is resolved
   against the Decision, so a choice that repeats the recorded option and moves
@@ -113,8 +110,8 @@ permission system.
   entry explains that the direct human decision made the Proposals stale.
 - A selection Sync records `accepted` standing through the judgment path, not
   the edit path, so it does not trip the reset-on-edit rule.
-- Approving a Decision Proposal that carries `selected_option` and no `status`
-  yields a Decision with `status == "decided"`.
+- Approving a legacy Decision Proposal that carries `selected_option` and no
+  `status` yields a Decision with `status == "decided"`.
 - After Sync, `experiment_control` reports the Decision as satisfied for every
   Experiment that `governed_by` it, and the pinned option recorded on a
   subsequent attempt is the human-selected one.

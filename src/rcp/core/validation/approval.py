@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from rcp.core.authority import DECIDE_DECISION, permits
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
@@ -27,18 +28,26 @@ def validate_approval_shape(
 ) -> None:
     revision = patch.revision or None
     resolution_ops = [op for op in patch.ops if op.get("op") == "resolve_proposals"]
-    if patch.human_action == "decision_choice":
+    approved_resolution = any(
+        resolution.get("status") == "approved"
+        for operation in resolution_ops
+        for resolution in operation.get("resolutions", [])
+        if isinstance(resolution, dict)
+    )
+    if patch.human_action == "decision_choice" and not approved_resolution:
         _validate_direct_decision_choice(state, patch, resolution_ops, report, revision)
         return
     if not resolution_ops:
         names = [op.get("op") for op in patch.ops]
-        if len(patch.ops) == 1 and names[0] in {
+        standalone_operations = {
             "set_standing",
             "remove_nodes",
-            "resolve_ambiguities",
             "set_ontology",
             "set_project_truth_scope",
-        }:
+        }
+        if mode == "replay":
+            standalone_operations.add("resolve_ambiguities")
+        if len(patch.ops) == 1 and names[0] in standalone_operations:
             return
         if len(patch.ops) == 1 and names[0] == "create_nodes":
             nodes = patch.ops[0].get("nodes")
@@ -73,7 +82,14 @@ def validate_approval_shape(
                     revision,
                 )
                 return
-            _validate_direct_node_edit(state, update_ops[0], report, revision)
+            _validate_direct_node_edit(
+                state,
+                patch,
+                update_ops[0],
+                report,
+                revision,
+                mode=mode,
+            )
             edits = update_ops[0].get("nodes", [])
             if standing_ops and edits and standing_ops[0].get("node_id") != edits[0].get("id"):
                 report.reject(
@@ -135,6 +151,28 @@ def validate_approval_shape(
             )
         elif not (is_verbatim and requires_normalization):
             _validate_approved_decision_result(state, semantic_ops, report, revision)
+        writes_decision_outcome = _writes_decision_outcome(state, semantic_ops)
+        if mode == "admission" and writes_decision_outcome:
+            if patch.human_action != "decision_choice":
+                report.reject(
+                    "unnamed-decision-action",
+                    f"Approving a legacy Decision Proposal that writes selected_option or status "
+                    f"decided must name the {DECIDE_DECISION} action.",
+                    revision,
+                )
+            elif not permits(patch, DECIDE_DECISION):
+                report.reject(
+                    "decision-action-refused",
+                    f"This actor is not permitted to {DECIDE_DECISION} through a legacy "
+                    "Decision Proposal approval.",
+                    revision,
+                )
+        elif patch.human_action == "decision_choice" and not writes_decision_outcome:
+            report.reject(
+                "invalid-direct-decision-choice",
+                "A decision_choice Proposal approval must replay a legacy Decision outcome.",
+                revision,
+            )
     if status in {"rejected", "withdrawn"} and semantic_ops:
         report.reject(
             "rejected-proposal-has-ops",
@@ -169,6 +207,10 @@ def _validate_direct_decision_choice(
             revision,
             related_node_ids=[node_id] if node_id else [],
         )
+
+    if not permits(patch, DECIDE_DECISION):
+        refuse(f"Only an actor permitted to {DECIDE_DECISION} may choose a Decision option.")
+        return
 
     names = [op.get("op") for op in patch.ops]
     if not names or set(names) - {"update_nodes", "resolve_proposals", "set_standing"}:
@@ -339,6 +381,18 @@ def _validate_approved_decision_result(
                 )
 
 
+def _writes_decision_outcome(state: GraphState, operations: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(state.nodes.get(update.get("id")), Decision)
+        and isinstance(update.get("changes"), dict)
+        and ("selected_option" in update["changes"] or update["changes"].get("status") == "decided")
+        for operation in operations
+        if operation.get("op") == "update_nodes"
+        for update in operation.get("nodes", [])
+        if isinstance(update, dict)
+    )
+
+
 def _validate_attempt_release(
     node: Any,
     raw_attempts: Any,
@@ -393,9 +447,12 @@ def _validate_attempt_release(
 
 def _validate_direct_node_edit(
     state: GraphState,
+    patch: Patch,
     operation: dict[str, Any],
     report: ValidationReport,
     revision: int | None,
+    *,
+    mode: Literal["admission", "replay"],
 ) -> None:
     if set(operation) != {"op", "nodes"}:
         report.reject(
@@ -445,6 +502,22 @@ def _validate_direct_node_edit(
             revision,
         )
         return
+    if (
+        mode == "admission"
+        and isinstance(node, Decision)
+        and ("selected_option" in changes or changes.get("status") == "decided")
+    ):
+        action = DECIDE_DECISION
+        permitted = permits(patch, action)
+        report.reject(
+            "unnamed-decision-action",
+            f"An ordinary node edit may queue Decision {node.id}, but only a patch naming "
+            f"human_action='decision_choice' may {action}."
+            if permitted
+            else f"This actor is not permitted to {action} on Decision {node.id}.",
+            revision,
+            related_node_ids=[node.id],
+        )
     if set(changes) == {"attempts"}:
         _validate_attempt_release(node, changes["attempts"], report, revision)
         return

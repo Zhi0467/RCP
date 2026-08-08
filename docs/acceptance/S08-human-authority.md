@@ -24,8 +24,8 @@ backend cannot see it.
 
 ## Setup
 
-A temporary copy of the demo project — it ships with a pending proposal and an
-ambiguity waiting on judgment.
+A temporary project with a pending Hypothesis-status Proposal, a Decision
+awaiting choice, and an asserted open Blocker.
 
 ## Drive
 

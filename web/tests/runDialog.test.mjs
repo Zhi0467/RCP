@@ -11,7 +11,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { RunDialog } = await server.ssrLoadModule("/src/components/RunDialog.tsx");
+const { RunDialog, agentSelectionChanged } = await server.ssrLoadModule(
+  "/src/components/RunDialog.tsx",
+);
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
 const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
 const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
@@ -754,6 +756,53 @@ test("retry keeps the original task boundary and exposes provider configuration"
   assert.doesNotMatch(html, /Truth input subset/);
   assert.doesNotMatch(html, /Additional message/);
   assert.match(html, />\s*Retry<\/button>/);
+  assert.doesNotMatch(html, /<button class="button primary" disabled=""[^>]*>.*Retry<\/button>/s);
+});
+
+test("Experiment provider switch exposes provider controls but locks the execution machine", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: true,
+      kind: "node_chat",
+      mode: "retry",
+      project,
+      initialScope: ["repo"],
+      initialConfig: {
+        provider: "codex",
+        model: "",
+        reasoning: "medium",
+        run_on: "local",
+      },
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
+
+  assert.match(html, /Switch Experiment provider/);
+  assert.match(html, /<span>Provider<\/span>/);
+  assert.match(html, /<span>Model<\/span>/);
+  assert.match(html, /<span>Run on <svg/);
+  assert.match(html, /<select disabled=""><option value="local" selected="">local · local/);
+  assert.match(
+    html,
+    /<button class="button primary" disabled=""[^>]*>.*Switch provider<\/button>/s,
+  );
+  assert.doesNotMatch(html, /Truth input subset|Additional message/);
+});
+
+test("Experiment provider switch requires an agent selection change and ignores run_on", () => {
+  const initial = {
+    provider: "codex",
+    model: "gpt-5.6",
+    reasoning: "high",
+    run_on: "cluster",
+  };
+
+  assert.equal(agentSelectionChanged({ ...initial, run_on: "local" }, initial), false);
+  assert.equal(agentSelectionChanged({ ...initial, provider: "claude" }, initial), true);
+  assert.equal(agentSelectionChanged({ ...initial, model: "gpt-5.6-mini" }, initial), true);
+  assert.equal(agentSelectionChanged({ ...initial, reasoning: "medium" }, initial), true);
 });
 
 test("task inspector names every provider launch by its continuation cause", () => {

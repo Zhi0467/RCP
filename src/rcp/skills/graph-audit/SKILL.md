@@ -41,8 +41,6 @@ nodes or evidence. Evidence may inform a Decision through `informs` or bear on a
 `addresses` without choosing the Decision or changing the Blocker's status; report the mismatch
 instead of inferring the transition.
 
-**Stale ambiguities.** Flag an Ambiguity that later graph content answered or made irrelevant.
-
 ## Report
 
 ```markdown

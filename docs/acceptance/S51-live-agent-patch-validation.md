@@ -44,9 +44,10 @@ so a person can see how many checks occurred and whether RCP was reachable.
   containing every earlier valid operation. Whole-patch lookup remains available
   for a node or edge created later, so relations and causes may forward-reference
   same-patch objects without reordering the patch.
-- Creating then updating one node, creating then resolving one ambiguity, and
-  creating a Decision then proposing its governed choice all validate and
-  materialize. Creating the same node id twice is rejected.
+- Creating then updating one node, creating then queuing a Decision as `ready`,
+  and creating Evidence before proposing its evidence-grounded Hypothesis
+  transition all validate and materialize. Creating the same node id twice is
+  rejected.
 - A Work session can run the staged validator client from its writable workspace.
   The client submits `patch.json`; RCP reads the live canonical graph, prepares
   bookkeeping, runs the same semantic validator used by Apply, and returns the

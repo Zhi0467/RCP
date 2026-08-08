@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from rcp.core.authority import EVIDENCE_EDGE_CAUSE_KIND, EVIDENCE_RELATIONS
 from rcp.core.models import (
     RELATION_SPEC,
+    Decision,
     Experiment,
     ExperimentAttempt,
     ExperimentDecisionPin,
@@ -59,7 +60,7 @@ def validate_experiment_loop_authority(
     for op in patch.ops:
         name = op.get("op")
         if name == "update_nodes":
-            _validate_updates(op, experiment, pinned, has_proposals, report, revision)
+            _validate_updates(state, op, experiment, pinned, has_proposals, report, revision)
         elif name == "create_nodes":
             _validate_created_nodes(op, experiment.id, report, revision)
         elif name == "create_edges":
@@ -68,7 +69,6 @@ def validate_experiment_loop_authority(
             _validate_proposals(
                 op,
                 experiment.id,
-                set(pinned_ids),
                 _tested_hypothesis_ids(state, experiment.id),
                 _grounding_edge_ids(state, patch.ops, created_types),
                 report,
@@ -84,6 +84,7 @@ def validate_experiment_loop_authority(
 
 
 def _validate_updates(
+    state: GraphState,
     op: dict[str, Any],
     experiment: Experiment,
     pinned: list[ExperimentDecisionPin],
@@ -91,9 +92,34 @@ def _validate_updates(
     report: ValidationReport,
     revision: int | None,
 ) -> None:
+    pinned_ids = {item.decision_id for item in pinned}
     for update in op.get("nodes", []):
         node_id = update.get("id")
         changes = update.get("changes")
+        if node_id in pinned_ids:
+            if not isinstance(changes, dict):
+                continue
+            if set(changes) != {"status"} or changes.get("status") not in {
+                "open",
+                "ready",
+                "revisit",
+            }:
+                report.reject(
+                    "experiment-loop-decision-action",
+                    f"Experiment loop {experiment.id} may only queue pinned Decision {node_id!r} "
+                    "as open, ready, or revisit; it may never decide it.",
+                    revision,
+                    related_node_ids=[experiment.id, node_id],
+                )
+            elif not isinstance(state.nodes.get(node_id), Decision):
+                report.reject(
+                    "experiment-loop-foreign-update",
+                    f"Experiment loop {experiment.id} cannot queue missing or non-Decision "
+                    f"node {node_id!r}.",
+                    revision,
+                    related_node_ids=[experiment.id, node_id],
+                )
+            continue
         if node_id != experiment.id:
             report.reject(
                 "experiment-loop-foreign-update",
@@ -359,18 +385,16 @@ def _grounding_edge_ids(
 def _validate_proposals(
     op: dict[str, Any],
     experiment_id: str,
-    governing_decision_ids: set[str],
     tested_hypothesis_ids: set[str],
     grounding_edge_ids: dict[str, set[str]],
     report: ValidationReport,
     revision: int | None,
 ) -> None:
-    """Admit the two proposal shapes a loop may raise, and nothing else.
+    """Admit the one belief Proposal shape a loop may raise, and nothing else.
 
-    A decision proposal asks the human to change a pinned governing choice. A
-    belief proposal asks the human to accept the belief change its own evidence
-    implies — the loop may never apply that change itself, which is why the edge
-    is asserted while the status move waits in Inbox.
+    A belief Proposal asks the human to accept the belief change its own evidence
+    implies. The loop may queue a pinned Decision directly, but never propose or
+    apply a Decision outcome.
     """
 
     for proposal in op.get("proposals", []):
@@ -388,14 +412,12 @@ def _validate_proposals(
             )
             continue
 
-        if not target_ids or not target_ids <= governing_decision_ids:
-            report.reject(
-                "experiment-loop-proposal-operations",
-                f"Experiment loop {experiment_id} proposals may update only pinned governing "
-                "decisions.",
-                revision,
-                related_node_ids=[experiment_id, *sorted(target_ids)],
-            )
+        report.reject(
+            "experiment-loop-proposal-operations",
+            f"Experiment loop {experiment_id} proposals may update only one tested Hypothesis.",
+            revision,
+            related_node_ids=[experiment_id, *sorted(target_ids)],
+        )
 
 
 def _proposal_update_targets(replay_ops: Any) -> set[str]:

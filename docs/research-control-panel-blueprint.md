@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.29
+**Version:** 0.32
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,20 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.32** — replaced active Ambiguities and agent Decision Proposals with one
+  direct Decision lifecycle: agents queue makeable choices as `ready` or reopen
+  them as `revisit`, the Inbox opens those node cards for the existing human
+  ballot, and Seed/Refresh retain their labelled answers; historical records
+  remain replayable without remaining authorable or visible as attention.
+- **0.31** — replaced node-detail relation text with a complete vertical one-hop
+  map, added two-window side-by-side comparison with reachable narrow-screen
+  overlap, and made expansion a non-navigating full-screen relation inspection
+  surface with one compact read-only node card.
+- **0.30** — made provider limits recoverable inside the current Experiment
+  episode and invocation: same-provider Retry resumes the exact native binding,
+  while an explicit provider switch replaces it only after a successful joint
+  Patch/watcher handoff; exposed recovery directly in Runs and made same-machine
+  watcher instructions local rather than inviting a self-SSH.
 - **0.29** — added desktop-only macOS dictation as editable composer input and
   provider-neutral temporary chat attachments: bounded files are claimed by one
   human turn, staged immutably on the execution host, named by path in a private
@@ -153,8 +167,10 @@ conditions. `Evidence.origin` records where the observation came from.
 `confidence` is not a graph field.
 
 Nested records such as `ExperimentAttempt`, belief transitions, sources, and
-decision options are not independent graph nodes. Proposal, ambiguity, glossary,
-and ontology records are side-car state with their own strict schemas.
+decision options are not independent graph nodes. Proposal, glossary, and
+ontology records are side-car state with their own strict schemas. Historical
+Ambiguity records remain in the replay schema only: new history cannot create or
+resolve them, and they do not render or contribute to attention.
 
 Project Settings does not expose ontology authoring. Historical extension types,
 fields, and relations already present in append-only history remain replayable,
@@ -234,6 +250,22 @@ project draft. Sync commits them in one approval Patch and atomically withdraws
 every pending Proposal that updates the same Decision. Editing the available
 options remains separate from choosing among them.
 
+Decision lifecycle also records whether a choice needs human attention. An
+agent-created Decision is `open` while it is not yet makeable and may instead be
+created `ready` when it is. Agents and humans may queue a Decision as `open`,
+`ready`, or `revisit`; only the human ballot may write `selected_option` or
+`status: decided`. `ready` and `revisit` enter the Inbox, while `ready` to `open`
+is the human's ordinary "not yet" edit. A `ready` or `revisit` Decision must
+have at least two distinct options. `revisit` preserves the previous selection
+while reopening it after later evidence undermines the choice.
+
+Ripeness is prompt guidance rather than an inferred or mechanically validated
+scientific judgment. An agent must inspect the run-scope repositories, real
+experiment state, and code rather than relying on the graph alone. Normally a
+ready choice has no open governing Blocker, no pre-completion governed
+Experiment, and enough rationale to explain what the choice turns on. RCP never
+sets `ready` by itself.
+
 Blocker standing and lifecycle status are independent. The human node editor may
 set Blocker status to `open`, `resolved`, or `superseded`, and a graph-capable
 agent may update the same field directly. These ordinary Blocker lifecycle edits
@@ -244,32 +276,30 @@ await a fresh judgment.
 
 ### Minimal agent Proposals
 
-An agent Proposal has exactly one of two semantic shapes:
-
-1. one governed Decision changes `selected_option` and/or semantic status; or
-2. one Hypothesis changes status with exactly one valid Evidence-to-Hypothesis
-   epistemic edge as its cause.
+An agent Proposal has one semantic shape: one Hypothesis changes status with
+exactly one valid Evidence-to-Hypothesis epistemic edge as its cause.
 
 The Proposal contains one `update_nodes` operation for one target. Ordinary
 content edits, edges, Evidence, Blockers, merges, supersessions, and removals are
 not Proposal-only merely because accepted material is nearby. An ordinary agent
 edit to accepted node content returns that node to asserted review.
 
-Agent-created Decisions begin open and unselected. A Decision Proposal that
-selects an option must select from the current list and make an open or revisit
-Decision decided; it cannot declare a Decision decided without a listed
-selection. Approval of an older selection-only Proposal adds that implied status
-for new history, while replay still accepts the exact legacy approval already in
-the append-only log. Agent-created Hypotheses begin proposed. Agents cannot
-approve or reject Proposals, but may explicitly withdraw any still-pending
-Proposal that later work proves obsolete or duplicated.
+Agents do not propose Decision outcomes: they queue the Decision itself as
+`ready` or `revisit` and the human uses its ballot. Historical Decision
+Proposals and approvals remain replayable. A pending historical Decision
+Proposal restored from older state remains resolvable; approving it is adapted
+to the same named `decision_choice` authority action used by the ballot, so
+Decision outcomes still have exactly one producer. Agent-created Hypotheses
+begin proposed. Agents cannot approve or reject Proposals, but may explicitly
+withdraw any still-pending Proposal that later work proves obsolete or
+duplicated.
 Withdrawal replays no semantic operation. RCP records creation and resolution
 provenance, including the originating task when available.
 
-A loop may propose a transition only for a pinned governing Decision or for a
-Hypothesis tested by its Experiment. The Hypothesis transition is grounded by an
-Evidence edge asserted in the same Patch. The human accepts the belief change,
-not the edge; edges have no standing.
+A loop may queue a pinned governing Decision as `ready` or `revisit`, and may
+propose a transition only for a Hypothesis tested by its Experiment. The
+Hypothesis transition is grounded by an Evidence edge asserted in the same
+Patch. The human accepts the belief change, not the edge; edges have no standing.
 
 ### Guarded node removal
 
@@ -412,6 +442,12 @@ retains failed Patch text and scratch, and returns agent-correctable validation
 messages to the same session within a bound. A provider failure may be retried
 or handed off according to durable task provenance; completed external effects
 are never silently repeated.
+
+The labelled final Seed/Refresh assistant message is retained on the durable
+task and displayed beside its Patch outcome. This is where the agent reports an
+ontology gap, missing Hypothesis scope, or other limitation that cannot be
+represented in the shipped graph. Such a limitation is an answer, not a reason
+to manufacture a Blocker, Decision, or other substitute node.
 
 ## Discuss, Work, and native chat context
 
@@ -623,8 +659,9 @@ the loop's authority beyond its own Experiment.
 
 ### Episode native sessions and graceful stop
 
-Every episode has exactly one validated native-session binding: provider,
-session id, execution host, and the exact reusable chat stage. A human Run always
+Every episode has exactly one active validated native-session binding at a
+time: provider, session id, execution host, and the exact reusable chat stage. A
+human Run always
 starts a fresh episode and a fresh native session — including Proposal or Blocker
 resolution, invocation-limit reauthorization, and restart after **Stop loop** —
 so native context never grows across a human authority boundary. An automatic
@@ -648,16 +685,31 @@ unavailability leaves the watchers unnotified for a later pass; a missing or
 mismatched binding becomes an exact Needs-action diagnostic and never silently
 launches a fresh session.
 
-The original session already holds the immutable contract, so an automatic wake
+The active session already holds the immutable contract, so an automatic wake
 sends a short continuation message rather than rebuilding it: what RCP accepted
 from the preceding turn, the delivered watcher ids, fresh file pointers, and the
-three valid exits. Provider, model, reasoning, machine, truth scope, and
-authority stay pinned for the episode while graph, research, schema, and output
-pointers refresh every turn. Changed repository, ontology, or package pointers
+three valid exits. Execution machine, truth scope, and authority stay pinned for
+the episode while graph, research, schema, and output pointers refresh every
+turn. Provider, model, and reasoning also stay pinned unless the human explicitly
+chooses **Switch provider** to recover a failed or paused invocation. Changed
+repository, ontology, or package pointers
 are appended as one compact replacement block that becomes the episode baseline
 only after a mechanically successful joint Patch/watcher handoff. A graph-level
 rejection is recorded truthfully and does not erase an otherwise accepted
 operational handoff.
+
+A recognized provider usage, session, quota, or credit limit is recoverable
+inside the same episode and invocation. **Retry provider** rechecks the provider
+and resumes the exact saved native session and stage; it does not spend another
+invocation. **Switch provider** is an explicit human recovery action that keeps
+the episode, invocation, execution machine, truth scope, governing decisions,
+watchers, and operational history, but starts a provisional native session for
+the chosen provider and sends the full current Experiment contract plus the
+exact failure diagnostic and a prohibition on repeating completed operational
+side effects. The active binding changes atomically only after that session
+returns a mechanically successful joint Patch/watcher handoff. Failure leaves
+the previous binding authoritative and the task recoverable. Automatic wakes,
+watcher provenance, and silent fallback can never switch providers.
 
 **Stop loop** is an idempotent, durable, restart-safe episode-level action
 meaning "finish the current turn, then disable automatic continuation." RCP
@@ -678,10 +730,12 @@ fresh human Run stays disabled until the turn resolves. The next Run starts a
 fresh episode whose staged watcher state includes the stopped episode's records
 as inspectable context with no delivered trigger.
 
-Recovery of a bound episode never falls back to a fresh provider session. If
-RCP proves the pinned session, exact stage, or continuation context unusable, it
-records the exact diagnostic and rejects Resume or Retry. A subsequent or
-already-persisted **Stop loop** may then abandon only recovery of that
+Recovery of a bound episode never silently falls back to a fresh provider
+session. If RCP proves the pinned session, exact stage, or continuation context
+unusable, it records the exact diagnostic and rejects same-provider Resume or
+Retry while offering an explicit provider switch when the pinned execution
+machine and episode context remain usable. A subsequent or already-persisted
+**Stop loop** may abandon only recovery of that
 already-terminal task, with a durable receipt and all task, Patch, watcher, and
 event history preserved; it terminalizes compatible watchers and settles so the
 next human Run can establish a new authority boundary. An in-flight graph repair
@@ -804,6 +858,12 @@ attempt, and never replaces the episode's last accepted handoff or native
 session. Validation, initial checks, retirements, grouping, and replacement
 inserts commit against one current snapshot; Stop, claim, or another maintenance
 turn has one visible winner.
+
+Watcher instructions describe the check location relative to the current Work
+turn. When the Work turn and watcher execution host are the same machine, the
+contract says **this machine** and directs the agent to use a local cold-login
+shell; it must not name that host as a remote target or suggest SSHing back into
+itself. Only a genuinely different watcher execution host is named as remote.
 
 Checks run from a cold login shell with a hard timeout. Exit `0` means gone,
 `1` means still present, and any other value means the check cannot answer.
@@ -956,9 +1016,12 @@ graceful takeover after recoverable work is paused.
 
 - **Overview** shows current project state and the latest plain-language revision
   summary.
-- **Inbox** contains pending Proposals, open ambiguities, and open Blockers whose
-  standing remains asserted. Accepted and contested open Blockers remain
-  operational graph state but no longer await human judgment.
+- **Inbox** contains pending Hypothesis-status Proposals, Decisions whose status
+  is `ready` or `revisit`, and open Blockers whose standing remains asserted.
+  A Decision is a row that opens its existing node inspector and ballot; a
+  Proposal, which is not a node, keeps its inline judgment controls. Accepted
+  and contested open Blockers remain operational graph state but no longer
+  await human judgment. Historical Ambiguities never render or count.
 - **Research** presents question-centered graph paths and a bounded DAG view.
   Its Research-flow layout gives each `has_subquestion` depth a successive
   horizontal column, then places Hypothesis/Decision, Experiment/Blocker, and
@@ -977,9 +1040,10 @@ graceful takeover after recoverable work is paused.
   budget, watcher health and provenance, and each immutable watcher group as its
   own operational unit with per-status summary, member status, and degraded-error
   detail. It reports resolved execution with native-session continuity and the
-  Experiment's meaning; its one loop-level action is **Stop loop**, while
-  invocation-level Pause, Resume,
-  and Retry stay in the Agent task inspector.
+  Experiment's meaning. Failed or paused loop turns expose direct **Retry
+  provider** and **Switch provider** recovery alongside the independent
+  loop-level **Stop loop** action. The detail does not include an **Open agent
+  task** button; full task history and diagnostics remain available from History.
 - **Chats** groups node and project conversations with immutable turn labels,
   inline task progress under the triggering message, and no global task banner.
 - **Paper** provides a human-authored Markdown Write/Preview pane and read-only
@@ -996,11 +1060,20 @@ Glossary destination and no new glossary-authoring authority until the open
 question is decided.
 
 Node detail is a persistent, resizable floating inspection window that clamps to
-the viewport and closes when entering Chats. Chat list width and Paper/editor
-split are likewise adjustable where specified by their acceptance scenarios. A
-Decision detail promotes its question and deduplicated options into a visually
-distinct, accessible single-choice ballot above prose Context, with lifecycle,
-canonical selection, staged selection, and competing-Proposal state visible.
+the viewport and closes when entering Chats. Its Relations section is a stable
+vertical one-hop map: incoming neighbors above, the focused node in the middle,
+outgoing neighbors below, and every labelled relation visible without a nested
+scroll area. Selecting a neighbor opens one companion detail beside the original;
+at most two detail windows remain open, with reachable overlap instead of
+unreadable shrinking on narrow viewports. Expanding the map opens the same
+one-hop graph in a full-screen overlay without navigating away. Selecting a node
+there updates one compact read-only inspection card, whose explicit action may
+open the full node window; the overlay adds no graph-authoring authority. Chat
+list width and Paper/editor split are likewise adjustable where specified by
+their acceptance scenarios. A Decision detail promotes its question and
+deduplicated options into a visually distinct, accessible single-choice ballot
+above prose Context, with lifecycle, canonical selection, and staged selection
+visible.
 
 Revision summaries are producer-authored ordinary prose with titles rather than
 ids, operation names, or inventory counts. Rendering deterministically resolves

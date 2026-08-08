@@ -2520,6 +2520,21 @@ button:disabled {
 .attention-item.blocker {
   color: var(--walnut);
 }
+.attention-item.decision {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.decision-attention-status {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--walnut);
+  font: 8px/1 var(--mono);
+  letter-spacing: 0.08em;
+  padding: 5px 7px;
+  text-transform: uppercase;
+}
+.decision-attention-status.revisit {
+  border-color: var(--mustard);
+}
 .quiet-empty,
 .empty-state {
   align-items: center;
@@ -2807,13 +2822,6 @@ button:disabled {
 .decision-choice-section fieldset:disabled .decision-choice-option.selected {
   opacity: 0.8;
 }
-.decision-proposal-count {
-  border-top: 1px solid var(--line);
-  color: var(--walnut);
-  font: 9px/1.4 var(--mono);
-  margin-top: 12px;
-  padding-top: 10px;
-}
 .context-list {
   margin: 0;
 }
@@ -2893,45 +2901,12 @@ button:disabled {
 .node-detail-drawer > header .glossary-definition:focus::after {
   transform: translateY(0);
 }
-.relation-row {
-  font-size: 10px;
-  padding: 4px 0;
-}
-.relation-row > button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 120px minmax(0, 1fr);
-  padding: 3px 0;
-  text-align: left;
-  width: 100%;
-}
-.relation-row > button > span {
-  color: var(--cobalt);
-}
-.relations-control {
-  background: transparent;
-  border: 0;
-  display: block;
-  padding: 0;
-  text-align: left;
-  width: 100%;
-}
 .relations-control-heading {
   align-items: center;
-  background: transparent;
-  border: 0;
   color: var(--ink);
   display: flex;
   gap: 7px;
   margin-bottom: 8px;
-  padding: 0;
-}
-.relations-control-heading svg {
-  color: var(--cobalt);
 }
 .relations-control-heading strong {
   font-size: 10px;
@@ -2950,21 +2925,234 @@ button:disabled {
   justify-content: center;
   min-width: 19px;
 }
-.relation-flag {
+.relation-map {
+  background: color-mix(in srgb, var(--sheet) 75%, var(--paper));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+.relation-map-toolbar {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font: 650 9px/1.2 var(--mono);
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.relation-map-expand {
+  min-height: 32px;
+  min-width: 32px;
+}
+.relation-flow {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 5px 2px;
+}
+.relation-flow-level {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  justify-items: center;
+  max-width: 760px;
+  width: 100%;
+}
+.relation-map-peer {
+  align-items: center;
+  align-self: stretch;
+  background: color-mix(in srgb, var(--sheet) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px;
+  width: 100%;
+}
+.relation-map-node {
+  align-items: flex-start;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--ink);
+  display: grid;
+  gap: 3px;
+  max-width: 330px;
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  width: min(100%, 330px);
+  z-index: 1;
+}
+button.relation-map-node:hover {
+  border-color: var(--teal);
+}
+.relation-map-node strong {
+  font-family: var(--editorial);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.relation-map-node .standing {
+  font-size: 7px;
+  justify-self: start;
+  padding: 4px 6px;
+}
+.relation-map-node.is-focused {
+  background: var(--walnut);
+  border: 3px double color-mix(in srgb, var(--mustard) 72%, var(--walnut));
+  color: var(--paper);
+  margin: 6px 0;
+  padding: 10px 12px;
+}
+.relation-map-node.is-focused .eyebrow {
+  color: color-mix(in srgb, var(--paper) 72%, var(--mustard));
+}
+.relation-map-edges {
+  display: grid;
+  justify-items: center;
+  width: 100%;
+}
+.relation-map-edge {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  padding: 3px 0;
+  position: relative;
+  width: 100%;
+}
+.relation-map-edge-arrow {
+  background: var(--paper);
+  color: var(--cobalt);
+  font: 700 15px/1 var(--mono);
+  padding: 0 4px;
+}
+.relation-map-edge-label {
+  background: var(--cobalt-soft);
+  border: 1px solid color-mix(in srgb, var(--cobalt) 24%, var(--line));
+  border-radius: 999px;
+  color: var(--cobalt-dark);
+  font: 700 8px/1.25 var(--mono);
+  letter-spacing: 0.045em;
+  max-width: calc(100% - 18px);
+  overflow-wrap: anywhere;
+  padding: 4px 7px;
+  text-align: center;
+  text-transform: uppercase;
+}
+.relation-map-edge-warning {
   align-items: flex-start;
   background: var(--amber-soft);
   border-left: 2px solid var(--mustard);
   color: var(--walnut);
   display: flex;
   font-size: 9px;
-  gap: 6px;
-  line-height: 1.45;
-  margin: 3px 0 2px 120px;
+  gap: 5px;
+  line-height: 1.35;
+  margin-top: 3px;
+  max-width: min(100%, 330px);
   padding: 5px 7px;
 }
-.relation-flag svg {
+.relation-map-edge-warning svg {
   flex: none;
   margin-top: 1px;
+}
+.relation-map-overlay {
+  background: var(--paper);
+  inset: 0;
+  overflow: auto;
+  padding: 24px clamp(16px, 4vw, 56px) 48px;
+  position: fixed;
+  z-index: 10000;
+}
+.relation-map-overlay-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--line-strong);
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 14px;
+}
+.relation-map-overlay-header h2 {
+  font-family: var(--editorial);
+  font-size: clamp(24px, 3vw, 38px);
+  font-weight: 550;
+  line-height: 1.15;
+  margin: 4px 0 0;
+}
+.relation-map-overlay-body {
+  align-items: start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 24px auto 0;
+  max-width: 1180px;
+}
+.relation-map-overlay-body.has-inspection {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+}
+.relation-map-fullscreen {
+  padding: clamp(18px, 4vw, 44px);
+}
+.relation-map-fullscreen .relation-flow {
+  margin: 0 auto;
+  max-width: 900px;
+}
+.relation-map-fullscreen .relation-flow-level {
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+}
+.relation-map-fullscreen .relation-map-node {
+  max-width: 480px;
+  padding: 12px 14px;
+  width: min(100%, 480px);
+}
+.relation-map-fullscreen .relation-map-node strong {
+  font-size: 16px;
+}
+.relation-map-fullscreen .relation-map-edge-warning {
+  max-width: 480px;
+}
+.relation-map-inspection {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-top: 4px solid var(--plum);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+  position: sticky;
+  top: 0;
+}
+.relation-map-inspection > header {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+}
+.relation-map-inspection h3 {
+  font-family: var(--editorial);
+  font-size: 20px;
+  line-height: 1.2;
+  margin: 3px 0 8px;
+}
+.relation-map-inspection-fields {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+.relation-map-inspection-fields div {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.relation-map-inspection-fields dt {
+  color: var(--muted);
+  font: 700 8px/1.25 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.relation-map-inspection-fields dd {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
 }
 .belief-history ol {
   display: grid;
@@ -5460,8 +5648,7 @@ button:disabled {
 .research-node-card.draft-touched,
 .run-card.draft-touched,
 .blocker-row.draft-touched,
-.proposal-card.draft-touched,
-.ambiguity-card.draft-touched {
+.proposal-card.draft-touched {
   border-color: var(--oxblood);
   box-shadow:
     inset 3px 0 var(--oxblood),
@@ -5474,21 +5661,6 @@ button:disabled {
 }
 .node-detail-drawer.draft-touched {
   border-left: 3px solid var(--oxblood);
-}
-.ambiguity-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  margin: 7px 0;
-  overflow: hidden;
-}
-.ambiguity-card .attention-item {
-  border: 0;
-  border-radius: 0;
-  margin: 0;
-}
-.ambiguity-actions {
-  border-top: 1px solid var(--line);
 }
 .view-panel {
   max-width: 1180px;
@@ -7466,6 +7638,18 @@ button:disabled {
 }
 
 @media (max-width: 920px) {
+  .relation-map-overlay {
+    padding: 16px 12px 36px;
+  }
+  .relation-map-overlay-body {
+    grid-template-columns: 1fr;
+  }
+  .relation-map-overlay-body.has-inspection {
+    grid-template-columns: 1fr;
+  }
+  .relation-map-inspection {
+    position: static;
+  }
   .project-header {
     padding: 0 15px;
   }

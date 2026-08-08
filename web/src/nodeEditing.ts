@@ -31,6 +31,16 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
     title,
     { key: "question", label: "Question", kind: "multiline" },
     { key: "options", label: "Options", kind: "list" },
+    {
+      key: "status",
+      label: "Status",
+      kind: "select",
+      options: [
+        { value: "open", label: "Open" },
+        { value: "ready", label: "Ready" },
+        { value: "revisit", label: "Revisit" },
+      ],
+    },
     { key: "rationale", label: "Rationale", kind: "multiline", nullable: true },
     { key: "consequences", label: "Consequences", kind: "list" },
   ],
@@ -76,12 +86,19 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
 
 export function editableNodeFields(node: GraphNode, ontology?: OntologyState): NodeEditField[] {
   const ownerTypes = new Set([node.type, ...(node.extension_type ? [node.extension_type] : [])]);
+  const baseFields =
+    node.type === "decision" &&
+    node.status !== "open" &&
+    node.status !== "ready" &&
+    node.status !== "revisit"
+      ? fieldsByType.decision.filter((field) => field.key !== "status")
+      : fieldsByType[node.type];
   const extensionFields = ontology
     ? ontology.fields
         .filter((field) => ownerTypes.has(field.owner_type) && !field.deprecated)
         .map(toEditField)
     : [];
-  return [...fieldsByType[node.type], ...extensionFields];
+  return [...baseFields, ...extensionFields];
 }
 
 export function nodeEditDraft(node: GraphNode, ontology?: OntologyState): Record<string, string> {

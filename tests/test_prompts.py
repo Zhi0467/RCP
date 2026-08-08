@@ -52,9 +52,10 @@ def _assert_shared_graph_authority(contract: str) -> None:
         policy_identity=f"Policy digest: `{AGENT_GRAPH_AUTHORITY_POLICY_DIGEST}`",
         ordinary_changes="Ordinary legal graph structure and content are assertions, not Proposals",
         accepted_edits="resets that node to asserted standing",
-        new_decisions='starts `status="open"` with `selected_option=null`',
+        new_decisions="Agents may create a Decision as `open` or `ready`",
+        queue_decisions="may queue an existing Decision as `open`, `ready`, or `revisit`",
+        decision_outcome='Agents never write `selected_option` or set `status="decided"`',
         new_hypotheses='starts `status="proposed"`',
-        decision_boundary="Experiment -> Decision `governed_by` edge",
         belief_boundary='`kind="evidence_edge"` naming a valid Evidence -> Hypothesis',
         human_only="Agents never set `standing`, approve, or reject Proposals",
         withdrawal="may withdraw any pending Proposal with `withdraw_proposals`",
@@ -86,11 +87,24 @@ def _assert_fixed_ontology_guidance(contract: str) -> None:
 
 
 def _assert_base_authoring_guidance(contract: str) -> None:
-    assert "create an Ambiguity explaining the missing\n  vocabulary" in contract
-    assert "Only a human may change ontology in Project Settings" in contract
-    assert "an agent may neither apply nor propose `set_ontology`" in contract
+    compact = " ".join(contract.split())
+    assert "state that plainly in the final answer, name the missing vocabulary" in compact
+    assert "continue with the records that can be expressed" in compact
+    assert "Do not create a node for the gap" in compact
+    assert "Project Settings" not in contract
+    assert "Ambiguity" not in contract
+    assert "may neither apply nor propose `set_ontology`" in contract
     assert "Every new Evidence must explicitly set `origin`" in contract
     assert "exact boundary is explicitly stated" in contract
+    assert "leave scope empty and say so in the final answer" in compact
+    assert "never manufacture a Blocker or Decision" in compact
+    assert "set a Decision `ready` only when its choice is already makeable" in compact
+    assert "run-scope repositories, the real state of relevant experiments, and the code" in compact
+    assert "rather than relying on the graph alone" in compact
+    assert (
+        "Use `revisit` only to reopen a settled choice when new evidence undermines it" in compact
+    )
+    assert "amb/" not in contract
     assert "`has_subquestion` ResearchQuestion->ResearchQuestion" in contract
     assert "`tests` Experiment->Hypothesis" in contract
     assert "`blocked_by` Experiment|Decision|ResearchQuestion->Blocker" in contract
@@ -193,6 +207,41 @@ def test_chat_master_separates_self_wake_from_experiment_watcher_maintenance() -
         in compact
     )
     assert "spends no bounded-loop invocation" in compact
+
+
+def test_chat_master_treats_same_host_experiment_watcher_maintenance_as_local() -> None:
+    resource = {
+        "control_node_id": "exp/example",
+        "episode_id": "episode-1",
+        "execution_host": "gpu.example",
+        "watcher_state_path": "/stage/inputs/exp-example-watchers.json",
+        "watch_path": "/stage/workspace/experiment-watch-example.json",
+    }
+    master = PromptFactory.chat_master_context(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        ontology_extensions=False,
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        graph_revision=7,
+        focused_node_id="exp/example",
+        repositories=[],
+        introduction_path=None,
+        patch_path="/stage/workspace/patch.json",
+        workspace_path="/stage/workspace",
+        output_schema_path="/stage/inputs/schema.json",
+        validator_command="python3 /stage/inputs/validate.py",
+        watch_path="/stage/workspace/watch.json",
+        execution_host="gpu.example",
+        experiment_watcher_resources=[resource],
+    )
+
+    work = master.split("## Work contract", 1)[1]
+    compact = " ".join(work.split())
+    assert "episode execution host: this machine" in compact
+    assert "directly in a local cold-login shell on this machine" in compact
+    assert "do not SSH back into this machine" in compact
+    assert "episode execution host: host `gpu.example`" not in work
 
 
 def test_experiment_watcher_maintenance_correction_defers_to_original_contract() -> None:
@@ -449,7 +498,8 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
     _assert_fixed_ontology_guidance(contract)
     _assert_local_causal_check(contract)
     assert "card.decision_needed" in contract
-    assert "exact Decision option" in contract
+    assert "exact Hypothesis status" in contract
+    assert "`evidence_edge` cause" in contract
     assert "never only" in contract
 
 
@@ -723,7 +773,13 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "exits 1 while the named work remains" in compact
     assert "connect same-Patch Evidence to an existing Decision with `informs`" in compact
     assert "or to a Blocker with `addresses`" in compact
-    assert "These handoffs do not select the Decision or change Blocker status" in compact
+    assert "These handoffs never select the Decision or change Blocker status" in compact
+    assert "queue an existing pinned Decision by setting it to `ready`" in compact
+    assert (
+        "reopen a settled pinned Decision as `revisit` when new evidence undermines it" in compact
+    )
+    assert "create a Hypothesis Proposal" in compact
+    assert "Decision `selected_option`/`status`" not in contract
     # The loop is the surface that submits scheduler jobs, so it carries the
     # set-membership Slurm check outright: a direct `squeue -j` lookup cannot tell a
     # finished job from an unreachable scheduler and would degrade the watcher.
@@ -732,6 +788,38 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "RCP runs every check on this machine" in compact
     _assert_live_validator_contract(contract, validator_command)
     _assert_local_causal_check(contract)
+
+
+def test_provider_switch_recovery_keeps_full_loop_contract_and_exact_diagnostics() -> None:
+    contract = experiment_loop_task_contract(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        ontology_extensions=False,
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        focused_experiment_id="exp/example",
+        repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
+        introduction_path=None,
+        human_request_path="/stage/inputs/human-request.txt",
+        loop_control_path="/stage/inputs/experiment-control.json",
+        watcher_state_path="/stage/inputs/experiment-watchers.json",
+        patch_path="/stage/patch.json",
+        artifact_path="/stage/artifacts",
+        output_schema_path="/stage/inputs/patch-schema.json",
+        watch_path="/stage/watch.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
+        recovery_diagnostics_path="/stage/inputs/provider-switch-diagnostics.json",
+    )
+
+    compact = " ".join(contract.split())
+    assert contract.startswith("# RCP Experiment-loop task contract")
+    assert "Explicit same-episode provider-switch recovery" in contract
+    assert "/stage/inputs/provider-switch-diagnostics.json" in contract
+    assert "same Experiment episode and the same invocation" in compact
+    assert "truth scope, pinned Decisions, watcher state, completion criteria" in compact
+    assert "inspect authoritative external state" in compact
+    assert "repeat it only when that proves the prior action did not take effect" in compact
+    assert "joint Patch/watcher handoff" in compact
 
 
 def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority() -> None:

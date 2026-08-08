@@ -1,8 +1,50 @@
 from __future__ import annotations
 
+import pytest
 from pydantic import ValidationError
 
-from rcp.service import ChatMessage, GraphUpdateResult, RunRequest
+from rcp.core.models import Decision
+from rcp.service import (
+    ChatMessage,
+    GraphSyncRequest,
+    GraphUpdateResult,
+    RunRequest,
+    decision_awaits_choice,
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("open", False),
+        ("ready", True),
+        ("decided", False),
+        ("revisit", True),
+        ("superseded", False),
+    ],
+)
+def test_decision_attention_predicate_is_ready_or_revisit(status: str, expected: bool) -> None:
+    decision = Decision(
+        id=f"dec/{status}",
+        type="decision",
+        title="Choose an option",
+        question="Which option should be used?",
+        options=["first", "second"],
+        selected_option="first" if status in {"decided", "revisit"} else None,
+        status=status,
+    )
+
+    assert decision_awaits_choice(decision) is expected
+
+
+def test_graph_sync_contract_has_no_ambiguity_resolution_path() -> None:
+    with pytest.raises(ValidationError, match="ambiguities"):
+        GraphSyncRequest.model_validate(
+            {
+                "base_revision": 1,
+                "ambiguities": [{"ambiguity_id": "amb/legacy", "status": "dismissed"}],
+            }
+        )
 
 
 def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph() -> None:

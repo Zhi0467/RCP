@@ -10,10 +10,10 @@ covered_by:
   - web/tests/acceptanceAgentMode.test.mjs
   - web/tests/experimentControlRefresh.test.mjs
 invariants: [3, 4, 4b, 10, 10b]
-last_passed: 2026-08-05 — a CPU-only served-app browser drive reached the
-  invocation ceiling, persisted the pending watcher completion across restart,
-  required a fresh human Run, produced grounded Evidence and one proposal, and
-  changed the Hypothesis only after human approval and Sync.
+last_passed: 2026-08-08 — hermetic prompt and loop suites proved same-machine
+  watcher maintenance uses a local cold-login shell without self-SSH and
+  provider-limit recovery keeps the current episode and invocation; the
+  isolated served app rendered the matching direct recovery controls.
 ---
 
 # Run an experiment through a bounded control loop
@@ -97,9 +97,18 @@ Confirmed by the human on 2026-08-05.
   distinct Experiment watcher file. The maintenance answer stays in that
   conversation, consumes no loop invocation, and the replacements still wake
   this episode's bound native session. Its ordinary `watch.json`, if written in
-  the same turn, remains a self-wake for the maintenance conversation.
+  the same turn, remains a self-wake for the maintenance conversation. When
+  that Work turn is already running on the watcher execution machine, its
+  contract says **this machine** and uses a local cold-login shell; it never
+  presents the same hostname as an SSH destination. A genuinely different host
+  remains explicit.
 - Pause, Resume, or Retry that watcher turn. Resume and Retry retain its episode
   and invocation number and receive a compact live control update before acting.
+  A recognized provider limit remains recoverable in that same episode and
+  invocation: same-provider Retry resumes the exact binding, while an explicit
+  provider switch replaces the active binding only after a successful joint
+  Patch/watcher handoff and never changes the execution machine, truth scope,
+  decisions, watchers, or invocation budget.
   Patch correction and watcher correction receive only the retained contract,
   current output paths, and exact diagnostics; none may repeat operational work
   or consume another loop invocation.
@@ -111,10 +120,11 @@ Confirmed by the human on 2026-08-05.
   persists, then Retry the same invocation. RCP reconciles the root-invocation
   Patch and deterministic watcher identities: at most one canonical Patch and
   one observer per requested watcher remain.
-- Drive a turn that needs a changed upstream decision. It appends a proposal-only
-  attempt when that bookkeeping is useful, sends the proposal to Inbox, and
-  pauses the episode. Approval does not resume automatically; the human presses
-  **Run**, which starts a new episode at invocation 1.
+- Drive a turn whose changed evidence makes an upstream choice ready or
+  undermines its prior selection. It queues that pinned Decision as `ready` or
+  `revisit` in Inbox and pauses the episode. Choosing in the existing ballot does
+  not resume automatically; the human presses **Run**, which starts a new episode
+  at invocation 1.
 - Reach the configured invocation ceiling after the last allowed turn arms a
   watcher. When that watcher completes, RCP does not start an over-budget wake or
   mark the completion delivered. The Experiment visibly says the loop is paused
@@ -145,6 +155,8 @@ Confirmed by the human on 2026-08-05.
 ## Assertions
 
 - `readiness_is_derived_from_decisions_proposals_blockers_and_episode_state`
+- `same_machine_watcher_contract_uses_local_shell_not_self_ssh`
+- `provider_limit_recovery_stays_inside_current_episode_and_invocation`
 - `run_is_disabled_with_the_exact_gate_reason`
 - `ordinary_work_remains_available_when_run_is_disabled`
 - `run_pins_the_governing_decision_bundle`

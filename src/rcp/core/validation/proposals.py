@@ -7,10 +7,9 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from rcp.core.authority import (
-    DECISION_PROPOSAL_FIELDS,
+    DECIDE_DECISION,
     EVIDENCE_EDGE_CAUSE_KIND,
     HYPOTHESIS_PROPOSAL_FIELDS,
-    decision_is_experiment_input,
 )
 from rcp.core.models import Decision, GraphState, Hypothesis, Patch, Proposal
 from rcp.core.validation.constants import IDENTIFIER_RE
@@ -32,12 +31,14 @@ def decision_transition_error(decision: Decision, changes: dict[str, Any]) -> st
             f"Decision {decision.id} can be decided only with a selected option listed in its "
             "current options."
         )
+    if status == "revisit" and decision.status != "revisit" and decision.selected_option is None:
+        return f"Decision {decision.id} can be revisited only after it has a prior decision."
     if (
-        decision.status in {"open", "revisit"}
+        decision.status in {"open", "ready", "revisit"}
         and changes.get("selected_option") is not None
         and status != "decided"
     ):
-        return f"Decision {decision.id} must become decided when a Proposal selects an option."
+        return f"Decision {decision.id} must become decided when an option is selected."
     return None
 
 
@@ -185,7 +186,6 @@ def validate_proposal(
             state,
             report,
             revision,
-            context_patch=context_patch,
         )
     _validate_proposal_ops(
         proposal,
@@ -207,14 +207,12 @@ def _validate_agent_proposal_boundary(
     state: GraphState,
     report: ValidationReport,
     revision: int | None,
-    *,
-    context_patch: Patch | None,
 ) -> None:
     def refuse(message: str) -> None:
         report.reject("invalid-agent-proposal-shape", message, revision)
 
     if len(proposal.ops) != 1 or proposal.ops[0].get("op") != "update_nodes":
-        refuse(f"Proposal {proposal.id} must contain exactly one Decision or Hypothesis update.")
+        refuse(f"Proposal {proposal.id} must contain exactly one Hypothesis status update.")
         return
     updates = proposal.ops[0].get("nodes")
     if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
@@ -234,25 +232,10 @@ def _validate_agent_proposal_boundary(
         refuse(f"Proposal {proposal.id} must contain an actual authority transition.")
         return
     if isinstance(node, Decision):
-        if not set(changes) <= DECISION_PROPOSAL_FIELDS or not any(
-            changes[field] != getattr(node, field) for field in changes
-        ):
-            refuse(
-                f"Decision Proposal {proposal.id} may change only status and selected_option, "
-                "and must change at least one of them."
-            )
-            return
-        if update.get("cause") is not None:
-            refuse(f"Decision Proposal {proposal.id} must not carry a belief cause.")
-            return
-        if error := decision_transition_error(node, changes):
-            refuse(f"Decision Proposal {proposal.id} is incoherent: {error}")
-            return
-        if not decision_is_experiment_input(state, node.id, context_patch):
-            refuse(
-                f"Decision Proposal {proposal.id} targets {node.id!r}, which is not an Experiment "
-                "input through a governed_by edge in the current graph or this Patch."
-            )
+        refuse(
+            f"Proposal {proposal.id} targets Decision {node.id!r}; new Decision Proposals are "
+            f"not admitted, and Decision outcomes require the {DECIDE_DECISION} action."
+        )
         return
     if isinstance(node, Hypothesis):
         if set(changes) != HYPOTHESIS_PROPOSAL_FIELDS or changes["status"] == node.status:
@@ -270,8 +253,8 @@ def _validate_agent_proposal_boundary(
             )
         return
     refuse(
-        f"Proposal {proposal.id} targets {node_id!r}; agents may propose only Decision choice "
-        "or Hypothesis status transitions."
+        f"Proposal {proposal.id} targets {node_id!r}; agents may propose only Hypothesis status "
+        "transitions."
     )
 
 

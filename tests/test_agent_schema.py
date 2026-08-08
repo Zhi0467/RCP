@@ -74,6 +74,7 @@ def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects()
     assert "layer" not in schema["$defs"]["NewEdge"]["properties"]
     for definition in ("NodeUpdate", "SupersedeNode", "NodeMerge"):
         assert "cause" in schema["$defs"][definition]["properties"]
+    assert "cause" in schema["$defs"]["ProposalNodeUpdate"]["required"]
 
 
 def test_agent_patch_schema_accepts_remove_nodes() -> None:
@@ -168,7 +169,9 @@ def test_agent_output_schema_omits_nested_rcp_bookkeeping() -> None:
             definitions[definition]["properties"]
         )
     assert "created_rev" not in definitions["NewEdge"]["properties"]
-    assert "raised_rev" not in definitions["AgentAmbiguity"]["properties"]
+    assert "AgentAmbiguity" not in definitions
+    assert "CreateAmbiguitiesOperation" not in definitions
+    assert "ResolveAmbiguitiesOperation" not in definitions
     assert "updated_rev" not in definitions["AgentGlossaryTerm"]["properties"]
     for definition in ("AgentSourceRef", "AgentExperimentAttempt", "AgentGatedCard"):
         assert definitions[definition]["additionalProperties"] is False
@@ -181,6 +184,140 @@ def test_agent_output_schema_omits_nested_rcp_bookkeeping() -> None:
         "resolved_rev",
         "rejection_reason",
     }.isdisjoint(definitions["AgentProposal"]["properties"])
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "create_ambiguities",
+            "ambiguities": [
+                {
+                    "id": "amb/missing-boundary",
+                    "question": "What is the scope?",
+                    "why_it_matters": "The Hypothesis needs a boundary.",
+                }
+            ],
+        },
+        {
+            "op": "resolve_ambiguities",
+            "resolutions": [{"id": "amb/missing-boundary", "status": "resolved"}],
+        },
+    ],
+)
+def test_agent_schema_has_no_ambiguity_operations(operation: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        AgentPatch.model_validate({"summary": "Tried a retired operation.", "ops": [operation]})
+
+    rendered = json.dumps(agent_output_schema())
+    assert '"create_ambiguities"' not in rendered
+    assert '"resolve_ambiguities"' not in rendered
+
+
+def test_agent_schema_allows_a_new_ready_decision() -> None:
+    patch = AgentPatch.model_validate(
+        {
+            "summary": "Queued a makeable research choice.",
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "dec/evaluation-budget",
+                            "type": "decision",
+                            "title": "Evaluation budget",
+                            "question": "Which evaluation budget should the study use?",
+                            "options": ["small", "large"],
+                            "status": "ready",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert patch.ops[0].nodes[0].status == "ready"  # type: ignore[union-attr]
+
+
+def test_agent_schema_rejects_a_decision_proposal() -> None:
+    raw = {
+        "summary": "Tried to propose a Decision outcome.",
+        "ops": [
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/select-budget",
+                        "title": "Select the larger budget",
+                        "card": {
+                            "situation_cold": "The evaluation budget is ready to choose.",
+                            "why_human_now": "The choice affects experiment cost.",
+                            "consequences": "The larger evaluation will run.",
+                            "decision_needed": "Select the large budget option.",
+                        },
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "nodes": [
+                                    {
+                                        "id": "dec/evaluation-budget",
+                                        "changes": {
+                                            "selected_option": "large",
+                                            "status": "decided",
+                                        },
+                                        "cause": {
+                                            "kind": "evidence_edge",
+                                            "ref_id": "ev/result::informs::dec/evaluation-budget",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="Hypothesis status"):
+        AgentPatch.model_validate(raw)
+
+
+def test_agent_schema_requires_an_evidence_cause_on_a_hypothesis_proposal() -> None:
+    raw = {
+        "summary": "Proposed a belief transition without evidence.",
+        "ops": [
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/promote-claim",
+                        "title": "Promote the claim",
+                        "card": {
+                            "situation_cold": "The claim has changed.",
+                            "why_human_now": "Belief status is human-authoritative.",
+                            "consequences": "The claim becomes active.",
+                            "decision_needed": "Approve or reject active status.",
+                        },
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "nodes": [
+                                    {
+                                        "id": "hyp/claim",
+                                        "changes": {"status": "active"},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="cause"):
+        AgentPatch.model_validate(raw)
 
 
 def test_agent_experiment_schema_uses_only_the_invocation_ceiling_name() -> None:

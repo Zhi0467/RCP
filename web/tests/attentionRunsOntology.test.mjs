@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -14,11 +15,34 @@ const server = await createServer({
 const { AttentionOverview, ExecutionView } = await server.ssrLoadModule(
   "/src/views/GraphViews.tsx",
 );
-const { humanAttentionBlockers, shouldShowCoverageBoundaryWarning } =
-  await server.ssrLoadModule("/src/App.tsx");
+const {
+  decisionsAwaitingChoice,
+  humanAttentionBlockers,
+  shouldShowCoverageBoundaryWarning,
+  taskRetryRequestBody,
+} = await server.ssrLoadModule("/src/App.tsx");
+const { AttentionRail } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
 const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 
 after(() => server.close());
+
+test("Experiment provider-switch retry overrides never submit run_on", () => {
+  const task = {
+    request: { patch_kind: "experiment_loop" },
+  };
+  const config = {
+    provider: "claude",
+    model: "claude-sonnet-4-5",
+    reasoning: "high",
+    run_on: "cluster",
+  };
+
+  assert.deepEqual(taskRetryRequestBody(task, config), {
+    provider: "claude",
+    model: "claude-sonnet-4-5",
+    reasoning: "high",
+  });
+});
 
 function graph(overrides = {}) {
   return {
@@ -52,6 +76,23 @@ function blocker(id, blockerType, status = "open", standing = "asserted") {
   };
 }
 
+function decision(id, status) {
+  return {
+    id,
+    type: "decision",
+    title: id,
+    question: `Choose ${id}?`,
+    options: ["First", "Second"],
+    selected_option: status === "decided" || status === "revisit" ? "First" : null,
+    status,
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+}
+
 function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T00:00:00Z") {
   return {
     operation_id: operationId,
@@ -74,12 +115,15 @@ function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T
   };
 }
 
-test("Inbox counts and lists only asserted open blockers", () => {
+test("Inbox counts pending proposals, queued Decisions, and only asserted open blockers", () => {
   const nodes = {
     asserted: blocker("ASSERTED OPEN", "scientific"),
     accepted: blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted"),
     contested: blocker("CONTESTED OPEN", "design", "open", "contested"),
     resolved: blocker("ASSERTED RESOLVED", "design", "resolved"),
+    decisionOpen: decision("OPEN DECISION", "open"),
+    decisionReady: decision("READY DECISION", "ready"),
+    decisionRevisit: decision("REVISIT DECISION", "revisit"),
   };
   assert.deepEqual(
     humanAttentionBlockers(Object.values(nodes)).map((node) => node.id),
@@ -115,9 +159,67 @@ test("Inbox counts and lists only asserted open blockers", () => {
     }),
   );
 
-  assert.match(html, /3 open/);
+  assert.match(html, /4 open/);
+  assert.match(html, /Decisions awaiting choice<\/span><strong>2<\/strong>/);
   assert.match(html, /Blockers awaiting judgment<\/span><strong>1<\/strong>/);
-  assert.doesNotMatch(html, /Open blockers|Scientific blockers/);
+  assert.doesNotMatch(html, /Open ambiguities|Open blockers|Scientific blockers|Resolve “/);
+});
+
+test("Decision attention membership uses canonical status while rendering staged nodes", () => {
+  const statuses = ["open", "ready", "decided", "revisit", "superseded"];
+  const canonicalNodes = Object.fromEntries(
+    statuses.map((status) => [status, decision(status.toUpperCase(), status)]),
+  );
+  const presentedNodes = Object.fromEntries(
+    Object.entries(canonicalNodes).map(([status, node]) => [
+      node.id,
+      {
+        ...node,
+        title: `STAGED ${status.toUpperCase()}`,
+        status: status === "ready" || status === "revisit" ? "decided" : node.status,
+        draft_touched: true,
+      },
+    ]),
+  );
+
+  assert.deepEqual(
+    decisionsAwaitingChoice(Object.values(canonicalNodes), presentedNodes).map((node) => [
+      node.id,
+      node.title,
+      node.status,
+      node.draft_touched,
+    ]),
+    [
+      ["READY", "STAGED READY", "ready", true],
+      ["REVISIT", "STAGED REVISIT", "revisit", true],
+    ],
+  );
+  assert.deepEqual(decisionsAwaitingChoice(Object.values(presentedNodes), presentedNodes), []);
+});
+
+test("Decision attention rows show only title and state and open the existing node card", () => {
+  const selected = [];
+  const decisions = [decision("READY ROW", "ready"), decision("REVISIT ROW", "revisit")];
+  const props = {
+    decisions,
+    blockers: [],
+    onSelectNode(nodeId) {
+      selected.push(nodeId);
+    },
+  };
+  const html = renderToStaticMarkup(React.createElement(AttentionRail, props));
+
+  assert.match(html, /READY ROW/);
+  assert.match(html, /REVISIT ROW/);
+  assert.match(html, />Ready<\/span>/);
+  assert.match(html, />Revisit<\/span>/);
+  assert.doesNotMatch(html, /First|Second|Resolve|Dismiss|ambiguity/i);
+
+  const tree = AttentionRail(props);
+  const readyRow = findElement(tree, (element) => element.key === "READY ROW");
+  assert.ok(readyRow);
+  readyRow.props.onClick();
+  assert.deepEqual(selected, ["READY ROW"]);
 });
 
 test("a successful Seed or Refresh suppresses the unseeded coverage warning", () => {
@@ -361,4 +463,40 @@ test("Project Settings has no ontology authoring surface", () => {
   } finally {
     globalThis.localStorage = previousLocalStorage;
   }
+});
+
+function findElement(node, predicate) {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findElement(child, predicate);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (!node || typeof node !== "object") return null;
+  if (node.props && predicate(node)) return node;
+  const children = node.props?.children;
+  for (const child of Array.isArray(children) ? children : [children]) {
+    const match = findElement(child, predicate);
+    if (match) return match;
+  }
+  return null;
+}
+
+test("the web Inbox predicate agrees with the backend over the shared fixture", () => {
+  // The backend counts Decisions awaiting choice for the project card while the
+  // client filters the graph itself for the Inbox, so the rule exists twice.
+  // tests/test_api.py reads this same file; drift on either side fails here.
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL("../../tests/fixtures/decisions_awaiting_choice.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const nodes = Object.fromEntries(fixture.nodes.map((node) => [node.id, node]));
+
+  assert.deepEqual(
+    decisionsAwaitingChoice(Object.values(nodes), nodes).map((node) => node.id),
+    fixture.expected_awaiting_choice,
+  );
 });

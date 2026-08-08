@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from rcp.core.authority import DECISION_PROPOSAL_FIELDS, HYPOTHESIS_PROPOSAL_FIELDS
+from rcp.core.authority import HYPOTHESIS_PROPOSAL_FIELDS
 from rcp.core.models import (
     ExperimentAttempt,
     GatedCard,
@@ -69,7 +69,7 @@ class AgentDecision(AgentNode):
     selected_option: None = None
     rationale: str | None = None
     consequences: list[str] = Field(default_factory=list)
-    status: Literal["open"] = "open"
+    status: Literal["open", "ready"] = "open"
 
 
 class AgentExperiment(AgentNode):
@@ -164,21 +164,6 @@ class NodeMerge(_StrictModel):
     cause: EvidenceEdgeCause | None = None
 
 
-class AmbiguityResolution(_StrictModel):
-    id: str
-    status: Literal["resolved", "dismissed"]
-
-
-class AgentAmbiguity(_StrictModel):
-    id: str = Field(pattern=rf"^amb/{_SLUG}$")
-    question: str
-    why_it_matters: str
-    candidates: list[str] = Field(default_factory=list)
-    related_node_ids: list[str] = Field(default_factory=list)
-    artifact_refs: list[str] = Field(default_factory=list)
-    status: Literal["open", "resolved", "dismissed"] = "open"
-
-
 class AgentGlossaryTerm(_StrictModel):
     term: str
     plain_definition: str
@@ -220,34 +205,19 @@ class MergeNodesOperation(_StrictModel):
     merges: list[NodeMerge] = Field(min_length=1)
 
 
-class CreateAmbiguitiesOperation(_StrictModel):
-    op: Literal["create_ambiguities"]
-    ambiguities: list[AgentAmbiguity] = Field(min_length=1)
-
-
-class ResolveAmbiguitiesOperation(_StrictModel):
-    op: Literal["resolve_ambiguities"]
-    resolutions: list[AmbiguityResolution] = Field(min_length=1)
-
-
 class UpsertGlossaryOperation(_StrictModel):
     op: Literal["upsert_glossary"]
     terms: list[AgentGlossaryTerm] = Field(min_length=1)
 
 
 class ProposalNodeUpdate(NodeUpdate):
+    cause: EvidenceEdgeCause
+
     @model_validator(mode="after")
     def validate_agent_authority_shape(self) -> ProposalNodeUpdate:
         fields = frozenset(self.changes)
-        if not fields or not (
-            fields <= DECISION_PROPOSAL_FIELDS or fields == HYPOTHESIS_PROPOSAL_FIELDS
-        ):
-            raise ValueError(
-                "An agent Proposal may change only Decision selected_option/status or "
-                "Hypothesis status."
-            )
-        if self.cause is not None and fields != HYPOTHESIS_PROPOSAL_FIELDS:
-            raise ValueError("Only a Hypothesis status Proposal may carry an evidence_edge cause.")
+        if fields != HYPOTHESIS_PROPOSAL_FIELDS:
+            raise ValueError("An agent Proposal may change only Hypothesis status.")
         return self
 
 
@@ -286,8 +256,6 @@ AgentOperation = Annotated[
     | RemoveNodesOperation
     | SupersedeNodesOperation
     | MergeNodesOperation
-    | CreateAmbiguitiesOperation
-    | ResolveAmbiguitiesOperation
     | CreateProposalsOperation
     | WithdrawProposalsOperation
     | UpsertGlossaryOperation,

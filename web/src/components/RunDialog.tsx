@@ -6,7 +6,7 @@ import { RepositoryScope } from "./RepositoryScope";
 
 interface Props {
   open: boolean;
-  kind: "seed" | "refresh";
+  kind: "seed" | "refresh" | "node_chat";
   project: ProjectSnapshot;
   initialScope: string[];
   initialConfig?: AgentRunConfig;
@@ -42,6 +42,10 @@ export function RunDialog({
   }, [open]);
 
   if (!open) return null;
+  const switchingExperimentProvider = mode === "retry" && kind === "node_chat";
+  const switchSelectionUnchanged = Boolean(
+    switchingExperimentProvider && initialConfig && !agentSelectionChanged(config, initialConfig),
+  );
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
@@ -72,11 +76,13 @@ export function RunDialog({
       >
         <header>
           <h2 id="run-dialog-title">
-            {mode === "retry"
-              ? `Retry ${kind === "seed" ? "seed" : "refresh"}`
-              : kind === "seed"
-                ? "Seed the project graph"
-                : "Refresh project understanding"}
+            {switchingExperimentProvider
+              ? "Switch Experiment provider"
+              : mode === "retry"
+                ? `Retry ${kind === "seed" ? "seed" : "refresh"}`
+                : kind === "seed"
+                  ? "Seed the project graph"
+                  : "Refresh project understanding"}
           </h2>
           <button className="icon-button" onClick={onClose} disabled={busy} aria-label="Close">
             <X size={17} />
@@ -145,15 +151,23 @@ export function RunDialog({
           <button
             className="button primary"
             disabled={
-              busy || scope.length === 0 || !providerReady || hostlessRepositories.length > 0
+              busy ||
+              (mode === "start" && scope.length === 0) ||
+              switchSelectionUnchanged ||
+              !providerReady ||
+              hostlessRepositories.length > 0
             }
             onClick={() => onRun(config, scope, message.trim() || null)}
           >
             <Play size={14} />{" "}
             {mode === "retry"
               ? busy
-                ? "Retrying…"
-                : "Retry"
+                ? switchingExperimentProvider
+                  ? "Switching…"
+                  : "Retrying…"
+                : switchingExperimentProvider
+                  ? "Switch provider"
+                  : "Retry"
               : busy
                 ? kind === "seed"
                   ? "Seeding…"
@@ -165,5 +179,13 @@ export function RunDialog({
         </footer>
       </section>
     </div>
+  );
+}
+
+export function agentSelectionChanged(current: AgentRunConfig, initial: AgentRunConfig): boolean {
+  return (
+    current.provider !== initial.provider ||
+    current.model !== initial.model ||
+    current.reasoning !== initial.reasoning
   );
 }

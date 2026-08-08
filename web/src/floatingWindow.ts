@@ -13,9 +13,12 @@ export interface FloatingRect {
   size: Size;
 }
 
+export type DetailWindowSlot = "original" | "companion";
+
 export const FLOATING_WINDOW_MARGIN = 12;
 export const FLOATING_WINDOW_GAP = 12;
 export const FLOATING_WINDOW_TOP = 118;
+export const DETAIL_WINDOW_OVERLAP_OFFSET = 40;
 
 export function clampFloatingPosition(
   position: Point,
@@ -142,4 +145,29 @@ export function defaultFloatingPosition(kind: "detail" | "chat", viewport: Size)
   if (kind === "chat") return { x: FLOATING_WINDOW_MARGIN, y: FLOATING_WINDOW_TOP };
   const width = floatingWindowSize(kind, viewport).width;
   return { x: viewport.width - width - FLOATING_WINDOW_MARGIN, y: FLOATING_WINDOW_TOP };
+}
+
+export function detailWindowSlotPosition(
+  slot: DetailWindowSlot,
+  windowSize: Size,
+  viewport: Size,
+): Point {
+  const right = viewport.width - windowSize.width - FLOATING_WINDOW_MARGIN;
+  const fitsSideBySide =
+    windowSize.width * 2 + FLOATING_WINDOW_GAP <= viewport.width - FLOATING_WINDOW_MARGIN * 2;
+  const companionX = right - DETAIL_WINDOW_OVERLAP_OFFSET;
+  const horizontalOffsetFits = companionX >= FLOATING_WINDOW_MARGIN;
+  const requested = fitsSideBySide
+    ? {
+        x: slot === "original" ? right : right - windowSize.width - FLOATING_WINDOW_GAP,
+        y: FLOATING_WINDOW_TOP,
+      }
+    : {
+        x: slot === "original" ? right : companionX,
+        y:
+          !horizontalOffsetFits && slot === "original"
+            ? FLOATING_WINDOW_TOP - DETAIL_WINDOW_OVERLAP_OFFSET
+            : FLOATING_WINDOW_TOP,
+      };
+  return clampFloatingPosition(requested, windowSize, viewport);
 }

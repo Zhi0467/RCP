@@ -319,7 +319,6 @@ def test_decision_drift_reports_a_moved_or_contested_pin_without_gating() -> Non
     assert [item.decision_id for item in moved.decision_drift] == [DECISION_ID]
     assert moved.decision_drift[0].pinned_option == "4xA100"
     assert moved.decision_drift[0].current_option == "8xA100"
-    assert not moved.decision_drift[0].proposed
 
 
 def test_active_loop_marker_uses_control_runtime_not_semantic_attempts() -> None:
@@ -490,7 +489,7 @@ def test_loop_patch_cannot_edit_the_pinned_bundle_or_other_graph_authority() -> 
             "op": "update_nodes",
             "nodes": [
                 {"id": EXPERIMENT_ID, "changes": {"attempts": [rewritten]}},
-                {"id": DECISION_ID, "changes": {"status": "open"}},
+                {"id": "blk/capacity", "changes": {"status": "open"}},
             ],
         },
         {"op": "set_standing", "node_id": EXPERIMENT_ID, "standing": "accepted"},
@@ -499,6 +498,37 @@ def test_loop_patch_cannot_edit_the_pinned_bundle_or_other_graph_authority() -> 
     assert "experiment-loop-attempt-mutation" in codes
     assert "experiment-loop-foreign-update" in codes
     assert "experiment-loop-operation" in codes
+
+
+def test_loop_patch_can_queue_a_pinned_decision_but_cannot_decide_it() -> None:
+    state = _state()
+    for status in ("open", "ready", "revisit"):
+        patch = _patch(
+            [
+                {
+                    "op": "update_nodes",
+                    "nodes": [{"id": DECISION_ID, "changes": {"status": status}}],
+                }
+            ]
+        )
+        assert not validate_patch(state, patch, ["repo"]).rejected
+
+    decide = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {"status": "decided", "selected_option": "8xA100"},
+                    }
+                ],
+            }
+        ]
+    )
+    codes = _codes(validate_patch(state, decide, ["repo"]))
+    assert "experiment-loop-decision-action" in codes
+    assert "decision-action-refused" in codes
 
 
 def test_loop_patch_cannot_mutate_completion_criteria_but_attempts_do_not_spend_budget() -> None:
@@ -675,26 +705,59 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
     )
 
 
-def test_proposal_only_iteration_is_typed_and_scoped_to_a_governing_decision() -> None:
+def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() -> None:
     state = _state()
     proposal = {
-        "id": "prop/change-resources",
-        "title": "Change resources",
+        "id": "prop/activate-target",
+        "title": "Activate the tested hypothesis",
         "card": {
-            "situation_cold": "The current resource shape is insufficient.",
-            "why_human_now": "The governing decision must change.",
-            "consequences": "The next run uses another resource shape.",
-            "decision_needed": "Choose whether to revisit the resource decision.",
+            "situation_cold": "The new result supports the tested hypothesis.",
+            "why_human_now": "Only the human controls the belief transition.",
+            "consequences": "The hypothesis becomes active.",
+            "decision_needed": "Approve or reject this belief transition.",
         },
         "ops": [
             {
                 "op": "update_nodes",
-                "nodes": [{"id": DECISION_ID, "changes": {"status": "revisit"}}],
+                "nodes": [
+                    {
+                        "id": "hyp/target",
+                        "changes": {"status": "active"},
+                        "cause": {
+                            "kind": "evidence_edge",
+                            "ref_id": "ev/proposal::supports::hyp/target",
+                        },
+                    }
+                ],
             }
         ],
-        "related_node_ids": [DECISION_ID],
+        "related_node_ids": ["hyp/target"],
         "base_rev": 3,
     }
+    evidence_ops = [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "ev/proposal",
+                    "type": "evidence",
+                    "title": "Proposal evidence",
+                    "observation": "The experiment supported the target.",
+                    "origin": "internal_run",
+                }
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "source": "ev/proposal",
+                    "target": "hyp/target",
+                    "relation": "supports",
+                }
+            ],
+        },
+    ]
     proposal_attempt = _attempt(attempt_kind="proposal_only", status="completed").model_copy(
         update={"job_refs": []}
     )
@@ -704,6 +767,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_governing_decision() -
                 "op": "update_nodes",
                 "nodes": [{"id": EXPERIMENT_ID, "changes": {"attempts": [proposal_attempt]}}],
             },
+            *evidence_ops,
             {"op": "create_proposals", "proposals": [proposal]},
         ]
     )
@@ -717,6 +781,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_governing_decision() -
                 "op": "update_nodes",
                 "nodes": [{"id": EXPERIMENT_ID, "changes": {"attempts": [closed_attempt]}}],
             },
+            *evidence_ops,
             {"op": "create_proposals", "proposals": [proposal]},
         ]
     )
@@ -725,19 +790,18 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_governing_decision() -
     # Proposal dependencies are RCP bookkeeping, not an agent declaration or
     # an experiment-loop authority input. The semantic target controls scope.
     stale_bookkeeping = deepcopy(proposal)
-    stale_bookkeeping["related_node_ids"] = ["hyp/target"]
+    stale_bookkeeping["related_node_ids"] = [DECISION_ID]
     codes = _codes(
         validate_patch(
             state,
-            _patch([{"op": "create_proposals", "proposals": [stale_bookkeeping]}]),
+            _patch([*evidence_ops, {"op": "create_proposals", "proposals": [stale_bookkeeping]}]),
             ["repo"],
         )
     )
     assert "experiment-loop-proposal-scope" not in codes
     assert "experiment-loop-proposal-operations" not in codes
 
-    # A target that is neither a pinned decision nor a hypothesis this experiment
-    # tests falls through both proposal shapes.
+    # A target that is not a Hypothesis this experiment tests is refused.
     hidden_foreign_update = deepcopy(proposal)
     hidden_foreign_update["ops"] = [
         {

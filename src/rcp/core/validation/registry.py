@@ -78,10 +78,14 @@ OP_RULES: dict[str, OpRule] = {
         authoring_validate=author_merge_nodes,
         dependencies=depends_merge_nodes,
     ),
-    "create_ambiguities": OpRule(dependencies=depends_create_ambiguities),
+    "create_ambiguities": OpRule(
+        dependencies=depends_create_ambiguities,
+        legacy_only=True,
+    ),
     "resolve_ambiguities": OpRule(
         structural_validate=validate_resolve_ambiguities,
         dependencies=depends_resolve_ambiguities,
+        legacy_only=True,
     ),
     "create_proposals": OpRule(
         structural_validate=validate_create_proposals,

@@ -1,14 +1,4 @@
-import {
-  AlertTriangle,
-  Check,
-  FlaskConical,
-  MessageCircle,
-  Minus,
-  Network,
-  PencilLine,
-  Trash2,
-  X,
-} from "lucide-react";
+import { Check, FlaskConical, MessageCircle, Minus, PencilLine, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { GlossaryIndex } from "../glossary";
@@ -21,7 +11,7 @@ import {
   type NodeEditField,
 } from "../nodeEditing";
 import type { DraftNodeValue } from "../humanDraft";
-import { beliefCausePresentation, edgeValidationFlags, nodeBeliefTransitions } from "../nodeDetail";
+import { beliefCausePresentation, nodeBeliefTransitions } from "../nodeDetail";
 import { humanFieldLabels, humanize, nodeTypeLabel, presentNode } from "../nodePresentation";
 import type {
   BeliefTransition,
@@ -31,6 +21,7 @@ import type {
   OntologyState,
   ValidationMessage,
 } from "../types";
+import { RelationMap } from "./RelationMap";
 
 interface Props {
   node: GraphNode;
@@ -41,6 +32,8 @@ interface Props {
   validationMessages: ValidationMessage[];
   ontology: OntologyState;
   sizeStorageKey?: string;
+  detailSlot: "original" | "companion";
+  focusRequestToken?: string | number;
   mutationsDisabled?: boolean;
   stagedNewNode?: boolean;
   stagedForRemoval?: boolean;
@@ -49,7 +42,6 @@ interface Props {
   experimentControl?: ExperimentControlState | null;
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
-  pendingDecisionProposalCount?: number;
   decisionChoiceStaged?: boolean;
   onUnstage?: () => void;
   onRemove?: () => void;
@@ -62,7 +54,7 @@ interface Props {
   onDecisionChoice?: (selectedOption: string) => void;
   onRunExperiment?: () => void;
   onOpenChat: () => void;
-  onExploreRelations: () => void;
+  onOpenRelatedNode: (nodeId: string) => void;
   onSelectNode: (nodeId: string) => void;
 }
 
@@ -97,6 +89,8 @@ export function DetailDrawer({
   validationMessages,
   ontology,
   sizeStorageKey,
+  detailSlot,
+  focusRequestToken,
   mutationsDisabled = false,
   stagedNewNode = false,
   stagedForRemoval = false,
@@ -105,7 +99,6 @@ export function DetailDrawer({
   experimentControl = null,
   experimentRunDisabled = false,
   experimentRunBusy = false,
-  pendingDecisionProposalCount = 0,
   decisionChoiceStaged = false,
   onUnstage,
   onRemove,
@@ -118,7 +111,7 @@ export function DetailDrawer({
   onDecisionChoice,
   onRunExperiment,
   onOpenChat,
-  onExploreRelations,
+  onOpenRelatedNode,
   onSelectNode,
 }: Props) {
   const [editing, setEditing] = useState(false);
@@ -242,23 +235,26 @@ export function DetailDrawer({
   const decisionChoiceDisabled =
     nodeMutationDisabled || node.status === "superseded" || !onDecisionChoice;
   const fullscreenTarget = typeof document === "undefined" ? null : document.fullscreenElement;
+  const drawerTitleId = `drawer-title-${detailSlot}-${node.id}`;
   const drawer = (
     <DraggableWindow
       className="node-detail-window"
       kind="detail"
       resizable
       sizeStorageKey={sizeStorageKey}
+      detailSlot={detailSlot}
+      focusRequestToken={focusRequestToken}
     >
       <aside
         className={`detail-drawer node-detail-drawer${node.draft_touched ? " draft-touched" : ""}`}
         role="dialog"
         aria-modal="false"
-        aria-labelledby="drawer-title"
+        aria-labelledby={drawerTitleId}
       >
         <header data-drag-handle="true">
           <div data-text-selectable="true">
             <span className="eyebrow">{nodeTypeLabel(node)}</span>
-            <h2 id="drawer-title">
+            <h2 id={drawerTitleId}>
               <GlossaryText text={node.title} glossaryIndex={glossaryIndex} />
             </h2>
             <div className="node-meta">
@@ -424,12 +420,6 @@ export function DetailDrawer({
                       })}
                     </div>
                   </fieldset>
-                  {pendingDecisionProposalCount > 0 && (
-                    <div className="decision-proposal-count" role="status">
-                      {pendingDecisionProposalCount} pending proposal
-                      {pendingDecisionProposalCount === 1 ? "" : "s"} target this decision
-                    </div>
-                  )}
                 </section>
               ) : (
                 <section className="node-lead">
@@ -515,9 +505,7 @@ export function DetailDrawer({
                     <ul className="experiment-decision-drift" aria-label="Decision drift">
                       {experimentControl.decision_drift.map((drift) => (
                         <li key={drift.decision_id}>
-                          {drift.proposed
-                            ? `${drift.decision_id} has a proposed change. This episode was pinned to ${drift.pinned_option}.`
-                            : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
+                          {`${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
                         </li>
                       ))}
                     </ul>
@@ -584,44 +572,17 @@ export function DetailDrawer({
               )}
 
               <section>
-                <div className="relations-control">
-                  <button
-                    className="relations-control-heading"
-                    onClick={onExploreRelations}
-                    aria-label={`Open DAG focused on relations for ${node.title}`}
-                  >
-                    <Network size={15} />
-                    <strong>Relations</strong>
-                    <small>{relations.length}</small>
-                  </button>
-                  {relations.map((edge) => {
-                    const peerId = edge.source === node.id ? edge.target : edge.source;
-                    const flags = edgeValidationFlags(edge.id, validationMessages);
-                    return (
-                      <div
-                        className={`relation-row${flags.length > 0 ? " has-flag" : ""}`}
-                        key={edge.id}
-                      >
-                        <button type="button" onClick={onExploreRelations}>
-                          <span>
-                            {edge.source === node.id ? edge.relation : `← ${edge.relation}`}
-                          </span>
-                          <strong>{allNodes[peerId]?.title ?? peerId}</strong>
-                        </button>
-                        {flags.map((flag) => (
-                          <span
-                            className="relation-flag"
-                            role="status"
-                            key={`${edge.id}-${flag.message}`}
-                          >
-                            <AlertTriangle size={12} />
-                            {flag.message}
-                          </span>
-                        ))}
-                      </div>
-                    );
-                  })}
+                <div className="relations-control-heading">
+                  <strong>Relations</strong>
+                  <small>{relations.length}</small>
                 </div>
+                <RelationMap
+                  focusedNode={node}
+                  allNodes={allNodes}
+                  incidentEdges={relations.filter((edge) => typeof edge.relation === "string")}
+                  validationMessages={validationMessages}
+                  onOpenNodeWindow={onOpenRelatedNode}
+                />
               </section>
 
               {details.length > 0 && (

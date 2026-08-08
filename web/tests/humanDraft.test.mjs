@@ -12,7 +12,6 @@ import {
   normalizeHumanDraft,
   proposalTargetsNode,
   serializeHumanDraft,
-  stageAmbiguityDecision,
   stageDecisionChoice,
   stageNodeEdit,
   stageNodeEditStart,
@@ -139,15 +138,13 @@ test("Blocker lifecycle edits invalidate prior judgment and can reopen attention
   assert.equal(reopened.standing, "asserted");
 });
 
-test("judgments, proposal decisions, and ambiguity decisions are reversible", () => {
+test("judgments and proposal decisions are reversible", () => {
   let draft = stageNodeStanding(emptyHumanDraft(4), graph, "hyp/example", "contested");
   draft = stageProposalDecision(draft, graph, "proposal/1", "approved");
-  draft = stageAmbiguityDecision(draft, "ambiguity/1", "resolved");
-  assert.equal(humanDraftChangeCount(draft), 3);
+  assert.equal(humanDraftChangeCount(draft), 2);
 
   draft = stageNodeStanding(draft, graph, "hyp/example", "accepted");
   draft = stageProposalDecision(draft, graph, "proposal/1", null);
-  draft = stageAmbiguityDecision(draft, "ambiguity/1", null);
   assert.equal(humanDraftChangeCount(draft), 0);
 });
 
@@ -245,7 +242,6 @@ test("direct Decision choices merge with wording edits and supersede targeted pr
       },
     ],
     proposals: [{ proposal_id: relatedOnly.id, decision: "rejected" }],
-    ambiguities: [],
     ontology: null,
     custom_nodes: [],
   });
@@ -283,11 +279,19 @@ test("serialization survives localStorage round trips and request conversion str
     statement: "Sharper statement",
   });
   draft = stageProposalDecision(draft, graph, "proposal/1", "rejected");
-  draft = stageAmbiguityDecision(draft, "ambiguity/1", "dismissed");
   const restored = deserializeHumanDraft(serializeHumanDraft(draft));
   assert.deepEqual(restored, draft);
+  assert.equal("ambiguities" in emptyHumanDraft(4), false);
   assert.equal(humanDraftStorageKey("project one"), "rcp:human-draft:project one");
   assert.equal(deserializeHumanDraft("not json"), null);
+
+  const legacyStoredDraft = JSON.parse(serializeHumanDraft(draft));
+  legacyStoredDraft.ambiguities = {
+    "ambiguity/1": { status: "dismissed" },
+  };
+  const restoredLegacyDraft = deserializeHumanDraft(JSON.stringify(legacyStoredDraft));
+  assert.deepEqual(restoredLegacyDraft, draft);
+  assert.equal("ambiguities" in restoredLegacyDraft, false);
 
   assert.deepEqual(toHumanSyncRequest(restored), {
     base_revision: 4,
@@ -301,7 +305,6 @@ test("serialization survives localStorage round trips and request conversion str
       },
     ],
     proposals: [{ proposal_id: "proposal/1", decision: "rejected" }],
-    ambiguities: [{ ambiguity_id: "ambiguity/1", status: "dismissed" }],
     ontology: null,
     custom_nodes: [],
   });
@@ -355,7 +358,6 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
     removed_node_ids: [],
     nodes: [],
     proposals: [],
-    ambiguities: [],
     ontology,
     custom_nodes: [customNode],
   });

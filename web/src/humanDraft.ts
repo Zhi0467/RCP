@@ -8,7 +8,6 @@ export type DraftNodeValue =
   | Record<string, string | number | boolean | string[]>
   | null;
 export type ProposalDecision = "approved" | "rejected";
-export type AmbiguityDecision = "resolved" | "dismissed";
 
 export interface DraftNodeChange {
   base_updated_rev: number;
@@ -24,7 +23,6 @@ export interface HumanDraft {
   nodes: Record<string, DraftNodeChange>;
   removed_node_ids: string[];
   proposals: Record<string, { decision: ProposalDecision; reason?: string }>;
-  ambiguities: Record<string, { status: AmbiguityDecision }>;
   ontology: OntologyState | null;
   custom_nodes: Record<string, GraphNode>;
 }
@@ -40,7 +38,6 @@ export interface HumanSyncRequest {
     cancel_attempt_ids?: string[];
   }>;
   proposals: Array<{ proposal_id: string; decision: ProposalDecision; reason?: string }>;
-  ambiguities: Array<{ ambiguity_id: string; status: AmbiguityDecision }>;
   ontology: OntologyState | null;
   custom_nodes: GraphNode[];
 }
@@ -52,7 +49,6 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
     nodes: {},
     removed_node_ids: [],
     proposals: {},
-    ambiguities: {},
     ontology: null,
     custom_nodes: {},
   };
@@ -283,17 +279,6 @@ export function stageProposalDecision(
   return normalizeHumanDraft(next, graph);
 }
 
-export function stageAmbiguityDecision(
-  draft: HumanDraft,
-  ambiguityId: string,
-  status: AmbiguityDecision | null,
-): HumanDraft {
-  const next = cloneDraft(draft);
-  if (status) next.ambiguities[ambiguityId] = { status };
-  else delete next.ambiguities[ambiguityId];
-  return next;
-}
-
 export function stageOntology(
   draft: HumanDraft,
   graph: GraphState,
@@ -351,7 +336,6 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
     nodeChanges +
     draft.removed_node_ids.length +
     Object.keys(draft.proposals).length +
-    Object.keys(draft.ambiguities).length +
     (draft.ontology ? 1 : 0) +
     Object.keys(draft.custom_nodes).length
   );
@@ -370,10 +354,6 @@ export function toHumanSyncRequest(draft: HumanDraft): HumanSyncRequest {
     })),
     proposals: Object.entries(draft.proposals).map(([proposalId, entry]) => ({
       proposal_id: proposalId,
-      ...entry,
-    })),
-    ambiguities: Object.entries(draft.ambiguities).map(([ambiguityId, entry]) => ({
-      ambiguity_id: ambiguityId,
       ...entry,
     })),
     ontology: draft.ontology,
@@ -414,13 +394,15 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed) || parsed.version !== 1 || !Number.isInteger(parsed.base_revision))
       return null;
-    if (!isRecord(parsed.nodes) || !isRecord(parsed.proposals) || !isRecord(parsed.ambiguities))
-      return null;
+    if (!isRecord(parsed.nodes) || !isRecord(parsed.proposals)) return null;
     return {
-      ...(parsed as unknown as HumanDraft),
+      version: 1,
+      base_revision: parsed.base_revision as number,
+      nodes: parsed.nodes as unknown as HumanDraft["nodes"],
       removed_node_ids: Array.isArray(parsed.removed_node_ids)
         ? parsed.removed_node_ids.filter((id): id is string => typeof id === "string")
         : [],
+      proposals: parsed.proposals as unknown as HumanDraft["proposals"],
       ontology: isRecord(parsed.ontology) ? (parsed.ontology as unknown as OntologyState) : null,
       custom_nodes: isRecord(parsed.custom_nodes)
         ? (parsed.custom_nodes as Record<string, GraphNode>)
@@ -446,9 +428,6 @@ function cloneDraft(draft: HumanDraft): HumanDraft {
     ),
     proposals: Object.fromEntries(
       Object.entries(draft.proposals).map(([id, entry]) => [id, { ...entry }]),
-    ),
-    ambiguities: Object.fromEntries(
-      Object.entries(draft.ambiguities).map(([id, entry]) => [id, { ...entry }]),
     ),
     ontology: draft.ontology
       ? {

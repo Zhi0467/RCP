@@ -430,8 +430,13 @@ one caller.
 
 **Status:** open. Raised 2026-08-07. Deferred until identity and multi-user land.
 **Governing section:** [Watch delivery](research-control-panel-blueprint.md#watch-delivery).
-**Related work:** [actor identity handoff](handoffs/handoff-2026-08-07-actor-identity-and-permissions.md),
+**Related work:** [team-space identity and permissions handoff](handoffs/handoff-2026-08-08-team-spaces-identity-and-permissions.md),
+[superseded actor identity handoff](handoffs/handoff-2026-08-07-actor-identity-and-permissions.md),
 [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
+
+The 2026-08-08 team-space design removes user-owned agent actors. Revisit the
+questions below in terms of task/campaign authorization lineage, recipient
+budget, project scope, and human consent rather than `owner_actor_id`.
 
 ### The question
 

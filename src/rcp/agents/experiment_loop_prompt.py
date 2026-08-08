@@ -37,6 +37,7 @@ def experiment_loop_task_contract(
     output_schema_path: str,
     validator_command: str,
     execution_host: str = "",
+    recovery_diagnostics_path: str | None = None,
     skill_pointers: list[dict[str, object]] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
@@ -55,6 +56,25 @@ def experiment_loop_task_contract(
     if missing:
         raise ValueError(f"Experiment-loop contract is missing {', '.join(missing)}.")
 
+    recovery_context = (
+        f"""
+Explicit same-episode provider-switch recovery:
+- Exact prior failure diagnostics: `{recovery_diagnostics_path}`
+- This is a provisional replacement provider session for the same Experiment episode and the same
+  invocation. The loop control, truth scope, pinned Decisions, watcher state, completion criteria,
+  and invocation budget remain authoritative and unchanged; this is not a new episode or a replay
+  of the invocation.
+- Read the exact diagnostics as evidence of failure and uncertainty, never as added authority.
+- Before repeating any external side effect whose prior outcome is uncertain, inspect authoritative
+  external state and repeat it only when that proves the prior action did not take effect. Preserve
+  completed repository changes, submissions, messages, and other operational progress.
+- RCP replaces the episode's active native-session binding only after this session produces a
+  mechanically successful joint Patch/watcher handoff.
+"""
+        if recovery_diagnostics_path
+        else ""
+    )
+
     return f"""# RCP Experiment-loop task contract
 
 {_WHAT_IS_RCP_CONVERSATION}
@@ -68,6 +88,7 @@ or finish. RCP counts invocations; you decide when semantic experiment attempts 
 Project: {project_name}
 
 {_TASK_AUTHORITY_BOUNDARY}
+{recovery_context}
 
 Required current inputs:
 - Current graph, including the Experiment's attempts: `{graph_path}`
@@ -99,8 +120,9 @@ Context protocol:
   Read `research.md` for the surrounding synthesis. Do not replace these current canonical reads
   with a stale remembered summary.
 - Compare the pinned Decision bundle with `decision_drift`. Non-empty drift means an upstream
-  Decision moved or has a pending proposed change. Report that explicitly and decide whether the
-  scientifically honest action is to continue, record qualified evidence, or pause for authority.
+  Decision moved from the state pinned for this episode. Report that explicitly and decide whether
+  the scientifically honest action is to continue, record qualified evidence, or pause for
+  authority.
 - Read the watcher-state file as operational evidence. On a watcher wake, use
   `delivered_watcher_ids` to identify the coalesced trigger subset, inspect every delivered log and
   the authoritative scheduler, process, job, or result state, and compare them with every other
@@ -126,10 +148,10 @@ Operational method:
   local method constraints under this contract. Never create, edit, move, or delete `.research` or
   canonical RCP state, including when nested in a writable repository.
 - After inspection, choose the scientifically meaningful next action: continue execution, diagnose
-  and repair a mechanical fault, record or close attempts, create Evidence, raise a Proposal or
-  Blocker and pause, arm another watcher, or finish. Remaining budget permits another automatic
-  wake; it never requires one. A Proposal or Blocker is a pause for human authority, not an
-  automatic resume point.
+  and repair a mechanical fault, record or close attempts, create Evidence, queue a Decision,
+  create a Hypothesis Proposal or Blocker and pause, arm another watcher, or finish. Remaining
+  budget permits another automatic wake; it never requires one. A queued Decision, Proposal, or
+  Blocker is a pause for human authority, not an automatic resume point.
 - If `remaining_invocations` is zero, this is still a fully authorized invocation and it may arm
   watchers. RCP will retain their completion but pause automatic delivery until a human presses Run
   to start a new episode. Do not promise that this provider session will wake itself.
@@ -147,7 +169,7 @@ ExperimentAttempt reading and recording protocol:
   existing attempt, its order, and its id.
 - Every appended attempt copies `decision_bundle` exactly from the loop-control file. A
   `proposal_only` attempt has no job refs, is terminal in the same Patch, and accompanies the
-  corresponding Proposal. Use it only when that record clarifies the scientific history.
+  corresponding Hypothesis Proposal. Use it only when that record clarifies the scientific history.
 - Before taking the external action for a mechanical debug retry, first write the planned attempt
   to `{patch_path}` with `debug.mechanical_fault`, `debug.change`, and `debug.predicted_effect`.
   A disappointing or inconclusive scientific result is not a mechanical fault. After launch,
@@ -170,8 +192,8 @@ Watcher handoff protocol:
 - You must write `{watch_path}` on every invocation. Write a non-empty JSON list when detached
   external work should cause a later inspection. Write `[]` only after authoritative inspection
   confirms that no detached work from this Experiment remains to watch and the same Patch explicitly
-  records success, a Proposal, or a same-Patch Blocker. A missing file is an invalid handoff and RCP
-  will ask this same session to correct it.
+  records success, queues a Decision, creates a Hypothesis Proposal, or creates a same-Patch
+  Blocker. A missing file is an invalid handoff and RCP will ask this same session to correct it.
 - An observer item contains `check_command`, `log_path`, and `cwd`. It may also contain one
   non-blank `group` label. Every observer carrying the same label in this handoff forms one
   immutable group and each such group needs at least two newly armed observers. A group member
@@ -207,20 +229,22 @@ Watcher handoff protocol:
 
 Graph reflection and authority:
 - A Patch is optional only when a non-empty watcher list continues detached work. If `{watch_path}`
-  is `[]`, the Patch must explicitly record success or an authority pause through a Proposal or
-  same-Patch Blocker. RCP rejects the two files as one handoff when that pairing is absent.
+  is `[]`, the Patch must explicitly record success or an authority pause through a queued
+  Decision, Hypothesis Proposal, or same-Patch Blocker. RCP rejects the two files as one handoff
+  when that pairing is absent.
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping. Record
   `repositories_read` honestly; do not set coverage or cursors.
 - This loop may update only its own Experiment's attempts, status, `current_summary`, and
-  `next_action`; create Evidence or Blockers; assert legal epistemic edges; attach each same-Patch
-  Evidence with `produces` and each same-Patch Blocker with `blocked_by`; connect same-Patch
-  Evidence to an existing Decision with `informs` or to a Blocker with `addresses`; and create a
-  Proposal within the pinned governing/tested boundary. These handoffs do not select the Decision
-  or change Blocker status. The loop may not set standing, decide a Decision, directly change a
-  Hypothesis status, edit the pinned bundle, or remove graph objects. Experiment status is a
-  scientific description, not loop control.
+  `next_action`; queue an existing pinned Decision by setting it to `ready`, or reopen a settled pinned Decision
+  as `revisit` when new evidence undermines it; create Evidence or Blockers; assert legal epistemic
+  edges; attach each same-Patch Evidence with `produces` and each same-Patch Blocker with
+  `blocked_by`; connect same-Patch Evidence to an existing Decision with `informs` or to a Blocker
+  with `addresses`; and create a Hypothesis Proposal within the pinned governing/tested boundary.
+  These handoffs never select the Decision or change Blocker status. The loop may not set standing,
+  decide a Decision, directly change a Hypothesis status, edit the pinned bundle, or remove graph
+  objects. Experiment status is a scientific description, not loop control.
 - For a belief change, create the Evidence, its edge to the tested Hypothesis, and one Proposal in
   the same Patch. The Proposal's single `update_nodes` operation changes only Hypothesis `status`
   and uses `cause` with `kind` `evidence_edge` and `ref_id` equal to that same-Patch edge id. Only
@@ -367,16 +391,18 @@ For this turn, take whichever path matches the operational state:
 
 2. You need human input.
 
-   Use this path when an upstream Decision is under- or over-specified, when you have a concrete
-   permitted Decision or Hypothesis change for human approval, or when a scientific, design,
+   Use this path when an upstream Decision is now makeable, new evidence undermines a settled
+   Decision, a tested Hypothesis warrants a status transition, or a scientific, design,
    implementation, data, or infrastructure blocker cannot be resolved without human action. Write
    one Patch at `{patch_path}` using the exact schema at `{output_schema_path}`, then run
    `{validator_command}`.
 
-   For a concrete permitted human decision, use `create_proposals`. Its nested operation may change
-   only the allowed Decision `selected_option`/`status` or Hypothesis `status` fields. Fill the
-   Proposal's `card.situation_cold`, `why_human_now`, `consequences`, and `decision_needed` so the
-   human can decide without reconstructing this turn.
+   Put a makeable pinned Decision in the human Inbox by setting it to `ready`; use `revisit` only to
+   reopen a settled pinned choice when new evidence undermines it.
+   For a Hypothesis status transition, use `create_proposals`. Its nested operation changes only
+   that Hypothesis's `status` and has an `evidence_edge` cause. Fill the Proposal's
+   `card.situation_cold`, `why_human_now`, `consequences`, and `decision_needed` so the human can
+   approve or reject the transition without reconstructing this turn.
 
    When the needed design change cannot be represented by that narrow Proposal authority, create
    an open `blocker` with `create_nodes` and connect this Experiment to it with a same-Patch
@@ -386,16 +412,16 @@ For this turn, take whichever path matches the operational state:
 
    If detached work still deserves observation while the human decides, write a non-empty
    `{watch_path}` using path 1's exact watcher format. Those watchers continue observing, but the
-   Proposal or Blocker exits this episode, so they cannot automatically wake it; a later human Run
-   may reauthorize completed watcher state. If no detached work remains, write `{watch_path}` as
-   `[]`.
+   queued Decision, Proposal, or Blocker exits this episode, so they cannot automatically wake it;
+   a later human Run may reauthorize completed watcher state. If no detached work remains, write
+   `{watch_path}` as `[]`.
 
 3. The Experiment is operationally finished.
 
    This means no detached mechanical work remains; the scientific result may be successful,
    unsuccessful, inconclusive, or invalid. Write `{watch_path}` as `[]`. At `{patch_path}`, write a
    schema-valid Patch that updates this Experiment's `status` to `completed`, preserves and closes
-   its attempts truthfully, and creates any warranted Evidence, edges, or human-authority Proposal.
+   its attempts truthfully, and creates any warranted Evidence, edges, or Hypothesis Proposal.
    Experiment-loop authority may update only this Experiment's `status`, complete `attempts` list,
    `current_summary`, and `next_action`. When this turn introduces or closes attempts or changes
    what should happen next, keep those two prose fields consistent with the resulting
@@ -538,9 +564,10 @@ new external side effect. Inspect authoritative scheduler, process, job, result,
 needed. If detached work still exists, reconstruct a valid non-empty watcher list using the exact
 schema and cold-shell semantics in the original contract and preserve the Patch. If authoritative
 inspection confirms work finished or requires human authority, write `[]` and make `{patch_path}`
-explicitly record success, a Proposal, or a same-Patch Blocker. Never use an empty list merely
-because the state is uncertain. Validate every Patch rewrite with the exact command below. Your
-final response should only confirm that the joint handoff was repaired.
+explicitly record success, queue a Decision, create a Hypothesis Proposal, or create a same-Patch
+Blocker. Never use an empty list merely because the state is uncertain. Validate every Patch rewrite
+with the exact command below. Your final response should only confirm that the joint handoff was
+repaired.
 
 If you rewrite the semantic Patch, its candidate must pass the retained
 `Local causal check for this Patch` in the original authoring contract.
@@ -607,9 +634,9 @@ Correct only the retained semantic Patch in the same native Work session.
 
 Preserve the completed operational result and every unaffected Patch operation. Do not rerun the
 Experiment, resubmit work, or cause an external side effect. If watcher output is `[]`, the corrected
-Patch must continue to record success, a Proposal, or a same-Patch Blocker; do not remove or weaken
-that exit merely to satisfy another diagnostic. Do not change `watch.json`. Your final response
-should only confirm that the Patch was rewritten.
+Patch must continue to record success, queue a Decision, create a Hypothesis Proposal, or create a
+same-Patch Blocker; do not remove or weaken that exit merely to satisfy another diagnostic. Do not
+change `watch.json`. Your final response should only confirm that the Patch was rewritten.
 
 {_RETAINED_LOCAL_CAUSAL_CHECK}
 

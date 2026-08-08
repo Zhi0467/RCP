@@ -36,6 +36,10 @@ _STATE_PATH_FIELDS = (
     "glossary_path",
     "coverage_path",
 )
+_NON_PROMPT_CONTRACT_ROLES = {
+    "chat_prompt_state",
+    "experiment_episode_context_candidate",
+}
 _RequestT = TypeVar("_RequestT", bound=BaseModel)
 
 
@@ -270,26 +274,81 @@ def _parent_task_contract_path(
     record = execution.store.agent_task(execution.operation_id)
     if record is None or record.parent_operation_id is None:
         raise ValueError("The resumed operation has no original task contract.")
-    receipts = execution.store.agent_task_receipts(record.parent_operation_id)
-    candidates = [
-        receipt.payload.get("contract_path")
-        for receipt in receipts
-        if receipt.category == "agent_prompt"
-    ]
-    contract_path = next(
-        (value for value in reversed(candidates) if isinstance(value, str) and value), None
-    )
-    if contract_path is None:
-        raise ValueError("The resumed operation has no recorded original task contract.")
-    if remote_stage is not None:
-        assert remote_stage.root is not None
-        if PurePosixPath(contract_path).parent != remote_stage.root / "inputs":
-            raise ValueError("The resumed operation's task contract is outside its saved stage.")
-    else:
-        assert local_stage is not None
-        if Path(contract_path).resolve().parent != (local_stage / "inputs").resolve():
-            raise ValueError("The resumed operation's task contract is outside its saved stage.")
-    return contract_path
+
+    stage_identity = (record.stage_host or "", record.stage_root)
+    ancestor_id: str | None = record.parent_operation_id
+    while ancestor_id is not None:
+        ancestor = execution.store.agent_task(ancestor_id)
+        if ancestor is None:
+            break
+        ancestor_stage = (ancestor.stage_host or "", ancestor.stage_root)
+        same_stage = ancestor_stage == stage_identity
+        legacy_stage = ancestor.stage_host is None and ancestor.stage_root is None
+        if not same_stage and not legacy_stage:
+            break
+
+        receipts = execution.store.agent_task_receipts(ancestor_id)
+        candidates = [
+            receipt.payload.get("contract_path")
+            for receipt in receipts
+            if receipt.category == "agent_prompt"
+        ]
+        contract_path = next(
+            (value for value in reversed(candidates) if isinstance(value, str) and value), None
+        )
+        if contract_path is not None:
+            if remote_stage is not None:
+                assert remote_stage.root is not None
+                if PurePosixPath(contract_path).parent != remote_stage.root / "inputs":
+                    raise ValueError(
+                        "The resumed operation's task contract is outside its saved stage."
+                    )
+            else:
+                assert local_stage is not None
+                if Path(contract_path).resolve().parent != (local_stage / "inputs").resolve():
+                    raise ValueError(
+                        "The resumed operation's task contract is outside its saved stage."
+                    )
+            return contract_path
+
+        # Pre-stage-provenance tasks remain recoverable through their retained, path-validated
+        # prompt receipt above. Without that receipt there is no safe evidence that an older
+        # durable contract belongs to this exact execution stage.
+        if not same_stage:
+            break
+
+        durable_contracts = [
+            contract
+            for contract in execution.store.agent_task_contracts(ancestor_id)
+            if contract.role not in _NON_PROMPT_CONTRACT_ROLES
+        ]
+        if durable_contracts:
+            durable = durable_contracts[-1]
+            digest = hashlib.sha256(durable.content.encode("utf-8")).hexdigest()
+            if digest != durable.sha256:
+                raise ValueError("The resumed operation's durable task contract is corrupt.")
+            label = f"task-{_safe_stage_name(ancestor_id)}-recovered-{digest[:16]}.md"
+            contract_path = _stage_or_reuse_task_input(
+                local_stage,
+                remote_stage,
+                label,
+                durable.content,
+            )
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "original_contract_recovered",
+                {
+                    "ancestor_operation_id": ancestor_id,
+                    "role": durable.role,
+                    "sha256": digest,
+                    "contract_path": contract_path,
+                },
+            )
+            return contract_path
+
+        ancestor_id = ancestor.parent_operation_id
+
+    raise ValueError("The resumed operation has no recorded original task contract.")
 
 
 def _stage_json_task_input(
@@ -387,7 +446,7 @@ class _ProviderOutcome:
 
     `answers` collects only the provider's labelled final assistant messages; a
     `message` is a trace and is never promoted into it. What an answer is worth
-    is the caller's decision — an ingest run leaves this list unread.
+    is the caller's decision.
     """
 
     session_id: str | None = None
@@ -530,8 +589,6 @@ def _record_patch_receipt(
         "remove_nodes",
         "supersede_nodes",
         "merge_nodes",
-        "create_ambiguities",
-        "resolve_ambiguities",
         "upsert_glossary",
         "set_coverage",
         "set_project_truth_scope",

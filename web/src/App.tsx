@@ -83,7 +83,7 @@ import {
 } from "./desktopRuntime";
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
-import { nodeDetailSizeStorageKey } from "./floatingWindow";
+import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
 import type { DagViewport } from "./hooks/dagZoom";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
@@ -99,9 +99,7 @@ import {
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
-  proposalTargetsNode,
   serializeHumanDraft,
-  stageAmbiguityDecision,
   stageDecisionChoice,
   stageNodeEdit,
   stageNodeEditStart,
@@ -238,6 +236,17 @@ export function canonicalRevisionPollDelay(consecutiveFailures: number): number 
   return Math.min(30_000, 2_000 * 2 ** Math.max(0, consecutiveFailures));
 }
 
+export function relatedNodeWindowAction(
+  sourceSlot: DetailWindowSlot,
+  targetNodeId: string,
+  originalNodeId: string | null,
+  companionNodeId: string | null,
+): { kind: "focus" | "open"; slot: DetailWindowSlot } {
+  if (targetNodeId === originalNodeId) return { kind: "focus", slot: "original" };
+  if (targetNodeId === companionNodeId) return { kind: "focus", slot: "companion" };
+  return { kind: "open", slot: sourceSlot === "original" ? "companion" : "original" };
+}
+
 function pageIsHidden(): boolean {
   return document.visibilityState === "hidden";
 }
@@ -288,6 +297,17 @@ export function humanAttentionBlockers(
     .map((node) => presentedNodes?.[node.id] ?? node);
 }
 
+export function decisionsAwaitingChoice(
+  canonicalNodes: GraphNode[],
+  presentedNodes?: GraphState["nodes"],
+): GraphNode[] {
+  return canonicalNodes
+    .filter(
+      (node) => node.type === "decision" && (node.status === "ready" || node.status === "revisit"),
+    )
+    .map((node) => ({ ...(presentedNodes?.[node.id] ?? node), status: node.status }));
+}
+
 export async function loadExperimentWatcherPoll(
   fetchJson: <T>(path: string) => Promise<T>,
   base: string,
@@ -333,6 +353,11 @@ export default function App() {
   const [trustView, setTrustView] = useState<TrustView>(readTrustView);
   const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [companionNode, setCompanionNode] = useState<GraphNode | null>(null);
+  const [detailFocusTokens, setDetailFocusTokens] = useState<Record<DetailWindowSlot, number>>({
+    original: 0,
+    companion: 0,
+  });
   const [selectedExperimentRunId, setSelectedExperimentRunId] = useState<string | null>(null);
   const [focusExperimentRunId, setFocusExperimentRunId] = useState<string | null>(null);
   const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
@@ -439,6 +464,7 @@ export default function App() {
       setGraph(nextGraph);
       setPaper(nextProject.paper);
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
+      setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
       setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
       setRunScope((current) =>
         current.length
@@ -963,6 +989,7 @@ export default function App() {
     setGraph(emptyGraph);
     setPaper(null);
     setSelectedNode(null);
+    setCompanionNode(null);
     setSelectedExperimentRunId(null);
     setFocusExperimentRunId(null);
     setExperimentStopId(null);
@@ -1122,20 +1149,20 @@ export default function App() {
     () => watchers.some((watcher) => !watcher.notified),
     [watchers],
   );
-  const selectedExperimentControl = useMemo<ExperimentControlState | null>(() => {
-    if (!project || selectedNode?.type !== "experiment") return null;
-    const control = project.experiment_control?.[selectedNode.id];
+  const experimentControlForNode = (node: GraphNode): ExperimentControlState | null => {
+    if (!project || node.type !== "experiment") return null;
+    const control = project.experiment_control?.[node.id];
     if (!control) return null;
     const operationActive = tasks.some(
       (task) =>
         isActiveTask(task) &&
         task.request.patch_kind === "experiment_loop" &&
-        task.request.control_node_id === selectedNode.id,
+        task.request.control_node_id === node.id,
     );
     return operationActive && (!control.active || control.paused)
       ? { ...control, active: true, paused: false }
       : control;
-  }, [project, selectedNode, tasks]);
+  };
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
@@ -1152,12 +1179,51 @@ export default function App() {
   const openNode = (node: GraphNode | null) => {
     if (!node) return;
     setDockedNodeIds((current) => current.filter((nodeId) => nodeId !== node.id));
+    if (selectedNode?.id === node.id) {
+      setDetailFocusTokens((current) => ({ ...current, original: current.original + 1 }));
+      return;
+    }
+    if (companionNode?.id === node.id) {
+      setDetailFocusTokens((current) => ({ ...current, companion: current.companion + 1 }));
+      return;
+    }
     setSelectedNode(node);
+    setCompanionNode(null);
+    setDetailFocusTokens((current) => ({ ...current, original: current.original + 1 }));
   };
   const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
-  const dockNode = (nodeId: string) => {
+  const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
+    const node = presentedGraph.nodes[nodeId];
+    if (!node) return;
+    setDockedNodeIds((current) => current.filter((id) => id !== nodeId));
+    const action = relatedNodeWindowAction(
+      sourceSlot,
+      nodeId,
+      selectedNode?.id ?? null,
+      companionNode?.id ?? null,
+    );
+    if (action.kind === "focus") {
+      setDetailFocusTokens((current) => ({
+        ...current,
+        [action.slot]: current[action.slot] + 1,
+      }));
+      return;
+    }
+    const targetSlot = action.slot;
+    if (targetSlot === "original") setSelectedNode(node);
+    else setCompanionNode(node);
+    setDetailFocusTokens((current) => ({
+      ...current,
+      [targetSlot]: current[targetSlot] + 1,
+    }));
+  };
+  const closeDetailSlot = (slot: DetailWindowSlot) => {
+    if (slot === "original") setSelectedNode(null);
+    else setCompanionNode(null);
+  };
+  const dockNode = (nodeId: string, slot: DetailWindowSlot) => {
     setDockedNodeIds((current) => (current.includes(nodeId) ? current : [...current, nodeId]));
-    setSelectedNode((current) => (current?.id === nodeId ? null : current));
+    closeDetailSlot(slot);
   };
   const restoreDockedNode = (nodeId: string) => {
     const node = presentedGraph.nodes[nodeId];
@@ -1240,6 +1306,7 @@ export default function App() {
     selectChat(nextChatId);
     setFloatingChat(null);
     setSelectedNode(null);
+    setCompanionNode(null);
     changeView("chats");
   };
 
@@ -1494,9 +1561,9 @@ export default function App() {
     () => Object.values(graph.proposals).filter((item) => item.status === "pending"),
     [graph],
   );
-  const ambiguities = useMemo(
-    () => Object.values(graph.ambiguities).filter((item) => item.status === "open"),
-    [graph],
+  const attentionDecisions = useMemo(
+    () => decisionsAwaitingChoice(Object.values(graph.nodes), presentedGraph.nodes),
+    [graph.nodes, presentedGraph.nodes],
   );
   const openBlockers = useMemo(
     () => humanAttentionBlockers(Object.values(graph.nodes), presentedGraph.nodes),
@@ -1594,6 +1661,7 @@ export default function App() {
       setGraph(nextGraph);
       setProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
+      setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
       await reload();
       setNotice({ kind: "info", text: `Synced revision ${nextGraph.revision}.` });
     } catch (error) {
@@ -1717,6 +1785,7 @@ export default function App() {
       setSelectedExperimentRunId(node.id);
       setFocusExperimentRunId(node.id);
       setSelectedNode(null);
+      setCompanionNode(null);
       setFloatingChat(null);
       changeView("execution");
       try {
@@ -1752,7 +1821,11 @@ export default function App() {
     }
   };
 
-  const operateTask = async (task: AgentTask, action: "pause" | "resume" | "retry") => {
+  const operateTask = async (
+    task: AgentTask,
+    action: "pause" | "resume" | "retry",
+    presentTask = true,
+  ) => {
     if (taskActionId) return;
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     setTaskActionId(task.operation_id);
@@ -1764,9 +1837,11 @@ export default function App() {
         next,
         ...current.filter((item) => item.operation_id !== next.operation_id),
       ]);
-      setActivityTaskId(next.operation_id);
-      setTaskInspectorId(next.operation_id);
-      setInspectedTask(next);
+      if (presentTask) {
+        setActivityTaskId(next.operation_id);
+        setTaskInspectorId(next.operation_id);
+        setInspectedTask(next);
+      }
       setDismissedTaskIds((current) => {
         const updated = new Set(current);
         updated.delete(next.operation_id);
@@ -1831,15 +1906,17 @@ export default function App() {
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
         method: "POST",
-        body: JSON.stringify(config),
+        body: JSON.stringify(taskRetryRequestBody(task, config)),
       });
       setTasks((current) => [
         next,
         ...current.filter((item) => item.operation_id !== next.operation_id),
       ]);
-      setActivityTaskId(next.operation_id);
-      setTaskInspectorId(next.operation_id);
-      setInspectedTask(next);
+      if (!isExperimentLoopRecovery(task)) {
+        setActivityTaskId(next.operation_id);
+        setTaskInspectorId(next.operation_id);
+        setInspectedTask(next);
+      }
       setRetryTask(null);
       setDismissedTaskIds((current) => {
         const updated = new Set(current);
@@ -2104,7 +2181,7 @@ export default function App() {
       </div>
     );
 
-  const attentionCount = pendingProposals.length + ambiguities.length + openBlockers.length;
+  const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = graph.revision === 0 ? "seed" : "refresh";
   const replayWarning = replayFailureLabel(graph);
@@ -2398,6 +2475,7 @@ export default function App() {
             <ProjectOverview
               project={projectWithGraph(project, presentedGraph)}
               graph={presentedGraph}
+              decisionsAwaitingChoice={attentionDecisions}
               latestRevisionSummary={
                 latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
               }
@@ -2421,13 +2499,8 @@ export default function App() {
                 />
               </div>
               <AttentionRail
-                ambiguities={ambiguities}
+                decisions={attentionDecisions}
                 blockers={openBlockers}
-                draft={mutationsDisabled ? null : humanDraft}
-                mutationsDisabled={mutationsDisabled}
-                onAmbiguity={(ambiguity, status) =>
-                  updateHumanDraft((draft) => stageAmbiguityDecision(draft, ambiguity.id, status))
-                }
                 onSelectNode={openNodeById}
               />
             </div>
@@ -2466,6 +2539,13 @@ export default function App() {
               focusExperimentId={focusExperimentRunId}
               runBusy={taskStarting}
               stopBusyId={experimentStopId}
+              taskActionId={taskActionId}
+              providerLabels={Object.fromEntries(
+                Object.entries(project.providers).map(([id, provider]) => [
+                  id,
+                  provider.label || id,
+                ]),
+              )}
               mutationsDisabled={mutationsDisabled}
               onInspectTask={setTaskInspectorId}
               onDismissTask={dismissTaskNotification}
@@ -2474,6 +2554,8 @@ export default function App() {
               onDetailFocused={() => setFocusExperimentRunId(null)}
               onRunExperiment={(node) => void runExperiment(node)}
               onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
+              onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
+              onSwitchExperimentProvider={setRetryTask}
             />
           )}
           {view === "paper" && (
@@ -2548,84 +2630,77 @@ export default function App() {
         </Suspense>
       </main>
 
-      {selectedNode && (
-        <DetailDrawer
-          node={presentedGraph.nodes[selectedNode.id] ?? selectedNode}
-          edges={Object.values(presentedGraph.edges)}
-          allNodes={presentedGraph.nodes}
-          glossaryIndex={glossaryIndex}
-          beliefTransitions={graph.belief_transitions}
-          validationMessages={graph.validation_messages}
-          ontology={presentedGraph.ontology}
-          sizeStorageKey={nodeDetailSizeStorageKey(project.id)}
-          mutationsDisabled={mutationsDisabled}
-          stagedNewNode={Boolean(humanDraft?.custom_nodes[selectedNode.id])}
-          stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(selectedNode.id))}
-          hasStagedNodeChange={Boolean(humanDraft?.nodes[selectedNode.id])}
-          canonicalStanding={graph.nodes[selectedNode.id]?.standing ?? selectedNode.standing}
-          experimentControl={selectedExperimentControl}
-          experimentRunDisabled={false}
-          experimentRunBusy={taskStarting}
-          pendingDecisionProposalCount={
-            selectedNode.type === "decision"
-              ? pendingProposals.filter((proposal) =>
-                  proposalTargetsNode(proposal, selectedNode.id),
-                ).length
-              : 0
-          }
-          decisionChoiceStaged={Boolean(
-            humanDraft?.nodes[selectedNode.id]?.changes.selected_option !== undefined ||
-            humanDraft?.nodes[selectedNode.id]?.changes.status === "decided",
-          )}
-          onUnstage={() => {
-            updateHumanDraft((draft) => unstageCustomNode(draft, selectedNode.id));
-            setSelectedNode(null);
-          }}
-          onRemove={() =>
-            updateHumanDraft((draft) =>
-              stageNodeRemoval(
-                draft,
-                graph,
-                selectedNode.id,
-                Boolean(selectedExperimentControl?.active),
-              ),
-            )
-          }
-          onUndoRemoval={() =>
-            updateHumanDraft((draft) => unstageNodeRemoval(draft, selectedNode.id))
-          }
-          onClose={() => setSelectedNode(null)}
-          onDock={() => dockNode(selectedNode.id)}
-          onBeginEdit={() =>
-            updateHumanDraft((draft) => stageNodeEditStart(draft, graph, selectedNode.id))
-          }
-          onStanding={(standing) =>
-            updateHumanDraft((draft) => stageNodeStanding(draft, graph, selectedNode.id, standing))
-          }
-          onStage={(changes) =>
-            updateHumanDraft((draft) => stageNodeEdit(draft, graph, selectedNode.id, changes))
-          }
-          onDecisionChoice={(selectedOption) =>
-            updateHumanDraft((draft) =>
-              stageDecisionChoice(draft, graph, selectedNode.id, selectedOption),
-            )
-          }
-          onRunExperiment={() =>
-            void runExperiment(presentedGraph.nodes[selectedNode.id] ?? selectedNode)
-          }
-          onOpenChat={() => {
-            const node = presentedGraph.nodes[selectedNode.id] ?? selectedNode;
-            const chatId = ensureConversation("node_chat", node);
-            selectChat(chatId);
-            setFloatingChat({ chatId, nodeId: node.id });
-          }}
-          onExploreRelations={() => {
-            setDagRelationFocusId(selectedNode.id);
-            changeView("dag");
-          }}
-          onSelectNode={openNodeById}
-        />
-      )}
+      {(
+        [
+          { slot: "original" as const, selected: selectedNode },
+          { slot: "companion" as const, selected: companionNode },
+        ] satisfies Array<{ slot: DetailWindowSlot; selected: GraphNode | null }>
+      ).map(({ slot, selected }) => {
+        if (!selected) return null;
+        const node = presentedGraph.nodes[selected.id] ?? selected;
+        const experimentControl = experimentControlForNode(node);
+        return (
+          <DetailDrawer
+            key={`${slot}:${node.id}`}
+            node={node}
+            edges={Object.values(presentedGraph.edges)}
+            allNodes={presentedGraph.nodes}
+            glossaryIndex={glossaryIndex}
+            beliefTransitions={graph.belief_transitions}
+            validationMessages={graph.validation_messages}
+            ontology={presentedGraph.ontology}
+            sizeStorageKey={nodeDetailSizeStorageKey(project.id)}
+            detailSlot={slot}
+            focusRequestToken={detailFocusTokens[slot]}
+            mutationsDisabled={mutationsDisabled}
+            stagedNewNode={Boolean(humanDraft?.custom_nodes[node.id])}
+            stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(node.id))}
+            hasStagedNodeChange={Boolean(humanDraft?.nodes[node.id])}
+            canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
+            experimentControl={experimentControl}
+            experimentRunDisabled={false}
+            experimentRunBusy={taskStarting}
+            decisionChoiceStaged={Boolean(
+              humanDraft?.nodes[node.id]?.changes.selected_option !== undefined ||
+              humanDraft?.nodes[node.id]?.changes.status === "decided",
+            )}
+            onUnstage={() => {
+              updateHumanDraft((draft) => unstageCustomNode(draft, node.id));
+              closeDetailSlot(slot);
+            }}
+            onRemove={() =>
+              updateHumanDraft((draft) =>
+                stageNodeRemoval(draft, graph, node.id, Boolean(experimentControl?.active)),
+              )
+            }
+            onUndoRemoval={() => updateHumanDraft((draft) => unstageNodeRemoval(draft, node.id))}
+            onClose={() => closeDetailSlot(slot)}
+            onDock={() => dockNode(node.id, slot)}
+            onBeginEdit={() =>
+              updateHumanDraft((draft) => stageNodeEditStart(draft, graph, node.id))
+            }
+            onStanding={(standing) =>
+              updateHumanDraft((draft) => stageNodeStanding(draft, graph, node.id, standing))
+            }
+            onStage={(changes) =>
+              updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes))
+            }
+            onDecisionChoice={(selectedOption) =>
+              updateHumanDraft((draft) =>
+                stageDecisionChoice(draft, graph, node.id, selectedOption),
+              )
+            }
+            onRunExperiment={() => void runExperiment(node)}
+            onOpenChat={() => {
+              const chatId = ensureConversation("node_chat", node);
+              selectChat(chatId);
+              setFloatingChat({ chatId, nodeId: node.id });
+            }}
+            onOpenRelatedNode={(nodeId) => openRelatedNode(slot, nodeId)}
+            onSelectNode={openNodeById}
+          />
+        );
+      })}
       {floatingChat && (
         <DraggableWindow className="node-chat-window" kind="chat" resizable>
           <Suspense
@@ -2687,7 +2762,13 @@ export default function App() {
         <RunDialog
           open
           mode="retry"
-          kind={retryTask.kind === "seed" ? "seed" : "refresh"}
+          kind={
+            isExperimentLoopRecovery(retryTask)
+              ? "node_chat"
+              : retryTask.kind === "seed"
+                ? "seed"
+                : "refresh"
+          }
           project={project}
           initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
@@ -2824,12 +2905,30 @@ function preserveProjectReadiness(
 }
 
 function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): AgentRunConfig {
-  const profile = project.agent_profiles[task.kind === "seed" ? "seed" : "refresh"];
+  const profileKind =
+    task.kind === "seed" ? "seed" : task.kind === "refresh" ? "refresh" : "node_chat";
+  const profile = project.agent_profiles[profileKind];
   return {
     provider: task.request.provider || profile.provider,
     model: task.request.model ?? profile.model,
     reasoning: task.request.reasoning || profile.reasoning,
     run_on: task.request.run_on || profile.run_on,
+  };
+}
+
+function isExperimentLoopRecovery(task: AgentTask): boolean {
+  return task.request.patch_kind === "experiment_loop";
+}
+
+export function taskRetryRequestBody(
+  task: AgentTask,
+  config: AgentRunConfig,
+): AgentRunConfig | Omit<AgentRunConfig, "run_on"> {
+  if (!isExperimentLoopRecovery(task)) return config;
+  return {
+    provider: config.provider,
+    model: config.model,
+    reasoning: config.reasoning,
   };
 }
 

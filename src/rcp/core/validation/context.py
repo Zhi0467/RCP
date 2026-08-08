@@ -57,3 +57,4 @@ class OpRule:
     structural_validate: OpValidator | None = None
     authoring_validate: OpValidator | None = None
     dependencies: OpDependencies | None = None
+    legacy_only: bool = False

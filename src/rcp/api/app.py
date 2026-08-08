@@ -1249,9 +1249,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="Agent task not found")
         try:
             overrides = body.model_dump(exclude_none=True) if body is not None else {}
-            if previous.request.get("patch_kind") == "experiment_loop" and overrides:
+            if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
                 raise ValueError(
-                    "Experiment-loop Retry cannot override its pinned provider configuration."
+                    "Experiment-loop recovery cannot change its pinned execution machine."
                 )
             request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
             candidate = request_type.model_validate(

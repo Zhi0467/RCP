@@ -19,6 +19,7 @@ from rcp.runs.experiment_loop import (
     preflight_episode_wake,
     stage_chat_experiment_watcher_resources,
 )
+from rcp.runs.shared import _parent_task_contract_path
 from rcp.runs.work import _process_experiment_watcher_maintenance, stream_work_run
 from rcp.service import RunRequest
 from rcp.storage import (
@@ -152,6 +153,7 @@ def _execution(
     continuation: str = "fresh",
     stage_root: str | None = None,
     parent_operation_id: str | None = None,
+    retry_feedback: tuple[str, ...] = (),
 ) -> AgentTaskExecution:
     now = store.now()
     store.create_agent_task(
@@ -187,6 +189,7 @@ def _execution(
         control=AgentProcessControl(),
         stage_root=stage_root,
         continuation=continuation,
+        retry_feedback=retry_feedback,
     )
 
 
@@ -243,6 +246,127 @@ async def _events(stream) -> list[AgentEvent]:
     async for frame in stream:
         events.append(AgentEvent.model_validate_json(frame.removeprefix("data: ").strip()))
     return events
+
+
+def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    stage = tmp_path / "chat-stage"
+    (stage / "inputs").mkdir(parents=True)
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id="chat-contract-recovery",
+        node_id=_EXPERIMENT_ID,
+        message="Continue the bounded Experiment loop.",
+        mode="work",
+        session_id="native-contract-recovery",
+    )
+    original = _execution(
+        store,
+        "project-contract-recovery",
+        "watcher-wake",
+        request,
+        continuation="watcher_wake",
+        stage_root=str(stage),
+    )
+    contract = "# Exact watcher-wake contract\n\nContinue the same bounded invocation.\n"
+    digest = hashlib.sha256(contract.encode("utf-8")).hexdigest()
+    original_path = stage / "inputs" / "task-watcher-wake.md"
+    original_path.write_text(contract, encoding="utf-8")
+    store.record_agent_task_contract("watcher-wake", "experiment_loop_wake", contract, digest)
+    store.record_agent_task_receipt(
+        "watcher-wake",
+        "agent_prompt",
+        {"contract_path": str(original_path)},
+        tier="diagnostic",
+    )
+    for index in range(32):
+        store.record_agent_task_receipt(
+            "watcher-wake",
+            "native_agent_checkpoint",
+            {"index": index},
+            tier="diagnostic",
+        )
+    assert all(
+        receipt.category != "agent_prompt" for receipt in store.agent_task_receipts("watcher-wake")
+    )
+    store.fail_agent_task(original.operation_id, "Provider session limit reached.")
+
+    failed_retry = _execution(
+        store,
+        "project-contract-recovery",
+        "failed-retry",
+        request,
+        continuation="retry",
+        stage_root=str(stage),
+        parent_operation_id=original.operation_id,
+    )
+    store.fail_agent_task(failed_retry.operation_id, "Original task contract was unavailable.")
+    retried = _execution(
+        store,
+        "project-contract-recovery",
+        "retry-after-failed-retry",
+        request,
+        continuation="retry",
+        stage_root=str(stage),
+        parent_operation_id="failed-retry",
+    )
+
+    recovered_path = _parent_task_contract_path(retried, stage, None)
+
+    assert Path(recovered_path).read_text(encoding="utf-8") == contract
+    receipt = next(
+        item
+        for item in store.agent_task_receipts(retried.operation_id)
+        if item.category == "original_contract_recovered"
+    )
+    assert receipt.payload["ancestor_operation_id"] == "watcher-wake"
+    assert receipt.payload["role"] == "experiment_loop_wake"
+    assert receipt.payload["sha256"] == digest
+
+
+def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_stage = tmp_path / "old-stage"
+    new_stage = tmp_path / "new-stage"
+    (old_stage / "inputs").mkdir(parents=True)
+    (new_stage / "inputs").mkdir(parents=True)
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id="chat-stage-boundary",
+        node_id=_EXPERIMENT_ID,
+        message="Continue the bounded Experiment loop.",
+        mode="work",
+        session_id="native-stage-boundary",
+    )
+    original = _execution(
+        store,
+        "project-stage-boundary",
+        "old-binding",
+        request,
+        stage_root=str(old_stage),
+    )
+    contract = "old provider contract\n"
+    store.record_agent_task_contract(
+        original.operation_id,
+        "experiment_loop_wake",
+        contract,
+        hashlib.sha256(contract.encode("utf-8")).hexdigest(),
+    )
+    store.fail_agent_task(original.operation_id, "Provider session limit reached.")
+    retried = _execution(
+        store,
+        "project-stage-boundary",
+        "new-binding-retry",
+        request,
+        continuation="retry",
+        stage_root=str(new_stage),
+        parent_operation_id=original.operation_id,
+    )
+
+    with pytest.raises(ValueError, match="no recorded original task contract"):
+        _parent_task_contract_path(retried, new_stage, None)
 
 
 def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
@@ -572,6 +696,142 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert unchanged.last_turn_operation_id == "loop-wake"
     assert unchanged.last_turn_invocation == 2
     assert unchanged.context_baseline == initial_baseline
+
+
+@pytest.mark.asyncio
+async def test_provider_switch_stages_full_recovery_contract_with_durable_provenance(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000075"
+    initial_request = _loop_request(
+        episode_id,
+        "chat-provider-switch",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    initial_execution = _execution(store, project_id, "loop-before-switch", initial_request)
+    initial_launcher = _LoopLauncher("codex-session-before-switch", tmp_path, write_handoff=True)
+    initial_events = await _events(
+        stream_work_run(
+            service,
+            initial_launcher,
+            initial_request,
+            data_dir,
+            execution=initial_execution,
+        )
+    )
+    assert not [event for event in initial_events if event.event == "error"]
+    store.fail_agent_task("loop-before-switch", "Provider session limit reached.")
+
+    diagnostics = ("Attempt 1 (failed) failed with: Provider session limit reached.",)
+    # The orchestration layer authorizes and persists the actual provider override. At this seam,
+    # `handoff` plus a missing session id is the provider-switch signal that selects the full
+    # provisional-session contract rather than the compact same-provider Retry contract.
+    switch_request = initial_request.model_copy(update={"session_id": None})
+    switch_execution = _execution(
+        store,
+        project_id,
+        "loop-provider-switch",
+        switch_request,
+        continuation="handoff",
+        parent_operation_id="loop-before-switch",
+        retry_feedback=diagnostics,
+    )
+    switch_launcher = _LoopLauncher("claude-session-after-switch", tmp_path, write_handoff=True)
+    switch_events = await _events(
+        stream_work_run(
+            service,
+            switch_launcher,
+            switch_request,
+            data_dir,
+            execution=switch_execution,
+        )
+    )
+
+    assert switch_launcher.sessions == [None]
+    contract = switch_launcher.contracts[0]
+    compact = " ".join(contract.split())
+    assert contract.startswith("# RCP Experiment-loop task contract")
+    assert "Explicit same-episode provider-switch recovery" in contract
+    assert "task-loop-provider-switch-retry-diagnostics.json" in contract
+    assert "same Experiment episode and the same invocation" in compact
+    assert "inspect authoritative external state" in compact
+    persisted = store.agent_task_contract("loop-provider-switch", "work_retry_base")
+    assert persisted == contract
+    diagnostics_path = Path(
+        next(
+            line.rsplit("`", 2)[1]
+            for line in contract.splitlines()
+            if line.startswith("- Exact prior failure diagnostics:")
+        )
+    )
+    assert json.loads(diagnostics_path.read_text(encoding="utf-8")) == {
+        "prior_attempt_diagnostics": list(diagnostics)
+    }
+    # Binding replacement is owned by the recovery orchestration layer. Prompt staging must remain
+    # inspectable even if a later handoff or binding check rejects the provisional session.
+    assert switch_events
+
+
+@pytest.mark.asyncio
+async def test_unbound_initial_handoff_does_not_claim_provider_switch_recovery(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000076"
+    request = _loop_request(
+        episode_id,
+        "chat-unbound-handoff",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    failed_execution = _execution(store, project_id, "loop-unbound-failure", request)
+    store.fail_agent_task(failed_execution.operation_id, "Provider unavailable before launch.")
+    handoff_execution = _execution(
+        store,
+        project_id,
+        "loop-unbound-handoff",
+        request,
+        continuation="handoff",
+        parent_operation_id=failed_execution.operation_id,
+        retry_feedback=("Attempt 1 (failed) failed with: Provider unavailable before launch.",),
+    )
+    launcher = _LoopLauncher("first-established-session", tmp_path, write_handoff=True)
+
+    events = await _events(
+        stream_work_run(
+            service,
+            launcher,
+            request,
+            data_dir,
+            execution=handoff_execution,
+        )
+    )
+
+    assert not [event for event in events if event.event == "error"]
+    contract = launcher.contracts[0]
+    assert contract.startswith("# RCP Experiment-loop task contract")
+    assert "Explicit same-episode provider-switch recovery" not in contract
+    assert "provisional replacement provider session" not in contract
+    assert "Exact prior failure diagnostics" not in contract
+    assert store.agent_task_contract("loop-unbound-handoff", "work_retry_base") == contract
 
 
 @pytest.mark.asyncio

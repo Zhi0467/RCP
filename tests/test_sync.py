@@ -131,16 +131,21 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
                 "base_rev": 2,
             }
         )
-    service.history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Proposed two evaluation choices.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[{"op": "create_proposals", "proposals": proposals}],
-        )
+    state = service.history.state()
+    legacy_patch = Patch(
+        revision=state.revision + 1,
+        kind="refresh",
+        author="agent",
+        summary="Proposed two evaluation choices before Decision Proposals were retired.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[{"op": "create_proposals", "proposals": proposals}],
+        admission="accepted",
     )
+    assert not validate_patch(state, legacy_patch, ["repo-a"], mode="replay").rejected
+    path = service.history.patches_dir / f"{legacy_patch.revision:06d}.json"
+    path.write_text(legacy_patch.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    service.history.materialize(write_outputs=True)
 
 
 def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path) -> None:
@@ -207,7 +212,34 @@ def test_graph_sync_directly_decides_an_ungoverned_decision(manifest, tmp_path) 
     assert chosen["status"] == "decided"
     assert chosen["standing"] == "accepted"
     assert "selected_option" not in HUMAN_EDITABLE_NODE_FIELDS["decision"]
-    assert "status" not in HUMAN_EDITABLE_NODE_FIELDS["decision"]
+    assert "status" in HUMAN_EDITABLE_NODE_FIELDS["decision"]
+
+
+def test_graph_sync_queues_a_decision_without_claiming_choice_authority(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    state = service.history.state()
+    decision = state.nodes["dec/evaluation-rule"]
+    request = GraphSyncRequest(
+        base_revision=state.revision,
+        nodes=[
+            GraphSyncNodeChange(
+                node_id=decision.id,
+                base_updated_rev=decision.updated_rev,
+                changes={"status": "ready"},
+            )
+        ],
+    )
+
+    patches = service._build_sync_patches(request, state, active_control_node_ids=set())
+
+    assert len(patches) == 1
+    assert patches[0].human_action is None
+    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    queued = apply_valid_patch(state, patches[0]).nodes[decision.id]
+    assert queued.status == "ready"
 
 
 def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(
@@ -532,6 +564,70 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp
     repaired = apply_valid_patch(state, patches[0]).nodes["dec/evaluation-rule"]
     assert (repaired.selected_option, repaired.status) == ("shifted", "decided")
     assert repaired.standing == "accepted"
+
+
+def test_graph_sync_approves_a_legacy_decision_proposal_through_decision_choice(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    state = service.history.state()
+    legacy_proposal = Patch(
+        revision=state.revision + 1,
+        kind="refresh",
+        author="agent",
+        summary="Recorded a legacy Decision Proposal.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/legacy-decision-choice",
+                        "title": "Choose shifted",
+                        "card": {"decision_needed": "Choose shifted?"},
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "nodes": [
+                                    {
+                                        "id": "dec/evaluation-rule",
+                                        "changes": {"selected_option": "shifted"},
+                                    }
+                                ],
+                            }
+                        ],
+                        "related_node_ids": ["dec/evaluation-rule"],
+                        "base_rev": state.revision,
+                    }
+                ],
+            }
+        ],
+    )
+    assert not validate_patch(state, legacy_proposal, ["repo-a"], mode="replay").rejected
+    state = apply_valid_patch(state, legacy_proposal)
+    request = GraphSyncRequest(
+        base_revision=state.revision,
+        proposals=[
+            {
+                "proposal_id": "prop/legacy-decision-choice",
+                "decision": "approved",
+            }
+        ],
+    )
+
+    patches = service._build_sync_patches(request, state, active_control_node_ids=set())
+
+    assert len(patches) == 1
+    assert patches[0].human_action == "decision_choice"
+    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    updated = apply_valid_patch(state, patches[0])
+    assert updated.proposals["prop/legacy-decision-choice"].status == "approved"
+    decision = updated.nodes["dec/evaluation-rule"]
+    assert (decision.selected_option, decision.status) == ("shifted", "decided")
 
 
 def test_a_decision_choice_patch_that_does_not_name_the_action_is_refused(
@@ -1624,3 +1720,63 @@ def test_replay_ignores_an_uncommitted_hidden_batch(manifest) -> None:
 
     assert [patch.revision for patch in history.load_patches()] == [1]
     assert history.state().nodes["rq/learning-after-shift"].standing == "asserted"
+
+
+def decision_ontology_payload() -> dict[str, object]:
+    return {
+        "types": [
+            {
+                "name": "policy_decision",
+                "definition": "A decision about project policy.",
+                "base_type": "decision",
+                "layer": "action",
+                "deprecated": False,
+            }
+        ],
+        "fields": [],
+        "relations": [],
+    }
+
+
+def test_graph_sync_refuses_creating_an_already_decided_decision(manifest, tmp_path) -> None:
+    """Creation must not be a second way to write a Decision outcome.
+
+    `selected_option` and `status="decided"` belong to the human decision_choice
+    action, which checks the selection against the node's own options. A custom
+    node carrying them at creation would skip that check entirely.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    client = TestClient(app)
+    project = app.state.default_project_id
+
+    ontology = client.post(
+        f"/api/projects/{project}/sync",
+        json={"base_revision": 1, "ontology": decision_ontology_payload()},
+    )
+    assert ontology.status_code == 200, ontology.text
+
+    response = client.post(
+        f"/api/projects/{project}/sync",
+        json={
+            "base_revision": service.history.state().revision,
+            "custom_nodes": [
+                {
+                    "id": "policy_decision/pre-decided",
+                    "type": "decision",
+                    "extension_type": "policy_decision",
+                    "title": "Pre-decided",
+                    "question": "Which policy?",
+                    "options": ["a", "b"],
+                    "selected_option": "not-an-option",
+                    "status": "decided",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "decide_decision" in response.json()["detail"]
+    assert "policy_decision/pre-decided" not in service.history.state().nodes

@@ -30,8 +30,8 @@ AgentTaskContinuation = Literal[
 # parent/child recovery semantics.
 _NATIVE_CHECKPOINT_CONTINUATIONS = frozenset({"resume", "retry", "graph_repair", "watcher_wake"})
 _EXPERIMENT_SESSION_LIMIT_DIAGNOSTIC = (
-    "This continuation cannot start a fresh provider session because the native provider "
-    "session reached its limit. Use Stop loop and press Run to start a fresh episode."
+    "The provider session reached its limit. Retry the same provider to recheck the limit and "
+    "resume this episode, or switch provider to continue this same episode and invocation."
 )
 
 
@@ -271,15 +271,24 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
-        if (
-            isinstance(original, RunRequest)
-            and original.patch_kind == "experiment_loop"
-            and any(value is not None for value in (provider, model, reasoning, run_on))
-        ):
-            raise ValueError(
-                "Experiment-loop Retry cannot override its pinned provider configuration."
-            )
         self._preflight_experiment_episode_recovery(previous, request=original)
+        graph_repair = (
+            self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
+        )
+        if isinstance(original, RunRequest) and original.patch_kind == "experiment_loop":
+            if run_on is not None:
+                raise ValueError(
+                    "Experiment-loop recovery cannot change its pinned execution machine."
+                )
+            if not graph_repair:
+                return self._retry_experiment_loop(
+                    previous,
+                    original,
+                    provider=provider,
+                    model=model,
+                    reasoning=reasoning,
+                    skills=skills,
+                )
         updates = {
             key: value
             for key, value in {
@@ -307,23 +316,8 @@ class BackgroundAgentTasks:
             and bool(previous.stage_root)
             and self._session_is_rcp_owned(previous)
         )
-        graph_repair = (
-            self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
-        )
-        episode = (
-            self.store.experiment_episode(original.control_episode_id)
-            if isinstance(original, RunRequest)
-            and original.patch_kind == "experiment_loop"
-            and original.control_episode_id
-            else None
-        )
-        must_reuse_episode_session = bool(
-            isinstance(original, RunRequest)
-            and original.patch_kind == "experiment_loop"
-            and (original.trigger == "watcher" or (episode is not None and episode.session_bound))
-        )
         must_reuse_patch_only_session = graph_repair
-        if must_reuse_episode_session or must_reuse_patch_only_session:
+        if must_reuse_patch_only_session:
             problem = None
             stage_available: bool | None = True
             if owned_checkpoint and previous.stage_host:
@@ -333,9 +327,7 @@ class BackgroundAgentTasks:
             elif owned_checkpoint and previous.stage_root:
                 stage = Path(previous.stage_root)
                 stage_available = stage.is_dir() and not stage.is_symlink()
-            if must_reuse_episode_session and (episode is None or not episode.session_bound):
-                problem = "the episode has no validated native provider session"
-            elif session_limit:
+            if session_limit:
                 problem = "the native provider session reached its limit"
             elif continuation_context_unavailable:
                 problem = "the saved continuation context is unavailable"
@@ -345,39 +337,11 @@ class BackgroundAgentTasks:
                 problem = "the prior task has no complete RCP-owned session and stage"
             elif stage_available is not True:
                 problem = "the saved provider workspace is unavailable"
-            elif episode is not None and (
-                previous.native_session_id != episode.native_session_id
-                or previous.stage_host != episode.stage_host
-                or previous.stage_root != episode.stage_root
-            ):
-                problem = "the task checkpoint no longer matches the episode session and stage"
             if problem is not None:
                 detail = (
-                    f"This continuation cannot start a fresh provider session because {problem}. "
-                    "Use Stop loop and press Run to start a fresh episode."
-                    if must_reuse_episode_session
-                    else (
-                        f"This patch-only graph repair cannot start a full Work turn because "
-                        f"{problem}. Start a new Work turn instead."
-                    )
+                    f"This patch-only graph repair cannot start a full Work turn because "
+                    f"{problem}. Start a new Work turn instead."
                 )
-                if (
-                    must_reuse_episode_session
-                    and isinstance(original, RunRequest)
-                    and original.control_episode_id
-                    and original.control_node_id
-                ):
-                    self.store.record_experiment_episode_diagnostic(
-                        episode_id=original.control_episode_id,
-                        project_id=previous.project_id,
-                        control_node_id=original.control_node_id,
-                        diagnostic=detail,
-                    )
-                    if episode is not None and episode.stop_requested_at is not None:
-                        self.store.settle_experiment_loop_stop(
-                            previous.project_id,
-                            original.control_node_id,
-                        )
                 raise ValueError(detail)
             assert previous.native_session_id is not None
             request = request.model_copy(update={"session_id": previous.native_session_id})
@@ -458,6 +422,162 @@ class BackgroundAgentTasks:
                 f"Native resume is unavailable because {reason}; starting a clean retry.",
                 level="warning",
             )
+        return retried
+
+    def _retry_experiment_loop(
+        self,
+        previous: AgentTaskRecord,
+        original: RunRequest,
+        *,
+        provider: str | None,
+        model: str | None,
+        reasoning: str | None,
+        skills: SkillSelection | None,
+    ) -> AgentTaskRecord:
+        """Recover an Experiment attempt without starting or spending a new episode turn."""
+
+        if not original.control_episode_id:
+            raise ValueError("Experiment-loop recovery is missing its episode id.")
+        episode = self.store.experiment_episode(original.control_episode_id)
+        binding_task = (
+            self.store.agent_task(episode.last_turn_operation_id)
+            if episode is not None and episode.last_turn_operation_id
+            else None
+        )
+        binding_request = (
+            self._request_from_record(binding_task) if binding_task is not None else original
+        )
+        if not isinstance(binding_request, RunRequest):
+            raise ValueError("The Experiment episode binding does not belong to a Work task.")
+
+        active_run_on = (
+            episode.execution_machine if episode is not None and episode.session_bound else None
+        )
+        baseline = {
+            **original.model_dump(mode="json"),
+            "run_on": active_run_on or binding_request.run_on,
+            "session_id": None,
+            **_skill_update(skills, mode="json"),
+        }
+        requested_config = {
+            key: value
+            for key, value in {
+                "provider": provider,
+                "model": model,
+                "reasoning": reasoning,
+            }.items()
+            if value is not None
+        }
+        request = RunRequest.model_validate({**baseline, **requested_config})
+        config_changed = any(
+            requested_config.get(field, baseline.get(field)) != baseline.get(field)
+            for field in requested_config
+        )
+        if config_changed:
+            estimate, samples = self.store.agent_task_estimate(
+                previous.project_id,
+                previous.kind,
+                request.model_dump(mode="json"),
+            )
+            return self._create_and_spawn(
+                previous.project_id,
+                previous.kind,
+                request,
+                parent=previous,
+                continuation="handoff",
+                estimate_seconds=estimate,
+                estimate_samples=samples,
+            )
+
+        active_config = (
+            binding_request.provider,
+            binding_request.model,
+            binding_request.reasoning,
+        )
+        current_config = (original.provider, original.model, original.reasoning)
+        previous_checkpoint = bool(
+            previous.native_session_id
+            and previous.stage_root
+            and self._session_is_rcp_owned(previous)
+        )
+        use_active_binding = bool(
+            not previous_checkpoint
+            and episode is not None
+            and episode.session_bound
+            and current_config == active_config
+        )
+        session_id = episode.native_session_id if use_active_binding else previous.native_session_id
+        stage_host = episode.stage_host if use_active_binding else previous.stage_host
+        stage_root = episode.stage_root if use_active_binding else previous.stage_root
+        owned_checkpoint = previous_checkpoint or use_active_binding
+        stage_available: bool | None = True
+        if owned_checkpoint and stage_host:
+            stage_available = RemoteRunStage(stage_host).directory_exists(stage_root or "")
+        elif owned_checkpoint and stage_root:
+            stage = Path(stage_root)
+            stage_available = stage.is_dir() and not stage.is_symlink()
+        if owned_checkpoint and stage_available is True:
+            return self._create_and_spawn(
+                previous.project_id,
+                previous.kind,
+                request.model_copy(update={"session_id": session_id}),
+                parent=previous,
+                continuation="retry",
+                estimate_seconds=previous.estimate_seconds,
+                estimate_samples=previous.estimate_samples,
+                stage_host=stage_host,
+                stage_root=stage_root,
+            )
+
+        reason = (
+            "the saved provider workspace is unavailable"
+            if owned_checkpoint
+            else "the episode has no complete RCP-owned native checkpoint and stage"
+        )
+        if episode is not None and episode.session_bound and current_config == active_config:
+            detail = (
+                f"This continuation cannot start a fresh provider session because {reason}. "
+                "Switch provider to continue this same episode, or use Stop loop to abandon it."
+            )
+            if original.control_node_id:
+                self.store.record_experiment_episode_diagnostic(
+                    episode_id=original.control_episode_id,
+                    project_id=previous.project_id,
+                    control_node_id=original.control_node_id,
+                    diagnostic=detail,
+                )
+                if episode.stop_requested_at is not None:
+                    self.store.settle_experiment_loop_stop(
+                        previous.project_id,
+                        original.control_node_id,
+                    )
+            raise ValueError(detail)
+        estimate, samples = self.store.agent_task_estimate(
+            previous.project_id,
+            previous.kind,
+            request.model_dump(mode="json"),
+        )
+        retried = self._create_and_spawn(
+            previous.project_id,
+            previous.kind,
+            request,
+            parent=previous,
+            continuation="handoff",
+            estimate_seconds=estimate,
+            estimate_samples=samples,
+        )
+        self.store.record_agent_task_receipt(
+            retried.operation_id,
+            "native_resume_unavailable",
+            {"reason": reason},
+            tier="diagnostic",
+        )
+        self.store.record_agent_task_event(
+            retried.operation_id,
+            f"Native resume is unavailable because {reason}; continuing this episode with a "
+            "provisional provider session.",
+            level="warning",
+        )
         return retried
 
     def repair_graph_update(self, operation_id: str) -> AgentTaskRecord:

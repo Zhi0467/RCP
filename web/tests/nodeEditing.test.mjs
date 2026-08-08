@@ -26,10 +26,22 @@ const hypothesis = {
 };
 
 test("editable fields mirror the human-editable allowlist for every node type", () => {
-  const keys = (type) => editableNodeFields({ ...hypothesis, type }).map((field) => field.key);
+  const keys = (type) =>
+    editableNodeFields({
+      ...hypothesis,
+      type,
+      status: type === "decision" ? "open" : hypothesis.status,
+    }).map((field) => field.key);
   assert.deepEqual(keys("research_question"), ["title", "question", "motivation", "scope"]);
   assert.deepEqual(keys("hypothesis"), ["title", "statement", "rationale", "predictions", "scope"]);
-  assert.deepEqual(keys("decision"), ["title", "question", "options", "rationale", "consequences"]);
+  assert.deepEqual(keys("decision"), [
+    "title",
+    "question",
+    "options",
+    "status",
+    "rationale",
+    "consequences",
+  ]);
   assert.deepEqual(keys("experiment"), [
     "title",
     "objective",
@@ -49,6 +61,32 @@ test("editable fields mirror the human-editable allowlist for every node type", 
     "resolution_condition",
     "recommended_action",
   ]);
+});
+
+test("only queued Decisions expose a human-editable queue status", () => {
+  const decision = {
+    ...hypothesis,
+    type: "decision",
+    question: "Choose a method",
+    options: ["A", "B"],
+    rationale: null,
+    consequences: [],
+  };
+
+  for (const status of ["open", "ready", "revisit"]) {
+    const field = editableNodeFields({ ...decision, status }).find((item) => item.key === "status");
+    assert.deepEqual(field?.options, [
+      { value: "open", label: "Open" },
+      { value: "ready", label: "Ready" },
+      { value: "revisit", label: "Revisit" },
+    ]);
+  }
+  for (const status of ["decided", "superseded"]) {
+    assert.equal(
+      editableNodeFields({ ...decision, status }).some((item) => item.key === "status"),
+      false,
+    );
+  }
 });
 
 test("active base and custom extension fields are editable as one complete object", () => {

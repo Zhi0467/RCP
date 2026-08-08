@@ -1,6 +1,6 @@
 ---
 id: S92-actor-identity-and-permission-checks
-status: pending — not human-confirmed
+status: superseded — replacement scenarios pending
 tier: hermetic
 driver: pytest + browser
 covered_by: none
@@ -9,12 +9,15 @@ invariants: [1, 3, 4]
 
 # An agent cannot exceed the person who owns it
 
-This scenario is a proposal and is **not yet human-confirmed**. The design it
-describes is settled in
-[the identity handoff](../handoffs/handoff-2026-08-07-actor-identity-and-permissions.md);
-the **UI path below is not** — the human and agent have not discussed the
-profile, directory, or sign-in surfaces in enough detail for the browser half to
-be treated as agreed. Confirm those before implementing anything visual.
+> **Superseded 2026-08-08.** The project no longer plans a durable user-owned
+> agent actor or an owner/profile intersection. See the consolidated
+> [team-space identity and permissions handoff](../handoffs/handoff-2026-08-08-team-spaces-identity-and-permissions.md).
+> Replacement scenarios must be written and human-confirmed before
+> implementation.
+
+The remainder is retained only as the historical proposal that the new handoff
+replaced. It was never human-confirmed and must not be implemented or used as an
+acceptance target.
 
 Every authority-bearing action resolves through one permission check against the
 acting identity's profile. An agent's reach is bounded by its owning user's, and
@@ -47,7 +50,7 @@ A project with existing canonical history written before actors existed, plus:
 - `legacy_patches_without_actor_id_replay_identically`
 - `patch_envelope_carries_actor_id_and_an_optional_empty_signature_field`
 - `profile_is_not_readable_or_settable_from_an_agent_prompt_skill_or_manifest`
-- `resolve_ambiguities_authority_comes_from_the_profile_not_the_author_binary`
+- `decide_decision_authority_comes_from_the_profile_not_the_author_binary`
 
 ## Boundary
 

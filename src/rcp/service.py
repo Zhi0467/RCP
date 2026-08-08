@@ -84,6 +84,30 @@ TaskTrigger = Literal["human", "experiment_run", "watcher"]
 GraphPatchKind = Literal["work", "experiment_loop"]
 
 
+def decision_awaits_choice(node: ProjectNode) -> bool:
+    """Whether one canonical Decision belongs in human attention."""
+
+    return isinstance(node, Decision) and node.status in {"ready", "revisit"}
+
+
+def _is_decision_choice(changes: dict[str, Any]) -> bool:
+    return "selected_option" in changes or changes.get("status") == "decided"
+
+
+def _proposal_applies_decision_choice(state: GraphState, proposal: Proposal) -> bool:
+    for operation in normalized_decision_proposal_ops(state, proposal):
+        if operation.get("op") != "update_nodes":
+            continue
+        for update in operation.get("nodes", []):
+            if not isinstance(update, dict) or not isinstance(update.get("changes"), dict):
+                continue
+            if isinstance(state.nodes.get(update.get("id")), Decision) and _is_decision_choice(
+                update["changes"]
+            ):
+                return True
+    return False
+
+
 class GraphUpdateResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -217,20 +241,12 @@ class GraphSyncProposalDecision(BaseModel):
     reason: str | None = None
 
 
-class GraphSyncAmbiguityResolution(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    ambiguity_id: str
-    status: Literal["resolved", "dismissed"]
-
-
 class GraphSyncRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_revision: int = Field(ge=0)
     nodes: list[GraphSyncNodeChange] = Field(default_factory=list)
     proposals: list[GraphSyncProposalDecision] = Field(default_factory=list)
-    ambiguities: list[GraphSyncAmbiguityResolution] = Field(default_factory=list)
     ontology: OntologyState | None = None
     custom_nodes: list[ProjectNode] = Field(default_factory=list)
     removed_node_ids: list[str] = Field(default_factory=list)
@@ -240,7 +256,6 @@ class GraphSyncRequest(BaseModel):
         for label, values in (
             ("node", [item.node_id for item in self.nodes]),
             ("proposal", [item.proposal_id for item in self.proposals]),
-            ("ambiguity", [item.ambiguity_id for item in self.ambiguities]),
             ("custom node", [item.id for item in self.custom_nodes]),
             ("removed node", self.removed_node_ids),
         ):
@@ -616,7 +631,9 @@ class ProjectService:
             paper = self.paper.snapshot()
         primary = self._primary_question(state)
         pending = [item for item in state.proposals.values() if item.status == "pending"]
-        open_ambiguities = [item for item in state.ambiguities.values() if item.status == "open"]
+        decisions_awaiting_choice = [
+            item for item in state.nodes.values() if decision_awaits_choice(item)
+        ]
         blockers = [
             item
             for item in state.nodes.values()
@@ -649,7 +666,7 @@ class ProjectService:
             "experiment_control": experiment_control,
             "counts": {
                 "pending_proposals": len(pending),
-                "open_ambiguities": len(open_ambiguities),
+                "decisions_awaiting_choice": len(decisions_awaiting_choice),
                 "open_blockers": len(blockers),
                 "asserted": sum(
                     node.standing == Standing.ASSERTED for node in state.nodes.values()
@@ -942,7 +959,6 @@ class ProjectService:
                 (
                     request.nodes,
                     request.proposals,
-                    request.ambiguities,
                     request.custom_nodes,
                     request.removed_node_ids,
                 )
@@ -981,7 +997,6 @@ class ProjectService:
                 (
                     request.nodes,
                     request.proposals,
-                    request.ambiguities,
                     request.custom_nodes,
                     request.removed_node_ids,
                 )
@@ -1103,7 +1118,7 @@ class ProjectService:
             staged.node_id
             for staged in request.nodes
             if isinstance(state.nodes.get(staged.node_id), Decision)
-            and bool(set(staged.changes).intersection({"selected_option", "status"}))
+            and _is_decision_choice(staged.changes)
         }
         superseded_proposal_ids = {
             proposal.id
@@ -1176,29 +1191,12 @@ class ProjectService:
                         *standing_ops,
                     ],
                     change_summary=[f"The proposal “{proposal.title}” was {staged.decision}."],
-                )
-            )
-
-        for staged in request.ambiguities:
-            ambiguity = state.ambiguities.get(staged.ambiguity_id)
-            if ambiguity is None:
-                raise KeyError(staged.ambiguity_id)
-            if ambiguity.status != "open":
-                raise NodeEditConflict(f"Ambiguity {ambiguity.id} is no longer open.")
-            patches.append(
-                Patch(
-                    kind="approval",
-                    author="human",
-                    summary=f"Marked the open question “{ambiguity.question}” {staged.status}.",
-                    ops=[
-                        {
-                            "op": "resolve_ambiguities",
-                            "resolutions": [{"id": ambiguity.id, "status": staged.status}],
-                        }
-                    ],
-                    change_summary=[
-                        f"The open question “{ambiguity.question}” was {staged.status}."
-                    ],
+                    human_action=(
+                        "decision_choice"
+                        if staged.decision == "approved"
+                        and _proposal_applies_decision_choice(state, proposal)
+                        else None
+                    ),
                 )
             )
 
@@ -1214,11 +1212,19 @@ class ProjectService:
             change_summary: list[str] = []
             changed_fields: set[str] = set()
             display_title = str(staged.changes.get("title", node.title))
-            is_direct_choice = isinstance(node, Decision) and bool(
-                set(staged.changes).intersection({"selected_option", "status"})
-            )
+            is_direct_choice = isinstance(node, Decision) and _is_decision_choice(staged.changes)
             if staged.changes:
                 allowed = set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
+                if (
+                    isinstance(node, Decision)
+                    and "status" in staged.changes
+                    and not is_direct_choice
+                    and staged.changes["status"] not in {"open", "ready", "revisit"}
+                ):
+                    raise ValueError(
+                        f"Direct edits to {node.id} may queue it as open, ready, or revisit; "
+                        "only the Decision choice control may decide it."
+                    )
                 if is_direct_choice:
                     if node.status == "superseded":
                         raise ValueError(

@@ -51,5 +51,5 @@ reports the peak. A source from the right conversation is not sufficient provena
 
 > **record** “We should use the smaller checkpoint interval.”
 
-Record this as a proposed Decision or an Ambiguity when it matters. It is neither an empirical
-observation nor proof that the option was selected.
+Frame this as a Decision when it is a lasting research choice; otherwise state the suggestion in the
+answer. It is neither an empirical observation nor proof that the option was selected.

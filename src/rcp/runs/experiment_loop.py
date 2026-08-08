@@ -333,6 +333,12 @@ def patch_explicitly_exits(patch_text: str | None, control_node_id: str) -> bool
             for update in op.get("nodes", []):
                 changes = update.get("changes", {})
                 if (
+                    update.get("id") != control_node_id
+                    and isinstance(changes, dict)
+                    and changes.get("status") in {"ready", "revisit"}
+                ):
+                    return True
+                if (
                     update.get("id") == control_node_id
                     and isinstance(changes, dict)
                     and changes.get("status") in _EXIT_STATUSES
@@ -795,12 +801,59 @@ def commit_experiment_episode_binding(
         raise ValueError(
             "A successful Experiment-loop turn did not retain its native session and exact stage."
         )
-    if request.trigger == "watcher":
-        episode = execution.store.experiment_episode(request.control_episode_id)
-        if episode is None or episode.native_session_id != native_session_id:
-            raise ValueError(
-                "An automatic Experiment wake cannot replace its committed native session."
-            )
+    episode = execution.store.experiment_episode(request.control_episode_id)
+    binding_replacement = bool(
+        episode is not None
+        and episode.session_bound
+        and (
+            episode.provider != request.provider
+            or episode.native_session_id != native_session_id
+            or episode.stage_host != stage_host
+            or episode.stage_root != stage_root
+        )
+    )
+    recovery_ancestor_id = task.parent_operation_id
+    explicit_handoff_lineage = execution.continuation == "handoff" and bool(recovery_ancestor_id)
+    while binding_replacement and recovery_ancestor_id and not explicit_handoff_lineage:
+        explicit_handoff_lineage = (
+            execution.store.agent_task_continuation_cause(recovery_ancestor_id) == "handoff"
+        )
+        ancestor = execution.store.agent_task(recovery_ancestor_id)
+        recovery_ancestor_id = ancestor.parent_operation_id if ancestor is not None else None
+    replacement_authorized = binding_replacement and explicit_handoff_lineage
+    if binding_replacement and not replacement_authorized:
+        raise ValueError(
+            "Only an explicit human Experiment recovery may replace the committed provider session."
+        )
+    if (
+        request.trigger == "watcher"
+        and execution.continuation == "watcher_wake"
+        and (episode is None or episode.native_session_id != native_session_id)
+    ):
+        raise ValueError(
+            "An automatic Experiment wake cannot replace its committed native session."
+        )
+    replacement_provenance = (
+        {
+            "episode_id": request.control_episode_id,
+            "invocation": request.control_invocation,
+            "parent_operation_id": task.parent_operation_id,
+            "previous": {
+                "provider": episode.provider,
+                "native_session_id": episode.native_session_id,
+                "stage_host": episode.stage_host,
+                "stage_root": episode.stage_root,
+            },
+            "replacement": {
+                "provider": request.provider,
+                "native_session_id": native_session_id,
+                "stage_host": stage_host,
+                "stage_root": stage_root,
+            },
+        }
+        if replacement_authorized and episode is not None
+        else None
+    )
     execution.store.commit_experiment_episode_turn(
         episode_id=request.control_episode_id,
         project_id=task.project_id,
@@ -817,6 +870,8 @@ def commit_experiment_episode_binding(
         graph_result=graph_result,
         watcher_ids=watcher_ids,
         context_baseline=context_baseline,
+        replace_binding=replacement_authorized,
+        replacement_provenance=replacement_provenance,
     )
     execution.store.record_agent_task_receipt(
         execution.operation_id,
@@ -830,6 +885,7 @@ def commit_experiment_episode_binding(
             "stage_root": stage_root,
             "graph_result": graph_result,
             "watcher_ids": watcher_ids,
+            "binding_replaced": replacement_authorized,
         },
     )
 

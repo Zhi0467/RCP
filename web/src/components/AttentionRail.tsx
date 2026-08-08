@@ -1,7 +1,7 @@
-import { AlertTriangle, ArrowRight, Check, MessageSquareText, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, X } from "lucide-react";
 import type { GlossaryIndex } from "../glossary";
-import type { AmbiguityDecision, HumanDraft, ProposalDecision } from "../humanDraft";
-import type { Ambiguity, GraphNode, Proposal } from "../types";
+import type { HumanDraft, ProposalDecision } from "../humanDraft";
+import type { GraphNode, Proposal } from "../types";
 import { GlossaryText } from "./GlossaryText";
 
 interface ProposalJudgmentSectionProps {
@@ -13,11 +13,8 @@ interface ProposalJudgmentSectionProps {
 }
 
 interface AttentionRailProps {
-  ambiguities: Ambiguity[];
+  decisions: GraphNode[];
   blockers: GraphNode[];
-  draft: HumanDraft | null;
-  mutationsDisabled?: boolean;
-  onAmbiguity: (ambiguity: Ambiguity, status: AmbiguityDecision | null) => void;
   onSelectNode: (nodeId: string) => void;
 }
 
@@ -145,15 +142,8 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-export function AttentionRail({
-  ambiguities,
-  blockers,
-  draft,
-  mutationsDisabled = false,
-  onAmbiguity,
-  onSelectNode,
-}: AttentionRailProps) {
-  const total = ambiguities.length + blockers.length;
+export function AttentionRail({ decisions, blockers, onSelectNode }: AttentionRailProps) {
+  const total = decisions.length + blockers.length;
   return (
     <aside className="attention-rail" aria-label="Needs your judgment">
       <header className="rail-heading">
@@ -168,42 +158,18 @@ export function AttentionRail({
         </div>
       )}
 
-      {ambiguities.map((ambiguity) => {
-        const status = draft?.ambiguities[ambiguity.id]?.status;
-        return (
-          <article className={`ambiguity-card${status ? " draft-touched" : ""}`} key={ambiguity.id}>
-            <button
-              className="attention-item"
-              onClick={() => {
-                const nodeId = ambiguity.related_node_ids[0];
-                if (nodeId) onSelectNode(nodeId);
-              }}
-            >
-              <MessageSquareText size={15} />
-              <strong>{ambiguity.question}</strong>
-              <ArrowRight size={14} />
-            </button>
-            <div className="card-actions ambiguity-actions">
-              <button
-                className={`button judgment${status === "dismissed" ? " selected disagree" : ""}`}
-                aria-pressed={status === "dismissed"}
-                disabled={mutationsDisabled}
-                onClick={() => onAmbiguity(ambiguity, status === "dismissed" ? null : "dismissed")}
-              >
-                <X size={13} /> Dismiss
-              </button>
-              <button
-                className={`button judgment${status === "resolved" ? " selected agree" : ""}`}
-                aria-pressed={status === "resolved"}
-                disabled={mutationsDisabled}
-                onClick={() => onAmbiguity(ambiguity, status === "resolved" ? null : "resolved")}
-              >
-                <Check size={13} /> Resolve
-              </button>
-            </div>
-          </article>
-        );
-      })}
+      {decisions.map((decision) => (
+        <button
+          className={`attention-item decision${decision.draft_touched ? " draft-touched" : ""}`}
+          key={decision.id}
+          onClick={() => onSelectNode(decision.id)}
+        >
+          <strong>{decision.title}</strong>
+          <span className={`decision-attention-status ${decision.status}`}>
+            {decision.status === "revisit" ? "Revisit" : "Ready"}
+          </span>
+        </button>
+      ))}
 
       {blockers.map((blocker) => (
         <button

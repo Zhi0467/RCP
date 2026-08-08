@@ -161,7 +161,7 @@ function watcher(fields = {}) {
   };
 }
 
-function render(run) {
+function render(run, props = {}) {
   const withWatcherItems = {
     ...run,
     watcherItems: run.watcherItems ?? experimentWatcherDisplayItems(run.watchers),
@@ -172,12 +172,97 @@ function render(run) {
       runBusy: false,
       runDisabled: false,
       stopBusy: false,
+      recoveryBusy: false,
       onRun() {},
       onStopLoop() {},
-      onInspectTask() {},
+      onRecover() {},
+      onSwitchProvider() {},
+      ...props,
     }),
   );
 }
+
+function recoveryTask(fields = {}) {
+  return {
+    operation_id: "wake-failed",
+    project_id: "project",
+    kind: "node_chat",
+    status: "failed",
+    request: {
+      provider: "codex",
+      model: "gpt-5.6",
+      reasoning: "high",
+      run_on: "cluster",
+      patch_kind: "experiment_loop",
+      control_node_id: "experiment/detail",
+      control_episode_id: "episode-1",
+    },
+    created_at: "2026-08-06T04:00:00Z",
+    updated_at: "2026-08-06T04:01:00Z",
+    status_message: "Agent turn failed",
+    error: "You've hit your session limit · resets 9:20am (UTC)",
+    attempt: 1,
+    estimate_seconds: 60,
+    estimate_samples: 1,
+    phase: "failed",
+    elapsed_seconds: 1,
+    progress: 0,
+    can_pause: false,
+    can_resume: false,
+    can_retry: true,
+    ...fields,
+  };
+}
+
+test("provider-limited Experiment recovery stays on the loop detail", () => {
+  const task = recoveryTask();
+  const diagnostic =
+    "Retry Codex to recheck availability, or switch provider to continue this episode.";
+  const html = render({
+    node: node(),
+    control: control(
+      {},
+      {
+        current_operation_id: task.operation_id,
+        session: { ...operational().session, diagnostic },
+      },
+    ),
+    taskGroup: { rootId: task.operation_id, root: task, latest: task, attempts: [task] },
+    currentTask: task,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.match(html, /Retry Codex/);
+  assert.match(html, /Switch provider…/);
+  assert.match(html, /Stop loop/);
+  assert.doesNotMatch(html, /Open agent task/);
+  assert.match(html, /Retry Codex to recheck availability/);
+  assert.ok(html.indexOf("Retry Codex to recheck availability") < html.indexOf("Last task error"));
+  assert.match(html, /Last task error/);
+  assert.match(html, /You&#x27;ve hit your session limit/);
+});
+
+test("a paused Experiment offers native-session resume and disables recovery while busy", () => {
+  const task = recoveryTask({ status: "paused", can_resume: true });
+  const html = render(
+    {
+      node: node(),
+      control: control({}, { current_operation_id: task.operation_id }),
+      taskGroup: { rootId: task.operation_id, root: task, latest: task, attempts: [task] },
+      currentTask: task,
+      watchers: [],
+      currentWatchers: [],
+      health: "needs_action",
+    },
+    { recoveryBusy: true },
+  );
+
+  assert.match(html, /Resuming Codex…/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>Resuming Codex…<\/button>/);
+  assert.match(html, /Switch provider…/);
+});
 
 test("completed watcher at the ceiling leaves human Run enabled", () => {
   const completed = watcher();

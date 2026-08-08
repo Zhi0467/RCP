@@ -44,18 +44,24 @@ _ONTOLOGY_EXTENSION_RULES = """- This project's materialized ontology carries ex
   and target types.
 """
 
-_BASE_AUTHORING_RULES = """- If the active ontology cannot express a needed concept, create an Ambiguity explaining the missing
-  vocabulary and tell the human in the reply. Only a human may change ontology in Project Settings
-  and Sync it; an agent may neither apply nor propose `set_ontology`. Do not use a definition that is
-  not already active.
+_BASE_AUTHORING_RULES = """- If the active ontology cannot express a needed node or edge, state that plainly
+  in the final answer, name the missing vocabulary, and continue with the records that can be
+  expressed. Do not create a node for the gap; an agent may neither apply nor propose `set_ontology`
+  or use a definition that is not already active.
 - Every new Evidence must explicitly set `origin`: `internal_run` for evidence produced by a
   project experiment or run; `external_publication` for a paper or publication;
   `external_instance` for evidence imported from another research/RCP instance; `analytic` for a
   mathematical or conceptual derivation rather than an empirical run; or `unknown` only when the
   provenance genuinely cannot be classified.
 - Write `Hypothesis.scope` only when the exact boundary is explicitly stated in one of that
-  hypothesis's cited `source_refs[].excerpt` values. Otherwise leave scope empty and create an
-  Ambiguity asking the human to supply the boundary; never infer or invent scope.
+  hypothesis's cited `source_refs[].excerpt` values. Otherwise leave scope empty and say so in the final
+  answer; never infer or invent scope, and never manufacture a Blocker or Decision for the missing boundary.
+- Decision ripeness: set a Decision `ready` only when its choice is already makeable and only after
+  inspecting the run-scope repositories, the real state of relevant experiments, and the code,
+  rather than relying on the graph alone. As graph signals, `ready` normally
+  means no Blocker linked by `blocked_by` remains open, no Experiment linked by `governed_by` is
+  pre-completion, and the rationale says what the choice turns on. Use `revisit` only to reopen a
+  settled choice when new evidence undermines it.
 - Base relation endpoint and layer contract (violations are retained but visibly flagged):
   epistemic — `has_subquestion` ResearchQuestion->ResearchQuestion; `has_hypothesis`
   ResearchQuestion->Hypothesis; `supports`, `weakens`, `refutes`, and `inconclusive`
@@ -68,8 +74,7 @@ _BASE_AUTHORING_RULES = """- If the active ontology cannot express a needed conc
   Never write a relation layer; RCP derives base layers from the relation and custom layers from
   the active materialized ontology.
 - Base node ids are `<type-prefix>/<kebab-slug>`: research_question=rq, hypothesis=hyp,
-  decision=dec, experiment=exp, evidence=ev, blocker=blk. Ambiguity and proposal ids use amb/ and
-  prop/.
+  decision=dec, experiment=exp, evidence=ev, blocker=blk. Proposal ids use prop/.
 - Internal-run Evidence connects to the Experiment that produced it. Every Evidence carries honest
   provenance and the SourceRefs its claims require; external or analytic Evidence need not invent
   an Experiment or conversation source.
@@ -191,19 +196,35 @@ Readable node-attached Experiment operational resources:
 
 def _work_experiment_watcher_resource_section(
     resources: list[dict[str, str]] | None,
+    *,
+    work_execution_host: str,
 ) -> str:
     if not resources:
         return ""
     pointers: list[str] = []
     for item in resources:
         control_node_id = item["control_node_id"]
-        host = _watcher_execution_host(item.get("execution_host", ""))
+        resource_execution_host = item.get("execution_host", "")
+        same_execution_host = resource_execution_host == work_execution_host
+        host = (
+            "this machine"
+            if same_execution_host
+            else _watcher_execution_host(resource_execution_host)
+        )
+        access = (
+            "  - run watcher inspection and command verification directly in a local "
+            "cold-login shell on this machine; do not SSH back into this machine"
+            if same_execution_host
+            else "  - use the named episode execution host for watcher inspection and command "
+            "verification"
+        )
         pointers.append(
             "\n".join(
                 [
                     f"- Experiment `{control_node_id}` (episode execution host: {host})",
                     f"  - current watcher state: `{item['watcher_state_path']}`",
                     f"  - watcher maintenance output: `{item['watch_path']}`",
+                    access,
                     "  - completing an accepted watcher from this file continues this "
                     "Experiment's bounded loop; it does not continue this conversation",
                 ]
@@ -221,9 +242,10 @@ Node-attached Experiment watcher maintenance:
   exactly `stop_watcher_id` and a non-blank `reason`. Same-label observers form an immutable group
   and each new group needs at least two observers. A stop may name only a compatible watcher in the
   staged current episode and never requests the human-only **Stop loop** action.
-- RCP runs every new observer check on the episode execution host named beside that resource,
-  whether or not that is where this Work turn is running. Observer commands have the same cold-login,
-  read-only exit contract as this conversation's own watcher file.
+- RCP runs every new observer check at the location named beside that resource. `this machine`
+  means the Work turn is already there and must use a local cold-login shell without self-SSH; an
+  explicit host means that distinct machine. Observer commands have the same cold-login, read-only
+  exit contract as this conversation's own watcher file.
 - RCP validates and commits one resource file atomically. A maintenance handoff spends no bounded-loop
   invocation, creates or closes no Experiment attempt, and cannot change the episode's native
   session, invocation ceiling, Decision bundle, standing, approval state, or Stop-loop intent.
@@ -664,7 +686,7 @@ Execution environment:
 
 Method:
 - Search the current graph before creating nodes. Prefer a duplicate over an uncertain merge. Never
-  delete nodes, ambiguities, or proposals.
+  delete nodes or proposals.
 - Evidence precedence, separate from instruction precedence: primary repository artifacts and exact
   source records carry factual claims; explicit human decisions, corrections, and reviewed synthesis
   carry project framing; specialist and assistant summaries may route you to evidence but are never
@@ -690,11 +712,13 @@ Output contract:
   concepts by their reader-facing titles, never ids or Patch operation names, and do not summarize
   with inventory counts. State only what the Patch records; quote a Proposal card consequence when
   relevant instead of inventing a causal explanation.
-- Every Proposal includes all four card fields and exact replay ops; `card.decision_needed` must name
-  the exact Decision option/status or Hypothesis status transition in plain prose, never only
-  "Approve or reject".
+- Every Proposal includes all four card fields and exactly one replay operation that updates only
+  one Hypothesis's `status`. That update must have an `evidence_edge` cause naming a valid Evidence
+  -> Hypothesis epistemic edge. `card.decision_needed` must name the exact Hypothesis status
+  transition in plain prose, never only "Approve or reject".
 - Record `repositories_read` honestly; RCP supplies the authorized run truth scope.
-- Your final response should only confirm that the patch file was written.
+- Your final response should briefly confirm that the patch file was written and plainly name any needed
+  ontology vocabulary that could not be represented or Hypothesis scope left empty for lack of a cited boundary.
 
 {_patch_validator_rules(validator_command)}
 """
@@ -850,7 +874,8 @@ Optional watcher handoff:
             else ""
         )
         experiment_resources = _work_experiment_watcher_resource_section(
-            experiment_watcher_resources
+            experiment_watcher_resources,
+            work_execution_host=execution_host,
         )
         validator_rules = _patch_validator_rules(validator_command)
         return f"""# RCP Work task contract

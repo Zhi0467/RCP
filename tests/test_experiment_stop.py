@@ -12,8 +12,9 @@ from fastapi.testclient import TestClient
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api import create_app
 from rcp.api.app import _resolved_graph_request
-from rcp.background import BackgroundAgentTasks
+from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
+from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillReference
@@ -578,15 +579,134 @@ def test_episode_binding_is_immutable_after_first_success(manifest, tmp_path) ->
         )
 
 
+def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
+    manifest, tmp_path
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"), invocation_ceiling=3)
+    loop.start_episode()
+    old_stage = tmp_path / "old-stage"
+    loop.bind_session(old_stage)
+    new_stage = tmp_path / "new-stage"
+    new_stage.mkdir()
+    request = loop.root_request(invocation=2).model_copy(
+        update={
+            "provider": "claude",
+            "model": "sonnet",
+            "reasoning": "high",
+            "trigger": "watcher",
+            "session_id": None,
+        }
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="failed-wake-for-switch",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=loop.root_request(invocation=2)
+            .model_copy(update={"trigger": "watcher", "session_id": "native-session-abc"})
+            .model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Provider limit reached.",
+            error="Usage limit exceeded",
+            native_session_id="native-session-abc",
+            stage_root=str(old_stage),
+        )
+    )
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="successful-provider-switch",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Switching provider.",
+            attempt=2,
+            parent_operation_id="failed-wake-for-switch",
+            native_session_id="new-claude-session",
+            stage_root=str(new_stage),
+        )
+    )
+    execution = AgentTaskExecution(
+        operation_id="successful-provider-switch",
+        store=loop.store,
+        control=AgentProcessControl(),
+        stage_root=str(new_stage),
+        continuation="handoff",
+    )
+
+    commit_experiment_episode_binding(
+        execution,
+        request,
+        native_session_id="new-claude-session",
+        execution_host="",
+        stage_host=None,
+        stage_root=str(new_stage),
+        graph_result="no graph change",
+        watcher_ids=["next-observer"],
+        context_baseline={"revision": 2},
+    )
+
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.provider == "claude"
+    assert episode.native_session_id == "new-claude-session"
+    assert episode.stage_root == str(new_stage)
+    assert episode.last_turn_invocation == 2
+    runtime = loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID)
+    assert runtime.episode_id == loop.episode_id
+    assert runtime.provider == "claude"
+    assert runtime.model == "sonnet"
+    assert runtime.reasoning == "high"
+    assert runtime.run_on == "laptop"
+    receipts = loop.store.agent_task_receipts("successful-provider-switch")
+    replacement = next(
+        item for item in receipts if item.category == "experiment_episode_binding_replaced"
+    )
+    assert replacement.payload["previous"]["provider"] == "codex"
+    assert replacement.payload["replacement"]["provider"] == "claude"
+
+    with pytest.raises(ValueError, match="pinned identity"):
+        loop.store.commit_experiment_episode_turn(
+            episode_id=loop.episode_id,
+            project_id=loop.project_id,
+            control_node_id=EXPERIMENT_ID,
+            provider="codex",
+            execution_machine="gpu",
+            execution_host="gpu.example",
+            native_session_id="third-session",
+            stage_host="gpu.example",
+            stage_root="/tmp/third-stage",
+            chat_id=loop.chat_id,
+            operation_id="successful-provider-switch",
+            invocation=2,
+            graph_result="none",
+            watcher_ids=[],
+            context_baseline={},
+            replace_binding=True,
+            replacement_provenance={"reason": "test"},
+        )
+
+
 def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_path) -> None:
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode()
+    stage = tmp_path / "stage"
+    loop.bind_session(stage)
     changed = loop.root_request(invocation=2).model_copy(
-        update={"trigger": "watcher", "model": "different-model"}
+        update={
+            "trigger": "watcher",
+            "model": "different-model",
+            "session_id": "native-session-abc",
+        }
     )
     now = loop.store.now()
 
-    with pytest.raises(ValueError, match="cannot change its pinned configuration"):
+    with pytest.raises(ValueError, match="episode binding: model"):
         loop.store.create_agent_task(
             AgentTaskRecord(
                 operation_id="changed-config",
@@ -597,6 +717,8 @@ def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_p
                 created_at=now,
                 updated_at=now,
                 status_message="Should not start.",
+                native_session_id="native-session-abc",
+                stage_root=str(stage),
             )
         )
 
@@ -971,16 +1093,9 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
     assert recovered.native_session_id == "repair-session"
 
 
-@pytest.mark.parametrize(
-    ("failure", "task_status"),
-    [
-        ("session_limit", "failed"),
-        ("missing_stage", "failed"),
-        ("missing_stage", "paused"),
-    ],
-)
+@pytest.mark.parametrize("task_status", ["failed", "paused"])
 def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
-    manifest, tmp_path, failure, task_status
+    manifest, tmp_path, task_status
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
@@ -1004,13 +1119,7 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
             created_at=now,
             updated_at=now,
             status_message="Automatic wake failed.",
-            error=(
-                "You've hit your session limit"
-                if failure == "session_limit"
-                else None
-                if task_status == "paused"
-                else "provider connection dropped"
-            ),
+            error=None if task_status == "paused" else "provider connection dropped",
             native_session_id="native-session-abc",
             stage_root=str(stage),
         )
@@ -1022,8 +1131,7 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
         candidate,
         hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
     )
-    if failure == "missing_stage":
-        stage.rmdir()
+    stage.rmdir()
 
     stopping = loop.stop()
     assert stopping["operational"]["stop_settled"] is False
@@ -1038,7 +1146,7 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     episode = loop.store.experiment_episode(loop.episode_id)
     assert episode is not None
     assert episode.session_diagnostic is not None
-    assert "Stop loop and press Run" in episode.session_diagnostic
+    assert "Switch provider" in episode.session_diagnostic
     settled = loop.control()
     assert settled["operational"]["stop_settled"] is True
     assert settled["ready"] is True
@@ -1066,6 +1174,248 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
             },
         )
         assert ordinary.status_code == 202, ordinary.text
+
+
+def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    stage = tmp_path / "wake-stage"
+    loop.bind_session(stage)
+    wake_request = loop.root_request(invocation=2).model_copy(
+        update={"trigger": "watcher", "session_id": "native-session-abc"}
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="limited-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Provider limit reached.",
+            error="You've hit your session limit",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+        )
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "limited-wake",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    observed = Event()
+    captured: dict[str, object] = {}
+
+    async def stream(_project_id, _kind, request, execution):
+        captured.update(request=request, continuation=execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    retried = app.state.background_tasks.retry("limited-wake")
+
+    assert observed.wait(timeout=2)
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert captured["continuation"] == "retry"
+    assert request.session_id == "native-session-abc"
+    assert request.control_episode_id == loop.episode_id
+    assert request.control_invocation == 2
+    assert retried.stage_root == str(stage)
+    assert retried.parent_operation_id == "limited-wake"
+
+
+def test_provider_switch_is_provisional_until_successful_episode_handoff(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    old_stage = tmp_path / "old-stage"
+    loop.bind_session(old_stage)
+    failed_request = loop.root_request(invocation=2).model_copy(
+        update={"trigger": "watcher", "session_id": "native-session-abc"}
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="failed-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=failed_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Provider limit reached.",
+            error="Quota exceeded",
+            native_session_id="native-session-abc",
+            stage_root=str(old_stage),
+        )
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "failed-wake",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    observed = Event()
+    captured: dict[str, object] = {}
+
+    async def fail_before_handoff(_project_id, _kind, request, execution):
+        captured.update(request=request, continuation=execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="error", text="provider unavailable"))
+
+    app.state.background_tasks.stream = fail_before_handoff
+    retried = app.state.background_tasks.retry(
+        "failed-wake",
+        provider="claude",
+        model="sonnet",
+        reasoning="high",
+    )
+
+    assert observed.wait(timeout=2)
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert captured["continuation"] == "handoff"
+    assert request.provider == "claude"
+    assert request.model == "sonnet"
+    assert request.reasoning == "high"
+    assert request.run_on == "laptop"
+    assert request.session_id is None
+    assert request.control_episode_id == loop.episode_id
+    assert request.control_invocation == 2
+    assert retried.parent_operation_id == "failed-wake"
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.provider == "codex"
+    assert episode.native_session_id == "native-session-abc"
+    assert episode.stage_root == str(old_stage)
+
+
+def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    old_stage = tmp_path / "old-stage"
+    loop.bind_session(old_stage)
+    candidate = "{}"
+    now = loop.store.now()
+    failed_wake_request = loop.root_request(invocation=2).model_copy(
+        update={"trigger": "watcher", "session_id": "native-session-abc"}
+    )
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="failed-wake-before-switch",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=failed_wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Provider limit reached.",
+            error="Usage limit exceeded",
+            native_session_id="native-session-abc",
+            stage_root=str(old_stage),
+        )
+    )
+    loop.store.record_agent_task_contract(
+        "failed-wake-before-switch",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    provisional_stage = tmp_path / "provisional-stage"
+    provisional_stage.mkdir()
+    provisional_request = failed_wake_request.model_copy(
+        update={
+            "provider": "claude",
+            "model": "sonnet",
+            "reasoning": "high",
+            "session_id": None,
+        }
+    )
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="failed-provisional-switch",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=provisional_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Provisional provider failed.",
+            error="provider temporarily unavailable",
+            attempt=2,
+            parent_operation_id="failed-wake-before-switch",
+            native_session_id="provisional-claude-session",
+            stage_root=str(provisional_stage),
+        )
+    )
+    loop.store.record_agent_task_receipt(
+        "failed-provisional-switch",
+        "operation_created",
+        {
+            "kind": "node_chat",
+            "attempt": 2,
+            "has_parent": True,
+            "continuation_cause": "handoff",
+            "resumed": False,
+        },
+    )
+    observed = Event()
+    captured: dict[str, object] = {}
+
+    async def stream(_project_id, _kind, request, execution):
+        captured.update(request=request, continuation=execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    retried = app.state.background_tasks.retry("failed-provisional-switch")
+
+    assert observed.wait(timeout=2)
+    retried_request = captured["request"]
+    assert isinstance(retried_request, RunRequest)
+    assert captured["continuation"] == "retry"
+    assert retried_request.provider == "claude"
+    assert retried_request.model == "sonnet"
+    assert retried_request.reasoning == "high"
+    assert retried_request.session_id == "provisional-claude-session"
+    assert retried.stage_root == str(provisional_stage)
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None and episode.provider == "codex"
+
+    commit_experiment_episode_binding(
+        AgentTaskExecution(
+            operation_id=retried.operation_id,
+            store=loop.store,
+            control=AgentProcessControl(),
+            stage_root=str(provisional_stage),
+            continuation="retry",
+        ),
+        retried_request,
+        native_session_id="provisional-claude-session",
+        execution_host="",
+        stage_host=None,
+        stage_root=str(provisional_stage),
+        graph_result="no graph change",
+        watcher_ids=["next-observer"],
+        context_baseline={},
+    )
+
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.provider == "claude"
+    assert episode.native_session_id == "provisional-claude-session"
 
 
 @pytest.mark.parametrize(
@@ -1256,7 +1606,8 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
     assert episode is not None
     assert episode.stop_requested_at is None
     assert episode.session_diagnostic is not None
-    assert "native provider session reached its limit" in episode.session_diagnostic
+    assert "Retry the same provider" in episode.session_diagnostic
+    assert "switch provider" in episode.session_diagnostic
     assert not [
         item
         for item in loop.store.agent_tasks(loop.project_id)
@@ -1393,17 +1744,38 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     assert request["session_id"] is None
 
 
-def test_experiment_retry_rejects_provider_overrides(manifest, tmp_path) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
     loop.start_episode(status="failed")
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "loop-root",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    seen = loop.record_answers()
 
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
-        json={"provider": "claude"},
+        json={"provider": "claude", "model": "sonnet", "reasoning": "high"},
     )
 
-    assert response.status_code == 409
-    assert "cannot override" in response.json()["detail"]
+    assert response.status_code == 202, response.text
+    assert response.json()["request"]["provider"] == "claude"
+    for _ in range(100):
+        if seen:
+            break
+        Event().wait(0.01)
+    assert seen and seen[0].run_on == "laptop"
+
+    pinned = loop.client.post(
+        f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
+        json={"run_on": "gpu"},
+    )
+    assert pinned.status_code == 409
+    assert "pinned execution machine" in pinned.json()["detail"]
 
 
 def test_stop_terminalizes_compatible_node_owned_watchers(manifest, tmp_path) -> None:

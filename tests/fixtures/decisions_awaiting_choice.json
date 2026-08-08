@@ -1,0 +1,63 @@
+{
+  "comment": "One fixture, two predicates. The backend `decision_awaits_choice` and the web `decisionsAwaitingChoice` must agree on this exact list, so a drift on either side fails a test instead of silently disagreeing between the project card and the Inbox.",
+  "nodes": [
+    {
+      "id": "dec/open-one",
+      "type": "decision",
+      "title": "Open decision",
+      "question": "Which evaluation rule?",
+      "options": ["matched", "shifted"],
+      "status": "open"
+    },
+    {
+      "id": "dec/ready-one",
+      "type": "decision",
+      "title": "Ready decision",
+      "question": "Which sampler?",
+      "options": ["uniform", "prioritized"],
+      "status": "ready"
+    },
+    {
+      "id": "dec/revisit-one",
+      "type": "decision",
+      "title": "Revisit decision",
+      "question": "Which reset schedule?",
+      "options": ["periodic", "adaptive"],
+      "selected_option": "periodic",
+      "status": "revisit"
+    },
+    {
+      "id": "dec/decided-one",
+      "type": "decision",
+      "title": "Decided decision",
+      "question": "Which optimizer?",
+      "options": ["adam", "sgd"],
+      "selected_option": "adam",
+      "status": "decided"
+    },
+    {
+      "id": "dec/superseded-one",
+      "type": "decision",
+      "title": "Superseded decision",
+      "question": "Which stale rule?",
+      "options": ["one", "two"],
+      "status": "superseded"
+    },
+    {
+      "id": "blk/asserted-open",
+      "type": "blocker",
+      "title": "Asserted open blocker",
+      "description": "The cluster queue is full.",
+      "status": "open",
+      "standing": "asserted"
+    },
+    {
+      "id": "hyp/proposed-one",
+      "type": "hypothesis",
+      "title": "A hypothesis",
+      "statement": "Replanning preserves plasticity.",
+      "status": "proposed"
+    }
+  ],
+  "expected_awaiting_choice": ["dec/ready-one", "dec/revisit-one"]
+}

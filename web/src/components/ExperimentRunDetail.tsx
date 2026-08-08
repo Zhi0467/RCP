@@ -67,9 +67,12 @@ interface Props {
   runBusy: boolean;
   runDisabled: boolean;
   stopBusy: boolean;
+  recoveryBusy: boolean;
+  providerLabel?: string;
   onRun: () => void;
   onStopLoop: () => void;
-  onInspectTask: (operationId: string) => void;
+  onRecover: (action: "resume" | "retry") => void;
+  onSwitchProvider: () => void;
 }
 
 export function ExperimentRunDetail({
@@ -77,9 +80,12 @@ export function ExperimentRunDetail({
   runBusy,
   runDisabled,
   stopBusy,
+  recoveryBusy,
+  providerLabel,
   onRun,
   onStopLoop,
-  onInspectTask,
+  onRecover,
+  onSwitchProvider,
 }: Props) {
   const { node, control, taskGroup, currentTask, health } = run;
   const operational = control?.operational ?? null;
@@ -101,6 +107,12 @@ export function ExperimentRunDetail({
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
+  const recoveryAction = experimentRecoveryAction(currentTask);
+  const recoveryProvider =
+    providerLabel ||
+    capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
+  const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
+  const canStop = live || Boolean(recoveryAction);
 
   return (
     <div className={`experiment-run-detail ${healthTones[health]}`}>
@@ -115,20 +127,45 @@ export function ExperimentRunDetail({
           <p>{nowLine(run)}</p>
         </div>
         <div className="experiment-run-actions" aria-label="Experiment loop actions">
-          {currentOperationId && (
+          {recoveryAction && (
+            <button
+              type="button"
+              className="button primary compact experiment-recovery-button"
+              disabled={runDisabled || recoveryBusy || stopBusy || stopUnsettled || stopRequested}
+              aria-busy={recoveryBusy}
+              onClick={() => onRecover(recoveryAction)}
+            >
+              {recoveryBusy
+                ? recoveryAction === "resume"
+                  ? `Resuming ${recoveryProvider}…`
+                  : `Retrying ${recoveryProvider}…`
+                : recoveryAction === "resume"
+                  ? `Resume ${recoveryProvider}`
+                  : `Retry ${recoveryProvider}`}
+            </button>
+          )}
+          {canSwitchProvider && (
             <button
               type="button"
               className="button compact"
-              onClick={() => onInspectTask(currentOperationId)}
+              disabled={runDisabled || recoveryBusy || stopBusy || stopUnsettled || stopRequested}
+              onClick={onSwitchProvider}
             >
-              Open agent task
+              Switch provider…
             </button>
           )}
           {control?.episode_id && (
             <button
               type="button"
               className="button compact experiment-stop-loop"
-              disabled={stopBusy || stopUnsettled || stopRequested || !live}
+              disabled={
+                runDisabled ||
+                stopBusy ||
+                recoveryBusy ||
+                stopUnsettled ||
+                stopRequested ||
+                !canStop
+              }
               onClick={onStopLoop}
             >
               {stopBusy || stopUnsettled
@@ -209,9 +246,7 @@ export function ExperimentRunDetail({
         <ul className="experiment-run-drift" aria-label="Decision drift">
           {(control?.decision_drift ?? []).map((drift) => (
             <li key={drift.decision_id}>
-              {drift.proposed
-                ? `${drift.decision_id} has a proposed change. This episode was pinned to ${drift.pinned_option}.`
-                : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
+              {`${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
             </li>
           ))}
         </ul>
@@ -288,6 +323,11 @@ export function ExperimentRunDetail({
                       session.diagnostic,
                     ])
                   : null,
+              },
+              {
+                label: "Last task error",
+                value: currentTask?.error,
+                breakable: true,
               },
               { label: "Episode", value: control?.episode_id, mono: true, breakable: true },
               { label: "Current task", value: currentOperationId, mono: true, breakable: true },
@@ -525,13 +565,29 @@ function nowLine(run: ExperimentRun): string {
     case "completed":
       return `Experiment ${String(run.node.status ?? "completed")}`;
     default:
+      if (experimentRecoveryAction(run.currentTask)) {
+        const diagnostic = operational?.session.diagnostic;
+        return (
+          (diagnostic && /\b(?:retry|resume|switch provider)\b/i.test(diagnostic)
+            ? diagnostic
+            : null) || "Retry this provider or switch provider to continue this episode"
+        );
+      }
       return (
-        run.currentTask?.error ||
         operational?.session.diagnostic ||
         taskMessage ||
+        run.currentTask?.error ||
         "No invocation is running"
       );
   }
+}
+
+function experimentRecoveryAction(task: ExperimentRun["currentTask"]): "resume" | "retry" | null {
+  if (!task || !["failed", "paused", "interrupted"].includes(task.status)) return null;
+  if (task.can_resume && (task.status === "paused" || task.status === "interrupted")) {
+    return "resume";
+  }
+  return task.can_retry ? "retry" : null;
 }
 
 function watcherDeliveryLabel(watcher: WatcherRecord): string {

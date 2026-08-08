@@ -430,7 +430,11 @@ class ProjectCatalog:
             primary_question=primary_question,
             attention_count=sum(
                 int(counts[key])
-                for key in ("pending_proposals", "open_ambiguities", "open_blockers")
+                for key in (
+                    "pending_proposals",
+                    "decisions_awaiting_choice",
+                    "open_blockers",
+                )
             ),
             last_refresh_at=_timestamp(last_refresh),
             reachable=bool(canonical["reachable"]),

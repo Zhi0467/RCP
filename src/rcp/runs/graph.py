@@ -795,10 +795,9 @@ async def stream_graph_run(
                     "correction_round": rounds,
                 },
             )
-            # An ingest run's deliverable is the patch file; its prose only confirms
-            # it was written, so the collected answers go unread. `done` is held back
-            # until the patch is applied so the wire order stays applied_revision,
-            # then done.
+            # Hold the labelled final answer until the initial provider invocation
+            # completes, and hold `done` until the Patch applies. Answer and Patch
+            # verdict remain independent.
             outcome = _ProviderOutcome(session_id=native_session_id)
             async with aclosing(
                 _stream_graph_agent_events(
@@ -861,6 +860,10 @@ async def stream_graph_run(
                     AgentEvent(event="error", text=f"{request.provider} produced no result.")
                 )
                 return
+
+            if rounds == 0:
+                for answer in outcome.answers:
+                    yield _sse(AgentEvent(event="answer", text=answer))
 
             if execution is not None:
                 execution.store.update_agent_task_message(

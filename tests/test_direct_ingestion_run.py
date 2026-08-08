@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import pytest
+from fastapi.testclient import TestClient
 
 import rcp.runs.graph as graph_run
 from rcp.agents import AgentEvent
 from rcp.api import create_app
+from rcp.runs.experiment_loop import patch_explicitly_exits
 from rcp.runs.graph import (
     _agent_read_dirs,
     _record_context_receipt,
@@ -20,7 +23,7 @@ from rcp.runs.graph import (
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
 
-from .helpers import seed_patch
+from .helpers import agent_patch_json, refresh_patch, seed_patch
 
 
 class _FailingLauncher:
@@ -30,6 +33,142 @@ class _FailingLauncher:
     async def stream(self, *_args, **kwargs):
         self.workspace = kwargs["cwd"]
         yield AgentEvent(event="error", text="provider failed before writing a patch")
+
+
+class _SuccessfulIngestLauncher:
+    def __init__(self, patch_text: str, answer: str) -> None:
+        self.patch_text = patch_text
+        self.answer = answer
+
+    async def stream(self, *_args, **kwargs):
+        workspace = Path(kwargs["cwd"])
+        (workspace / "patch.json").write_text(self.patch_text, encoding="utf-8")
+        yield AgentEvent(event="answer", text=self.answer)
+        yield AgentEvent(event="done")
+
+
+def _wait_for_task(
+    client: TestClient,
+    project_id: str,
+    operation_id: str,
+) -> dict[str, object]:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
+        assert response.status_code == 200
+        task = response.json()
+        if task["status"] not in {"queued", "running"}:
+            return task
+        time.sleep(0.01)
+    raise AssertionError("background ingest task did not finish")
+
+
+@pytest.mark.parametrize("kind", ["seed", "refresh"])
+def test_successful_ingest_answer_is_persisted_and_readable(
+    manifest,
+    tmp_path,
+    kind: str,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    patch = seed_patch() if kind == "seed" else refresh_patch()
+    if kind == "refresh":
+        service.history.append(seed_patch())
+    answer = (
+        "Wrote the graph Patch. Hypothesis scope remains empty because no cited excerpt states "
+        "the exact boundary."
+    )
+    launcher = _SuccessfulIngestLauncher(agent_patch_json(patch), answer)
+
+    async def stream(_project_id, task_kind, request, execution):
+        async for frame in stream_graph_run(
+            service,
+            launcher,
+            task_kind,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/{kind}",
+            json={"run_truth_scope": ["repo-a"]},
+        )
+        assert started.status_code == 202
+        completed = _wait_for_task(client, project_id, started.json()["operation_id"])
+
+    assert completed["status"] == "succeeded"
+    assert completed["result"] == {"messages": [answer]}
+    assert completed["applied_revision"] == (1 if kind == "seed" else 2)
+
+
+def test_failed_ingest_keeps_its_independent_answer(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    answer = "Wrote the attempted Patch, but the active ontology lacks a needed relation."
+    invalid_patch = json.dumps(
+        {
+            "summary": "Used an operation outside the agent schema.",
+            "ops": [{"op": "invent_nodes", "nodes": []}],
+        }
+    )
+    launcher = _SuccessfulIngestLauncher(invalid_patch, answer)
+
+    async def stream(_project_id, task_kind, request, execution):
+        async for frame in stream_graph_run(
+            service,
+            launcher,
+            task_kind,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/seed",
+            json={"run_truth_scope": ["repo-a"]},
+        )
+        assert started.status_code == 202
+        failed = _wait_for_task(client, project_id, started.json()["operation_id"])
+
+    assert failed["status"] == "failed"
+    assert failed["result"] == {"messages": [answer]}
+    assert failed["applied_revision"] is None
+
+
+def test_queued_decision_is_an_explicit_experiment_loop_exit() -> None:
+    base = {
+        "summary": "Queued a research choice for the human.",
+        "repositories_read": ["repo-a"],
+        "change_summary": ["Queued the evaluation budget choice."],
+    }
+    for status in ("ready", "revisit"):
+        queued = {
+            **base,
+            "ops": [
+                {
+                    "op": "update_nodes",
+                    "nodes": [
+                        {
+                            "id": "dec/evaluation-budget",
+                            "changes": {"status": status},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        assert patch_explicitly_exits(json.dumps(queued), "exp/evaluation")
 
 
 def test_remote_graph_context_rebinds_metadata_without_staging_provider_logs(

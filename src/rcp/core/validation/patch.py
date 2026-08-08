@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
-from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
+from rcp.core.models import Decision, ExperimentDecisionPin, GraphState, Patch
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
@@ -123,6 +123,7 @@ def _validate_patch(
         validate_approval_shape(state, patch, report, mode=mode)
 
     oldest_ref = _validate_operations(ctx)
+    _validate_queued_decision_options(ctx)
     _validate_created_proposal_liveness(ctx)
 
     if (
@@ -157,6 +158,46 @@ def _validate_created_proposal_liveness(ctx: OpContext) -> None:
                 f"Proposal {proposal_id!r} is already stale after applying its outer patch.",
                 ctx.revision,
                 related_node_ids=list(proposal.related_node_ids),
+            )
+
+
+def _validate_queued_decision_options(ctx: OpContext) -> None:
+    """Check queued ballots after the Patch's written-order staging has finished."""
+
+    if ctx.mode != "admission":
+        return
+    touched_ids = {
+        raw.get("id")
+        for operation in ctx.patch.ops
+        if operation.get("op") in {"create_nodes", "update_nodes", "supersede_nodes"}
+        for raw in operation.get("nodes", [])
+        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+    }
+    touched_ids.update(
+        raw.get("duplicate")
+        for operation in ctx.patch.ops
+        if operation.get("op") == "merge_nodes"
+        for raw in operation.get("merges", [])
+        if isinstance(raw, dict) and isinstance(raw.get("duplicate"), str)
+    )
+    touched_ids.update(
+        operation.get("node_id")
+        for operation in ctx.patch.ops
+        if operation.get("op") == "set_standing" and isinstance(operation.get("node_id"), str)
+    )
+    for node_id in sorted(touched_ids):
+        node = ctx.state.nodes.get(node_id)
+        if (
+            isinstance(node, Decision)
+            and node.status in {"ready", "revisit"}
+            and len(set(node.options)) < 2
+        ):
+            ctx.report.reject(
+                "incomplete-decision-ballot",
+                f"Decision {node.id} must have at least two distinct options before it can be "
+                f"queued as {node.status}.",
+                ctx.revision,
+                related_node_ids=[node.id],
             )
 
 
@@ -215,6 +256,14 @@ def _validate_operations(ctx: OpContext):
         rule = OP_RULES.get(name)
         if rule is None:
             ctx.report.reject("unknown-operation", f"Unknown operation {name!r}.", ctx.revision)
+            continue
+        if ctx.mode == "admission" and rule.legacy_only:
+            ctx.report.reject(
+                "legacy-only-operation",
+                f"Operation {name!r} is retained for historical replay and cannot be admitted "
+                "in a new patch.",
+                ctx.revision,
+            )
             continue
         rejects_before = sum(message.level == "reject" for message in ctx.report.messages)
         if rule.structural_validate is not None:

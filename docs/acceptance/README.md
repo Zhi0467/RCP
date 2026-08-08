@@ -198,10 +198,10 @@ it but a browser or a machine we do not have.
 | [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
 | [S48](S48-screen-story-token-scale.md) | Measure project usage in favorite screen stories | implemented | **browser** | 5 checks + driven 2026-08-02 |
 | [S49](S49-chat-node-reference-links.md) | Open an existing node from a chat answer | implemented | **browser** | covered + driven 2026-08-02 |
-| [S50](S50-minimal-agent-proposal-boundary.md) | Agents propose only decisions and belief changes | implemented | pytest | covered |
+| [S50](S50-minimal-agent-proposal-boundary.md) | Agents propose only evidence-grounded belief changes | implemented | pytest | covered |
 | [S51](S51-live-agent-patch-validation.md) | Every patch-producing task checks the exact semantic patch RCP will apply | implemented | pytest | covered |
 | [S52](S52-explicit-rejection-and-node-removal.md) | Judge explicitly and remove current graph nodes without rewriting history | implemented | **browser** | covered + driven 2026-08-03 |
-| [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and run surfaces tell one truthful story | implemented | **browser** | covered + driven 2026-08-03 |
+| [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and run surfaces tell one truthful story | implemented | **browser** | covered + driven 2026-08-08 |
 | [S54](S54-paper-preview-and-resizable-node-detail.md) | Read authored Markdown and resize the node being inspected | implemented | **browser** | covered + driven 2026-08-03 |
 | [S55](S55-project-owned-agent-profile.md) | Project Settings owns agent configuration | implemented | pytest + **browser** | covered + driven 2026-08-03 |
 | [S56](S56-plain-language-revision-history.md) | Read what changed between graph revisions | implemented | pytest + **browser** | covered + driven 2026-08-03 |
@@ -237,7 +237,9 @@ it but a browser or a machine we do not have.
 | [S89](S89-provider-native-skill-inventory.md) | Offer provider-native skills beside RCP packages | implemented | pytest + **browser** + ssh | covered + driven 2026-08-08 |
 | [S90](S90-desktop-chat-dictation.md) | Turn one spoken segment into an editable chat draft | pending | **desktop** | native + span tests + desktop control; live audio pending |
 | [S91](S91-chat-input-attachments.md) | Send bounded temporary files with one chat turn | implemented | pytest + **browser** + ssh | tests + remote browser/SSH drive |
-| [S92](S92-actor-identity-and-permission-checks.md) | Bound an agent by its owning person's authority | pending — **not human-confirmed** | pytest + **browser** | none |
+| [S92](S92-actor-identity-and-permission-checks.md) | Bound an agent by its owning person's authority | superseded — replacement scenarios pending | historical | none |
+| [S93](S93-one-hop-relation-map.md) | Read a node's immediate structure without leaving it | implemented | **browser** | tests + browser 2026-08-08 |
+| [S94](S94-decision-ripeness-and-the-agent-contract.md) | Agents queue Decisions; only humans decide them | implemented | pytest | covered |
 
 Ids are never reused. Gaps are retired scenarios or promises folded into another
 scenario or the test-defended list below; a new scenario takes the next free

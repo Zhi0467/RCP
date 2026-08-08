@@ -4,11 +4,18 @@ import type { AppView, GraphNode, GraphState, ProjectSnapshot, RevisionSummary }
 interface Props {
   project: ProjectSnapshot;
   graph: GraphState;
+  decisionsAwaitingChoice: GraphNode[];
   latestRevisionSummary?: RevisionSummary | null;
   onNavigate: (view: AppView) => void;
 }
 
-export function ProjectOverview({ project, graph, latestRevisionSummary, onNavigate }: Props) {
+export function ProjectOverview({
+  project,
+  graph,
+  decisionsAwaitingChoice,
+  latestRevisionSummary,
+  onNavigate,
+}: Props) {
   const nodes = Object.values(graph.nodes);
   const activeExperiments = nodes.filter(
     (node) =>
@@ -18,7 +25,6 @@ export function ProjectOverview({ project, graph, latestRevisionSummary, onNavig
   const latestNode = [...nodes].sort((left, right) => right.updated_rev - left.updated_rev)[0];
   const blockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
   const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
-  const ambiguities = Object.values(graph.ambiguities).filter((item) => item.status === "open");
   const nextExperiment = activeExperiments.find((node) => node.next_action);
   const question =
     project.primary_question?.question ||
@@ -81,9 +87,9 @@ export function ProjectOverview({ project, graph, latestRevisionSummary, onNavig
       prompt: "What needs you?",
       answer:
         proposals[0]?.title ||
-        ambiguities[0]?.question ||
+        decisionsAwaitingChoice[0]?.title ||
         "Nothing currently requires human judgment.",
-      detail: `${proposals.length} proposals · ${ambiguities.length} ambiguities`,
+      detail: `${proposals.length} proposals · ${decisionsAwaitingChoice.length} decisions awaiting choice`,
       view: "attention",
     },
     {

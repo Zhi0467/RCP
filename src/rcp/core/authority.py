@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from typing import Any
+from typing import Literal
 
-from rcp.core.models import Experiment, GraphState, Patch
+from rcp.core.models import Patch
 
-AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s69-v1"
+AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s94-v1"
 
-DECISION_PROPOSAL_FIELDS = frozenset({"selected_option", "status"})
 HYPOTHESIS_PROPOSAL_FIELDS = frozenset({"status"})
 EVIDENCE_EDGE_CAUSE_KIND = "evidence_edge"
-EXPERIMENT_GOVERNING_RELATION = "governed_by"
 EVIDENCE_RELATIONS = frozenset({"supports", "weakens", "refutes", "inconclusive", "contradicts"})
+
+DECIDE_DECISION = "decide_decision"
+QUEUE_DECISION = "queue_decision"
+DecisionAction = Literal["decide_decision", "queue_decision"]
 
 _AGENT_GRAPH_AUTHORITY_BODY = """Assert directly:
 - Ordinary legal graph structure and content are assertions, not Proposals. This includes creating
@@ -21,15 +23,12 @@ _AGENT_GRAPH_AUTHORITY_BODY = """Assert directly:
   ordinary review. Never preserve accepted standing on content the agent changed.
 - Removing an asserted or contested node also removes all of its incident edges. Never remove an
   accepted node or an Experiment with a planned, submitted, or running bounded-loop attempt.
-- Every agent-created Decision starts `status="open"` with `selected_option=null`. Every
-  agent-created Hypothesis starts `status="proposed"`.
+- Agents may create a Decision as `open` or `ready`, and may queue an existing Decision as `open`,
+  `ready`, or `revisit`. Agents never write `selected_option` or set `status="decided"`; those
+  writes require the `decide_decision` action. Every agent-created Hypothesis starts
+  `status="proposed"`.
 
 Proposal-only changes:
-- A Decision Proposal may change only `selected_option` and/or `status` on exactly one Decision
-  that is an Experiment input through an Experiment -> Decision `governed_by` edge in the current
-  graph or the same outer Patch. That Decision may also be created earlier in the outer Patch. The
-  Proposal contains exactly one `update_nodes` operation for it. Never directly select, change,
-  reopen, merge, or supersede a Decision when that would change its choice or status.
 - A belief Proposal may change only `status` on exactly one Hypothesis, including one created
   earlier in the same outer Patch. It contains exactly one `update_nodes` operation for that
   Hypothesis and its update has a cause with
@@ -61,59 +60,11 @@ def render_agent_graph_authority_contract() -> str:
     )
 
 
-def decision_is_experiment_input(
-    state: GraphState,
-    decision_id: str,
-    context_patch: Patch | None = None,
-) -> bool:
-    """Whether a Decision is governed by an Experiment after this Patch's edge operations."""
+def permits(patch: Patch, action: DecisionAction) -> bool:
+    """Temporary action predicate for the future actor-profile permission lookup."""
 
-    experiment_ids = {
-        node_id for node_id, node in state.nodes.items() if isinstance(node, Experiment)
-    }
-    active_edges = {
-        edge_id
-        for edge_id, edge in state.edges.items()
-        if edge.relation == EXPERIMENT_GOVERNING_RELATION
-        and edge.target == decision_id
-        and edge.source in experiment_ids
-    }
-    if context_patch is None:
-        return bool(active_edges)
-
-    for operation in context_patch.ops:
-        if operation.get("op") != "create_nodes":
-            continue
-        for raw in operation.get("nodes", []):
-            if isinstance(raw, dict) and raw.get("type") == "experiment":
-                node_id = raw.get("id")
-                if isinstance(node_id, str):
-                    experiment_ids.add(node_id)
-    for operation in context_patch.ops:
-        name = operation.get("op")
-        if name == "create_edges":
-            for raw in operation.get("edges", []):
-                if not isinstance(raw, dict):
-                    continue
-                source = raw.get("source")
-                target = raw.get("target")
-                relation = raw.get("relation")
-                if (
-                    relation == EXPERIMENT_GOVERNING_RELATION
-                    and target == decision_id
-                    and source in experiment_ids
-                ):
-                    active_edges.add(_edge_id(raw))
-        elif name == "remove_edges":
-            active_edges.difference_update(
-                edge_id for edge_id in operation.get("edge_ids", []) if isinstance(edge_id, str)
-            )
-
-    return bool(active_edges)
-
-
-def _edge_id(raw: dict[str, Any]) -> str:
-    explicit = raw.get("id")
-    if isinstance(explicit, str):
-        return explicit
-    return f"{raw.get('source')}::{raw.get('relation')}::{raw.get('target')}"
+    if action == DECIDE_DECISION:
+        return patch.author == "human"
+    if action == QUEUE_DECISION:
+        return True
+    raise ValueError(f"Unknown Decision action {action!r}.")

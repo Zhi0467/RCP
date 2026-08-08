@@ -144,56 +144,67 @@ def test_ordinary_agent_update_clears_accepted_standing(manifest) -> None:
     assert node.standing == "asserted"
 
 
-@pytest.mark.parametrize(
-    ("direct_update", "proposal"),
-    [
-        (
+def test_agent_cannot_decide_directly_or_by_proposal(manifest) -> None:
+    state = _state_with_decision(manifest)
+    direct_report = validate_patch(
+        state,
+        _agent_patch(
             {
-                "id": "dec/evaluation-rule",
-                "changes": {"status": "decided", "selected_option": "matched"},
-            },
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "dec/evaluation-rule",
+                        "changes": {"status": "decided", "selected_option": "matched"},
+                    }
+                ],
+            }
+        ),
+        ["repo-a", "repo-b"],
+    )
+    proposal_report = validate_patch(
+        state,
+        _agent_patch(
             _proposal(
                 proposal_id="prop/select-evaluation",
                 node_id="dec/evaluation-rule",
                 changes={"status": "decided", "selected_option": "matched"},
-            ),
+            )
         ),
-        (
-            {
-                "id": "hyp/replanning-restores-plasticity",
-                "changes": {"status": "active"},
-                "cause": {"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
-            },
-            _proposal(
-                proposal_id="prop/activate-hypothesis",
-                node_id="hyp/replanning-restores-plasticity",
-                changes={"status": "active"},
-                cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
-            ),
-        ),
-    ],
-)
-def test_decision_and_belief_transitions_require_exact_proposals(
-    manifest, direct_update: dict, proposal: dict
-) -> None:
+        ["repo-a", "repo-b"],
+    )
+
+    assert direct_report.rejected
+    assert proposal_report.rejected
+    assert any("decide_decision" in message.message for message in direct_report.messages)
+    assert any("decide_decision" in message.message for message in proposal_report.messages)
+
+
+def test_belief_transition_still_requires_an_exact_proposal(manifest) -> None:
     state = _state_with_decision(manifest)
+    direct_update = {
+        "id": "hyp/replanning-restores-plasticity",
+        "changes": {"status": "active"},
+        "cause": {"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+    }
+    proposal = _proposal(
+        proposal_id="prop/activate-hypothesis",
+        node_id="hyp/replanning-restores-plasticity",
+        changes={"status": "active"},
+        cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+    )
 
     direct_report = validate_patch(
         state,
         _agent_patch({"op": "update_nodes", "nodes": [direct_update]}),
         ["repo-a", "repo-b"],
     )
-    proposal_report = validate_patch(
-        state,
-        _agent_patch(proposal),
-        ["repo-a", "repo-b"],
-    )
+    proposal_report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
 
     assert direct_report.rejected
     assert not proposal_report.rejected
 
 
-def test_decision_proposal_requires_an_experiment_input_edge(manifest) -> None:
+def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest) -> None:
     state = _state_with_decision(manifest, governed=False)
     proposal = _proposal(
         proposal_id="prop/select-evaluation",
@@ -257,8 +268,8 @@ def test_decision_proposal_requires_an_experiment_input_edge(manifest) -> None:
     assert ungoverned.rejected
     assert any(message.code == "invalid-agent-proposal-shape" for message in ungoverned.messages)
     assert not historical.rejected
-    assert not same_patch_governed.rejected
-    assert not same_patch_experiment.rejected
+    assert same_patch_governed.rejected
+    assert same_patch_experiment.rejected
 
 
 @pytest.mark.parametrize(
@@ -269,7 +280,7 @@ def test_decision_proposal_requires_an_experiment_input_edge(manifest) -> None:
         {"status": "decided"},
     ],
 )
-def test_decision_proposal_requires_a_coherent_choice_transition(manifest, changes) -> None:
+def test_every_new_decision_proposal_shape_is_refused(manifest, changes) -> None:
     state = _state_with_decision(manifest)
     proposal = _proposal(
         proposal_id="prop/incoherent-evaluation",
@@ -286,7 +297,7 @@ def test_decision_proposal_requires_a_coherent_choice_transition(manifest, chang
     )
 
 
-def test_decision_proposal_can_mark_a_retained_listed_selection_decided(manifest) -> None:
+def test_new_decision_proposal_cannot_mark_a_retained_selection_decided(manifest) -> None:
     state = _state_with_decision(manifest)
     decision = state.nodes["dec/evaluation-rule"]
     state = state.model_copy(
@@ -305,7 +316,8 @@ def test_decision_proposal_can_mark_a_retained_listed_selection_decided(manifest
 
     report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
 
-    assert not report.rejected
+    assert report.rejected
+    assert any("decide_decision" in message.message for message in report.messages)
 
 
 def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest) -> None:
@@ -350,6 +362,7 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
         revision=state.revision + 1,
         kind="approval",
         author="human",
+        human_action="decision_choice",
         summary="Approved the legacy selection.",
         ops=[
             *semantic_ops,
@@ -368,6 +381,11 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
         mode="replay",
     )
     report = validate_patch(state, approval, ["repo-a", "repo-b"])
+    unnamed = validate_patch(
+        state,
+        approval.model_copy(update={"human_action": None}),
+        ["repo-a", "repo-b"],
+    )
 
     assert admission.rejected
     assert any(message.code == "unnormalized-decision-approval" for message in admission.messages)
@@ -377,6 +395,8 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
         "status": "decided",
     }
     assert not report.rejected
+    assert unnamed.rejected
+    assert any(message.code == "unnamed-decision-action" for message in unnamed.messages)
     updated = apply_valid_patch(state, approval)
     assert updated.nodes["dec/evaluation-rule"].selected_option == "matched"
     assert updated.nodes["dec/evaluation-rule"].status == "decided"
@@ -405,6 +425,7 @@ def test_legacy_decided_proposal_without_a_listed_selection_is_refused(manifest)
         revision=state.revision + 1,
         kind="approval",
         author="human",
+        human_action="decision_choice",
         summary="Approved an incoherent legacy proposal.",
         ops=[
             *proposal.ops,

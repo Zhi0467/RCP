@@ -25,7 +25,6 @@ class DecisionDrift(BaseModel):
     pinned_revision: int
     current_option: str | None = None
     current_status: str | None = None
-    proposed: bool = False
 
 
 class ExperimentSessionBinding(BaseModel):
@@ -111,14 +110,13 @@ def decision_drift(state: GraphState, pins: Iterable[ExperimentDecisionPin]) -> 
     for pin in pins:
         node = state.nodes.get(pin.decision_id)
         decision = node if isinstance(node, Decision) else None
-        proposed = _has_pending_proposal(state, pin.decision_id)
         moved = (
             decision is None
             or decision.status != "decided"
             or decision.selected_option != pin.selected_option
             or decision.updated_rev != pin.decision_revision
         )
-        if not moved and not proposed:
+        if not moved:
             continue
         drifted.append(
             DecisionDrift(
@@ -127,7 +125,6 @@ def decision_drift(state: GraphState, pins: Iterable[ExperimentDecisionPin]) -> 
                 pinned_revision=pin.decision_revision,
                 current_option=decision.selected_option if decision else None,
                 current_status=decision.status if decision else None,
-                proposed=proposed,
             )
         )
     return drifted

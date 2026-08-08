@@ -63,11 +63,11 @@ blocking the graph-writing launch.
   recorded by RCP as `unavailable`, never graph findings. A successfully staged
   required invocation that produced no report is recorded separately as missing
   rather than synthesized as any of those outcomes.
-- Advice to drop or merge is expressed as a suggested Proposal-shaped change in
-  the report; it is never automatically converted into removal, merge, or
-  standing operations, and the skill never creates a second graph-change
-  channel. This scanner constraint does not revoke S52's existing authority for
-  a graph-capable agent to author an independently chosen legal `remove_nodes`
+- Advice to drop or merge remains advisory text in the report, never a graph
+  Proposal; it is not automatically converted into removal, merge, or standing
+  operations, and the skill never creates a second graph-change channel. This
+  scanner constraint does not revoke S52's existing authority for a
+  graph-capable agent to author an independently chosen legal `remove_nodes`
   operation.
 - RCP derives protection constraints from canonical append-only history rather
   than asking the scanner to infer authorship. Every accepted node is protected

@@ -38,8 +38,9 @@ the existing direct node editor, stages in the project draft, and reaches
 canonical history only through **Sync**. Editing it never starts chat.
 
 An agent may write Scope only when one of its cited sources states the boundary
-explicitly. Otherwise it leaves Scope empty and creates an Ambiguity asking the
-human to supply it. Empty is honest; there is no `unknown` filler.
+explicitly. Otherwise it leaves Scope empty and says so in its final answer. It
+does not manufacture a Blocker, Decision, or other graph node to hold the gap.
+Empty is honest; there is no `unknown` filler.
 
 Opening Evidence shows **Origin** as one of `Internal run`, `External
 publication`, `External instance`, `Analytic`, or `Unknown`. Origin is a compact
@@ -126,7 +127,7 @@ the browser path uses the resulting fixture.
   not a structural replay failure
 - `grounded_agent_scope_is_allowed`
 - `ungrounded_agent_scope_is_rejected`
-- `missing_scope_can_raise_an_ambiguity`
+- `missing_scope_is_reported_in_the_answer_without_a_graph_object`
 - `human_scope_edit_is_allowed_and_sync_only`
 - `hypothesis_status_change_requires_cause`
 - `all_four_cause_kinds_are_valid`

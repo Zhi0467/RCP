@@ -444,9 +444,6 @@ def watcher_next_check_at(
 
 
 _EXPERIMENT_EPISODE_PINNED_FIELDS = (
-    "provider",
-    "model",
-    "reasoning",
     "run_on",
     "run_truth_scope",
     "chat_id",
@@ -1361,6 +1358,13 @@ class AppStore:
         ).fetchone()
         if episode is None or episode["stop_requested_at"] is not None:
             raise ValueError("The automatic Experiment wake has no active episode binding.")
+        binding_task = connection.execute(
+            "SELECT request_json FROM graph_runs WHERE operation_id = ?",
+            (episode["last_turn_operation_id"],),
+        ).fetchone()
+        if binding_task is None:
+            raise ValueError("The automatic Experiment wake has no active binding task.")
+        binding_request = json.loads(binding_task["request_json"])
         expected = {
             "project_id": record.project_id,
             "control_node_id": request.get("control_node_id"),
@@ -1370,6 +1374,8 @@ class AppStore:
             "stage_host": record.stage_host or "",
             "stage_root": record.stage_root,
             "chat_id": request.get("chat_id"),
+            "model": request.get("model"),
+            "reasoning": request.get("reasoning"),
         }
         actual = {
             "project_id": episode["project_id"],
@@ -1380,6 +1386,8 @@ class AppStore:
             "stage_host": episode["stage_host"] or "",
             "stage_root": episode["stage_root"],
             "chat_id": episode["chat_id"],
+            "model": binding_request.get("model"),
+            "reasoning": binding_request.get("reasoning"),
         }
         mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
         if (episode["execution_host"] or "") != (record.stage_host or ""):
@@ -2527,6 +2535,8 @@ class AppStore:
         graph_result: str,
         watcher_ids: list[str],
         context_baseline: dict[str, object],
+        replace_binding: bool = False,
+        replacement_provenance: dict[str, object] | None = None,
     ) -> ExperimentEpisodeRecord:
         """Bind this episode to the session a later automatic wake resumes.
 
@@ -2538,6 +2548,13 @@ class AppStore:
 
         if not native_session_id or not stage_root:
             raise ValueError("An episode binding requires a native session and its exact stage.")
+        if replace_binding and replacement_provenance is None:
+            raise ValueError("An episode binding replacement requires its recovery provenance.")
+        replacement_payload_json = (
+            self._bounded_receipt_payload(replacement_provenance)
+            if replacement_provenance is not None
+            else None
+        )
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -2561,22 +2578,32 @@ class AppStore:
             ):
                 raise ValueError("This episode id belongs to a different Experiment.")
             if existing["native_session_id"] is not None:
-                immutable = {
-                    "provider": provider,
+                fixed = {
                     "execution_machine": execution_machine,
                     "execution_host": execution_host,
+                    "chat_id": chat_id,
+                }
+                fixed_conflicts = sorted(
+                    field for field, value in fixed.items() if (existing[field] or "") != value
+                )
+                if fixed_conflicts:
+                    raise ValueError(
+                        "An Experiment episode recovery cannot change its pinned identity: "
+                        + ", ".join(fixed_conflicts)
+                    )
+                binding = {
+                    "provider": provider,
                     "native_session_id": native_session_id,
                     "stage_host": stage_host or "",
                     "stage_root": stage_root,
-                    "chat_id": chat_id,
                 }
-                conflicts = sorted(
-                    field for field, value in immutable.items() if (existing[field] or "") != value
+                binding_conflicts = sorted(
+                    field for field, value in binding.items() if (existing[field] or "") != value
                 )
-                if conflicts:
+                if binding_conflicts and not replace_binding:
                     raise ValueError(
                         "An Experiment episode cannot change its native-session binding: "
-                        + ", ".join(conflicts)
+                        + ", ".join(binding_conflicts)
                     )
             connection.execute(
                 """
@@ -2605,6 +2632,15 @@ class AppStore:
                     episode_id,
                 ),
             )
+            if replace_binding and replacement_payload_json is not None:
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "experiment_episode_binding_replaced",
+                    replacement_payload_json,
+                    tier="summary",
+                    created_at=now,
+                )
         stored = self.experiment_episode(episode_id)
         assert stored is not None
         return stored
@@ -3111,6 +3147,14 @@ class AppStore:
             episode_entries,
             key=lambda entry: (entry[0]["created_at"], entry[0]["storage_rowid"]),
         )
+        binding_request = next(
+            (
+                request
+                for row, request in episode_entries
+                if episode is not None and row["operation_id"] == episode.last_turn_operation_id
+            ),
+            root_request,
+        )
         current_invocation = current_request.get("control_invocation")
         return ExperimentLoopRuntime(
             episode_id=episode_id,
@@ -3140,10 +3184,14 @@ class AppStore:
             stop_settled=episode is not None and episode.stop_settled_at is not None,
             session_bound=episode is not None and episode.session_bound,
             session_diagnostic=episode.session_diagnostic if episode else None,
-            provider=_optional_str(root_request.get("provider")),
-            model=(root_request["model"] if isinstance(root_request.get("model"), str) else None),
-            reasoning=_optional_str(root_request.get("reasoning")),
-            run_on=_optional_str(root_request.get("run_on")),
+            provider=(episode.provider if episode is not None else None)
+            or _optional_str(binding_request.get("provider")),
+            model=(
+                binding_request["model"] if isinstance(binding_request.get("model"), str) else None
+            ),
+            reasoning=_optional_str(binding_request.get("reasoning")),
+            run_on=(episode.execution_machine if episode is not None else None)
+            or _optional_str(binding_request.get("run_on")),
             execution_host=episode.execution_host if episode else None,
             run_truth_scope=(
                 [str(item) for item in root_request["run_truth_scope"]]

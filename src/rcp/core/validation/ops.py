@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from rcp.core.authority import DECIDE_DECISION, QUEUE_DECISION, permits
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     RELATION_SPEC,
@@ -40,7 +41,7 @@ from rcp.core.validation.nodes import (
     validate_new_node_authoring,
     validate_updated_node_authoring,
 )
-from rcp.core.validation.proposals import validate_proposal
+from rcp.core.validation.proposals import decision_transition_error, validate_proposal
 
 
 def validate_create_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
@@ -99,15 +100,45 @@ def validate_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
             and node_id == ctx.experiment_control_node_id
             and set(changes) <= {"attempts", "status"}
         )
-        if (
-            ctx.patch.kind != "approval"
-            and not is_control_update
-            and requires_proposal(node, changes)
+        if not is_control_update and requires_proposal(node, changes):
+            if isinstance(node, Decision):
+                if ctx.mode == "admission" and not permits(ctx.patch, DECIDE_DECISION):
+                    ctx.report.reject(
+                        "decision-action-refused",
+                        f"Update to {node_id} uses decide_decision; only a human may write "
+                        "selected_option or status decided.",
+                        ctx.revision,
+                        related_node_ids=[node.id],
+                    )
+            elif ctx.patch.kind != "approval":
+                ctx.report.reject(
+                    "gated-transition",
+                    f"Update to {node_id} requires a Proposal and human approval.",
+                    ctx.revision,
+                )
+        elif (
+            isinstance(node, Decision)
+            and ctx.mode == "admission"
+            and changes.get("status") in {"open", "ready", "revisit"}
+            and not permits(ctx.patch, QUEUE_DECISION)
         ):
             ctx.report.reject(
-                "gated-transition",
-                f"Update to {node_id} requires a Proposal and human approval.",
+                "decision-action-refused",
+                f"Update to {node_id} is not permitted to use {QUEUE_DECISION}.",
                 ctx.revision,
+                related_node_ids=[node.id],
+            )
+        if (
+            ctx.mode == "admission"
+            and isinstance(node, Decision)
+            and isinstance(changes, dict)
+            and (error := decision_transition_error(node, changes))
+        ):
+            ctx.report.reject(
+                "incoherent-decision-transition",
+                error,
+                ctx.revision,
+                related_node_ids=[node.id],
             )
         oldest = older(
             oldest,

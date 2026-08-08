@@ -5,6 +5,7 @@ import {
   clampFloatingPosition,
   clampFloatingSize,
   defaultFloatingPosition,
+  detailWindowSlotPosition,
   floatingWindowSize,
   movedPosition,
   nodeDetailSizeStorageKey,
@@ -111,4 +112,25 @@ test("supported compact windows start below navigation and side by side", () => 
   assert.equal(detail.y, 118);
   assert.ok(chat.x + chatSize.width < detail.x);
   assert.ok(detail.x + detailSize.width <= viewport.width - 12);
+});
+
+test("detail slots sit side by side on wide viewports", () => {
+  const viewport = { width: 1440, height: 900 };
+  const size = { width: 540, height: 600 };
+  assert.deepEqual(detailWindowSlotPosition("original", size, viewport), { x: 888, y: 118 });
+  assert.deepEqual(detailWindowSlotPosition("companion", size, viewport), { x: 336, y: 118 });
+});
+
+test("detail slots overlap with visible offsets on narrow viewports", () => {
+  const viewport = { width: 900, height: 700 };
+  const size = { width: 540, height: 500 };
+  assert.deepEqual(detailWindowSlotPosition("original", size, viewport), { x: 348, y: 118 });
+  assert.deepEqual(detailWindowSlotPosition("companion", size, viewport), { x: 308, y: 118 });
+});
+
+test("a vertical offset keeps both detail slots reachable when horizontal room is gone", () => {
+  const viewport = { width: 400, height: 720 };
+  const size = { width: 376, height: 590 };
+  assert.deepEqual(detailWindowSlotPosition("original", size, viewport), { x: 12, y: 78 });
+  assert.deepEqual(detailWindowSlotPosition("companion", size, viewport), { x: 12, y: 118 });
 });

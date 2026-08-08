@@ -8,10 +8,10 @@ covered_by: tests/test_experiment_stop.py, tests/test_storage.py,
   web/tests/experimentControlRefresh.test.mjs, browser 2026-08-06
 invariants: [8, 10, 10b]
 reported_by: human, 2026-08-06
-last_passed: 2026-08-06 — served-app browser drive covered the complete Runs
-  hierarchy and detail, an automatic watcher wake, watcher-only and active-turn
-  graceful Stop, fresh Run after Stop, navigation persistence, and narrow layout;
-  hermetic coverage also passed for direct Stop after a bound provider limit.
+last_passed: 2026-08-08 — an isolated acceptance-agent served-app drive rendered
+  a provider-limited loop with direct same-provider Retry, provider switch, and
+  Stop actions; removed Open agent task, locked execution machine in the switch
+  dialog, retained the historical error, and produced no console or server error.
 ---
 
 # Runs leads with live operational state
@@ -63,9 +63,13 @@ the existing Agent task inspector.
 4. Select a running Experiment while its agent turn is active, while it waits
    on healthy detached work, while one watcher is degraded, and while a watcher
    completion is waiting at the invocation ceiling.
-5. Open the current Agent task from the Experiment detail. Pause, Resume, or
-   Retry it there, then return to Runs. Those invocation controls are not
-   duplicated in the Experiment detail.
+5. Fail a loop turn with a recognized provider session limit. In the Experiment
+   detail, confirm the historical failure remains visible but the primary
+   status explains that the same episode and invocation can recover. Press
+   **Retry Claude** (or the active provider label) to recheck and resume the
+   exact binding. In a separate failure, press **Switch provider…**, choose a
+   provider/model/reasoning configuration while the execution machine remains
+   locked, and continue the same loop. There is no **Open agent task** button.
 6. Press **Stop loop** first while an agent turn is active, then in a separate
    episode while only watchers remain. Observe the graceful lifecycle below.
 7. After the stop settles, press **Run**. RCP starts invocation 1 of a fresh
@@ -122,11 +126,14 @@ from unrelated task rows:
   governing decisions, and decision drift remain visible alongside operational
   state without controlling it.
 
-The current Agent task and its full inspector are one action away. That
-inspector remains the only UI for invocation-level Pause, Resume, Retry,
-provider events, diagnostics, receipts, and staged contracts. Experiment Runs
-exposes one loop-level action: **Stop loop**. It does not duplicate task controls
-or present per-watcher Stop actions for an Experiment loop. Generic Work
+Failed or paused loop turns expose their recovery where the failure is visible:
+**Retry provider** resumes the current binding, and **Switch provider…** opens
+the ordinary provider/model/reasoning controls with execution machine locked.
+Both retain the episode and invocation. **Stop loop** remains a distinct
+episode-level abandonment action. The detail has no **Open agent task** button;
+provider events, diagnostics, receipts, and staged contracts remain available
+from History without making the inspector a prerequisite for recovery. The
+detail presents no per-watcher Stop action for an Experiment loop. Generic Work
 watchers keep their existing individual Stop authority.
 
 ## Graceful Stop loop
@@ -157,11 +164,10 @@ continuation,” not “cancel the current task” and not “change the Experim
   transition with the preserved task history, terminalizes the compatible
   watchers, and settles so a fresh human Run becomes possible. It does not
   discard the retained Patch or reinterpret the failed turn.
-- A recognized provider usage, session, quota, or credit limit on a bound
-  episode session is already proof that its current turn cannot resume. RCP
-  records that diagnostic when the task fails, before any recovery action. The
-  human may press **Stop loop** directly; the stop abandons only that terminal
-  task's recovery and settles without requiring a doomed **Retry** click first.
+- A recognized provider usage, session, quota, or credit limit is a recoverable
+  condition, not proof that the episode must end. RCP records the diagnostic and
+  offers same-provider Retry and explicit provider switch in this detail. Stop
+  remains available when the human actually intends to abandon the loop.
 - Stop never deletes a watcher, kills external work, edits Experiment status,
   creates or closes an ExperimentAttempt, interprets a result, or discards a
   valid Patch.
@@ -196,13 +202,15 @@ current turn; otherwise the stop wins and no wake task is created.
 - `watcher_health_and_provenance_are_detailed`
 - `resolved_execution_and_native_session_state_are_visible`
 - `semantic_attempts_and_watchers_remain_distinct`
-- `task_inspector_alone_owns_invocation_controls`
+- `failed_loop_recovery_is_directly_actionable_without_opening_task_inspector`
+- `open_agent_task_button_is_absent`
+- `same_provider_retry_and_provider_switch_retain_episode_and_invocation`
 - `stop_loop_is_durable_graceful_and_episode_scoped`
 - `stop_never_cancels_or_semantically_interprets_the_current_turn`
 - `stop_blocks_new_claims_and_terminalizes_existing_and_new_watchers`
 - `task_recovery_after_stop_cannot_reenable_automatic_continuation`
 - `unrecoverable_task_recovery_never_falls_back_and_stop_can_abandon_recovery`
-- `provider_usage_limit_allows_direct_stop_without_retry_ordering`
+- `provider_usage_limit_remains_recoverable_until_human_stops_the_loop`
 - `stopped_watchers_are_retained_history_not_triggers`
 - `next_run_after_stop_is_fresh_with_stopped_history_and_no_delivery`
 - `stop_claim_and_handoff_races_have_one_visible_winner`
@@ -215,6 +223,7 @@ current turn; otherwise the stop wins and no wake task is created.
 Run looks like an ordinary chat resume; a node-chat window opens; live or
 actionable Experiment work is hidden or misordered; watcher state is presented
 as scientific progress; Stop cancels valid current work, loses history, permits
-a later wake, silently changes graph meaning, or depends on a doomed Retry click
-before a known provider limit can settle; or a healthy wait and a broken watcher
-look the same.
+a later wake, silently changes graph meaning, forces a new episode for a
+provider limit, hides recovery behind an Agent-task detour, or confuses a
+historical limit message with a currently enforced limit; or a healthy wait and
+a broken watcher look the same.

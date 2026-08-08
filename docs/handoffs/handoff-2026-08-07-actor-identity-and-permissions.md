@@ -1,5 +1,12 @@
 # Handoff — actor identity and per-action permission checks
 
+> **Superseded 2026-08-08.** Do not implement the user-owned agent model or the
+> shared-repository multiplayer topology below. The current working design is
+> [`handoff-2026-08-08-team-spaces-identity-and-permissions.md`](handoff-2026-08-08-team-spaces-identity-and-permissions.md),
+> which replaces agent ownership with authorization lineage and makes one RCP
+> team-space backend authoritative for identity, admission, execution, and
+> project homes.
+
 **Date:** 2026-08-07
 **State:** scope and the rulings marked *decided 2026-08-07* are confirmed by the
 human. Everything not marked decided is proposed. **No acceptance scenario has
@@ -21,10 +28,20 @@ RCP expresses authority three incompatible ways, none of which can say *"this
 agent, owned by this user, may do X but not Y."*
 
 1. **`Patch.author: Literal["agent", "human"]`**
-   ([delta.py:48](../../src/rcp/history/delta.py:48)). This is not merely
-   provenance — it is already an **authorization check**:
-   [delta.py:412](../../src/rcp/history/delta.py:412) permits
-   `resolve_ambiguities` only when `patch.author == "human"`.
+   ([delta.py:48](../../src/rcp/history/delta.py:48)). This field records who
+   wrote a patch. It also controls what the patch is allowed to do. Only a patch
+   with `author == "human"` may write a Decision's `selected_option` or set its
+   status to `decided`. The check is `permits` in
+   [authority.py:63](../../src/rcp/core/authority.py:63), which the validator
+   calls at [ops.py:105](../../src/rcp/core/validation/ops.py:105). So this is a
+   permission check, and the only answer it can give is "human" or "agent".
+
+   There are really two actions here, named in the
+   [2026-08-08 handoff](handoff-2026-08-08-inbox-decisions-proposals-blockers.md):
+   `decide_decision` (write `selected_option`, or set status to `decided`) and
+   `queue_decision` (set status to `open`, `ready`, or `revisit`). Any agent may
+   queue a Decision. Only a human may decide one. Both already go through the
+   same `permits` function, so this piece only has to replace what is inside it.
 2. **`Proposal.created_by` / `resolved_by`**, the same binary
    ([models.py:364](../../src/rcp/core/models.py:364)).
 3. **`permissions_for()` in [config.py](../../src/rcp/config.py)** — capability
@@ -73,7 +90,7 @@ exists in [`RELATION_SPEC`](../../src/rcp/core/models.py:288):
 | Group | Actions |
 |---|---|
 | Epistemic | set standing; accept a Hypothesis status transition; edit ResearchQuestion or Hypothesis status |
-| Action-layer | Decision status and `selected_option`; Experiment status; Blocker status |
+| Action-layer | `decide_decision`; `queue_decision`; Experiment status; Blocker status |
 | Structural | create/update nodes and edges by type; `remove_nodes` |
 | Project | truth-scope membership; Settings; Proposal approve/reject |
 | Verbs (piece 3) | `dispatch`; `address` |
@@ -82,6 +99,12 @@ The epistemic/action split is not invented here — it is the `layer` already
 declared per relation, and it is the line the human drew for the orchestrator.
 Recording it as the permission axis is what makes the table principled rather
 than an arbitrary type list, which matters once human roles use the same table.
+
+The Action-layer row used to say "Decision status and `selected_option`" as one
+action. That hid a real difference: deciding a Decision is the human's job, but
+moving it in and out of the Inbox is not. "Experiment status" and "Blocker
+status" have not been checked for the same problem yet. They may need splitting
+too.
 
 ### Legacy resolution — invariant 1 is not negotiable
 

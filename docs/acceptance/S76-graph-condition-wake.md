@@ -19,9 +19,9 @@ arming, firing, restart recovery, and failing closed.
 
 ## Setup
 
-A project with an Experiment loop, an open Blocker, and a pending Proposal on a
-Decision. A fake provider that writes a `watch.json` carrying both an external
-watcher and a graph condition.
+A project with an Experiment loop, an open Blocker, and a pending
+Hypothesis-status Proposal. A fake provider that writes a `watch.json` carrying
+both an external watcher and a graph condition.
 
 ## Drive — proposal
 

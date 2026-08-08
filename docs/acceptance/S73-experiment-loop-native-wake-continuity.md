@@ -8,12 +8,11 @@ covered_by: tests/test_experiment_loop_agent_io.py,
   tests/test_acceptance_agent.py, tests/test_control.py, tests/test_prompts.py
 invariants: [4, 4b, 8, 9, 10b, 10c, 10d]
 reported_by: human, 2026-08-06
-last_passed: 2026-08-06 — full backend suite plus served-app initial Run and
-  automatic watcher wake verified one episode-native session; legacy stop
-  recovery was reconciled in the live CRLP ledger and a fresh UI Run reached an
-  active agent turn; race, recovery, and remote-stage edge paths were inspected
-  and covered by focused tests; validator, materialization, and prompt coverage
-  passed for focused summary and next-action authority.
+last_passed: 2026-08-08 — the full backend suite proved exact-session provider
+  recheck, pinned-machine provisional switching, failed-switch non-authority,
+  repeated provisional recovery, atomic binding replacement and provenance,
+  active-profile projection, unchanged automatic-wake validation, and durable
+  same-stage contract recovery after bounded receipt eviction.
 ---
 
 # Watcher wakes continue one bounded episode session
@@ -47,12 +46,13 @@ allowed.
 | First human Run, or human Run after Proposal/Blocker resolution with no completed ungrouped watcher or ready group | new, invocation 1 | fresh | `initial_run`; full Experiment-loop contract | current Node-chat profile and selected/default truth scope |
 | Automatic ungrouped completion or group readiness below the ceiling | same, invocation N+1 | resume the current episode session | `watcher_wake`; compact continuation below | pinned by the episode session |
 | Task Pause → Resume | same, same invocation | resume the same episode session | `resume`; existing compact task-resume contract | unchanged |
-| Task Retry/correction | same, same invocation | existing explicit task-recovery semantics | `retry` or correction; existing narrow contract | unchanged |
+| Task same-provider Retry/correction | same, same invocation | resume exact active binding | `retry` or correction; exact diagnostic and no-repeat contract | unchanged |
+| Human Switch provider recovery | same, same invocation | provisional fresh session; replace active binding only after successful joint handoff | `handoff`; full current contract plus exact diagnostic and no-repeat rule | chosen provider/model/reasoning; execution machine and authority remain pinned |
 | Human Run delivering completed watcher state after exit or ceiling | new, invocation 1 | fresh | `human_reauthorization`; full Experiment-loop contract | current Node-chat profile and selected/default truth scope; watcher configuration remains provenance |
 | Human Run after S72 Stop loop | new, invocation 1 | fresh | `initial_run`; full Experiment-loop contract with stopped history and no delivery | current Node-chat profile and selected/default truth scope |
 
-Every episode has exactly one validated native-session binding: provider,
-session id, execution host, and exact reusable chat stage. Every automatic wake
+Every episode has exactly one active validated native-session binding at a time:
+provider, session id, execution host, and exact reusable chat stage. Every automatic wake
 resumes that binding, regardless of which invocation armed its delivered
 watchers or which permitted Work conversation later maintained them. Compatible
 cross-invocation, cross-conversation, and older-episode watcher provenance may
@@ -73,11 +73,13 @@ spending the next invocation, RCP validates that the episode session and exact
 saved stage still exist on the pinned execution machine. A transiently unavailable binding leaves
 the watchers completed and unnotified for a later delivery pass. A missing or
 mismatched binding becomes an exact Needs-action diagnostic in S72 and never
-silently launches a fresh session. The human may restore availability, or use
-**Stop loop** and a new Run to cross that authority boundary explicitly.
+silently launches a fresh session. The human may restore availability, retry the
+active provider, explicitly switch provider inside this episode, or use **Stop
+loop** to abandon it.
 
-Provider, model, reasoning, execution machine, truth scope, and authority stay
-pinned for the episode. Current graph/research/schema/output pointers are
+Execution machine, truth scope, and authority stay pinned for the episode.
+Provider, model, and reasoning stay pinned except during an explicit human
+**Switch provider** recovery. Current graph/research/schema/output pointers are
 refreshed every turn. If ontology, repository pointers, enabled package
 pointers, or other task context changed since the preceding successful loop
 turn, the wake appends one compact exact replacement block and commits it as the
@@ -215,16 +217,18 @@ For this turn, take whichever path matches the operational state:
 
 2. You need human input.
 
-   Use this path when an upstream Decision is under- or over-specified, when you have a concrete
-   permitted Decision or Hypothesis change for human approval, or when a scientific, design,
+   Use this path when an upstream Decision is now makeable, new evidence undermines a settled
+   Decision, a tested Hypothesis warrants a status transition, or a scientific, design,
    implementation, data, or infrastructure blocker cannot be resolved without human action. Write
    one Patch at `{patch_path}` using the exact schema at `{output_schema_path}`, then run
    `{validator_command}`.
 
-   For a concrete permitted human decision, use `create_proposals`. Its nested operation may change
-   only the allowed Decision `selected_option`/`status` or Hypothesis `status` fields. Fill the
-   Proposal's `card.situation_cold`, `why_human_now`, `consequences`, and `decision_needed` so the
-   human can decide without reconstructing this turn.
+   Put a makeable pinned Decision in the human Inbox by setting it to `ready`; use `revisit` only to
+   reopen a settled pinned choice when new evidence undermines it. For a Hypothesis status
+   transition, use `create_proposals`. Its nested operation changes only that Hypothesis's `status`
+   and has an `evidence_edge` cause. Fill the Proposal's `card.situation_cold`, `why_human_now`,
+   `consequences`, and `decision_needed` so the human can approve or reject the transition without
+   reconstructing this turn.
 
    When the needed design change cannot be represented by that narrow Proposal authority, create
    an open `blocker` with `create_nodes` and connect this Experiment to it with a same-Patch
@@ -234,9 +238,9 @@ For this turn, take whichever path matches the operational state:
 
    If detached work still deserves observation while the human decides, write a non-empty
    `{watch_path}` using path 1's exact watcher format. Those watchers continue observing, but the
-   Proposal or Blocker exits this episode, so they cannot automatically wake it; a later human Run
-   may reauthorize completed watcher state. If no detached work remains, write `{watch_path}` as
-   `[]`.
+   queued Decision, Proposal, or Blocker exits this episode, so they cannot automatically wake it;
+   a later human Run may reauthorize completed watcher state. If no detached work remains, write
+   `{watch_path}` as `[]`.
 
 3. The Experiment is operationally finished.
 
@@ -303,15 +307,25 @@ Experiment meaning** immediately shows the updated **Current summary** and
    a fresh session and `human_reauthorization` turn 1.
 7. Use S72 Stop loop, then Run. Confirm a fresh initial session with stopped
    history and no delivered watcher ids.
-8. Make the current episode session transiently unavailable, then permanently
+8. Fail a watcher wake with a recognized provider limit. Retry after the limit
+   clears and confirm the exact session/stage, episode, invocation, watcher
+   claim, and budget are unchanged. Fill the failed wake's bounded diagnostic
+   receipt tier until its launch receipt is evicted, then Retry through one
+   already-failed child; confirm RCP restages the exact durable contract from
+   the same-stage lineage and does not cross a provider-switch stage boundary.
+   In a second fixture, explicitly switch
+   provider and confirm a provisional new session receives the full current
+   contract and exact diagnostic, cannot repeat completed work, and replaces
+   the active binding only after a successful joint handoff.
+9. Make the current episode session transiently unavailable, then permanently
    mismatched, before automatic claim.
-9. Resume and Retry a paused pre-migration invocation whose root task has no
+10. Resume and Retry a paused pre-migration invocation whose root task has no
    retained episode-context candidate. Confirm RCP refuses the impossible
    continuation without launching another provider process, records why the
    episode cannot continue, and lets **Stop loop** preserve the task history,
    abandon only that recovery path, settle the episode, and enable **Run** for a
    fresh episode.
-10. Apply an Experiment-loop Patch that closes an attempt, refreshes
+11. Apply an Experiment-loop Patch that closes an attempt, refreshes
     `current_summary`, and clears `next_action`. Confirm all three changes
     materialize together, while another Experiment field and a foreign-node
     prose update remain rejected.
@@ -325,15 +339,20 @@ Experiment meaning** immediately shows the updated **Current summary** and
 - `task_resume_is_same_task_lineage_and_same_invocation_not_a_wake`
 - `codex_and_claude_automatic_wakes_use_native_resume_without_task_resume_semantics`
 - `episode_binding_pins_provider_session_host_and_exact_stage`
+- `provider_limit_retry_rechecks_and_resumes_exact_binding_without_new_invocation`
+- `explicit_provider_switch_keeps_episode_invocation_machine_scope_and_watchers`
+- `provider_switch_commits_new_binding_only_after_successful_joint_handoff`
+- `failed_provider_switch_leaves_previous_binding_authoritative`
 - `watcher_provenance_never_selects_the_resumed_session`
 - `compatible_cross_invocation_watchers_coalesce_into_current_episode_session`
 - `stale_episode_or_wrong_host_completed_watchers_remain_pending_and_visible`
 - `automatic_wake_never_switches_episode_provider_machine_or_scope`
+- `only_explicit_human_recovery_can_switch_episode_provider`
 - `session_preflight_precedes_watcher_claim_and_budget_spend`
 - `transient_session_unavailability_leaves_watchers_unnotified`
 - `missing_or_mismatched_session_is_visible_and_never_falls_back_silently`
 - `legacy_missing_context_candidate_stops_cleanly_and_enables_fresh_run`
-- `stop_then_run_is_the_explicit_fresh_session_recovery`
+- `stop_then_run_remains_abandonment_not_provider_limit_recovery`
 - `watchers_remain_sqlite_operational_records_not_graph_or_transcript`
 - `agent_reads_bounded_staged_watcher_json_not_sqlite`
 - `watcher_selection_matches_wake_initial_reauthorization_and_stop_rules`

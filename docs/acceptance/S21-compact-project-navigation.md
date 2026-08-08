@@ -30,8 +30,8 @@ read rather than as a primary destination.
 
 1. Open a project at desktop and narrow widths.
 2. Inspect the header controls and primary navigation.
-3. Open Inbox and confirm its badge matches pending Proposals, open Ambiguities,
-   and every asserted open Blocker regardless of subtype.
+3. Open Inbox and confirm its badge matches pending Proposals, Decisions awaiting
+   choice, and every asserted open Blocker regardless of subtype.
 4. Open Research, switch to DAG, then switch back to the path projection.
 5. Use the icon-only task and Refresh controls, and open Ask.
 

@@ -108,7 +108,7 @@ class Decision(BaseNode):
     selected_option: str | None = None
     rationale: str | None = None
     consequences: list[str] = Field(default_factory=list)
-    status: Literal["open", "decided", "revisit", "superseded"] = "open"
+    status: Literal["open", "ready", "decided", "revisit", "superseded"] = "open"
 
 
 class Experiment(BaseNode):
@@ -177,7 +177,7 @@ ProjectNode = Annotated[
 HUMAN_EDITABLE_NODE_FIELDS: dict[str, frozenset[str]] = {
     "research_question": frozenset({"title", "question", "motivation", "scope"}),
     "hypothesis": frozenset({"title", "statement", "rationale", "predictions", "scope"}),
-    "decision": frozenset({"title", "question", "options", "rationale", "consequences"}),
+    "decision": frozenset({"title", "question", "options", "rationale", "consequences", "status"}),
     "experiment": frozenset(
         {
             "title",

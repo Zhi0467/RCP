@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from rcp.core.authority import QUEUE_DECISION, permits
 from rcp.core.models import (
     Decision,
     GraphState,
@@ -97,17 +98,40 @@ def validate_new_node_authoring(
             revision,
             related_node_ids=[node_id] if isinstance(node_id, str) else [],
         )
-    if (
-        patch.author == "agent"
-        and node_type == "decision"
-        and (raw.get("status", "open") != "open" or raw.get("selected_option") is not None)
-    ):
-        report.reject(
-            "agent-created-decision-transition",
-            f"Agent-created Decision {node_id!r} must start open without a selected option.",
-            revision,
-            related_node_ids=[node_id] if isinstance(node_id, str) else [],
-        )
+    if node_type == "decision":
+        status = raw.get("status", "open")
+        if status == "revisit":
+            report.reject(
+                "incoherent-decision-creation",
+                f"Decision {node_id!r} cannot start revisit because it has no prior decision.",
+                revision,
+                related_node_ids=[node_id] if isinstance(node_id, str) else [],
+            )
+        elif raw.get("selected_option") is not None or status == "decided":
+            # No author creates a decided Decision. `decide_decision` is reachable
+            # only through the human `decision_choice` action on an existing node,
+            # so creation cannot smuggle a choice past that path's coherence check.
+            report.reject(
+                "agent-created-decision-action",
+                f"New Decision {node_id!r} cannot use decide_decision; selected_option and "
+                "status decided are written only by the human Decision choice action.",
+                revision,
+                related_node_ids=[node_id] if isinstance(node_id, str) else [],
+            )
+        elif status not in {"open", "ready"}:
+            report.reject(
+                "agent-created-decision-action",
+                f"New Decision {node_id!r} must start open or ready.",
+                revision,
+                related_node_ids=[node_id] if isinstance(node_id, str) else [],
+            )
+        elif status in {"open", "ready"} and not permits(patch, QUEUE_DECISION):
+            report.reject(
+                "agent-created-decision-action",
+                f"Agent-created Decision {node_id!r} is not permitted to use queue_decision.",
+                revision,
+                related_node_ids=[node_id] if isinstance(node_id, str) else [],
+            )
 
     prefix = node_id.split("/", 1)[0] if "/" in node_id else ""
     suffix = node_id.split("/", 1)[-1]
@@ -184,9 +208,8 @@ def _normalize_grounding_text(value: str) -> str:
 def requires_proposal(node: Any, changes: dict[str, Any]) -> bool:
     if isinstance(node, Hypothesis) and "status" in changes and changes["status"] != node.status:
         return True
-    return isinstance(node, Decision) and any(
-        field in changes and changes[field] != getattr(node, field)
-        for field in ("status", "selected_option")
+    return isinstance(node, Decision) and (
+        "selected_option" in changes or changes.get("status") == "decided"
     )
 
 

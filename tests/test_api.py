@@ -28,7 +28,8 @@ from rcp.api.app import (
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig, load_manifest
-from rcp.core.models import Blocker, GraphState, Patch
+from rcp.core.models import Blocker, Decision, GraphState, Patch
+from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.paper import WritingSession
 from rcp.providers import ProviderSkill, ProviderUsage
@@ -55,7 +56,12 @@ from rcp.runs.shared import (
     _sweep_stale_stages,
 )
 from rcp.runs.work import stream_work_run
-from rcp.service import CoachRequest, ReviewRequest, RunRequest
+from rcp.service import (
+    CoachRequest,
+    ReviewRequest,
+    RunRequest,
+    decision_awaits_choice,
+)
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.transport import RunLockCancelled, RunLockLease, StateUnavailable
@@ -1183,7 +1189,7 @@ def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch
     snapshot["primary_question"] = {"question": "Which path remains plastic?"}
     snapshot["counts"] = {
         "pending_proposals": 2,
-        "open_ambiguities": 3,
+        "decisions_awaiting_choice": 3,
         "open_blockers": 4,
     }
     monkeypatch.setattr(
@@ -1201,7 +1207,9 @@ def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch
     assert record.attention_count == 9
 
 
-def test_project_snapshot_counts_only_open_asserted_blockers(manifest, tmp_path) -> None:
+def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
+    manifest, tmp_path
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     blockers = [
         Blocker(
@@ -1237,14 +1245,30 @@ def test_project_snapshot_counts_only_open_asserted_blockers(manifest, tmp_path)
             status="resolved",
         ),
     ]
-    state = GraphState(nodes={blocker.id: blocker for blocker in blockers})
+    decisions = [
+        Decision(
+            id=f"dec/{status}",
+            type="decision",
+            title=f"{status.title()} decision",
+            question="Which option should be used?",
+            options=["first", "second"],
+            selected_option="first" if status in {"decided", "revisit"} else None,
+            status=status,
+        )
+        for status in ("open", "ready", "decided", "revisit", "superseded")
+    ]
+    state = GraphState(
+        nodes={item.id: item for item in [*blockers, *decisions]},
+    )
 
     snapshot = app.state.service.project_snapshot(state=state)
 
+    assert snapshot["counts"]["decisions_awaiting_choice"] == 2
     assert snapshot["counts"]["open_blockers"] == 1
     assert {
         node_id: (node["status"], node["standing"])
         for node_id, node in snapshot["graph"]["nodes"].items()
+        if node["type"] == "blocker"
     } == {
         "blk/asserted-open": ("open", "asserted"),
         "blk/accepted-open": ("open", "accepted"),
@@ -7834,3 +7858,21 @@ def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
         .resolve(workflow_ids=["research-graph-audit"])
         .resolved_skill_packages
     ]
+
+
+def test_decisions_awaiting_choice_matches_the_shared_frontend_fixture() -> None:
+    """Bind the backend predicate to the fixture `web/tests` asserts against.
+
+    The web client filters the graph itself to render the Inbox and its badge,
+    so the rule genuinely exists twice. This is the only test that fails when
+    the two copies drift apart.
+    """
+
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "decisions_awaiting_choice.json").read_text()
+    )
+    nodes = [NODE_ADAPTER.validate_python(raw) for raw in fixture["nodes"]]
+
+    awaiting = [node.id for node in nodes if decision_awaits_choice(node)]
+
+    assert awaiting == fixture["expected_awaiting_choice"]

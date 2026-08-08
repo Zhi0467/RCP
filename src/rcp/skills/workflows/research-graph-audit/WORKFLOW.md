@@ -19,7 +19,7 @@ task, and all three passes remain report-only inside this workflow.
 
 Apply Graph audit. Read `research.md` before `graph.json`; list the claims and action state a reader
 would believe. Check support, relation reasoning, truthful node roles, duplicate identity, lifecycle
-drift, and stale ambiguities. Record important paths that are sound.
+drift, and unresolved action gates. Record important paths that are sound.
 
 ## Pass 2: action causality
 

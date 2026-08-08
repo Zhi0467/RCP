@@ -35,10 +35,26 @@ const graph = {
       title: "Latest graph concept",
       updated_rev: 5,
     },
+    "dec/ready": {
+      id: "dec/ready",
+      type: "decision",
+      title: "Choose the queued direction",
+      status: "ready",
+      updated_rev: 3,
+    },
+    "dec/open": {
+      id: "dec/open",
+      type: "decision",
+      title: "Keep framing this choice",
+      status: "open",
+      updated_rev: 2,
+    },
   },
   edges: {},
   proposals: {},
-  ambiguities: {},
+  ambiguities: {
+    legacy: { id: "legacy", question: "Historical ambiguity", status: "open" },
+  },
 };
 
 const project = {
@@ -75,6 +91,7 @@ test("Overview uses the latest revision prose and preserves every other question
     React.createElement(ProjectOverview, {
       project,
       graph,
+      decisionsAwaitingChoice: [graph.nodes["dec/ready"]],
       latestRevisionSummary: latestSummary,
       onNavigate() {},
     }),
@@ -90,13 +107,21 @@ test("Overview uses the latest revision prose and preserves every other question
   assert.match(html, /Where are we\?/);
   assert.match(html, /What is blocked\?/);
   assert.match(html, /What needs you\?/);
+  assert.match(html, /Choose the queued direction/);
+  assert.match(html, /0 proposals · 1 decisions awaiting choice/);
+  assert.doesNotMatch(html, /Historical ambiguity|ambiguities/);
   assert.match(html, /What happens next\?/);
   assert.equal(html.match(/class="overview-number"/g)?.length, 6);
 });
 
 test("Overview keeps its previous latest-node fallback when no summary is supplied", () => {
   const html = renderToStaticMarkup(
-    React.createElement(ProjectOverview, { project, graph, onNavigate() {} }),
+    React.createElement(ProjectOverview, {
+      project,
+      graph,
+      decisionsAwaitingChoice: [],
+      onNavigate() {},
+    }),
   );
 
   assert.match(html, /Latest graph concept/);

@@ -3,10 +3,12 @@ import {
   clampFloatingPosition,
   clampFloatingSize,
   defaultFloatingPosition,
+  detailWindowSlotPosition,
   floatingWindowSize,
   movedPosition,
   parseFloatingSize,
   resizedFloatingRect,
+  type DetailWindowSlot,
   type Point,
   type ResizeCorner,
   type Size,
@@ -21,6 +23,8 @@ interface Props {
   kind: "detail" | "chat";
   resizable?: boolean;
   sizeStorageKey?: string;
+  detailSlot?: DetailWindowSlot;
+  focusRequestToken?: string | number;
 }
 
 export function shouldStartWindowDrag(target: Element): boolean {
@@ -40,6 +44,8 @@ export function DraggableWindow({
   kind,
   resizable = false,
   sizeStorageKey,
+  detailSlot,
+  focusRequestToken,
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const preferredSize = useRef<Size | null>(null);
@@ -57,20 +63,14 @@ export function DraggableWindow({
     preferredSize.current = stored ?? floatingWindowSize(kind, viewport);
     return clampFloatingSize(preferredSize.current, viewport, detailMinimumSize);
   });
-  const [position, setPosition] = useState<Point>(() =>
-    clampFloatingPosition(
-      defaultFloatingPosition(kind, {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }),
-      size ??
-        floatingWindowSize(kind, {
-          width: window.innerWidth,
-          height: window.innerHeight,
-        }),
-      { width: window.innerWidth, height: window.innerHeight },
-    ),
-  );
+  const [position, setPosition] = useState<Point>(() => {
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const initialSize = size ?? floatingWindowSize(kind, viewport);
+    if (kind === "detail" && detailSlot) {
+      return detailWindowSlotPosition(detailSlot, initialSize, viewport);
+    }
+    return clampFloatingPosition(defaultFloatingPosition(kind, viewport), initialSize, viewport);
+  });
   const [zIndex, setZIndex] = useState(() => ++topFloatingZIndex);
   const drag = useRef<{ origin: Point; pointer: Point } | null>(null);
   const resize = useRef<{
@@ -115,21 +115,33 @@ export function DraggableWindow({
 
   useEffect(() => {
     const onResize = () => {
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
       const nextSize =
         resizable && preferredSize.current
-          ? clampFloatingSize(
-              preferredSize.current,
-              { width: window.innerWidth, height: window.innerHeight },
-              detailMinimumSize,
-            )
+          ? clampFloatingSize(preferredSize.current, viewport, detailMinimumSize)
           : null;
       if (nextSize) setSize(nextSize);
-      setPosition((current) => clamp(current, nextSize));
+      if (kind === "detail" && detailSlot) {
+        setPosition(
+          detailWindowSlotPosition(
+            detailSlot,
+            nextSize ?? floatingWindowSize(kind, viewport),
+            viewport,
+          ),
+        );
+      } else {
+        setPosition((current) => clamp(current, nextSize));
+      }
     };
     window.addEventListener("resize", onResize);
     onResize();
     return () => window.removeEventListener("resize", onResize);
-  }, [resizable]);
+  }, [detailSlot, kind, resizable]);
+
+  useEffect(() => {
+    if (focusRequestToken === undefined) return;
+    setZIndex(++topFloatingZIndex);
+  }, [focusRequestToken]);
 
   return (
     <div
