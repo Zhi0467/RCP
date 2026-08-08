@@ -8,6 +8,11 @@ covered_by:
   - tests/test_agent_schema.py::test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping
   - tests/test_staged_graph_validation.py
   - tests/test_patch_validator.py
+  - tests/test_graph_patch_validator.py::test_seed_attempt_stages_and_serves_live_validator_before_final_append
+  - tests/test_prompts.py::test_graph_contract_keeps_fanout_and_points_to_payload_files
+  - tests/test_prompts.py::test_work_patch_correction_keeps_work_access_and_live_validator_contract
+  - tests/test_prompts.py::test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority
+  - tests/test_prompts.py::test_paper_and_continuation_contracts_only_point_to_dynamic_content
   - tests/test_transport.py::test_remote_stage_workspace_mailbox_round_trip_is_atomic
   - tests/test_transport.py::test_remote_stage_workspace_operations_fail_closed
   - tests/test_launcher.py::test_codex_work_bypasses_approvals_and_sandbox
@@ -16,7 +21,7 @@ covered_by:
   - tests/test_api.py::test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn
   - tests/test_api.py::test_work_patch_is_applied_to_live_state_without_correction
 invariants: [1, 3, 4, 4b, 9, 10b]
-last_passed: 2026-08-03
+last_passed: 2026-08-04
 ---
 
 # A patch-producing agent checks the exact semantic patch RCP will apply
@@ -60,6 +65,13 @@ so a person can see how many checks occurred and whether RCP was reachable.
 - Claude Work and correction turns use `bypassPermissions`. The only graph-state
   prohibition is the Work contract against canonical `.research`; repositories
   and ordinary tools are otherwise unrestricted.
+- Every patch-producing contract names the rule rather than relying on shared
+  session context: Seed, Refresh, Work, and Work correction receive the staged
+  validator and must check their current `patch.json` before completion.
+- Discuss and Paper Coach explicitly cannot produce or validate a graph patch.
+  They receive neither a patch schema nor a validator client.
+- The self-check is read-only. RCP's validation immediately before the canonical
+  append remains authoritative.
 
 ## Assertions
 
@@ -73,6 +85,9 @@ so a person can see how many checks occurred and whether RCP was reachable.
 - `apply_revalidates_current_state_under_the_append_lock`
 - `correction_reuses_the_original_work_session_and_permissions`
 - `claude_work_is_unrestricted_except_for_the_research_contract`
+- `seed_refresh_work_and_work_correction_name_the_live_validator_contract`
+- `discuss_and_paper_coach_have_an_explicit_no_patch_contract`
+- `self_check_never_replaces_final_append_validation`
 
 ## Failure means
 
@@ -80,4 +95,5 @@ An agent must guess RCP bookkeeping; validation judges an operation against a
 graph that omits earlier operations; a self-check uses frozen context or a
 different validator from Apply; a dropped validator is reported as semantic
 invalidity; correction loses Work access; or Apply rejects only because the
-turn's original graph revision is stale even though the patch is valid now.
+turn's original graph revision is stale even though the patch is valid now; or
+a no-patch surface receives graph authority.

@@ -1,5 +1,6 @@
 mod backend;
 mod commands;
+mod dictation;
 mod lifecycle;
 mod navigation;
 mod updates;
@@ -60,6 +61,8 @@ pub fn run() {
             commands::desktop_status,
             commands::desktop_reconnect_backend,
             commands::desktop_show_ready,
+            commands::desktop_start_dictation,
+            commands::desktop_stop_dictation,
             commands::open_artifact_preview,
             commands::download_artifact,
             commands::open_external,
@@ -75,6 +78,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    dictation::stop_active();
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -176,6 +180,7 @@ fn verify_then_prepare_show(app: tauri::AppHandle, reason: &'static str) {
 
 fn quit_from_menu(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        dictation::stop_active();
         let state = app.state::<BackendState>().inner().clone();
         let result = backend::graceful_stop(&state).await;
         if let Ok(shutdown) = &result {

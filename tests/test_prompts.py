@@ -13,6 +13,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_patch_correction_contract,
     experiment_loop_task_contract,
     experiment_loop_watcher_correction_contract,
+    experiment_watcher_maintenance_correction_contract,
 )
 from rcp.agents.prompts import PromptFactory
 from rcp.core.authority import (
@@ -150,6 +151,63 @@ def test_chat_master_context_contains_both_exclusive_mode_contracts() -> None:
     assert master.count("Instruction and trust boundary:") == 1
     assert "This task cannot produce a Patch" in master
     assert "Live graph validator:" in master
+
+
+def test_chat_master_separates_self_wake_from_experiment_watcher_maintenance() -> None:
+    resource = {
+        "control_node_id": "exp/example",
+        "episode_id": "episode-1",
+        "execution_host": "episode.example",
+        "watcher_state_path": "/stage/inputs/exp-example-watchers.json",
+        "watch_path": "/stage/workspace/experiment-watch-example.json",
+    }
+    master = PromptFactory.chat_master_context(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        ontology_extensions=False,
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        graph_revision=7,
+        focused_node_id="exp/example",
+        repositories=[],
+        introduction_path=None,
+        patch_path="/stage/workspace/patch.json",
+        workspace_path="/stage/workspace",
+        output_schema_path="/stage/inputs/schema.json",
+        validator_command="python3 /stage/inputs/validate.py",
+        watch_path="/stage/workspace/watch.json",
+        execution_host="chat.example",
+        experiment_watcher_resources=[resource],
+    )
+
+    compact = " ".join(master.split())
+    assert "current read-only operational pointers for this Discuss turn" in compact
+    assert "/stage/inputs/exp-example-watchers.json" in master
+    assert "watcher maintenance output: `/stage/workspace/experiment-watch-example.json`" in master
+    assert "episode execution host: host `episode.example`" in master
+    assert "continues this Experiment's bounded loop" in compact
+    assert "continues this conversation" in compact
+    assert "physical output path selects the Experiment resource" in compact
+    assert (
+        "never add a target node, episode, provider, session, execution-host, kind, or surface"
+        in compact
+    )
+    assert "spends no bounded-loop invocation" in compact
+
+
+def test_experiment_watcher_maintenance_correction_defers_to_original_contract() -> None:
+    contract = experiment_watcher_maintenance_correction_contract(
+        original_contract_path="/stage/inputs/chat-master.md",
+        diagnostics_path="/stage/inputs/maintenance-diagnostic.json",
+        watch_path="/stage/workspace/experiment-watch-example.json",
+    )
+
+    compact = " ".join(contract.split())
+    assert "Read the original contract" in compact
+    assert "exact item shapes" in compact
+    assert "do not add a target or control field" in compact
+    assert "items contain exactly" not in contract
+    assert "check_command`, `log_path`, and `cwd" not in contract
 
 
 def test_resumed_chat_turn_is_marker_plus_unchanged_human_message_and_optional_delta() -> None:
@@ -661,6 +719,7 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "pause automatic delivery until a human presses Run" in compact
     assert "no watcher api to" in contract.casefold()
     assert "arms the list atomically" in compact
+    assert "continues this Experiment's bounded loop and never a separate conversation" in compact
     assert "exits 1 while the named work remains" in compact
     assert "connect same-Patch Evidence to an existing Decision with `informs`" in compact
     assert "or to a Blocker with `addresses`" in compact

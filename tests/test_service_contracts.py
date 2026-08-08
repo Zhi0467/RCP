@@ -38,6 +38,10 @@ def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph(
         "invoked_provider_skill_names": [],
         "resolved_provider_skills": [],
         "resolved_skill_packages": None,
+        "attachment_set_id": None,
+        "attachment_client_id": None,
+        "attachment_batch_id": None,
+        "attachments": [],
     }
 
 

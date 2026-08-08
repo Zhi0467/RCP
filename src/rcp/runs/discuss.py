@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, invoked_package_pointers
+from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import ReplayHalted
@@ -15,6 +16,7 @@ from rcp.runs.chat import (
     _chat_read_dirs,
     _chat_stage_name,
     _clear_stale_patch,
+    _clear_stale_watch,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
     _logical_chat_turn_operation_id,
@@ -27,6 +29,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
+from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -56,6 +59,7 @@ def _prepare_discuss_chat_prompt(
     master_context: str,
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
+    attachment_pointers: list[dict[str, object]],
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
@@ -81,6 +85,7 @@ def _prepare_discuss_chat_prompt(
             skill_ids=request.invoked_skill_ids,
         ),
         invoked_provider_skills=request.resolved_provider_skills,
+        attachments=attachment_pointers,
     )
     return prompt, retained_master_path
 
@@ -160,6 +165,7 @@ async def stream_discuss_run(
             if not reusing_checkpoint:
                 # A reused folder must not hand this turn the previous turn's patch.
                 _clear_stale_patch(workspace, remote_stage)
+                _clear_stale_watch(workspace, remote_stage)
             artifact_scope_id = (
                 _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
@@ -178,6 +184,16 @@ async def stream_discuss_run(
                 )
 
             token = _task_token(execution)
+            experiment_resources = await stage_chat_experiment_watcher_resources(
+                request,
+                execution,
+                local_stage,
+                remote_stage,
+                workspace=workspace,
+                token=token,
+                clear_stale=not reusing_checkpoint,
+            )
+            experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
             skill_selection = service.resolve_skill_selection(request)
             skill_pointers = stage_skill_selection(
                 skill_selection,
@@ -186,11 +202,30 @@ async def stream_discuss_run(
                 label=skill_bundle_label(skill_selection),
                 reuse_existing=True,
             )
+            if bool(request.attachment_batch_id) != bool(request.attachments):
+                raise ValueError("The chat task has incomplete attachment batch metadata.")
+            attachment_pointers = (
+                ChatAttachmentStore(data_dir / "chat-attachments").stage(
+                    request.attachment_batch_id,
+                    request.attachments,
+                    local_stage=local_stage,
+                    remote_stage=remote_stage,
+                )
+                if request.attachment_batch_id
+                else []
+            )
             read_dirs = _chat_read_dirs(
                 context,
                 remote_stage,
                 service,
                 execution_machine.alias,
+            )
+            read_dirs.extend(
+                path
+                for path in dict.fromkeys(
+                    Path(str(item["path"])).parent for item in attachment_pointers
+                )
+                if path not in read_dirs
             )
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
@@ -260,6 +295,7 @@ async def stream_discuss_run(
                         human_request_path=human_request_path,
                         artifact_path=str(artifact_directory),
                         retry_diagnostics_path=retry_diagnostics_path,
+                        experiment_watcher_resources=experiment_resource_pointers,
                         skill_pointers=skill_pointers,
                         invoked_skill_pointers=invoked_package_pointers(
                             skill_pointers,
@@ -267,6 +303,7 @@ async def stream_discuss_run(
                             skill_ids=request.invoked_skill_ids,
                         ),
                         invoked_provider_skills=request.resolved_provider_skills,
+                        attachments=attachment_pointers,
                     )
                     current_contract_path, current_prompt = _stage_task_contract(
                         local_stage,
@@ -364,6 +401,7 @@ async def stream_discuss_run(
                     validator_command=patch_inputs.validator_command,
                     watch_path=patch_inputs.watch_path,
                     execution_host=execution_host,
+                    experiment_watcher_resources=experiment_resource_pointers,
                     skill_pointers=skill_pointers,
                 )
                 prompt, retained_master_path = _prepare_discuss_chat_prompt(
@@ -375,6 +413,7 @@ async def stream_discuss_run(
                     master_context=master_context,
                     stable_values=stable_prompt_values,
                     skill_pointers=skill_pointers,
+                    attachment_pointers=attachment_pointers,
                 )
                 contract_path = retained_master_path
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:

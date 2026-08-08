@@ -40,6 +40,18 @@ export interface ArtifactCommand {
   artifactId: string;
 }
 
+export interface DictationResultEvent {
+  session_id: string;
+  text: string;
+  is_final: boolean;
+}
+
+export interface DictationStateEvent {
+  session_id: string;
+  state: "recording" | "stopped" | "error";
+  error?: string | null;
+}
+
 interface BackendIdentity {
   version: string;
   instance_id: string;
@@ -154,6 +166,16 @@ export async function downloadDesktopArtifact(
   return desktopDownloadPath(result);
 }
 
+export async function startDesktopDictation(sessionId: string): Promise<void> {
+  if (!isDesktopRuntime()) throw new Error("Dictation is available in the desktop app.");
+  await invokeDesktop("desktop_start_dictation", { sessionId });
+}
+
+export async function stopDesktopDictation(sessionId: string): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  await invokeDesktop("desktop_stop_dictation", { sessionId });
+}
+
 export function desktopDownloadPath(result: {
   saved: boolean;
   path?: string | null;
@@ -183,7 +205,12 @@ export async function applyDesktopUpdate(confirmActiveWork: boolean): Promise<vo
 }
 
 export async function listenDesktopEvent<T>(
-  name: "rcp://prepare-show" | "rcp://backend-mismatch" | "rcp://update-ready",
+  name:
+    | "rcp://prepare-show"
+    | "rcp://backend-mismatch"
+    | "rcp://update-ready"
+    | "rcp://dictation-result"
+    | "rcp://dictation-state",
   handler: (payload: T) => void | Promise<void>,
 ): Promise<() => void> {
   if (!isDesktopRuntime()) return () => undefined;

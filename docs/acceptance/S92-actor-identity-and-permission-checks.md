@@ -1,5 +1,5 @@
 ---
-id: S75-actor-identity-and-permission-checks
+id: S92-actor-identity-and-permission-checks
 status: pending — not human-confirmed
 tier: hermetic
 driver: pytest + browser

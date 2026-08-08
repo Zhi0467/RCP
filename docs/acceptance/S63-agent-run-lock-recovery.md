@@ -1,4 +1,5 @@
 ---
+id: S63-agent-run-lock-recovery
 status: implemented
 driver: pytest + api
 tier: hermetic
@@ -11,6 +12,7 @@ covered_by:
   - tests/test_api.py::test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost
   - tests/test_api.py::test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_apply
   - tests/test_api.py::test_background_work_can_pause_while_waiting_for_canonical_state
+invariants: [8, 9]
 ---
 
 # RCP recovers agent-run ownership; the human never removes a lock

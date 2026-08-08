@@ -21,8 +21,8 @@ that already exists instead of starting anything.
 
 **Showing the window is what makes it truthful.** The human never sees a stale
 frame and then watches it correct itself. That matters because the only
-mechanism that could keep a hidden window current is the task poll at
-[App.tsx:296](../../web/src/App.tsx:296), and it has two limits: it runs only
+mechanism that could keep a hidden window current is the task poll in
+[App.tsx](../../web/src/App.tsx), and it has two limits: it runs only
 while a task is already active, and it is a timer chain inside a webview that is
 occluded for exactly as long as the window is hidden. A task started from the
 **browser** entrance while the desktop window is hidden sets no `activeTask` in

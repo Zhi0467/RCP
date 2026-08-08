@@ -3,6 +3,7 @@ id: S66-no-global-task-banner
 status: implemented
 tier: hermetic
 driver: browser
+covered_by: none
 invariants: [10]
 reported_by: human, 2026-08-04
 ---

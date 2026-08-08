@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+import sqlite3
 import subprocess
 import uuid
 from datetime import datetime, timedelta
@@ -246,6 +247,343 @@ def _bound_episode(store: AppStore, episode_id: str, *, operation_id: str = "loo
         watcher_ids=[],
         context_baseline={},
     )
+
+
+def _maintenance_task(
+    store: AppStore,
+    operation_id: str,
+    *,
+    kind: str = "project_chat",
+    mode: str = "work",
+    node_id: str | None = None,
+    chat_id: str = "maintenance-chat",
+) -> AgentTaskRecord:
+    now = store.now()
+    return AgentTaskRecord(
+        operation_id=operation_id,
+        project_id="project",
+        kind=kind,
+        status="queued",
+        request={
+            "chat_id": chat_id,
+            "node_id": node_id,
+            "provider": "claude",
+            "model": "different-model",
+            "reasoning": "high",
+            "run_on": "different-machine",
+            "run_truth_scope": ["different-scope"],
+            "mode": mode,
+            "trigger": "human",
+            "patch_kind": "work",
+            "workflow_ids": [],
+            "skill_ids": [],
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "resolved_skill_packages": [],
+            "watcher_ids": [],
+        },
+        created_at=now,
+        updated_at=now,
+        status_message="Maintaining node observers.",
+    )
+
+
+def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    resource = store.experiment_watcher_resources("project")[0]
+    binding = WatcherBinding(
+        project_id="project",
+        origin_operation_id="maintenance",
+        origin_task_kind="project_chat",
+        chat_id="maintenance-chat",
+        node_id="exp-one",
+        execution_host=resource.execution_host,
+        continuation=resource.continuation,
+    )
+
+    assert store.admit_experiment_watcher_maintenance(binding) == resource
+    assert resource.wake_chat_id == "chat"
+    assert resource.continuation.provider == "codex"
+    assert resource.continuation.run_on == "laptop"
+
+    store.create_agent_task(
+        _maintenance_task(
+            store,
+            "other-node",
+            kind="node_chat",
+            node_id="different-experiment",
+        )
+    )
+    with pytest.raises(ValueError, match="permission denied: node scope"):
+        store.admit_experiment_watcher_maintenance(
+            binding.model_copy(
+                update={
+                    "origin_operation_id": "other-node",
+                    "origin_task_kind": "node_chat",
+                }
+            )
+        )
+    store.complete_agent_task("other-node", applied_revision=None, result={})
+
+    store.create_agent_task(
+        _maintenance_task(store, "discuss", kind="node_chat", mode="discuss", node_id="exp-one")
+    )
+    with pytest.raises(ValueError, match="Work capability is required"):
+        store.admit_experiment_watcher_maintenance(
+            binding.model_copy(
+                update={"origin_operation_id": "discuss", "origin_task_kind": "node_chat"}
+            )
+        )
+
+
+def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    old = _record("old", origin="loop-root").model_copy(
+        update={"continuation": _loop_continuation(episode_id)}
+    )
+    store.create_watchers([old])
+    resource = store.experiment_watcher_resources("project")[0]
+    binding = WatcherBinding(
+        project_id="project",
+        origin_operation_id="maintenance",
+        origin_task_kind="project_chat",
+        chat_id="maintenance-chat",
+        node_id="exp-one",
+        execution_host=resource.execution_host,
+        continuation=resource.continuation,
+    )
+    replacement = _record("replacement", origin="maintenance").model_copy(
+        update={
+            "origin_task_kind": "project_chat",
+            "chat_id": "maintenance-chat",
+            "experiment_episode_id": episode_id,
+            "continuation": resource.continuation,
+        }
+    )
+    before = store.experiment_episode(episode_id)
+
+    stored = store.persist_experiment_watchers_idempotently(
+        [replacement],
+        stops=[WatcherStopRequest(stop_watcher_id="old", reason="Replaced observer")],
+        binding=binding,
+        expected_watcher_snapshot_token=resource.watcher_snapshot_token,
+    )
+
+    assert [item.watcher_id for item in stored] == ["replacement"]
+    assert stored[0].chat_id == "maintenance-chat"
+    assert stored[0].origin_task_kind == "project_chat"
+    assert stored[0].node_id == "exp-one"
+    assert stored[0].experiment_episode_id == episode_id
+    assert stored[0].execution_host == resource.execution_host
+    assert stored[0].continuation.provider == "codex"
+    assert store.watcher("old").stop_operation_id == "maintenance"
+    assert store.experiment_episode(episode_id) == before
+
+
+def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "first-maintenance"))
+    store.create_agent_task(
+        _maintenance_task(store, "second-maintenance", chat_id="second-maintenance-chat")
+    )
+    resource = store.experiment_watcher_resources("project")[0]
+
+    def binding(operation_id: str, chat_id: str) -> WatcherBinding:
+        return WatcherBinding(
+            project_id="project",
+            origin_operation_id=operation_id,
+            origin_task_kind="project_chat",
+            chat_id=chat_id,
+            node_id="exp-one",
+            execution_host=resource.execution_host,
+            continuation=resource.continuation,
+        )
+
+    def replacement(watcher_id: str, operation_id: str, chat_id: str) -> WatcherRecord:
+        return _record(watcher_id, origin=operation_id).model_copy(
+            update={
+                "origin_task_kind": "project_chat",
+                "chat_id": chat_id,
+                "experiment_episode_id": episode_id,
+                "continuation": resource.continuation,
+            }
+        )
+
+    store.persist_experiment_watchers_idempotently(
+        [replacement("first-replacement", "first-maintenance", "maintenance-chat")],
+        binding=binding("first-maintenance", "maintenance-chat"),
+        expected_watcher_snapshot_token=resource.watcher_snapshot_token,
+    )
+
+    with pytest.raises(WatcherClaimConflict, match="changed after it was staged"):
+        store.persist_experiment_watchers_idempotently(
+            [
+                replacement(
+                    "second-replacement",
+                    "second-maintenance",
+                    "second-maintenance-chat",
+                )
+            ],
+            binding=binding("second-maintenance", "second-maintenance-chat"),
+            expected_watcher_snapshot_token=resource.watcher_snapshot_token,
+        )
+    assert store.watcher("second-replacement") is None
+
+
+def test_observing_a_degraded_watcher_does_not_invalidate_maintenance(tmp_path) -> None:
+    """Polling is not a claim.
+
+    The motivating repair targets a degraded observer, and S84 re-checks one every
+    few minutes, so a maintenance turn that fingerprinted observation would be
+    rejected by the very watcher it exists to fix.
+    """
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    old = _record("old", origin="loop-root").model_copy(
+        update={"continuation": _loop_continuation(episode_id)}
+    )
+    store.create_watchers([old])
+    resource = store.experiment_watcher_resources("project")[0]
+
+    # While the agent inspects the scheduler, the poller observes the broken check.
+    store.record_watcher_check(
+        "old", status="degraded", exit_code=127, error="squeue: command not found"
+    )
+    store.record_watcher_check(
+        "old", status="degraded", exit_code=127, error="squeue: command not found"
+    )
+
+    binding = WatcherBinding(
+        project_id="project",
+        origin_operation_id="maintenance",
+        origin_task_kind="project_chat",
+        chat_id="maintenance-chat",
+        node_id="exp-one",
+        execution_host=resource.execution_host,
+        continuation=resource.continuation,
+    )
+    replacement = _record("replacement", origin="maintenance").model_copy(
+        update={
+            "origin_task_kind": "project_chat",
+            "chat_id": "maintenance-chat",
+            "experiment_episode_id": episode_id,
+            "continuation": resource.continuation,
+        }
+    )
+
+    stored = store.persist_experiment_watchers_idempotently(
+        [replacement],
+        stops=[WatcherStopRequest(stop_watcher_id="old", reason="Replaced degraded observer")],
+        binding=binding,
+        expected_watcher_snapshot_token=resource.watcher_snapshot_token,
+    )
+
+    assert [item.watcher_id for item in stored] == ["replacement"]
+    assert store.watcher("old").status == "stopped"
+
+
+def test_a_retirement_another_turn_already_won_is_refused_per_item(tmp_path) -> None:
+    """Membership is the fence; a resolved stop is caught by its own compare-and-swap."""
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    old = _record("old", origin="loop-root").model_copy(
+        update={"continuation": _loop_continuation(episode_id)}
+    )
+    store.create_watchers([old])
+    resource = store.experiment_watcher_resources("project")[0]
+    binding = WatcherBinding(
+        project_id="project",
+        origin_operation_id="maintenance",
+        origin_task_kind="project_chat",
+        chat_id="maintenance-chat",
+        node_id="exp-one",
+        execution_host=resource.execution_host,
+        continuation=resource.continuation,
+    )
+
+    # Another turn retires the same observer first. Retirement keeps the row, so
+    # membership is unchanged and the fingerprint still matches.
+    store.stop_watchers("project", ["old"])
+
+    with pytest.raises(ValueError, match="already resolved"):
+        store.persist_experiment_watchers_idempotently(
+            [],
+            stops=[WatcherStopRequest(stop_watcher_id="old", reason="Replaced degraded observer")],
+            binding=binding,
+            expected_watcher_snapshot_token=resource.watcher_snapshot_token,
+        )
+
+
+def test_watcher_admission_fails_closed_after_stop_or_stale_episode(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    resource = store.experiment_watcher_resources("project")[0]
+    binding = WatcherBinding(
+        project_id="project",
+        origin_operation_id="maintenance",
+        origin_task_kind="project_chat",
+        chat_id="maintenance-chat",
+        node_id="exp-one",
+        execution_host=resource.execution_host,
+        continuation=resource.continuation,
+    )
+
+    stale = binding.model_copy(
+        update={
+            "continuation": binding.continuation.model_copy(
+                update={"control_episode_id": str(uuid.uuid4())}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="stale episode"):
+        store.admit_experiment_watcher_maintenance(stale)
+
+    store.request_experiment_loop_stop("project", "exp-one")
+    assert store.experiment_watcher_resources("project") == []
+    with pytest.raises(ValueError, match="live, unstopped episode"):
+        store.admit_experiment_watcher_maintenance(binding)
+
+
+def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    store = AppStore(path)
+    episode_id = str(uuid.uuid4())
+    store.create_watchers(
+        [_record("legacy-loop").model_copy(update={"continuation": _loop_continuation(episode_id)})]
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX watchers_experiment_episode")
+        connection.execute("ALTER TABLE watchers DROP COLUMN experiment_episode_id")
+
+    reopened = AppStore(path)
+    with reopened.connection() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(watchers)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(watchers)")}
+        stored_episode_id = connection.execute(
+            "SELECT experiment_episode_id FROM watchers WHERE watcher_id = 'legacy-loop'"
+        ).fetchone()[0]
+
+    assert "experiment_episode_id" in columns
+    assert "watchers_experiment_episode" in indexes
+    assert stored_episode_id == episode_id
 
 
 def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(tmp_path) -> None:

@@ -139,11 +139,11 @@ shows a persistent warning in the UI. Never use it with canonical project data.
 ## What does not exist yet
 
 1. **The check functions** for anything whose `covered_by` is `none`.
-2. **The desktop harness.** No tooling here drives an application window; the
-   browser tools cannot attach to one. The intended mechanism is WebdriverIO's
-   Tauri service with its embedded macOS driver, and it is unproven in this
-   repository — proving it is part of building the shell, not a later chore. A
-   `desktop` scenario is not runnable until it exists.
+2. **An automated desktop harness.** Browser tooling cannot attach to a native
+   application window. Desktop scenarios can still be driven manually through
+   the built macOS application, its accessibility tree, screenshots, and shell
+   logs, as the existing `last_passed` records show. What does not yet exist is
+   one reusable unattended harness for those checks.
 
 A `browser` scenario is **runnable today** — an agent drives the app and reports
 what it found. S03 and S08's browser half need no fake agent at all, since no
@@ -163,7 +163,7 @@ it but a browser or a machine we do not have.
 | [S08](S08-human-authority.md) | Human authority, and Sync as the only commit | implemented | pytest + **browser** | backend only |
 | [S10](S10-pause-resume-retry.md) | Agent work is durable | implemented | pytest + **browser** | backend only |
 | [S11](S11-paper-coach.md) | The coach reads and never writes | implemented | pytest + **browser** | partial |
-| [S12](S12-ontology-evolution.md) | Keep historical ontology extensions readable | implemented | pytest | covered |
+| [S12](S12-ontology-evolution.md) | Keep historical ontology extensions readable without restoring a schema editor | implemented | pytest + **browser** | covered + driven 2026-08-03 |
 | [S13](S13-replay-halts.md) | A bad patch stops replay instead of vanishing | implemented | pytest | covered |
 | [S14](S14-remote-state.md) | Canonical state on another machine | implemented | api | partial |
 | [S15](S15-real-agent.md) | One real agent run, end to end | implemented | api | **none** |
@@ -175,69 +175,73 @@ it but a browser or a machine we do not have.
 | [S21](S21-compact-project-navigation.md) | The project shell says only what is needed | implemented | **browser** | driven 2026-07-30 |
 | [S22](S22-fast-project-open.md) | Opening a project does one authoritative replay | implemented | pytest + **browser** | driven 2026-07-30 |
 | [S23](S23-margin-visual-system.md) | RCP uses Margin's visual grammar | implemented | **browser** | driven 2026-07-30 |
-| [S24](S24-provider-registry.md) | Every agent choice offered is one the provider accepts | implemented | **browser** | driven 2026-08-01 |
+| [S24](S24-provider-registry.md) | Every agent choice offered is one the provider accepts | implemented | **browser** | driven 2026-08-04 |
 | [S25](S25-grounded-belief-ontology.md) | Belief changes are grounded and readable | implemented | pytest + **browser** | covered + driven 2026-07-30 |
-| [S26](S26-delete-project.md) | Delete an RCP project without deleting the research project | pending | pytest + **browser** | none |
+| [S26](S26-delete-project.md) | Delete an RCP project without deleting the research project | implemented | pytest + **browser** | covered + driven 2026-07-31 |
 | [S27](S27-agent-task-explains-and-recovers.md) | Every launch has one task, authority contract, and recovery cause | implemented | pytest + **browser** | `test_prompts.py`, `test_conversation_retry.py`, `test_api.py`, `test_proposal_boundary.py`, `runDialog.test.mjs`, browser 2026-08-03 |
-| [S28](S28-one-backend-two-entrances.md) | One backend, two entrances | pending | pytest + api | none |
-| [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | pending | pytest | none |
+| [S28](S28-one-backend-two-entrances.md) | One backend, two entrances | implemented | pytest + api | covered + driven 2026-07-31 |
+| [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | implemented | pytest | covered |
 | [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | pending | **desktop** | none |
 | [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | **desktop** | none |
 | [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | none |
 | [S33](S33-a-seed-corrects-itself.md) | A seed that goes wrong corrects itself | implemented | pytest + **browser** | covered + driven 2026-07-31 |
-| [S34](S34-packaged-app-needs-no-toolchain.md) | A dev shell that loads the checkout, and a release app that needs nothing | pending | **desktop** | none |
+| [S34](S34-packaged-app-needs-no-toolchain.md) | A dev shell that loads the checkout, and a release app that needs nothing | implemented | **desktop** | partial drive 2026-07-31 |
 | [S35](S35-packaged-environment-parity.md) | RCP knows where your tools are, and you can see and correct it | blocked-external | **desktop** | none |
-| [S36](S36-updating-never-interrupts-work.md) | An update waits for idle, and never interrupts work without being asked | pending | **desktop** | none |
+| [S36](S36-updating-never-interrupts-work.md) | An update waits for idle, and never interrupts work without being asked | blocked-external | **desktop** | source-covered; update channel required |
 | [S37](S37-desktop-text-scale.md) | Text stays readable throughout the desktop app | implemented | **desktop** | covered + driven 2026-07-31 |
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
-| [S39](S39-project-sized-run-preparation.md) | Repeated run preparation reuses unchanged source metadata | superseded by S62 | pytest | historical |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
 | [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | implemented | pytest + **browser** | covered + driven 2026-08-05 |
 | [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | implemented | pytest + **browser** | covered + driven 2026-08-05 |
-| [S43](S43-agent-execution-module-boundaries.md) | Keep agent behavior intact while execution code moves | implemented | pytest | 10 checks |
-| [S44](S44-chat-conversation-projection-permissions.md) | Chat does not ingest transcripts; Seed/Refresh read logs in place | pending | pytest + **browser** | 4 checks |
 | [S45](S45-floating-window-dock.md) | Dock a floating node window without closing it | implemented | **browser** | driven 2026-08-02 |
 | [S46](S46-project-header-and-chat-split.md) | Fold the project utilities and resize the Chats split | implemented | **browser** | driven 2026-08-02 |
 | [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
 | [S48](S48-screen-story-token-scale.md) | Measure project usage in favorite screen stories | implemented | **browser** | 5 checks + driven 2026-08-02 |
 | [S49](S49-chat-node-reference-links.md) | Open an existing node from a chat answer | implemented | **browser** | covered + driven 2026-08-02 |
 | [S50](S50-minimal-agent-proposal-boundary.md) | Agents propose only decisions and belief changes | implemented | pytest | covered |
-| [S51](S51-live-agent-patch-validation.md) | A Work agent checks the exact semantic patch RCP will apply | implemented | pytest | 2026-08-03 |
-| [S52](S52-explicit-rejection-and-node-removal.md) | Judge explicitly and remove current graph nodes without rewriting history | implemented | pytest + **browser** | covered + driven 2026-08-03 |
+| [S51](S51-live-agent-patch-validation.md) | Every patch-producing task checks the exact semantic patch RCP will apply | implemented | pytest | covered |
+| [S52](S52-explicit-rejection-and-node-removal.md) | Judge explicitly and remove current graph nodes without rewriting history | implemented | **browser** | covered + driven 2026-08-03 |
 | [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and run surfaces tell one truthful story | implemented | **browser** | covered + driven 2026-08-03 |
 | [S54](S54-paper-preview-and-resizable-node-detail.md) | Read authored Markdown and resize the node being inspected | implemented | **browser** | covered + driven 2026-08-03 |
 | [S55](S55-project-owned-agent-profile.md) | Project Settings owns agent configuration | implemented | pytest + **browser** | covered + driven 2026-08-03 |
 | [S56](S56-plain-language-revision-history.md) | Read what changed between graph revisions | implemented | pytest + **browser** | covered + driven 2026-08-03 |
-| [S57](S57-fixed-product-ontology.md) | Existing ontology extensions remain readable without a schema editor | implemented | pytest + **browser** | covered + driven 2026-08-03 |
 | [S58](S58-inline-glossary-definitions.md) | Definitions appear where a term is read | implemented | **browser** | covered + driven 2026-08-03 |
 | [S59](S59-staged-graph-audit-skills.md) | An agent audits the graph patch it is about to finish | pending — **not human-confirmed** | pytest + **browser** | none |
 | [S60](S60-plain-language-project-setup.md) | Add a project with plain-language setup steps | pending — **not human-confirmed** | **browser** | none |
-| [S61](S61-app-scoped-provider-readiness.md) | Opening a project does not recheck providers | implemented | pytest + **browser** | driven 2026-08-04 |
-| [S62](S62-direct-provider-log-ingestion.md) | Seed and Refresh point agents at provider logs instead of moving them | implemented | pytest + **browser** | covered + live Seeds 2026-08-04 |
-| [S63](S63-agent-run-lock-recovery.md) | RCP recovers agent-run ownership; the human never removes a lock | implemented | pytest + api | covered |
+| [S62](S62-direct-provider-log-ingestion.md) | Seed and Refresh point agents at provider logs instead of moving them | implemented | pytest + **browser** | partial live check 2026-08-04 |
+| [S63](S63-agent-run-lock-recovery.md) | RCP recovers agent-run ownership; the human never removes a lock | implemented | pytest + api | tests; api drive not recorded |
 | [S64](S64-project-skill-workflow-selection.md) | Choose project workflows and skills, then load them into a run | implemented | pytest + **browser** | 16 checks + driven 2026-08-04 |
 | [S65](S65-concurrent-agent-tasks.md) | Multiple agent tasks can run at once | implemented | pytest + **browser** | covered + driven 2026-08-04 |
-| [S66](S66-no-global-task-banner.md) | Agent tasks do not appear as a global banner | implemented | **browser** | implemented |
-| [S67](S67-proposal-action-legibility.md) | Pending proposals state the exact option or status transition | implemented | pytest + **browser** | covered |
-| [S68](S68-chat-progress-start-feedback.md) | Chat progress appears immediately under a sent message | implemented | **browser** | covered |
+| [S66](S66-no-global-task-banner.md) | Agent tasks do not appear as a global banner | implemented | **browser** | browser drive not recorded |
+| [S67](S67-proposal-action-legibility.md) | Pending proposals state the exact option or status transition | implemented | pytest + **browser** | tests; browser drive not recorded |
+| [S68](S68-chat-progress-start-feedback.md) | Chat progress appears immediately under a sent message | implemented | **browser** | browser drive not recorded |
 | [S69](S69-agent-proposal-withdrawal.md) | Agents can withdraw obsolete pending proposals | implemented | pytest | covered |
-| [S70](S70-uniform-patch-validation-contract.md) | Patch-producing tasks uniformly self-check through the validator | implemented | pytest | 2026-08-04 |
 | [S71](S71-chat-master-context-and-deltas.md) | Chat sends one master context, then turn markers and compact deltas | implemented | pytest | 2026-08-04 |
 | [S72](S72-runs-operational-hierarchy.md) | Runs leads with live operational state | implemented | **browser** | tests + browser 2026-08-06 |
 | [S73](S73-experiment-loop-native-wake-continuity.md) | Watcher wakes continue one bounded episode session | implemented | pytest | tests + browser 2026-08-06 |
 | [S74](S74-boundary-inputs-fail-closed.md) | Uncommon boundary inputs fail closed without damaging the project | implemented | pytest + browser | tests + browser 2026-08-06 |
 | [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | blocked-external | pytest + **browser** | provider commands + Codex browser 2026-08-07 |
+| [S76](S76-graph-condition-wake.md) | Wake a conversation when a canonical graph condition becomes true | pending — **not human-confirmed** | pytest | none |
+| [S77](S77-auto-research-stops-at-belief.md) | Let auto-research run the action layer and stop at belief | pending — **not human-confirmed** | pytest | none |
+| [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | pending — **not human-confirmed** | **browser** | none |
+| [S79](S79-cold-desktop-launch-renders.md) | A cold desktop launch never rests on a blank window | implemented | **desktop** | driven 2026-08-07 |
 | [S80](S80-question-hierarchy-flow-columns.md) | Read question hierarchy from the Research flow columns | implemented | **browser** | layout tests + driven 2026-08-07 |
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without reloading the UI | implemented | api + **browser** | tests + driven 2026-08-07 |
+| [S82](S82-view-state-survives-navigation.md) | Return to the same panel position after navigating away | implemented | **browser** | driven 2026-08-07 |
 | [S83](S83-agent-retires-experiment-watchers.md) | Let an Experiment agent retire observers for work it cancelled | implemented | pytest | covered |
 | [S84](S84-watchers-poll-with-persistent-backoff.md) | Poll watchers patiently with durable error backoff | implemented | pytest | covered |
 | [S85](S85-grouped-watchers-wake-once.md) | Wake once when every watcher in a group is finished or persistently degraded | implemented | pytest + **browser** | tests + driven 2026-08-07 |
 | [S86](S86-human-decides-a-decision.md) | Decide a Decision by clicking an option | implemented | pytest + **browser** | tests + driven 2026-08-07 |
 | [S87](S87-experiment-prerequisite-chains.md) | Construct causal action chains around experiments | implemented | pytest + api | tests + real provider 2026-08-08 |
-| [S88](S88-node-attached-agent-authority.md) | Let permitted agents maintain resources attached to a node | pending | pytest + **browser** | none |
+| [S88](S88-node-attached-agent-authority.md) | Let permitted agents maintain resources attached to a node | implemented | pytest + **browser** | covered + driven 2026-08-08 |
+| [S89](S89-provider-native-skill-inventory.md) | Offer provider-native skills beside RCP packages | implemented | pytest + **browser** + ssh | covered + driven 2026-08-08 |
+| [S90](S90-desktop-chat-dictation.md) | Turn one spoken segment into an editable chat draft | pending | **desktop** | native + span tests + desktop control; live audio pending |
+| [S91](S91-chat-input-attachments.md) | Send bounded temporary files with one chat turn | pending | pytest + **browser** + ssh | tests + local browser; SSH pending |
+| [S92](S92-actor-identity-and-permission-checks.md) | Bound an agent by its owning person's authority | pending — **not human-confirmed** | pytest + **browser** | none |
 
-Ids are never reused. The gaps are scenarios that were folded into the list
-below; a new scenario takes the next free number.
+Ids are never reused. Gaps are retired scenarios or promises folded into another
+scenario or the test-defended list below; a new scenario takes the next free
+number.
 
 ## Promises already defended by tests
 
@@ -251,23 +255,17 @@ promote it back to a file with a fresh id.
 | Promise | Defended by |
 |---|---|
 | Reopening and refreshing a project appends, and never edits a prior patch | `test_sync.py::test_replay_ignores_an_uncommitted_hidden_batch`, `::test_interrupted_batch_write_exposes_none_of_the_sync`, `test_history.py::test_successful_patch_materializes_processed_cursors` |
-| A question with no authority changes nothing, and an agent cannot grant itself authority by writing the file; scratch remains writable for disposable outputs | `test_api.py::test_unauthorized_chat_patch_is_discarded_not_applied`, `::test_node_chat_answers_without_writing_a_patch`. One frontend residual is uncovered: authorization is **per turn**, so the toggle must not stay on after a send — correct today at [NodeChat.tsx:85](../../web/src/components/NodeChat.tsx:85), defended by nothing |
-| An authorized question changes exactly one thing, and is refused if the graph moved under it | `test_api.py::test_authorized_chat_launch_is_not_read_only`, `::test_chat_patch_cannot_move_the_ingest_boundary`, `::test_chat_patch_is_refused_when_the_graph_moved_under_it` |
-| A conversation outlives its turns: one folder, prior patch cleared, and provider continuation state is retained without using chat history as agent context | `test_api.py::test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch`, `::test_same_chat_id_uses_distinct_stages_for_distinct_projects` |
-| A bad patch is corrected in-session, and a failed run keeps its work | `test_api.py::test_invalid_patch_is_corrected_in_the_same_native_session`, `::test_failed_run_retains_its_patch_and_scratch_folder`, `::test_patch_under_an_unexpected_filename_is_still_applied`, `::test_patch_collector_prefers_patch_json_and_refuses_ambiguity` |
-| An authorized turn that changes nothing spends no revision | **nothing — test to write.** The Sync analogue exists (`test_sync.py::test_graph_sync_no_net_change_writes_no_patch`); the chat path has none |
+| Preparing an agent run does not replay canonical history merely to rediscover its revision, and Sync reuses its validated pending replay after commit | `test_api.py::test_graph_stream_reuses_revision_from_assembled_context`, `test_sync.py::test_graph_sync_builds_from_the_single_in_lock_current_replay`, `::test_batch_reuses_pending_replay_for_committed_outputs` |
 
-Three things these tables say out loud:
+Do not maintain hand-counted coverage summaries here; they become stale as soon
+as a scenario is added or merged. Frontmatter is the inventory. For an
+implemented `api`, `browser`, or `desktop` scenario, a missing `last_passed`
+means its end-to-end drive remains verification debt. `last_checked` records a
+partial drive and must not be presented as a pass.
 
-- **Ten of sixteen implemented API/browser scenarios have persisted verdicts.**
-  S01, S03, S08, S10, S11, and S15 still need their named end-to-end drive.
-- **Six implemented scenarios remain without automated coverage.** Some are
-  deliberately live or visual. The two highest-value holes are an authorized
-  chat turn that changes nothing (a cheap test) and S15's real-provider seam.
-- **S13 established an ordering constraint in v0.5.** The
-  structural/authoring split (§6.4) landed before the replay halt (§6.4b), so
-  replay can distinguish a patch rejected at admission from an accepted patch
-  that later fails structural integrity.
+S13 also preserves an ordering constraint from v0.5: the structural/authoring
+split landed before the replay halt, so replay can distinguish a patch rejected
+at admission from an accepted patch that later fails structural integrity.
 
 The artifact-preview feature has a three-part gate: S16 is the implemented
 deterministic merge contract, S17 is the live provider/version gate and must be

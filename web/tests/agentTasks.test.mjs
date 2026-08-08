@@ -83,6 +83,25 @@ test("node chat reconstruction follows the latest chat id for that node", () => 
   assert.equal(latestNativeSessionId(related), "native-1");
 });
 
+test("temporary input attachment metadata follows the human turn only", () => {
+  const attachment = {
+    attachment_id: "attachment-a",
+    name: "evidence.csv",
+    media_type: "text/csv",
+    size: 42,
+    expires_at: "2026-08-15T00:00:00Z",
+  };
+  const lines = reconstructTaskTranscript([
+    task({
+      operation_id: "with-attachment",
+      request: { message: "Read this", attachments: [attachment] },
+      result: { messages: ["Read"] },
+    }),
+  ]);
+  assert.deepEqual(lines[0].attachments, [attachment]);
+  assert.equal(lines[1].attachments, undefined);
+});
+
 test("node chat reconstruction can select an older explicit chat id", () => {
   const tasks = [
     task({

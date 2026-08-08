@@ -8,6 +8,8 @@ import {
   loadProjectReadiness,
   pinApiInstance,
   registerMutationFailureHandler,
+  removeChatAttachment,
+  uploadChatAttachment,
 } from "../src/api.ts";
 
 const metrics = {
@@ -152,6 +154,64 @@ test("reads never carry the pinned backend identity", async () => {
     assert.equal(headers.get("X-Caller"), "kept");
   } finally {
     pinApiInstance(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("chat attachment ingress preserves multipart content and client scope", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  const descriptor = {
+    attachment_id: "attachment-a",
+    name: "notes.md",
+    media_type: "text/markdown",
+    size: 5,
+    expires_at: "2026-08-15T00:00:00Z",
+  };
+  globalThis.fetch = async (path, init) => {
+    request = { path, init };
+    return new Response(JSON.stringify({ attachment_set_id: "set-a", attachment: descriptor }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    const result = await uploadChatAttachment(
+      "/api/projects/demo",
+      "chat-a",
+      file,
+      "client-a",
+      "set-a",
+    );
+    assert.equal(result.attachment.name, "notes.md");
+    assert.equal(request.path, "/api/projects/demo/chats/chat-a/attachments");
+    assert.equal(request.init.method, "POST");
+    assert.ok(request.init.body instanceof FormData);
+    assert.equal(request.init.body.get("client_id"), "client-a");
+    assert.equal(request.init.body.get("attachment_set_id"), "set-a");
+    assert.equal(new Headers(request.init.headers).get("Content-Type"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("removing an unsent attachment preserves the claimed set scope", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (path, init) => {
+    request = { path, init };
+    return new Response(JSON.stringify({ removed: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    await removeChatAttachment("/api/projects/demo", "chat-a", "set-a", "attachment-a", "client-a");
+    assert.match(request.path, /attachment-a\?/);
+    assert.match(request.path, /attachment_set_id=set-a/);
+    assert.match(request.path, /client_id=client-a/);
+  } finally {
     globalThis.fetch = originalFetch;
   }
 });

@@ -6,7 +6,7 @@ driver: pytest + browser
 covered_by:
   - tests/test_acceptance_experiment_watchers.py::test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits
   - tests/test_acceptance_agent.py
-  - tests/test_api.py::test_human_run_claims_over_ceiling_completion_as_new_episode_invocation_one
+  - tests/test_api.py::test_human_run_claims_over_ceiling_completion_into_a_new_episode
   - web/tests/acceptanceAgentMode.test.mjs
   - web/tests/experimentControlRefresh.test.mjs
 invariants: [3, 4, 4b, 10, 10b]
@@ -26,7 +26,8 @@ discretion; and the human remains the only authority that accepts evidence or
 decides an upstream choice.
 
 Experiment attempts and generic watchers are separate records. This scenario
-uses the watcher delivery promised by S42 to continue the conversation. The
+uses the watcher machinery promised by S42, with S88's node-owned Experiment
+resource, to continue the episode's bound conversation. The
 human-set `invocation_ceiling` bounds the initial Run invocation plus attributed
 watcher wakes inside one episode. Semantic `ExperimentAttempt` records neither
 spend nor reset that budget.
@@ -91,6 +92,12 @@ Confirmed by the human on 2026-08-05.
   attempt record. Per S73 the wake resumes this episode's native provider session
   with a compact continuation message rather than starting a fresh session and
   rebuilding the contract; generic Work watcher wakes stay fresh turns.
+- From another permitted Work conversation, inspect this Experiment's staged
+  watcher state, retire obsolete observers, and arm replacements through its
+  distinct Experiment watcher file. The maintenance answer stays in that
+  conversation, consumes no loop invocation, and the replacements still wake
+  this episode's bound native session. Its ordinary `watch.json`, if written in
+  the same turn, remains a self-wake for the maintenance conversation.
 - Pause, Resume, or Retry that watcher turn. Resume and Retry retain its episode
   and invocation number and receive a compact live control update before acting.
   Patch correction and watcher correction receive only the retained contract,
@@ -117,7 +124,8 @@ Confirmed by the human on 2026-08-05.
   than mislabelling it an automatic wake. Nothing is discarded and the human
   need not raise the ceiling merely to resume from this pause.
 - Let compatible ungrouped watchers and ready labelled groups from different
-  invocations become deliverable together. Their immutable origin
+  invocations and permitted arming conversations become deliverable together.
+  Their immutable origin
   episode/invocation fields remain visible in watcher state, and compatible
   delivery may coalesce them into one invocation without splitting a group.
   Race S72's **Stop loop** or an agent's reasoned staged-observer retirement

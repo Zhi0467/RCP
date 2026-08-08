@@ -26,6 +26,7 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
+from rcp.attachments import ChatAttachmentDescriptor
 from rcp.config import AgentSurface, AgentSurfaceConfig, MachineConfig, Manifest
 from rcp.control import derive_experiment_control_state
 from rcp.core.models import (
@@ -112,6 +113,7 @@ class ChatMessage(BaseModel):
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = None
     trigger: TaskTrigger = "human"
+    attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
 
 
 class ChatSummary(BaseModel):
@@ -166,6 +168,7 @@ class _StoredChatRecord(BaseModel):
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
     trigger: TaskTrigger = "human"
+    attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
 
 
 class ReviewRequest(BaseModel):
@@ -285,6 +288,13 @@ class RunRequest(BaseModel):
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
+    # The set/client fields are short-lived ingress capabilities accepted only on a
+    # human chat request. RCP replaces them with the claimed batch and metadata
+    # before the task record is created.
+    attachment_set_id: str | None = None
+    attachment_client_id: str | None = None
+    attachment_batch_id: str | None = None
+    attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
 
 
 class CoachRequest(BaseModel):
@@ -569,6 +579,7 @@ class ProjectService:
                 mode=record.mode,
                 graph_update=record.graph_update,
                 trigger=record.trigger,
+                attachments=record.attachments,
             )
             for record in records
         ]

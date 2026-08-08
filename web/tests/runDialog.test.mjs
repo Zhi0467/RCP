@@ -584,9 +584,92 @@ test("conversation watcher status and wake attribution stay operational", () => 
   assert.doesNotMatch(html, /SSH exited 255/);
   assert.doesNotMatch(html, /chat-watchers/);
   assert.equal(html.match(/chat-watcher-count/g).length, 1);
-  assert.equal(experimentHtml.match(/chat-watcher-count/g).length, 1);
+  assert.doesNotMatch(experimentHtml, /chat-watcher-count/);
   assert.match(html, /chat-turn-trigger watcher[^>]*>Watcher/);
   assert.doesNotMatch(html, /node-chat-line human/);
+});
+
+test("a new Experiment chat sees the node loop and only its own generic watcher", () => {
+  const node = {
+    id: "experiment/shared-loop",
+    type: "experiment",
+    title: "Shared loop",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const watcher = {
+    watcher_id: "loop-active",
+    chat_id: "creator-chat",
+    status: "active",
+    log_path: "/tmp/loop-active.log",
+    last_checked_at: null,
+    last_error: null,
+    continuation: {
+      patch_kind: "experiment_loop",
+      control_node_id: node.id,
+    },
+  };
+  const props = {
+    project,
+    node,
+    runScope: ["repo"],
+    tasks: [],
+    historyMessages: [],
+    chatId: "new-session-chat",
+    onStartTask() {},
+    onInspectTask() {},
+    onOpenInbox() {},
+    onRepairGraphUpdate() {},
+    onStopWatcher() {},
+    onNewSession() {},
+    onClose() {},
+    onResumeTask() {},
+    onRetryTask() {},
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      ...props,
+      watchers: [
+        watcher,
+        { ...watcher, watcher_id: "loop-degraded", status: "degraded" },
+        { ...watcher, watcher_id: "loop-stopped", status: "stopped" },
+        { ...watcher, watcher_id: "loop-completed", status: "completed" },
+        {
+          ...watcher,
+          watcher_id: "other-node-loop",
+          continuation: {
+            patch_kind: "experiment_loop",
+            control_node_id: "experiment/other",
+          },
+        },
+        {
+          ...watcher,
+          watcher_id: "self-wake",
+          chat_id: "new-session-chat",
+          continuation: { patch_kind: "work", control_node_id: null },
+        },
+        {
+          ...watcher,
+          watcher_id: "other-chat-self-wake",
+          continuation: { patch_kind: "work", control_node_id: null },
+        },
+      ],
+    }),
+  );
+  const projectChatHtml = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      ...props,
+      node: null,
+      watchers: [watcher],
+    }),
+  );
+
+  assert.match(html, /aria-label="3 active watchers"/);
+  assert.match(html, /<svg[^>]*>.*<\/svg> 3<\/button>/s);
+  assert.doesNotMatch(projectChatHtml, /chat-watcher-count/);
 });
 
 test("long human chat messages render a bounded preview control", () => {

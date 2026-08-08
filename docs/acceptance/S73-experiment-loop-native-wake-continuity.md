@@ -48,27 +48,25 @@ allowed.
 | Automatic ungrouped completion or group readiness below the ceiling | same, invocation N+1 | resume the current episode session | `watcher_wake`; compact continuation below | pinned by the episode session |
 | Task Pause → Resume | same, same invocation | resume the same episode session | `resume`; existing compact task-resume contract | unchanged |
 | Task Retry/correction | same, same invocation | existing explicit task-recovery semantics | `retry` or correction; existing narrow contract | unchanged |
-| Human Run delivering completed watcher state after exit or ceiling | new, invocation 1 | fresh | `human_reauthorization`; full Experiment-loop contract | frozen compatible watcher continuation, preserving provider, machine, scope, and log access |
+| Human Run delivering completed watcher state after exit or ceiling | new, invocation 1 | fresh | `human_reauthorization`; full Experiment-loop contract | current Node-chat profile and selected/default truth scope; watcher configuration remains provenance |
 | Human Run after S72 Stop loop | new, invocation 1 | fresh | `initial_run`; full Experiment-loop contract with stopped history and no delivery | current Node-chat profile and selected/default truth scope |
 
 Every episode has exactly one validated native-session binding: provider,
 session id, execution host, and exact reusable chat stage. Every automatic wake
 resumes that binding, regardless of which invocation armed its delivered
-watchers. Compatible cross-invocation and older-episode watcher provenance may
+watchers or which permitted Work conversation later maintained them. Compatible
+cross-invocation, cross-conversation, and older-episode watcher provenance may
 coalesce, but watcher provenance never chooses or changes the native session;
 the newest human-authorized episode does.
 
 An automatic wake may claim only a completed ungrouped watcher or ready watcher
-group whose frozen provider, execution target, conversation, Experiment, truth
-scope, and Patch authority are compatible with the current episode binding. A
-watcher from an older episode that becomes incompatible because a later human Run selected a
-different provider, machine, or scope remains completed and unnotified. It is
-visible in Runs and cannot silently switch sessions, consume budget, or
-disappear. Package pointers are current episode context, not watcher authority,
-and follow the compact replacement-delta rule below. A later human Run may
-explicitly reauthorize one compatible pending watcher or group into a fresh
-episode using its frozen configuration; other incompatible watchers or groups
-remain pending.
+group attached to the same Experiment whose check still runs on the episode's
+execution host. Origin conversation, provider, machine alias, truth scope, and
+package selection are provenance rather than selectors; the live episode owns
+the wake policy and session. A stale node or episode, stopped loop, missing
+durable binding, or wrong check host remains visible and cannot silently switch
+sessions, consume budget, or become a generic Work wake. A later human Run may
+explicitly reauthorize compatible pending watcher state into a fresh episode.
 
 Before atomically claiming a completed ungrouped watcher or ready group or
 spending the next invocation, RCP validates that the episode session and exact
@@ -90,15 +88,18 @@ an empty replacement block renders nothing rather than a heading with “none.�
 
 ## Watcher storage and per-turn access
 
-The agent still writes only `watch.json`; no MCP or provider tool owns watcher
-authority. An Experiment-loop handoff may contain strict observer items, optional
-group labels, and reasoned retirement items for staged compatible observers;
-ordinary Work retains the strict observer-only list from S42. RCP validates the
-complete list after the turn and persists each watcher as a durable SQLite
+No MCP or provider tool owns watcher authority. A conversation's `watch.json`
+retains the strict observer-only self-wake from S42. An Experiment's separate
+watcher file contains strict observer items, optional group labels, and reasoned
+retirement items for staged compatible observers; the loop and every permitted
+maintenance Work turn write that same node resource. The file path decides which
+target wakes, without a discriminator or agent-supplied target field. RCP
+validates the complete list after the turn and persists each watcher as a durable SQLite
 `WatcherRecord`, separate from graph state, chat history, semantic
 ExperimentAttempt records, and provider task lineage. The record retains:
 
-- watcher id, project, Experiment, conversation, and originating operation;
+- watcher id, project, Experiment, accepting episode, creation conversation,
+  and originating operation;
 - execution host, absolute `cwd`, observational `check_command`, and absolute
   `log_path`;
 - `active`, `degraded`, `completed`, or `stopped` status, check timestamps, next
@@ -109,9 +110,12 @@ ExperimentAttempt records, and provider task lineage. The record retains:
   scope, package selection, Patch authority, originating episode/invocation,
   ceiling, control revision, pinned decisions, and completion criteria.
 
-The agent never reads SQLite. Before each loop turn, RCP stages a bounded
+The agent never reads SQLite. Before each loop turn and each conversation that
+may inspect the node resource, RCP stages a bounded
 `experiment-watchers.json` in the exact local or remote scratch workspace and
-points to it from the loop-control JSON and prompt. Each item contains the
+points to it from the applicable contract. A Work turn receives the writable
+Experiment file and its loop wake target; Discuss receives readable state only.
+Each item contains the
 operational fields the agent can act on: id, origin operation, execution host,
 check, log, cwd, status and timestamps, last exit/error, notified claim, origin
 episode/invocation/ceiling/revision, and pinned decision bundle.
@@ -316,14 +320,14 @@ Experiment meaning** immediately shows the updated **Current summary** and
 
 - `human_run_starts_fresh_native_session_and_episode`
 - `initial_run_uses_current_node_chat_profile`
-- `human_reauthorization_uses_frozen_compatible_watcher_profile`
+- `human_reauthorization_uses_current_node_profile_and_new_chat`
 - `automatic_wake_is_new_task_and_budget_unit_but_resumes_episode_session`
 - `task_resume_is_same_task_lineage_and_same_invocation_not_a_wake`
 - `codex_and_claude_automatic_wakes_use_native_resume_without_task_resume_semantics`
 - `episode_binding_pins_provider_session_host_and_exact_stage`
 - `watcher_provenance_never_selects_the_resumed_session`
 - `compatible_cross_invocation_watchers_coalesce_into_current_episode_session`
-- `incompatible_completed_watchers_remain_pending_and_visible`
+- `stale_episode_or_wrong_host_completed_watchers_remain_pending_and_visible`
 - `automatic_wake_never_switches_episode_provider_machine_or_scope`
 - `session_preflight_precedes_watcher_claim_and_budget_spend`
 - `transient_session_unavailability_leaves_watchers_unnotified`

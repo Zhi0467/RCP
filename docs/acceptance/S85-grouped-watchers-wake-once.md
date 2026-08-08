@@ -90,7 +90,9 @@ uncertainty rather than treating it as failure.
   requirements and can never trigger the group. If all members are retired, the
   group is historical and produces no wake.
 - Compatible ready groups may coalesce into one wake, but no group is split and
-  members from different groups are never merged into a synthetic group.
+  members from different groups are never merged into a synthetic group. For an
+  Experiment, compatibility follows the node's live episode rather than the
+  conversation or provider that created or maintained each group.
 - Claim, notification bookkeeping, and task creation are atomic. Restart,
   polling races, callback retry, task Resume, and task Retry cannot create a
   second wake from the same group.

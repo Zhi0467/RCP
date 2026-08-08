@@ -18,6 +18,7 @@ from rcp.runs.shared import _sse
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
+from rcp.watchers import WatcherBinding
 
 from .helpers import seed_patch
 
@@ -416,25 +417,31 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(manifest, tmp_pat
     assert loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID).invocations_used == 1
 
 
-def test_an_incompatible_completion_stays_pending_and_visible(manifest, tmp_path) -> None:
+def test_provider_provenance_does_not_block_current_episode_delivery(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
+    loop.record_answers()
     loop.arm_watcher(
         "other-provider",
         status="completed",
         continuation=loop.continuation(provider="claude"),
     )
 
-    before = loop.loop_task_ids()
     loop.deliver("other-provider")
 
-    assert loop.loop_task_ids() == before
     record = loop.store.watcher("other-provider")
     assert record.status == "completed"
-    assert record.notified is False
-    # Incompatibility is not a broken episode, so it leaves no durable fault.
+    assert record.notified is True
+    woken = [
+        item
+        for item in loop.store.agent_tasks(loop.project_id)
+        if item.request.get("trigger") == "watcher"
+    ]
+    assert len(woken) == 1
+    assert woken[0].request["provider"] == "codex"
+    assert woken[0].request["chat_id"] == loop.chat_id
     assert loop.control()["operational"]["session"]["diagnostic"] is None
 
 
@@ -1348,9 +1355,9 @@ def test_initial_run_uses_current_node_chat_profile_not_client_overrides(
     assert request["run_on"] == "laptop"
 
 
-def test_human_reauthorization_uses_the_frozen_watcher_profile(manifest, tmp_path) -> None:
+def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+    loop = _Loop(app, invocation_ceiling=1)
     loop.start_episode()
     loop.arm_watcher(
         "other-provider-result",
@@ -1362,11 +1369,12 @@ def test_human_reauthorization_uses_the_frozen_watcher_profile(manifest, tmp_pat
         ),
     )
     loop.record_answers()
+    new_chat_id = str(uuid.uuid4())
 
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
         json={
-            "chat_id": str(uuid.uuid4()),
+            "chat_id": new_chat_id,
             "run_truth_scope": [],
             "provider": "codex",
         },
@@ -1376,12 +1384,12 @@ def test_human_reauthorization_uses_the_frozen_watcher_profile(manifest, tmp_pat
     request = response.json()["request"]
     assert request["trigger"] == "experiment_run"
     assert request["control_invocation"] == 1
-    assert request["provider"] == "claude"
-    assert request["model"] == "sonnet"
-    assert request["reasoning"] == "high"
+    assert request["provider"] == "codex"
+    assert request["model"] == ""
+    assert request["reasoning"] == "medium"
     assert request["run_on"] == "laptop"
     assert request["run_truth_scope"] == ["repo-a"]
-    assert request["chat_id"] == loop.chat_id
+    assert request["chat_id"] == new_chat_id
     assert request["session_id"] is None
 
 
@@ -1398,7 +1406,7 @@ def test_experiment_retry_rejects_provider_overrides(manifest, tmp_path) -> None
     assert "cannot override" in response.json()["detail"]
 
 
-def test_stop_only_terminalizes_current_episode_watchers(manifest, tmp_path) -> None:
+def test_stop_terminalizes_compatible_node_owned_watchers(manifest, tmp_path) -> None:
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode(operation_id="old-root")
     loop.arm_watcher("old-watcher", origin_operation_id="old-root")
@@ -1410,7 +1418,7 @@ def test_stop_only_terminalizes_current_episode_watchers(manifest, tmp_path) -> 
     loop.stop()
 
     assert loop.store.watcher("current-watcher").status == "stopped"
-    assert loop.store.watcher("old-watcher").status == "active"
+    assert loop.store.watcher("old-watcher").status == "stopped"
 
 
 def test_stop_fences_and_terminalizes_compatible_adopted_watcher(manifest, tmp_path) -> None:
@@ -1466,7 +1474,18 @@ def test_final_handoff_is_born_stopped_when_stop_wins_transaction(manifest, tmp_
         created_at=now,
     )
 
-    stored = loop.store.persist_experiment_watchers_idempotently([desired])
+    stored = loop.store.persist_experiment_watchers_idempotently(
+        [desired],
+        binding=WatcherBinding(
+            project_id=loop.project_id,
+            origin_operation_id="loop-root",
+            origin_task_kind="node_chat",
+            chat_id=loop.chat_id,
+            node_id=EXPERIMENT_ID,
+            execution_host="",
+            continuation=loop.continuation(),
+        ),
+    )
 
     assert stored[0].status == "stopped"
     assert stored[0].notified is True

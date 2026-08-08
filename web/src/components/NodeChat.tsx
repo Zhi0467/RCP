@@ -8,13 +8,17 @@ import {
   LoaderCircle,
   MessageCircle,
   MessageCirclePlus,
+  Mic,
+  MicOff,
   Play,
+  Plus,
   RadioTower,
   RotateCcw,
   Send,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { removeChatAttachment, uploadChatAttachment } from "../api";
 import {
   artifactUrl,
   chatMessageTranscriptLine,
@@ -37,18 +41,25 @@ import {
   toggleConversationMode,
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
+import { replaceTextSpan } from "../chatInput";
 import type { GlossaryIndex } from "../glossary";
 import { skillInvocationFields } from "../skillPicker";
-import { watcherIsActive, watcherIsIndividuallyStoppable } from "../runProjection";
+import { visibleChatWatchers, watcherIsIndividuallyStoppable } from "../runProjection";
 import {
   downloadDesktopArtifact,
+  type DictationResultEvent,
+  type DictationStateEvent,
   isDesktopRuntime,
+  listenDesktopEvent,
   openDesktopArtifactPreview,
+  startDesktopDictation,
+  stopDesktopDictation,
 } from "../desktopRuntime";
 import type {
   AgentArtifactDescriptor,
   AgentTask,
   ChatMessage,
+  ChatAttachmentDescriptor,
   ConversationMode,
   GraphNode,
   GraphUpdateResult,
@@ -95,6 +106,23 @@ interface PendingChatTurn {
   text: string;
   timestamp: string;
   mode: ConversationMode;
+  attachments: ChatAttachmentDescriptor[];
+}
+
+type AttachmentStatus = "preparing" | "ready" | "error";
+
+interface ComposerAttachment {
+  localId: string;
+  file: File;
+  status: AttachmentStatus;
+  descriptor?: ChatAttachmentDescriptor;
+  error?: string;
+}
+
+interface DictationSpan {
+  sessionId: string;
+  start: number;
+  end: number;
 }
 
 export function NodeChat({
@@ -143,6 +171,7 @@ export function NodeChat({
                 taskId: pendingTurn.clientId,
                 timestamp: pendingTurn.timestamp,
                 mode: pendingTurn.mode,
+                attachments: pendingTurn.attachments,
                 trigger: "human" as const,
               },
             ]
@@ -172,10 +201,25 @@ export function NodeChat({
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
   });
   const [submitting, setSubmitting] = useState(false);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const [dictationState, setDictationState] = useState<
+    "idle" | "starting" | "recording" | "stopping" | "error"
+  >("idle");
+  const [dictationError, setDictationError] = useState<string | null>(null);
+  const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
     () => new Set(),
   );
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentSetIdRef = useRef<string | null>(null);
+  const attachmentUploadBusyRef = useRef(false);
+  const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
+  const dictationSpanRef = useRef<DictationSpan | null>(null);
+  const dictationTimerRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastChatIdRef = useRef(chatId);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -198,8 +242,8 @@ export function NodeChat({
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
   const liveWatchers = useMemo(
-    () => watchers.filter((watcher) => watcher.chat_id === chatId && watcherIsActive(watcher)),
-    [chatId, watchers],
+    () => visibleChatWatchers(watchers, chatId, node),
+    [chatId, node, watchers],
   );
   const continuedTaskIds = useMemo(
     () =>
@@ -220,6 +264,14 @@ export function NodeChat({
     null;
   const mode = modeState.value;
   const chatTitle = node?.title || conversationTitle || project.name;
+  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
+  const readyAttachments = attachments.flatMap((item) =>
+    item.status === "ready" && item.descriptor ? [item.descriptor] : [],
+  );
+  const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
+  const attachmentsUnready = attachments.some((item) => item.status !== "ready");
+  const dictating = dictationState !== "idle" && dictationState !== "error";
 
   useEffect(() => {
     setModeState((current) =>
@@ -249,6 +301,62 @@ export function NodeChat({
     if (!element || !shouldStickToBottomRef.current) return;
     element.scrollTop = element.scrollHeight;
   }, [chatId, transcript]);
+
+  useEffect(() => {
+    attachmentSetIdRef.current = attachmentSetId;
+  }, [attachmentSetId]);
+
+  useEffect(() => {
+    if (!transcript.some((line) => line.attachments?.length)) return;
+    const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [transcript]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    const unlisten: Array<() => void> = [];
+    void listenDesktopEvent<DictationResultEvent>("rcp://dictation-result", (payload) => {
+      const span = dictationSpanRef.current;
+      if (!span || span.sessionId !== payload.session_id) return;
+      setMessage((current) => {
+        const next = replaceTextSpan(current, span, payload.text);
+        span.end = next.end;
+        skills.readMessage(next.value);
+        return next.value;
+      });
+      window.requestAnimationFrame(() => {
+        const active = dictationSpanRef.current;
+        if (!active || active.sessionId !== payload.session_id) return;
+        textareaRef.current?.setSelectionRange(active.end, active.end);
+      });
+    }).then((dispose) => (disposed ? dispose() : unlisten.push(dispose)));
+    void listenDesktopEvent<DictationStateEvent>("rcp://dictation-state", (payload) => {
+      if (dictationSpanRef.current?.sessionId !== payload.session_id) return;
+      if (payload.state === "recording") setDictationState("recording");
+      if (payload.state === "error") {
+        clearDictationTimer(dictationTimerRef);
+        dictationSpanRef.current = null;
+        setDictationState("error");
+        setDictationError(payload.error || "Dictation stopped unexpectedly.");
+      }
+      if (payload.state === "stopped") {
+        clearDictationTimer(dictationTimerRef);
+        dictationSpanRef.current = null;
+        setDictationState("idle");
+      }
+    }).then((dispose) => (disposed ? dispose() : unlisten.push(dispose)));
+    return () => {
+      disposed = true;
+      unlisten.forEach((dispose) => dispose());
+      clearDictationTimer(dictationTimerRef);
+      const sessionId = dictationSpanRef.current?.sessionId;
+      dictationSpanRef.current = null;
+      if (sessionId) void stopDesktopDictation(sessionId);
+    };
+    // The event bridge belongs to the native shell lifetime, not each draft render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desktop]);
 
   const selectMode = useCallback(
     (next: ConversationMode) => {
@@ -288,6 +396,158 @@ export function NodeChat({
     setSubmitError(null);
   };
 
+  const stopDictation = (invalidate = false) => {
+    const sessionId = dictationSpanRef.current?.sessionId;
+    if (!sessionId) return;
+    clearDictationTimer(dictationTimerRef);
+    setDictationState("stopping");
+    if (invalidate) {
+      dictationSpanRef.current = null;
+      setDictationState("idle");
+    }
+    void stopDesktopDictation(sessionId).catch((error) => {
+      dictationSpanRef.current = null;
+      setDictationState("error");
+      setDictationError(error instanceof Error ? error.message : String(error));
+    });
+  };
+
+  const toggleDictation = async () => {
+    if (dictating) {
+      stopDictation();
+      return;
+    }
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? message.length;
+    const sessionId = crypto.randomUUID();
+    dictationSpanRef.current = { sessionId, start, end: start };
+    writeStorage(modeKey, mode);
+    setModeState({ value: mode, pinned: true });
+    setSubmitError(null);
+    setDictationError(null);
+    setDictationState("starting");
+    try {
+      await startDesktopDictation(sessionId);
+      if (dictationSpanRef.current?.sessionId !== sessionId) return;
+      setDictationState("recording");
+      dictationTimerRef.current = window.setTimeout(() => stopDictation(), 55_000);
+    } catch (error) {
+      dictationSpanRef.current = null;
+      setDictationState("error");
+      setDictationError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const addFiles = async (incoming: File[]) => {
+    setDraggingFiles(false);
+    if (attachmentUploadBusyRef.current) {
+      setSubmitError("Wait for the current files to finish preparing before adding more.");
+      return;
+    }
+    attachmentUploadBusyRef.current = true;
+    setSubmitError(null);
+    const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
+    if (incoming.length > available) {
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files.`);
+    }
+    const candidates = incoming.slice(0, available).map<ComposerAttachment>((file) => ({
+      localId: crypto.randomUUID(),
+      file,
+      status: "preparing",
+    }));
+    let total = attachments.reduce(
+      (sum, item) => (item.status === "error" ? sum : sum + item.file.size),
+      0,
+    );
+    for (const item of candidates) {
+      const validation = validateChatAttachment(item.file, total);
+      if (validation) {
+        item.status = "error";
+        item.error = validation;
+      } else {
+        total += item.file.size;
+      }
+    }
+    setAttachments((current) => [...current, ...candidates]);
+
+    const uploadCandidates = candidates.filter((candidate) => candidate.status === "preparing");
+    for (const [index, item] of uploadCandidates.entries()) {
+      try {
+        const result = await uploadChatAttachment(
+          apiBase,
+          chatId,
+          item.file,
+          attachmentClientId,
+          attachmentSetIdRef.current,
+        );
+        attachmentSetIdRef.current = result.attachment_set_id;
+        setAttachmentSetId(result.attachment_set_id);
+        if (cancelledAttachmentIdsRef.current.delete(item.localId)) {
+          await removeChatAttachment(
+            apiBase,
+            chatId,
+            result.attachment_set_id,
+            result.attachment.attachment_id,
+            attachmentClientId,
+          );
+          continue;
+        }
+        setAttachments((current) =>
+          current.map((candidate) =>
+            candidate.localId === item.localId
+              ? { ...candidate, status: "ready", descriptor: result.attachment }
+              : candidate,
+          ),
+        );
+      } catch (error) {
+        const cancelled = cancelledAttachmentIdsRef.current.delete(item.localId);
+        const detail = error instanceof Error ? error.message : String(error);
+        if (!cancelled) {
+          setAttachments((current) =>
+            current.map((candidate) =>
+              candidate.localId === item.localId
+                ? {
+                    ...candidate,
+                    status: "error",
+                    error: detail,
+                  }
+                : candidate,
+            ),
+          );
+        }
+        if (!attachmentSetIdRef.current) {
+          const remaining = new Set(
+            uploadCandidates.slice(index + 1).map((candidate) => candidate.localId),
+          );
+          setAttachments((current) =>
+            current.map((candidate) =>
+              remaining.has(candidate.localId)
+                ? { ...candidate, status: "error", error: "Attachment set could not be created" }
+                : candidate,
+            ),
+          );
+          break;
+        }
+      }
+    }
+    attachmentUploadBusyRef.current = false;
+  };
+
+  const removeAttachment = (item: ComposerAttachment) => {
+    if (item.status === "preparing") cancelledAttachmentIdsRef.current.add(item.localId);
+    setAttachments((current) => current.filter((candidate) => candidate.localId !== item.localId));
+    const setId = attachmentSetIdRef.current;
+    if (setId && item.descriptor) {
+      void removeChatAttachment(
+        apiBase,
+        chatId,
+        setId,
+        item.descriptor.attachment_id,
+        attachmentClientId,
+      ).catch((error) => setSubmitError(error instanceof Error ? error.message : String(error)));
+    }
+  };
+
   const toggleHumanMessage = (messageId: string) => {
     setExpandedHumanMessageIds((current) => {
       const next = new Set(current);
@@ -306,8 +566,17 @@ export function NodeChat({
 
   const send = async () => {
     const text = message.trim();
-    if (!text || relatedActive || pausedAttempt || submitting || repairingTaskId || reviewPending)
+    if (
+      !text ||
+      attachmentsUnready ||
+      relatedActive ||
+      pausedAttempt ||
+      submitting ||
+      repairingTaskId ||
+      reviewPending
+    )
       return;
+    if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const clientId = `pending-${crypto.randomUUID()}`;
     setPendingTurn({
@@ -315,6 +584,7 @@ export function NodeChat({
       text,
       timestamp: new Date().toISOString(),
       mode,
+      attachments: readyAttachments,
     });
     setMessage("");
     setSubmitError(null);
@@ -329,10 +599,19 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
+        ...(readyAttachments.length && attachmentSetId
+          ? {
+              attachment_set_id: attachmentSetId,
+              attachment_client_id: attachmentClientId,
+            }
+          : {}),
         ...skillInvocationFields(skills.selection, skills.providerSkillNames),
       });
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
+      setAttachments([]);
+      setAttachmentSetId(null);
+      attachmentSetIdRef.current = null;
       selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
@@ -577,6 +856,24 @@ export function NodeChat({
                       {expanded ? "See less" : "See more"}
                     </button>
                   )}
+                  {line.attachments?.map((attachment) => {
+                    const expired = Date.parse(attachment.expires_at) <= expiryClock;
+                    return (
+                      <div
+                        className={`chat-input-attachment${expired ? " expired" : ""}`}
+                        key={attachment.attachment_id}
+                      >
+                        <File size={13} />
+                        <span>
+                          <strong>{attachment.name}</strong>
+                          <small>
+                            {attachment.media_type} · {formatBytes(attachment.size)}
+                          </small>
+                        </span>
+                        {expired && <em>Expired</em>}
+                      </div>
+                    );
+                  })}
                   {pausedLineTask ? (
                     <InlinePausedTask
                       task={pausedLineTask}
@@ -667,13 +964,97 @@ export function NodeChat({
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
       </div>
-      <div className="chat-composer" data-mode={mode}>
+      <div
+        className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
+        data-mode={mode}
+        onDragEnter={(event) => {
+          if (event.dataTransfer.types.includes("Files")) setDraggingFiles(true);
+        }}
+        onDragOver={(event) => {
+          if (!event.dataTransfer.types.includes("Files")) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setDraggingFiles(false);
+          }
+        }}
+        onDrop={(event) => {
+          if (!event.dataTransfer.files.length) return;
+          event.preventDefault();
+          void addFiles(Array.from(event.dataTransfer.files));
+        }}
+      >
         <SkillPicker {...skills.props} />
+        {attachments.length > 0 && (
+          <div className="chat-attachment-chips" aria-label="Files for this turn">
+            {attachments.map((item) => (
+              <div className={`chat-attachment-chip ${item.status}`} key={item.localId}>
+                {item.status === "preparing" ? (
+                  <LoaderCircle className="spin" size={12} />
+                ) : (
+                  <File size={12} />
+                )}
+                <span>
+                  <strong>{item.file.name}</strong>
+                  <small>
+                    {item.status === "preparing"
+                      ? "Preparing"
+                      : item.status === "ready"
+                        ? `Ready · ${formatBytes(item.file.size)}`
+                        : item.error || "Could not prepare file"}
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${item.file.name}`}
+                  onClick={() => removeAttachment(item)}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <input
+          ref={attachmentInputRef}
+          className="visually-hidden"
+          type="file"
+          multiple
+          accept={CHAT_ATTACHMENT_ACCEPT}
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = "";
+            if (files.length) void addFiles(files);
+          }}
+        />
+        <button
+          className="icon-button chat-add-file"
+          type="button"
+          aria-label="Add files"
+          disabled={
+            attachments.length >= MAX_CHAT_ATTACHMENTS || attachmentsPreparing || submitting
+          }
+          onClick={() => attachmentInputRef.current?.click()}
+        >
+          <Plus size={16} />
+        </button>
         <textarea
+          ref={textareaRef}
           aria-label="Message"
           aria-keyshortcuts="Shift+Tab"
           value={message}
-          onChange={(event) => updateMessage(event.target.value)}
+          onChange={(event) => {
+            if (dictating) stopDictation(true);
+            updateMessage(event.target.value);
+          }}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData.files);
+            if (!files.length) return;
+            event.preventDefault();
+            void addFiles(files);
+          }}
           onKeyDown={(event) => {
             if (skills.handleKeyDown(event)) return;
             if (isConversationModeShortcut(event.key, event.shiftKey)) {
@@ -703,23 +1084,44 @@ export function NodeChat({
               </button>
             ))}
           </div>
-          <button
-            className="icon-button primary chat-send-button"
-            disabled={
-              !message.trim() ||
-              relatedActive ||
-              Boolean(pausedAttempt) ||
-              submitting ||
-              Boolean(repairingTaskId) ||
-              reviewPending ||
-              scope.length === 0 ||
-              !providerReady
-            }
-            onClick={() => void send()}
-            aria-label={`Start ${modeLabel(mode)} turn`}
-          >
-            <Send size={15} />
-          </button>
+          <div className="chat-send-actions">
+            {desktop && (
+              <button
+                className={`icon-button chat-dictation-button${dictating ? " recording" : ""}`}
+                type="button"
+                aria-label={dictating ? "Stop dictation" : "Start dictation"}
+                aria-pressed={dictating}
+                title={dictationError || (dictating ? "Stop dictation" : "Dictate")}
+                disabled={submitting}
+                onClick={() => void toggleDictation()}
+              >
+                {dictating ? <MicOff size={15} /> : <Mic size={15} />}
+              </button>
+            )}
+            <button
+              className="icon-button primary chat-send-button"
+              disabled={
+                !message.trim() ||
+                attachmentsUnready ||
+                relatedActive ||
+                Boolean(pausedAttempt) ||
+                submitting ||
+                Boolean(repairingTaskId) ||
+                reviewPending ||
+                scope.length === 0 ||
+                !providerReady
+              }
+              onClick={() => void send()}
+              aria-label={`Start ${modeLabel(mode)} turn`}
+            >
+              <Send size={15} />
+            </button>
+          </div>
+          {dictationError && (
+            <span className="chat-dictation-error" role="alert">
+              {dictationError}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -840,6 +1242,110 @@ function GraphUpdateReceipt({
 
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
   return mode === "discuss" ? "Discuss" : "Work";
+}
+
+const MAX_CHAT_ATTACHMENTS = 8;
+const MAX_CHAT_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
+const CHAT_ATTACHMENT_CLIENT_KEY = "rcp:chat-attachment-client";
+const CHAT_ATTACHMENT_EXTENSIONS = new Set([
+  "c",
+  "cc",
+  "cpp",
+  "cs",
+  "css",
+  "csv",
+  "fish",
+  "go",
+  "h",
+  "hpp",
+  "htm",
+  "html",
+  "java",
+  "js",
+  "json",
+  "jsx",
+  "kt",
+  "kts",
+  "lua",
+  "markdown",
+  "md",
+  "mjs",
+  "mm",
+  "php",
+  "py",
+  "r",
+  "rb",
+  "rs",
+  "scala",
+  "sh",
+  "sql",
+  "svg",
+  "swift",
+  "toml",
+  "ts",
+  "tsv",
+  "tsx",
+  "txt",
+  "xml",
+  "yaml",
+  "yml",
+  "zsh",
+]);
+const CHAT_ATTACHMENT_BINARY_EXTENSIONS = new Set(["jpeg", "jpg", "pdf", "png", "webp"]);
+const CHAT_ATTACHMENT_ACCEPT = [
+  ".txt",
+  ".md",
+  ".csv",
+  ".tsv",
+  ".json",
+  ".html",
+  ".htm",
+  ".svg",
+  ".pdf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ...[...CHAT_ATTACHMENT_EXTENSIONS].map((extension) => `.${extension}`),
+].join(",");
+
+function validateChatAttachment(file: File, currentTotal: number): string | null {
+  const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
+  if (
+    !CHAT_ATTACHMENT_BINARY_EXTENSIONS.has(extension) &&
+    !CHAT_ATTACHMENT_EXTENSIONS.has(extension)
+  ) {
+    return "Unsupported file type";
+  }
+  if (file.size > MAX_CHAT_ATTACHMENT_BYTES) return "File exceeds 16 MiB";
+  if (currentTotal + file.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
+    return "Turn exceeds 32 MiB total";
+  }
+  return null;
+}
+
+function chatAttachmentClientId(): string {
+  try {
+    const current = sessionStorage.getItem(CHAT_ATTACHMENT_CLIENT_KEY);
+    if (current) return current;
+    const created = crypto.randomUUID();
+    sessionStorage.setItem(CHAT_ATTACHMENT_CLIENT_KEY, created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
+}
+
+function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
+  if (ref.current !== null) window.clearTimeout(ref.current);
+  ref.current = null;
 }
 
 function fileName(path: string): string {

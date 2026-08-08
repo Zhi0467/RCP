@@ -22,7 +22,8 @@ a trap: in an embedded webview the human would see a tidy "Preview unavailable"
 and reasonably conclude the backend lost the file. The same applies to Download,
 which relies on the browser honoring a download attribute.
 
-The isolation itself is two layers ([artifacts.py:225](../../src/rcp/artifacts.py:225)):
+The isolation itself is two layers (the wrapper builder in
+[artifacts.py](../../src/rcp/artifacts.py)):
 an RCP-origin wrapper document holding an `<iframe sandbox="allow-scripts"
 srcdoc="…">` with no `allow-same-origin`, so the artifact sits in an opaque
 origin and reaches the wrapper only by `postMessage` carrying a per-response
@@ -63,10 +64,11 @@ Confirmed with the human on 2026-07-31.
 - **Bytes stay temporary.** Nothing is copied into canonical state, the
   transcript, or durable app storage by previewing or downloading.
 
-The comment at [artifacts.py:246](../../src/rcp/artifacts.py:246) records that
-Chromium does not enforce `navigate-to`, leaving the opaque sandbox as the real
-boundary. Whether WebKit behaves the same is a fact to establish when the shell
-first runs, not to assume; if it differs, it differs in our favor.
+The navigation-policy comment in [artifacts.py](../../src/rcp/artifacts.py)
+records that Chromium does not enforce `navigate-to`, leaving the opaque
+sandbox as the real boundary. Whether WebKit behaves the same is a fact to
+establish when the shell first runs, not to assume; if it differs, it differs in
+our favor.
 
 Deliberately not possible: a preview that renders inside the RCP document, a
 preview window with any IPC capability, an RCP-owned webview on a remote origin,

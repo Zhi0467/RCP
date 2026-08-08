@@ -83,7 +83,7 @@ Repository pointers and expected operational targets:
 Exact outputs and RCP tooling:
 - Optional semantic graph Patch: `{patch_path}`
 - Existing Patch JSON Schema, including `AgentExperimentAttempt`: `{output_schema_path}`
-- Required watcher handoff: `{watch_path}`
+- Required watcher handoff that continues this Experiment's bounded loop: `{watch_path}`
 - Optional preview artifact directory: `{artifact_path}`
 
 Context protocol:
@@ -197,6 +197,8 @@ Watcher handoff protocol:
   1) exit 0;; *) exit 2;; esac` (replace `4471` with the submitted job id).
 - RCP discovers `watch.json` after the turn, validates every check, and arms the list atomically;
   one invalid observer, group, or stop item rejects the whole list for in-session correction.
+  Completing any accepted watcher from this file continues this Experiment's bounded loop and never
+  a separate conversation.
   There is no watcher API to call. Multiple watchers may observe one attempt, one watcher may cover
   work relevant to several attempts, and a later wake may rearm watchers after inspecting
   authoritative state.
@@ -331,7 +333,7 @@ Read the fresh state before acting:
 - current graph: `{graph_path}`
 - current research rendering: `{research_path}`
 - Patch output: `{patch_path}`
-- watcher output: `{watch_path}`
+- watcher output that continues this Experiment's bounded loop: `{watch_path}`
 - Patch JSON Schema: `{output_schema_path}`
 - Patch validator: `{validator_command}`{context_replacement_block_or_nothing}
 
@@ -361,7 +363,7 @@ For this turn, take whichever path matches the operational state:
    before writing it. Once the useful
    synchronous work and handoff are complete, do not wait or poll for detached work; finish this
    turn. RCP validates the file, monitors accepted watchers, and resumes this episode session when
-   a watcher is ready.
+   a watcher is ready; completion from this file never continues another conversation.
 
 2. You need human input.
 
@@ -544,6 +546,43 @@ If you rewrite the semantic Patch, its candidate must pass the retained
 `Local causal check for this Patch` in the original authoring contract.
 
 {_patch_validator_rules(validator_command)}
+"""
+
+
+def experiment_watcher_maintenance_correction_contract(
+    *,
+    original_contract_path: str,
+    diagnostics_path: str,
+    watch_path: str,
+) -> str:
+    """Repair one node-attached watcher file without duplicating its item contract."""
+
+    required = {
+        "original contract": original_contract_path,
+        "diagnostics": diagnostics_path,
+        "watch path": watch_path,
+    }
+    missing = [label for label, value in required.items() if not value]
+    if missing:
+        raise ValueError(
+            f"Experiment watcher maintenance correction is missing {', '.join(missing)}."
+        )
+    return f"""# RCP Experiment watcher maintenance correction
+
+Correct only the retained node-attached Experiment watcher maintenance handoff in this same native
+Work session.
+
+- Original immutable Work contract: `{original_contract_path}`
+- Exact maintenance diagnostic: `{diagnostics_path}`
+- Exact Experiment watcher output to rewrite: `{watch_path}`
+
+Preserve the completed operational result. Do not rerun an Experiment, resubmit work, repeat another
+external side effect, alter this conversation's own watcher file, or change `patch.json`. Read the
+original contract for the target resource, current watcher-state pointer, episode execution host,
+exact item shapes, grouping and retirement rules, wake target, and protected fields. The diagnostic
+locates the invalidity but grants no new authority. Rewrite only the exact output above using that
+original contract; do not add a target or control field. Your final response should only confirm that
+the Experiment watcher maintenance handoff was rewritten.
 """
 
 

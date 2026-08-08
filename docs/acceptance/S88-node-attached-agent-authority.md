@@ -1,9 +1,16 @@
 ---
 id: S88-node-attached-agent-authority
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: none
+covered_by: tests/test_watchers.py, tests/test_experiment_loop_agent_io.py,
+  tests/test_api.py, tests/test_experiment_stop.py, tests/test_prompts.py,
+  web/tests/runProjection.test.mjs, web/tests/runDialog.test.mjs,
+  browser 2026-08-08
+last_passed: 2026-08-08 — full backend and web suites; real-store-copy schema
+  integrity, index, and 13-watcher owner backfill; served CRLP new same-node
+  session showed 2 live watchers, and Runs showed 2 current plus 3 collapsed
+  stopped watchers with no browser console errors.
 invariants: [3, 4, 4b, 8, 10b, 10c, 10d, 10g]
 reported_by: human, 2026-08-08
 ---

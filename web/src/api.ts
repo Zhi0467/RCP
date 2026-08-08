@@ -1,4 +1,4 @@
-import type { ProjectCacheMetrics, ProjectSnapshot } from "./types";
+import type { ChatAttachmentDescriptor, ProjectCacheMetrics, ProjectSnapshot } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 
@@ -18,7 +18,9 @@ export class ApiError extends Error {
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const mutation = isMutationRequest(init);
   const headers = new Headers(init?.headers);
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && !(init?.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   if (mutation && pinnedInstanceId) headers.set("X-RCP-Instance-ID", pinnedInstanceId);
   let response: Response;
   try {
@@ -66,4 +68,43 @@ export function loadProjectReadiness(
   Pick<ProjectSnapshot, "provider_readiness" | "providers" | "provider_skill_inventories">
 > {
   return api(`${apiBase}/readiness${refresh ? "?refresh=true" : ""}`);
+}
+
+export interface ChatAttachmentUpload {
+  attachment_set_id: string;
+  attachment: ChatAttachmentDescriptor;
+}
+
+export function uploadChatAttachment(
+  apiBase: string,
+  chatId: string,
+  file: File,
+  clientId: string,
+  attachmentSetId?: string | null,
+): Promise<ChatAttachmentUpload> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  body.append("client_id", clientId);
+  if (attachmentSetId) body.append("attachment_set_id", attachmentSetId);
+  return api<ChatAttachmentUpload>(`${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`, {
+    method: "POST",
+    body,
+  });
+}
+
+export function removeChatAttachment(
+  apiBase: string,
+  chatId: string,
+  attachmentSetId: string,
+  attachmentId: string,
+  clientId: string,
+): Promise<{ removed: boolean }> {
+  const query = new URLSearchParams({
+    attachment_set_id: attachmentSetId,
+    client_id: clientId,
+  });
+  return api<{ removed: boolean }>(
+    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
+    { method: "DELETE" },
+  );
 }

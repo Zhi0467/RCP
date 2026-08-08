@@ -43,10 +43,10 @@ watching** action; **Stop loop** remains the only human stop control.
 
 ## File contract
 
-- Before every Experiment-loop invocation, RCP continues staging the bounded
-  watcher-state file containing the relevant watcher ids and statuses. The agent
-  never reads the watcher database.
-- `watch.json` remains the only watcher handoff. Its list may contain the current
+- Before every Experiment-loop invocation and permitted maintenance
+  conversation, RCP stages the bounded watcher-state file containing the
+  relevant watcher ids and statuses. The agent never reads the watcher database.
+- The Experiment's watcher file remains its one watcher handoff. Its list may contain the current
   strict three-field observer items and explicit stop items. A stop item names
   one staged watcher id and a non-blank reason; it carries no command or path.
   The shapes may be mixed in one list:
@@ -67,11 +67,12 @@ watching** action; **Stop loop** remains the only human stop control.
 
   The two strict shapes are distinguished by their fields; no existing observer
   item gains a discriminator or changes representation.
-- Stop items are available only to Experiment-loop turns. Ordinary Work retains
-  its existing strict non-empty observer-list contract.
+- Stop items are available to the Experiment loop and to a Work conversation
+  admitted to that node-attached resource. The same conversation's ordinary
+  `watch.json` retains its strict non-empty self-wake observer contract.
 - One handoff may stop old watchers and arm replacement observers. Duplicate
   stop ids, unknown ids, already notified watchers, watchers outside the bound
-  project/conversation/Experiment, and watchers incompatible with the current
+  project or resolved node scope, and watchers incompatible with the current
   episode are rejected atomically.
 - RCP does not interpret a stop item as proof that the external job was
   cancelled. Cancelling or otherwise settling that work is an operational side
@@ -109,7 +110,7 @@ watching** action; **Stop loop** remains the only human stop control.
 
 - `experiment_watch_json_accepts_explicit_staged_watcher_stop_items`
 - `ordinary_work_watch_json_remains_a_strict_observer_list`
-- `agent_stop_is_scoped_to_the_bound_experiment_conversation_and_episode`
+- `agent_stop_is_scoped_to_the_permitted_experiment_node_and_episode`
 - `agent_stop_requires_a_non_blank_reason`
 - `invalid_stop_item_arms_and_stops_nothing`
 - `agent_stop_and_new_observers_form_one_recoverable_handoff`

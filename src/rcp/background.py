@@ -138,6 +138,8 @@ class BackgroundAgentTasks:
         project_id: str,
         kind: AgentTaskKind,
         request: AgentTaskRequest,
+        *,
+        operation_id: str | None = None,
     ) -> AgentTaskRecord:
         if kind in {"seed", "refresh"} and request.session_id:
             raise ValueError(
@@ -153,6 +155,7 @@ class BackgroundAgentTasks:
             request,
             estimate_seconds=estimate,
             estimate_samples=samples,
+            operation_id=operation_id,
         )
 
     def start_watcher_notification(
@@ -533,8 +536,9 @@ class BackgroundAgentTasks:
         continuation: AgentTaskContinuation = "fresh",
         stage_host: str | None = None,
         stage_root: str | None = None,
+        operation_id: str | None = None,
     ) -> AgentTaskRecord:
-        operation_id = str(uuid.uuid4())
+        operation_id = operation_id or str(uuid.uuid4())
         now = self.store.now()
         verb = (
             "repair its graph update"

@@ -178,14 +178,19 @@ class AcceptanceAgentLauncher(AgentLauncher):
             _write_state(resolved_cwd, state)
             answer = "Corrected the watcher handoff without resubmitting either fixture job."
         else:
-            if not _fixture_jobs_complete(resolved_cwd):
+            if not (
+                _fixture_jobs_complete(resolved_cwd)
+                or _reauthorized_fixture_jobs_complete(contract)
+            ):
                 yield AgentEvent(
                     event="error",
                     text="Acceptance fixture watcher woke before both detached jobs completed.",
                 )
                 return
             if scenario == "experiment_loop":
-                focused_experiment_id = state.get("focused_experiment_id")
+                focused_experiment_id = state.get(
+                    "focused_experiment_id"
+                ) or _focused_experiment_id(contract)
                 if not isinstance(focused_experiment_id, str) or not focused_experiment_id:
                     raise ValueError(
                         "Acceptance Experiment state has no persisted focused Experiment id."
@@ -281,9 +286,24 @@ def _action(
     first_line = contract.partition("\n")[0].lower()
     if "watch correction" in first_line or "watcher correction" in first_line:
         return "watch_correction"
+    if _experiment_loop_phase(contract) == "human_reauthorization":
+        return "wake"
     if state.get("jobs_started"):
         return "wake"
     return "initial"
+
+
+def _experiment_loop_phase(contract: str) -> str | None:
+    prefix = "- Loop control for this invocation: `"
+    for line in contract.splitlines():
+        if not (line.startswith(prefix) and line.endswith("`")):
+            continue
+        try:
+            value = json.loads(Path(line[len(prefix) : -1]).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Acceptance Experiment loop control is unreadable: {exc}") from exc
+        return value.get("phase") if isinstance(value, dict) else None
+    return None
 
 
 def _focused_experiment_id(contract: str) -> str | None:
@@ -381,6 +401,29 @@ def _watch_specs(cwd: Path) -> list[dict[str, str]]:
 def _fixture_jobs_complete(cwd: Path) -> bool:
     jobs = cwd / _JOBS_DIRECTORY
     return all((jobs / f"{name}.done").is_file() for name in ("job-one", "job-two"))
+
+
+def _reauthorized_fixture_jobs_complete(contract: str) -> bool:
+    """Inspect delivered watcher evidence when a human Run starts in a fresh chat stage."""
+
+    prefix = "- Current watcher state for this Experiment: `"
+    for line in contract.splitlines():
+        if not (line.startswith(prefix) and line.endswith("`")):
+            continue
+        try:
+            value = json.loads(Path(line[len(prefix) : -1]).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Acceptance Experiment watcher state is unreadable: {exc}") from exc
+        if not isinstance(value, list) or not value:
+            return False
+        delivered = [item for item in value if isinstance(item, dict) and item.get("notified")]
+        return bool(delivered) and all(
+            item.get("status") == "completed"
+            and isinstance(item.get("log_path"), str)
+            and Path(item["log_path"]).is_file()
+            for item in delivered
+        )
+    return False
 
 
 def _completion_patch(

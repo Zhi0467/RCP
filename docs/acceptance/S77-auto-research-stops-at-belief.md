@@ -22,7 +22,7 @@ human watches.
 
 A project with a ResearchQuestion, two Hypotheses, an open governed Decision, a
 ready Experiment, and an open Blocker. An orchestrator actor holding the
-elevated profile from [S75](S75-actor-identity-and-permission-checks.md).
+elevated profile from [S92](S92-actor-identity-and-permission-checks.md).
 
 ## Drive — proposal
 

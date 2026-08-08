@@ -2,24 +2,34 @@
 id: S12-ontology-evolution
 status: implemented
 tier: hermetic
-driver: pytest
-covered_by: tests/test_ontology_evolution.py, tests/test_sync.py
-invariants: [1, 3]
-last_passed: 2026-08-08
+driver: pytest + browser
+covered_by: tests/test_ontology_evolution.py, tests/test_sync.py, web/tests/attentionRunsOntology.test.mjs
+invariants: [1, 2, 3]
+reported_by: human, 2026-08-03
+last_passed: 2026-08-03 — browser confirmed the absence of an ontology authoring
+  surface and legacy rendering; backend replay and prompt compatibility passed
+  then and were checked again by pytest on 2026-08-08
 blueprint: research-control-panel-blueprint.md#schema-evolution-and-transfer-boundary
 ---
 
-# Keep historical ontology extensions readable
+# Keep historical ontology extensions readable without a schema editor
 
-RCP now ships six product node types and does not expose a schema editor. Older
-projects may nevertheless contain append-only operations that defined custom
-types, fields, and relations. Those records must keep opening, keep meaning what
-they meant, and replay identically.
+Confirmed by the human on 2026-08-03.
 
-This is a compatibility promise, not a current ontology-authoring path. The
-separate browser promise in
-[`S57-fixed-product-ontology.md`](S57-fixed-product-ontology.md) removes the
-editing surface while preserving the behavior below.
+RCP's six shipped node types are the authoring product, and the app does not
+expose a schema editor. Older projects may nevertheless contain append-only
+operations that defined custom types, fields, and relations. Those records must
+keep opening, keep meaning what they meant, and replay identically. Removing the
+authoring surface must not remove historical compatibility.
+
+## Product surface
+
+- Project Settings and the rest of the app expose no custom type, field, or
+  relation editor.
+- Existing custom nodes, fields, and relations still project onto the product's
+  base types and render in Research, DAG, and node detail views.
+- Backend ontology models and historical operations remain available for replay;
+  they are compatibility machinery, not a current agent or human authoring path.
 
 ## Historical compatibility
 
@@ -54,15 +64,19 @@ replay.
 
 ## Drive
 
-1. Replay a legacy project with no ontology or extension keys.
-2. Replay a project that defines a custom type, uses it in later revisions, and
+1. Open Settings and inspect every section; confirm no ontology authoring control
+   exists anywhere in the product.
+2. Replay a legacy project with no ontology or extension keys.
+3. Replay a project that defines a custom type, uses it in later revisions, and
    later removes the type.
-3. Compare every materialized node and edge field with the recorded graph.
-4. Validate existing custom fields and relations against the ontology that was
+4. Open that project's Research, DAG, and node detail views, and confirm its
+   custom records still render.
+5. Compare every materialized node and edge field with the recorded graph.
+6. Validate existing custom fields and relations against the ontology that was
    active at each revision.
-5. Attempt to redefine the base ontology or narrow a historical relation past
+7. Attempt to redefine the base ontology or narrow a historical relation past
    edges that already use it.
-6. Build a patch-producing contract for a project with an empty materialized
+8. Build a patch-producing contract for a project with an empty materialized
    ontology and for one carrying historical extensions.
 
 ## Assert
@@ -76,9 +90,10 @@ replay.
 - `test_relation_narrowing_names_the_edges_and_nodes_that_block_it`
 - `test_extension_authoring_rules_appear_only_for_a_project_with_extensions`
 - `test_base_authoring_rules_appear_regardless_of_ontology_state`
+- `Project Settings has no ontology authoring surface`
 
 ## Failure means
 
-Removing the schema editor made an existing research graph unreadable or
-silently changed its history, or an agent working in a project with historical
-extensions was never told how to write them.
+RCP exposes a schema-authoring surface; removing that surface made an existing
+research graph unreadable, changed its rendering or history, or left an agent in
+a project with historical extensions unable to preserve them.

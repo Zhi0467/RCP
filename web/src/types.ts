@@ -170,6 +170,7 @@ export interface WatcherRecord {
   origin_task_kind: "node_chat" | "project_chat";
   chat_id: string;
   node_id: string | null;
+  experiment_episode_id: string | null;
   execution_host: string;
   check_command: string;
   log_path: string;
@@ -393,6 +394,9 @@ export interface AgentTaskRequest {
   node_id?: string | null;
   message?: string | null;
   chat_id?: string | null;
+  attachment_set_id?: string | null;
+  attachment_client_id?: string | null;
+  attachments?: ChatAttachmentDescriptor[];
   session_id?: string | null;
   mode?: ConversationMode;
   trigger?: TaskTrigger;
@@ -626,6 +630,15 @@ export interface ChatMessage {
   mode: ConversationMode | null;
   graph_update: GraphUpdateResult | null;
   trigger: TaskTrigger;
+  attachments: ChatAttachmentDescriptor[];
+}
+
+export interface ChatAttachmentDescriptor {
+  attachment_id: string;
+  name: string;
+  media_type: string;
+  size: number;
+  expires_at: string;
 }
 
 export interface ChatTranscript extends ChatSummary {

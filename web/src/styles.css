@@ -3961,6 +3961,11 @@ button:disabled {
   flex-direction: column;
   gap: 6px;
 }
+.chat-send-actions {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
 .chat-dock {
   background: var(--surface);
   display: flex;
@@ -4076,6 +4081,46 @@ button:disabled {
 .chat-human-message.collapsed {
   max-height: var(--chat-user-message-preview-height);
   overflow: hidden;
+}
+.chat-input-attachment {
+  align-items: center;
+  background: color-mix(in srgb, white 12%, transparent);
+  border: 1px solid color-mix(in srgb, white 34%, transparent);
+  border-radius: 5px;
+  display: flex;
+  gap: 7px;
+  margin-top: 7px;
+  min-width: 0;
+  padding: 6px 7px;
+}
+.chat-input-attachment > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.chat-input-attachment strong,
+.chat-input-attachment small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-input-attachment strong {
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.chat-input-attachment small {
+  color: color-mix(in srgb, white 72%, transparent);
+  font-size: 8px;
+}
+.chat-input-attachment em {
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.chat-input-attachment.expired {
+  opacity: 0.62;
 }
 .chat-message-toggle {
   background: transparent;
@@ -4426,6 +4471,119 @@ button:disabled {
   box-shadow: inset 0 2px var(--chat-mode-accent);
   position: relative;
   transition: box-shadow 0.14s ease;
+}
+.chat-composer.is-dragging-files {
+  background: color-mix(in srgb, var(--chat-mode-soft) 72%, var(--surface));
+  box-shadow: inset 0 0 0 2px var(--chat-mode-accent);
+}
+.chat-composer > .visually-hidden {
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+  clip-path: inset(50%);
+}
+.chat-add-file {
+  align-self: flex-end;
+  flex: none;
+  margin-bottom: 1px;
+}
+.chat-attachment-chips {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.chat-attachment-chip {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  display: flex;
+  gap: 6px;
+  max-width: min(240px, 100%);
+  min-width: 0;
+  padding: 5px 5px 5px 7px;
+}
+.chat-attachment-chip.ready {
+  border-color: color-mix(in srgb, var(--forest) 55%, var(--line));
+}
+.chat-attachment-chip.error {
+  border-color: var(--red);
+}
+.chat-attachment-chip > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.chat-attachment-chip strong,
+.chat-attachment-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attachment-chip strong {
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.chat-attachment-chip small {
+  color: var(--muted);
+  font-size: 8px;
+}
+.chat-attachment-chip.error small {
+  color: var(--red);
+}
+.chat-attachment-chip button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
+  padding: 3px;
+}
+.chat-attachment-chip button:hover {
+  background: var(--surface-cool);
+  color: var(--ink);
+}
+.chat-dictation-button.recording {
+  background: var(--red-soft);
+  border-color: var(--red);
+  color: var(--red);
+}
+.chat-dictation-button.recording::after {
+  animation: dictation-ring 1.4s ease-out infinite;
+  border: 1px solid var(--red);
+  border-radius: inherit;
+  content: "";
+  inset: -3px;
+  position: absolute;
+}
+.chat-dictation-button {
+  position: relative;
+}
+.chat-dictation-error {
+  color: var(--red);
+  font-size: 8px;
+  max-width: 150px;
+  text-align: right;
+}
+@keyframes dictation-ring {
+  from {
+    opacity: 0.65;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.2);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-dictation-button.recording::after {
+    animation: none;
+  }
 }
 .coach-composer {
   position: relative;

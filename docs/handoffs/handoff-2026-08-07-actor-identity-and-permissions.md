@@ -256,7 +256,7 @@ Suggested order:
 
 ## 10. Acceptance scenario — written, not yet confirmed
 
-[S75 — An agent cannot exceed the person who owns it](../acceptance/S75-actor-identity-and-permission-checks.md).
+[S92 — An agent cannot exceed the person who owns it](../acceptance/S92-actor-identity-and-permission-checks.md).
 
 Driver `pytest + browser`. The backend half is settled; the **UI path is not** —
 the profile, directory, and sign-in surfaces have not been discussed in enough
@@ -264,7 +264,7 @@ detail. Per [`AGENTS.md`](../../AGENTS.md) step 0, confirm it with the human
 before implementation.
 
 Sign-in, the actor directory, and person-to-person messaging (section 6) are
-deliberately outside S75 and need their own scenarios once their surfaces exist
+deliberately outside S92 and need their own scenarios once their surfaces exist
 as designs.
 
 ## 11. Do not

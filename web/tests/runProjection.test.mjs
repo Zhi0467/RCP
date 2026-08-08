@@ -6,6 +6,8 @@ import {
   buildRunProjection,
   buildRunTaskProjection,
   experimentRunSection,
+  visibleChatWatchers,
+  watcherIsActive,
   watcherIsIndividuallyStoppable,
 } from "../src/runProjection.ts";
 
@@ -291,6 +293,90 @@ test("Experiment watcher projection keeps each immutable group and ungrouped his
       .filter((item) => item.kind === "watcher")
       .map((item) => item.watcher.watcher_id),
     ["ungrouped"],
+  );
+});
+
+test("Chats project node-owned loop watchers separately from conversation self-wake watchers", () => {
+  const node = experiment("experiment/shared-loop");
+  const episodeId = "episode-shared-loop";
+  const loopActive = watcher("loop-active", node.id, episodeId, "active", {
+    chat_id: "creator-chat",
+  });
+  const loopDegraded = watcher("loop-degraded", node.id, episodeId, "degraded", {
+    chat_id: "other-creator-chat",
+  });
+  const loopStopped = watcher("loop-stopped", node.id, episodeId, "stopped", {
+    chat_id: "creator-chat",
+  });
+  const loopCompleted = watcher("loop-completed", node.id, episodeId, "completed", {
+    chat_id: "creator-chat",
+  });
+  const otherNodeLoop = watcher("other-node-loop", "experiment/other", "episode-other", "active", {
+    chat_id: "creator-chat",
+  });
+  const selfWake = watcher("self-wake", null, null, "active", {
+    chat_id: "maintenance-chat",
+    continuation: {
+      ...loopActive.continuation,
+      patch_kind: "work",
+      control_node_id: null,
+      control_episode_id: null,
+    },
+  });
+  const otherChatSelfWake = watcher("other-chat-self-wake", null, null, "active", {
+    chat_id: "other-chat",
+    continuation: {
+      ...loopActive.continuation,
+      patch_kind: "work",
+      control_node_id: null,
+      control_episode_id: null,
+    },
+  });
+  const stoppedSelfWake = watcher("stopped-self-wake", null, null, "stopped", {
+    chat_id: "maintenance-chat",
+    continuation: selfWake.continuation,
+  });
+  const watchers = [
+    loopActive,
+    loopDegraded,
+    loopStopped,
+    loopCompleted,
+    otherNodeLoop,
+    selfWake,
+    otherChatSelfWake,
+    stoppedSelfWake,
+  ];
+
+  const sameNodeChat = visibleChatWatchers(watchers, "maintenance-chat", node);
+  assert.deepEqual(
+    sameNodeChat.map((item) => item.watcher_id),
+    ["loop-active", "loop-degraded", "self-wake"],
+  );
+  assert.deepEqual(
+    visibleChatWatchers([...watchers, loopActive, selfWake], "maintenance-chat", node).map(
+      (item) => item.watcher_id,
+    ),
+    ["loop-active", "loop-degraded", "self-wake"],
+  );
+  const run = buildExperimentRun(node, control({ episode_id: episodeId }), [], watchers);
+  assert.equal(
+    sameNodeChat.filter((item) => item.continuation.patch_kind === "experiment_loop").length,
+    run.watchers.filter(watcherIsActive).length,
+  );
+
+  assert.deepEqual(
+    visibleChatWatchers(watchers, "maintenance-chat", null).map((item) => item.watcher_id),
+    ["self-wake"],
+  );
+  assert.deepEqual(
+    visibleChatWatchers(watchers, "maintenance-chat", experiment("experiment/unrelated")).map(
+      (item) => item.watcher_id,
+    ),
+    ["self-wake"],
+  );
+  assert.deepEqual(
+    visibleChatWatchers(watchers, "project-chat", null).map((item) => item.watcher_id),
+    [],
   );
 });
 

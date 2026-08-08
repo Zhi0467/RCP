@@ -3,6 +3,7 @@ id: S68-chat-progress-start-feedback
 status: implemented
 tier: hermetic
 driver: browser
+covered_by: none
 invariants: []
 ---
 

@@ -64,6 +64,31 @@ export function watcherIsActive(watcher: WatcherRecord): boolean {
   return watcher.status === "active" || watcher.status === "degraded";
 }
 
+/**
+ * Chats show the resources they can observe: an Experiment node's loop watchers and the exact
+ * conversation's own self-wake watchers. Experiment-loop provenance does not make a chat its
+ * owner, while generic self-wake watchers never leak into another conversation.
+ */
+export function visibleChatWatchers(
+  watchers: WatcherRecord[],
+  chatId: string,
+  node: GraphNode | null | undefined,
+): WatcherRecord[] {
+  const experimentNodeId = node?.type === "experiment" ? node.id : null;
+  const visible = new Map<string, WatcherRecord>();
+  for (const watcher of watchers) {
+    if (!watcherIsActive(watcher)) continue;
+    const nodeLoopWatcher =
+      experimentNodeId !== null &&
+      watcher.continuation.patch_kind === "experiment_loop" &&
+      watcher.continuation.control_node_id === experimentNodeId;
+    const chatSelfWakeWatcher =
+      watcher.chat_id === chatId && watcher.continuation.patch_kind === "work";
+    if (nodeLoopWatcher || chatSelfWakeWatcher) visible.set(watcher.watcher_id, watcher);
+  }
+  return [...visible.values()];
+}
+
 export type RunEntry =
   | { kind: "task"; id: string; observedAt: string | null; group: AgentTaskGroup }
   | { kind: "experiment"; id: string; observedAt: string | null; experiment: ExperimentRun }

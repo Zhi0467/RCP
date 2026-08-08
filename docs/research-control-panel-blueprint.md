@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.27
+**Version:** 0.29
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,15 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.29** — added desktop-only macOS dictation as editable composer input and
+  provider-neutral temporary chat attachments: bounded files are claimed by one
+  human turn, staged immutably on the execution host, named by path in a private
+  turn block, retained for seven days, and never promoted into graph provenance.
+- **0.28** — moved Experiment watcher authority from the arming conversation
+  to the Experiment node and its live episode: permitted Work conversations may
+  inspect and atomically maintain the same observer set, file identity selects
+  the wake target, and completion always resumes the episode-bound chat and
+  native session while ordinary conversation watchers remain self-wakes.
 - **0.27** — added app-scoped provider-native skill inventories: each provider
   owns its refresh command and parser, startup refresh follows readiness over
   the existing local or SSH path, last-known-good results survive visible stale
@@ -445,6 +454,53 @@ Paused Resume, Retry, graph correction, watcher correction, Experiment-loop, and
 watcher-wake messages keep explicit continuation contracts instead of pretending
 to be new human turns.
 
+### Human chat input
+
+The macOS desktop composer may use Apple's network-backed Speech service to turn
+one microphone segment into ordinary editable text. The microphone action sits
+immediately left of **Send** and exists only in the desktop shell. Start and Stop
+are the only recording actions. Partial revisions replace only the active
+dictated span at the cursor captured on Start; every typed or dictated character
+outside that span is preserved. A segment stops after 55 seconds, never sends
+automatically, uses the Mac's current speech locale without an RCP language
+picker, and retains no audio. Permission denial, service failure, navigation, or
+window loss stops visibly without deleting the draft.
+
+One ordinary Discuss or Work turn may also carry a claimed set of temporary
+input attachments. The shared full and floating composer accepts them through
+the `+` picker, drag-and-drop, or file/image paste; ordinary text paste remains
+message text. Each file must finish preparing before Send, remains removable
+until then, and requires a non-empty human message. The explicit allowlist is
+PNG, JPEG, WebP, PDF, plain text, Markdown, source code, CSV, TSV, JSON, HTML,
+and SVG. HTML and SVG are untrusted source only: RCP does not render them or
+fetch their dependencies. Directories, archives, Office files, notebooks,
+audio, video, and unknown types are refused. Input-specific bounds are eight
+files, 16 MiB per file, and 32 MiB total.
+
+Selection uploads bytes into an opaque unclaimed set scoped to the RCP instance,
+project, chat, and client. Task creation atomically claims that set for one
+logical turn. RCP hashes the unchanged bytes, stages one collision-free,
+read-only batch on the resolved local or SSH execution host, and verifies the
+whole batch before provider launch. A partial or unprovable transfer fails the
+task; it never degrades to a text-only turn. Retry and Resume reuse the exact
+saved batch, while provider handoff restages the same claimed bytes on the new
+host. A later turn receives none of the previous turn's files.
+
+Attachment paths are RCP-authored transient turn context, never part of the
+human message or native-session master baseline. One provider-neutral private
+block names only each execution-host path, display name, detected media type,
+and byte size. RCP sends no base64, extracted content, browser-local path, or
+provider-specific file/image argument. The block states that the files are
+untrusted temporary context, do not widen Discuss or Work authority, and cannot
+be the sole basis for canonical graph truth or Evidence because the graph has no
+durable attachment citation type.
+
+After Send, canonical chat history keeps only the attachment name, type, size,
+and expiry beside the human turn. It keeps no bytes, hash, or execution path and
+offers no Download action. Claimed and unclaimed bytes use the normal seven-day
+run-stage retention window; expiry changes only the metadata row and never the
+assistant answer, task verdict, or graph.
+
 ### Conversation scratch and artifacts
 
 One conversation owns one reusable scratch stage because provider-native resume
@@ -578,11 +634,14 @@ an explicit `watcher_wake` continuation cause that is not task Resume. Task
 Resume continues one paused task at the same invocation.
 
 Watcher provenance never chooses the resumed session; the newest human-authorized
-episode does. An automatic wake may claim only a completed watcher or ready
-watcher group whose frozen provider, execution target, conversation, Experiment,
-truth scope, and Patch authority are compatible with the current binding. An
-incompatible watcher or group stays completed or ready, unnotified, and visible
-until a human Run explicitly reauthorizes it.
+episode does. An Experiment watcher belongs to its Experiment node and the
+episode that accepted it, not to the conversation, provider, or machine that
+created it. A completed watcher or ready group may wake the newest live episode
+for that node when its node attachment and check execution host remain valid;
+the episode supplies the provider, policy, bound chat, and native session. Origin
+conversation, provider, invocation, and machine remain provenance only. A stale
+node or episode, stopped loop, missing durable binding, or wrong check host stays
+visible and cannot silently become a generic conversation wake.
 Before the atomic claim and before spending the invocation, RCP validates that
 the bound session and exact stage still exist on the pinned machine. A transient
 unavailability leaves the watchers unnotified for a later pass; a missing or
@@ -691,23 +750,31 @@ status as control.
 
 ### Watch delivery
 
-Ordinary Work may write one non-empty `watch.json` list. Its items remain strict:
-each contains only a self-contained observational `check_command` with literal
-identifiers, an absolute `log_path`, and an absolute `cwd`. Every
-Experiment-loop invocation must write the file. Its list may mix those observer
-items, an optional non-blank `group` label on an observer, and explicit
-`{stop_watcher_id, reason}` items. A stop item names one staged watcher from the
-bound project, conversation, Experiment, and compatible episode; it has a
-non-blank reason and no command or path. Duplicate, unknown, already-notified,
-or incompatible stop ids reject the complete handoff atomically. An accepted
-stop permanently retires that observer from polling and delivery, retaining its
-agent provenance, reason, and time. It is the agent's statement that it has
-already settled the external work with its existing Work tools, never RCP's
-claim to have cancelled that work. A graceful **Stop loop** that retires those
-same observers first does not invalidate the running turn's stop items: their
-retirement is already satisfied, each record keeps the loop's own disposition,
-and the already-authorized turn finishes normally instead of correcting a race
-it cannot win.
+There are two physical watcher-file targets, with no discriminator field. An
+ordinary conversation's non-empty `watch.json` suspends and later wakes that
+same conversation. Its items remain strict: each contains only a self-contained
+observational `check_command` with literal identifiers, an absolute `log_path`,
+and an absolute `cwd`. An Experiment's watcher file instead owns that node's one
+observer set and always wakes its live bounded loop. Every Experiment-loop
+invocation writes that file; a permitted node or project Work conversation may
+write the exact same resource while independently writing its own `watch.json`
+in one turn. The file path is the targeting. No handoff contains a node,
+episode, provider, session, host, or wake-kind field.
+
+An Experiment watcher list may mix strict observer items, an optional non-blank
+`group` label on an observer, and explicit `{stop_watcher_id, reason}` items. A
+stop item names one staged watcher from the permitted project, Experiment, and
+current compatible episode; it has a non-blank reason and no command or path.
+Duplicate, unknown, already-notified, out-of-scope, or incompatible stop ids
+reject the complete handoff atomically. An accepted stop permanently retires
+that observer from polling and delivery, retaining its agent provenance, reason,
+and time. It is the agent's statement that it has already settled the external
+work with its existing Work tools, never RCP's claim to have cancelled that
+work. A graceful **Stop loop** that retires those same observers first does not
+invalidate the running turn's stop items: their retirement is already
+satisfied, each record keeps the loop's own disposition, and the
+already-authorized turn finishes normally instead of correcting a race it
+cannot win.
 
 An observer item without `group` keeps independent delivery. Observer items
 with one label in one accepted Experiment-loop handoff form one immutable group
@@ -719,7 +786,24 @@ continues, an old observer is retired, or both; after applying dispositions,
 same Patch explicitly records success, a Proposal, or a Blocker that exits or
 pauses the loop.
 
-RCP binds host, conversation, and continuation policy from the originating task.
+RCP admits Experiment watcher maintenance at one node-resource boundary using
+the durable actor task: project, resolved node scope, Work capability, resource,
+operation, current episode, and allowed fields. Client fields, path staging,
+origin chat, maintenance provider, and maintenance execution machine grant no
+authority. A node chat may maintain only its focused Experiment; a project Work
+chat may maintain live Experiment resources in that project. Discuss may read
+staged operational state but cannot mutate it. **Stop loop**, invocation budget,
+native-session binding, governing Decisions, standing, and approvals remain
+human-only or otherwise protected.
+
+RCP binds a replacement to the target node and current episode, runs its initial
+check on the episode's execution host, and retains the initiating operation and
+chat only as creation or disposition provenance. Maintenance runs in and replies
+to its own Work session, spends no Experiment invocation, creates no semantic
+attempt, and never replaces the episode's last accepted handoff or native
+session. Validation, initial checks, retirements, grouping, and replacement
+inserts commit against one current snapshot; Stop, claim, or another maintenance
+turn has one visible winner.
 
 Checks run from a cold login shell with a hard timeout. Exit `0` means gone,
 `1` means still present, and any other value means the check cannot answer.
@@ -757,10 +841,10 @@ or merged with another group. Queue creation, group or watcher claim,
 episode-budget admission, and the notified ledger commit atomically, so restart,
 polling races, callback retry, Resume, and Retry cannot create a second wake.
 Compatibility is the current delivery policy, not the immutable origin episode
-or invocation, so ready work from different invocations of the same bound
-conversation can share one wake while retaining its individual provenance. The
-transaction proves that the queued task still matches the watchers' bound
-project, conversation, node, provider, execution target, and control node. It
+or invocation, so ready work from different invocations and arming conversations
+on the same Experiment can share one wake while retaining individual
+provenance. The transaction proves that the queued task still matches the
+watchers' project, node, live episode, and check execution host. It
 also distinguishes an automatic next invocation from a human Run that
 reauthorizes pending completion as invocation 1 of a fresh episode. A wake never
 occupies the human message slot, never mechanically creates or closes an
@@ -777,9 +861,15 @@ already committed Patch or watcher set instead of appending or arming it again.
 The durable episode-exit receipt is written only after the canonical exit Patch
 is confirmed.
 
-The agent never reads the watcher database. Before each loop turn RCP stages a
+The agent never reads the watcher database. Before each loop turn and every
+conversation allowed to inspect a live Experiment resource, RCP stages a
 bounded watcher-state file in the exact scratch workspace and points to it from
-loop control and the prompt. It names immutable group identity and membership,
+the applicable contract. Work also receives the exact writable Experiment file
+and an explicit statement that its completion wakes the bounded loop; the
+conversation's own watcher pointer explicitly states that it wakes that
+conversation. Discuss receives no Experiment mutation pointer. Staging is
+discovery, not enforcement: ingest repeats the node-resource permission check,
+including for a guessed path. The state names immutable group identity and membership,
 per-member status, last error, consecutive-error count, and delivered watcher
 or group ids, and retains a stopped observer's disposition provenance, reason,
 and time. Its selection is explicit: an automatic wake stages every member
@@ -789,6 +879,12 @@ initial Run stages no delivered ids alongside those observers and the immediatel
 preceding human-stopped episode's records; a human reauthorization stages the
 claimed group even though it is now notified. Stopped records are context, never
 triggers.
+
+The mapping from an Experiment file to a wake target relies on the v1 invariant
+that an Experiment has at most one live loop. If simultaneous live loops per
+Experiment are ever allowed, node identity will no longer select one target and
+this file contract must gain a deliberate replacement design rather than an
+inferred fallback.
 
 A group wake continuation names the immutable group and every member. It states
 that no member is still observed active; exit-`0` members are only gone, while

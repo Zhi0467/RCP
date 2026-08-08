@@ -61,7 +61,7 @@ state; the rest is a process contract with three surfaces:
 Re-verification reuses seams that already exist rather than adding a heartbeat,
 which would only run when nobody is looking. The instance id is re-checked on
 window show (with the refresh in [S30](S30-desktop-window-is-not-the-app.md)), on
-the failure branch of the existing task poll at [App.tsx:296](../../web/src/App.tsx:296),
+the failure branch of the existing task poll in [App.tsx](../../web/src/App.tsx),
 and on any `ApiError` from a mutation. On mismatch the window stops presenting
 state and shows a reconnect surface instead of silently re-rendering.
 

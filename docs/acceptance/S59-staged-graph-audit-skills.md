@@ -1,6 +1,6 @@
 ---
 id: S59-staged-graph-audit-skills
-status: pending
+status: pending — not human-confirmed
 tier: hermetic
 driver: pytest + browser
 covered_by: none

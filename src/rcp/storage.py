@@ -379,6 +379,7 @@ class WatcherRecord(BaseModel):
     origin_task_kind: Literal["node_chat", "project_chat"]
     chat_id: str
     node_id: str | None = None
+    experiment_episode_id: str | None = None
     execution_host: str = ""
     check_command: str
     log_path: str
@@ -400,6 +401,21 @@ class WatcherRecord(BaseModel):
     stop_reason: str | None = None
     stopped_at: str | None = None
     stop_operation_id: str | None = None
+
+
+class ExperimentWatcherResourceRecord(BaseModel):
+    """The current node-and-episode owner of one Experiment watcher file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    control_node_id: str
+    episode_id: str
+    execution_host: str
+    wake_task_kind: Literal["node_chat"]
+    wake_chat_id: str
+    continuation: WatcherContinuation
+    watcher_snapshot_token: str
 
 
 def watcher_next_check_at(
@@ -643,6 +659,7 @@ class AppStore:
                     origin_task_kind TEXT NOT NULL,
                     chat_id TEXT NOT NULL,
                     node_id TEXT,
+                    experiment_episode_id TEXT,
                     execution_host TEXT NOT NULL,
                     check_command TEXT NOT NULL,
                     log_path TEXT NOT NULL,
@@ -722,6 +739,7 @@ class AppStore:
             )
             self._ensure_column(connection, "watchers", "group_id", "TEXT")
             self._ensure_column(connection, "watchers", "group_label", "TEXT")
+            self._ensure_column(connection, "watchers", "experiment_episode_id", "TEXT")
             self._ensure_column(connection, "watchers", "stopped_by", "TEXT")
             self._ensure_column(connection, "watchers", "stop_reason", "TEXT")
             self._ensure_column(connection, "watchers", "stopped_at", "TEXT")
@@ -741,6 +759,16 @@ class AppStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS watchers_group_delivery_candidates "
                 "ON watchers(notified, status, group_id, consecutive_error_count)"
+            )
+            connection.execute(
+                "UPDATE watchers SET experiment_episode_id = "
+                "json_extract(continuation_json, '$.control_episode_id') "
+                "WHERE experiment_episode_id IS NULL "
+                "AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS watchers_experiment_episode "
+                "ON watchers(project_id, node_id, experiment_episode_id, status)"
             )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
@@ -1530,6 +1558,7 @@ class AppStore:
         *,
         stops: list[WatcherStopRequest] | None = None,
         binding: WatcherBinding | None = None,
+        expected_watcher_snapshot_token: str | None = None,
     ) -> list[WatcherRecord]:
         """Persist one loop handoff atomically with the episode's graceful stop.
 
@@ -1545,8 +1574,8 @@ class AppStore:
         records = [self._prepare_watcher_for_insert(record) for record in records]
         if records:
             self._validate_watch_list(records)
-        if binding is None and not records:
-            raise ValueError("a stop-only Experiment handoff requires its bound watcher context")
+        if binding is None:
+            raise ValueError("an Experiment handoff requires its bound watcher context")
         continuation = records[0].continuation if records else binding.continuation
         if continuation.patch_kind != "experiment_loop":
             raise ValueError("idempotent Experiment persistence requires loop watchers")
@@ -1575,6 +1604,17 @@ class AppStore:
         watcher_ids = [record.watcher_id for record in records]
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            resource = self._admit_experiment_watcher_maintenance(connection, binding)
+            if resource is not None:
+                if expected_watcher_snapshot_token is None:
+                    raise ValueError(
+                        "Experiment watcher maintenance requires its staged watcher snapshot."
+                    )
+                if expected_watcher_snapshot_token != resource.watcher_snapshot_token:
+                    raise WatcherClaimConflict(
+                        "Experiment watcher state changed after it was staged; inspect the "
+                        "current resource before maintaining it."
+                    )
             episode = connection.execute(
                 "SELECT * FROM experiment_episodes WHERE episode_id = ?",
                 (episode_id,),
@@ -1647,6 +1687,7 @@ class AppStore:
             return
         episode_id = binding.continuation.control_episode_id
         with self.connection() as connection:
+            self._admit_experiment_watcher_maintenance(connection, binding)
             episode = connection.execute(
                 "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
             ).fetchone()
@@ -1657,6 +1698,296 @@ class AppStore:
                 episode,
                 apply=False,
             )
+
+    def experiment_watcher_resources(
+        self,
+        project_id: str,
+        *,
+        control_node_ids: set[str] | None = None,
+    ) -> list[ExperimentWatcherResourceRecord]:
+        """Return live Experiment resources visible within one already-resolved scope."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT json_extract(request_json, '$.control_node_id') AS control_node_id
+                FROM graph_runs
+                WHERE project_id = ? AND parent_operation_id IS NULL
+                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                """,
+                (project_id,),
+            ).fetchall()
+            resources: list[ExperimentWatcherResourceRecord] = []
+            for row in rows:
+                control_node_id = row["control_node_id"]
+                if not isinstance(control_node_id, str) or not control_node_id:
+                    continue
+                if control_node_ids is not None and control_node_id not in control_node_ids:
+                    continue
+                try:
+                    resource = self._current_experiment_watcher_resource(
+                        connection,
+                        project_id,
+                        control_node_id,
+                    )
+                except ValueError:
+                    continue
+                resources.append(resource)
+        return sorted(resources, key=lambda item: item.control_node_id)
+
+    def admit_experiment_watcher_maintenance(
+        self,
+        binding: WatcherBinding,
+    ) -> ExperimentWatcherResourceRecord | None:
+        """Authorize one node-attached watcher handoff from its durable Work task.
+
+        A loop turn returns ``None`` before its first episode binding exists. A
+        conversation maintenance turn always returns the current resource and
+        fails closed when durable node, episode, or session identity is absent.
+        """
+
+        with self.connection() as connection:
+            return self._admit_experiment_watcher_maintenance(connection, binding)
+
+    def _admit_experiment_watcher_maintenance(
+        self,
+        connection: sqlite3.Connection,
+        binding: WatcherBinding,
+    ) -> ExperimentWatcherResourceRecord | None:
+        task_row = connection.execute(
+            "SELECT project_id, kind, request_json FROM graph_runs WHERE operation_id = ?",
+            (binding.origin_operation_id,),
+        ).fetchone()
+        if task_row is None:
+            raise ValueError("Experiment watcher maintenance permission denied: actor is missing.")
+        request = json.loads(task_row["request_json"])
+        if task_row["project_id"] != binding.project_id:
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: project scope does not match."
+            )
+        if request.get("mode") != "work" or task_row["kind"] not in {
+            "node_chat",
+            "project_chat",
+        }:
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: Work capability is required."
+            )
+        if (
+            request.get("chat_id") != binding.chat_id
+            or task_row["kind"] != binding.origin_task_kind
+        ):
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: actor provenance does not match."
+            )
+
+        continuation = binding.continuation
+        control_node_id = continuation.control_node_id
+        episode_id = continuation.control_episode_id
+        if continuation.patch_kind != "experiment_loop" or not control_node_id or not episode_id:
+            raise ValueError(
+                "Experiment watcher maintenance requires an explicit node and episode resource."
+            )
+        if binding.node_id != control_node_id:
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: target node does not match."
+            )
+
+        actor_patch_kind = request.get("patch_kind")
+        if actor_patch_kind == "experiment_loop":
+            if (
+                request.get("control_node_id") != control_node_id
+                or request.get("control_episode_id") != episode_id
+            ):
+                raise ValueError(
+                    "Experiment watcher maintenance permission denied: loop binding does not match."
+                )
+            episode_row = connection.execute(
+                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if episode_row is not None and (
+                episode_row["project_id"] != binding.project_id
+                or episode_row["control_node_id"] != control_node_id
+            ):
+                raise ValueError("Experiment watcher maintenance targets a different episode.")
+            return None
+
+        if actor_patch_kind != "work":
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: captured Patch policy is invalid."
+            )
+        if task_row["kind"] == "node_chat" and request.get("node_id") != control_node_id:
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: node scope does not include "
+                f"{control_node_id}."
+            )
+        resource = self._current_experiment_watcher_resource(
+            connection,
+            binding.project_id,
+            control_node_id,
+            expected_episode_id=episode_id,
+        )
+        if binding.execution_host != resource.execution_host:
+            raise ValueError("Experiment watcher maintenance must use the episode execution host.")
+        if continuation != resource.continuation:
+            raise ValueError(
+                "Experiment watcher maintenance no longer matches the live episode policy."
+            )
+        return resource
+
+    def _current_experiment_watcher_resource(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        *,
+        expected_episode_id: str | None = None,
+    ) -> ExperimentWatcherResourceRecord:
+        root_row = connection.execute(
+            """
+            SELECT kind, request_json FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(request_json, '$.control_node_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (project_id, control_node_id),
+        ).fetchone()
+        if root_row is None:
+            raise ValueError("Experiment watcher maintenance requires a current live episode.")
+        root_request = json.loads(root_row["request_json"])
+        episode_id = root_request.get("control_episode_id")
+        if not isinstance(episode_id, str) or not episode_id:
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the current episode identity."
+            )
+        if expected_episode_id is not None and expected_episode_id != episode_id:
+            raise ValueError("Experiment watcher maintenance targets a stale episode.")
+        episode_row = connection.execute(
+            "SELECT * FROM experiment_episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if episode_row is None:
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the episode session binding."
+            )
+        episode = self._experiment_episode_record(episode_row)
+        if (
+            episode.project_id != project_id
+            or episode.control_node_id != control_node_id
+            or not episode.session_bound
+        ):
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the episode session binding."
+            )
+        if episode.stop_requested_at is not None or episode.stop_settled_at is not None:
+            raise ValueError("Experiment watcher maintenance requires a live, unstopped episode.")
+        exited = connection.execute(
+            """
+            SELECT 1 FROM graph_run_receipts AS receipt
+            JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+            WHERE run.project_id = ?
+              AND json_extract(run.request_json, '$.control_episode_id') = ?
+              AND receipt.category = 'experiment_loop_exit'
+            LIMIT 1
+            """,
+            (project_id, episode_id),
+        ).fetchone()
+        if exited is not None:
+            raise ValueError("Experiment watcher maintenance requires a live, unexited episode.")
+        if not episode.last_turn_operation_id:
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the episode's latest turn."
+            )
+        turn_row = connection.execute(
+            "SELECT request_json FROM graph_runs WHERE operation_id = ? AND project_id = ?",
+            (episode.last_turn_operation_id, project_id),
+        ).fetchone()
+        if turn_row is None:
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the episode's latest turn."
+            )
+        turn_request = json.loads(turn_row["request_json"])
+        continuation_data = {
+            key: turn_request[key]
+            for key in WatcherContinuation.model_fields
+            if key in turn_request
+        }
+        for nullable_list in ("workflow_ids", "skill_ids", "resolved_skill_packages"):
+            if continuation_data.get(nullable_list) is None:
+                continuation_data[nullable_list] = []
+        continuation = WatcherContinuation.model_validate(continuation_data)
+        if (
+            continuation.patch_kind != "experiment_loop"
+            or continuation.control_node_id != control_node_id
+            or continuation.control_episode_id != episode_id
+        ):
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the episode continuation policy."
+            )
+        wake_task_kind = root_row["kind"]
+        if wake_task_kind != "node_chat":
+            raise ValueError("Experiment watcher maintenance has an invalid wake task binding.")
+        if not episode.chat_id:
+            # The wake target is derived, never guessed: without the episode's own
+            # conversation there is nothing to wake, so fail closed with a diagnostic
+            # rather than an AssertionError that -O would strip.
+            raise ValueError(
+                "Experiment watcher maintenance cannot prove the episode's wake conversation."
+            )
+        return ExperimentWatcherResourceRecord(
+            project_id=project_id,
+            control_node_id=control_node_id,
+            episode_id=episode_id,
+            execution_host=episode.execution_host,
+            wake_task_kind=wake_task_kind,
+            wake_chat_id=episode.chat_id,
+            continuation=continuation,
+            watcher_snapshot_token=self._experiment_watcher_snapshot_token(
+                connection,
+                project_id,
+                control_node_id,
+            ),
+        )
+
+    @staticmethod
+    def _experiment_watcher_snapshot_token(
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+    ) -> str:
+        """Fingerprint the node's observer membership, and nothing else.
+
+        This defends exactly one gap. Every retirement is already a
+        compare-and-swap inside the arming transaction, so a delivery claim, a
+        **Stop loop**, or an already-resolved stop is caught per item without a
+        fingerprint. Arming is not: new observers are plain inserts, so two
+        maintenance turns could each retire the old set and each arm
+        replacements, leaving the Experiment double-observed.
+
+        Membership answers that and stays blind to everything RCP merely
+        observed. Status and consecutive-error counts deliberately do not appear:
+        a degraded observer is re-checked on the S84 backoff, so fingerprinting
+        observation would reject the maintenance turn that exists to repair that
+        very observer. Retired rows keep their id, so the set only grows and a
+        concurrent retirement does not collide with an unrelated repair.
+        """
+
+        rows = connection.execute(
+            """
+            SELECT watcher_id FROM watchers
+            WHERE project_id = ? AND node_id = ?
+              AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+            ORDER BY watcher_id
+            """,
+            (project_id, control_node_id),
+        ).fetchall()
+        snapshot = json.dumps(
+            [str(row["watcher_id"]) for row in rows],
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
     def _validate_and_apply_agent_watcher_stops(
         self,
@@ -1713,9 +2044,7 @@ class AppStore:
                 raise WatcherClaimConflict("A watcher update was already claimed for delivery.")
             if (
                 record.project_id != binding.project_id
-                or record.chat_id != binding.chat_id
-                or record.node_id != binding.node_id
-                or record.execution_host != binding.execution_host
+                or record.node_id != control_node_id
                 or not self._experiment_watcher_matches_current(record, root_request, episode)
             ):
                 raise ValueError(
@@ -1759,6 +2088,11 @@ class AppStore:
 
     @staticmethod
     def _prepare_watcher_for_insert(record: WatcherRecord) -> WatcherRecord:
+        continuation = record.continuation
+        if continuation.patch_kind == "experiment_loop":
+            episode_id = record.experiment_episode_id or continuation.control_episode_id
+            if episode_id != record.experiment_episode_id:
+                record = record.model_copy(update={"experiment_episode_id": episode_id})
         if record.status not in {"active", "degraded"} or record.next_check_at is not None:
             return record
         error_count = record.consecutive_error_count
@@ -1790,6 +2124,7 @@ class AppStore:
                 record.origin_task_kind,
                 record.chat_id,
                 record.node_id,
+                record.experiment_episode_id,
                 record.execution_host,
                 record.continuation.model_dump_json(),
             )
@@ -1811,6 +2146,8 @@ class AppStore:
             if any(count < 2 for count in group_counts.values()):
                 raise ValueError("an Experiment watcher group requires at least two observers")
         if continuation.patch_kind != "experiment_loop":
+            if any(record.experiment_episode_id is not None for record in records):
+                raise ValueError("only Experiment watchers may bind to an Experiment episode")
             return
         if not all(
             (
@@ -1825,6 +2162,10 @@ class AppStore:
         assert continuation.control_invocation_ceiling is not None
         if continuation.control_invocation > continuation.control_invocation_ceiling:
             raise ValueError("an experiment-loop watcher invocation exceeds its pinned ceiling")
+        if any(
+            record.experiment_episode_id != continuation.control_episode_id for record in records
+        ):
+            raise ValueError("an Experiment watcher must bind explicitly to its control episode")
 
     @staticmethod
     def _validate_idempotent_watcher(
@@ -1837,6 +2178,7 @@ class AppStore:
             "origin_task_kind",
             "chat_id",
             "node_id",
+            "experiment_episode_id",
             "execution_host",
             "check_command",
             "log_path",
@@ -1854,13 +2196,14 @@ class AppStore:
             """
             INSERT INTO watchers (
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, node_id, execution_host, check_command, log_path, cwd,
+                chat_id, node_id, experiment_episode_id, execution_host,
+                check_command, log_path, cwd,
                 continuation_json, status, created_at, last_checked_at,
                 last_exit_code, last_error, completed_at, next_check_at,
                 consecutive_error_count, group_id, group_label, notified,
                 notification_operation_id, stopped_by, stop_reason, stopped_at,
                 stop_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -1869,6 +2212,7 @@ class AppStore:
                 record.origin_task_kind,
                 record.chat_id,
                 record.node_id,
+                record.experiment_episode_id,
                 record.execution_host,
                 record.check_command,
                 record.log_path,
@@ -2823,39 +3167,26 @@ class AppStore:
         root_request: dict[str, object],
         episode: ExperimentEpisodeRecord | None,
     ) -> bool:
-        """Whether watcher provenance can automatically wake the current episode.
+        """Whether this node-owned observer can wake the current episode.
 
-        Model, reasoning, and package pointers deliberately are not selectors:
-        the current episode owns those values. Human reauthorization uses the
-        frozen full continuation through a separate grouping path.
+        Conversation, provider, execution-machine alias, and package provenance
+        are deliberately absent. The episode owns its session and policy; the
+        watcher owns only the node, episode, and check execution host needed to
+        answer the operational question.
         """
 
         continuation = record.continuation
-        expected_scope = _experiment_pinned_value(root_request, "run_truth_scope")
-        actual_scope = _experiment_pinned_value(
-            continuation.model_dump(mode="json"),
-            "run_truth_scope",
-        )
+        control_node_id = root_request.get("control_node_id")
         episode_matches = episode is None or (
             record.project_id == episode.project_id
-            and episode.control_node_id == root_request.get("control_node_id")
-            and (episode.chat_id is None or episode.chat_id == record.chat_id)
-            and (
-                episode.execution_machine is None
-                or (
-                    episode.execution_machine == continuation.run_on
-                    and record.execution_host == episode.execution_host
-                )
-            )
+            and episode.control_node_id == control_node_id
+            and record.execution_host == episode.execution_host
         )
         return (
             continuation.patch_kind == "experiment_loop"
-            and continuation.provider == root_request.get("provider")
-            and continuation.run_on == root_request.get("run_on")
-            and continuation.control_node_id == root_request.get("control_node_id")
-            and record.chat_id == root_request.get("chat_id")
-            and record.node_id == root_request.get("node_id")
-            and expected_scope == actual_scope
+            and continuation.control_node_id == control_node_id
+            and record.node_id == control_node_id
+            and record.experiment_episode_id is not None
             and episode_matches
         )
 
@@ -3050,12 +3381,22 @@ class AppStore:
         for unit in units:
             first = unit[0]
             key = (
-                first.project_id,
-                first.origin_task_kind,
-                first.chat_id,
-                first.node_id,
-                first.execution_host,
-                self._automatic_watcher_delivery_policy(first.continuation),
+                (
+                    first.project_id,
+                    "experiment_loop",
+                    first.node_id,
+                    first.execution_host,
+                    self._automatic_watcher_delivery_policy(first.continuation),
+                )
+                if first.continuation.patch_kind == "experiment_loop"
+                else (
+                    first.project_id,
+                    first.origin_task_kind,
+                    first.chat_id,
+                    first.node_id,
+                    first.execution_host,
+                    self._automatic_watcher_delivery_policy(first.continuation),
+                )
             )
             groups.setdefault(key, []).extend(unit)
         return list(groups.values())
@@ -3164,11 +3505,9 @@ class AppStore:
             ):
                 continue
             key = (
-                first.origin_task_kind,
-                first.chat_id,
                 first.node_id,
                 first.execution_host,
-                self._watcher_delivery_policy(first.continuation),
+                self._automatic_watcher_delivery_policy(first.continuation),
             )
             groups.setdefault(key, []).extend(unit)
         return next(iter(groups.values()), None)
@@ -3218,15 +3557,20 @@ class AppStore:
                     raise ValueError("watchers and notification task belong to different projects")
                 bindings = {
                     (
-                        item.origin_task_kind,
-                        item.chat_id,
-                        item.node_id,
-                        item.execution_host,
                         (
-                            self._automatic_watcher_delivery_policy(item.continuation)
-                            if record.request.get("trigger") == "watcher"
-                            else self._watcher_delivery_policy(item.continuation)
-                        ),
+                            "experiment_loop",
+                            item.node_id,
+                            item.execution_host,
+                            self._automatic_watcher_delivery_policy(item.continuation),
+                        )
+                        if item.continuation.patch_kind == "experiment_loop"
+                        else (
+                            item.origin_task_kind,
+                            item.chat_id,
+                            item.node_id,
+                            item.execution_host,
+                            self._watcher_delivery_policy(item.continuation),
+                        )
                     )
                     for item in watchers
                 }
@@ -3328,9 +3672,6 @@ class AppStore:
         if continuation.patch_kind != "experiment_loop":
             return AppStore._watcher_delivery_policy(continuation)
         policy = {
-            "provider": continuation.provider,
-            "run_on": continuation.run_on,
-            "run_truth_scope": sorted(set(continuation.run_truth_scope or [])),
             "patch_kind": continuation.patch_kind,
             "control_node_id": continuation.control_node_id,
         }
@@ -3345,21 +3686,31 @@ class AppStore:
         first = watchers[0]
         continuation = first.continuation
         request = record.request
-        expected = {
-            "kind": first.origin_task_kind,
-            "chat_id": first.chat_id,
-            "node_id": first.node_id,
-        }
-        actual = {
-            "kind": record.kind,
-            "chat_id": request.get("chat_id"),
-            "node_id": request.get("node_id"),
-        }
-        mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
-        if mismatched:
-            raise ValueError(
-                f"watcher notification changed immutable scope: {', '.join(mismatched)}"
-            )
+        trigger = request.get("trigger")
+        if continuation.patch_kind == "experiment_loop":
+            if (
+                record.kind != "node_chat"
+                or request.get("node_id") != continuation.control_node_id
+                or not isinstance(request.get("chat_id"), str)
+                or not request.get("chat_id")
+            ):
+                raise ValueError("Experiment watcher delivery must target its node chat.")
+        else:
+            expected = {
+                "kind": first.origin_task_kind,
+                "chat_id": first.chat_id,
+                "node_id": first.node_id,
+            }
+            actual = {
+                "kind": record.kind,
+                "chat_id": request.get("chat_id"),
+                "node_id": request.get("node_id"),
+            }
+            mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
+            if mismatched:
+                raise ValueError(
+                    f"watcher notification changed immutable scope: {', '.join(mismatched)}"
+                )
         request_continuation_data = {
             key: request[key] for key in WatcherContinuation.model_fields if key in request
         }
@@ -3367,15 +3718,14 @@ class AppStore:
             if request_continuation_data.get(nullable_list) is None:
                 request_continuation_data[nullable_list] = []
         request_continuation = WatcherContinuation.model_validate(request_continuation_data)
-        trigger = request.get("trigger")
         request_policy = (
             AppStore._automatic_watcher_delivery_policy(request_continuation)
-            if trigger == "watcher" and continuation.patch_kind == "experiment_loop"
+            if continuation.patch_kind == "experiment_loop"
             else AppStore._watcher_delivery_policy(request_continuation)
         )
         continuation_policy = (
             AppStore._automatic_watcher_delivery_policy(continuation)
-            if trigger == "watcher" and continuation.patch_kind == "experiment_loop"
+            if continuation.patch_kind == "experiment_loop"
             else AppStore._watcher_delivery_policy(continuation)
         )
         if request_policy != continuation_policy:
@@ -3391,7 +3741,7 @@ class AppStore:
                 raise ValueError("an automatic Experiment wake must continue an existing episode")
             newest = connection.execute(
                 """
-                SELECT request_json FROM graph_runs
+                SELECT kind, request_json FROM graph_runs
                 WHERE project_id = ? AND parent_operation_id IS NULL
                   AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
                   AND json_extract(request_json, '$.control_node_id') = ?
@@ -3412,6 +3762,10 @@ class AppStore:
                 if episode_row is not None
                 else None
             )
+            if episode is not None and (
+                record.kind != newest["kind"] or request.get("chat_id") != episode.chat_id
+            ):
+                raise ValueError("Experiment watcher delivery changed its episode wake target.")
             if any(
                 not AppStore._experiment_watcher_matches_current(item, newest_request, episode)
                 for item in watchers
@@ -4820,6 +5174,8 @@ class AppStore:
     def _watcher_record(row: sqlite3.Row) -> WatcherRecord:
         data = dict(row)
         data["continuation"] = json.loads(data.pop("continuation_json"))
+        if "experiment_episode_id" not in data:
+            data["experiment_episode_id"] = data["continuation"].get("control_episode_id")
         data["notified"] = bool(data["notified"])
         return WatcherRecord.model_validate(data)
 

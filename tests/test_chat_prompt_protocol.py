@@ -182,11 +182,11 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
 
     second_prompt = launcher.prompts[1]
     assert second_prompt.startswith("Open and retain the RCP chat master context at:\n")
-    assert "chat-master-v3-" in second_prompt.splitlines()[1]
+    assert "chat-master-v4-" in second_prompt.splitlines()[1]
     committed = store.chat_session_context("codex", "laptop", session_id)
     assert committed is not None
-    assert committed.protocol_version == 3
-    assert json.loads(committed.snapshot_json)["contract_key"] == "chat-master-v3"
+    assert committed.protocol_version == 4
+    assert json.loads(committed.snapshot_json)["contract_key"] == "chat-master-v4"
 
 
 @pytest.mark.asyncio

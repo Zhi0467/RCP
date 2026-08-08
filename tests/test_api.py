@@ -106,6 +106,60 @@ def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
     assert request.invoked_provider_skill_names == []
     assert request.resolved_provider_skills == []
 
+    experiment_watcher = watcher.model_copy(
+        update={"continuation": continuation.model_copy(update={"patch_kind": "experiment_loop"})}
+    )
+    with pytest.raises(ValueError, match="cannot carry Experiment-loop authority"):
+        _generic_watcher_delivery_request([experiment_watcher])
+
+
+def test_generic_watcher_delivery_wakes_its_own_project_chat(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    watcher = WatcherRecord(
+        watcher_id="generic-project-chat-wake",
+        project_id=project_id,
+        origin_operation_id="generic-project-chat-origin",
+        origin_task_kind="project_chat",
+        chat_id="generic-project-chat",
+        check_command="true",
+        log_path=str(tmp_path / "generic.log"),
+        cwd=str(tmp_path),
+        continuation=WatcherContinuation(
+            provider="claude",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+            patch_kind="work",
+        ),
+        status="completed",
+        created_at="2026-08-08T00:00:00Z",
+    )
+    captured: dict[str, object] = {}
+
+    def capture(project, kind, request, watcher_ids, **_kwargs):
+        captured.update(
+            project_id=project,
+            kind=kind,
+            request=request,
+            watcher_ids=watcher_ids,
+        )
+
+    monkeypatch.setattr(app.state.background_tasks, "start_watcher_notification", capture)
+
+    assert app.state.watcher_poller.on_completed is not None
+    app.state.watcher_poller.on_completed([watcher])
+
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert captured["project_id"] == project_id
+    assert captured["kind"] == "project_chat"
+    assert captured["watcher_ids"] == [watcher.watcher_id]
+    assert request.chat_scope == "project"
+    assert request.chat_id == watcher.chat_id
+    assert request.node_id is None
+
 
 class FakeLauncher:
     def __init__(self, events: list[AgentEvent]) -> None:
@@ -6134,6 +6188,148 @@ def _experiment_fixture_patch(
     )
 
 
+def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenance(
+    manifest, tmp_path: Path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_fixture_patch(invocation_ceiling=3))
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    episode_id = str(uuid.uuid4())
+    loop_chat_id = str(uuid.uuid4())
+    maintenance_chat_id = str(uuid.uuid4())
+    stage_root = tmp_path / "episode-stage"
+    stage_root.mkdir()
+    now = store.now()
+    root_request = RunRequest(
+        provider="codex",
+        model="episode-model",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_id=loop_chat_id,
+        chat_scope="node",
+        node_id="exp/bounded-loop",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=2,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        control_decision_bundle=[],
+        control_completion_criteria=["The detached fixture exits cleanly."],
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="loop-root-for-maintenance-wake",
+            project_id=project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=root_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Loop waiting on detached work.",
+        )
+    )
+    store.commit_experiment_episode_turn(
+        episode_id=episode_id,
+        project_id=project_id,
+        control_node_id="exp/bounded-loop",
+        provider="codex",
+        execution_machine="laptop",
+        execution_host="",
+        native_session_id="episode-native-session",
+        stage_host=None,
+        stage_root=str(stage_root),
+        chat_id=loop_chat_id,
+        operation_id="loop-root-for-maintenance-wake",
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=["maintenance-origin-observer"],
+        context_baseline={},
+    )
+    watcher = WatcherRecord(
+        watcher_id="maintenance-origin-observer",
+        project_id=project_id,
+        origin_operation_id="maintenance-project-chat-turn",
+        origin_task_kind="project_chat",
+        chat_id=maintenance_chat_id,
+        node_id="exp/bounded-loop",
+        execution_host="",
+        check_command="true",
+        log_path=str(tmp_path / "maintenance-observer.log"),
+        cwd=str(tmp_path),
+        continuation=WatcherContinuation(
+            provider="claude",
+            model="maintenance-model",
+            reasoning="high",
+            run_on="maintenance-machine",
+            run_truth_scope=["repo-b"],
+            patch_kind="experiment_loop",
+            control_node_id="exp/bounded-loop",
+            control_revision=2,
+            control_episode_id=episode_id,
+            control_invocation=1,
+            control_invocation_ceiling=3,
+            control_decision_bundle=[],
+            control_completion_criteria=["The detached fixture exits cleanly."],
+        ),
+        status="completed",
+        created_at=now,
+        completed_at=now,
+    )
+    store.create_watchers([watcher])
+    captured: dict[str, object] = {}
+    entered = threading.Event()
+
+    async def stream(project, kind, request, _execution):
+        captured.update(
+            project_id=project,
+            kind=kind,
+            request=request,
+        )
+        entered.set()
+        yield _sse(AgentEvent(event="answer", text="Continued the live loop."))
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+
+    stored = store.watcher(watcher.watcher_id)
+    assert stored is not None
+    assert app.state.watcher_poller.on_completed is not None
+    app.state.watcher_poller.on_completed([stored])
+    assert entered.wait(timeout=1)
+
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert captured["project_id"] == project_id
+    assert captured["kind"] == "node_chat"
+    assert request.watcher_ids == [watcher.watcher_id]
+    assert request.chat_scope == "node"
+    assert request.node_id == "exp/bounded-loop"
+    assert request.chat_id == loop_chat_id
+    assert request.session_id == "episode-native-session"
+    assert request.provider == "codex"
+    assert request.model == "episode-model"
+    assert request.reasoning == "medium"
+    assert request.run_on == "laptop"
+    assert request.run_truth_scope == ["repo-a"]
+    assert request.chat_id != maintenance_chat_id
+    delivered = store.watcher(watcher.watcher_id)
+    assert delivered is not None
+    assert delivered.notified is True
+    assert delivered.notification_operation_id is not None
+    notification = store.agent_task(delivered.notification_operation_id)
+    assert notification is not None
+    assert notification.kind == "node_chat"
+    assert notification.stage_host is None
+    assert notification.stage_root == str(stage_root)
+
+
 def _chat_task_execution(
     store: AppStore,
     *,
@@ -6255,13 +6451,14 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     old_episode = str(uuid.uuid4())
-    chat_id = str(uuid.uuid4())
+    loop_chat_id = str(uuid.uuid4())
+    maintenance_chat_id = str(uuid.uuid4())
     now = store.now()
     old_request = RunRequest(
         provider="codex",
         run_on="laptop",
         run_truth_scope=["repo-a"],
-        chat_id=chat_id,
+        chat_id=loop_chat_id,
         chat_scope="node",
         node_id="exp/bounded-loop",
         mode="work",
@@ -6293,17 +6490,18 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
                 watcher_id="pending-loop-watcher",
                 project_id=project_id,
                 origin_operation_id="old-loop-root",
-                origin_task_kind="node_chat",
-                chat_id=chat_id,
+                origin_task_kind="project_chat",
+                chat_id=maintenance_chat_id,
                 node_id="exp/bounded-loop",
                 check_command="true",
                 log_path="/tmp/pending-loop.log",
                 cwd="/tmp",
                 continuation=WatcherContinuation(
-                    provider="codex",
-                    reasoning="medium",
-                    run_on="laptop",
-                    run_truth_scope=["repo-a"],
+                    provider="claude",
+                    model="maintenance-model",
+                    reasoning="high",
+                    run_on="maintenance-machine",
+                    run_truth_scope=["repo-b"],
                     patch_kind="experiment_loop",
                     control_node_id="exp/bounded-loop",
                     control_revision=2,
@@ -6349,7 +6547,19 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert completed_control["ready"] is True
     assert completed_control["reasons"] == []
 
-    async def stream(_project_id, _kind, request, _execution):
+    new_loop_chat_id = str(uuid.uuid4())
+
+    async def stream(_project_id, kind, request, _execution):
+        assert kind == "node_chat"
+        assert request.chat_scope == "node"
+        assert request.node_id == "exp/bounded-loop"
+        assert request.chat_id == new_loop_chat_id
+        assert request.chat_id != maintenance_chat_id
+        assert request.provider == "codex"
+        assert request.model == ""
+        assert request.reasoning == "medium"
+        assert request.run_on == "laptop"
+        assert request.run_truth_scope == ["repo-a"]
         assert request.message == (
             "Continue the bounded Experiment loop from its staged watcher state."
         )
@@ -6360,7 +6570,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     app.state.background_tasks.stream = stream
     response = client.post(
         f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
-        json={"chat_id": str(uuid.uuid4())},
+        json={"chat_id": new_loop_chat_id},
     )
 
     assert response.status_code == 202, response.text
@@ -6370,6 +6580,15 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["control_invocation_ceiling"] == 1
     assert request["control_episode_id"] != old_episode
     assert request["watcher_ids"] == ["pending-loop-watcher"]
+    assert request["chat_scope"] == "node"
+    assert request["node_id"] == "exp/bounded-loop"
+    assert request["chat_id"] == new_loop_chat_id
+    assert request["provider"] == "codex"
+    assert request["model"] == ""
+    assert request["reasoning"] == "medium"
+    assert request["run_on"] == "laptop"
+    assert request["run_truth_scope"] == ["repo-a"]
+    assert response.json()["kind"] == "node_chat"
     assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
     assert store.watcher("pending-loop-watcher").notified is True
     operation_id = response.json()["operation_id"]

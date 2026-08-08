@@ -4,6 +4,8 @@ const COMMANDS: &[&str] = &[
     "desktop_status",
     "desktop_reconnect_backend",
     "desktop_show_ready",
+    "desktop_start_dictation",
+    "desktop_stop_dictation",
     "open_artifact_preview",
     "download_artifact",
     "open_external",
@@ -13,6 +15,17 @@ const COMMANDS: &[&str] = &[
 ];
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        cc::Build::new()
+            .file("src/dictation.m")
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("rcp_dictation");
+        println!("cargo:rustc-link-lib=framework=AVFoundation");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=Speech");
+        println!("cargo:rerun-if-changed=src/dictation.m");
+    }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),

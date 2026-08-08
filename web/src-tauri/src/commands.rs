@@ -8,6 +8,7 @@ use url::Url;
 
 use crate::{
     backend::{self, BackendState},
+    dictation,
     lifecycle::DesktopStatus,
     navigation, updates, windows,
 };
@@ -38,6 +39,16 @@ pub struct QuitResult {
 #[derive(Serialize)]
 pub struct ApplyUpdateResult {
     started: bool,
+}
+
+#[tauri::command]
+pub fn desktop_start_dictation(app: AppHandle, session_id: String) -> Result<(), String> {
+    dictation::start(&app, &session_id)
+}
+
+#[tauri::command]
+pub fn desktop_stop_dictation(session_id: String) -> Result<(), String> {
+    dictation::stop(&session_id)
 }
 
 #[tauri::command]
@@ -190,6 +201,7 @@ pub async fn request_quit(
     app: AppHandle,
     state: State<'_, BackendState>,
 ) -> Result<QuitResult, String> {
+    dictation::stop_active();
     let shutdown = backend::graceful_stop(&state).await?;
     if shutdown.forced {
         app.dialog()

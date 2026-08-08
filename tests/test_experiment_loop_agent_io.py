@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -14,9 +15,11 @@ from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
     experiment_watcher_delivery_request,
+    experiment_watcher_output_name,
     preflight_episode_wake,
+    stage_chat_experiment_watcher_resources,
 )
-from rcp.runs.work import stream_work_run
+from rcp.runs.work import _process_experiment_watcher_maintenance, stream_work_run
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -361,6 +364,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         origin_task_kind="node_chat",
         chat_id="chat-native-wake",
         node_id=_EXPERIMENT_ID,
+        experiment_episode_id=episode.episode_id,
         check_command="false",
         log_path=str(tmp_path / "detached.log"),
         cwd=str(tmp_path),
@@ -757,6 +761,195 @@ def _store_watcher(
             )
         ]
     )
+
+
+@pytest.mark.asyncio
+async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stale_output(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "chat-resource.sqlite3")
+    project_id = "project-chat-resource"
+    episode_id = "00000000-0000-4000-8000-000000000098"
+    _store_task(
+        store,
+        operation_id="loop-resource-root",
+        project_id=project_id,
+        episode_id=episode_id,
+    )
+    store.commit_experiment_episode_turn(
+        episode_id=episode_id,
+        project_id=project_id,
+        control_node_id=_EXPERIMENT_ID,
+        provider="codex",
+        execution_machine="laptop",
+        execution_host="episode.example",
+        native_session_id="loop-resource-session",
+        stage_host=None,
+        stage_root=str(tmp_path / "loop-resource-stage"),
+        chat_id="watcher-state-chat",
+        operation_id="loop-resource-root",
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=[],
+        context_baseline={},
+    )
+    _store_watcher(
+        store,
+        watcher_id="resource-active",
+        project_id=project_id,
+        episode_id=episode_id,
+        status="active",
+    )
+    request = RunRequest(
+        chat_scope="node",
+        chat_id="maintenance-chat",
+        node_id=_EXPERIMENT_ID,
+        message="Inspect the observer.",
+        run_truth_scope=["repo-a"],
+        mode="discuss",
+    )
+    execution = _execution(
+        store,
+        project_id,
+        "maintenance-discuss",
+        request,
+    )
+    stage = tmp_path / "maintenance-stage"
+    workspace = stage / "workspace"
+    workspace.mkdir(parents=True)
+    stale = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
+    stale.write_text("stale", encoding="utf-8")
+
+    resources = await stage_chat_experiment_watcher_resources(
+        request,
+        execution,
+        stage,
+        None,
+        workspace=workspace,
+        token="maintenance-discuss",
+        clear_stale=True,
+    )
+
+    assert len(resources) == 1
+    resource = resources[0]
+    assert resource.resource.control_node_id == _EXPERIMENT_ID
+    assert resource.resource.episode_id == episode_id
+    assert resource.resource.execution_host == "episode.example"
+    assert resource.watch_path == str(workspace / experiment_watcher_output_name(_EXPERIMENT_ID))
+    assert not stale.exists()
+    state = json.loads(Path(resource.watcher_state_path).read_text(encoding="utf-8"))
+    assert [item["watcher_id"] for item in state] == ["resource-active"]
+
+
+@pytest.mark.asyncio
+async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "unstaged-resource.sqlite3")
+    project_id = "project-unstaged-resource"
+    request = RunRequest(
+        chat_scope="node",
+        chat_id="maintenance-chat",
+        node_id=_EXPERIMENT_ID,
+        message="Try an unstaged resource.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _execution(store, project_id, "maintenance-work", request)
+    workspace = tmp_path / "unstaged-workspace"
+    workspace.mkdir()
+    guessed = workspace / experiment_watcher_output_name("exp/outside-scope")
+    guessed.write_text("[]", encoding="utf-8")
+
+    frames, session_id, paused = await _process_experiment_watcher_maintenance(
+        launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
+        request=request,
+        execution=execution,
+        staged_resources=[],
+        workspace=workspace,
+        remote_stage=None,
+        local_stage=tmp_path / "unstaged-stage",
+        base_contract_path="/stage/inputs/chat-master.md",
+        token="maintenance-work",
+        native_session_id="maintenance-session",
+        read_dirs=[],
+        write_dirs=[],
+        execution_host="",
+        provider_binary=None,
+        retry_output_digests={},
+    )
+
+    assert frames == []
+    assert session_id == "maintenance-session"
+    assert paused is False
+    rejection = next(
+        item
+        for item in store.agent_task_receipts(execution.operation_id)
+        if item.category == "experiment_watcher_maintenance_rejected"
+    )
+    assert "permission denied" in str(rejection.payload["problem"]).casefold()
+    assert "not staged" in str(rejection.payload["problem"])
+    assert "missing" not in str(rejection.payload["problem"]).casefold()
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path: Path) -> None:
+    """A Retry reuses the chat folder, so a survivor is not this attempt's handoff.
+
+    Applying it would commit the previous attempt's maintenance under this
+    attempt's authorization, which invariant 10c forbids.
+    """
+
+    store = AppStore(tmp_path / "retry-survivor.sqlite3")
+    project_id = "project-retry-survivor"
+    request = RunRequest(
+        chat_scope="node",
+        chat_id="maintenance-chat",
+        node_id=_EXPERIMENT_ID,
+        message="Repair the observers.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _execution(
+        store,
+        project_id,
+        "maintenance-retry",
+        request,
+        continuation="retry",
+        parent_operation_id="maintenance-work",
+    )
+    workspace = tmp_path / "retry-workspace"
+    workspace.mkdir()
+    survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
+    survivor_text = '[{"stop_watcher_id": "w-1", "reason": "Superseded"}]'
+    survivor.write_text(survivor_text, encoding="utf-8")
+    predecessor_digest = hashlib.sha256(survivor_text.encode("utf-8")).hexdigest()
+
+    frames, session_id, paused = await _process_experiment_watcher_maintenance(
+        launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
+        request=request,
+        execution=execution,
+        staged_resources=[],
+        workspace=workspace,
+        remote_stage=None,
+        local_stage=tmp_path / "retry-stage",
+        base_contract_path="/stage/inputs/chat-master.md",
+        token="maintenance-retry",
+        native_session_id="maintenance-session",
+        read_dirs=[],
+        write_dirs=[],
+        execution_host="",
+        provider_binary=None,
+        retry_output_digests={survivor.name: predecessor_digest},
+    )
+
+    assert frames == []
+    assert session_id == "maintenance-session"
+    assert paused is False
+    receipts = store.agent_task_receipts("maintenance-retry")
+    comparisons = [item for item in receipts if item.category == "retry_deliverable_comparison"]
+    assert [item.payload["unchanged"] for item in comparisons] == [True]
+    assert not [
+        item for item in receipts if item.category == "experiment_watcher_maintenance_rejected"
+    ]
 
 
 def test_watcher_state_includes_current_and_compatible_stopped_history(

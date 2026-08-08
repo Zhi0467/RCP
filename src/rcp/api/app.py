@@ -10,10 +10,10 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,7 @@ from rcp.artifacts import (
     read_local_regular_file,
     validate_artifact_bytes,
 )
+from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload
 from rcp.background import (
     AgentTaskExecution,
     AgentTaskRequest,
@@ -154,6 +155,7 @@ def create_app(
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     setup = ProjectSetupManager(app_data, catalog, launcher)
+    attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
     default_record = catalog.register(manifest_path) if manifest_path else None
     default_project_id = default_record.project_id if default_record else None
     default_project_name = default_record.name if default_record else None
@@ -351,6 +353,9 @@ def create_app(
                     return
                 if runtime.control_revision is None:
                     raise ValueError("An Experiment watcher is missing its control revision.")
+                # Watchers keep the maintenance turn as immutable creation
+                # provenance. Delivery always resumes the live episode's node
+                # chat and pinned policy instead.
                 request = experiment_watcher_delivery_request(
                     group,
                     trigger="watcher",
@@ -369,13 +374,15 @@ def create_app(
                         "reasoning": runtime.reasoning,
                         "run_on": runtime.run_on,
                         "run_truth_scope": runtime.run_truth_scope,
-                        "chat_id": runtime.chat_id,
+                        "chat_scope": "node",
+                        "node_id": control_node_id,
+                        "chat_id": episode.chat_id,
                         "session_id": preflight.session_id,
                     }
                 )
                 background_tasks.start_watcher_notification(
                     first.project_id,
-                    first.origin_task_kind,
+                    "node_chat",
                     request,
                     watcher_ids,
                     episode_stage_host=preflight.stage_host,
@@ -457,6 +464,7 @@ def create_app(
         try:
             store.prune_operational_storage()
             _sweep_stale_stages(app_data / "run-stage", now=time.time())
+            attachment_store.sweep()
             RebuildableCache(
                 app_data / "source-cache",
                 REMOTE_SOURCE_CACHE_LIMITS,
@@ -784,6 +792,56 @@ def create_app(
             )
         return service.clear_rebuildable_caches()
 
+    @app.post(
+        "/api/projects/{project_id}/chats/{chat_id}/attachments",
+        response_model=ChatAttachmentUpload,
+    )
+    def upload_chat_attachment(
+        project_id: str,
+        chat_id: str,
+        file: Annotated[UploadFile, File()],
+        client_id: Annotated[str, Form()],
+        attachment_set_id: Annotated[str | None, Form()] = None,
+    ) -> ChatAttachmentUpload:
+        _require_registered_project(catalog, project_id)
+        try:
+            return attachment_store.add(
+                project_id=project_id,
+                chat_id=chat_id,
+                client_id=client_id,
+                filename=file.filename or "",
+                media_type=file.content_type,
+                source=file.file,
+                attachment_set_id=attachment_set_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            file.file.close()
+
+    @app.delete(
+        "/api/projects/{project_id}/chats/{chat_id}/attachments/{attachment_id}",
+    )
+    def remove_chat_attachment(
+        project_id: str,
+        chat_id: str,
+        attachment_id: str,
+        client_id: str,
+        attachment_set_id: str,
+    ) -> dict[str, bool]:
+        _require_registered_project(catalog, project_id)
+        try:
+            attachment_store.remove(
+                project_id=project_id,
+                chat_id=chat_id,
+                client_id=client_id,
+                attachment_set_id=attachment_set_id,
+                attachment_id=attachment_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"removed": True}
+
     @app.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
     def start_agent_task(
         project_id: str,
@@ -808,7 +866,44 @@ def create_app(
                             "starting a new turn."
                         ),
                     )
-            record = background_tasks.start(project_id, kind, request)
+            operation_id = str(uuid.uuid4())
+            claimed_set: tuple[str, str] | None = None
+            if kind in {"node_chat", "project_chat"}:
+                assert isinstance(request, RunRequest)
+                supplied = (request.attachment_set_id, request.attachment_client_id)
+                if any(supplied) and not all(supplied):
+                    raise ValueError(
+                        "Chat attachments require both attachment_set_id and attachment_client_id."
+                    )
+                if request.attachment_set_id and request.attachment_client_id:
+                    assert request.chat_id is not None
+                    claimed = attachment_store.claim(
+                        project_id=project_id,
+                        chat_id=request.chat_id,
+                        client_id=request.attachment_client_id,
+                        attachment_set_id=request.attachment_set_id,
+                        operation_id=operation_id,
+                    )
+                    claimed_set = (claimed.attachment_batch_id, operation_id)
+                    request = request.model_copy(
+                        update={
+                            "attachment_set_id": None,
+                            "attachment_client_id": None,
+                            "attachment_batch_id": claimed.attachment_batch_id,
+                            "attachments": claimed.attachments,
+                        }
+                    )
+            try:
+                record = background_tasks.start(
+                    project_id,
+                    kind,
+                    request,
+                    operation_id=operation_id,
+                )
+            except BaseException:
+                if claimed_set is not None and store.agent_task(operation_id) is None:
+                    attachment_store.release(*claimed_set)
+                raise
         except ValueError as exc:
             status = 409 if "already running" in str(exc) else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -851,14 +946,28 @@ def create_app(
                         decision_bundle=control.governing_decisions,
                         completion_criteria=list(node.completion_criteria),
                     )
+                    profile = service.resolve_agent_profile("node_chat")
+                    request = request.model_copy(
+                        update={
+                            "provider": profile.provider,
+                            "model": profile.model,
+                            "reasoning": profile.reasoning,
+                            "run_on": profile.run_on,
+                            "run_truth_scope": supplied.run_truth_scope,
+                            "chat_scope": "node",
+                            "node_id": node_id,
+                            "chat_id": supplied.chat_id,
+                            "session_id": None,
+                        }
+                    )
                     request = _resolved_graph_request(
                         service,
-                        pending_group[0].origin_task_kind,
+                        "node_chat",
                         request,
                     )
                     record = background_tasks.start_watcher_notification(
                         project_id,
-                        pending_group[0].origin_task_kind,
+                        "node_chat",
                         request,
                         [item.watcher_id for item in pending_group],
                     )
@@ -1429,6 +1538,8 @@ def _validated_task_request(
             "control_decision_bundle": [],
             "control_completion_criteria": [],
             "watcher_ids": [],
+            "attachment_batch_id": None,
+            "attachments": [],
         }
     )
     if kind in {"seed", "refresh"}:
@@ -1447,7 +1558,7 @@ def _validated_task_request(
             "node_id": request.node_id if chat_scope == "node" else None,
         }
     )
-    if not request.message or not request.chat_id:
+    if not request.message or not request.message.strip() or not request.chat_id:
         raise ValueError("Chat requires a chat_id and message")
     if chat_scope == "node":
         if not request.node_id:

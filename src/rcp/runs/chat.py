@@ -798,6 +798,7 @@ def _append_chat_exchange(
                     "type": "user",
                     "role": "user",
                     "text": request.message,
+                    "attachments": [item.model_dump(mode="json") for item in request.attachments],
                 }
             )
         records.append(

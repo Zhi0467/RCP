@@ -3,6 +3,7 @@ import type {
   AgentTask,
   AgentTaskKind,
   ChatMessage,
+  ChatAttachmentDescriptor,
   ConversationMode,
   GraphUpdateResult,
   TaskTrigger,
@@ -14,6 +15,7 @@ export interface TaskTranscriptLine {
   taskId: string;
   timestamp: string;
   artifacts?: AgentArtifactDescriptor[];
+  attachments?: ChatAttachmentDescriptor[];
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
   graphUpdate?: GraphUpdateResult | null;
@@ -185,6 +187,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     mode: message.mode,
     trigger: message.trigger,
     graphUpdate: message.graph_update,
+    attachments: message.attachments,
   };
 }
 
@@ -196,6 +199,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const trigger = taskTrigger(task.request.trigger);
     const graphUpdate = task.result?.graph_update ?? null;
     if (message && trigger === "human") {
+      const attachments = taskAttachments(task.request.attachments);
       lines.push({
         role: "human",
         text: message,
@@ -203,6 +207,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         timestamp: task.created_at,
         mode,
         trigger,
+        ...(attachments.length ? { attachments } : {}),
       });
     }
     const messages = Array.isArray(task.result?.messages)
@@ -259,6 +264,20 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     }
     return lines;
   });
+}
+
+function taskAttachments(value: unknown): ChatAttachmentDescriptor[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is ChatAttachmentDescriptor =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof item.attachment_id === "string" &&
+      typeof item.name === "string" &&
+      typeof item.media_type === "string" &&
+      typeof item.size === "number" &&
+      typeof item.expires_at === "string",
+  );
 }
 
 export function orderTranscriptLines(lines: TaskTranscriptLine[]): TaskTranscriptLine[] {

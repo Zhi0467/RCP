@@ -7,16 +7,14 @@ covered_by:
   - tests/test_providers.py
   - tests/test_launcher.py::test_stream_reuses_capability_and_invalidates_it_after_launch_failure
   - tests/test_launcher.py::test_cold_readiness_does_not_block_stream_event_loop
-  - tests/test_api.py::test_local_provider_warmup_starts_after_health_is_available
+  - tests/test_api.py::test_provider_warmup_starts_after_health_is_available
   - tests/test_api.py::test_project_readiness_does_not_open_or_materialize_project
-  - tests/test_provider_capabilities.py
   - web/tests/providers.test.mjs
-last_passed: 2026-08-01 — isolated local browser drive covered all five agent
-  surfaces, live Codex per-model effort narrowing, provider reset, and forced
-  re-probe; process-lifetime reuse, lazy remote discovery, invalidation, and
-  launch-time reuse passed in the 455-test backend suite. All 109 web tests
-  passed, with no browser-console or server errors.
-invariants: [4]
+last_passed: 2026-08-04 — browser opened a project, switched to Chats, and used
+  the composer while readiness warmed in the background; the 2026-08-01 drive
+  covered all five agent surfaces, live Codex per-model effort narrowing,
+  provider reset, forced re-probe, and process-lifetime capability reuse
+invariants: [4, 8]
 ---
 
 # Every agent choice offered is a choice the provider actually accepts
@@ -31,7 +29,7 @@ Two bugs motivated this scenario, both found on 2026-07-30:
   `minimal`, which the current Codex models do not accept, and omitted `max` and
   `ultra`, which they do.
 - The reasoning control was **hidden for Claude** on the false premise that the
-  provider command dropped it. It does not — [providers.py:253](../../src/rcp/providers.py:253)
+  provider command dropped it. It does not — [providers.py](../../src/rcp/providers.py)
   passes `--effort`. A correct control was removed because the person removing
   it guessed instead of reading.
 
@@ -94,7 +92,9 @@ project setup.
    levels.
 5. Press the readiness refresh control.
 6. Repeat in project setup and in the run dialog.
-7. Open a second project using the same local provider target, then launch an
+7. While readiness is still warming, open a project, switch to Chats, type into
+   the composer, and move between views; only provider status may remain pending.
+8. Open a second project using the same local provider target, then launch an
    agent without pressing Refresh.
 
 ## Assert
@@ -120,6 +120,8 @@ project setup.
   efforts, not only installed/authenticated
 - `local_capabilities_warm_after_app_health` — app startup is never held behind
   a provider probe, but the unique local targets begin warming once it is usable
+- `project_shell_remains_interactive_during_warmup` — project views and the chat
+  composer remain usable while the background probe is running
 - `project_open_never_probes_a_provider`
 - `projects_share_capability_by_provider_host_and_binary`
 - `launch_reuses_process_lifetime_capability`
@@ -157,5 +159,6 @@ install software on a machine they could not log into.
 ## Failure means
 
 RCP is offering the human a choice the provider will reject, hiding one it would
-accept, or has grown a second place where provider facts are written from
-memory.
+accept, has grown a second place where provider facts are written from memory,
+or lets a provider probe freeze the app or repeat merely because a project was
+opened.
