@@ -6,7 +6,7 @@ from contextlib import aclosing, suppress
 from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, invoked_package_pointers
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import ReplayHalted
@@ -55,6 +55,7 @@ def _prepare_discuss_chat_prompt(
     artifact_path: str,
     master_context: str,
     stable_values: dict[str, object],
+    skill_pointers: list[dict[str, object]],
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
@@ -74,6 +75,12 @@ def _prepare_discuss_chat_prompt(
         human_message=request.message,
         master_context_path=bootstrap_path,
         context_delta=context_delta,
+        invoked_skill_pointers=invoked_package_pointers(
+            skill_pointers,
+            workflow_ids=request.invoked_workflow_ids,
+            skill_ids=request.invoked_skill_ids,
+        ),
+        invoked_provider_skills=request.resolved_provider_skills,
     )
     return prompt, retained_master_path
 
@@ -199,6 +206,12 @@ async def stream_discuss_run(
                     original_contract_path=original_contract_path,
                     mode="resume",
                     patch_path=None,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers,
+                        workflow_ids=request.invoked_workflow_ids,
+                        skill_ids=request.invoked_skill_ids,
+                    ),
+                    invoked_provider_skills=request.resolved_provider_skills,
                 )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
@@ -248,6 +261,12 @@ async def stream_discuss_run(
                         artifact_path=str(artifact_directory),
                         retry_diagnostics_path=retry_diagnostics_path,
                         skill_pointers=skill_pointers,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
+                        invoked_provider_skills=request.resolved_provider_skills,
                     )
                     current_contract_path, current_prompt = _stage_task_contract(
                         local_stage,
@@ -269,6 +288,12 @@ async def stream_discuss_run(
                         diagnostics_path=retry_diagnostics_path,
                         mode="retry",
                         skill_pointers=skill_pointers if resumed_retry else None,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
+                        invoked_provider_skills=request.resolved_provider_skills,
                     )
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
@@ -338,6 +363,7 @@ async def stream_discuss_run(
                     output_schema_path=patch_inputs.schema_path,
                     validator_command=patch_inputs.validator_command,
                     watch_path=patch_inputs.watch_path,
+                    execution_host=execution_host,
                     skill_pointers=skill_pointers,
                 )
                 prompt, retained_master_path = _prepare_discuss_chat_prompt(
@@ -348,6 +374,7 @@ async def stream_discuss_run(
                     artifact_path=str(artifact_directory),
                     master_context=master_context,
                     stable_values=stable_prompt_values,
+                    skill_pointers=skill_pointers,
                 )
                 contract_path = retained_master_path
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:

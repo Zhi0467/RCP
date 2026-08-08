@@ -530,7 +530,7 @@ def test_loop_patch_cannot_mutate_completion_criteria_but_attempts_do_not_spend_
     assert "experiment-loop-attempt-ceiling" not in codes
 
 
-def test_loop_patch_may_create_evidence_blockers_and_epistemic_edges_only() -> None:
+def test_loop_patch_may_create_evidence_blockers_and_scoped_evidence_edges() -> None:
     state = _state()
     evidence = {
         "id": "ev/result",
@@ -575,6 +575,55 @@ def test_loop_patch_may_create_evidence_blockers_and_epistemic_edges_only() -> N
     codes = _codes(validate_patch(state, _patch(invalid), ["repo"]))
     assert "experiment-loop-created-node" in codes
     assert "experiment-loop-edge-layer" in codes
+
+
+def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None:
+    state = _state()
+    evidence = {
+        "id": "ev/result",
+        "type": "evidence",
+        "title": "Result",
+        "observation": "The run completed.",
+        "origin": "internal_run",
+    }
+    handoffs = _patch(
+        [
+            {"op": "create_nodes", "nodes": [evidence]},
+            {
+                "op": "create_edges",
+                "edges": [
+                    {"source": EXPERIMENT_ID, "target": evidence["id"], "relation": "produces"},
+                    {"source": evidence["id"], "target": DECISION_ID, "relation": "informs"},
+                    {
+                        "source": evidence["id"],
+                        "target": "blk/capacity",
+                        "relation": "addresses",
+                    },
+                ],
+            },
+        ]
+    )
+    assert not validate_patch(state, handoffs, ["repo"]).rejected
+
+    wrong_source = deepcopy(handoffs.ops)
+    wrong_source[1]["edges"][1] = {
+        "source": EXPERIMENT_ID,
+        "target": DECISION_ID,
+        "relation": "informs",
+    }
+    assert "experiment-loop-evidence-handoff" in _codes(
+        validate_patch(state, _patch(wrong_source), ["repo"])
+    )
+
+    wrong_target = deepcopy(handoffs.ops)
+    wrong_target[1]["edges"][2] = {
+        "source": evidence["id"],
+        "target": "hyp/target",
+        "relation": "addresses",
+    }
+    assert "experiment-loop-evidence-handoff" in _codes(
+        validate_patch(state, _patch(wrong_target), ["repo"])
+    )
 
 
 def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None:

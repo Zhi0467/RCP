@@ -288,7 +288,12 @@ guarantees — surface the conflict instead of working around it.
    `glossary.json`, `proposals.json`, `coverage.json` are outputs.
 3. **Agents assert or propose; humans hold authority.** Only human UI actions
    set `standing`, approve gated operations, or change project truth membership.
-   Do not add an agent path that writes any of those.
+   Do not add an agent path that writes any of those. A human authority action
+   whose operations cannot distinguish it from an ordinary edit names itself on
+   the patch (`human_action` in [models.py](src/rcp/core/models.py)); validation
+   dispatches on that name. Never infer which action produced a patch from its
+   operation shape — a direct Decision choice and a node edit are both one
+   `update_nodes` on one node, and guessing silently reroutes the other one.
 4. **Agent permission contracts are fixed by capability.** `permissions_for()`
    in [config.py](src/rcp/config.py) is the contract; the manifest may not widen
    or narrow it. Discuss has writable conversation scratch but no project or

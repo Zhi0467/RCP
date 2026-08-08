@@ -38,7 +38,8 @@ import {
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
 import type { GlossaryIndex } from "../glossary";
-import { watcherIsIndividuallyStoppable } from "../runProjection";
+import { skillInvocationFields } from "../skillPicker";
+import { watcherIsActive, watcherIsIndividuallyStoppable } from "../runProjection";
 import {
   downloadDesktopArtifact,
   isDesktopRuntime,
@@ -185,15 +186,19 @@ export function NodeChat({
     () => new Map(),
   );
   const [watchersOpen, setWatchersOpen] = useState(false);
+  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
     catalog: skillCatalog,
     defaults: skillDefaults,
+    provider: config.provider,
+    providerLabel: readiness?.label || config.provider,
+    machine: config.run_on,
+    inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
   const liveWatchers = useMemo(
-    () =>
-      watchers.filter((watcher) => watcher.chat_id === chatId && watcher.status !== "completed"),
+    () => watchers.filter((watcher) => watcher.chat_id === chatId && watcherIsActive(watcher)),
     [chatId, watchers],
   );
   const continuedTaskIds = useMemo(
@@ -206,7 +211,6 @@ export function NodeChat({
     [relatedTasks],
   );
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
-  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   const sessionId =
@@ -325,8 +329,7 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
-        invoked_workflow_ids: skills.selection.workflow_ids,
-        invoked_skill_ids: skills.selection.skill_ids,
+        ...skillInvocationFields(skills.selection, skills.providerSkillNames),
       });
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();

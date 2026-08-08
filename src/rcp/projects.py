@@ -21,6 +21,7 @@ from rcp.core.models import GraphState
 from rcp.history import HistoryManager
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
 from rcp.paper import PaperService
+from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
 from rcp.service import ProjectService, ProjectSettingsRequest
 from rcp.storage import AppStore, ProjectRecord, ProjectStageRecord
@@ -48,6 +49,7 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "paper_coach",
     "agent_profiles",
     "provider_readiness",
+    "provider_skill_inventories",
     "providers",
     "cache_metrics",
     "validation_messages",
@@ -63,10 +65,17 @@ class ProjectDeletionResult(BaseModel):
 
 
 class ProjectCatalog:
-    def __init__(self, data_dir: Path, store: AppStore, launcher: AgentLauncher) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        store: AppStore,
+        launcher: AgentLauncher,
+        provider_skills: ProviderSkillInventoryManager | None = None,
+    ) -> None:
         self.data_dir = data_dir
         self.store = store
         self.launcher = launcher
+        self.provider_skills = provider_skills
         self._services: dict[str, ProjectService] = {}
         self._services_lock = threading.Lock()
         self._opening: dict[str, Future[tuple[ProjectService, GraphState]]] = {}
@@ -185,7 +194,13 @@ class ProjectCatalog:
         if record is None:
             raise KeyError(project_id)
         manifest = load_manifest(record.locator)
-        return ProjectService.readiness_for(manifest, self.launcher, refresh=refresh)
+        snapshot = ProjectService.readiness_for(manifest, self.launcher, refresh=refresh)
+        ProjectService.wait_for_provider_skill_inventories_for(manifest, self.provider_skills)
+        snapshot["provider_skill_inventories"] = ProjectService.provider_skill_inventories_for(
+            manifest,
+            self.provider_skills,
+        )
+        return snapshot
 
     def provider_targets(self) -> list[tuple[ProviderId, str, str | None]]:
         """Unique configured provider capabilities known to this app process."""
@@ -388,6 +403,7 @@ class ProjectCatalog:
             paper,
             self.launcher,
             data_dir=self.data_dir,
+            provider_skills=self.provider_skills,
         )
         return service, initialized_state
 
@@ -551,6 +567,7 @@ def _valid_display_snapshot(project_id: str, snapshot: dict[str, object]) -> boo
             "paper_coach",
             "agent_profiles",
             "provider_readiness",
+            "provider_skill_inventories",
             "providers",
             "cache_metrics",
         )

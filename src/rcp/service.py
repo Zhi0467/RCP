@@ -53,7 +53,8 @@ from rcp.limits import (
     CHAT_TITLE_MAX_CHARS,
 )
 from rcp.paper import PaperService, PaperSnapshot
-from rcp.providers import PROVIDER_IDS, ProviderId
+from rcp.provider_skills import ProviderSkillInventoryManager
+from rcp.providers import PROVIDER_IDS, ProviderId, ProviderSkillReference
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -281,6 +282,8 @@ class RunRequest(BaseModel):
     skill_ids: list[str] | None = None
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
+    invoked_provider_skill_names: list[str] = Field(default_factory=list)
+    resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
 
@@ -295,6 +298,8 @@ class CoachRequest(BaseModel):
     skill_ids: list[str] | None = None
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
+    invoked_provider_skill_names: list[str] = Field(default_factory=list)
+    resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
 
@@ -334,10 +339,12 @@ class ProjectService:
         paper: PaperService,
         launcher: AgentLauncher | None = None,
         data_dir: Path | None = None,
+        provider_skills: ProviderSkillInventoryManager | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
         self.launcher = launcher or AgentLauncher()
+        self.provider_skills = provider_skills
         state_repository = manifest.repository_map[manifest.state.repository]
         state_machine = manifest.machine_map[state_repository.machine]
         app_chat_origin = AppChatOrigin(
@@ -651,6 +658,7 @@ class ProjectService:
             "skill_catalog": official_registry().catalog(),
             "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
             "provider_readiness": {},
+            "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
             "providers": {},
             "cache_metrics": self.indexer.cache_metrics().model_dump(mode="json"),
             "validation_messages": [
@@ -659,7 +667,60 @@ class ProjectService:
         }
 
     def readiness_snapshot(self, *, refresh: bool = False) -> dict[str, object]:
-        return self.readiness_for(self.manifest, self.launcher, refresh=refresh)
+        snapshot = self.readiness_for(self.manifest, self.launcher, refresh=refresh)
+        self.wait_for_provider_skill_inventories()
+        snapshot["provider_skill_inventories"] = self.provider_skill_inventory_snapshot()
+        return snapshot
+
+    def wait_for_provider_skill_inventories(self) -> None:
+        """Wait only for an already-scheduled startup refresh; never start one."""
+
+        self.wait_for_provider_skill_inventories_for(self.manifest, self.provider_skills)
+
+    @staticmethod
+    def wait_for_provider_skill_inventories_for(
+        manifest: Manifest,
+        provider_skills: ProviderSkillInventoryManager | None,
+    ) -> None:
+        if provider_skills is None:
+            return
+        for machine in manifest.machines:
+            for provider in PROVIDER_IDS:
+                provider_skills.wait(
+                    provider,
+                    machine.host,
+                    machine.provider_paths.get(provider),
+                )
+
+    def provider_skill_inventory_snapshot(self) -> dict[str, dict[ProviderId, object]]:
+        """Return startup-cached provider skills without probing a provider."""
+
+        return self.provider_skill_inventories_for(self.manifest, self.provider_skills)
+
+    @staticmethod
+    def provider_skill_inventories_for(
+        manifest: Manifest,
+        provider_skills: ProviderSkillInventoryManager | None,
+    ) -> dict[str, dict[ProviderId, object]]:
+        """Project provider inventories mapped through its machine aliases."""
+
+        if provider_skills is None:
+            return {
+                machine.alias: {provider: None for provider in PROVIDER_IDS}
+                for machine in manifest.machines
+            }
+        return {
+            machine.alias: {
+                provider: provider_skills.snapshot(
+                    provider,
+                    machine.host,
+                    machine.provider_paths.get(provider),
+                    machine.alias,
+                ).model_dump(mode="json")
+                for provider in PROVIDER_IDS
+            }
+            for machine in manifest.machines
+        }
 
     @staticmethod
     def readiness_for(
@@ -1152,7 +1213,10 @@ class ProjectService:
                         raise ValueError(
                             f"Decision {node.id} is superseded and cannot be decided again."
                         )
-                    selected_option = staged.changes.get("selected_option")
+                    # Choosing the option a Decision already carries stages only
+                    # the status move, so resolve the effective choice against
+                    # the node the way the options list already is.
+                    selected_option = staged.changes.get("selected_option", node.selected_option)
                     effective_options = staged.changes.get("options", node.options)
                     if staged.changes.get("status") != "decided":
                         raise ValueError(
@@ -1282,6 +1346,7 @@ class ProjectService:
                         summary=f"Synced staged changes for “{display_title}”.",
                         ops=ops,
                         change_summary=change_summary,
+                        human_action="decision_choice" if is_direct_choice else None,
                     )
                 )
 
@@ -1635,12 +1700,32 @@ class ProjectService:
 
         invoked_workflow_ids = validate_invocations(request.invoked_workflow_ids, "workflow")
         invoked_skill_ids = validate_invocations(request.invoked_skill_ids, "skill")
+        resolved_provider_skills: list[ProviderSkillReference] = []
+        if request.invoked_provider_skill_names:
+            if self.provider_skills is None:
+                raise ValueError("provider-native skill inventory is unavailable")
+            if request.provider is None or request.run_on is None:
+                raise ValueError(
+                    "provider-native skills require a resolved provider and execution machine"
+                )
+            try:
+                machine = self.manifest.machine_map[request.run_on]
+            except KeyError:
+                raise ValueError(f"unknown execution machine: {request.run_on}") from None
+            resolved_provider_skills = self.provider_skills.resolve(
+                request.provider,
+                machine.host,
+                machine.provider_paths.get(request.provider),
+                machine.alias,
+                request.invoked_provider_skill_names,
+            )
         return request.model_copy(
             update={
                 "workflow_ids": selection.workflow_ids,
                 "skill_ids": selection.skill_ids,
                 "invoked_workflow_ids": invoked_workflow_ids,
                 "invoked_skill_ids": invoked_skill_ids,
+                "resolved_provider_skills": resolved_provider_skills,
                 "resolved_skill_packages": selection.resolved_skill_packages,
             }
         )

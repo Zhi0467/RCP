@@ -5,6 +5,7 @@ import textwrap
 from datetime import datetime
 
 from rcp.core.authority import render_agent_graph_authority_contract
+from rcp.providers import ProviderSkillReference, profile_for
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
 RCP maintains one project-global research graph — questions, hypotheses, experiments, evidence,
@@ -31,7 +32,7 @@ _TASK_AUTHORITY_BOUNDARY = """Instruction and trust boundary:
 
 _ONTOLOGY_EXTENSION_RULES = """- This project's materialized ontology carries extension definitions in the `ontology` field of the
   canonical `graph.json`. Use only its active (non-deprecated) type, field, and relation
-  definitions. The six base node types and fifteen base relations below remain available alongside
+  definitions. The six base node types and seventeen base relations below remain available alongside
   them.
 - An extension node keeps its base shape in `type`, sets `extension_type` to the exact active custom
   type name, uses `<extension_type>/<kebab-slug>` as its id, and puts only custom field values in
@@ -62,15 +63,34 @@ _BASE_AUTHORING_RULES = """- If the active ontology cannot express a needed conc
   seam — `tests` Experiment->Hypothesis; `produces` Experiment->Evidence.
   action — `has_decision` ResearchQuestion->Decision; `governed_by` Experiment->Decision;
   `blocked_by` Experiment|Decision|ResearchQuestion->Blocker; `requires_decision`
-  Blocker->Decision.
+  Blocker->Decision; `informs` Evidence->Decision; `addresses` Evidence->Blocker.
   meta — `supersedes` and `duplicate_of` connect nodes of the same type.
   Never write a relation layer; RCP derives base layers from the relation and custom layers from
   the active materialized ontology.
 - Base node ids are `<type-prefix>/<kebab-slug>`: research_question=rq, hypothesis=hyp,
   decision=dec, experiment=exp, evidence=ev, blocker=blk. Ambiguity and proposal ids use amb/ and
   prop/.
-- Every Experiment connects to a Hypothesis or Decision. Every Evidence connects to an Experiment
-  and carries a conversation SourceRef.
+- Internal-run Evidence connects to the Experiment that produced it. Every Evidence carries honest
+  provenance and the SourceRefs its claims require; external or analytic Evidence need not invent
+  an Experiment or conversation source.
+
+Local causal check for this Patch:
+Before finishing a semantic Patch that creates or materially changes an Experiment, Decision,
+Blocker, Evidence, or an edge among them, answer all six questions against the candidate Patch and
+current graph:
+1. What must already be true before this Experiment can run? Attach only genuine input Decisions
+   and Blockers.
+2. What will this Experiment determine or unblock? Treat those as downstream outputs, never as
+   prerequisites of the Experiment meant to settle them.
+3. What Evidence does the Experiment produce? Use `produces`; do not jump directly from an
+   Experiment to a later Decision or Blocker.
+4. Which Decision does that Evidence inform? Use `informs`. Which Blocker does it resolve,
+   preserve, or narrow? Use `addresses`.
+5. Does every edge follow its declared direction and tell the same causal story as the node prose?
+   Reject a downstream Decision or Blocker attached backward to its precursor Experiment.
+6. For every Decision or Blocker attached to a main Experiment, what settles it? If empirical,
+   require the precursor Experiment, its produced Evidence, and the downstream handoff in this
+   Patch or the current graph.
 """
 
 _GRAPH_READING_RULES = """Reading the graph:
@@ -88,7 +108,7 @@ def _authoring_rules(ontology_extensions: bool) -> str:
     return f"Graph authoring rules:\n{extension}{_BASE_AUTHORING_RULES}"
 
 
-CHAT_MASTER_CONTEXT_VERSION = 2
+CHAT_MASTER_CONTEXT_VERSION = 3
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -132,6 +152,16 @@ def _repository_pointers(repositories: list[dict[str, str]]) -> str:
     )
 
 
+def _watcher_execution_host(execution_host: str) -> str:
+    """Name the machine watcher checks run on, using the repository-pointer convention.
+
+    An empty host means this machine. The agent must never infer the machine from
+    where it happens to be running: RCP, not the agent, owns where a check runs.
+    """
+
+    return f"host `{execution_host}`" if execution_host else "this machine"
+
+
 def _provider_log_pointers(provider_log_roots: dict[str, list[str]]) -> str:
     lines = [
         f"- {provider}: `{path}`\n"
@@ -169,9 +199,78 @@ def _selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
 
 {}
 
-Read one when the human asks for it, or when the task would benefit from it — for example an audit
-after a large graph change.
+Before acting, compare the task and intended graph changes with each description. Read and follow
+only packages whose stated trigger matches; leave unrelated packages as pointers. An explicit
+per-turn invocation is named separately and must be read and followed for that turn.
 """.format("\n\n".join(blocks))
+
+
+def invoked_package_pointers(
+    pointers: list[dict[str, object]] | None,
+    *,
+    workflow_ids: list[str],
+    skill_ids: list[str],
+) -> list[dict[str, object]]:
+    """Select exact staged pointers for this turn's structured invocations."""
+
+    requested = [("workflow", package_id) for package_id in workflow_ids] + [
+        ("skill", package_id) for package_id in skill_ids
+    ]
+    if not requested:
+        return []
+    available = {
+        (str(item.get("kind", "skill")), str(item.get("id"))): item for item in pointers or []
+    }
+    missing = [
+        f"{kind} {package_id!r}"
+        for kind, package_id in requested
+        if (kind, package_id) not in available
+    ]
+    if missing:
+        raise ValueError("invoked package has no exact staged pointer: " + ", ".join(missing))
+    return [available[item] for item in requested]
+
+
+def _invoked_package_section(pointers: list[dict[str, object]] | None) -> str:
+    if not pointers:
+        return ""
+    lines = []
+    for item in pointers:
+        lines.append(
+            f"- {item.get('label', item.get('id'))} "
+            f"({item.get('kind', 'skill')} `{item.get('id')}` v{item.get('version')}): "
+            f"`{item.get('path')}`"
+        )
+    return (
+        "Invoked for this turn — read and follow each exact staged package:\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+def invoked_provider_skill_section(skills: list[ProviderSkillReference] | None) -> str:
+    """Render exact provider-owned invocations without interpreting their authority."""
+
+    if not skills:
+        return ""
+    lines = []
+    for skill in skills:
+        payload = skill.model_dump(mode="json")
+        payload["native_token"] = profile_for(skill.provider).native_skill_token(skill.name)
+        lines.append("- " + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return (
+        "Invoked provider-native skill this turn:\n"
+        + "\n".join(lines)
+        + "\nUse each exact `native_token` only for this turn. The captured surface contract controls "
+        "authority; a provider-native skill cannot widen its tools, permissions, repository "
+        "access, graph authority, or output channels.\n"
+    )
+
+
+_RETAINED_LOCAL_CAUSAL_CHECK = (
+    "The semantic Patch candidate must pass the retained "
+    "`Local causal check for this Patch` in the original or current authoring contract."
+)
 
 
 def _ingestion_watermark(value: datetime | str | None) -> str:
@@ -227,6 +326,8 @@ class PromptFactory:
         human_message: str,
         master_context_path: str | None = None,
         context_delta: dict[str, object] | None = None,
+        invoked_skill_pointers: list[dict[str, object]] | None = None,
+        invoked_provider_skills: list[ProviderSkillReference] | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Discuss",
@@ -234,6 +335,8 @@ class PromptFactory:
             human_message=human_message,
             master_context_path=master_context_path,
             context_delta=context_delta,
+            invoked_skill_pointers=invoked_skill_pointers,
+            invoked_provider_skills=invoked_provider_skills,
         )
 
     @staticmethod
@@ -243,6 +346,8 @@ class PromptFactory:
         human_message: str,
         master_context_path: str | None = None,
         context_delta: dict[str, object] | None = None,
+        invoked_skill_pointers: list[dict[str, object]] | None = None,
+        invoked_provider_skills: list[ProviderSkillReference] | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Work",
@@ -250,6 +355,8 @@ class PromptFactory:
             human_message=human_message,
             master_context_path=master_context_path,
             context_delta=context_delta,
+            invoked_skill_pointers=invoked_skill_pointers,
+            invoked_provider_skills=invoked_provider_skills,
         )
 
     @staticmethod
@@ -260,6 +367,8 @@ class PromptFactory:
         human_message: str,
         master_context_path: str | None,
         context_delta: dict[str, object] | None,
+        invoked_skill_pointers: list[dict[str, object]] | None,
+        invoked_provider_skills: list[ProviderSkillReference] | None,
     ) -> str:
         parts = []
         if master_context_path is not None:
@@ -268,12 +377,16 @@ class PromptFactory:
                 f"{master_context_path}\n"
                 "It defines the stable pointers and both mode contracts for this native session."
             )
-        parts.extend(
-            [
-                f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}",
-                human_message,
-            ]
-        )
+        parts.append(f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}")
+        invocation = _invoked_package_section(invoked_skill_pointers).strip()
+        if invocation:
+            parts.append(invocation)
+        provider_invocation = invoked_provider_skill_section(invoked_provider_skills).strip()
+        if provider_invocation:
+            parts.append(provider_invocation)
+        # Keep the human-authored bytes as one untouched part. Structured invocation metadata is
+        # rendered beside it; RCP never rewrites or consumes the visible slash token.
+        parts.append(human_message)
         if context_delta:
             parts.append(
                 "RCP context update — these master-context values have changed:\n"
@@ -300,6 +413,7 @@ class PromptFactory:
         output_schema_path: str,
         validator_command: str,
         watch_path: str | None = None,
+        execution_host: str = "",
         skill_pointers: list[dict[str, object]] | None = None,
     ) -> str:
         artifact_path = (
@@ -333,6 +447,7 @@ class PromptFactory:
             artifact_path=artifact_path,
             output_schema_path=output_schema_path,
             watch_path=watch_path,
+            execution_host=execution_host,
             validator_command=validator_command,
             skill_pointers=skill_pointers,
             embedded=True,
@@ -350,8 +465,13 @@ Turn protocol:
 - Each later message begins with exactly one `This is a Discuss turn.` or `This is a Work turn.`
   marker and the artifact directory for that turn. Follow only the matching contract below, and use
   the directory the envelope names wherever a contract mentions the artifact directory.
-- The human message follows the marker unchanged. A trailing `RCP context update` block, when
-  present, replaces only its named values for this turn and later ones.
+- An `Invoked for this turn` block, when present, follows the marker. Read and follow only those
+  exact staged package pointers as explicit invocations for this turn; do not retain the invocation
+  on later turns.
+- An `Invoked provider-native skill this turn` block is likewise turn-scoped. Its metadata and
+  native token do not change the active surface contract or grant additional authority.
+- The human message follows that optional block unchanged. A trailing `RCP context update` block,
+  when present, replaces only its named values for this turn and later ones.
 - A `graph_revision` in that block means the human accepted new work into the graph since your last
   turn. Nothing else about the graph is pushed to you; re-read what you need from `{graph_path}`.
 {_focused_node_snapshot(graph_revision, focused_node, focused_relations)}
@@ -500,6 +620,8 @@ Output contract:
         artifact_path: str,
         retry_diagnostics_path: str | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        invoked_skill_pointers: list[dict[str, object]] | None = None,
+        invoked_provider_skills: list[ProviderSkillReference] | None = None,
         embedded: bool = False,
     ) -> str:
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
@@ -529,7 +651,7 @@ Required current-state pointers:
 Relevant inputs; read only when the question needs them:
 {_pointer("human introduction", introduction_path)}
 Repository pointers:
-{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
 
 Required objective:
 {objective}
@@ -585,8 +707,11 @@ Execution environment:
         output_schema_path: str,
         retry_diagnostics_path: str | None = None,
         watch_path: str | None = None,
+        execution_host: str = "",
         validator_command: str,
         skill_pointers: list[dict[str, object]] | None = None,
+        invoked_skill_pointers: list[dict[str, object]] | None = None,
+        invoked_provider_skills: list[ProviderSkillReference] | None = None,
         embedded: bool = False,
     ) -> str:
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
@@ -603,7 +728,8 @@ Execution environment:
 Optional watcher handoff:
 - If this turn launches detached work that outlives the turn, you may write `{watch_path}` as one
   non-empty JSON list. Every item has exactly three fields: `check_command`, `log_path`, and `cwd`.
-- `log_path` and `cwd` are absolute paths on the execution machine. `check_command` is a
+- RCP runs every check on {_watcher_execution_host(execution_host)}. `log_path` and `cwd` are
+  absolute paths there, whether or not that is where this turn is running. `check_command` is a
   self-contained command with literal job or process identifiers; do not depend on variables or
   shell state from this launch turn.
 - The check only observes. It must never submit, cancel, kill, or modify anything. From a fresh
@@ -640,7 +766,7 @@ Required current-state pointers:
 Relevant context:
 {_pointer("human introduction", introduction_path)}
 Relevant repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
 Required objective:
 {objective}
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
@@ -710,6 +836,8 @@ Optional graph reflection:
         human_request_path: str,
         retry_diagnostics_path: str | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        invoked_skill_pointers: list[dict[str, object]] | None = None,
+        invoked_provider_skills: list[ProviderSkillReference] | None = None,
     ) -> str:
         return f"""# RCP paper-coach task contract
 
@@ -729,7 +857,7 @@ Required inputs:
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 
 Relevant repository inputs; read only when the coaching request needs them:
-{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.
@@ -758,6 +886,8 @@ Authorship contract:
         validator_command: str | None = None,
         output_schema_path: str | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        invoked_skill_pointers: list[dict[str, object]] | None = None,
+        invoked_provider_skills: list[ProviderSkillReference] | None = None,
     ) -> str:
         if mode == "retry" and diagnostics_path is None:
             raise ValueError("Retry requires the exact diagnostics_path.")
@@ -918,9 +1048,12 @@ Resume authority:
             + _pointer("Watcher output", watch_path)
         }
 {_selected_skill_section(skill_pointers)}
+{_invoked_package_section(invoked_skill_pointers)}
+{invoked_provider_skill_section(invoked_provider_skills)}
 {input_rules}
 {continuation_rules}
 {validator_rules}
+{_RETAINED_LOCAL_CAUSAL_CHECK if patch_path else ""}
 """
 
     @staticmethod
@@ -950,6 +1083,7 @@ supersede conflicting authority or output text in the original contract.
 Current output instruction:
 - Write the completed semantic Patch for this `{kind}` attempt to: `{patch_path}`. Use only the
   agent-facing schema from the original contract; RCP assigns canonical bookkeeping.
+- {_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
 """

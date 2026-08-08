@@ -194,7 +194,7 @@ For this turn, take whichever path matches the operational state:
 
    [
      {
-       "check_command": "jobs=$(squeue -h -j 48192 -o '%i') || exit 2; [ -z \"$jobs\" ]",
+       "check_command": "ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 48192 <<<\"$ids\"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac",
        "log_path": "/absolute/path/to/job-48192.log",
        "cwd": "/absolute/path/to/repository"
      }

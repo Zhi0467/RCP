@@ -21,6 +21,7 @@ from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactor
 from rcp.agents.context import RepositoryPointer
 from rcp.api import create_app
 from rcp.api.app import (
+    _generic_watcher_delivery_request,
     _validate_stored_task_request,
     _validated_task_request,
 )
@@ -30,7 +31,7 @@ from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import Blocker, GraphState, Patch
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.paper import WritingSession
-from rcp.providers import ProviderUsage
+from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
@@ -70,6 +71,40 @@ def _persist_skill_defaults(service, defaults: SkillDefaults) -> None:
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
         skill_defaults=defaults,
     )
+
+
+def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
+    tmp_path: Path,
+) -> None:
+    continuation = WatcherContinuation(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        patch_kind="work",
+        skill_ids=["experiment-causality"],
+        invoked_skill_ids=["experiment-causality"],
+    )
+    watcher = WatcherRecord(
+        watcher_id="generic-turn-local-invocation",
+        project_id="project-turn-local-invocation",
+        origin_operation_id="origin-turn-local-invocation",
+        origin_task_kind="project_chat",
+        chat_id="chat-turn-local-invocation",
+        check_command="false",
+        log_path=str(tmp_path / "detached.log"),
+        cwd=str(tmp_path),
+        continuation=continuation,
+        status="completed",
+        created_at="2026-08-08T00:00:00Z",
+    )
+
+    request = _generic_watcher_delivery_request([watcher])
+
+    assert request.skill_ids == ["experiment-causality"]
+    assert request.invoked_skill_ids == []
+    assert request.invoked_workflow_ids == []
+    assert request.invoked_provider_skill_names == []
+    assert request.resolved_provider_skills == []
 
 
 class FakeLauncher:
@@ -130,6 +165,122 @@ def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, mo
             assert calls == [("codex", "", "/opt/agents/codex")]
         finally:
             release.set()
+
+
+def test_startup_marks_all_skill_targets_then_refreshes_each_once(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    targets = [
+        ("codex", "", "/opt/agents/codex"),
+        ("claude", "research.example", "/opt/agents/claude"),
+    ]
+    calls: list[tuple[str, str, str, str | None]] = []
+    completed = threading.Event()
+
+    monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: targets)
+
+    def mark(provider: str, host: str, binary: str | None):
+        calls.append(("mark", provider, host, binary))
+
+    def readiness(provider: str, *, host: str = "", binary: str | None = None):
+        calls.append(("readiness", provider, host, binary))
+        return ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            version="test-version",
+            binary_path=binary,
+            path_state="resolved",
+        )
+
+    def refresh(provider: str, host: str, binary: str | None, _readiness):
+        calls.append(("refresh", provider, host, binary))
+        if sum(call[0] == "refresh" for call in calls) == len(targets):
+            completed.set()
+
+    monkeypatch.setattr(app.state.provider_skills, "mark_refreshing", mark)
+    monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
+    monkeypatch.setattr(app.state.provider_skills, "refresh", refresh)
+
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert completed.wait(timeout=2)
+
+    assert calls[:2] == [
+        ("mark", "codex", "", "/opt/agents/codex"),
+        ("mark", "claude", "research.example", "/opt/agents/claude"),
+    ]
+    assert sorted(call[1:] for call in calls if call[0] == "readiness") == sorted(targets)
+    assert sorted(call[1:] for call in calls if call[0] == "refresh") == sorted(targets)
+
+
+def test_project_snapshot_and_resolution_use_last_good_provider_skills(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app.state.catalog.store.save_provider_skill_inventory_success(
+        "codex",
+        "",
+        None,
+        resolved_binary="/opt/agents/codex",
+        provider_version="1.2.3",
+        command=["/opt/agents/codex", "app-server"],
+        protocol="jsonrpc",
+        skills=[
+            ProviderSkill(
+                name="native-review",
+                label="Native review",
+                description="Review with the provider-native workflow.",
+            )
+        ],
+        inventory_hash="inventory-123",
+        refreshed_at="2026-08-08T00:00:00+00:00",
+    )
+    service = app.state.catalog.open(app.state.default_project_id)
+
+    snapshot = service.project_snapshot()
+    inventory = snapshot["provider_skill_inventories"]["laptop"]["codex"]
+    assert inventory["status"] == "fresh"
+    assert [skill["name"] for skill in inventory["skills"]] == ["native-review"]
+
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        invoked_provider_skill_names=["native-review"],
+        resolved_provider_skills=[
+            {
+                "provider": "wrong",
+                "machine": "wrong",
+                "provider_version": "old",
+                "inventory_hash": "old",
+                "name": "old",
+                "label": "Old",
+                "description": "Old receipt",
+            }
+        ],
+    )
+    resolved = service.resolve_skill_request(request)
+    assert [skill.name for skill in resolved.resolved_provider_skills] == ["native-review"]
+    assert resolved.resolved_provider_skills[0].machine == "laptop"
+    assert not resolved.resolved_provider_skills[0].stale
+
+    app.state.catalog.store.save_provider_skill_inventory_failure(
+        "codex",
+        "",
+        None,
+        diagnostic="remote probe timed out",
+        updated_at="2026-08-08T00:01:00+00:00",
+    )
+    stale = service.project_snapshot()["provider_skill_inventories"]["laptop"]["codex"]
+    assert stale["status"] == "stale"
+    assert stale["diagnostic"] == "remote probe timed out"
+    assert [skill["name"] for skill in stale["skills"]] == ["native-review"]
+    stale_request = service.resolve_skill_request(request)
+    assert stale_request.resolved_provider_skills[0].stale
+
+    with pytest.raises(ValueError, match="missing-native"):
+        service.resolve_skill_request(
+            request.model_copy(update={"invoked_provider_skill_names": ["missing-native"]})
+        )
 
 
 def test_remote_stage_sweep_starts_after_health_is_available(
@@ -761,6 +912,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
         ),
     )
     calls: list[tuple[str, bool]] = []
+    inventory_waits: list[tuple[str, str, str | None]] = []
 
     def readiness(provider: str, *, host: str = "", refresh: bool = False):
         calls.append((provider, refresh))
@@ -772,6 +924,18 @@ def test_project_readiness_does_not_open_or_materialize_project(
         )
 
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
+    monkeypatch.setattr(
+        app.state.provider_skills,
+        "refresh",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("manual readiness must not refresh provider skills")
+        ),
+    )
+    monkeypatch.setattr(
+        app.state.provider_skills,
+        "wait",
+        lambda provider, host, binary: inventory_waits.append((provider, host, binary)) or True,
+    )
 
     response = client.get(f"/api/projects/{project_id}/readiness")
     refreshed = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
@@ -780,12 +944,21 @@ def test_project_readiness_does_not_open_or_materialize_project(
     assert refreshed.status_code == 200
     assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == ("codex-ready")
     assert response.json()["providers"] == response.json()["provider_readiness"]["laptop"]
+    assert response.json()["provider_skill_inventories"]["laptop"]["codex"]["status"] == (
+        "unavailable"
+    )
     assert set(calls) == {
         ("codex", False),
         ("claude", False),
         ("codex", True),
         ("claude", True),
     }
+    assert inventory_waits == [
+        ("codex", "", None),
+        ("claude", "", None),
+        ("codex", "", None),
+        ("claude", "", None),
+    ]
     assert project_id not in app.state.catalog._services
 
 
@@ -7364,6 +7537,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
     assert observed["staged"] == [
         "skill/evidence-triage/SKILL.md",
         "skill/evidence-triage/references/worked-examples.md",
+        "skill/experiment-causality/SKILL.md",
         "skill/graph-audit/SKILL.md",
         "workflow/research-graph-audit/WORKFLOW.md",
     ]

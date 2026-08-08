@@ -254,6 +254,7 @@ def _created_node_types(ops: Iterable[dict[str, Any]]) -> dict[str, str]:
 # `produces` is provenance and `blocked_by` is self-blocking, so neither widens
 # its authority; both targets must be nodes this same patch created.
 _SELF_ATTACHMENT_RELATIONS = {"produces": "evidence", "blocked_by": "blocker"}
+_EVIDENCE_HANDOFF_RELATIONS = {"informs": "decision", "addresses": "blocker"}
 
 
 def _validate_created_edges(
@@ -281,14 +282,33 @@ def _validate_created_edges(
                 ],
             )
             continue
+        if relation_name in _EVIDENCE_HANDOFF_RELATIONS:
+            source = edge.get("source")
+            target = edge.get("target")
+            target_node = state.nodes.get(target)
+            target_type = target_node.type if target_node is not None else created_types.get(target)
+            expected_target_type = _EVIDENCE_HANDOFF_RELATIONS[relation_name]
+            if created_types.get(source) == "evidence" and target_type == expected_target_type:
+                continue
+            report.reject(
+                "experiment-loop-evidence-handoff",
+                f"Experiment loop {experiment_id} may use {relation_name!r} only from Evidence "
+                f"this patch creates to a {expected_target_type} node.",
+                revision,
+                related_node_ids=[
+                    item for item in (experiment_id, source, target) if isinstance(item, str)
+                ],
+            )
+            continue
         base = RELATION_SPEC.get(relation_name)
         relation = custom_relation(state.ontology, relation_name)
         layer = base.layer if base is not None else relation.layer if relation is not None else None
         if layer != "epistemic":
             report.reject(
                 "experiment-loop-edge-layer",
-                f"Experiment loop {experiment_id} may assert only epistemic edges, or attach its "
-                "own evidence and blockers to its experiment.",
+                f"Experiment loop {experiment_id} may assert only epistemic edges, attach its "
+                "own evidence and blockers to its experiment, or hand its new Evidence to a "
+                "Decision or Blocker.",
                 revision,
                 related_node_ids=[experiment_id],
             )

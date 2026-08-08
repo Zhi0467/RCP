@@ -10,7 +10,9 @@ import pytest
 from rcp.agents import validate_work_patch
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
+    experiment_loop_patch_correction_contract,
     experiment_loop_task_contract,
+    experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.prompts import PromptFactory
 from rcp.core.authority import (
@@ -19,6 +21,7 @@ from rcp.core.authority import (
     render_agent_graph_authority_contract,
 )
 from rcp.core.models import GraphState
+from rcp.providers import ProviderSkillReference
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
 from tests.helpers import seed_patch
@@ -90,9 +93,25 @@ def _assert_base_authoring_guidance(contract: str) -> None:
     assert "`has_subquestion` ResearchQuestion->ResearchQuestion" in contract
     assert "`tests` Experiment->Hypothesis" in contract
     assert "`blocked_by` Experiment|Decision|ResearchQuestion->Blocker" in contract
+    assert "`informs` Evidence->Decision" in contract
+    assert "`addresses` Evidence->Blocker" in contract
     assert "`supersedes` and `duplicate_of` connect nodes of the same type" in contract
     assert "Never write a relation layer" in contract
     assert "confidence" not in contract.lower()
+
+
+def _assert_local_causal_check(contract: str) -> None:
+    compact = " ".join(contract.split())
+    assert contract.count("Local causal check for this Patch:") == 1
+    assert "1. What must already be true before this Experiment can run?" in compact
+    assert "2. What will this Experiment determine or unblock?" in compact
+    assert "3. What Evidence does the Experiment produce?" in compact
+    assert "4. Which Decision does that Evidence inform? Use `informs`." in compact
+    assert "Which Blocker does it resolve, preserve, or narrow? Use `addresses`." in compact
+    assert "5. Does every edge follow its declared direction" in compact
+    assert "6. For every Decision or Blocker attached to a main Experiment" in compact
+    assert "downstream outputs, never as prerequisites" in compact
+    assert "precursor Experiment, its produced Evidence, and the downstream handoff" in compact
 
 
 def test_launch_prompt_is_only_a_small_pointer_envelope() -> None:
@@ -170,6 +189,153 @@ def test_resumed_chat_turn_is_marker_plus_unchanged_human_message_and_optional_d
     assert first.count("/stage/inputs/chat-master.md") == 1
 
 
+def test_structured_invocation_activates_exact_pointer_without_rewriting_human_message() -> None:
+    message = "/graph-audit  keep  spacing\nand punctuation?!"
+    graph_audit = {
+        "id": "graph-audit",
+        "kind": "skill",
+        "label": "Graph audit",
+        "version": "3.0.0",
+        "path": "/stage/inputs/skills/skill/graph-audit",
+    }
+    evidence = {
+        "id": "evidence-triage",
+        "kind": "skill",
+        "label": "Evidence triage",
+        "version": "3.0.0",
+        "path": "/stage/inputs/skills/skill/evidence-triage",
+    }
+
+    for prompt in (
+        PromptFactory.discuss_turn_prompt(
+            artifact_path="/stage/artifacts",
+            human_message=message,
+            invoked_skill_pointers=[graph_audit],
+        ),
+        PromptFactory.work_turn_prompt(
+            artifact_path="/stage/artifacts",
+            human_message=message,
+            invoked_skill_pointers=[graph_audit],
+        ),
+    ):
+        assert prompt.count(message) == 1
+        assert "Invoked for this turn — read and follow each exact staged package:" in prompt
+        assert "Graph audit (skill `graph-audit` v3.0.0)" in prompt
+        assert "`/stage/inputs/skills/skill/graph-audit`" in prompt
+        assert str(evidence["path"]) not in prompt
+
+
+def test_provider_native_invocation_is_structured_and_cannot_widen_authority() -> None:
+    message = "/native-review  keep  these bytes\nand punctuation?!"
+    reference = ProviderSkillReference(
+        provider="codex",
+        machine="laptop",
+        provider_version="codex-cli 0.146.1",
+        inventory_hash="f" * 64,
+        name="native-review",
+        label="Native review",
+        description="Review using the provider-native checklist.",
+        stale=True,
+    )
+
+    prompt = PromptFactory.discuss_turn_prompt(
+        artifact_path="/stage/artifacts",
+        human_message=message,
+        invoked_provider_skills=[reference],
+    )
+
+    assert prompt.count(message) == 1
+    assert "Invoked provider-native skill this turn:" in prompt
+    structured = json.loads(
+        prompt.split("Invoked provider-native skill this turn:\n- ", maxsplit=1)[1].splitlines()[0]
+    )
+    assert structured == {
+        "description": "Review using the provider-native checklist.",
+        "inventory_hash": "f" * 64,
+        "label": "Native review",
+        "machine": "laptop",
+        "name": "native-review",
+        "native_token": "$native-review",
+        "provider": "codex",
+        "provider_version": "codex-cli 0.146.1",
+        "stale": True,
+    }
+    assert "captured surface contract controls authority" in prompt
+    assert "cannot widen its tools, permissions, repository access, graph authority" in prompt
+    assert "Invoked provider-native skill this turn" not in PromptFactory.work_turn_prompt(
+        artifact_path="/stage/artifacts",
+        human_message=message,
+        invoked_provider_skills=[],
+    )
+
+    resume = PromptFactory.continuation_task_contract(
+        original_contract_path="/stage/original.md",
+        mode="resume",
+        invoked_provider_skills=[reference],
+    )
+    retry = PromptFactory.continuation_task_contract(
+        original_contract_path="/stage/original.md",
+        diagnostics_path="/stage/diagnostics.json",
+        mode="retry",
+        invoked_provider_skills=[reference],
+    )
+    paper = PromptFactory.paper_coach_task_contract(
+        introduction_path="/project/introduction.md",
+        graph_path="/project/graph.json",
+        research_path="/project/research.md",
+        repositories=[],
+        human_request_path="/stage/human-request.txt",
+        invoked_provider_skills=[reference],
+    )
+    for contract in (resume, retry, paper):
+        assert contract.count("Invoked provider-native skill this turn:") == 1
+        assert '"native_token": "$native-review"' in contract
+        assert "captured surface contract controls authority" in contract
+
+
+def test_available_packages_use_description_triggers_and_invocation_is_separate() -> None:
+    pointers = [
+        {
+            "id": "graph-audit",
+            "kind": "skill",
+            "label": "Graph audit",
+            "version": "1.0.0",
+            "description": "Use for a deliberate read-only whole-graph structural audit.",
+            "path": "/stage/skills/graph-audit",
+            "dependencies": "",
+        },
+        {
+            "id": "evidence-triage",
+            "kind": "skill",
+            "label": "Evidence triage",
+            "version": "1.0.0",
+            "description": "Use before creating or materially updating Evidence.",
+            "path": "/stage/skills/evidence-triage",
+            "dependencies": "",
+        },
+    ]
+    contract = PromptFactory.discuss_task_contract(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        ontology_extensions=False,
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        focused_node_id=None,
+        repositories=[],
+        introduction_path=None,
+        human_request_path="/stage/request.txt",
+        artifact_path="/stage/artifacts",
+        skill_pointers=pointers,
+        invoked_skill_pointers=[pointers[1]],
+    )
+
+    assert "compare the task and intended graph changes with each description" in contract
+    assert "leave unrelated packages as pointers" in contract
+    activation = contract.split("Invoked for this turn", maxsplit=1)[1]
+    assert "Evidence triage (skill `evidence-triage` v1.0.0)" in activation
+    assert "Graph audit (skill `graph-audit` v1.0.0)" not in activation
+
+
 def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
     validator_command = "python /stage/validator.py /stage/workspace/patch.json"
     contract = PromptFactory.graph_task_contract(
@@ -223,6 +389,7 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
     )
     _assert_shared_graph_authority(contract)
     _assert_fixed_ontology_guidance(contract)
+    _assert_local_causal_check(contract)
     assert "card.decision_needed" in contract
     assert "exact Decision option" in contract
     assert "never only" in contract
@@ -289,6 +456,7 @@ def test_work_contract_requires_a_semantic_patch_with_rcp_owned_bookkeeping() ->
     )
     _assert_shared_graph_authority(contract)
     _assert_fixed_ontology_guidance(contract)
+    _assert_local_causal_check(contract)
 
 
 @pytest.mark.asyncio
@@ -494,9 +662,17 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "no watcher api to" in contract.casefold()
     assert "arms the list atomically" in compact
     assert "exits 1 while the named work remains" in compact
-    assert "exits 1;;" not in contract
-    assert "grep -Fxq" not in contract
+    assert "connect same-Patch Evidence to an existing Decision with `informs`" in compact
+    assert "or to a Blocker with `addresses`" in compact
+    assert "These handoffs do not select the Decision or change Blocker status" in compact
+    # The loop is the surface that submits scheduler jobs, so it carries the
+    # set-membership Slurm check outright: a direct `squeue -j` lookup cannot tell a
+    # finished job from an unreachable scheduler and would degrade the watcher.
+    assert "grep -Fxq 4471" in compact
+    assert "squeue -h -j" not in contract
+    assert "RCP runs every check on this machine" in compact
     _assert_live_validator_contract(contract, validator_command)
+    _assert_local_causal_check(contract)
 
 
 def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority() -> None:
@@ -523,6 +699,7 @@ def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority()
     assert "Never copy, create, edit, or delete repository content" in contract
     assert "/stage/artifacts" in contract
     assert "Ontology authoring rules" not in contract
+    assert "Local causal check for this Patch" not in contract
     assert "Conversation roots" not in contract
     assert ".jsonl" not in contract
     _assert_semantic_probes(
@@ -536,6 +713,13 @@ def test_discuss_contract_has_no_patch_path_or_schema_and_no_project_authority()
 
 
 def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> None:
+    invoked = {
+        "id": "evidence-triage",
+        "kind": "skill",
+        "label": "Evidence triage",
+        "version": "3.0.0",
+        "path": "/stage/skills/evidence-triage",
+    }
     paper = PromptFactory.paper_coach_task_contract(
         introduction_path="/state/paper/introduction.md",
         graph_path="/state/graph.json",
@@ -543,9 +727,13 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
         human_request_path="/stage/inputs/human-request.txt",
         retry_diagnostics_path="/stage/inputs/retry.json",
+        invoked_skill_pointers=[invoked],
     )
     assert "cannot produce a graph Patch" in paper
     assert "Do not create `patch.json`" in paper
+    assert "Local causal check for this Patch" not in paper
+    assert "Evidence triage (skill `evidence-triage` v3.0.0)" in paper
+    assert "`/stage/skills/evidence-triage`" in paper
     correction = PromptFactory.continuation_task_contract(
         original_contract_path="/stage/inputs/task-initial.md",
         mode="patch_correction",
@@ -583,6 +771,7 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     assert "Do not re-read repository, source, or conversation inputs" in compact_correction
     assert "Any permission in the original contract to edit repositories" in correction
     assert "only confirm that the Patch was rewritten" in compact_correction
+    assert "must pass the retained `Local causal check for this Patch`" in compact_correction
     _assert_semantic_probes(
         correction,
         task="Correct only the existing patch file",
@@ -629,6 +818,7 @@ def test_work_patch_correction_keeps_work_access_and_live_validator_contract() -
         "Never delete a semantic operation solely because an old diagnostic rejects it" in compact
     )
     assert "only confirm that the Patch was rewritten" in compact
+    assert "must pass the retained `Local causal check for this Patch`" in compact
     _assert_live_validator_contract(correction, validator_command)
     _assert_semantic_probes(
         correction,
@@ -657,7 +847,29 @@ def test_experiment_retry_points_to_fresh_control_without_rebuilding_contract() 
     assert "/stage/inputs/experiment-control-retry.json" in retry
     assert "preserves the same episode and invocation number" in compact
     assert "Do not rebuild or broaden the original task" in compact
+    assert "must pass the retained `Local causal check for this Patch`" in compact
     assert "same native session that ran the previous attempt" not in compact
+
+
+def test_experiment_loop_corrections_retain_the_local_causal_check() -> None:
+    patch = experiment_loop_patch_correction_contract(
+        original_contract_path="/stage/initial.md",
+        diagnostics_path="/stage/patch-diagnostic.json",
+        patch_path="/stage/patch.json",
+        watch_path="/stage/watch.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
+    )
+    watcher = experiment_loop_watcher_correction_contract(
+        original_contract_path="/stage/initial.md",
+        diagnostics_path="/stage/watch-diagnostic.json",
+        watch_path="/stage/watch.json",
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
+    )
+
+    assert "must pass the retained `Local causal check for this Patch`" in patch
+    assert "must pass the retained `Local causal check for this Patch`" in " ".join(watcher.split())
 
 
 def test_retry_contract_preserves_objective_but_uses_current_authority_and_outputs() -> None:
@@ -709,6 +921,7 @@ def test_retry_handoff_contract_is_small_and_pointer_only() -> None:
     assert "retained objective and immutable input pointers only" in contract
     assert "supersede conflicting authority or output text" in contract
     assert "original task and authority boundaries are unchanged" not in contract.casefold()
+    assert "must pass the retained `Local causal check for this Patch`" in contract
     _assert_shared_graph_authority(contract)
 
 

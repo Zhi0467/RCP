@@ -142,7 +142,7 @@ def _prepare_chat_prompt_state(
         master_context_path = previous.master_context_path
 
     delta = None if previous is None else _chat_context_delta(previous.values, values)
-    bootstrap_path: str | None = master_context_path if previous is None else None
+    bootstrap_path: str | None = master_context_path if must_bootstrap else None
     if previous is not None and previous.contract_key != contract_key:
         delta = {
             **(delta or {}),

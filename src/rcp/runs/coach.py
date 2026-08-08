@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents.prompts import invoked_package_pointers
 from rcp.background import AgentTaskExecution
 from rcp.paper import PaperService, WritingSession
 from rcp.runs.shared import (
@@ -179,6 +180,12 @@ async def stream_coach(
             contract = PromptFactory.continuation_task_contract(
                 original_contract_path=original_contract_path,
                 mode="resume",
+                invoked_skill_pointers=invoked_package_pointers(
+                    skill_pointers,
+                    workflow_ids=request.invoked_workflow_ids,
+                    skill_ids=request.invoked_skill_ids,
+                ),
+                invoked_provider_skills=request.resolved_provider_skills,
             )
             contract_path, prompt = _stage_task_contract(
                 local_stage,
@@ -232,6 +239,12 @@ async def stream_coach(
                     human_request_path=human_request_path,
                     retry_diagnostics_path=retry_diagnostics_path,
                     skill_pointers=skill_pointers,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers,
+                        workflow_ids=request.invoked_workflow_ids,
+                        skill_ids=request.invoked_skill_ids,
+                    ),
+                    invoked_provider_skills=request.resolved_provider_skills,
                 )
                 current_contract_path, current_prompt = _stage_task_contract(
                     local_stage,
@@ -251,6 +264,12 @@ async def stream_coach(
                     diagnostics_path=retry_diagnostics_path,
                     mode="retry",
                     skill_pointers=skill_pointers if resumed_retry else None,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers,
+                        workflow_ids=request.invoked_workflow_ids,
+                        skill_ids=request.invoked_skill_ids,
+                    ),
+                    invoked_provider_skills=request.resolved_provider_skills,
                 )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,

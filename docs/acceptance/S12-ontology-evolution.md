@@ -5,7 +5,7 @@ tier: hermetic
 driver: pytest
 covered_by: tests/test_ontology_evolution.py, tests/test_sync.py
 invariants: [1, 3]
-last_passed: 2026-08-05
+last_passed: 2026-08-08
 blueprint: research-control-panel-blueprint.md#schema-evolution-and-transfer-boundary
 ---
 
@@ -38,10 +38,12 @@ No compatibility code may hand-edit `graph.json` or another derived file.
 
 ## What an agent is told
 
-The base vocabulary — node id prefixes, the fifteen base relations and their
+The base vocabulary — node id prefixes, the seventeen base relations and their
 endpoints, `Evidence.origin`, `Hypothesis.scope`, and the Experiment/Evidence
-connection rules — is how an agent knows what a legal graph edit is. It appears
-in every patch-producing contract regardless of ontology state.
+connection rules — is how an agent knows what a legal graph edit is. The
+relations include `informs` from Evidence to Decision and `addresses` from
+Evidence to Blocker. It appears in every patch-producing contract regardless of
+ontology state.
 
 The extension-authoring rules describe how to write a custom type, a custom
 field, and a custom relation. A project that has never defined one cannot use

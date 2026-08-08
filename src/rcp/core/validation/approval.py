@@ -27,7 +27,7 @@ def validate_approval_shape(
 ) -> None:
     revision = patch.revision or None
     resolution_ops = [op for op in patch.ops if op.get("op") == "resolve_proposals"]
-    if _is_direct_decision_choice(state, patch, resolution_ops):
+    if patch.human_action == "decision_choice":
         _validate_direct_decision_choice(state, patch, resolution_ops, report, revision)
         return
     if not resolution_ops:
@@ -155,29 +155,6 @@ def validate_approval_shape(
         )
 
 
-def _is_direct_decision_choice(
-    state: GraphState, patch: Patch, resolution_ops: list[dict[str, Any]]
-) -> bool:
-    update_ops = [op for op in patch.ops if op.get("op") == "update_nodes"]
-    if len(update_ops) != 1:
-        return False
-    updates = update_ops[0].get("nodes")
-    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
-        return False
-    update = updates[0]
-    changes = update.get("changes")
-    if not isinstance(state.nodes.get(update.get("id")), Decision) or not isinstance(changes, dict):
-        return False
-    if not set(changes).intersection({"selected_option", "status"}):
-        return False
-    return not any(
-        resolution.get("status") in {"approved", "rejected"}
-        for operation in resolution_ops
-        for resolution in operation.get("resolutions", [])
-        if isinstance(resolution, dict)
-    )
-
-
 def _validate_direct_decision_choice(
     state: GraphState,
     patch: Patch,
@@ -247,7 +224,11 @@ def _validate_direct_decision_choice(
             f"Direct choice on {node.id} cannot change: {', '.join(disallowed)}.",
             node_id=node.id,
         )
-    selected_option = changes.get("selected_option")
+    # A choice that repeats the Decision's existing option carries no
+    # `selected_option` change, because only the status moves. Resolve the
+    # effective choice against the node so repairing a selected-but-open
+    # Decision is expressible.
+    selected_option = changes.get("selected_option", node.selected_option)
     options = changes.get("options", node.options)
     if changes.get("status") != "decided":
         refuse(f"Direct choice on {node.id} must set status exactly to decided.", node_id=node.id)
@@ -278,6 +259,12 @@ def _validate_direct_decision_choice(
                 refuse(f"Proposal withdrawals for {node.id} are malformed.", node_id=node.id)
                 continue
             proposal_id = resolution.get("id")
+            if not isinstance(proposal_id, str):
+                refuse(
+                    f"A Proposal withdrawal for {node.id} requires a Proposal id.",
+                    node_id=node.id,
+                )
+                continue
             proposal = state.proposals.get(proposal_id)
             if proposal_id in seen_proposals:
                 refuse(

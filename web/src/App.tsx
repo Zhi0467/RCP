@@ -147,6 +147,22 @@ import {
 } from "./textScale";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 
+const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
+const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
+
+export function shouldPollProviderSkillReadiness(
+  inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
+  completedFollowUps: number,
+): boolean {
+  return (
+    inventories !== undefined &&
+    completedFollowUps < PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS &&
+    Object.values(inventories).some((providers) =>
+      Object.values(providers).some((inventory) => inventory?.status === "refreshing"),
+    )
+  );
+}
+
 const AttentionOverview = lazy(() =>
   import("./views/GraphViews").then((module) => ({ default: module.AttentionOverview })),
 );
@@ -379,6 +395,7 @@ export default function App() {
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
   const readinessRequestedProjectIds = useRef(new Set<string>());
+  const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const panelScrollRef = useRef(new Map<AppView, number>());
   const viewRef = useRef<AppView>(view);
@@ -864,22 +881,53 @@ export default function App() {
       return;
     const requestedProjectId = projectId;
     readinessRequestedProjectIds.current.add(requestedProjectId);
-    void loadProjectReadiness(apiBase)
-      .then((readiness) => {
-        if (activeProjectId.current !== requestedProjectId) return;
-        setProject((current) =>
-          current?.id === requestedProjectId ? { ...current, ...readiness } : current,
-        );
-      })
-      .catch((error) => {
-        readinessRequestedProjectIds.current.delete(requestedProjectId);
-        if (activeProjectId.current !== requestedProjectId) return;
-        setNotice({
-          kind: "error",
-          text: error instanceof Error ? error.message : String(error),
+    const readCachedReadiness = (completedFollowUps: number) => {
+      void loadProjectReadiness(apiBase)
+        .then((readiness) => {
+          if (activeProjectId.current !== requestedProjectId) return;
+          setProject((current) =>
+            current?.id === requestedProjectId ? { ...current, ...readiness } : current,
+          );
+          if (
+            shouldPollProviderSkillReadiness(
+              readiness.provider_skill_inventories,
+              completedFollowUps,
+            )
+          ) {
+            const timeoutId = window.setTimeout(() => {
+              providerSkillReadinessPoll.current = null;
+              if (activeProjectId.current !== requestedProjectId) return;
+              readCachedReadiness(completedFollowUps + 1);
+            }, PROVIDER_SKILL_READINESS_POLL_DELAY_MS);
+            providerSkillReadinessPoll.current = { projectId: requestedProjectId, timeoutId };
+          } else {
+            providerSkillReadinessPoll.current = null;
+          }
+        })
+        .catch((error) => {
+          readinessRequestedProjectIds.current.delete(requestedProjectId);
+          if (providerSkillReadinessPoll.current?.projectId === requestedProjectId) {
+            providerSkillReadinessPoll.current = null;
+          }
+          if (activeProjectId.current !== requestedProjectId) return;
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
+    };
+    readCachedReadiness(0);
   }, [apiBase, project?.id, projectId, projectReconciliation]);
+
+  useEffect(() => {
+    return () => {
+      const pending = providerSkillReadinessPoll.current;
+      if (pending?.projectId === projectId) {
+        window.clearTimeout(pending.timeoutId);
+        providerSkillReadinessPoll.current = null;
+      }
+    };
+  }, [projectId]);
 
   const refreshUsage = useCallback(async () => {
     if (!apiBase) return;
@@ -2771,6 +2819,7 @@ function preserveProjectReadiness(
     ...next,
     provider_readiness: current.provider_readiness,
     providers: current.providers,
+    provider_skill_inventories: current.provider_skill_inventories,
   };
 }
 

@@ -117,7 +117,8 @@ function watcher(fields = {}) {
     chat_id: "chat-1",
     node_id: "experiment/detail",
     execution_host: "login.research",
-    check_command: "jobs=$(squeue -h -j 48192 -o '%i') || exit 2; [ -z \"$jobs\" ]",
+    check_command:
+      "ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 48192 <<<\"$ids\"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac",
     log_path: "/scratch/evaluation.log",
     cwd: "/scratch/run",
     continuation: {
@@ -226,7 +227,7 @@ test("detail separates watcher provenance from semantic meaning and execution bi
   assert.match(html, /Stopped · not delivered/);
   assert.match(html, /origin-turn/);
   assert.match(html, /episode episode-1 · invocation 3 \/ 3/);
-  assert.match(html, /squeue -h -j 48192/);
+  assert.match(html, /squeue -h -o/);
   assert.match(html, /evaluation\.log/);
   assert.match(html, /Working directory/);
   assert.match(html, /codex/);
@@ -246,6 +247,32 @@ test("detail separates watcher provenance from semantic meaning and execution bi
   assert.match(html, /Decision drift/);
   assert.match(html, /decision\/data moved to v2/);
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
+});
+
+test("stopped watcher history is collapsed separately from current watchers", () => {
+  const active = watcher({ watcher_id: "watcher-active", status: "active" });
+  const stopped = watcher({
+    watcher_id: "watcher-stopped",
+    status: "stopped",
+    notified: true,
+  });
+  const html = render({
+    node: node(),
+    control: control(),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [active, stopped],
+    currentWatchers: [active],
+    health: "waiting_on_watchers",
+  });
+
+  assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
+  assert.match(
+    html,
+    /<details class="experiment-fold nested"><summary><span class="experiment-fold-title">Stopped watchers<\/span><span class="experiment-fold-count">1<\/span>/,
+  );
+  assert.doesNotMatch(html, /<details class="experiment-fold nested" open/);
+  assert.match(html, /aria-label="Stopped experiment watchers"/);
 });
 
 test("a queued notification claim is not presented as proven provider delivery", () => {

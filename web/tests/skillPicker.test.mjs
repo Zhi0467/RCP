@@ -12,14 +12,18 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const {
+  addProviderSkillSelection,
   addSkillSelection,
+  buildSkillPickerEntries,
   filterSkillCatalog,
   filterSkillCatalogToDefaults,
+  filterSkillPickerEntries,
   hasSkillSelection,
   moveSkillHighlight,
   readSkillTrigger,
   removeSkillSelection,
   selectedSkillRefs,
+  skillInvocationFields,
 } = await server.ssrLoadModule("/src/skillPicker.ts");
 const { SkillPicker } = await server.ssrLoadModule("/src/components/SkillPicker.tsx");
 
@@ -43,14 +47,185 @@ const catalog = [
     dependencies: [],
   },
 ];
+const EMPTY_DEFAULTS = { workflow_ids: [], skill_ids: [] };
+
+const codexInventory = {
+  provider: "codex",
+  machine: "local",
+  host: "",
+  provider_version: "0.146.1",
+  inventory_hash: "codex-hash",
+  command: ["codex", "app-server"],
+  protocol: "jsonrpc",
+  status: "fresh",
+  stale: false,
+  skills: [
+    {
+      name: "frontend-design:frontend-design",
+      label: "Frontend design",
+      description: "Shape a distinctive interface.",
+      scope: "user",
+      path: "/skills/frontend-design/SKILL.md",
+      enabled: true,
+    },
+    {
+      name: "disabled-skill",
+      label: "Disabled skill",
+      description: "Do not offer this.",
+      enabled: false,
+    },
+  ],
+};
 
 test("a trigger opens only at the end of a word boundary", () => {
   assert.equal(readSkillTrigger("/"), "");
   assert.equal(readSkillTrigger("$gra"), null);
   assert.equal(readSkillTrigger("check this /graph"), "graph");
+  assert.equal(
+    readSkillTrigger("use /frontend-design:frontend-design"),
+    "frontend-design:frontend-design",
+  );
   assert.equal(readSkillTrigger("look at src/rcp/runs"), null);
   assert.equal(readSkillTrigger("/graph then more words"), null);
   assert.equal(readSkillTrigger(""), null);
+});
+
+test("the menu orders RCP official groups before the selected provider and machine", () => {
+  const entries = buildSkillPickerEntries(
+    catalog,
+    { workflow_ids: ["research-graph-audit"], skill_ids: ["graph-audit"] },
+    {
+      provider: "codex",
+      providerLabel: "Codex",
+      machine: "local",
+      inventory: codexInventory,
+    },
+  );
+
+  assert.deepEqual(
+    entries.map((entry) => [entry.source, entry.group, entry.label]),
+    [
+      ["rcp", "RCP Official Workflows", "Research graph audit"],
+      ["rcp", "RCP Official Skills", "Graph audit"],
+      ["provider", "Codex Skills · local", "Frontend design"],
+    ],
+  );
+  assert.deepEqual(
+    filterSkillPickerEntries(entries, "frontend-design:frontend-design").map(
+      (entry) => entry.label,
+    ),
+    ["Frontend design"],
+  );
+});
+
+test("switching provider or machine replaces only the provider-native group", () => {
+  const defaults = { workflow_ids: ["research-graph-audit"], skill_ids: ["graph-audit"] };
+  const codex = buildSkillPickerEntries(catalog, defaults, {
+    provider: "codex",
+    providerLabel: "Codex",
+    machine: "local",
+    inventory: codexInventory,
+  });
+  const claude = buildSkillPickerEntries(catalog, defaults, {
+    provider: "claude",
+    providerLabel: "Claude",
+    machine: "gpu",
+    inventory: {
+      ...codexInventory,
+      provider: "claude",
+      machine: "gpu",
+      host: "gpu.example",
+      skills: [
+        {
+          name: "review-pr",
+          label: "Review PR",
+          description: "Review a change.",
+          enabled: true,
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(
+    codex.filter((entry) => entry.source === "rcp"),
+    claude.filter((entry) => entry.source === "rcp"),
+  );
+  assert.deepEqual(
+    claude.filter((entry) => entry.source === "provider").map((entry) => entry.group),
+    ["Claude Skills · gpu"],
+  );
+  assert.equal(
+    claude.some((entry) => "name" in entry && entry.name.includes("frontend")),
+    false,
+  );
+});
+
+test("stale native skills remain selectable and produce separate request metadata", () => {
+  const message = "Please apply /frontend-design:frontend-design";
+  const [native] = buildSkillPickerEntries(catalog, EMPTY_DEFAULTS, {
+    provider: "codex",
+    providerLabel: "Codex",
+    machine: "local",
+    inventory: {
+      ...codexInventory,
+      status: "stale",
+      stale: true,
+      diagnostic: "SSH host is unavailable",
+    },
+  });
+  const names = addProviderSkillSelection([], native);
+
+  assert.equal(message, "Please apply /frontend-design:frontend-design");
+  assert.deepEqual(skillInvocationFields(EMPTY_DEFAULTS, names), {
+    invoked_workflow_ids: [],
+    invoked_skill_ids: [],
+    invoked_provider_skill_names: ["frontend-design:frontend-design"],
+  });
+
+  const html = renderToStaticMarkup(
+    React.createElement(SkillPicker, {
+      catalog,
+      selection: EMPTY_DEFAULTS,
+      entries: [native],
+      open: true,
+      loading: false,
+      highlight: 0,
+      onHighlight() {},
+      onChoose() {},
+    }),
+  );
+  assert.match(html, /Codex Skills · local/);
+  assert.match(html, /stale · Shape a distinctive interface/);
+  assert.match(html, /Last refresh failed: SSH host is unavailable/);
+});
+
+test("refreshing inventory leaves official entries usable and shows loading state", () => {
+  const entries = buildSkillPickerEntries(
+    catalog,
+    { workflow_ids: ["research-graph-audit"], skill_ids: [] },
+    {
+      provider: "codex",
+      providerLabel: "Codex",
+      machine: "local",
+      inventory: { ...codexInventory, status: "refreshing", skills: [] },
+    },
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(SkillPicker, {
+      catalog,
+      selection: EMPTY_DEFAULTS,
+      entries,
+      open: true,
+      loading: true,
+      highlight: 0,
+      onHighlight() {},
+      onChoose() {},
+    }),
+  );
+
+  assert.match(html, /RCP Official Workflows/);
+  assert.match(html, /role="option"/);
+  assert.match(html, /Checking provider skills…/);
 });
 
 test("the dropdown filters on id, label, and kind", () => {
@@ -93,6 +268,8 @@ test("the picker never renders persistent selection chips", () => {
       catalog,
       selection: { workflow_ids: ["research-graph-audit"], skill_ids: [] },
       entries: [],
+      open: false,
+      loading: false,
       highlight: 0,
       onHighlight() {},
       onChoose() {},

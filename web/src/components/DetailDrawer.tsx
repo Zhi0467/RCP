@@ -403,7 +403,12 @@ export function DetailDrawer({
                               name={`decision-choice-${node.id}`}
                               value={option}
                               checked={selected}
-                              onChange={() => onDecisionChoice?.(option)}
+                              readOnly
+                              // Not onChange: a click on the already-checked
+                              // option fires no change event, and that is
+                              // exactly the click that decides a Decision
+                              // carrying an option it never moved to decided.
+                              onClick={() => onDecisionChoice?.(option)}
                             />
                             <span className="decision-choice-option-label">
                               <GlossaryText text={option} glossaryIndex={glossaryIndex} />

@@ -211,6 +211,8 @@ BaseRelation = Literal[
     "tests",
     "governed_by",
     "produces",
+    "informs",
+    "addresses",
     "blocked_by",
     "supports",
     "weakens",
@@ -303,6 +305,8 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
     ),
     "tests": RelationSpec(frozenset({"experiment"}), frozenset({"hypothesis"}), "seam"),
     "produces": RelationSpec(frozenset({"experiment"}), frozenset({"evidence"}), "seam"),
+    "informs": RelationSpec(frozenset({"evidence"}), frozenset({"decision"}), "action"),
+    "addresses": RelationSpec(frozenset({"evidence"}), frozenset({"blocker"}), "action"),
     "has_decision": RelationSpec(
         frozenset({"research_question"}), frozenset({"decision"}), "action"
     ),
@@ -452,6 +456,12 @@ class Patch(BaseModel):
     processed_cursors: dict[str, str] = Field(default_factory=dict)
     change_summary: list[str] = Field(default_factory=list)
     source_operation_id: str | None = None
+    # Which human authority action produced this patch, when its operations
+    # alone cannot say. A direct Decision choice and an ordinary node edit are
+    # both one `update_nodes` on one node, but they carry different authority
+    # and are validated by different rules, so the producer names the action
+    # rather than leaving the validator to infer it from shape.
+    human_action: Literal["decision_choice"] | None = None
     admission: Literal["accepted", "rejected"] = "accepted"
     admission_messages: list[ValidationMessage] = Field(default_factory=list)
     # RCP stamps these after reading an experiment-loop deliverable. They are

@@ -60,6 +60,10 @@ export interface ExperimentWatcherGroup {
 export type ExperimentWatcherItem =
   { kind: "group"; group: ExperimentWatcherGroup } | { kind: "watcher"; watcher: WatcherRecord };
 
+export function watcherIsActive(watcher: WatcherRecord): boolean {
+  return watcher.status === "active" || watcher.status === "degraded";
+}
+
 export type RunEntry =
   | { kind: "task"; id: string; observedAt: string | null; group: AgentTaskGroup }
   | { kind: "experiment"; id: string; observedAt: string | null; experiment: ExperimentRun }
@@ -168,8 +172,7 @@ export function deriveExperimentLoopHealth(
     currentWatchers.some((watcher) => watcher.status === "completed" && !watcher.notified),
   );
   const detachedWorkActive = Boolean(
-    operational?.detached_work_active ||
-    currentWatchers.some((watcher) => watcher.status === "active" || watcher.status === "degraded"),
+    operational?.detached_work_active || currentWatchers.some(watcherIsActive),
   );
   const hasGraphGate = Boolean(
     control?.reasons.some((reason) => !nonGatingOperationalReasons.has(reason)),

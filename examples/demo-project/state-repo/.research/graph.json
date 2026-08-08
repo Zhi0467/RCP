@@ -204,7 +204,10 @@
     "exp/two-update-matched-trajectory": {
       "attempts": [
         {
+          "attempt_kind": "external_run",
           "configuration": "8 episodes",
+          "debug": null,
+          "decision_bundle": [],
           "failure_reason": "Dataset path resolved to a stale mount",
           "finished_at": null,
           "id": "attempt/01",
@@ -219,7 +222,10 @@
           "status": "failed"
         },
         {
+          "attempt_kind": "external_run",
           "configuration": "32 episodes",
+          "debug": null,
+          "decision_bundle": [],
           "failure_reason": "Optimizer state was absent",
           "finished_at": null,
           "id": "attempt/02",
@@ -234,7 +240,10 @@
           "status": "failed"
         },
         {
+          "attempt_kind": "external_run",
           "configuration": "128 episodes",
+          "debug": null,
+          "decision_bundle": [],
           "failure_reason": null,
           "finished_at": null,
           "id": "attempt/03",
@@ -267,6 +276,7 @@
         "Current performance is not future plasticity",
         "A single checkpoint is not a learning curve"
       ],
+      "invocation_ceiling": 5,
       "next_action": "Inspect the first complete second-shift learning curve.",
       "objective": "Measure future learning after matching the first update's compute and endpoint behavior.",
       "source_refs": [],
@@ -329,6 +339,8 @@
         "situation_cold": "The accepted hypothesis says replanning restores future learning, but the current comparison does not yet match the learning path that produced the endpoint.",
         "why_human_now": "Weakening an accepted scientific claim changes the instruction sent to every control-panel agent."
       },
+      "created_by": "agent",
+      "created_by_operation_id": null,
       "id": "prop/weaken-search-restores-learning",
       "ops": [
         {
@@ -350,6 +362,9 @@
       "related_node_ids": [
         "hyp/search-restores-future-learning"
       ],
+      "resolution_reason": null,
+      "resolved_by": "agent",
+      "resolved_by_operation_id": null,
       "resolved_rev": 5,
       "status": "withdrawn",
       "title": "Narrow what the search result would establish"
@@ -362,6 +377,8 @@
         "situation_cold": "The accepted hypothesis says replanning restores future learning, while the current comparison does not match the learning path that produced the endpoint.",
         "why_human_now": "Weakening an accepted scientific claim changes the instruction sent to every control-panel agent."
       },
+      "created_by": "agent",
+      "created_by_operation_id": null,
       "id": "prop/weaken-search-with-cause",
       "ops": [
         {
@@ -387,6 +404,9 @@
       "related_node_ids": [
         "hyp/search-restores-future-learning"
       ],
+      "resolution_reason": null,
+      "resolved_by": "human",
+      "resolved_by_operation_id": null,
       "resolved_rev": 6,
       "status": "approved",
       "title": "Narrow what the search result would establish"

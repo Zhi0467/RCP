@@ -233,6 +233,8 @@ it but a browser or a machine we do not have.
 | [S84](S84-watchers-poll-with-persistent-backoff.md) | Poll watchers patiently with durable error backoff | implemented | pytest | covered |
 | [S85](S85-grouped-watchers-wake-once.md) | Wake once when every watcher in a group is finished or persistently degraded | implemented | pytest + **browser** | tests + driven 2026-08-07 |
 | [S86](S86-human-decides-a-decision.md) | Decide a Decision by clicking an option | implemented | pytest + **browser** | tests + driven 2026-08-07 |
+| [S87](S87-experiment-prerequisite-chains.md) | Construct causal action chains around experiments | implemented | pytest + api | tests + real provider 2026-08-08 |
+| [S88](S88-node-attached-agent-authority.md) | Let permitted agents maintain resources attached to a node | pending | pytest + **browser** | none |
 
 Ids are never reused. The gaps are scenarios that were folded into the list
 below; a new scenario takes the next free number.

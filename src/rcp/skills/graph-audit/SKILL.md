@@ -2,95 +2,69 @@
 id: graph-audit
 kind: skill
 label: Graph audit
-version: 2.0.0
-description: Review the project graph for claims that outrun their support, relations that hide their reasoning, duplicate identities, and summaries that overstate standing.
+version: 3.0.0
+description: Audit a research graph when asked for a read-only structural review of claims, relations, node identity, lifecycle consistency, or rendered summaries; report defects without editing canonical state.
 dependencies:
 ---
 
 # Graph audit
 
-A research graph decays quietly. Nothing breaks; it just gradually stops meaning what it says. A
-hypothesis keeps a status set three revisions ago after the evidence moved. Two nodes describe the
-same experiment under different names, and each accumulates half the relations. A summary sentence
-written when a result was preliminary still reads as settled. None of this shows up as an error — it
-shows up months later as a reader trusting a claim that was never established.
+Audit what the graph tells a reader, not only whether its JSON is valid. Produce a report; do not
+repair canonical state unless a separate outer task explicitly asks for a later graph change.
 
-An audit is a read pass whose output is a report for a human. You are not repairing the graph, and
-you are not proposing edits unless the task asked for them.
+## Read in order
 
-## Read in this order
+1. Read `research.md`. List the claims and action state a first-time reader would believe.
+2. Read `graph.json`. Trace each item to its nodes, relations, standing, evidence, and lifecycle.
+3. Compare node titles within each type to find split or duplicate identities.
 
-1. **`research.md`** first, as a reader would. Note every sentence you would believe on first
-   reading. Those are the claims the graph is actually making.
-2. **`graph.json`** second, to check whether each of those claims is carried by nodes, relations,
-   standing, and evidence that support it.
+## Check
 
-Reading the rendering first is deliberate. If you start in the JSON you will audit the data
-structure, which is almost always fine, and miss the thing that matters: what the project appears to
-assert to someone who reads the prose.
+**Claims outrunning support.** Flag a conclusion that no Evidence establishes, a supported
+Hypothesis carried only by qualified or unrelated Evidence, or prose that drops a recorded caveat.
 
-## What to look for
+**Relations hiding their reasoning.** Require an explanation of why a relation holds. Check that
+an Experiment `tests` a Hypothesis it can discriminate, `produces` the Evidence it generated, and
+uses `governed_by` or `blocked_by` only for genuine input gates. Check complete action chains rather
+than treating every Experiment without a Hypothesis or Decision as an orphan.
 
-**Claims that outrun their support.** A hypothesis at `supported` whose only inbound evidence is
-preliminary, qualified, or attached to a different question. A conclusion in the rendering that no
-evidence node establishes. A result stated without the caveat its own interpretation records.
+**Missing truthful roles.** Flag Evidence with no provenance or producing Experiment when one is
+known; a Blocker that blocks nothing; or an Experiment whose role is expressed neither through
+`tests`, `produces`, nor an action-gate chain. Accept honest isolation such as a newly recorded
+observation awaiting placement.
 
-**Relations that hide their reasoning.** An edge exists but nothing explains why this evidence bears
-on that hypothesis. `supports` where the evidence measures the apparatus rather than the claim. An
-experiment connected to a hypothesis it cannot discriminate between.
+**Split identity.** Flag duplicate nodes that divide one entity's claims, evidence, or action
+relations. Prefer reusing an existing identity over adding a near-copy.
 
-**Split or duplicate identity.** Two nodes for one thing, each holding part of the relations, so
-neither reads as complete. This is the most common structural defect and the hardest to see from
-inside a single node — it becomes visible only when you list the titles of one type together and
-read them as a set.
+**Lifecycle drift.** Flag a Decision, Blocker, or Experiment whose status conflicts with later
+nodes or evidence. Evidence may inform a Decision through `informs` or bear on a Blocker through
+`addresses` without choosing the Decision or changing the Blocker's status; report the mismatch
+instead of inferring the transition.
 
-**Orphans that should not be orphans.** Evidence attached to no experiment. An experiment attached to
-no hypothesis or decision. A blocker nothing is blocked by. Some isolation is legitimate — a newly
-recorded observation waiting to be placed — so ask whether the missing link is an omission or an
-honest "not yet connected".
+**Stale ambiguities.** Flag an Ambiguity that later graph content answered or made irrelevant.
 
-**Stale status.** A decision still `open` whose question the graph has since answered. A blocker
-still `open` whose resolution condition the evidence shows was met. An experiment in `running` whose
-evidence describes a completed analysis.
+## Report
 
-**Ambiguities that stopped being open questions.** An ambiguity whose question a later node quietly
-answered, or whose related nodes have moved on. These are cheap to close, and they crowd the human's
-attention queue while they sit.
-
-## Report format
-
-Structure the report so a human can act on it without re-deriving your reasoning:
-
-```
+```markdown
 ## Observations
-What the graph currently says, with node ids, and what in the graph does or does not support it.
+What the graph currently says, with node ids and supporting paths.
 
 ## Concerns
-Each concern: what reads wrong, which nodes are involved, and what a reader would wrongly conclude.
-Ordered by how badly a reader would be misled, not by how easy the fix is.
+For each concern: the defect, involved nodes, evidence, and likely reader error. Order by impact.
 
-## Suggested human actions
-Concrete and human-owned: a status a person could change, a merge a person could approve, an
-ambiguity a person could answer. Say what each would fix.
+## Suggested actions
+Name the smallest correction and who has authority to make it.
 
 ## Checked and sound
-Briefly — what you verified that was fine. This is what makes the report trustworthy rather than a
-list of complaints.
+Briefly list the important paths verified as coherent.
 ```
 
-Keep observation separate from recommendation throughout. "This hypothesis is `supported` while both
-inbound evidence nodes are qualified" is an observation. "Move it back to `proposed`" is a
-recommendation, and it is the human's call.
+Separate observation from recommendation. Label standing, approval, and truth-membership changes
+as human-owned. Do not describe every lifecycle status correction as human-only; identify authority
+from the surrounding task contract and graph rules.
 
-## What an audit does not do
+## Boundaries
 
-Do not edit canonical `.research` files. Do not change standing, status, or truth membership — those
-are human authority, and an audit that quietly fixed things would destroy the record it was asked to
-check.
-
-Do not invent causal explanations for what you find. "These two nodes describe the same run" is
-supportable. "They diverged because the second session lost context" is a story about history you
-cannot read.
-
-If the audit surfaces a genuine gap in the project's vocabulary, or a boundary nobody has set, that
-is an Ambiguity for the human, not a finding you resolve.
+Do not edit canonical `.research` files during an audit. Do not invent causal history or explanations
+for missing relations. If the vocabulary cannot represent an observed relation, report the exact gap
+without silently choosing new ontology.

@@ -13,6 +13,7 @@ from rcp.core.models import Patch
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
+    experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
 from rcp.runs.work import stream_work_run
@@ -29,6 +30,55 @@ from rcp.storage import (
 from .helpers import seed_patch
 
 _EXPERIMENT_ID = "exp/native-wake"
+
+
+def test_experiment_watcher_wake_keeps_packages_available_without_reinvoking_them(
+    tmp_path: Path,
+) -> None:
+    episode_id = "00000000-0000-4000-8000-000000000087"
+    continuation = WatcherContinuation(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        patch_kind="experiment_loop",
+        control_node_id=_EXPERIMENT_ID,
+        control_revision=2,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        skill_ids=["experiment-causality"],
+        invoked_skill_ids=["experiment-causality"],
+    )
+    watcher = WatcherRecord(
+        watcher_id="watcher-turn-local-invocation",
+        project_id="project-turn-local-invocation",
+        origin_operation_id="origin-turn-local-invocation",
+        origin_task_kind="node_chat",
+        chat_id="chat-turn-local-invocation",
+        node_id=_EXPERIMENT_ID,
+        check_command="false",
+        log_path=str(tmp_path / "detached.log"),
+        cwd=str(tmp_path),
+        continuation=continuation,
+        status="completed",
+        created_at="2026-08-08T00:00:00Z",
+    )
+
+    request = experiment_watcher_delivery_request(
+        [watcher],
+        trigger="watcher",
+        episode_id=episode_id,
+        invocation=2,
+        invocation_ceiling=3,
+        control_revision=2,
+        decision_bundle=[],
+        completion_criteria=[],
+        session_id="native-session",
+    )
+
+    assert request.skill_ids == ["experiment-causality"]
+    assert request.invoked_skill_ids == []
+    assert request.invoked_workflow_ids == []
 
 
 def _experiment_patch(*, invocation_ceiling: int = 3) -> Patch:

@@ -62,6 +62,8 @@ export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics
 export function loadProjectReadiness(
   apiBase: string,
   refresh = false,
-): Promise<Pick<ProjectSnapshot, "provider_readiness" | "providers">> {
+): Promise<
+  Pick<ProjectSnapshot, "provider_readiness" | "providers" | "provider_skill_inventories">
+> {
   return api(`${apiBase}/readiness${refresh ? "?refresh=true" : ""}`);
 }

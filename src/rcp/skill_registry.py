@@ -285,6 +285,12 @@ def official_registry() -> SkillRegistry:
         ),
         _package(
             root,
+            kind="skill",
+            package_id="experiment-causality",
+            relative_file="experiment-causality/SKILL.md",
+        ),
+        _package(
+            root,
             kind="workflow",
             package_id="research-graph-audit",
             relative_file="workflows/research-graph-audit/WORKFLOW.md",

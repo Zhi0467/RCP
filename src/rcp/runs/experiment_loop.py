@@ -209,8 +209,8 @@ def experiment_watcher_delivery_request(
         control_completion_criteria=completion_criteria,
         workflow_ids=continuation.workflow_ids,
         skill_ids=continuation.skill_ids,
-        invoked_workflow_ids=continuation.invoked_workflow_ids,
-        invoked_skill_ids=continuation.invoked_skill_ids,
+        invoked_workflow_ids=[],
+        invoked_skill_ids=[],
         resolved_skill_packages=continuation.resolved_skill_packages,
         watcher_ids=[item.watcher_id for item in group],
     )

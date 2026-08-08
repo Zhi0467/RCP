@@ -16,7 +16,7 @@ import { api } from "../api";
 import { MarkdownAnswer } from "../chatMarkdown";
 import { profileRunConfig } from "../components/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../components/SkillPicker";
-import { EMPTY_SKILL_SELECTION } from "../skillPicker";
+import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -170,9 +170,14 @@ export function PaperWorkspace({
   );
   const skillCatalog = project.skill_catalog ?? [];
   const skillDefaults = project.skill_defaults ?? EMPTY_SKILL_SELECTION;
+  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
     catalog: skillCatalog,
     defaults: skillDefaults,
+    provider: config.provider,
+    providerLabel: readiness?.label || config.provider,
+    machine: config.run_on,
+    inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
   });
 
   useEffect(() => {
@@ -264,8 +269,7 @@ export function PaperWorkspace({
         ...config,
         model: config.model || null,
         session_id: activeSession?.native_session_id ?? null,
-        invoked_workflow_ids: skills.selection.workflow_ids,
-        invoked_skill_ids: skills.selection.skill_ids,
+        ...skillInvocationFields(skills.selection, skills.providerSkillNames),
       });
       setPendingCoachTaskId(task.operation_id);
       setMessage("");
@@ -283,7 +287,6 @@ export function PaperWorkspace({
       ? [pendingCoachTask]
       : [];
   const transcript = reconstructTaskTranscript(sessionTasks);
-  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const reviewStale = activeSession
     ? activeSession.graph_revision_examined < project.revision
     : false;

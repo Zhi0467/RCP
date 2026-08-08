@@ -37,7 +37,7 @@ from rcp.limits import (
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
-from rcp.providers import ProviderUsage
+from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.skill_registry import SkillReference
 
 if TYPE_CHECKING:
@@ -63,6 +63,24 @@ class ProjectRecord(BaseModel):
 class ProjectStageRecord(BaseModel):
     host: str
     root: str
+
+
+class ProviderSkillInventoryRecord(BaseModel):
+    """One durable last-known provider-native skill inventory."""
+
+    provider: str
+    host: str
+    configured_binary: str
+    resolved_binary: str | None = None
+    provider_version: str | None = None
+    command: list[str] = Field(default_factory=list)
+    protocol: str | None = None
+    skills: list[ProviderSkill] = Field(default_factory=list)
+    inventory_hash: str | None = None
+    status: Literal["refreshing", "fresh", "stale", "unavailable"]
+    diagnostic: str | None = None
+    refreshed_at: str | None = None
+    updated_at: str
 
 
 AgentTaskKind = Literal[
@@ -513,6 +531,22 @@ class AppStore:
                 );
                 CREATE INDEX IF NOT EXISTS projects_recent
                     ON projects(last_opened_at DESC, added_at DESC);
+                CREATE TABLE IF NOT EXISTS provider_skill_inventories (
+                    provider TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    configured_binary TEXT NOT NULL,
+                    resolved_binary TEXT,
+                    provider_version TEXT,
+                    command_json TEXT NOT NULL DEFAULT '[]',
+                    protocol TEXT,
+                    skills_json TEXT NOT NULL DEFAULT '[]',
+                    inventory_hash TEXT,
+                    status TEXT NOT NULL,
+                    diagnostic TEXT,
+                    refreshed_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(provider, host, configured_binary)
+                );
                 CREATE TABLE IF NOT EXISTS graph_runs (
                     operation_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -710,6 +744,135 @@ class AppStore:
             )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
+
+    def provider_skill_inventory(
+        self,
+        provider: str,
+        host: str,
+        configured_binary: str | None,
+    ) -> ProviderSkillInventoryRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM provider_skill_inventories
+                WHERE provider = ? AND host = ? AND configured_binary = ?
+                """,
+                (provider, host, configured_binary or ""),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProviderSkillInventoryRecord(
+            provider=row["provider"],
+            host=row["host"],
+            configured_binary=row["configured_binary"],
+            resolved_binary=row["resolved_binary"],
+            provider_version=row["provider_version"],
+            command=json.loads(row["command_json"]),
+            protocol=row["protocol"],
+            skills=[ProviderSkill.model_validate(item) for item in json.loads(row["skills_json"])],
+            inventory_hash=row["inventory_hash"],
+            status=row["status"],
+            diagnostic=row["diagnostic"],
+            refreshed_at=row["refreshed_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def mark_provider_skill_inventory_refreshing(
+        self,
+        provider: str,
+        host: str,
+        configured_binary: str | None,
+        *,
+        updated_at: str,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO provider_skill_inventories (
+                    provider, host, configured_binary, status, updated_at
+                ) VALUES (?, ?, ?, 'refreshing', ?)
+                ON CONFLICT(provider, host, configured_binary) DO UPDATE SET
+                    status = 'refreshing', diagnostic = NULL, updated_at = excluded.updated_at
+                """,
+                (provider, host, configured_binary or "", updated_at),
+            )
+
+    def save_provider_skill_inventory_success(
+        self,
+        provider: str,
+        host: str,
+        configured_binary: str | None,
+        *,
+        resolved_binary: str,
+        provider_version: str,
+        command: list[str],
+        protocol: str,
+        skills: list[ProviderSkill],
+        inventory_hash: str,
+        refreshed_at: str,
+    ) -> None:
+        skill_payload = [item.model_dump(mode="json") for item in skills]
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO provider_skill_inventories (
+                    provider, host, configured_binary, resolved_binary,
+                    provider_version, command_json, protocol, skills_json,
+                    inventory_hash, status, diagnostic, refreshed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', NULL, ?, ?)
+                ON CONFLICT(provider, host, configured_binary) DO UPDATE SET
+                    resolved_binary = excluded.resolved_binary,
+                    provider_version = excluded.provider_version,
+                    command_json = excluded.command_json,
+                    protocol = excluded.protocol,
+                    skills_json = excluded.skills_json,
+                    inventory_hash = excluded.inventory_hash,
+                    status = 'fresh',
+                    diagnostic = NULL,
+                    refreshed_at = excluded.refreshed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    provider,
+                    host,
+                    configured_binary or "",
+                    resolved_binary,
+                    provider_version,
+                    json.dumps(command, separators=(",", ":")),
+                    protocol,
+                    json.dumps(skill_payload, sort_keys=True, separators=(",", ":")),
+                    inventory_hash,
+                    refreshed_at,
+                    refreshed_at,
+                ),
+            )
+
+    def save_provider_skill_inventory_failure(
+        self,
+        provider: str,
+        host: str,
+        configured_binary: str | None,
+        *,
+        diagnostic: str,
+        updated_at: str,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO provider_skill_inventories (
+                    provider, host, configured_binary, status, diagnostic, updated_at
+                ) VALUES (?, ?, ?, 'unavailable', ?, ?)
+                ON CONFLICT(provider, host, configured_binary) DO UPDATE SET
+                    status = CASE
+                        WHEN provider_skill_inventories.refreshed_at IS NULL
+                        THEN 'unavailable'
+                        ELSE 'stale'
+                    END,
+                    diagnostic = excluded.diagnostic,
+                    updated_at = excluded.updated_at
+                """,
+                (provider, host, configured_binary or "", diagnostic, updated_at),
+            )
 
     @staticmethod
     def _ensure_column(

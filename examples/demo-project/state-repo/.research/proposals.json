@@ -7,6 +7,8 @@
       "situation_cold": "The accepted hypothesis says replanning restores future learning, but the current comparison does not yet match the learning path that produced the endpoint.",
       "why_human_now": "Weakening an accepted scientific claim changes the instruction sent to every control-panel agent."
     },
+    "created_by": "agent",
+    "created_by_operation_id": null,
     "id": "prop/weaken-search-restores-learning",
     "ops": [
       {
@@ -28,6 +30,9 @@
     "related_node_ids": [
       "hyp/search-restores-future-learning"
     ],
+    "resolution_reason": null,
+    "resolved_by": "agent",
+    "resolved_by_operation_id": null,
     "resolved_rev": 5,
     "status": "withdrawn",
     "title": "Narrow what the search result would establish"
@@ -40,6 +45,8 @@
       "situation_cold": "The accepted hypothesis says replanning restores future learning, while the current comparison does not match the learning path that produced the endpoint.",
       "why_human_now": "Weakening an accepted scientific claim changes the instruction sent to every control-panel agent."
     },
+    "created_by": "agent",
+    "created_by_operation_id": null,
     "id": "prop/weaken-search-with-cause",
     "ops": [
       {
@@ -65,6 +72,9 @@
     "related_node_ids": [
       "hyp/search-restores-future-learning"
     ],
+    "resolution_reason": null,
+    "resolved_by": "human",
+    "resolved_by_operation_id": null,
     "resolved_rev": 6,
     "status": "approved",
     "title": "Narrow what the search result would establish"

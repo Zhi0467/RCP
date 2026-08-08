@@ -1,17 +1,28 @@
 import { useEffect, useState } from "react";
 import {
   EMPTY_SKILL_SELECTION,
+  addProviderSkillSelection,
   addSkillSelection,
-  filterSkillCatalogToDefaults,
-  filterSkillCatalog,
+  buildSkillPickerEntries,
+  filterSkillPickerEntries,
   moveSkillHighlight,
   readSkillTrigger,
 } from "../skillPicker";
-import type { SkillCatalogEntry, SkillDefaults } from "../types";
+import type { ProviderSkillPickerEntry, SkillPickerEntry } from "../skillPicker";
+import type {
+  ProviderId,
+  ProviderSkillInventory,
+  SkillCatalogEntry,
+  SkillDefaults,
+} from "../types";
 
 interface Options {
   catalog: SkillCatalogEntry[];
   defaults: SkillDefaults;
+  provider: ProviderId;
+  providerLabel: string;
+  machine: string;
+  inventory?: ProviderSkillInventory | null;
 }
 
 /**
@@ -21,14 +32,29 @@ interface Options {
  * its send shortcut, so an open dropdown claims the arrows, Enter, and Escape
  * instead of sending the turn.
  */
-export function useSkillPicker({ catalog, defaults }: Options) {
+export function useSkillPicker({
+  catalog,
+  defaults,
+  provider,
+  providerLabel,
+  machine,
+  inventory,
+}: Options) {
   const [selection, setSelection] = useState<SkillDefaults>(EMPTY_SKILL_SELECTION);
+  const [providerSkillNames, setProviderSkillNames] = useState<string[]>([]);
   const [query, setQuery] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(0);
-  const enabledCatalog = filterSkillCatalogToDefaults(catalog, defaults);
-  const entries = query === null ? [] : filterSkillCatalog(enabledCatalog, query);
-  const open = entries.length > 0;
+  const availableEntries = buildSkillPickerEntries(catalog, defaults, {
+    provider,
+    providerLabel,
+    machine,
+    inventory,
+  });
+  const entries = query === null ? [] : filterSkillPickerEntries(availableEntries, query);
+  const loading = Boolean(query !== null && inventory?.status === "refreshing");
+  const open = query !== null && (entries.length > 0 || loading);
   const defaultsKey = `${defaults.workflow_ids.join(",")}|${defaults.skill_ids.join(",")}`;
+  const targetKey = `${provider}:${machine}`;
 
   useEffect(() => {
     setHighlight(0);
@@ -36,21 +62,32 @@ export function useSkillPicker({ catalog, defaults }: Options) {
 
   useEffect(() => {
     setSelection(EMPTY_SKILL_SELECTION);
+    setProviderSkillNames([]);
     setQuery(null);
   }, [defaultsKey]);
+
+  useEffect(() => {
+    setProviderSkillNames([]);
+    setQuery(null);
+  }, [targetKey]);
 
   const close = () => setQuery(null);
 
   const reset = () => {
     setSelection(EMPTY_SKILL_SELECTION);
+    setProviderSkillNames([]);
     close();
   };
 
   /** Track the trigger word as the composer text changes. */
   const readMessage = (next: string) => setQuery(readSkillTrigger(next));
 
-  const choose = (entry: SkillCatalogEntry) => {
-    setSelection((current) => addSkillSelection(current, entry));
+  const choose = (entry: SkillPickerEntry) => {
+    if (entry.source === "rcp") {
+      setSelection((current) => addSkillSelection(current, entry));
+    } else {
+      setProviderSkillNames((current) => addProviderSkillSelection(current, entry));
+    }
     close();
   };
 
@@ -65,7 +102,8 @@ export function useSkillPicker({ catalog, defaults }: Options) {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      choose(entries[Math.min(highlight, entries.length - 1)]);
+      const entry = entries[Math.min(highlight, entries.length - 1)];
+      if (entry) choose(entry);
       return true;
     }
     if (event.key === "Escape") {
@@ -78,6 +116,7 @@ export function useSkillPicker({ catalog, defaults }: Options) {
 
   return {
     selection,
+    providerSkillNames,
     setSelection,
     reset,
     readMessage,
@@ -86,6 +125,8 @@ export function useSkillPicker({ catalog, defaults }: Options) {
       catalog,
       selection,
       entries,
+      open,
+      loading,
       highlight: Math.min(highlight, Math.max(entries.length - 1, 0)),
       onHighlight: setHighlight,
       onChoose: choose,
@@ -95,30 +136,72 @@ export function useSkillPicker({ catalog, defaults }: Options) {
 
 export type SkillPickerProps = ReturnType<typeof useSkillPicker>["props"];
 
-export function SkillPicker({ entries, highlight, onHighlight, onChoose }: SkillPickerProps) {
+function skillEntryKey(entry: SkillPickerEntry): string {
+  return entry.source === "rcp"
+    ? `rcp:${entry.kind}:${entry.id}`
+    : `provider:${entry.provider}:${entry.machine}:${entry.name}`;
+}
+
+function entryDetail(entry: SkillPickerEntry): string {
+  if (entry.source === "rcp") return entry.description;
+  return entry.stale ? `stale · ${entry.description}` : entry.description;
+}
+
+function staleInventory(entries: SkillPickerEntry[]): ProviderSkillPickerEntry | undefined {
+  return entries.find(
+    (entry): entry is ProviderSkillPickerEntry => entry.source === "provider" && entry.stale,
+  );
+}
+
+export function SkillPicker({
+  entries,
+  open,
+  loading,
+  highlight,
+  onHighlight,
+  onChoose,
+}: SkillPickerProps) {
+  const stale = staleInventory(entries);
+  let previousGroup: string | null = null;
+  let optionIndex = 0;
   return (
     <>
-      {entries.length > 0 && (
+      {open && (
         <div className="chat-skill-menu" role="listbox" aria-label="Select a skill or workflow">
-          {entries.map((item, index) => (
-            <button
-              type="button"
-              role="option"
-              aria-selected={index === highlight}
-              className={index === highlight ? "highlighted" : undefined}
-              key={`${item.kind}:${item.id}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => onHighlight(index)}
-              onClick={() => onChoose(item)}
-            >
-              <span>
-                <strong>{item.label}</strong>
-                <small>
-                  {item.kind} · {item.description}
-                </small>
-              </span>
-            </button>
-          ))}
+          {entries.map((item) => {
+            const showGroup = item.group !== previousGroup;
+            previousGroup = item.group;
+            const index = optionIndex++;
+            return (
+              <div className="chat-skill-menu-item" role="presentation" key={skillEntryKey(item)}>
+                {showGroup && <div className="chat-skill-group-label">{item.group}</div>}
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={index === highlight}
+                  className={index === highlight ? "highlighted" : undefined}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => onHighlight(index)}
+                  onClick={() => onChoose(item)}
+                >
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{entryDetail(item)}</small>
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+          {loading && (
+            <div className="chat-skill-menu-status" role="status">
+              Checking provider skills…
+            </div>
+          )}
+          {stale?.diagnostic && (
+            <div className="chat-skill-menu-status stale" role="status">
+              Last refresh failed: {stale.diagnostic}
+            </div>
+          )}
         </div>
       )}
     </>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -10,9 +11,11 @@ from fastapi.testclient import TestClient
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api import create_app
 from rcp.background import AgentTaskExecution
+from rcp.providers import ProviderSkillReference
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.work import stream_work_run
 from rcp.service import RunRequest
+from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore
 
 from .helpers import agent_patch_json, refresh_patch, seed_patch
@@ -90,6 +93,102 @@ def _wait_for_task(
     raise AssertionError("background task did not finish")
 
 
+def _enable_graph_audit(service) -> None:
+    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+    service.history.update_agent_settings(
+        service.manifest.agent.default_run_truth_scope,
+        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
+        skill_defaults=SkillDefaults(skill_ids=["graph-audit"]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_contract_version_change_rebootstraps_an_existing_native_chat(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    chat_id = "contract-version-chat"
+    session_id = "contract-version-native-session"
+    launcher = _RecordingLauncher(session_id)
+
+    first_request = RunRequest(
+        chat_scope="project",
+        chat_id=chat_id,
+        message="Start the native chat.",
+        run_truth_scope=["repo-a"],
+        mode="discuss",
+    )
+    first_execution = _execution(
+        store,
+        operation_id="contract-version-first",
+        project_id=project_id,
+        request=first_request,
+        native_session_id=session_id,
+    )
+    async for _frame in stream_discuss_run(
+        service,
+        launcher,
+        first_request,
+        tmp_path / "data",
+        execution=first_execution,
+    ):
+        pass
+    store.complete_agent_task(first_execution.operation_id, applied_revision=None, result={})
+
+    current = store.chat_session_context("codex", "laptop", session_id)
+    assert current is not None
+    stale_snapshot = json.loads(current.snapshot_json)
+    stale_snapshot["master_context_version"] = 2
+    stale_snapshot["contract_key"] = "chat-master-v2"
+    stale_snapshot["master_context_path"] = "/stale/chat-master-v2.md"
+    stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id=session_id,
+        project_id=project_id,
+        kind="project_chat",
+        chat_id=chat_id,
+        node_id=None,
+        protocol_version=2,
+        snapshot_json=stale_json,
+        snapshot_sha256=hashlib.sha256(stale_json.encode("utf-8")).hexdigest(),
+        committed_operation_id=first_execution.operation_id,
+        expected_snapshot_sha256=current.snapshot_sha256,
+    )
+
+    second_request = first_request.model_copy(
+        update={"message": "Use the current contract.", "session_id": session_id}
+    )
+    second_execution = _execution(
+        store,
+        operation_id="contract-version-second",
+        project_id=project_id,
+        request=second_request,
+        native_session_id=session_id,
+    )
+    async for _frame in stream_discuss_run(
+        service,
+        launcher,
+        second_request,
+        tmp_path / "data",
+        execution=second_execution,
+    ):
+        pass
+
+    second_prompt = launcher.prompts[1]
+    assert second_prompt.startswith("Open and retain the RCP chat master context at:\n")
+    assert "chat-master-v3-" in second_prompt.splitlines()[1]
+    committed = store.chat_session_context("codex", "laptop", session_id)
+    assert committed is not None
+    assert committed.protocol_version == 3
+    assert json.loads(committed.snapshot_json)["contract_key"] == "chat-master-v3"
+
+
 @pytest.mark.asyncio
 async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     manifest, tmp_path
@@ -143,6 +242,7 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     assert "This turn has no graph-change channel" in master
     assert "Patch JSON Schema" in master
     assert "named in the envelope" in master
+    assert "Invoked for this turn —" not in master
     assert not (launcher.workspaces[0] / "current-turn.json").exists()
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
@@ -175,11 +275,67 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     assert launch_receipt.payload["contract_path"] == str(master_path)
 
 
+@pytest.mark.asyncio
+async def test_fresh_discuss_passes_provider_native_receipt_beside_unchanged_message(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    message = "/native-review  preserve  spacing\nand this line."
+    request = RunRequest(
+        chat_scope="project",
+        chat_id="provider-native-discuss",
+        message=message,
+        run_truth_scope=["repo-a"],
+        mode="discuss",
+        resolved_provider_skills=[
+            ProviderSkillReference(
+                provider="codex",
+                machine="laptop",
+                provider_version="codex-cli 0.146.1",
+                inventory_hash="a" * 64,
+                name="native-review",
+                label="Native review",
+                description="Review with the native checklist.",
+                stale=True,
+            )
+        ],
+    )
+    execution = _execution(
+        store,
+        operation_id="provider-native-discuss-first",
+        project_id=project_id,
+        request=request,
+    )
+    launcher = _RecordingLauncher("provider-native-session")
+
+    async for _frame in stream_discuss_run(
+        service,
+        launcher,
+        request,
+        tmp_path / "data",
+        execution=execution,
+    ):
+        pass
+
+    prompt = launcher.prompts[0]
+    assert prompt.count(message) == 1
+    assert prompt.count("Invoked provider-native skill this turn:") == 1
+    assert '"native_token": "$native-review"' in prompt
+    assert '"stale": true' in prompt
+    master_path = Path(prompt.splitlines()[1])
+    assert "Invoked provider-native skill this turn:" not in master_path.read_text(encoding="utf-8")
+
+
 def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_context(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
+    _enable_graph_audit(service)
     service.history.append(seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -224,6 +380,7 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
             "session_id": session_id,
             "run_truth_scope": ["repo-a"],
             "mode": "discuss",
+            "invoked_skill_ids": ["graph-audit"],
         },
     )
     assert second_response.status_code == 202, second_response.text
@@ -234,10 +391,12 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     assert launcher.sessions == [None, session_id]
     prompt = launcher.prompts[1]
     second_artifacts = launcher.workspaces[1] / "turns" / second_operation_id / "artifacts"
-    assert prompt == (
-        f"This is a Discuss turn.\nArtifact directory for this turn: {second_artifacts}"
-        f"\n\n{second_message}"
-    )
+    marker = f"This is a Discuss turn.\nArtifact directory for this turn: {second_artifacts}"
+    assert prompt.startswith(marker)
+    assert prompt.count(second_message) == 1
+    assert "Invoked for this turn — read and follow each exact staged package:" in prompt
+    assert "Graph audit (skill `graph-audit` v3.0.0)" in prompt
+    assert "/skill/graph-audit`" in prompt
     assert prompt.count("This is a Discuss turn.") == 1
     assert "Open and retain the RCP chat master context" not in prompt
     assert "# RCP Discuss task contract" not in prompt
@@ -255,12 +414,30 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     )
     assert launch_receipt.payload["contract_path"] == str(master_path)
 
+    third_message = "No package invocation on this turn."
+    third_response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": chat_id,
+            "message": third_message,
+            "session_id": session_id,
+            "run_truth_scope": ["repo-a"],
+            "mode": "discuss",
+        },
+    )
+    assert third_response.status_code == 202, third_response.text
+    third_operation_id = third_response.json()["operation_id"]
+    assert _wait_for_task(client, project_id, third_operation_id)["status"] == "succeeded"
+    assert launcher.prompts[2].count(third_message) == 1
+    assert "Invoked for this turn" not in launcher.prompts[2]
+
 
 def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settings(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
+    _enable_graph_audit(service)
     service.history.append(seed_patch())
     project_id = app.state.default_project_id
     chat_id = "65d1ae3c-f234-4abe-96b7-f28c40d85a1b"
@@ -305,6 +482,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
             "run_truth_scope": ["repo-a"],
             "mode": "work",
             "reasoning": "high",
+            "invoked_skill_ids": ["graph-audit"],
         },
     )
     assert second.status_code == 202, second.text
@@ -316,9 +494,14 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
     assert launcher.prompts[1].startswith(
         f"This is a Work turn.\nArtifact directory for this turn: {work_artifacts}"
-        f"\n\n{work_message}\n\n"
     )
+    assert launcher.prompts[1].count(work_message) == 1
     assert launcher.prompts[1].count("RCP context update") == 1
+    assert (
+        "Invoked for this turn — read and follow each exact staged package:"
+        in (launcher.prompts[1])
+    )
+    assert "Graph audit (skill `graph-audit` v3.0.0)" in launcher.prompts[1]
     assert '"reasoning": "high"' in launcher.prompts[1]
     assert '"repositories"' not in launcher.prompts[1]
     assert '"skills"' not in launcher.prompts[1]

@@ -25,7 +25,11 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
 )
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
+from rcp.agents.prompts import (
+    CHAT_MASTER_CONTEXT_VERSION,
+    invoked_package_pointers,
+    invoked_provider_skill_section,
+)
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.models import ExperimentDecisionPin, Patch
@@ -168,6 +172,7 @@ def _prepare_work_chat_prompt(
     artifact_path: str,
     master_context: str,
     stable_values: dict[str, object],
+    skill_pointers: list[dict[str, object]],
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -187,6 +192,12 @@ def _prepare_work_chat_prompt(
         human_message=request.message,
         master_context_path=bootstrap_path,
         context_delta=context_delta,
+        invoked_skill_pointers=invoked_package_pointers(
+            skill_pointers,
+            workflow_ids=request.invoked_workflow_ids,
+            skill_ids=request.invoked_skill_ids,
+        ),
+        invoked_provider_skills=request.resolved_provider_skills,
     )
     return prompt, retained_master_path
 
@@ -450,13 +461,25 @@ async def stream_work_run(
                     watch_path=watch_path,
                     output_schema_path=schema_path,
                     validator_command=validator_command,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers,
+                        workflow_ids=request.invoked_workflow_ids,
+                        skill_ids=request.invoked_skill_ids,
+                    ),
                 )
+                contract += invoked_provider_skill_section(request.resolved_provider_skills)
             else:
                 contract = PromptFactory.continuation_task_contract(
                     original_contract_path=original_contract_path,
                     mode="resume",
                     patch_path=patch_path,
                     validator_command=validator_command,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers,
+                        workflow_ids=request.invoked_workflow_ids,
+                        skill_ids=request.invoked_skill_ids,
+                    ),
+                    invoked_provider_skills=request.resolved_provider_skills,
                 )
             contract_path, prompt = _stage_task_contract(
                 local_stage,
@@ -491,7 +514,13 @@ async def stream_work_run(
                 watch_path=watch_path,
                 output_schema_path=schema_path,
                 validator_command=validator_command,
+                execution_host=execution_host,
                 context_replacement=context_replacement,
+                invoked_skill_pointers=invoked_package_pointers(
+                    skill_pointers,
+                    workflow_ids=request.invoked_workflow_ids,
+                    skill_ids=request.invoked_skill_ids,
+                ),
             )
             contract_path, prompt = _stage_task_contract(
                 local_stage,
@@ -557,8 +586,15 @@ async def stream_work_run(
                         artifact_path=str(artifact_directory),
                         output_schema_path=schema_path,
                         validator_command=validator_command,
+                        execution_host=execution_host,
                         skill_pointers=skill_pointers,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
                     )
+                    contract += invoked_provider_skill_section(request.resolved_provider_skills)
                 else:
                     contract = PromptFactory.work_task_contract(
                         project_name=context.project_name,
@@ -575,8 +611,15 @@ async def stream_work_run(
                         output_schema_path=schema_path,
                         retry_diagnostics_path=retry_diagnostics_path,
                         watch_path=watch_path,
+                        execution_host=execution_host,
                         validator_command=validator_command,
                         skill_pointers=skill_pointers,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
+                        invoked_provider_skills=request.resolved_provider_skills,
                     )
                 current_contract_path, current_prompt = _stage_task_contract(
                     local_stage,
@@ -605,6 +648,7 @@ async def stream_work_run(
                     output_schema_path=schema_path,
                     validator_command=validator_command,
                     watch_path=watch_path,
+                    execution_host=execution_host,
                     skill_pointers=skill_pointers,
                 )
                 stable_prompt_values: dict[str, object] = {
@@ -642,6 +686,7 @@ async def stream_work_run(
                     artifact_path=str(artifact_directory),
                     master_context=master_context,
                     stable_values=stable_prompt_values,
+                    skill_pointers=skill_pointers,
                 )
                 contract_path = retained_master_path
                 base_contract_path = retained_master_path
@@ -667,6 +712,14 @@ async def stream_work_run(
                         output_schema_path=schema_path,
                         validator_command=validator_command,
                         diagnostics_path=retry_diagnostics_path,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
+                    )
+                    retry_contract += invoked_provider_skill_section(
+                        request.resolved_provider_skills
                     )
                 else:
                     retry_contract = PromptFactory.continuation_task_contract(
@@ -679,6 +732,12 @@ async def stream_work_run(
                         validator_command=validator_command,
                         output_schema_path=schema_path if resumed_retry else None,
                         skill_pointers=skill_pointers if resumed_retry else None,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
+                        invoked_provider_skills=request.resolved_provider_skills,
                     )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,

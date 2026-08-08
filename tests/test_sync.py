@@ -374,6 +374,7 @@ def test_direct_choice_validator_requires_every_targeted_proposal_withdrawal(
         kind="approval",
         author="human",
         summary="Tried to leave one superseded Proposal pending.",
+        human_action="decision_choice",
         ops=[
             {
                 "op": "update_nodes",
@@ -444,6 +445,176 @@ def test_graph_sync_rejects_incoherent_direct_decision_choice(manifest, tmp_path
     assert response.status_code == 422
     assert decision.id in response.text
     assert service.history.state().revision == 2
+
+
+def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp_path) -> None:
+    """A pre-fix approval left an option selected while status stayed open.
+
+    Clicking that same option is the only repair available, and it stages no
+    `selected_option` change because the option is already the canonical one.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    state = service.history.state()
+    legacy_proposal = Patch(
+        revision=state.revision + 1,
+        kind="refresh",
+        author="agent",
+        summary="Recorded a legacy Proposal that selected without deciding.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/legacy-selection",
+                        "title": "Choose shifted",
+                        "card": {"decision_needed": "Choose shifted?"},
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "nodes": [
+                                    {
+                                        "id": "dec/evaluation-rule",
+                                        "changes": {"selected_option": "shifted"},
+                                    }
+                                ],
+                            }
+                        ],
+                        "related_node_ids": ["dec/evaluation-rule"],
+                        "base_rev": state.revision,
+                    }
+                ],
+            }
+        ],
+    )
+    assert not validate_patch(state, legacy_proposal, ["repo-a"], mode="replay").rejected
+    state = apply_valid_patch(state, legacy_proposal)
+    legacy_approval = Patch(
+        revision=state.revision + 1,
+        kind="approval",
+        author="human",
+        summary="Approved the legacy Proposal before the implied status existed.",
+        ops=[
+            *state.proposals["prop/legacy-selection"].ops,
+            {
+                "op": "resolve_proposals",
+                "resolutions": [{"id": "prop/legacy-selection", "status": "approved"}],
+            },
+        ],
+    )
+    assert not validate_patch(state, legacy_approval, ["repo-a"], mode="replay").rejected
+    state = apply_valid_patch(state, legacy_approval)
+    decision = state.nodes["dec/evaluation-rule"]
+    assert (decision.selected_option, decision.status) == ("shifted", "open")
+
+    request = GraphSyncRequest(
+        base_revision=state.revision,
+        nodes=[
+            GraphSyncNodeChange(
+                node_id=decision.id,
+                base_updated_rev=decision.updated_rev,
+                # What the UI sends for a click on the already-selected option.
+                changes={"status": "decided"},
+                standing="accepted",
+            )
+        ],
+    )
+    patches = service._build_sync_patches(request, state, active_control_node_ids=set())
+
+    assert len(patches) == 1
+    assert patches[0].human_action == "decision_choice"
+    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    repaired = apply_valid_patch(state, patches[0]).nodes["dec/evaluation-rule"]
+    assert (repaired.selected_option, repaired.status) == ("shifted", "decided")
+    assert repaired.standing == "accepted"
+
+
+def test_a_decision_choice_patch_that_does_not_name_the_action_is_refused(
+    manifest, tmp_path
+) -> None:
+    """The producer names the authority action; the validator never infers it.
+
+    An ordinary node edit and a direct choice are both one `update_nodes` on
+    one node, so shape cannot tell them apart. Without the marker this patch is
+    an ordinary edit, and ordinary edits may not touch a Decision's choice.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    state = service.history.state()
+    decision = state.nodes["dec/evaluation-rule"]
+    patch = Patch(
+        kind="approval",
+        author="human",
+        summary="Chose an option without naming the action.",
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": decision.id,
+                        "base_updated_rev": decision.updated_rev,
+                        "changes": {"selected_option": "shifted", "status": "decided"},
+                    }
+                ],
+            }
+        ],
+    )
+
+    report = validate_patch(state, patch, ["repo-a"])
+
+    assert report.rejected
+    assert any(message.code == "non-prose-node-edit" for message in report.messages)
+
+
+def test_direct_choice_refuses_a_proposal_withdrawal_without_an_id(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=True)
+    state = service.history.state()
+    decision = state.nodes["dec/evaluation-rule"]
+    patch = Patch(
+        kind="approval",
+        author="human",
+        summary="Withdrew Proposals without naming them.",
+        human_action="decision_choice",
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": decision.id,
+                        "base_updated_rev": decision.updated_rev,
+                        "changes": {"selected_option": "shifted", "status": "decided"},
+                    }
+                ],
+            },
+            {
+                "op": "resolve_proposals",
+                "resolutions": [
+                    {"status": "withdrawn", "reason": "The human decided directly."},
+                    {"status": "withdrawn", "reason": "The human decided directly."},
+                ],
+            },
+        ],
+    )
+
+    report = validate_patch(state, patch, ["repo-a"])
+
+    assert report.rejected
+    assert any(
+        message.code == "invalid-direct-decision-choice"
+        and "requires a Proposal id" in message.message
+        for message in report.messages
+    )
 
 
 @pytest.mark.parametrize(

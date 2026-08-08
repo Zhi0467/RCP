@@ -448,6 +448,10 @@ def test_relation_spec_covers_every_relation_flags_mismatches_and_serializes_lay
     }
     assert RELATION_SPEC["supersedes"].same_type
     assert RELATION_SPEC["duplicate_of"].same_type
+    assert RELATION_SPEC["informs"].source_types == frozenset({"evidence"})
+    assert RELATION_SPEC["informs"].target_types == frozenset({"decision"})
+    assert RELATION_SPEC["addresses"].source_types == frozenset({"evidence"})
+    assert RELATION_SPEC["addresses"].target_types == frozenset({"blocker"})
 
     patch = _patch(
         1,
@@ -790,6 +794,7 @@ def _layer_of(source: dict[str, object], target: dict[str, object], relation: st
 _RQ = {"id": "rq/q", "type": "research_question", "title": "Q", "question": "Why?"}
 _DEC = {"id": "dec/d", "type": "decision", "title": "D", "question": "Which target?"}
 _EXP = {"id": "exp/e", "type": "experiment", "title": "E", "objective": "Measure it."}
+_EV = {"id": "ev/e", "type": "evidence", "title": "E", "observation": "It ran."}
 _BLK = {"id": "blk/b", "type": "blocker", "title": "B", "description": "State is missing."}
 
 
@@ -802,6 +807,10 @@ def test_edge_layer_is_derived_from_the_endpoints_not_the_relation_name() -> Non
     # The same relation stays inside the action layer from an action-layer source.
     assert _layer_of(_EXP, _DEC, "governed_by") == "action"
     assert _layer_of(_EXP, _BLK, "blocked_by") == "action"
+
+    # Action evidence crosses from the epistemic layer into the action layer.
+    assert _layer_of(_EV, _DEC, "informs") == "seam"
+    assert _layer_of(_EV, _BLK, "addresses") == "seam"
 
 
 def test_declared_seam_relations_still_resolve_to_seam() -> None:

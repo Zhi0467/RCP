@@ -43,6 +43,37 @@ class ModelChoice(BaseModel):
     default_reasoning: str = ""
 
 
+class ProviderSkill(BaseModel):
+    """One user-invocable skill reported by a provider CLI."""
+
+    name: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    description: str
+    scope: str | None = None
+    path: str | None = None
+    enabled: bool = True
+
+
+class ProviderSkillProbe(BaseModel):
+    """The exact provider-owned command and wire protocol used for refresh."""
+
+    command: list[str] = Field(min_length=1)
+    protocol: Literal["jsonrpc", "jsonl"]
+
+
+class ProviderSkillReference(BaseModel):
+    """Immutable per-turn receipt for one provider-native skill invocation."""
+
+    provider: str = Field(min_length=1)
+    machine: str = Field(min_length=1)
+    provider_version: str = Field(min_length=1)
+    inventory_hash: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    description: str
+    stale: bool = False
+
+
 class ProviderUsage(BaseModel):
     """Provider-normalized usage at one accounting boundary.
 
@@ -115,6 +146,21 @@ class ProviderProfile:
 
     def parse_catalog(self, stdout: str) -> list[ModelChoice]:
         return []
+
+    def skill_probe(self, binary: str) -> ProviderSkillProbe:
+        """Return the zero-turn command that enumerates this CLI's loaded skills."""
+
+        raise NotImplementedError
+
+    def parse_skills(self, payload: object) -> list[ProviderSkill]:
+        """Normalize one successful provider-owned inventory response."""
+
+        raise NotImplementedError
+
+    def native_skill_token(self, name: str) -> str:
+        """Provider-native spelling retained in the structured turn marker."""
+
+        return f"/{name}"
 
     def models(self, catalog: subprocess.CompletedProcess[str] | None) -> list[ModelChoice]:
         """The models to offer, preferring a live catalog over declared ones."""
@@ -206,6 +252,40 @@ class CodexProfile(ProviderProfile):
         # Codex orders its own catalog by `priority`; preserve that rather than
         # imposing an alphabetical order the human has not seen anywhere else.
         return choices
+
+    def skill_probe(self, binary: str) -> ProviderSkillProbe:
+        return ProviderSkillProbe(command=[binary, "app-server"], protocol="jsonrpc")
+
+    def parse_skills(self, payload: object) -> list[ProviderSkill]:
+        if not isinstance(payload, dict):
+            raise ValueError("Codex skills/list result is not an object")
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise ValueError("Codex skills/list result has no data list")
+        normalized: dict[str, ProviderSkill] = {}
+        for scope in data:
+            if not isinstance(scope, dict) or not isinstance(scope.get("skills"), list):
+                continue
+            for item in scope["skills"]:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if not isinstance(name, str) or not name or item.get("enabled") is not True:
+                    continue
+                interface = item.get("interface")
+                display_name = interface.get("displayName") if isinstance(interface, dict) else None
+                description = item.get("description")
+                normalized[name] = ProviderSkill(
+                    name=name,
+                    label=display_name if isinstance(display_name, str) and display_name else name,
+                    description=description if isinstance(description, str) else "",
+                    scope=item.get("scope") if isinstance(item.get("scope"), str) else None,
+                    path=item.get("path") if isinstance(item.get("path"), str) else None,
+                )
+        return list(normalized.values())
+
+    def native_skill_token(self, name: str) -> str:
+        return f"${name}"
 
     def command(
         self,
@@ -345,6 +425,56 @@ class ClaudeProfile(ProviderProfile):
             return bool(json.loads(result.stdout).get("loggedIn"))
         except (json.JSONDecodeError, AttributeError):
             return False
+
+    def skill_probe(self, binary: str) -> ProviderSkillProbe:
+        return ProviderSkillProbe(
+            command=[
+                binary,
+                "--print",
+                "/context",
+                "--no-session-persistence",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "plan",
+                "--settings",
+                '{"disableAllHooks":true}',
+                "--strict-mcp-config",
+                "--mcp-config",
+                '{"mcpServers":{}}',
+            ],
+            protocol="jsonl",
+        )
+
+    def parse_skills(self, payload: object) -> list[ProviderSkill]:
+        if not isinstance(payload, str):
+            raise ValueError("Claude skill inventory is not JSONL text")
+        init: dict[str, object] | None = None
+        for line in payload.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("type") == "system"
+                and value.get("subtype") == "init"
+            ):
+                init = value
+                break
+        if init is None or not isinstance(init.get("skills"), list):
+            raise ValueError("Claude system/init has no skills list")
+        return [
+            ProviderSkill(
+                name=name,
+                label=name,
+                description="Claude-native skill loaded by this CLI.",
+                scope="plugin" if ":" in name else None,
+            )
+            for name in dict.fromkeys(init["skills"])
+            if isinstance(name, str) and name
+        ]
 
     def command(
         self,

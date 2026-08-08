@@ -35,6 +35,8 @@ def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph(
         "skill_ids": None,
         "invoked_workflow_ids": [],
         "invoked_skill_ids": [],
+        "invoked_provider_skill_names": [],
+        "resolved_provider_skills": [],
         "resolved_skill_packages": None,
     }
 

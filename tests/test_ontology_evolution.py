@@ -517,6 +517,9 @@ def test_base_authoring_rules_appear_regardless_of_ontology_state() -> None:
         assert "Base node ids are" in contract
         assert "`has_subquestion` ResearchQuestion->ResearchQuestion" in contract
         assert "`blocked_by` Experiment|Decision|ResearchQuestion->Blocker" in contract
+        assert "`informs` Evidence->Decision" in contract
+        assert "`addresses` Evidence->Blocker" in contract
         assert "Every new Evidence must explicitly set `origin`" in contract
-        assert "Every Experiment connects to a Hypothesis or Decision" in contract
+        assert "Every Experiment connects to a Hypothesis or Decision" not in contract
+        assert "Internal-run Evidence connects to the Experiment that produced it" in contract
         assert "an agent may neither apply nor propose `set_ontology`" in contract

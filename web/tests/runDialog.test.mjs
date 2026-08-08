@@ -560,7 +560,15 @@ test("conversation watcher status and wake attribution stay operational", () => 
   const html = renderToStaticMarkup(
     React.createElement(NodeChat, {
       ...props,
-      watchers: [{ ...watcher, continuation: { patch_kind: "work" } }],
+      watchers: [
+        { ...watcher, continuation: { patch_kind: "work" } },
+        {
+          ...watcher,
+          watcher_id: "watcher-stopped",
+          status: "stopped",
+          continuation: { patch_kind: "work" },
+        },
+      ],
     }),
   );
   const experimentHtml = renderToStaticMarkup(
@@ -680,7 +688,22 @@ test("task inspector names every provider launch by its continuation cause", () 
     project_id: "project-1",
     kind: "seed",
     status: "running",
-    request: { provider: "codex", run_on: "local" },
+    request: {
+      provider: "codex",
+      run_on: "local",
+      resolved_provider_skills: [
+        {
+          provider: "codex",
+          machine: "local",
+          provider_version: "0.146.1",
+          inventory_hash: "inventory-hash",
+          name: "frontend-design:frontend-design",
+          label: "Frontend design",
+          description: "Shape a distinctive interface.",
+          stale: true,
+        },
+      ],
+    },
     created_at: now,
     updated_at: now,
     status_message: "Correcting the graph update.",
@@ -732,6 +755,9 @@ test("task inspector names every provider launch by its continuation cause", () 
   assert.match(html, />Base</);
   assert.match(html, /contract-digest/);
   assert.match(html, /# RCP seed task contract/);
+  assert.match(html, /Provider-native guidance/);
+  assert.match(html, /Frontend design \(frontend-design:frontend-design\)/);
+  assert.match(html, /codex · local · CLI 0\.146\.1 · stale inventory/);
 });
 
 test("provider path state distinguishes a stale recorded executable", () => {

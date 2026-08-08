@@ -42,9 +42,9 @@ def test_demo_fixture_replays_from_its_patch_log(demo_state: Path) -> None:
     assert state.revision > 0
     assert state.nodes
 
-    # Flags are allowed and currently expected — see Q1 in docs/open-questions.md,
-    # where the fixture's mistyped `supports` edge is kept on purpose. A *reject*
-    # is different: it means replay hit something structurally broken.
+    # Flags are allowed and currently expected: the fixture keeps a deliberately
+    # mistyped historical `supports` edge to demonstrate endpoint diagnostics. A
+    # *reject* is different: it means replay hit something structurally broken.
     rejects = [item for item in state.validation_messages if item.level == "reject"]
     assert rejects == []
 

@@ -8,11 +8,14 @@ covered_by:
   - tests/test_api.py::test_seed_stages_its_selected_skills_and_records_what_it_ran
   - tests/test_api.py::test_an_upgraded_package_never_makes_a_stored_task_un_retryable
   - tests/test_api.py::test_retrying_a_failed_seed_records_the_selection_it_will_stage
+  - tests/test_prompts.py::test_structured_invocation_activates_exact_pointer_without_rewriting_human_message
+  - tests/test_chat_prompt_protocol.py
   - web/tests/skillPicker.test.mjs
-last_passed: 2026-08-04 — Settings showed the enabled package set; browser drove
-  the slash picker in Node chat and Paper, confirmed only enabled entries were
-  offered, preserved the literal `/research` token after selection, and showed
-  no persistent skill chips; 627 backend and 166 web checks passed.
+last_passed: 2026-08-08 — Settings exposed Experiment causality, the browser
+  drove its slash selection into a real Work turn, the task inspector showed the
+  untouched slash message beside the separate exact activation pointer, and a
+  later turn does not retain that invocation; browser console and server log
+  were clean
 invariants: [4, 4b, 8, 9, 10, 10b, 10c]
 reported_by: human, 2026-08-04
 ---
@@ -51,8 +54,9 @@ explicitly invoke a subset of those packages with slash syntax.
 7. Open the resulting Agent task. Its immutable contract shows the Settings-
    enabled workflows, resolved dependency skills, their ids and versions,
    descriptions, and pointers to the staged folders. It does not embed their
-   bodies, and it does not separately mark which package the slash token named:
-   that token is already in the human message the agent reads.
+   bodies. A short, separate **Invoked this turn** block names the exact package
+   selected by the slash picker and its staged pointer, while the unchanged
+   slash token remains in the human message the agent reads.
 8. Start a Seed or Refresh task. It stages only the project defaults from
    Settings; there is no separate per-run skill selector. A selected workflow
    is preflighted before provider launch; its workflow file and every declared
@@ -78,12 +82,14 @@ explicitly invoke a subset of those packages with slash syntax.
   into `.research` or a project repository and remain disposable scratch.
 - A slash invocation may name only a workflow or skill enabled directly in
   Settings. It never stages an additional package and never grants authority.
-  The invocation reaches the agent as the unchanged literal token in the human
-  message; RCP does not restate it as a separate contract section, because the
-  contract already lists every staged package and the message already says which
-  one the human asked for.
+  The invocation reaches the agent both as the unchanged literal token in the
+  human message and as one short activation block naming the exact invoked id,
+  version, and staged pointer. The block requires the agent to read and follow
+  that package for the turn; it never embeds the package body.
 - Without a slash invocation, the task still receives lightweight pointers to
-  every Settings-enabled package so the agent may discover relevant guidance.
+  every Settings-enabled package. Each pointer includes the description that
+  defines its trigger; the agent reads a package only when the task and intended
+  change match that description.
 - The first chat master context and non-chat task contracts expose compact ids,
   versions, descriptions, and exact staged paths. A changed enabled set or
   package version becomes a compact chat context delta; unchanged pointers are
@@ -120,6 +126,9 @@ explicitly invoke a subset of those packages with slash syntax.
 - Chat and paper coaching do not render persistent skill/workflow chips. The
   task contract and inspector remain the visible receipt of staged packages, and
   the persisted human message is the receipt of what was invoked.
+- The provider contract separately names every explicitly invoked package and
+  its exact staged pointer, requires its use for that turn, preserves the human
+  message byte-for-byte, and leaves unrelated enabled packages as pointers.
 - Retrying a task after its package was upgraded runs the new version and says
   so, rather than failing on the older recorded version.
 - Workflow dependency preflight catches missing entries, cycles, invalid paths,
@@ -139,4 +148,5 @@ workflow dependencies are silently omitted, an upgraded package makes an
 existing task un-retryable, an attempt reports a version its staged folder
 does not contain, skill content enters `.research`, selected skills widen
 permissions, persistent chips misrepresent the defaults, or the agent must
-infer invocation from the human's raw message.
+infer invocation from the human's raw message, or an invocation marker embeds a
+package body instead of pointing to the staged package.

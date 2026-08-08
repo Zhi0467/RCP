@@ -1,5 +1,12 @@
 import { FlaskConical } from "lucide-react";
-import type { ExperimentLoopHealth, ExperimentRun, ExperimentWatcherGroup } from "../runProjection";
+import type { ReactNode } from "react";
+import {
+  type ExperimentLoopHealth,
+  type ExperimentRun,
+  type ExperimentWatcherGroup,
+  type ExperimentWatcherItem,
+  watcherIsActive,
+} from "../runProjection";
 import type { WatcherRecord } from "../types";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
@@ -45,9 +52,7 @@ export function experimentLoopIsLive(run: ExperimentRun): boolean {
     operational?.watcher_completion_pending ||
     run.currentWatchers.some(
       (watcher) =>
-        watcher.status === "active" ||
-        watcher.status === "degraded" ||
-        (watcher.status === "completed" && !watcher.notified),
+        watcherIsActive(watcher) || (watcher.status === "completed" && !watcher.notified),
     ),
   );
 }
@@ -76,7 +81,7 @@ export function ExperimentRunDetail({
   onStopLoop,
   onInspectTask,
 }: Props) {
-  const { node, control, taskGroup, currentTask, watchers, health } = run;
+  const { node, control, taskGroup, currentTask, health } = run;
   const operational = control?.operational ?? null;
   const session = operational?.session ?? null;
   const live = experimentLoopIsLive(run);
@@ -89,19 +94,26 @@ export function ExperimentRunDetail({
     taskGroup?.latest.operation_id;
   const attempts = node.attempts ?? [];
   const completionCriteria = node.completion_criteria ?? [];
+  const stoppedWatcherItems = run.watcherItems.filter(watcherItemIsStopped);
+  const currentWatcherItems = run.watcherItems.filter((item) => !watcherItemIsStopped(item));
+  const stoppedWatcherCount = stoppedWatcherItems.reduce(watcherItemCount, 0);
+  const currentWatcherCount = run.watchers.filter(watcherIsActive).length;
+  const lastActivity = formatMoment(
+    currentTask?.last_activity_at ?? operational?.current_last_activity_at,
+  );
 
   return (
     <div className={`experiment-run-detail ${healthTones[health]}`}>
       <div className="experiment-run-topline">
-        <span
+        <div
           className={`experiment-run-health ${healthTones[health]}`}
           role="status"
           aria-live="polite"
           aria-atomic="true"
         >
-          <span className="eyebrow">Loop health</span>
           <strong>{healthLabels[health]}</strong>
-        </span>
+          <p>{nowLine(run)}</p>
+        </div>
         <div className="experiment-run-actions" aria-label="Experiment loop actions">
           {currentOperationId && (
             <button
@@ -139,37 +151,29 @@ export function ExperimentRunDetail({
         </div>
       </div>
 
-      <dl className="experiment-run-facts experiment-run-primary-facts">
-        <div>
-          <dt>Now</dt>
-          <dd>{nowLine(run)}</dd>
-        </div>
-        <div>
-          <dt>Phase</dt>
-          <dd>{currentTask?.phase || operational?.current_phase || "—"}</dd>
-        </div>
-        <div>
-          <dt>Last activity</dt>
-          <dd>
-            {formatMoment(currentTask?.last_activity_at ?? operational?.current_last_activity_at)}
-          </dd>
-        </div>
-        <div>
-          <dt>Episode</dt>
-          <dd className="mono">{control?.episode_id ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Invocation budget</dt>
-          <dd>
-            {control ? `${control.invocations_used} / ${control.invocation_ceiling}` : "—"}
-            {control ? ` · ${control.invocations_remaining} remaining` : ""}
-          </dd>
-        </div>
-        <div>
-          <dt>Current invocation</dt>
-          <dd>{operational?.current_invocation ?? taskInvocation(currentTask) ?? "—"}</dd>
-        </div>
-      </dl>
+      <p className="experiment-run-meta">
+        {control && (
+          <span>
+            <span className="eyebrow">Invocation</span>
+            {operational?.current_invocation ??
+              taskInvocation(currentTask) ??
+              control.invocations_used}{" "}
+            / {control.invocation_ceiling}
+          </span>
+        )}
+        {(currentTask?.phase || operational?.current_phase) && (
+          <span>
+            <span className="eyebrow">Phase</span>
+            {currentTask?.phase || operational?.current_phase}
+          </span>
+        )}
+        {lastActivity !== "—" && (
+          <span>
+            <span className="eyebrow">Active</span>
+            {lastActivity}
+          </span>
+        )}
+      </p>
 
       {control && control.reasons.length > 0 && (
         <ul
@@ -183,158 +187,229 @@ export function ExperimentRunDetail({
         </ul>
       )}
 
-      <section className="experiment-run-block experiment-run-watchers-block">
+      <section className="experiment-run-block">
         <div className="experiment-run-block-heading">
-          <h4>Watchers</h4>
-          <span>{watchers.length}</span>
+          <h4>Experiment</h4>
+          {node.status && (
+            <span className={`status-pill ${node.status}`}>{String(node.status)}</span>
+          )}
         </div>
-        {watchers.length === 0 ? (
-          <p className="experiment-run-empty">No detached work has been handed off.</p>
+        <p className="experiment-run-prose">
+          {String(node.current_summary || node.objective || "No summary recorded")}
+        </p>
+        {node.next_action && (
+          <p className="experiment-run-prose experiment-run-next-action">
+            <span className="eyebrow">Next action</span>
+            {String(node.next_action)}
+          </p>
+        )}
+      </section>
+
+      {(control?.decision_drift ?? []).length > 0 && (
+        <ul className="experiment-run-drift" aria-label="Decision drift">
+          {(control?.decision_drift ?? []).map((drift) => (
+            <li key={drift.decision_id}>
+              {drift.proposed
+                ? `${drift.decision_id} has a proposed change. This episode was pinned to ${drift.pinned_option}.`
+                : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Fold title="Watchers" count={currentWatcherCount} defaultOpen>
+        {currentWatcherItems.length === 0 ? (
+          <p className="experiment-run-empty">
+            {stoppedWatcherCount > 0
+              ? "No current watchers."
+              : "No detached work has been handed off."}
+          </p>
         ) : (
           <ul className="experiment-run-watchers" aria-label="Experiment watchers">
-            {run.watcherItems.map((item) =>
-              item.kind === "group" ? (
-                <WatcherGroupDetail group={item.group} key={item.group.groupId} />
-              ) : (
-                <WatcherDetail watcher={item.watcher} key={item.watcher.watcher_id} />
-              ),
-            )}
+            <WatcherItems items={currentWatcherItems} />
           </ul>
         )}
-      </section>
-
-      <section className="experiment-run-block">
-        <div className="experiment-run-block-heading">
-          <h4>Execution</h4>
-        </div>
-        <dl className="experiment-run-facts">
-          <div>
-            <dt>Provider</dt>
-            <dd>{session?.provider ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Model</dt>
-            <dd>{session?.model || "Provider default"}</dd>
-          </div>
-          <div>
-            <dt>Reasoning</dt>
-            <dd>{session?.reasoning ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Machine</dt>
-            <dd>
-              {session?.run_on ?? "—"}
-              {session?.execution_host ? ` · ${session.execution_host}` : ""}
-            </dd>
-          </div>
-          <div>
-            <dt>Truth scope</dt>
-            <dd className="experiment-run-breakable">
-              {session?.run_truth_scope?.join(", ") || "—"}
-            </dd>
-          </div>
-          <div>
-            <dt>Native continuity</dt>
-            <dd>
-              {session?.native_session_bound ? "Bound" : "Not bound"}
-              {session?.diagnostic ? ` · ${session.diagnostic}` : ""}
-            </dd>
-          </div>
-          <div>
-            <dt>Current task</dt>
-            <dd className="mono experiment-run-breakable">{currentOperationId ?? "—"}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section className="experiment-run-block">
-        <div className="experiment-run-block-heading">
-          <h4>Experiment meaning</h4>
-        </div>
-        <dl className="experiment-run-facts">
-          <div>
-            <dt>Status</dt>
-            <dd>{node.status ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Current summary</dt>
-            <dd>{String(node.current_summary || node.objective || "—")}</dd>
-          </div>
-          <div>
-            <dt>Next action</dt>
-            <dd>{String(node.next_action || "—")}</dd>
-          </div>
-        </dl>
-
-        {completionCriteria.length > 0 && (
-          <div className="experiment-run-subsection">
-            <h5>Completion criteria</h5>
-            <ul>
-              {completionCriteria.map((criterion) => (
-                <li key={criterion}>{criterion}</li>
-              ))}
+        {stoppedWatcherCount > 0 && (
+          <Fold title="Stopped watchers" count={stoppedWatcherCount} nested>
+            <ul className="experiment-run-watchers" aria-label="Stopped experiment watchers">
+              <WatcherItems items={stoppedWatcherItems} />
             </ul>
-          </div>
+          </Fold>
         )}
+      </Fold>
 
-        {attempts.length > 0 && (
-          <div className="experiment-run-subsection">
-            <h5>Semantic attempts</h5>
-            <ol className="experiment-run-attempts" aria-label="Semantic attempts">
-              {attempts.map((attempt) => (
-                <li key={attempt.id}>
-                  <span className="experiment-run-attempt-seq">
-                    {String(attempt.sequence).padStart(2, "0")}
-                  </span>
-                  <span className="experiment-run-attempt-copy">
-                    <strong>{attempt.purpose}</strong>
-                    <span>
-                      {attempt.outcome || attempt.failure_reason || "No outcome recorded"}
+      {attempts.length > 0 && (
+        <Fold title="Semantic attempts" count={attempts.length}>
+          <ol className="experiment-run-attempts" aria-label="Semantic attempts">
+            {attempts.map((attempt) => (
+              <li key={attempt.id}>
+                <span className="experiment-run-attempt-seq">
+                  {String(attempt.sequence).padStart(2, "0")}
+                </span>
+                <span className="experiment-run-attempt-copy">
+                  <strong>{attempt.purpose}</strong>
+                  <span>{attempt.outcome || attempt.failure_reason || "No outcome recorded"}</span>
+                  {attempt.job_refs.length > 0 && (
+                    <span className="mono experiment-run-breakable">
+                      {attempt.job_refs.join(", ")}
                     </span>
-                    {attempt.job_refs.length > 0 && (
-                      <span className="mono experiment-run-breakable">
-                        {attempt.job_refs.join(", ")}
-                      </span>
-                    )}
-                  </span>
-                  <span className={`status-pill ${attempt.status}`}>{attempt.status}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
+                  )}
+                </span>
+                <span className={`status-pill ${attempt.status}`}>{attempt.status}</span>
+              </li>
+            ))}
+          </ol>
+        </Fold>
+      )}
 
-        {(control?.governing_decisions ?? []).length > 0 && (
-          <div className="experiment-run-subsection">
-            <h5>Governing decisions</h5>
-            <ul className="experiment-run-decisions">
-              {(control?.governing_decisions ?? []).map((pin) => (
-                <li key={pin.decision_id}>
-                  <span className="mono">{pin.decision_id}</span> · r{pin.decision_revision} ·{" "}
-                  {pin.selected_option}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+      {(session || control?.episode_id || currentOperationId) && (
+        <Fold title="Execution">
+          <Facts
+            entries={[
+              {
+                label: "Agent",
+                value: joinFacts([
+                  session?.provider,
+                  session?.model || "provider default",
+                  session?.reasoning,
+                ]),
+              },
+              { label: "Machine", value: joinFacts([session?.run_on, session?.execution_host]) },
+              {
+                label: "Truth scope",
+                value: session?.run_truth_scope?.join(", "),
+                breakable: true,
+              },
+              {
+                label: "Native continuity",
+                value: session
+                  ? joinFacts([
+                      session.native_session_bound ? "Bound" : "Not bound",
+                      session.diagnostic,
+                    ])
+                  : null,
+              },
+              { label: "Episode", value: control?.episode_id, mono: true, breakable: true },
+              { label: "Current task", value: currentOperationId, mono: true, breakable: true },
+            ]}
+          />
+        </Fold>
+      )}
 
-        {(control?.decision_drift ?? []).length > 0 && (
-          <div className="experiment-run-subsection experiment-run-drift">
-            <h5>Decision drift</h5>
-            <ul>
-              {(control?.decision_drift ?? []).map((drift) => (
-                <li key={drift.decision_id}>
-                  {drift.proposed
-                    ? `${drift.decision_id} has a proposed change. This episode was pinned to ${drift.pinned_option}.`
-                    : `${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
+      {completionCriteria.length > 0 && (
+        <Fold title="Completion criteria" count={completionCriteria.length}>
+          <ul className="experiment-run-list">
+            {completionCriteria.map((criterion) => (
+              <li key={criterion}>{criterion}</li>
+            ))}
+          </ul>
+        </Fold>
+      )}
+
+      {(control?.governing_decisions ?? []).length > 0 && (
+        <Fold title="Governing decisions" count={(control?.governing_decisions ?? []).length}>
+          <ul className="experiment-run-list">
+            {(control?.governing_decisions ?? []).map((pin) => (
+              <li key={pin.decision_id}>
+                <span className="mono">{pin.decision_id}</span> · r{pin.decision_revision} ·{" "}
+                {pin.selected_option}
+              </li>
+            ))}
+          </ul>
+        </Fold>
+      )}
     </div>
   );
+}
+
+function Fold({
+  title,
+  count,
+  defaultOpen,
+  nested,
+  children,
+}: {
+  title: string;
+  count?: number;
+  defaultOpen?: boolean;
+  nested?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className={nested ? "experiment-fold nested" : "experiment-fold"} open={defaultOpen}>
+      <summary>
+        <span className="experiment-fold-title">{title}</span>
+        {count !== undefined && <span className="experiment-fold-count">{count}</span>}
+      </summary>
+      <div className="experiment-fold-body">{children}</div>
+    </details>
+  );
+}
+
+interface Fact {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  breakable?: boolean;
+  className?: string;
+}
+
+function Facts({ entries, className }: { entries: Fact[]; className?: string }) {
+  const present = entries.filter(
+    (entry) =>
+      entry.value !== null &&
+      entry.value !== undefined &&
+      entry.value !== "" &&
+      entry.value !== "—",
+  );
+  if (present.length === 0) return null;
+  return (
+    <dl className={className ? `experiment-run-facts ${className}` : "experiment-run-facts"}>
+      {present.map((entry) => (
+        <div key={entry.label}>
+          <dt>{entry.label}</dt>
+          <dd
+            className={
+              [
+                entry.mono ? "mono" : "",
+                entry.breakable ? "experiment-run-breakable" : "",
+                entry.className ?? "",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined
+            }
+          >
+            {entry.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function joinFacts(parts: (string | null | undefined)[]): string | null {
+  const kept = parts.filter((part): part is string => Boolean(part));
+  return kept.length > 0 ? kept.join(" · ") : null;
+}
+
+function WatcherItems({ items }: { items: ExperimentWatcherItem[] }) {
+  return items.map((item) =>
+    item.kind === "group" ? (
+      <WatcherGroupDetail group={item.group} key={item.group.groupId} />
+    ) : (
+      <WatcherDetail watcher={item.watcher} key={item.watcher.watcher_id} />
+    ),
+  );
+}
+
+function watcherItemCount(total: number, item: ExperimentWatcherItem): number {
+  return total + (item.kind === "group" ? item.group.watchers.length : 1);
+}
+
+function watcherItemIsStopped(item: ExperimentWatcherItem): boolean {
+  return item.kind === "group"
+    ? item.group.watchers.every((watcher) => watcher.status === "stopped")
+    : item.watcher.status === "stopped";
 }
 
 function WatcherGroupDetail({ group }: { group: ExperimentWatcherGroup }) {
@@ -365,79 +440,64 @@ function WatcherGroupDetail({ group }: { group: ExperimentWatcherGroup }) {
 function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
-      <div className="experiment-run-watcher-heading">
-        <span className={`status-pill ${watcher.status}`}>{watcher.status}</span>
-        <strong className="mono experiment-run-breakable">{watcher.watcher_id}</strong>
-        <span>{watcherDeliveryLabel(watcher)}</span>
-      </div>
-      <dl className="experiment-run-watcher-facts">
-        <div>
-          <dt>Origin invocation</dt>
-          <dd className="mono experiment-run-breakable">{watcher.origin_operation_id}</dd>
+      <details>
+        <summary className="experiment-run-watcher-heading">
+          <span className={`status-pill ${watcher.status}`}>{watcher.status}</span>
+          <strong className="mono experiment-run-breakable">{watcher.watcher_id}</strong>
+          <span>{watcherDeliveryLabel(watcher)}</span>
+        </summary>
+        <Facts
+          className="experiment-run-watcher-facts"
+          entries={[
+            {
+              label: "Origin invocation",
+              value: watcher.origin_operation_id,
+              mono: true,
+              breakable: true,
+            },
+            { label: "Provenance", value: watcherProvenance(watcher) },
+            { label: "Last check", value: formatMoment(watcher.last_checked_at) },
+            { label: "Exit code", value: watcher.last_exit_code },
+            { label: "Completed", value: formatMoment(watcher.completed_at) },
+            { label: "Machine", value: watcher.execution_host || "Local" },
+            {
+              label: "Delivery task",
+              value: watcher.notification_operation_id,
+              mono: true,
+              breakable: true,
+            },
+            {
+              label: "Stopped by",
+              value: watcher.status === "stopped" ? watcherStopDisposition(watcher) : null,
+            },
+            {
+              label: "Current error",
+              value: watcher.last_error,
+              className: "experiment-run-watcher-current-error",
+            },
+          ]}
+        />
+        <div className="experiment-run-watcher-command">
+          <span className="eyebrow">Check command</span>
+          <code>{watcher.check_command}</code>
         </div>
-        <div>
-          <dt>Provenance</dt>
-          <dd>{watcherProvenance(watcher)}</dd>
+        <div className="experiment-run-watcher-paths">
+          <span>
+            <span className="eyebrow">Log</span>
+            <code>{watcher.log_path}</code>
+          </span>
+          <span>
+            <span className="eyebrow">Working directory</span>
+            <code>{watcher.cwd}</code>
+          </span>
         </div>
-        <div>
-          <dt>Created</dt>
-          <dd>{formatMoment(watcher.created_at)}</dd>
-        </div>
-        <div>
-          <dt>Last check</dt>
-          <dd>{formatMoment(watcher.last_checked_at)}</dd>
-        </div>
-        <div>
-          <dt>Exit code</dt>
-          <dd>{watcher.last_exit_code ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Current error</dt>
-          <dd className={watcher.last_error ? "experiment-run-watcher-current-error" : undefined}>
-            {watcher.last_error ?? "—"}
-          </dd>
-        </div>
-        <div>
-          <dt>Completed</dt>
-          <dd>{formatMoment(watcher.completed_at)}</dd>
-        </div>
-        <div>
-          <dt>Machine</dt>
-          <dd>{watcher.execution_host || "Local"}</dd>
-        </div>
-        <div>
-          <dt>Delivery task</dt>
-          <dd className="mono experiment-run-breakable">
-            {watcher.notification_operation_id ?? "—"}
-          </dd>
-        </div>
-        {watcher.status === "stopped" && (
-          <div>
-            <dt>Stopped by</dt>
-            <dd>{watcherStopDisposition(watcher)}</dd>
-          </div>
+        {watcher.stop_reason && (
+          <p className="experiment-run-watcher-stop-reason">
+            <strong>{watcher.stopped_by === "agent" ? "Agent reason" : "Stop reason"}</strong>
+            {watcher.stop_reason}
+          </p>
         )}
-      </dl>
-      <div className="experiment-run-watcher-command">
-        <span className="eyebrow">Check command</span>
-        <code>{watcher.check_command}</code>
-      </div>
-      <div className="experiment-run-watcher-paths">
-        <span>
-          <span className="eyebrow">Log</span>
-          <code>{watcher.log_path}</code>
-        </span>
-        <span>
-          <span className="eyebrow">Working directory</span>
-          <code>{watcher.cwd}</code>
-        </span>
-      </div>
-      {watcher.stop_reason && (
-        <p className="experiment-run-watcher-stop-reason">
-          <strong>{watcher.stopped_by === "agent" ? "Agent reason" : "Stop reason"}</strong>
-          {watcher.stop_reason}
-        </p>
-      )}
+      </details>
     </li>
   );
 }
@@ -445,9 +505,7 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
 function nowLine(run: ExperimentRun): string {
   const operational = run.control?.operational ?? null;
   const taskMessage = run.currentTask?.status_message || operational?.current_status_message || "";
-  const liveWatchers = run.currentWatchers.filter(
-    (watcher) => watcher.status === "active" || watcher.status === "degraded",
-  ).length;
+  const liveWatchers = run.currentWatchers.filter(watcherIsActive).length;
   switch (run.health) {
     case "starting":
     case "agent_active":
@@ -515,5 +573,10 @@ function taskInvocation(task: ExperimentRun["currentTask"]): number | null {
 
 function formatMoment(value: string | null | undefined): string {
   if (!value || !Number.isFinite(Date.parse(value))) return "—";
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }

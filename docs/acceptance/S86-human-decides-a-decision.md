@@ -9,14 +9,17 @@ covered_by:
   - tests/test_sync.py::test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal
   - tests/test_sync.py::test_direct_choice_validator_requires_every_targeted_proposal_withdrawal
   - tests/test_sync.py::test_graph_sync_rejects_incoherent_direct_decision_choice
+  - tests/test_sync.py::test_direct_choice_repairs_a_legacy_selected_but_open_decision
+  - tests/test_sync.py::test_direct_choice_refuses_a_proposal_withdrawal_without_an_id
+  - tests/test_sync.py::test_a_decision_choice_patch_that_does_not_name_the_action_is_refused
   - tests/test_proposal_boundary.py::test_decision_proposal_requires_a_coherent_choice_transition
   - tests/test_proposal_boundary.py::test_legacy_decision_selection_approval_adds_implied_decided_status
   - web/tests/humanDraft.test.mjs
   - web/tests/decisionChoice.test.mjs
-  - browser 2026-08-07
+  - browser 2026-08-08
 invariants: [1, 3]
 reported_by: human, 2026-08-07
-last_passed: 2026-08-07 — direct choice, persistence, replacement, Reset, and Sync driven in browser; pytest and web suites passed
+last_passed: 2026-08-08 — direct choice, replacement, and the legacy selected-but-open repair driven in browser against a real project; pytest and web suites passed
 ---
 
 # A human decides a Decision by clicking the option
@@ -75,7 +78,12 @@ permission system.
    Experiment **Run** gate that requires every `governed_by` Decision to be
    decided with a selected option is satisfied by a human selection with no
    agent Proposal involved.
-8. The same semantic rule closes an existing hole on the Proposal path. New
+8. A Decision that already carries a selected option while its status never
+   moved — the state a pre-fix approval left behind — is repaired by clicking
+   that same option. This is the one click that stages only a status move, and
+   both the click and the Sync must accept it; otherwise the Decision is stuck
+   open forever and every Experiment governed by it stays un-runnable.
+9. The same semantic rule closes an existing hole on the Proposal path. New
    Decision Proposals must describe a coherent transition: choosing a listed
    option means `status: decided`. When approving an already-recorded Proposal
    that selects an option but omitted status, RCP records the implied
@@ -89,7 +97,15 @@ permission system.
   `selected_option` or Decision status to the ordinary node editor's field set.
   The backend, not the presence of a button, enforces that authority boundary.
 - A staged selection whose value is not one of the node's current `options` is
-  rejected with a diagnostic naming the node.
+  rejected with a diagnostic naming the node. The effective option is resolved
+  against the Decision, so a choice that repeats the recorded option and moves
+  only the status is accepted rather than read as no choice at all.
+- A Proposal withdrawal that names no Proposal id is refused with a diagnostic,
+  never raising out of the validator.
+- The patch names the authority action that produced it. A direct choice and an
+  ordinary node edit are the same shape, so the validator dispatches on that
+  name and never infers one from operations; an unmarked patch carrying a
+  Decision choice is refused as the ordinary edit it claims to be.
 - Sync commits an approval Patch carrying `selected_option`, `status`, and the
   accepted judgment, authored `human`; the patch log stays append-only.
 - Syncing a selection on a Decision with pending Proposals commits the selection

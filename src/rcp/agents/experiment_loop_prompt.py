@@ -4,13 +4,16 @@ import json
 from typing import Literal
 
 from rcp.agents.prompts import (
+    _RETAINED_LOCAL_CAUSAL_CHECK,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
     _authoring_rules,
+    _invoked_package_section,
     _patch_validator_rules,
     _pointer,
     _repository_pointers,
     _selected_skill_section,
+    _watcher_execution_host,
 )
 from rcp.core.authority import render_agent_graph_authority_contract
 
@@ -33,7 +36,9 @@ def experiment_loop_task_contract(
     artifact_path: str,
     output_schema_path: str,
     validator_command: str,
+    execution_host: str = "",
     skill_pointers: list[dict[str, object]] | None = None,
+    invoked_skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
     """Build the self-contained contract for one bounded Experiment-loop invocation."""
 
@@ -74,7 +79,7 @@ Required current inputs:
 {_pointer("Ontology extensions", ontology_path if ontology_extensions else None)}
 {_pointer("Human introduction", introduction_path)}
 Repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}
+{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
 Exact outputs and RCP tooling:
 - Optional semantic graph Patch: `{patch_path}`
 - Existing Patch JSON Schema, including `AgentExperimentAttempt`: `{output_schema_path}`
@@ -177,12 +182,19 @@ Watcher handoff protocol:
   Stopping an observer does not prove the job was cancelled and does not request or set **Stop
   loop**. You may mix stop items and observer items, including retiring old observers while arming
   replacements.
-- Each observer's `log_path` and `cwd` are absolute paths on the execution machine. Its command contains literal
-  job or process identifiers and no variables or shell state inherited from this invocation.
+- RCP runs every check on {_watcher_execution_host(execution_host)}. Each observer's `log_path` and
+  `cwd` are absolute paths there, whether or not that is where this invocation is running. Its
+  command contains literal job or process identifiers and no variables or shell state inherited
+  from this invocation.
 - Each check is observational. From a fresh login shell in its `cwd`, it exits 1 while the named
   work remains in its system, 0 when that work is gone, and another status only when it cannot
   answer. It never submits, cancels, kills, edits, or otherwise changes external state. Verify the
   detached work outlives this turn and run the exact check from a fresh login shell before handoff.
+- For Slurm, ask for the whole active-job set and interpret membership; never look one job up
+  directly, because a finished job's "invalid job id" error is indistinguishable from an
+  unreachable scheduler and would degrade the watcher instead of completing it. Use
+  `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids"; case $? in 0) exit 1;;
+  1) exit 0;; *) exit 2;; esac` (replace `4471` with the submitted job id).
 - RCP discovers `watch.json` after the turn, validates every check, and arms the list atomically;
   one invalid observer, group, or stop item rejects the whole list for in-session correction.
   There is no watcher API to call. Multiple watchers may observe one attempt, one watcher may cover
@@ -201,10 +213,12 @@ Graph reflection and authority:
   `repositories_read` honestly; do not set coverage or cursors.
 - This loop may update only its own Experiment's attempts, status, `current_summary`, and
   `next_action`; create Evidence or Blockers; assert legal epistemic edges; attach each same-Patch
-  Evidence with `produces` and each same-Patch Blocker with `blocked_by`; and create a Proposal
-  within the pinned governing/tested boundary. It may not set standing, decide a Decision, directly
-  change a Hypothesis status, edit the pinned bundle, or remove graph objects. Experiment status is
-  a scientific description, not loop control.
+  Evidence with `produces` and each same-Patch Blocker with `blocked_by`; connect same-Patch
+  Evidence to an existing Decision with `informs` or to a Blocker with `addresses`; and create a
+  Proposal within the pinned governing/tested boundary. These handoffs do not select the Decision
+  or change Blocker status. The loop may not set standing, decide a Decision, directly change a
+  Hypothesis status, edit the pinned bundle, or remove graph objects. Experiment status is a
+  scientific description, not loop control.
 - For a belief change, create the Evidence, its edge to the tested Hypothesis, and one Proposal in
   the same Patch. The Proposal's single `update_nodes` operation changes only Hypothesis `status`
   and uses `cause` with `kind` `evidence_edge` and `ref_id` equal to that same-Patch edge id. Only
@@ -246,7 +260,9 @@ def experiment_loop_wake_message(
     watch_path: str,
     output_schema_path: str,
     validator_command: str,
+    execution_host: str = "",
     context_replacement: dict[str, object] | None = None,
+    invoked_skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
     """Continue one bounded episode's native session with a compact human-style turn.
 
@@ -293,6 +309,8 @@ RCP accepted the previous turn's handoff:
 
 This turn was triggered by: {delivered}
 
+{_invoked_package_section(invoked_skill_pointers)}
+
 A completed watcher means only that its check no longer sees the named external work. It does not
 mean the work succeeded and does not begin, close, or correspond one-to-one with a scientific
 attempt. Inspect its authoritative scheduler or process state and its logs before interpreting the
@@ -328,15 +346,19 @@ For this turn, take whichever path matches the operational state:
 
    [
      {{
-       "check_command": "jobs=$(squeue -h -j 48192 -o '%i') || exit 2; [ -z \\"$jobs\\" ]",
+       "check_command": "ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 48192 <<<\\"$ids\\"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac",
        "log_path": "/absolute/path/to/job-48192.log",
        "cwd": "/absolute/path/to/repository"
      }}
    ]
 
-   Each object has exactly `check_command`, `log_path`, and `cwd`. From a cold login shell in
-   `cwd`, the check exits 1 while the named work remains, 0 when it is gone, and another status
-   only when it cannot answer. Verify the literal check before writing it. Once the useful
+   Each object has exactly `check_command`, `log_path`, and `cwd`. RCP runs the check on
+   {_watcher_execution_host(execution_host)}, so those paths are absolute there. From a cold login
+   shell in `cwd`, the check exits 1 while the named work remains, 0 when it is gone, and another
+   status only when it cannot answer. Ask Slurm for the whole active-job set as above rather than
+   looking one job up: a finished job's "invalid job id" error looks exactly like an unreachable
+   scheduler and would degrade the watcher instead of completing it. Verify the literal check
+   before writing it. Once the useful
    synchronous work and handoff are complete, do not wait or poll for detached work; finish this
    turn. RCP validates the file, monitors accepted watchers, and resumes this episode session when
    a watcher is ready.
@@ -405,6 +427,8 @@ For this turn, take whichever path matches the operational state:
 
 Your Markdown reply remains independent from `patch.json` and `watch.json`. State what you found,
 what you changed or launched, which path you took, and any remaining uncertainty.
+
+{_RETAINED_LOCAL_CAUSAL_CHECK}
 """
 
 
@@ -418,6 +442,7 @@ def experiment_loop_continuation_contract(
     output_schema_path: str,
     validator_command: str,
     diagnostics_path: str | None = None,
+    invoked_skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
     """Point a resumed or retried invocation at one fresh, compact control delta."""
 
@@ -458,6 +483,8 @@ def experiment_loop_continuation_contract(
 - Watcher output: `{watch_path}`
 - Patch JSON Schema: `{output_schema_path}`
 
+{_invoked_package_section(invoked_skill_pointers)}
+
 Read the original contract for the objective, authority, context-reading protocol, and detailed
 attempt and watcher rules. Then read the fresh control delta before acting. It preserves the same
 episode and invocation number while refreshing phase, live drift, remaining budget, delivered
@@ -466,6 +493,7 @@ watcher ids, and the current watcher-state path. The paths above replace prior o
 {retry_rules}
 - Do not rebuild or broaden the original task. Patch and watcher correction are separate narrow
   continuations; this continuation may resume operational work only within the original authority.
+- {_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
 """
@@ -512,6 +540,9 @@ explicitly record success, a Proposal, or a same-Patch Blocker. Never use an emp
 because the state is uncertain. Validate every Patch rewrite with the exact command below. Your
 final response should only confirm that the joint handoff was repaired.
 
+If you rewrite the semantic Patch, its candidate must pass the retained
+`Local causal check for this Patch` in the original authoring contract.
+
 {_patch_validator_rules(validator_command)}
 """
 
@@ -540,6 +571,8 @@ Experiment, resubmit work, or cause an external side effect. If watcher output i
 Patch must continue to record success, a Proposal, or a same-Patch Blocker; do not remove or weaken
 that exit merely to satisfy another diagnostic. Do not change `watch.json`. Your final response
 should only confirm that the Patch was rewritten.
+
+{_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
 """

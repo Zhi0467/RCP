@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.25
+**Version:** 0.27
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,16 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.27** — added app-scoped provider-native skill inventories: each provider
+  owns its refresh command and parser, startup refresh follows readiness over
+  the existing local or SSH path, last-known-good results survive visible stale
+  failures, and slash menus distinguish RCP Official packages from the selected
+  provider and machine's native skills without widening run authority.
+- **0.26** — added the `informs` Evidence-to-Decision and `addresses`
+  Evidence-to-Blocker action handoffs; required a local causal check on every
+  Patch-origin and correction contract; and made package activation explicit
+  while composing graph audit, experiment causality, and evidence triage in the
+  research-graph-audit workflow.
 - **0.25** — made every non-superseded Decision directly human-decidable through
   a staged option ballot: Sync records the listed selection, decided status, and
   accepted standing together while atomically withdrawing competing pending
@@ -123,7 +133,8 @@ The six shipped authoring types are the product ontology:
 - **Hypothesis** — a falsifiable claim and its current semantic status;
 - **Decision** — a choice required by research execution;
 - **Experiment** — a bounded test with optional precommitted completion criteria;
-- **Evidence** — an observation produced by an Experiment; and
+- **Evidence** — a durable observation with explicit provenance, optionally
+  produced by an Experiment; and
 - **Blocker** — a concrete impediment to progress.
 
 Every node has an id, title, ordinary-language content, provenance standing, and
@@ -151,9 +162,19 @@ types and a reading layer. The core shapes include:
 - Experiment `tests` Hypothesis;
 - Experiment `governed_by` Decision;
 - Experiment `blocked_by` Blocker;
-- Experiment `produces` Evidence; and
+- Experiment `produces` Evidence;
+- Evidence `informs` Decision without making the human-owned choice;
+- Evidence `addresses` Blocker without by itself changing its recorded
+  lifecycle; and
 - Evidence epistemically supporting, weakening, refuting, contradicting, or
   being inconclusive toward a Hypothesis as permitted by the relation table.
+
+These action handoffs make precursor experiments expressible without reversing
+causality: a smoke, calibration, profiling, diagnostic, or feasibility
+Experiment produces Evidence; that Evidence informs the downstream Decision or
+addresses the downstream Blocker; and the resulting gate governs or blocks the
+main Experiment. A downstream gate that the precursor is meant to settle is not
+an input to that precursor.
 
 Epistemic and action layers are projections over one graph, joined at
 Experiments. Layers improve reading and layout; they do not define export,
@@ -174,9 +195,10 @@ types. A transferable graph unit includes its ontology revision, Patch history,
 and stable research semantics. Provider-native `SourceRef` locations are local
 provenance pointers and are not claimed to be portable across installations.
 
-Future schema widening must be explicit and migration-aware. Open relation or
-glossary-authority questions stay in [`open-questions.md`](open-questions.md),
-not in agent prompts or opportunistic implementation changes.
+Future schema widening must be explicit and migration-aware. Undecided ontology
+or glossary-authority questions stay in
+[`open-questions.md`](open-questions.md), not in agent prompts or opportunistic
+implementation changes.
 
 ## Human and agent authority
 
@@ -288,13 +310,29 @@ modify operational repositories, but those writes do not grant graph authority.
 Preview artifacts are temporary, non-canonical, and independent of both reply
 and Patch verdict.
 
-### Uniform live Patch self-check
+### Uniform live Patch self-check and causal check
 
-Every patch-producing Seed, Refresh, Work, and Patch-correction provider pass
-receives an RCP-staged validator client and exact command. It checks the current
-`patch.json` against live canonical state through a bounded request/response
-mailbox. Exit values distinguish valid, semantically invalid, and validator
-unavailable; unavailable never becomes a semantic correction loop.
+Every Patch-origin and Patch-correction provider pass receives the same concise
+local causal check in its graph-authoring contract: Seed, Refresh, Work,
+Experiment-loop, generic Seed/Refresh correction, and Work or Experiment-loop
+graph correction. Discuss and Paper do not receive it because they have no
+Patch channel. Correction instructions may point back to the retained contract,
+but must explicitly require the corrected Patch to pass the same check.
+
+Before finishing a Patch that creates or materially changes an Experiment,
+Decision, Blocker, Evidence, or an edge among them, the agent asks what truly
+gates each Experiment, what it will determine or unblock, what Evidence it
+produces, which downstream Decision that Evidence `informs` or Blocker it
+`addresses`, and whether every empirical gate on a main Experiment has its
+precursor Experiment and Evidence handoff. Edge directions and node prose must
+tell the same causal story; a downstream output must not be attached backward
+as its precursor's input.
+
+Each such pass also receives an RCP-staged validator client and exact command.
+It checks the current `patch.json` against live canonical state through a
+bounded request/response mailbox. Exit values distinguish valid, semantically
+invalid, and validator unavailable; unavailable never becomes a semantic
+correction loop.
 
 The self-check is advisory. Apply reloads current state and reruns the same
 semantic validator while holding the canonical append lock. Graph movement alone
@@ -424,18 +462,57 @@ status, or graph outcome. HTML runs in an opaque sandbox with no RCP authority.
 Project Settings selects the official skill and workflow packages available to
 runs. Only selected packages are transferred to the execution host and staged as
 read-only, content-addressed folders. Every selected package leaves a compact
-discoverable pointer in the master or task contract; bodies are never embedded
-in launch messages.
+discoverable id, version, description, and exact pointer in the master or task
+contract; bodies are never embedded in launch messages. An agent compares the
+task and its intended graph changes with those descriptions and reads only the
+available package whose trigger matches.
 
 A slash command may proactively invoke only a package currently enabled in
 Settings. The original slash text remains unchanged in the human message. It is
-not replaced with a body or expanded string. Packages never widen the captured
-surface capability. The composer does not render persistent package chips.
+not replaced with a body or expanded string. A separate short **Invoked this
+turn** block names each exact invoked package and its staged pointer and requires
+the agent to read and follow it for that turn. Other selected packages remain
+description-triggered pointers. Packages never widen the captured surface
+capability. The composer does not render persistent package chips.
+
+The official package set separates the always-present local causal check from
+deeper, progressively disclosed guidance. `graph-audit` performs a deliberate
+whole-graph structural and lifecycle pass. `experiment-causality` recursively
+checks main experiments, precursor experiments, Evidence, Decisions, and
+Blockers for complete and correctly directed action chains. `evidence-triage`
+checks provenance, strength, validity, and interpretation of load-bearing
+Evidence, including action Evidence. The `research-graph-audit` workflow depends
+on all three and runs them in that order: broad graph structure, experiment
+causal closure, then evidence provenance. Merely staging any of them does not
+make every Seed or Refresh run a full audit.
 
 Package registry, version, dependency, staging, and receipts are implemented
 contracts. An executable mandatory graph-scanner remains only the unconfirmed
 proposal in [S59](acceptance/S59-staged-graph-audit-skills.md) and is not part of
 this blueprint.
+
+Provider-native skills are a separate app-scoped inventory, never additions to
+the official registry or project Settings. After the app becomes healthy, each
+provider profile refreshes its configured machine targets once, downstream of
+the existing executable-path, version, authentication, and model-catalog check.
+Local and remote commands use the same provider runner and SSH login-shell path
+as readiness. The exact refresh command and normalized result live in app
+SQLite, keyed to the provider and machine target; no inventory enters the
+manifest or `.research`.
+
+A successful refresh atomically replaces the last successful result. Failure
+retains those skills and their successful version and hash, marks them visibly
+stale, and records the current diagnostic. With no prior success there is
+nothing to offer. Project open, navigation, explicit readiness refresh, and
+launch never refresh this inventory; startup is the sole automatic refresh.
+
+Chat and Paper slash menus place **RCP Official Workflows** and **RCP Official
+Skills** before the native group for the currently selected provider and
+execution machine. A native selection is per-turn structured metadata carrying
+provider, machine, successful provider version, inventory hash, and skill name.
+It leaves the human text unchanged and does not alter launch flags, permissions,
+graph authority, or repository authority. A stale native selection that the CLI
+no longer accepts fails visibly without falling back.
 
 ## Experiment control and watchers
 
@@ -570,9 +647,9 @@ after resolution, a human Run starts the next authorized episode.
 
 Every budgeted invocation is self-sufficient without inventing a second context
 system. The provider receives only the short immutable-contract pointer. The
-staged contract file contains the normal RCP ontology, authority, method,
-focused-node and one-hop context, exact repository pointers, and Patch,
-validator, watcher, schema, and artifact paths.
+staged contract file contains the normal RCP ontology, authority, method, local
+causal check, focused-node and one-hop context, exact repository pointers, and
+Patch, validator, watcher, schema, and artifact paths.
 
 The contract points to a small per-invocation loop-control JSON file containing
 only the phase, episode id, invocation counts, pinned governing Decision bundle,

@@ -15,8 +15,36 @@ def test_official_registry_exposes_workflows_and_skills_with_declared_dependenci
     registry = official_registry()
 
     workflow = registry.package("workflow", "research-graph-audit")
-    assert [item.id for item in workflow.dependencies] == ["graph-audit", "evidence-triage"]
+    assert [(item.id, item.version) for item in workflow.dependencies] == [
+        ("graph-audit", "3.0.0"),
+        ("experiment-causality", "1.0.0"),
+        ("evidence-triage", "3.0.0"),
+    ]
+    assert workflow.version == "3.0.0"
+    assert registry.package("skill", "graph-audit").version == "3.0.0"
+    assert registry.package("skill", "experiment-causality").version == "1.0.0"
+    assert registry.package("skill", "evidence-triage").version == "3.0.0"
     assert {item["kind"] for item in registry.catalog()} == {"skill", "workflow"}
+
+
+def test_experiment_causality_resolves_and_stages_as_an_official_skill(tmp_path: Path) -> None:
+    selection = official_registry().resolve(skill_ids=["experiment-causality"])
+
+    assert [item.id for item in selection.resolved_skill_packages] == ["experiment-causality"]
+
+    stage = tmp_path / "run"
+    stage.mkdir()
+    pointers = stage_skill_selection(
+        selection,
+        local_stage=stage,
+        remote_stage=None,
+        label="rcp-skills-attempt-1",
+    )
+
+    assert [item["id"] for item in pointers] == ["experiment-causality"]
+    assert (
+        stage / "inputs" / "rcp-skills-attempt-1" / "skill" / "experiment-causality" / "SKILL.md"
+    ).is_file()
 
 
 def test_workflow_resolution_is_ordered_and_deduplicates_shared_dependencies() -> None:
@@ -30,6 +58,7 @@ def test_workflow_resolution_is_ordered_and_deduplicates_shared_dependencies() -
     assert [item.id for item in selection.resolved_skill_packages] == [
         "research-graph-audit",
         "graph-audit",
+        "experiment-causality",
         "evidence-triage",
     ]
 
@@ -117,6 +146,7 @@ def test_local_skill_stage_is_immutable_and_points_to_each_package(tmp_path: Pat
     assert [item["id"] for item in pointers] == [
         "research-graph-audit",
         "graph-audit",
+        "experiment-causality",
         "evidence-triage",
     ]
     assert (
@@ -130,8 +160,50 @@ def test_local_skill_stage_is_immutable_and_points_to_each_package(tmp_path: Pat
     # No unrelated registry package rides along.
     assert sorted(path.name for path in (bundle / "skill").iterdir()) == [
         "evidence-triage",
+        "experiment-causality",
         "graph-audit",
     ]
+
+
+def test_official_skills_match_the_action_evidence_ontology() -> None:
+    registry = official_registry()
+    graph = registry.package("skill", "graph-audit")
+    evidence = registry.package("skill", "evidence-triage")
+    causality = registry.package("skill", "experiment-causality")
+
+    assert "read-only structural review" in graph.description
+    assert "before creating or materially updating" in evidence.description
+    assert "Seed, Refresh, or graph-capable Work" in causality.description
+
+    graph_body = registry.package_body("skill", "graph-audit")
+    assert "`tests`, `produces`, nor an action-gate chain" in graph_body
+    assert "Do not describe every lifecycle status correction as human-only" in graph_body
+
+    evidence_body = registry.package_body("skill", "evidence-triage")
+    assert "Use `informs` when Evidence bears on a Decision" in evidence_body
+    assert "Use `addresses` when Evidence bears on whether a Blocker" in evidence_body
+    assert "does not itself change Blocker status" in evidence_body
+
+    causality_body = registry.package_body("skill", "experiment-causality")
+    for defect in (
+        "**Reversed:**",
+        "**Prose-only:**",
+        "**Circular:**",
+        "**Self-blocking:**",
+        "**Stale:**",
+        "**Duplicate:**",
+    ):
+        assert defect in causality_body
+    assert "Do not invent Experiments for human choices, external" in causality_body
+    assert "report\nfindings only" in causality_body
+
+    workflow_body = registry.package_body("workflow", "research-graph-audit")
+    assert workflow_body.index("## Pass 1: broad structure") < workflow_body.index(
+        "## Pass 2: action causality"
+    )
+    assert workflow_body.index("## Pass 2: action causality") < workflow_body.index(
+        "## Pass 3: narrow provenance"
+    )
 
 
 def test_each_attempt_stages_its_own_bundle_in_a_reused_stage(tmp_path: Path) -> None:
@@ -281,10 +353,11 @@ def test_the_task_contract_carries_pointers_rather_than_package_bodies(tmp_path:
     assert str(stage / "inputs" / "rcp-skills-attempt-1" / "workflow" / "research-graph-audit") in (
         contract
     )
-    assert "when the task would benefit from it" in contract
+    assert "compare the task and intended graph changes with each description" in contract
+    assert "only packages whose stated trigger matches" in contract
     # The body stays in the staged folder; the contract only points at it.
-    assert "Run the structural review" in body
-    assert "Run the structural review" not in contract
+    assert "## Pass 1: broad structure" in body
+    assert "## Pass 1: broad structure" not in contract
 
 
 def test_a_contract_without_a_selection_has_no_skill_section() -> None:

@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from rcp import __version__
-from rcp.agents import AcceptanceAgentLauncher, AgentLauncher
+from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -50,6 +50,7 @@ from rcp.limits import (
     CHAT_PAGE_MAX_LIMIT,
 )
 from rcp.projects import ProjectCatalog
+from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, profile_for
 from rcp.runs.chat import _logical_chat_turn_operation_id
 from rcp.runs.coach import _resolved_coach_request, stream_coach
@@ -150,7 +151,8 @@ def create_app(
     store = AppStore(app_data / "rcp.sqlite3")
     launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
-    catalog = ProjectCatalog(app_data, store, launcher)
+    provider_skills = ProviderSkillInventoryManager(store)
+    catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     setup = ProjectSetupManager(app_data, catalog, launcher)
     default_record = catalog.register(manifest_path) if manifest_path else None
     default_project_id = default_record.project_id if default_record else None
@@ -396,8 +398,35 @@ def create_app(
         try:
             targets = await asyncio.to_thread(catalog.provider_targets)
 
+            def mark_refreshing() -> None:
+                for provider, host, binary in targets:
+                    provider_skills.mark_refreshing(provider, host, binary)
+
             def probe(provider: str, host: str, binary: str | None) -> None:
-                launcher.readiness(provider, host=host, binary=binary)
+                try:
+                    readiness = launcher.readiness(provider, host=host, binary=binary)
+                except Exception as exc:
+                    # An unexpected readiness exception still has to finish
+                    # this startup generation. Feeding the diagnostic through
+                    # the inventory manager preserves any last-good skills as
+                    # stale instead of leaving the target stuck refreshing.
+                    readiness = ProviderReadiness(
+                        provider=provider,
+                        installed=False,
+                        authenticated=False,
+                        binary_path=binary,
+                        path_state="unreachable" if host else "missing",
+                        reason=str(exc),
+                    )
+                    provider_skills.refresh(provider, host, binary, readiness)
+                    raise
+                provider_skills.refresh(provider, host, binary, readiness)
+
+            # Mark the whole startup inventory before beginning any provider
+            # process so the UI never mistakes a prior process's cache for a
+            # completed refresh in this one. All SQLite and CLI/SSH work stays
+            # off the event loop.
+            await asyncio.to_thread(mark_refreshing)
 
             results = await asyncio.gather(
                 *(
@@ -462,6 +491,7 @@ def create_app(
 
     app = FastAPI(title="RCP", version=__version__, lifespan=lifespan)
     app.state.catalog = catalog
+    app.state.provider_skills = provider_skills
     app.state.setup = setup
     app.state.default_project_id = default_project_id
     app.state.service = default_service
@@ -1262,8 +1292,8 @@ def _generic_watcher_delivery_request(group: list[WatcherRecord]) -> RunRequest:
         patch_kind="work",
         workflow_ids=continuation.workflow_ids,
         skill_ids=continuation.skill_ids,
-        invoked_workflow_ids=continuation.invoked_workflow_ids,
-        invoked_skill_ids=continuation.invoked_skill_ids,
+        invoked_workflow_ids=[],
+        invoked_skill_ids=[],
         resolved_skill_packages=continuation.resolved_skill_packages,
         watcher_ids=watcher_ids,
     )
@@ -1440,11 +1470,13 @@ def _validate_stored_task_request(
     """Validate a stored request and return the selection this attempt would get."""
 
     if kind == "paper_coach":
-        return service.resolve_skill_selection(CoachRequest.model_validate(body))
+        resolved_coach = _resolved_coach_request(service, CoachRequest.model_validate(body))
+        return service.resolve_skill_selection(resolved_coach)
     request = RunRequest.model_validate(body)
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
-    return service.resolve_skill_selection(_resolved_graph_request(service, kind, request))
+    resolved_run = _resolved_graph_request(service, kind, request)
+    return service.resolve_skill_selection(resolved_run)
 
 
 def _resolved_graph_request(

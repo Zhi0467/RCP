@@ -406,6 +406,8 @@ export interface AgentTaskRequest {
   skill_ids?: string[] | null;
   invoked_workflow_ids?: string[];
   invoked_skill_ids?: string[];
+  invoked_provider_skill_names?: string[];
+  resolved_provider_skills?: ProviderSkillReference[];
   resolved_skill_packages?: SkillReference[] | null;
   [key: string]: unknown;
 }
@@ -431,6 +433,43 @@ export interface SkillPackageDetail extends SkillCatalogEntry {
 export interface SkillDefaults {
   workflow_ids: string[];
   skill_ids: string[];
+}
+
+export interface ProviderSkill {
+  name: string;
+  label: string;
+  description: string;
+  scope?: string | null;
+  path?: string | null;
+  enabled: boolean;
+}
+
+export interface ProviderSkillInventory {
+  provider: ProviderId;
+  machine: string;
+  host: string;
+  configured_binary?: string | null;
+  resolved_binary?: string | null;
+  provider_version?: string | null;
+  inventory_hash?: string | null;
+  refreshed_at?: string | null;
+  command: string[];
+  protocol?: "jsonrpc" | "jsonl" | null;
+  status: "refreshing" | "fresh" | "stale" | "unavailable";
+  stale: boolean;
+  diagnostic?: string | null;
+  skills: ProviderSkill[];
+}
+
+export interface ProviderSkillReference {
+  provider: ProviderId;
+  machine: string;
+  provider_version: string;
+  inventory_hash: string;
+  name: string;
+  label: string;
+  description: string;
+  stale: boolean;
 }
 
 export interface GraphUpdateResult {
@@ -668,6 +707,10 @@ export interface ProjectSnapshot {
   agent_profiles: Record<AgentSurface, AgentProfile>;
   skill_catalog: SkillCatalogEntry[];
   skill_defaults: SkillDefaults;
+  provider_skill_inventories: Record<
+    string,
+    Partial<Record<ProviderId, ProviderSkillInventory | null>>
+  >;
   provider_readiness: Record<string, Record<ProviderId, ProviderReadiness>>;
   providers: Record<ProviderId, ProviderReadiness>;
   cache_metrics: ProjectCacheMetrics;

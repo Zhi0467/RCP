@@ -52,6 +52,7 @@ export function AgentTaskInspector({
   const promptReceipts = task?.debug_receipts?.filter(isPromptReceipt) ?? [];
   const contracts = task?.contracts ?? [];
   const resolvedSkillPackages = task?.request.resolved_skill_packages ?? [];
+  const resolvedProviderSkills = task?.request.resolved_provider_skills ?? [];
 
   async function copyPrompt(receipt: AgentTaskReceipt) {
     const prompt = receipt.payload.prompt;
@@ -178,6 +179,23 @@ export function AgentTaskInspector({
                           {resolvedSkillPackages
                             .map((item) => `${item.kind} ${item.id}@${item.version}`)
                             .join(", ")}
+                        </dd>
+                      </div>
+                    )}
+                    {resolvedProviderSkills.length > 0 && (
+                      <div>
+                        <dt>Provider-native guidance</dt>
+                        <dd>
+                          {resolvedProviderSkills.map((item) => (
+                            <div
+                              className="mono"
+                              key={`${item.provider}:${item.machine}:${item.name}`}
+                            >
+                              {item.label} ({item.name}) · {item.provider} · {item.machine} · CLI{" "}
+                              {item.provider_version}
+                              {item.stale ? " · stale inventory" : ""}
+                            </div>
+                          ))}
                         </dd>
                       </div>
                     )}
