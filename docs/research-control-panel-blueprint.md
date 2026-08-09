@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.35
+**Version:** 0.36
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,9 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.36** — changed the project dock from horizontal overflow to browser-like
+  proportional tab compression inside one capped span, with the active project
+  retaining more width than inactive tabs.
 - **0.35** — added a session-scoped multi-project dock with direct project-tab
   switching and closing, an index shortcut, and per-tab in-session view state
   without changing project, draft, or background-task ownership.
@@ -1027,12 +1030,14 @@ graceful takeover after recoverable work is paused.
 
 ## Reader-facing application surfaces
 
-- The project shell places one compact, horizontally scrollable project-tab dock
-  immediately to the right of its back/index control. Opening a project from a
-  project card or the cross-project Experiments board appends and activates its
-  named tab, while reopening a docked project activates it without duplicating
-  or moving it. The dock remains visible on the project index. `Command–T`
-  returns there without closing tabs; `Option–Command–Left` and
+- The project shell places one compact project-tab dock immediately to the right
+  of its back/index control. The dock has one capped span: inactive tabs shrink
+  proportionally as it fills, the active tab retains a wider share, and labels
+  truncate without horizontal dock overflow. Opening a project from a project
+  card or the cross-project Experiments board appends and activates its named
+  tab, while reopening a docked project activates it without duplicating or
+  moving it. The dock remains visible on the project index. `Command–T` returns
+  there without closing tabs; `Option–Command–Left` and
   `Option–Command–Right` wrap through open project tabs unless focus is in an
   editable control.
 - Each tab restores that project's panel and ephemeral in-session view state.

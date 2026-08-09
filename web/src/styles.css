@@ -1101,27 +1101,27 @@ button:disabled {
 }
 
 .project-dock {
-  flex: 1 1 auto;
+  flex: 0 1 620px;
+  max-width: 620px;
   min-width: 0;
   overflow: hidden;
 }
 .project-dock-scroll {
   align-items: stretch;
   display: flex;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-color: var(--line-strong) transparent;
-  scrollbar-width: thin;
+  overflow: hidden;
+  width: 100%;
 }
 .project-dock-tab {
   align-items: stretch;
   background: color-mix(in srgb, var(--sheet) 62%, transparent);
   border-left: 1px solid var(--line);
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 132px;
   height: 36px;
-  max-width: 168px;
-  min-width: 84px;
+  max-width: 140px;
+  min-width: 0;
+  overflow: hidden;
   position: relative;
 }
 .project-dock-tab:last-child {
@@ -1139,6 +1139,10 @@ button:disabled {
 .project-dock-tab.active {
   background: var(--paper);
   box-shadow: inset 0 1px var(--line-strong);
+  flex-basis: 168px;
+  flex-grow: 1.25;
+  flex-shrink: 0.55;
+  max-width: 168px;
 }
 .project-dock-tab.active::after {
   background: var(--oxblood);
@@ -5605,7 +5609,8 @@ button.relation-map-node:hover {
   flex: none;
 }
 .project-header-navigation > .project-dock {
-  max-width: min(760px, 62vw);
+  flex-basis: min(620px, 52vw);
+  max-width: min(620px, 52vw);
 }
 .project-reconciliation {
   align-items: center;
@@ -5703,6 +5708,7 @@ button.relation-map-node:hover {
 .project-tabs-project-dock {
   flex: 0 1 46vw;
   margin-right: 6px;
+  max-width: 620px;
   min-width: 150px;
 }
 .project-tabs-project-dock .project-dock-tab {

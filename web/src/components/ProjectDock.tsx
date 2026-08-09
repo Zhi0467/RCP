@@ -1,5 +1,4 @@
 import { X } from "lucide-react";
-import { useLayoutEffect, useRef } from "react";
 import type { ProjectTab } from "../projectTabs";
 
 interface Props {
@@ -11,33 +10,14 @@ interface Props {
 }
 
 export function ProjectDock({ tabs, activeProjectId, onActivate, onClose, className = "" }: Props) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const activeRef = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    const scroller = scrollRef.current;
-    const active = activeRef.current;
-    if (!scroller || !active) return;
-    const left = active.offsetLeft;
-    const right = left + active.offsetWidth;
-    if (left < scroller.scrollLeft) scroller.scrollLeft = left;
-    else if (right > scroller.scrollLeft + scroller.clientWidth) {
-      scroller.scrollLeft = right - scroller.clientWidth;
-    }
-  }, [activeProjectId, tabs]);
-
   if (tabs.length === 0) return null;
   return (
     <nav className={`project-dock ${className}`.trim()} aria-label="Open projects">
-      <div className="project-dock-scroll" ref={scrollRef}>
+      <div className="project-dock-scroll">
         {tabs.map((tab) => {
           const active = tab.id === activeProjectId;
           return (
-            <div
-              className={`project-dock-tab${active ? " active" : ""}`}
-              key={tab.id}
-              ref={active ? activeRef : undefined}
-            >
+            <div className={`project-dock-tab${active ? " active" : ""}`} key={tab.id}>
               <button
                 className="project-dock-select"
                 type="button"

@@ -6,10 +6,10 @@ driver: browser + desktop
 covered_by: web/tests/projectTabs.test.mjs
 invariants: [8]
 last_passed: 2026-08-09 — isolated browser and RCP Dev drives verified ordered
-  project tabs, project-local panel and DAG viewport restoration, close and
-  reload semantics, narrow overflow, real macOS shortcuts, window reopen
-  persistence, and clean console and server output; full web and backend suites
-  passed.
+  tabs, project-local view restoration, close and reload semantics, real macOS
+  shortcuts, and window reopen persistence; a follow-up served-browser drive at
+  900px verified proportional compression with a wider active tab and no dock
+  overflow or console errors; full web and backend suites passed.
 ---
 
 # Keep several projects open in one RCP window
@@ -27,8 +27,9 @@ project index the only route between projects.
   ink, rules, and oxblood active treatment; it does not add a second app header
   or repeat project metadata.
 - Each tab is named with the project's display name. The active tab is visually
-  and accessibly selected. Long names truncate, and a crowded dock scrolls
-  horizontally instead of compressing the project actions on the right.
+  and accessibly selected. Long names truncate. The dock has a fixed maximum
+  span: crowded inactive tabs shrink proportionally while the active tab keeps
+  a wider share, and the dock never displaces the project actions on the right.
 - Clicking a project card or a project in the cross-project Experiment board
   adds it to the end of the dock and activates it. Opening a project already in
   the dock activates the existing tab without moving or duplicating it.
