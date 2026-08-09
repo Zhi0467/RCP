@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 
+from rcp import skill_registry
 from rcp.agents.prompts import PromptFactory
 from rcp.api.app import create_app
 from rcp.service import RunRequest
@@ -243,6 +245,63 @@ def test_skill_bundle_label_is_stable_for_the_resolved_package_content() -> None
     assert label == skill_bundle_label(reordered)
     assert label.startswith("rcp-skills-v1-")
     assert label != skill_bundle_label(upgraded)
+
+
+def test_editing_a_package_without_a_version_bump_restages_under_a_new_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgraded RCP must not collide with the previous release's bundle.
+
+    Addressing the label by version alone let an edited package keep its label,
+    so every reusing turn on an existing chat stage died at staging against the
+    immutable bundle already there.
+    """
+
+    packages = tmp_path / "package-root"
+    packages.mkdir()
+    shutil.copytree(Path(skill_registry.__file__).parent / "skills", packages / "skills")
+    monkeypatch.setattr(skill_registry, "__file__", str(packages / "skill_registry.py"))
+    stage = tmp_path / "chat"
+    stage.mkdir()
+
+    before = official_registry().resolve(workflow_ids=["research-graph-audit"])
+    before_label = skill_bundle_label(before)
+    stage_skill_selection(
+        before,
+        local_stage=stage,
+        remote_stage=None,
+        label=before_label,
+        reuse_existing=True,
+    )
+
+    edited = packages / "skills" / "graph-audit" / "SKILL.md"
+    edited.write_text(
+        edited.read_text(encoding="utf-8") + "\nAn edit that ships no new version.\n",
+        encoding="utf-8",
+    )
+    after = official_registry().resolve(workflow_ids=["research-graph-audit"])
+
+    assert [(item.kind, item.id, item.version) for item in after.resolved_skill_packages] == [
+        (item.kind, item.id, item.version) for item in before.resolved_skill_packages
+    ]
+    after_label = skill_bundle_label(after)
+    assert after_label != before_label
+
+    pointers = stage_skill_selection(
+        after,
+        local_stage=stage,
+        remote_stage=None,
+        label=after_label,
+        reuse_existing=True,
+    )
+
+    assert all(f"/{after_label}/" in str(pointer["path"]) for pointer in pointers)
+    assert (
+        (stage / "inputs" / after_label / "skill" / "graph-audit" / "SKILL.md")
+        .read_text(encoding="utf-8")
+        .endswith("An edit that ships no new version.\n")
+    )
+    assert {entry.name for entry in (stage / "inputs").iterdir()} == {before_label, after_label}
 
 
 def test_local_content_addressed_skill_stage_reuses_one_immutable_bundle(tmp_path: Path) -> None:

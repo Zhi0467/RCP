@@ -5,7 +5,8 @@ tier: hermetic
 driver: desktop
 covered_by: none
 invariants: [8]
-last_passed: 2026-08-07
+last_passed: 2026-08-09 — two clean cold launches and one warm reopen in RCP Dev,
+  with the project index painted before interaction and no top-left black tile
 ---
 
 # A cold desktop launch never comes to rest on a blank window
@@ -33,7 +34,8 @@ Confirmed with the human on 2026-08-07.
 
 - **Cold launch** — nothing listening on 8421. The app starts, the backend
   builds and boots, and the window appears showing the project index. No blank
-  frame that stays blank, and no relaunch needed.
+  frame that stays blank, no transient black patch in the top-left corner, and
+  no click or relaunch needed to make the window paint correctly.
 - **Warm launch** — a backend is already running. The window renders
   immediately, reusing that backend, with no second navigation and no visible
   reload flicker.
@@ -54,5 +56,6 @@ startup ordering. The startup milestones on stderr are the evidence:
   `showing the RCP window`;
 - `the frontend handshake did not arrive` must be absent — its presence means
   the frontend never booted;
-- the rendered window is confirmed to contain the project index, not an empty
-  document.
+- before any interaction, the rendered window is confirmed to contain the
+  fully painted project index, not an empty document or a transient black patch
+  in its top-left corner.

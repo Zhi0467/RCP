@@ -12,6 +12,7 @@ from concurrent.futures import Future
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -81,6 +82,8 @@ class ProjectCatalog:
         self._opening: dict[str, Future[tuple[ProjectService, GraphState]]] = {}
         self._deleting: set[str] = set()
         self._snapshot_locks: dict[str, threading.Lock] = {}
+        self._snapshot_generations: dict[str, int] = {}
+        self._committed_snapshot_generations: dict[str, int] = {}
 
     def register(self, locator: str) -> ProjectRecord:
         manifest = load_manifest(locator)
@@ -237,6 +240,8 @@ class ProjectCatalog:
                 paper_snapshot = self._paper_snapshot_path(project_id)
                 removed_display = _unlink_regular_app_file(display_snapshot)
                 removed_paper = _unlink_regular_app_file(paper_snapshot)
+                self._snapshot_generations.pop(project_id, None)
+                self._committed_snapshot_generations.pop(project_id, None)
                 database_records = self.store.delete_project_records(project_id)
             return ProjectDeletionResult(
                 project_id=project_id,
@@ -282,6 +287,62 @@ class ProjectCatalog:
             if self._is_deleting(project_id) or self.store.project(project_id) is None:
                 raise KeyError(project_id)
             self._write_cached_snapshot_locked(project_id, snapshot)
+
+    def commit_cached_snapshot(
+        self,
+        project_id: str,
+        snapshot: dict[str, object],
+        *,
+        generation: int,
+    ) -> bool:
+        """Commit a display snapshot unless a newer project view already won."""
+
+        with self._snapshot_lock(project_id):
+            if self._is_deleting(project_id):
+                raise KeyError(project_id)
+            record = self.store.project(project_id)
+            if record is None:
+                raise KeyError(project_id)
+            if not _valid_display_snapshot(project_id, snapshot):
+                raise ValueError("Project display snapshot is invalid")
+            if generation < 1 or generation > self._snapshot_generations.get(project_id, 0):
+                raise ValueError("Project display snapshot generation is invalid")
+            cached = self._cached_snapshot_locked(project_id)
+            persisted_revisions = [
+                revision
+                for revision in (
+                    record.revision,
+                    int(cached["revision"]) if cached is not None else None,
+                )
+                if revision is not None
+            ]
+            candidate_revision = int(snapshot["revision"])
+            if persisted_revisions:
+                persisted_revision = max(persisted_revisions)
+                if candidate_revision < persisted_revision:
+                    return False
+                if (
+                    candidate_revision == persisted_revision
+                    and generation < self._committed_snapshot_generations.get(project_id, 0)
+                ):
+                    return False
+            self._write_cached_snapshot_locked(project_id, snapshot)
+            self._committed_snapshot_generations[project_id] = max(
+                generation,
+                self._committed_snapshot_generations.get(project_id, 0),
+            )
+            self.update_summary(project_id, snapshot)
+            return True
+
+    def reserve_cached_snapshot_generation(self, project_id: str) -> int:
+        """Reserve construction order for one future display snapshot candidate."""
+
+        with self._snapshot_lock(project_id):
+            if self._is_deleting(project_id) or self.store.project(project_id) is None:
+                raise KeyError(project_id)
+            generation = self._snapshot_generations.get(project_id, 0) + 1
+            self._snapshot_generations[project_id] = generation
+            return generation
 
     def _write_cached_snapshot_locked(
         self,
@@ -329,46 +390,71 @@ class ProjectCatalog:
                 temporary.unlink(missing_ok=True)
 
     def cached_snapshot(self, project_id: str) -> dict[str, object] | None:
+        _status, snapshot = self.cached_snapshot_status(project_id)
+        return snapshot
+
+    def cached_snapshot_status(
+        self,
+        project_id: str,
+    ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id) or self.store.project(project_id) is None:
-                return None
-            return self._cached_snapshot_locked(project_id)
+                return "missing", None
+            return self._cached_snapshot_status_locked(project_id)
 
     def _cached_snapshot_locked(self, project_id: str) -> dict[str, object] | None:
+        _status, snapshot = self._cached_snapshot_status_locked(project_id)
+        return snapshot
+
+    def _cached_snapshot_status_locked(
+        self,
+        project_id: str,
+    ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
         path = self._cached_snapshot_path(project_id)
         try:
             metadata = path.lstat()
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_size <= 0
-                or metadata.st_size > PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
-            ):
-                return None
+        except FileNotFoundError:
+            return "missing", None
+        except OSError:
+            return "invalid", None
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size <= 0
+            or metadata.st_size > PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
+        ):
+            return "invalid", None
+        try:
             content = path.read_bytes()
         except OSError:
-            return None
+            return "invalid", None
         if not content or len(content) > PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES:
-            return None
+            return "invalid", None
         try:
             envelope = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-            return None
+            return "invalid", None
         if not isinstance(envelope, dict) or set(envelope) != {
             "schema_version",
             "project_id",
             "snapshot",
         }:
-            return None
+            return "invalid", None
         if (
             type(envelope["schema_version"]) is not int
             or envelope["schema_version"] != _DISPLAY_SNAPSHOT_SCHEMA_VERSION
             or envelope["project_id"] != project_id
         ):
-            return None
+            return "invalid", None
         snapshot = envelope["snapshot"]
         if not isinstance(snapshot, dict) or not _valid_display_snapshot(project_id, snapshot):
-            return None
-        return snapshot
+            return "invalid", None
+        return "valid", snapshot
+
+    def loaded_service(self, project_id: str) -> ProjectService | None:
+        """Return an already-open service without opening or refreshing it."""
+
+        with self._services_lock:
+            return self._services.get(project_id)
 
     def _cached_snapshot_path(self, project_id: str) -> Path:
         digest = hashlib.sha256(project_id.encode()).hexdigest()

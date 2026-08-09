@@ -16,17 +16,26 @@ last_passed: 2026-08-08 — the full backend suite covered agent assertions,
   legacy replay, withdrawal, and the human-only authority boundary
 ---
 
-# Agents propose only evidence-grounded belief changes
+# Ordinary agents propose only evidence-grounded belief changes
 
-An agent-authored graph patch is an assertion, not a request for blanket human
-approval. A Proposal is reserved for the one semantic transition the agent may
-recommend but may not apply: changing a Hypothesis belief status with a valid
-Evidence-edge cause. A Decision is itself the authority handoff: an agent queues
-it as `ready` or `revisit`, and only the human choice control records its outcome.
+An ordinary-agent-authored graph patch is an assertion, not a request for
+blanket human approval. A Proposal is reserved for the one semantic transition
+the agent may recommend but may not apply: changing a Hypothesis belief status
+with a valid Evidence-edge cause. A Decision is itself the authority handoff: an
+ordinary agent queues it as `ready` or `revisit` but cannot record its outcome.
+The project-orchestrator exception is specified below.
 
 This is a backend contract. It adds no UI path: the existing node review,
 Inbox, and Experiment Run surfaces render the resulting asserted nodes,
 Proposals, and readiness state.
+
+Here **agent** means the ordinary profile and its current task surfaces. The
+project-orchestrator profile deliberately has broader authority: full direct
+control of Decisions, Experiments, Blockers, and Evidence; direct creation of
+new ResearchQuestions and Hypotheses; and Proposal-only changes to existing
+ones. It approves no Proposals at all — every agent-produced Proposal waits for
+a human ([S77](S77-auto-research-stops-at-belief.md)). Those future rules do not
+widen this implemented ordinary profile.
 
 ## Scenario
 

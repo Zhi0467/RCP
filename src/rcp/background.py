@@ -82,6 +82,9 @@ class AgentTaskExecution:
 AgentTaskStream = Callable[
     [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], AsyncIterator[str]
 ]
+AgentTaskStreamClosedHook = Callable[
+    [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None
+]
 
 
 @dataclass(frozen=True)
@@ -124,9 +127,15 @@ class TaskFailed(RuntimeError):
 
 
 class BackgroundAgentTasks:
-    def __init__(self, store: AppStore, stream: AgentTaskStream) -> None:
+    def __init__(
+        self,
+        store: AppStore,
+        stream: AgentTaskStream,
+        on_stream_closed: AgentTaskStreamClosedHook | None = None,
+    ) -> None:
         self.store = store
         self.stream = stream
+        self.on_stream_closed = on_stream_closed
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
@@ -786,7 +795,12 @@ class BackgroundAgentTasks:
             ),
         )
         try:
-            outcome = asyncio.run(self._consume(record.project_id, record.kind, request, execution))
+            try:
+                outcome = asyncio.run(
+                    self._consume(record.project_id, record.kind, request, execution)
+                )
+            finally:
+                self._stream_closed(record, request, execution)
         except TaskPaused as exc:
             result: dict[str, object] | None = None
             if exc.messages or exc.artifacts:
@@ -851,6 +865,27 @@ class BackgroundAgentTasks:
             if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
                 self.store.settle_ready_experiment_loop_stops()
             self._forget_control(operation_id)
+
+    def _stream_closed(
+        self,
+        record: AgentTaskRecord,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        if self.on_stream_closed is None:
+            return
+        try:
+            self.on_stream_closed(record.project_id, record.kind, request, execution)
+        except Exception as exc:
+            # An observer must never replace the stream's actual paused, failed,
+            # or completed verdict.
+            with suppress(Exception):
+                self.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "stream_closed_callback_failed",
+                    {"exception_type": type(exc).__name__},
+                    tier="diagnostic",
+                )
 
     async def _consume(
         self,

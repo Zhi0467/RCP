@@ -12,8 +12,10 @@ invariants: [8, 10g]
 This scenario is a proposal and is **not yet human-confirmed**, and its **UI
 path is the least settled part of the whole program** — the human and agent have
 not discussed the auto-research entry point, the campaign row, or the budget
-display in enough detail. Treat the drive below as a sketch to be agreed, not a
-specification. The lifecycle it protects is settled in
+display in enough detail. The campaign's required detailed HTML wrap-up is also
+confirmed only in direction; its terminal-state, durability, and failure
+semantics still need grilling. Treat the drive below as a sketch to be agreed,
+not a specification. The lifecycle it protects is settled in
 [the orchestrator handoff](../handoffs/handoff-2026-08-07-orchestrator.md).
 
 A campaign spends from one pot, and stopping it is graceful. Its sibling
@@ -38,6 +40,7 @@ exhaust during the drive.
 6. Reauthorize, then press **Stop** while a turn is active.
 7. Attempt to start a second campaign while the first is live.
 8. Interrupt a turn after it spawned a worker, then Retry it.
+9. Complete a campaign and open its detailed HTML wrap-up from the campaign row.
 
 ## Assert
 
@@ -54,6 +57,10 @@ exhaust during the drive.
 - `an_interrupted_call_with_no_recorded_exit_is_reconciled_against_live_state`
 - `every_client_invocation_appears_in_the_task_event_stream`
 - `the_human_can_message_the_orchestrator_but_not_a_worker`
+- `campaign_wrapup_invokes_the_versioned_rcp_report_skill`
+- `the_campaign_row_exposes_the_detailed_html_report`
+- `the_report_covers_decisions_blockers_experiments_evidence_and_epistemic_proposals`
+- `campaign_reporting_does_not_widen_graph_inbox_membership`
 
 ## Boundary
 
@@ -64,6 +71,11 @@ never clear the stop intent.
 
 Authority — what the orchestrator may change in the graph — is
 [S77](S77-auto-research-stops-at-belief.md), and should not be re-asserted here.
+
+This proposal does not yet decide whether exhaustion, Stop, or failure must
+produce a partial report; whether report bytes are durable or regenerable; or
+how missing/invalid HTML affects the campaign verdict. Confirm those details
+before implementing the report assertions above.
 
 Real-time streaming and worker-to-worker mail are out of scope, deferred as
 [Q8 and Q9](../open-questions.md).

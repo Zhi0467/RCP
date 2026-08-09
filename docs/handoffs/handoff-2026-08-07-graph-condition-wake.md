@@ -5,10 +5,10 @@
 human. Everything not marked decided is proposed. **No acceptance scenario has
 been written or confirmed**, and no code exists.
 
-**Order in the program:** piece 2 of 3, after
-[actor identity](handoff-2026-08-07-actor-identity-and-permissions.md) and
-before the [orchestrator](handoff-2026-08-07-orchestrator.md). It is
-independent of piece 1 and can land in either order.
+**Order in the program:** piece 2 of 3, alongside the
+[permission design](../design/identity-permissions-and-agent-profiles.md) and
+before the [orchestrator](handoff-2026-08-07-orchestrator.md). It is independent
+of the permission work and can land in either order.
 
 Read [`AGENTS.md`](../../AGENTS.md), then the blueprint's
 [Watch delivery](../research-control-panel-blueprint.md#watch-delivery)

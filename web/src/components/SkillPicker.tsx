@@ -4,7 +4,9 @@ import {
   addProviderSkillSelection,
   addSkillSelection,
   buildSkillPickerEntries,
+  completeSkillTrigger,
   filterSkillPickerEntries,
+  isSkillPickerChooseKey,
   moveSkillHighlight,
   readSkillTrigger,
 } from "../skillPicker";
@@ -23,14 +25,16 @@ interface Options {
   providerLabel: string;
   machine: string;
   inventory?: ProviderSkillInventory | null;
+  message: string;
+  onComplete: (message: string) => void;
 }
 
 /**
  * The `/`-dropdown controller shared by chat and paper coaching.
  *
  * `handleKeyDown` belongs to the composer's own textarea and must run before
- * its send shortcut, so an open dropdown claims the arrows, Enter, and Escape
- * instead of sending the turn.
+ * its send shortcut, so an open dropdown claims the arrows, Enter, Tab, and
+ * Escape instead of sending the turn.
  */
 export function useSkillPicker({
   catalog,
@@ -39,6 +43,8 @@ export function useSkillPicker({
   providerLabel,
   machine,
   inventory,
+  message,
+  onComplete,
 }: Options) {
   const [selection, setSelection] = useState<SkillDefaults>(EMPTY_SKILL_SELECTION);
   const [providerSkillNames, setProviderSkillNames] = useState<string[]>([]);
@@ -83,6 +89,7 @@ export function useSkillPicker({
   const readMessage = (next: string) => setQuery(readSkillTrigger(next));
 
   const choose = (entry: SkillPickerEntry) => {
+    onComplete(completeSkillTrigger(message, entry));
     if (entry.source === "rcp") {
       setSelection((current) => addSkillSelection(current, entry));
     } else {
@@ -100,7 +107,9 @@ export function useSkillPicker({
       );
       return true;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      isSkillPickerChooseKey(event.key, event.shiftKey, event.altKey, event.ctrlKey, event.metaKey)
+    ) {
       event.preventDefault();
       const entry = entries[Math.min(highlight, entries.length - 1)];
       if (entry) choose(entry);

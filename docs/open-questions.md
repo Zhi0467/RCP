@@ -428,15 +428,15 @@ one caller.
 
 ## Q9 — How does peer-to-peer agent mail work once RCP is multiplayer?
 
-**Status:** open. Raised 2026-08-07. Deferred until identity and multi-user land.
+**Status:** open. Raised 2026-08-07. Deferred until team spaces and orchestration land.
 **Governing section:** [Watch delivery](research-control-panel-blueprint.md#watch-delivery).
-**Related work:** [team-space identity and permissions handoff](handoffs/handoff-2026-08-08-team-spaces-identity-and-permissions.md),
-[superseded actor identity handoff](handoffs/handoff-2026-08-07-actor-identity-and-permissions.md),
-[orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
+**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
 
-The 2026-08-08 team-space design removes user-owned agent actors. Revisit the
-questions below in terms of task/campaign authorization lineage, recipient
-budget, project scope, and human consent rather than `owner_actor_id`.
+The confirmed team-space design has no user-owned agent actors. Concrete tasks,
+workers, and campaigns are addressable execution records; the ordinary and
+project-orchestrator profiles are the permission principals. Peer mail must
+therefore be designed from task/campaign lineage, project membership, recipient
+budget, scope, and human authorization—not an agent owner or actor directory.
 
 ### The question
 
@@ -450,36 +450,39 @@ contention is a lease, not a message; and a blocker being resolved is a
 canonical **graph** event that a graph-condition wake observes exactly, without
 hearsay.
 
-Multiplayer is what changes the calculus. Once several users share one truthful
-RCP state, the natural shapes have no star to route through:
+Team spaces change the calculus because several independently authorized root
+tasks and campaigns may coexist in one project. The unresolved cases are:
 
-- one user's agent needs something from **another user**;
-- one user's agent needs something from **another user's agent**; and
-- a user wants to hand a seat to a collaborator without handing over their own
-  agent's authority.
+- a task in one campaign needs a result from a task in another campaign;
+- an ordinary task wants to address a worker it did not spawn;
+- a project member wants to transfer or share responsibility for a running seat;
+  and
+- a message would wake a recipient whose remaining budget and root authorizer
+  differ from the sender's.
 
 ### What blocks a decision
 
 The permission gymnastics, which are genuinely unsolved:
 
-1. **Whose budget pays for a delivered message?** Delivery spends an invocation
-   unit of the recipient. Cross-user, that means one user's agent can spend
-   another user's budget — the ping-pong termination argument stops being a
-   safety property and becomes an attack.
+1. **Which authorization pays for delivery?** Delivery spends an invocation
+   unit of the recipient. A task from campaign A must not consume campaign B's
+   budget merely by addressing one of its workers. The recipient campaign or
+   root authorization needs an explicit admission rule or opt-in.
 2. **What authority does a received message carry?** Nothing, by the hearsay
-   rule. But an agent that acts on a peer's claim has still been influenced by
-   an actor outside its owner's control, and the graph records the consequence
-   without recording the influence unless the thread is retained.
-3. **Can an agent address an actor its owner cannot?** It must not — an agent's
-   reach is bounded by its owner's. That constrains the address book to
-   something derived from group membership, not chosen by the agent.
-4. **Consent.** Being addressable is a state a user should be able to decline,
-   per project and per counterparty.
+   rule. The recipient still acts under its own profile, task contract, scope,
+   project membership, and root authorization. The retained thread must record
+   the outside influence even though it grants no permission.
+3. **Which tasks are addressable?** A task cannot name an arbitrary id and gain
+   reach. The address set must be derived from permitted project and campaign
+   structure, active task state, and the sender's own scope.
+4. **Who consents?** Cross-campaign addressability may need consent from the
+   recipient campaign's root authorizer or a project-level policy. Project
+   membership alone does not authorize spending another campaign's budget.
 5. **Topology.** Graph adjacency was considered as the natural bound on who may
    talk to whom — two seats may talk when their control nodes are adjacent,
    making the comms topology derived from research structure and auditable. It
-   is attractive and untested, and it interacts with cross-user permission in
-   ways nobody has worked through.
+   is attractive and untested, and it does not by itself solve budget consent or
+   task addressability.
 
 ### Do not do in the meantime
 

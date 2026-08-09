@@ -5,6 +5,7 @@ tier: hermetic
 driver: pytest + browser
 covered_by:
   - tests/test_sync.py::test_graph_sync_directly_decides_an_ungoverned_decision
+  - tests/test_sync.py::test_graph_sync_atomically_edits_and_selects_a_decision_option
   - tests/test_sync.py::test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals
   - tests/test_sync.py::test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal
   - tests/test_sync.py::test_direct_choice_validator_requires_every_targeted_proposal_withdrawal
@@ -16,19 +17,20 @@ covered_by:
   - tests/test_proposal_boundary.py::test_legacy_decision_selection_approval_adds_implied_decided_status
   - web/tests/humanDraft.test.mjs
   - web/tests/decisionChoice.test.mjs
-  - browser 2026-08-08
+  - browser 2026-08-09
 invariants: [1, 3]
 reported_by: human, 2026-08-07
-last_passed: 2026-08-08 — direct choice, replacement, and the legacy selected-but-open repair driven in browser against a real project; pytest and web suites passed
+last_passed: 2026-08-09 — edited an option and selected that staged wording in one Sync from Inbox in the Vista Follow-up remote project, producing accepted revision 21; pytest and web suites passed
 ---
 
 # A human decides a Decision by clicking the option
 
-A Decision node exists to record a choice a human made. Its outcome has one
-producer: the direct human Decision-choice action. Agents may frame a Decision
-as `open`, queue it as `ready`, or reopen a settled choice as `revisit`, but they
-cannot write `selected_option` or `status: decided` and cannot create a new
-Decision-targeting Proposal.
+A Decision node exists to record a choice. In the current product its outcome
+has one producer: the direct human Decision-choice action. Ordinary agents may
+frame a Decision as `open`, queue it as `ready`, or reopen a settled choice as
+`revisit`, but they cannot write `selected_option` or `status: decided` and
+cannot create a new Decision-targeting Proposal. The future project-orchestrator
+profile is the one deliberate agent exception.
 
 The options are the point of the node, so they get their own control. Selecting
 one is a direct human authority action, staged and Synced through the same
@@ -68,9 +70,10 @@ permission system.
    choice and withdraws every still-pending legacy Proposal for that Decision
    atomically as stale. This is a withdrawal, not an approval or rejection: the
    human chose directly and did not implicitly judge the historical rationale.
-6. An option the human wants but the agent did not list is added through **Edit
-   node**, which already owns `options`. Selection chooses among the listed
-   options only.
+6. **Edit node** owns `options`: the human may add an option or revise an
+   underspecified agent-written option, then select that staged option before
+   Sync. The one Sync preserves the edited option list and records the choice
+   atomically. Selection chooses among the effective post-edit options only.
 7. A decided Decision reads as decided everywhere it already claimed to: the
    Experiment **Run** gate that requires every `governed_by` Decision to be
    decided with a selected option is satisfied by a human selection with no
@@ -93,8 +96,10 @@ permission system.
   `selected_option` to the ordinary node editor's field set. The ordinary
   status control may queue `open`, `ready`, or `revisit`, but cannot set
   `decided`; the backend, not the presence of a button, enforces that boundary.
-- A staged selection whose value is not one of the node's current `options` is
-  rejected with a diagnostic naming the node. The effective option is resolved
+- A staged selection whose value is not one of the Decision's effective
+  `options` is rejected with a diagnostic naming the node. When the same draft edits
+  `options`, validation uses that effective post-edit list, so a revised or new
+  option can be selected in the same Sync. The effective option is resolved
   against the Decision, so a choice that repeats the recorded option and moves
   only the status is accepted rather than read as no choice at all.
 - A Proposal withdrawal that names no Proposal id is refused with a diagnostic,
@@ -123,6 +128,6 @@ permission system.
 ## Not this scenario
 
 Per-identity affordance in general — including an orchestrator whose profile
-permits an action through configuration rather than a human click — is the
-direction this belongs to, not the change. See the
-[actor-identity handoff](../handoffs/handoff-2026-08-07-actor-identity-and-permissions.md).
+permits an action through configuration rather than a human click — belongs to
+the [permission design](../design/identity-permissions-and-agent-profiles.md),
+not this scenario.

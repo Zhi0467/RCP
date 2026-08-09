@@ -13,13 +13,28 @@ from rcp.transport import RemoteRunStage
 
 
 def skill_bundle_label(selection: SkillSelection) -> str:
-    """Return the stable content label for one resolved official package bundle."""
+    """Return the stable content label for one resolved official package bundle.
 
+    The label covers the staged bytes, not only the declared versions, because a
+    reused bundle is accepted only when its whole tree still matches. Addressing
+    it by version alone let an edited package keep its label, so an upgraded RCP
+    met the previous release's immutable bundle and every reusing turn failed at
+    staging. Editing a package now yields a new label and a new bundle instead,
+    and the superseded one is left untouched for its stage's sweeper.
+    """
+
+    registry = official_registry()
     packages = sorted(
         (reference.kind, reference.id, reference.version)
         for reference in selection.resolved_skill_packages
     )
-    payload = json.dumps(packages, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    contents = sorted(
+        (path, entry_kind, digest)
+        for path, (entry_kind, digest) in _selection_manifest(registry, selection).items()
+    )
+    payload = json.dumps([packages, contents], ensure_ascii=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
     digest = hashlib.sha256(payload).hexdigest()
     return f"rcp-skills-v1-{digest}"
 

@@ -6,10 +6,14 @@ in a design interview on 2026-08-08. No acceptance scenario has been rewritten
 yet and no code exists. Write and confirm the scenarios in section 12 before
 implementing.
 
-**Relation to other work:** independent of, but touching, piece 1 of the identity
-program ([actor identity and permissions](handoff-2026-08-07-actor-identity-and-permissions.md)).
-This handoff hands piece 1 a corrected action vocabulary and a replacement for
-its motivating example — see section 6.
+**Relation to other work:** independent of, but touching, the
+[permission design](../design/identity-permissions-and-agent-profiles.md). This
+handoff supplies its Decision-action split — see section 6.
+
+**Updated 2026-08-09:** “Hypothesis-status-only” below is the implemented
+ordinary-agent contract. The project-orchestrator design later adds protected
+Proposals for any change to an existing ResearchQuestion or Hypothesis. It does
+not restore Decision Proposals: the orchestrator decides Decisions directly.
 
 Read [`AGENTS.md`](../../AGENTS.md) first, then the blueprint's
 [Human and agent authority](../research-control-panel-blueprint.md#human-and-agent-authority)
@@ -44,8 +48,22 @@ The end state is three item types and three distinct human acts:
 | Inbox item | The human act |
 |---|---|
 | Decision awaiting choice | **choose** an option |
-| Pending Proposal (Hypothesis status only) | **approve or reject** a transition |
+| Pending Proposal (currently Hypothesis status; later protected orchestrator epistemic operations) | **approve or reject** a transition |
 | Asserted open Blocker | **agree or contest** a claim |
+
+This table is the complete **graph-attention** grammar; auto-research does not
+widen it to completed Experiments, Evidence, decided Decisions, or resolved
+Blockers. Team spaces separately add project-membership invitations to the
+Inbox. An invitation is a non-graph account item whose action is **join or
+decline**; it does not change which graph node types or statuses count as
+research attention.
+
+An auto-research campaign instead ends with a detailed HTML wrap-up available
+from its campaign record. That report is where a returning human reviews the
+Decisions and Blockers acted on, Experiments run, Evidence produced, and
+epistemic Proposals still awaiting judgment. Its exact contract is owned by the
+[orchestrator handoff](handoff-2026-08-07-orchestrator.md), not by this Inbox
+predicate.
 
 ## 2. The one new concept: ripeness
 
@@ -74,14 +92,14 @@ Full status set: `open | ready | decided | revisit | superseded`.
 | R3 | `Decision.status` gains an explicit ripeness state `ready`. Inbox admits `ready` and `revisit`. |
 | R4 | The human's "not yet" is `ready → open`, an ordinary human node edit. No `standing` filter for Decisions, no snooze state, nothing new recorded. |
 | R5 | A patch that leaves a Decision in `ready` or `revisit` with fewer than 2 distinct `options` is **rejected at admission**. Plain `open` stays unconstrained. |
-| R6 | **Agent Decision Proposals are dropped.** Proposals become Hypothesis-status-only. Creation is removed; approval, withdrawal, and replay stay. |
+| R6 | **Ordinary-agent Decision Proposals are dropped.** The implemented ordinary-agent contract becomes Hypothesis-status-only. Creation is removed; approval, withdrawal, and replay stay. |
 | R7 | Split the conflated Decision gate into two named permission actions, `decide_decision` and `queue_decision`, behind one stubbed predicate. |
 | R8 | Ripeness criteria are **prompt guidance, never validated**. The prompt must direct the agent to inspect run-scope repositories and real experiment/code state, not only the graph. RCP never sets `ready` itself. |
 | R9 | Inbox grammar: an item that **is a node** is a row that opens its node card; an item that is **not** a node (a Proposal) acts inline. No inline Decision ballot. |
 | R10 | A Decision row shows **title plus a Ready/Revisit state chip**. Nothing else. |
 | R11 | The snapshot count key is **`decisions_awaiting_choice`**, with one named predicate per side and a backend/frontend agreement test. |
-| R12 | The agent-creation check narrows to `decide_decision` only: an agent-created Decision may be `open` or `ready`, never carry `selected_option` or `status: decided`. `revisit` at creation is incoherent and refused. |
-| R13 | [S53](../acceptance/S53-truthful-attention-and-run-surfaces.md) is **rewritten in place**; one new `driver: pytest` scenario carries the agent contract. S86 and S92 are amended. |
+| R12 | The ordinary-agent creation check narrows to `decide_decision` only: an ordinary-agent-created Decision may be `open` or `ready`, never carry `selected_option` or `status: decided`. `revisit` at creation is incoherent and refused. |
+| R13 | [S53](../acceptance/S53-truthful-attention-and-run-surfaces.md) is **rewritten in place**; one new `driver: pytest` scenario carries the agent contract. S86 is amended; the obsolete actor-ownership scenario is retired. |
 | R14 | Ontology gaps and missing hypothesis scope are both **said in the answer**, not recorded as nodes. |
 | R15 | The Seed/Refresh final answer is **persisted and displayed**, because it is currently discarded and R14 depends on it reaching the human. |
 
@@ -169,40 +187,37 @@ backup shows a dormant record in `graph.json` and in History, which is correct.
 
 ## 6. Permission actions (R7)
 
-The identity handoff's action table
-([§3](handoff-2026-08-07-actor-identity-and-permissions.md)) currently has one
-Action-layer row reading *"Decision status and `selected_option`."* That single
-row is the conflation blocking `ready`. **Split it:**
+The permission design's action vocabulary must not treat Decision status and
+`selected_option` as one authority. That conflation blocks `ready`. **Split
+it:**
 
 | Action | Covers |
 |---|---|
 | `decide_decision` | write `selected_option`, or set `status: decided` |
 | `queue_decision` | set `status` ∈ {`open`, `ready`, `revisit`} |
 
-What human authority protects on a Decision is **the choice**, never the queue
-position. `revisit` changes nothing about what was decided — `selected_option`
-and its history stay intact — it only puts the question back in front of the
-human. That is an assertion, which invariant 3 permits agents to make.
+What the ordinary-agent boundary protects on a Decision is **the choice**, never
+the queue position. `revisit` changes nothing about what was decided —
+`selected_option` and its history stay intact — it only puts the question back
+in front of the human. That is an assertion, which invariant 3 permits ordinary
+agents to make.
 
 **Interim implementation.** Actors do not exist yet. Name both actions now and
 route every check through a single predicate — e.g. `permits(patch, action)` —
 whose temporary body consults `patch.author`: `decide_decision` requires
-`author == "human"`, `queue_decision` is always permitted. Piece 1 then replaces
-the **body** with the profile lookup and the legacy synthetic-actor mapping it
-already specifies, instead of hunting scattered `author == "agent"` conditionals
-— which is the migration piece 1 is most likely to get wrong.
+`author == "human"`, `queue_decision` is always permitted. The future permission
+service replaces that temporary rule in live admission rather than hunting
+scattered `author == "agent"` conditionals. Replay remains independent of users
+and profiles; it must not acquire a synthetic-actor lookup.
 
-**Two edits owed to piece 1:**
+That future permission service deliberately gives the human-authorized project
+orchestrator profile `decide_decision` as well as `queue_decision`. The ordinary
+profile remains queue-only. The temporary `patch.author` rule cannot express
+that distinction and is not the final orchestrator contract.
 
-1. [handoff §1](handoff-2026-08-07-actor-identity-and-permissions.md) cites
-   [delta.py:412](../../src/rcp/history/delta.py:412) — `resolve_ambiguities`
-   permitted only when `patch.author == "human"` — as its flagship proof that
-   the author binary is already doing authorization. That example dies here.
-   Replace it with `decide_decision`, which is a sharper example: it has a
-   neighbouring action that must resolve differently.
-2. [S92](../acceptance/S92-actor-identity-and-permission-checks.md) asserts
-   `resolve_ambiguities_authority_comes_from_the_profile_not_the_author_binary`.
-   Replace with `decide_decision_authority_comes_from_the_profile_not_the_author_binary`.
+The permission module carries this split forward. Its sharper authority example
+is `decide_decision`, which has the neighbouring `queue_decision` action that
+must resolve differently. The obsolete actor-ownership scenario is not retained.
 
 ## 7. Shared contracts — land these first, serially
 
@@ -244,8 +259,9 @@ Per `AGENTS.md`, do **not** parallelize across these. One commit, then fan out.
   the Decision branch narrows to *changes touching `selected_option`, or setting
   `status: decided`*. It is no longer "any status change." Since Decision
   Proposals no longer exist, that condition means **refused**, not "gated pending
-  approval" — the rejection message must say *only a human may decide* rather
-  than naming a Proposal path that is gone.
+  approval" — the current ordinary-agent rejection must say *only a human may
+  decide* rather than naming a Proposal path that is gone. The future
+  orchestrator path resolves through its dedicated profile instead.
 - `agent-created-decision-transition`
   ([:99](../../src/rcp/core/validation/nodes.py:99)): narrow to `decide_decision`
   only. Allow `open` or `ready` at creation; refuse `selected_option` and
@@ -294,11 +310,13 @@ Per `AGENTS.md`, do **not** parallelize across these. One commit, then fan out.
   subsumed — an agent reopening a settled choice now sets `revisit`, and
   `decision.status != "decided"` already trips `moved`.
 
-### The single sharpest consequence
+### The single sharpest current consequence
 
-After this change, `selected_option` and `status: decided` can only ever be
-written by a patch carrying `human_action="decision_choice"`. No approval path,
-no agent path, no gated path. **A Decision's outcome has exactly one producer.**
+Until the project orchestrator profile lands, `selected_option` and
+`status: decided` can only be written by a patch carrying
+`human_action="decision_choice"`. No ordinary-agent or Proposal path exists.
+The permission implementation will add the orchestrator as the second explicit
+producer without reopening either of those paths.
 Assert this directly in S94.
 
 ## 9. Service, snapshot, and counts (R11)
@@ -400,12 +418,13 @@ Also sweep `web/src/views/GraphViews.tsx` and the ambiguity styles in
 | [:710](../../src/rcp/agents/prompts.py:710) | Narrow Proposal rules to Hypothesis status transitions with an evidence cause. |
 | new | The Decision lifecycle contract, stated **once**. |
 
-The new Decision block says: create a Decision `open`, or `ready` when the choice
-is already makeable. Never write `selected_option` and never set
-`status: decided` — only the human decides. Set `ready` when the choice can
-actually be made, which in general means checking **the run-scope repositories,
-the real state of the experiments, and the code** — not the graph alone. As graph
-signals, `ready` normally implies no Blocker linked by `blocked_by` is still
+The new ordinary-agent Decision block says: create a Decision `open`, or `ready`
+when the choice is already makeable. Never write `selected_option` and never set
+`status: decided` — this ordinary profile does not decide. Set `ready` when the
+choice can actually be made, which in general means checking **the run-scope
+repositories, the real state of the experiments, and the code** — not the graph
+alone. As graph signals, `ready` normally implies no Blocker linked by
+`blocked_by` is still
 open, no Experiment linked by `governed_by` is pre-completion, and `rationale`
 can say what the choice turns on. Use `revisit` to reopen a settled choice when
 new evidence undermines it. Ripeness is never validated; a premature `ready`
@@ -491,8 +510,6 @@ a browser.
   from history. Keep the approval and withdrawal machinery and its tests: a
   project restored from a backup with a pending Decision Proposal must stay
   resolvable by hand, and deleting the withdrawal logic buys nothing.
-- **[S92](../acceptance/S92-actor-identity-and-permission-checks.md)** — swap the
-  `resolve_ambiguities` assertion for `decide_decision` (section 6).
 - **S08, S21, S25, S51** — edit only where they name ambiguities.
 
 ## 14. Tests

@@ -1,12 +1,20 @@
 import { MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ProjectCard } from "../types";
+import { ExperimentBoard } from "../components/ExperimentBoard";
+import { ProjectDock } from "../components/ProjectDock";
+import type { ProjectTab } from "../projectTabs";
+import type { ExperimentLoopIndexEntry, ProjectCard } from "../types";
 
 interface Props {
   projects: ProjectCard[];
+  experimentLoops: ExperimentLoopIndexEntry[];
   onOpen: (projectId: string) => void;
+  onOpenExperiment: (projectId: string, experimentId: string) => void;
   onCreate: () => void;
   onDelete: (projectId: string) => Promise<void> | void;
+  openProjectTabs: ProjectTab[];
+  onActivateProjectTab: (projectId: string) => void;
+  onCloseProjectTab: (projectId: string) => void;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -32,7 +40,17 @@ const COVER_LABELS: Record<CoverStyle, string> = {
   diffusion: "Diffusion",
 };
 
-export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) {
+export function ProjectLanding({
+  projects,
+  experimentLoops,
+  onOpen,
+  onOpenExperiment,
+  onCreate,
+  onDelete,
+  openProjectTabs,
+  onActivateProjectTab,
+  onCloseProjectTab,
+}: Props) {
   const [covers, setCovers] = useState<Record<string, CoverStyle>>(() => readCoverPreferences());
   const [openMenuProject, setOpenMenuProject] = useState<string | null>(null);
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
@@ -104,6 +122,12 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
             RCP
           </span>
         </a>
+        <ProjectDock
+          tabs={openProjectTabs}
+          activeProjectId={null}
+          onActivate={onActivateProjectTab}
+          onClose={onCloseProjectTab}
+        />
       </header>
 
       <main className="landing-main">
@@ -211,6 +235,8 @@ export function ProjectLanding({ projects, onOpen, onCreate, onDelete }: Props) 
             </span>
           </button>
         </section>
+
+        <ExperimentBoard entries={experimentLoops} onOpen={onOpenExperiment} />
       </main>
 
       {deleteProject && (

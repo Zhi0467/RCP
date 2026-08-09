@@ -50,6 +50,7 @@ from rcp.limits import (
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
 )
+from rcp.paper import PaperSnapshot
 from rcp.projects import ProjectCatalog
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, profile_for
@@ -251,7 +252,63 @@ def create_app(
             async for frame in stream:
                 yield frame
 
-    background_tasks = BackgroundAgentTasks(store, background_task_stream)
+    def refresh_cached_project_after_stream(
+        project_id: str,
+        kind: AgentTaskKind,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        graph_capable = isinstance(request, RunRequest) and (
+            kind in {"seed", "refresh"}
+            or (kind in {"node_chat", "project_chat"} and request.mode == "work")
+        )
+        if not graph_capable:
+            return
+        try:
+            service = catalog.loaded_service(project_id)
+            if service is None:
+                raise RuntimeError("The closed stream's project service is no longer loaded.")
+            generation = catalog.reserve_cached_snapshot_generation(project_id)
+            cache_status, cached = catalog.cached_snapshot_status(project_id)
+            if cache_status == "missing":
+                record = store.project(project_id)
+                if record is None or record.revision is None:
+                    return
+                raise ValueError("The expected project display snapshot is missing.")
+            if cached is None:
+                raise ValueError("The existing project display snapshot is invalid.")
+            state = service.history.materialize(write_outputs=False).state
+            paper = PaperSnapshot.model_validate(cached["paper"])
+            snapshot = service.project_snapshot(state=state, paper=paper)
+            snapshot["id"] = project_id
+            attach_experiment_control(project_id, snapshot)
+            catalog.commit_cached_snapshot(project_id, snapshot, generation=generation)
+        except Exception as exc:
+            logger.warning(
+                "Could not refresh display snapshot after task %s for project %s: %s",
+                execution.operation_id,
+                project_id,
+                exc,
+            )
+            try:
+                store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "display_cache_refresh_failed",
+                    {"exception_type": type(exc).__name__, "detail": str(exc)},
+                    tier="diagnostic",
+                )
+            except Exception as receipt_exc:
+                logger.warning(
+                    "Could not record display cache refresh failure for task %s: %s",
+                    execution.operation_id,
+                    receipt_exc,
+                )
+
+    background_tasks = BackgroundAgentTasks(
+        store,
+        background_task_stream,
+        on_stream_closed=refresh_cached_project_after_stream,
+    )
 
     def deliver_watcher_group(group: list[WatcherRecord]) -> None:
         if not group:
@@ -588,6 +645,54 @@ def create_app(
     def projects() -> list[dict[str, object]]:
         return catalog.cards()
 
+    @app.get("/api/experiment-loops")
+    def experiment_loops() -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for record in store.projects():
+            cache_status, cached = catalog.cached_snapshot_status(record.project_id)
+            if cache_status == "invalid" or (
+                cache_status == "missing" and record.revision is not None
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cached project snapshot is unavailable for {record.project_id}.",
+                )
+            state = _cached_graph_state(cached)
+            if state is None:
+                continue
+            reachable = _cached_project_reachable(cached)
+            if record.reachable is False:
+                reachable = False
+
+            experiments = [node for node in state.nodes.values() if isinstance(node, Experiment)]
+            experiment_ids = [node.id for node in experiments]
+            runtimes = store.experiment_loop_runtimes(record.project_id, experiment_ids)
+            settle_ids = [
+                experiment_id
+                for experiment_id, runtime in runtimes.items()
+                if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
+            ]
+            for experiment_id in settle_ids:
+                store.settle_experiment_loop_stop(record.project_id, experiment_id)
+            if settle_ids:
+                runtimes.update(store.experiment_loop_runtimes(record.project_id, settle_ids))
+            for node in experiments:
+                runtime = runtimes[node.id]
+                if runtime.episode_id is None:
+                    continue
+                entries.append(
+                    {
+                        "project_id": record.project_id,
+                        "project_name": record.name,
+                        "project_reachable": reachable,
+                        "node": node.model_dump(mode="json"),
+                        "control": _experiment_control_from_runtime(
+                            state, node.id, runtime
+                        ).model_dump(mode="json"),
+                    }
+                )
+        return entries
+
     @app.get("/api/providers")
     def providers(refresh: bool = False) -> list[dict[str, object]]:
         """The registry probed on this machine, for surfaces with no project yet.
@@ -665,6 +770,7 @@ def create_app(
     @app.get("/api/projects/{project_id}")
     def project(project_id: str) -> dict[str, object]:
         try:
+            generation = catalog.reserve_cached_snapshot_generation(project_id)
             _, snapshot = catalog.open_snapshot(project_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -673,12 +779,21 @@ def create_app(
         snapshot["id"] = project_id
         attach_experiment_control(project_id, snapshot)
         try:
-            catalog.update_summary(project_id, snapshot)
-            catalog.write_cached_snapshot(project_id, snapshot)
+            committed = catalog.commit_cached_snapshot(
+                project_id,
+                snapshot,
+                generation=generation,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
         except (OSError, TypeError, ValueError) as exc:
             logger.warning("Could not update display snapshot for %s: %s", project_id, exc)
+        else:
+            if not committed:
+                latest = catalog.cached_snapshot(project_id)
+                if latest is not None:
+                    attach_experiment_control(project_id, latest)
+                    return latest
         return snapshot
 
     @app.get("/api/projects/{project_id}/cached")
@@ -686,6 +801,7 @@ def create_app(
         snapshot = catalog.cached_snapshot(project_id)
         if snapshot is None:
             raise HTTPException(status_code=404, detail="Cached project snapshot not found")
+        attach_experiment_control(project_id, snapshot)
         return snapshot
 
     @app.get("/api/projects/{project_id}/readiness")
@@ -1415,6 +1531,25 @@ def _project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _cached_graph_state(snapshot: dict[str, object] | None) -> GraphState | None:
+    if snapshot is None:
+        return None
+    try:
+        return GraphState.model_validate(snapshot["graph"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _cached_project_reachable(snapshot: dict[str, object] | None) -> bool | None:
+    if snapshot is None:
+        return None
+    canonical = snapshot.get("canonical_state")
+    if not isinstance(canonical, dict):
+        return None
+    reachable = canonical.get("reachable")
+    return reachable if isinstance(reachable, bool) else None
 
 
 def _experiment_control(

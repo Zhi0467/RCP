@@ -83,6 +83,11 @@ import {
 } from "./desktopRuntime";
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
+import {
+  experimentBoardHref,
+  parseProjectHash,
+  projectHashAfterViewChange,
+} from "./experimentBoard";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
 import type { DagViewport } from "./hooks/dagZoom";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
@@ -90,6 +95,7 @@ import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRa
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
+import { ProjectDock } from "./components/ProjectDock";
 import { RunDialog } from "./components/RunDialog";
 import {
   applyHumanDraft,
@@ -122,6 +128,7 @@ import type {
   ChatSummary,
   ChatTranscript,
   ExperimentControlState,
+  ExperimentLoopIndexEntry,
   GraphNode,
   GraphState,
   Health,
@@ -144,9 +151,21 @@ import {
   type TextScaleAction,
 } from "./textScale";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
+import {
+  adjacentProjectTabId,
+  closeProjectTab,
+  initialProjectHash,
+  isEditableShortcutTarget,
+  openProjectTab,
+  projectViewportRef,
+  projectTabShortcut,
+  type ProjectTab,
+  type ProjectViewState,
+} from "./projectTabs";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
+const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
 
 export function shouldPollProviderSkillReadiness(
   inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
@@ -330,6 +349,15 @@ type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "fail
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
+  const [initialRoute] = useState(() => {
+    const navigation = window.performance.getEntriesByType("navigation")[0] as
+      PerformanceNavigationTiming | undefined;
+    const hash = initialProjectHash(window.location.hash, navigation?.type);
+    if (hash !== window.location.hash) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    }
+    return { project: parseProjectHash(hash), setupOpen: hash === "#/projects/new" };
+  });
   const [identityReady, setIdentityReady] = useState(false);
   const [identityIssue, setIdentityIssue] = useState<string | null>(null);
   const [verifiedHealth, setVerifiedHealth] = useState<Health | null>(null);
@@ -338,18 +366,23 @@ export default function App() {
   const [updateExpanded, setUpdateExpanded] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
-  const [pendingDesktopProjectId, setPendingDesktopProjectId] = useState<string | null>(null);
+  const [pendingDesktopProject, setPendingDesktopProject] = useState<{
+    projectId: string;
+    experimentId: string | null;
+  } | null>(null);
   const [desktopAccessError, setDesktopAccessError] = useState<string | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(() => projectIdFromHash());
-  const [setupOpen, setSetupOpen] = useState(() => isSetupRoute());
+  const [projectId, setProjectId] = useState<string | null>(initialRoute.project.projectId);
+  const [setupOpen, setSetupOpen] = useState(initialRoute.setupOpen);
   const [projects, setProjects] = useState<ProjectCard[]>([]);
+  const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
+  const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
   const [project, setProject] = useState<ProjectSnapshot | null>(null);
   const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
     readProjectHeaderCollapsed(projectId),
   );
   const [graph, setGraph] = useState<GraphState>(emptyGraph);
   const [paper, setPaper] = useState<PaperSnapshot | null>(null);
-  const [view, setView] = useState<AppView>("overview");
+  const [view, setView] = useState<AppView>(initialRoute.project.view);
   const [trustView, setTrustView] = useState<TrustView>(readTrustView);
   const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -358,8 +391,12 @@ export default function App() {
     original: 0,
     companion: 0,
   });
-  const [selectedExperimentRunId, setSelectedExperimentRunId] = useState<string | null>(null);
-  const [focusExperimentRunId, setFocusExperimentRunId] = useState<string | null>(null);
+  const [selectedExperimentRunId, setSelectedExperimentRunId] = useState<string | null>(
+    initialRoute.project.experimentId,
+  );
+  const [focusExperimentRunId, setFocusExperimentRunId] = useState<string | null>(
+    initialRoute.project.experimentId,
+  );
   const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
   const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
   const [floatingChat, setFloatingChat] = useState<{ chatId: string; nodeId: string } | null>(null);
@@ -425,11 +462,30 @@ export default function App() {
   const panelScrollRef = useRef(new Map<AppView, number>());
   const viewRef = useRef<AppView>(view);
   const researchSubviewRef = useRef<AppView>("scientific");
-  const dagViewportRef = useRef<DagViewport | null>(null);
+  const dagViewportRefsRef = useRef(new Map<string, { current: DagViewport | null }>());
+  const openProjectTabsRef = useRef(openProjectTabs);
+  const projectViewStatesRef = useRef(new Map<string, ProjectViewState>());
+  openProjectTabsRef.current = openProjectTabs;
   activeProjectId.current = projectId;
   renderedRevisionRef.current = graph.revision;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  const activeDagViewportRef = projectId
+    ? projectViewportRef(dagViewportRefsRef.current, projectId)
+    : null;
+
+  const rememberProjectView = useCallback((id: string | null) => {
+    if (!id) return;
+    const panelScroll = new Map(panelScrollRef.current);
+    const dagViewport = dagViewportRefsRef.current.get(id)?.current ?? null;
+    if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
+    projectViewStatesRef.current.set(id, {
+      view: viewRef.current,
+      panelScroll: [...panelScroll.entries()],
+      researchSubview: researchSubviewRef.current,
+      dagViewport: dagViewport ? { ...dagViewport } : null,
+    });
+  }, []);
 
   useEffect(() => {
     if (!notice) return;
@@ -443,6 +499,8 @@ export default function App() {
   const changeView = useCallback((next: AppView) => {
     const panel = panelRef.current;
     if (panel) panelScrollRef.current.set(viewRef.current, panel.scrollTop);
+    const replacementHash = projectHashAfterViewChange(window.location.hash, next);
+    if (replacementHash) window.history.replaceState(null, "", replacementHash);
     setView(next);
   }, []);
 
@@ -972,8 +1030,12 @@ export default function App() {
 
   useEffect(() => {
     const handleHashChange = () => {
+      const route = parseProjectHash(window.location.hash);
       setSetupOpen(isSetupRoute());
-      setProjectId(projectIdFromHash());
+      setProjectId(route.projectId);
+      setView(route.view);
+      setSelectedExperimentRunId(route.experimentId);
+      setFocusExperimentRunId(route.experimentId);
     };
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
@@ -981,6 +1043,12 @@ export default function App() {
 
   useEffect(() => {
     if (!identityReady || identityIssue) return;
+    const requestedRoute = parseProjectHash(window.location.hash);
+    const routeMatchesProject = requestedRoute.projectId === projectId;
+    const rememberedView =
+      routeMatchesProject && !requestedRoute.experimentId && projectId
+        ? projectViewStatesRef.current.get(projectId)
+        : undefined;
     setLoading(true);
     setProjectReconciliation("opening");
     authoritativeProjectId.current = null;
@@ -990,8 +1058,8 @@ export default function App() {
     setPaper(null);
     setSelectedNode(null);
     setCompanionNode(null);
-    setSelectedExperimentRunId(null);
-    setFocusExperimentRunId(null);
+    setSelectedExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
+    setFocusExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
     setExperimentStopId(null);
     setDockedNodeIds([]);
     setFloatingChat(null);
@@ -1024,10 +1092,21 @@ export default function App() {
     setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
     setHumanDraft(null);
     setSyncingDraft(false);
-    panelScrollRef.current.clear();
-    researchSubviewRef.current = "scientific";
-    dagViewportRef.current = null;
-    setView("overview");
+    panelScrollRef.current = new Map(rememberedView?.panelScroll ?? []);
+    researchSubviewRef.current = rememberedView?.researchSubview ?? "scientific";
+    if (projectId) {
+      const viewportRef = projectViewportRef(dagViewportRefsRef.current, projectId);
+      if (viewportRef.current === null && rememberedView?.dagViewport) {
+        viewportRef.current = { ...rememberedView.dagViewport };
+      }
+    }
+    setView(
+      routeMatchesProject
+        ? requestedRoute.experimentId
+          ? requestedRoute.view
+          : (rememberedView?.view ?? requestedRoute.view)
+        : "overview",
+    );
     if (setupOpen) {
       setLoading(false);
       return;
@@ -1089,6 +1168,50 @@ export default function App() {
     selectChat,
     setupOpen,
   ]);
+
+  useEffect(() => {
+    if (!identityReady || identityIssue || projectId || setupOpen) return;
+    let stopped = false;
+    let timer = 0;
+    const schedule = () => {
+      timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+    };
+    const poll = async () => {
+      if (stopped) return;
+      if (pageIsHidden()) {
+        schedule();
+        return;
+      }
+      try {
+        const nextEntries = await api<ExperimentLoopIndexEntry[]>("/api/experiment-loops");
+        if (!stopped) setExperimentLoops(nextEntries);
+      } catch (error) {
+        if (!stopped) {
+          setNotice({
+            kind: "error",
+            text: `Experiment board could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+      if (!stopped) schedule();
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [identityIssue, identityReady, projectId, setupOpen]);
+
+  useEffect(() => {
+    if (!project || project.id !== projectId) return;
+    const nextTabs = openProjectTab(openProjectTabsRef.current, {
+      id: project.id,
+      name: project.name,
+    });
+    if (nextTabs === openProjectTabsRef.current) return;
+    openProjectTabsRef.current = nextTabs;
+    setOpenProjectTabs(nextTabs);
+  }, [project, projectId]);
 
   useEffect(() => {
     if (projectReconciliation === "authoritative") ensureProjectReadiness();
@@ -1315,7 +1438,7 @@ export default function App() {
     if (view === "scientific" || view === "dag") researchSubviewRef.current = view;
     const panel = panelRef.current;
     if (panel) panel.scrollTop = panelScrollRef.current.get(view) ?? 0;
-  }, [view]);
+  }, [loading, project?.id, view]);
 
   useEffect(() => {
     if (mutationsDisabled) setRunDialogOpen(false);
@@ -1939,11 +2062,28 @@ export default function App() {
     void operateTask(task, "retry");
   };
 
-  const commitProjectOpen = (id: string) => {
-    setSetupOpen(false);
-    window.location.hash = `/projects/${id}`;
+  const tabForProject = (id: string): ProjectTab => ({
+    id,
+    name:
+      projects.find((item) => item.id === id)?.name ??
+      experimentLoops.find((item) => item.project_id === id)?.project_name ??
+      (project?.id === id ? project.name : id),
+  });
+
+  const setTabs = (nextTabs: ProjectTab[]) => {
+    openProjectTabsRef.current = nextTabs;
+    setOpenProjectTabs(nextTabs);
   };
-  const openProject = (id: string) => {
+
+  const commitProjectOpen = (id: string, experimentId: string | null = null) => {
+    if (projectId !== id) rememberProjectView(projectId);
+    setTabs(openProjectTab(openProjectTabsRef.current, tabForProject(id)));
+    setSetupOpen(false);
+    window.location.hash = experimentId
+      ? experimentBoardHref(id, experimentId).slice(1)
+      : `/projects/${encodeURIComponent(id)}`;
+  };
+  const openProject = (id: string, experimentId: string | null = null) => {
     if (desktop) {
       let storedAcknowledgement: string | null = null;
       try {
@@ -1951,23 +2091,23 @@ export default function App() {
       } catch {}
       if (needsDesktopFolderAccessAcknowledgement(true, storedAcknowledgement)) {
         setDesktopAccessError(null);
-        setPendingDesktopProjectId(id);
+        setPendingDesktopProject({ projectId: id, experimentId });
         return;
       }
     }
-    commitProjectOpen(id);
+    commitProjectOpen(id, experimentId);
   };
   const continueDesktopProjectOpen = () => {
-    if (!pendingDesktopProjectId) return;
+    if (!pendingDesktopProject) return;
     try {
       localStorage.setItem(
         DESKTOP_FOLDER_ACCESS_ACK_KEY,
         desktopFolderAccessAcknowledgementValue(),
       );
-      const projectToOpen = pendingDesktopProjectId;
-      setPendingDesktopProjectId(null);
+      const projectToOpen = pendingDesktopProject;
+      setPendingDesktopProject(null);
       setDesktopAccessError(null);
-      commitProjectOpen(projectToOpen);
+      commitProjectOpen(projectToOpen.projectId, projectToOpen.experimentId);
     } catch (error) {
       setDesktopAccessError(
         `RCP could not record this choice: ${error instanceof Error ? error.message : String(error)}`,
@@ -1980,6 +2120,7 @@ export default function App() {
     window.location.hash = "/projects/new";
   };
   const returnToProjects = () => {
+    rememberProjectView(projectId);
     setSetupOpen(false);
     setProjectId(null);
     window.location.hash = "";
@@ -1988,12 +2129,61 @@ export default function App() {
   const deleteProject = async (id: string) => {
     await api(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
     setProjects((current) => current.filter((item) => item.id !== id));
+    setExperimentLoops((current) => current.filter((item) => item.project_id !== id));
+    projectViewStatesRef.current.delete(id);
+    dagViewportRefsRef.current.delete(id);
+    setTabs(closeProjectTab(openProjectTabsRef.current, projectId, id).tabs);
     try {
       localStorage.removeItem(humanDraftStorageKey(id));
     } catch {
       // The project is already deleted; a stranded draft key must not fail the action.
     }
   };
+
+  const activateProjectTab = (id: string) => {
+    if (id === projectId) return;
+    commitProjectOpen(id);
+  };
+
+  const closeDockedProject = (id: string) => {
+    const result = closeProjectTab(openProjectTabsRef.current, projectId, id);
+    if (result.tabs === openProjectTabsRef.current) return;
+    projectViewStatesRef.current.delete(id);
+    dagViewportRefsRef.current.delete(id);
+    setTabs(result.tabs);
+    if (id !== projectId) return;
+    if (result.activeProjectId) {
+      setSetupOpen(false);
+      window.location.hash = `/projects/${encodeURIComponent(result.activeProjectId)}`;
+    } else {
+      setSetupOpen(false);
+      setProjectId(null);
+      window.location.hash = "";
+    }
+  };
+
+  useEffect(() => {
+    if (!desktop) return;
+    const onProjectTabKeyDown = (event: KeyboardEvent) => {
+      const action = projectTabShortcut(event, isEditableShortcutTarget(event.target));
+      if (!action) return;
+      if (action === "index") {
+        event.preventDefault();
+        returnToProjects();
+        return;
+      }
+      const nextProjectId = adjacentProjectTabId(
+        openProjectTabsRef.current,
+        projectId,
+        action === "previous" ? -1 : 1,
+      );
+      if (!nextProjectId) return;
+      event.preventDefault();
+      activateProjectTab(nextProjectId);
+    };
+    window.addEventListener("keydown", onProjectTabKeyDown);
+    return () => window.removeEventListener("keydown", onProjectTabKeyDown);
+  });
 
   const reconnectBackend = async () => {
     if (reconnecting) return;
@@ -2058,7 +2248,7 @@ export default function App() {
         }}
       />
     ) : null;
-  const desktopAccessSurface = pendingDesktopProjectId ? (
+  const desktopAccessSurface = pendingDesktopProject ? (
     <div className="modal-backdrop desktop-access-backdrop">
       <section
         className="desktop-access-dialog"
@@ -2085,7 +2275,7 @@ export default function App() {
             className="button secondary"
             type="button"
             onClick={() => {
-              setPendingDesktopProjectId(null);
+              setPendingDesktopProject(null);
               setDesktopAccessError(null);
             }}
           >
@@ -2157,14 +2347,34 @@ export default function App() {
       <>
         <ProjectLanding
           projects={projects}
+          experimentLoops={experimentLoops}
           onOpen={openProject}
+          onOpenExperiment={openProject}
           onCreate={openSetup}
           onDelete={deleteProject}
+          openProjectTabs={openProjectTabs}
+          onActivateProjectTab={activateProjectTab}
+          onCloseProjectTab={closeDockedProject}
         />
+        {notice && (
+          <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
+            {notice.text}
+          </button>
+        )}
         {updateSurface}
         {desktopAccessSurface}
         {acceptanceAgentSurface}
       </>
+    );
+  if (project?.id && project.id !== projectId)
+    return (
+      <div className="app-loading">
+        <LoaderCircle className="spin" />
+        <span>Opening project</span>
+        {updateSurface}
+        {desktopAccessSurface}
+        {acceptanceAgentSurface}
+      </div>
     );
   if (!project || !paper)
     return (
@@ -2191,10 +2401,16 @@ export default function App() {
       {acceptanceAgentSurface}
       {!projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
-          <div className="brand-lockup">
+          <div className="project-header-navigation">
             <button className="project-back" onClick={returnToProjects} aria-label="All projects">
               <ArrowLeft size={16} />
             </button>
+            <ProjectDock
+              tabs={openProjectTabs}
+              activeProjectId={projectId}
+              onActivate={activateProjectTab}
+              onClose={closeDockedProject}
+            />
             {projectReconciliation === "reconciling" && (
               <span
                 className="project-reconciliation"
@@ -2305,13 +2521,22 @@ export default function App() {
 
       <nav className="project-tabs" aria-label="Project panels">
         {projectHeaderCollapsed && (
-          <button
-            className="project-tabs-back project-back"
-            onClick={returnToProjects}
-            aria-label="All projects"
-          >
-            <ArrowLeft size={16} />
-          </button>
+          <>
+            <button
+              className="project-tabs-back project-back"
+              onClick={returnToProjects}
+              aria-label="All projects"
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <ProjectDock
+              className="project-tabs-project-dock"
+              tabs={openProjectTabs}
+              activeProjectId={projectId}
+              onActivate={activateProjectTab}
+              onClose={closeDockedProject}
+            />
+          </>
         )}
         <button
           aria-expanded={!projectHeaderCollapsed}
@@ -2521,7 +2746,7 @@ export default function App() {
               graph={presentedGraph}
               trustView={trustView}
               projectId={project.id}
-              viewportRef={dagViewportRef}
+              viewportRef={activeDagViewportRef!}
               relationFocusNodeId={dagRelationFocusId}
               onClearRelationFocus={() => setDagRelationFocusId(null)}
               onSelectNode={openNode}
@@ -2932,14 +3157,8 @@ export function taskRetryRequestBody(
   };
 }
 
-function projectIdFromHash(): string | null {
-  const match = window.location.hash.match(/^#\/projects\/([^/]+)$/);
-  if (!match || match[1] === "new") return null;
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return null;
-  }
+export function projectIdFromHash(hash = window.location.hash): string | null {
+  return parseProjectHash(hash).projectId;
 }
 
 function isSetupRoute(): boolean {

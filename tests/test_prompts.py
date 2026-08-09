@@ -765,6 +765,10 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "trying to write `current_summary` or `next_action`" not in compact
     assert "A watcher completing means only" in compact
     assert "does not begin, close, or correspond one-to-one with an attempt" in compact
+    assert "continue the useful synchronous work in this turn" in compact
+    assert "do not invent a watcher" in compact.casefold()
+    assert "Never set the focused Experiment to `completed`" in contract
+    assert "until `next_action` can truthfully be null" in contract
     assert "remaining_invocations` is zero" in contract
     assert "pause automatic delivery until a human presses Run" in compact
     assert "no watcher api to" in contract.casefold()

@@ -217,8 +217,8 @@ Use generic fixtures containing:
 - a main Experiment gated by a Decision that requires calibration Evidence;
 - a main Experiment gated by a Blocker that requires smoke-test Evidence;
 - a precursor Experiment with a separate, genuine upstream gate of its own;
-- an open human-only Decision and an external Blocker that require no invented
-  Experiment;
+- an open Decision that ordinary Work cannot decide and an external Blocker that
+  require no invented Experiment;
 - an initially wrong graph where the downstream Decision governs the smoke test
   meant to determine it;
 - an initially incomplete graph where a main Experiment's gate exists only in

@@ -2,12 +2,21 @@
 
 **Date:** 2026-08-07
 **State:** scope and the rulings marked *decided 2026-08-07* are confirmed by the
-human. Everything not marked decided is proposed. **No acceptance scenario has
-been written or confirmed**, and no code exists.
+human. Everything not marked decided is proposed. Two acceptance scenarios are
+written but not yet human-confirmed, and no code exists.
 
-**Order in the program:** piece 3 of 3. It depends on both
-[actor identity](handoff-2026-08-07-actor-identity-and-permissions.md) (for its
-elevated profile) and
+**Updated 2026-08-09:** the team-space profile model replaces the original
+agent-actor ownership. The Decision-action split distinguishes ordinary agents
+from the human-authorized project orchestrator; it does not remove the
+orchestrator's direct Decision choice. The authority line is operation-specific,
+not a division of whole node layers: the orchestrator may create new
+ResearchQuestions and Hypotheses and has full control of every other graph node
+type, while changes to existing ResearchQuestions and Hypotheses require
+producer-separated Proposals.
+
+**Order in the program:** piece 3 of 3. It depends on both the
+[permission design](../design/identity-permissions-and-agent-profiles.md) (for
+its elevated profile) and
 [graph-condition wake](handoff-2026-08-07-graph-condition-wake.md) (because its
 dispatch decisions are graph-driven). Do not start it before those land.
 
@@ -19,60 +28,76 @@ section, then this file.
 
 ## 1. What it is
 
-One agent actor, seated at project scope, that pushes research forward under a
-framing the human fixed. In the UI this is the **auto-research** action: the
-human sets the framing and a budget, presses it, and the orchestrator works the
-action layer until the budget runs out or it needs a human decision.
+One project-owned orchestrator profile, active through a bounded campaign task,
+pushes research forward within a campaign scope the human authorized. In the UI
+this is the **auto-research** action: the human sets the scope and a budget,
+presses it, and the orchestrator conducts the campaign until the budget runs
+out, it is stopped, or it needs new authorization. It may leave protected
+epistemic changes in the Inbox without pausing otherwise independent work.
 
 Its powers:
 
 - **spawn / stop / pause** node agents and Experiment loops;
 - **message** them — turn-level mail, star topology only;
 - **set graph wake conditions**; and
-- **act on the action layer** of the graph with elevated authority, despite
-  being an agent identity.
+- **conduct and structure the research**, including direct Decision choice,
+  full control of Experiments, Blockers, and Evidence, direct creation of new
+  ResearchQuestions and Hypotheses, and Proposals for changing existing ones.
 
 ## 2. The authority line
 
-The human owns **what we ask and what we believe**. The orchestrator owns
-**what we do to find out**.
+The orchestrator may expand the research framing by creating new questions and
+hypotheses. Once a ResearchQuestion or Hypothesis exists, the orchestrator may
+change it only through a Proposal. It may approve a protected Proposal produced
+by an ordinary child agent, but it may not approve one it produced itself.
 
-That is not a new axis. It is the `layer` field already declared per relation in
-[`RELATION_SPEC`](../../src/rcp/core/models.py:288):
+The earlier whole-layer split was wrong. Authority follows the semantic
+operation, not the node's layer:
 
-| Layer | Nodes | Who |
-|---|---|---|
-| epistemic | ResearchQuestion, Hypothesis, Evidence→Hypothesis edges | human |
-| action | Decision, Experiment, Blocker | orchestrator |
-| seam | `tests`, `produces` | the handoff between them |
+| Operation | Orchestrator authority |
+|---|---|
+| Create a new ResearchQuestion or Hypothesis in its normal unresolved initial state | direct |
+| Change ordinary content, status, standing, or meaning-bearing relations of an existing ResearchQuestion or Hypothesis | Proposal |
+| Remove an existing ResearchQuestion or Hypothesis | Proposal |
+| Approve a protected Proposal produced by an eligible ordinary child in this campaign | direct |
+| Approve a protected Proposal produced by the orchestrator itself | forbidden |
+| Create, edit, judge, or remove Evidence | direct |
+| Create, edit, decide, judge, or remove a Decision | direct |
+| Create, edit, advance, judge, or remove an Experiment or Blocker | direct |
 
-So the orchestrator may set Decision status and `selected_option`, Experiment
-status, and Blocker status directly. ResearchQuestion and Hypothesis status
-transitions remain human, reached through the two existing Proposal shapes —
-unchanged, not widened.
+The permission boundary is therefore **new versus existing** for these two node
+types. Ordinary editing of an existing question or hypothesis is protected just
+as status, standing, relation, and removal changes are. The orchestrator can
+raise those changes as Proposals and continue independent campaign work. A
+human may judge them, or an eligible ordinary child may independently produce a
+Proposal that the orchestrator may judge. The exact eligibility rule beyond a
+direct child in the same campaign still needs grilling; the implementation must
+never reduce it to “the orchestrator may approve any Proposal.”
 
-Evidence remains freely creatable by agents, as today. The seam relations are
-literally where agent action authority hands off to human epistemic authority,
-which is a satisfying place for the line to sit and worth saying out loud in the
-blueprint.
+These operations widen the future Proposal vocabulary beyond the current
+ordinary-agent Hypothesis-status-only contract. They never reintroduce Decision
+Proposals: the orchestrator decides Decisions directly.
+
+Its direct operations take effect during the campaign. When the campaign wraps
+up, the orchestrator must produce a detailed HTML report showing what Decisions
+and Blockers were resolved, which Experiments ran, what Evidence was recorded,
+which existing ResearchQuestions or Hypotheses changed through approved
+Proposals, and which Proposals still await judgment. Correcting an already
+effective operational action is a new action, not retrospective permission
+retraction.
 
 ### The gate's meaning changes, deliberately
 
 Experiment readiness condition 1 is *"every `governed_by` Decision is decided
-with a selected option."* Once the orchestrator can decide Decisions, it
-satisfies its own readiness gate.
-
-**Confirmed by the human on 2026-08-07: that is the point.** Judging when a gate
-should pass *is* the orchestrator's job, and auto-research is the one mode that
-may hold that judgment. This is not a caveat to work around — do not add a
-compensating check that re-gates the orchestrator behind a human step.
+with a selected option."* Because the orchestrator may decide Decisions, it can
+satisfy that readiness gate itself inside the human-authorized campaign.
 
 Two constraints follow, and both are load-bearing:
 
 1. **Exactly one profile carries this.** There is one auto-research mode, not a
    family of elevated agents. Resist a second profile with "almost" the same
    authority; the moment two exist, the line stops being explainable.
-2. **The budget is the enforced brake**, together with framing authority. Since
+2. **The budget is the enforced brake**, together with campaign scope. Since
    per-episode human approval no longer gates anything, budget enforcement is
    not bookkeeping — it is the safety mechanism.
 
@@ -80,9 +105,11 @@ Two constraints follow, and both are load-bearing:
 
 **Emphasized by the human, 2026-08-07 — do not conflate these.**
 
-- **Authority scope** is the whole action layer, exercised freely and directly.
-  The orchestrator edits Decisions, Experiments, and Blockers itself, including
-  their status and `selected_option`, with no gate.
+- **Authority scope** includes full direct control of Decisions, Experiments,
+  Blockers, and Evidence, direct creation of new ResearchQuestions and
+  Hypotheses, and Proposal creation for existing ones. Existing ResearchQuestion
+  and Hypothesis records are never directly edited or removed by the
+  orchestrator, and every Proposal it creates waits for a human.
 - **Seating scope** is the much narrower question of which nodes it may start a
   *worker agent* on: **Experiments and Blockers only** (see section 4).
 
@@ -204,10 +231,11 @@ them to turn end — which for a dispatcher means one turn is one blind batch.
 
 ### Three requirements that make it safe
 
-1. **A per-turn credential.** The client must know who is calling. Stage a token
-   bound to (actor, task, turn), scoped to exactly that actor's profile from
-   piece 1, expiring with the turn. Every invocation checks it. Without this the
-   CLI is an authority hole, not an authority surface.
+1. **A per-turn credential.** The client must know which authorized campaign
+   task is calling. Stage a token bound to the campaign, task, and turn, scoped
+   to the project orchestrator profile, and expiring with the turn. Every
+   invocation checks it. Without this the CLI is an authority hole, not an
+   authority surface.
 2. **A caller-supplied idempotency key on every mutating command.**
 
    The hazard is **RCP replaying the orchestrator's own turn**, not the
@@ -307,8 +335,9 @@ inside an implementation.
    become a scheduler"*
    ([blueprint](../research-control-panel-blueprint.md#purpose-and-product-boundary)).
    An orchestrator with `dispatch` crosses this. The honest amended form is
-   bounded: RCP schedules **within a human-set framing and a human-set budget**,
-   and never sets the framing itself.
+   bounded: RCP schedules **within a human-authorized campaign scope and a
+   human-set budget**. The orchestrator may create and revise graph framing
+   inside that scope; it may not expand its own campaign authorization.
 2. **Q2's deferral.** *"Graph-level scheduling across the research frontier is
    still separately deferred"* ([open-questions.md](../open-questions.md)). This
    piece un-defers exactly that. Update or delete the sentence when it lands.
@@ -331,13 +360,48 @@ throughout.
   exists to preserve.
 - **DAG occupancy** — workers rendered on the nodes they hold. This is the actual
   control panel, and it reuses the existing pin/release grammar.
+- **The completed campaign exposes a detailed HTML report** from its Runs record.
+  This is the retrospective review surface; completed Experiments, Evidence,
+  decided Decisions, and resolved Blockers do not enter the graph Inbox merely
+  because auto-research touched them.
+
+### Campaign-report skill — confirmed direction, details still to grill
+
+RCP supplies a versioned campaign-report skill and requires the orchestrator to
+use it for the final wrap-up. The skill tells the orchestrator how to turn the
+campaign ledger, graph deltas, worker results, and pending Proposals into one
+detailed HTML report. Because the report is a campaign contract, the skill is an
+RCP-owned orchestration dependency rather than an optional project Settings
+selection. It must cover at least:
+
+- the campaign scope, initiator, budget use, and termination reason;
+- Decisions made and their rationale;
+- Blockers opened, resolved, or left unresolved;
+- Experiments attempted and their outcomes;
+- Evidence created or changed;
+- new ResearchQuestions and Hypotheses;
+- approved changes to existing ResearchQuestions and Hypotheses, with Proposal
+  provenance; and
+- still-pending Proposals and other concrete follow-up work.
+
+The report is not a Patch, carries no graph authority, and does not determine
+whether a campaign succeeded. It summarizes authoritative graph and task state;
+the graph and task ledger remain the source of truth.
+
+The next grill must decide which terminal states require a report—including
+normal completion, budget exhaustion, human Stop, and failure—whether the HTML
+is a durable campaign artifact or a regenerable report, when it becomes visible
+relative to still-finishing child work, the exact skill package and invocation
+contract, and how RCP handles a missing or invalid report. The implementation
+must reuse the existing sandboxed HTML rendering boundary rather than inventing
+an unrestricted campaign document surface.
 
 ## 9. Acceptance scenarios — written, not yet confirmed
 
 **Two scenarios, decided 2026-08-07.** Bundling them would make the cheap half
 expensive.
 
-- [S77 — Auto-research runs the action layer and stops at belief](../acceptance/S77-auto-research-stops-at-belief.md).
+- [S77 — Auto-research creates freely and proposes changes to existing epistemic nodes](../acceptance/S77-auto-research-stops-at-belief.md).
   Driver `pytest`. Owns the authority line, including the
   seating-versus-authority distinction.
 - [S78 — One budget, one stop](../acceptance/S78-one-budget-one-stop.md).
@@ -356,10 +420,19 @@ expect S78's drive to change when the surface is actually designed.
   providers support it, and the reason to wait is RCP's lifecycle model, not
   provider capability.
 - Do not build worker-to-worker mail. Deferred as Q9.
-- Do not give the orchestrator epistemic authority, even temporarily "to unblock
-  testing." The whole design rests on that line.
-- Do not let the orchestrator change the framing — it may not edit a
-  ResearchQuestion or create one.
+- Do not turn epistemic review into a blanket ban on epistemic work. The
+  orchestrator may create new ResearchQuestions and Hypotheses, propose changes
+  to existing ones, and exercise full authority over Evidence.
+- Do not let the orchestrator directly modify or remove an existing
+  ResearchQuestion or Hypothesis.
+- Do not let any agent approve a Proposal. **Superseded 2026-08-09:** the
+  earlier rule here let the orchestrator judge an eligible child-produced
+  Proposal while barring it from approving its own. That did not bind, because
+  the orchestrator writes the instructions for the child whose Proposal it would
+  then approve. Every agent-produced Proposal now waits for a human; see
+  [Identity, permissions, and agent profiles](../design/identity-permissions-and-agent-profiles.md#a-proposal-is-an-escalation-to-a-human).
+- Do not widen graph Inbox membership to make campaign review possible; the
+  detailed HTML campaign report owns that retrospective review.
 - Do not add a second budget, a second stop, or a second wake path. Every one of
   those already exists and is durable; a parallel implementation would be a
   strictly worse copy.

@@ -46,7 +46,6 @@ from rcp.runs.chat import (
     _clear_stale_watch,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
-    _existing_watch_digest,
     _logical_chat_turn_operation_id,
     _prepare_chat_prompt_state,
     _prepare_local_artifact_directory,
@@ -64,6 +63,7 @@ from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     commit_experiment_episode_binding,
     experiment_episode_context_values,
+    experiment_exit_problem,
     experiment_graph_result_summary,
     experiment_watcher_output_name,
     patch_explicitly_exits,
@@ -73,6 +73,7 @@ from rcp.runs.experiment_loop import (
     root_experiment_loop_operation_id,
     stage_chat_experiment_watcher_resources,
     stage_experiment_loop_context,
+    validate_experiment_completion,
 )
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
@@ -1522,8 +1523,14 @@ async def stream_work_run(
                         if not request.control_node_id or not patch_explicitly_exits(
                             exit_patch_text, request.control_node_id
                         ):
+                            completion_problem = (
+                                experiment_exit_problem(exit_patch_text, request.control_node_id)
+                                if request.control_node_id
+                                else None
+                            )
                             raise ValueError(
-                                "An empty Experiment-loop watch.json requires patch.json to "
+                                completion_problem
+                                or "An empty Experiment-loop watch.json requires patch.json to "
                                 "explicitly record success, a Proposal, or a same-Patch Blocker."
                             )
                     specs = (
@@ -1708,7 +1715,6 @@ async def stream_work_run(
                 execution=execution,
                 role=f"watch_correction_{watch_correction_rounds}",
             )
-            pre_launch_digest = _existing_watch_digest(workspace, remote_stage)
             _record_agent_launch_receipt(
                 execution,
                 request,
@@ -1797,16 +1803,9 @@ async def stream_work_run(
                 watch_problem = "The correction completed without writing watch.json."
                 watch_text = None
                 continue
-            if (
-                pre_launch_digest is not None
-                and hashlib.sha256(corrected.encode("utf-8")).hexdigest() == pre_launch_digest
-            ):
-                watch_problem = (
-                    f"{watch_problem} The correction left watch.json byte-identical; rewrite it "
-                    "with the required changes."
-                )
-                watch_text = None
-                continue
+            # Correction validates the resulting Patch/watch handoff, not an
+            # output delta. An empty watcher list may already be correct while
+            # the agent repairs only patch.json to record a terminal outcome.
             watch_text = corrected
             watch_problem = None
 
@@ -2542,6 +2541,9 @@ def _prepare_work_patch_candidate(
                 "experiment_decision_bundle": list(control_decision_bundle or ()),
             }
         )
+        if not control_node_id:
+            raise ValueError("Experiment-loop Patch validation requires its focused Experiment.")
+        validate_experiment_completion(patch, control_node_id)
     validate_work_patch(patch)
     return _PreparedWorkPatch(
         patch=patch,

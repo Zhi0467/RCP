@@ -33,12 +33,14 @@ paper slash menus.
    renders **RCP Official Workflows** and **RCP Official Skills** first. It then
    renders a provider group labelled with the selected provider and execution
    machine, such as **Codex Skills · laptop** or **Claude Skills · gpu**.
+   Clicking an entry or choosing it with Enter or Tab completes its slash token
+   into the composer and leaves the user ready to continue the message.
 3. Change the composer provider or execution machine. Only the matching
    provider-native inventory changes; the RCP official groups remain.
 4. Select a provider-native skill and send the turn. The visible human message
-   remains unchanged. The immutable request and provider contract record the
-   exact provider, machine, provider version, inventory hash, and native skill
-   name selected for that turn.
+   contains the completed slash token. The immutable request and provider
+   contract record the exact provider, machine, provider version, inventory
+   hash, and native skill name selected for that turn.
 5. Restart after making one configured SSH host unreachable. Skills from that
    target's last successful refresh remain rendered and selectable, visibly
    stale with the current diagnostic. A target with no successful inventory
@@ -76,6 +78,7 @@ paper slash menus.
 - `failed_refresh_preserves_last_successful_inventory_as_stale`
 - `first_failure_offers_no_native_skills`
 - `official_registry_remains_separate_and_first_in_the_menu`
+- `click_enter_and_tab_complete_the_selected_slash_token`
 - `provider_and_machine_switch_the_native_group`
 - `native_invocation_is_structured_and_preserves_the_human_message`
 - `native_skills_never_widen_surface_authority`

@@ -20,7 +20,7 @@ last_passed: 2026-08-08 — the full backend suite covered admission and replay,
   experiment-loop exits, and persisted Seed and Refresh answers
 ---
 
-# Agents queue Decisions; only humans decide them
+# Ordinary agents queue Decisions; they do not decide them
 
 Confirmed by the human on 2026-08-08.
 
@@ -32,12 +32,18 @@ repositories, real experiment state, and code rather than relying only on the
 graph, while RCP enforces only that a queued ballot has at least two distinct
 options.
 
-Agents may create or queue a Decision, but only the direct human Decision-choice
-action may write its outcome. New Proposals target only Hypothesis status.
+Ordinary agents may create or queue a Decision, but in the current product only
+the direct human Decision-choice action may write its outcome. New Proposals
+target only Hypothesis status.
 Ambiguities and Decision Proposals remain replayable history, but no new patch
 may create or resolve one. Seed and Refresh preserve the labelled final answer
 so ontology gaps and missing Hypothesis scope can be stated to the human without
 manufacturing another graph object.
+
+Here **agent** means the ordinary agent surfaces implemented by this scenario.
+The confirmed project-orchestrator design adds one dedicated, human-authorized
+profile that may invoke `decide_decision` directly. It does not widen ordinary
+agents or change the human UI path tested here.
 
 ## Setup
 
@@ -65,8 +71,8 @@ state, and Seed and Refresh tasks whose provider emits a labelled final answer.
 
 ## Failure means
 
-An agent can decide rather than queue a Decision; a queued Decision cannot be
-answered; a one-option ballot enters the Inbox; old append-only history stops
-replaying; new ambiguity or Decision-Proposal records enter canonical history;
-the backend and frontend count different Decisions; or a Seed/Refresh answer is
-discarded before the human can read it.
+An ordinary agent can decide rather than queue a Decision; a queued Decision
+cannot be answered; a one-option ballot enters the Inbox; old append-only
+history stops replaying; new ambiguity or Decision-Proposal records enter
+canonical history; the backend and frontend count different Decisions; or a
+Seed/Refresh answer is discarded before the human can read it.

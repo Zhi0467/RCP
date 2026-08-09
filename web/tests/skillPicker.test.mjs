@@ -15,10 +15,12 @@ const {
   addProviderSkillSelection,
   addSkillSelection,
   buildSkillPickerEntries,
+  completeSkillTrigger,
   filterSkillCatalog,
   filterSkillCatalogToDefaults,
   filterSkillPickerEntries,
   hasSkillSelection,
+  isSkillPickerChooseKey,
   moveSkillHighlight,
   readSkillTrigger,
   removeSkillSelection,
@@ -88,6 +90,33 @@ test("a trigger opens only at the end of a word boundary", () => {
   assert.equal(readSkillTrigger("look at src/rcp/runs"), null);
   assert.equal(readSkillTrigger("/graph then more words"), null);
   assert.equal(readSkillTrigger(""), null);
+});
+
+test("selection completes official and provider triggers without changing preceding text", () => {
+  const entries = buildSkillPickerEntries(
+    catalog,
+    { workflow_ids: ["research-graph-audit"], skill_ids: [] },
+    {
+      provider: "codex",
+      providerLabel: "Codex",
+      machine: "local",
+      inventory: codexInventory,
+    },
+  );
+
+  assert.equal(completeSkillTrigger("/res", entries[0]), "/research-graph-audit ");
+  assert.equal(
+    completeSkillTrigger("Please use /front", entries[1]),
+    "Please use /frontend-design:frontend-design ",
+  );
+  assert.equal(completeSkillTrigger("No active trigger", entries[0]), "No active trigger");
+});
+
+test("Enter and unmodified Tab choose an entry while Shift+Tab remains available", () => {
+  assert.equal(isSkillPickerChooseKey("Enter", false, false, false, false), true);
+  assert.equal(isSkillPickerChooseKey("Tab", false, false, false, false), true);
+  assert.equal(isSkillPickerChooseKey("Tab", true, false, false, false), false);
+  assert.equal(isSkillPickerChooseKey("Tab", false, true, false, false), false);
 });
 
 test("the menu orders RCP official groups before the selected provider and machine", () => {

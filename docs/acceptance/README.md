@@ -198,7 +198,7 @@ it but a browser or a machine we do not have.
 | [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
 | [S48](S48-screen-story-token-scale.md) | Measure project usage in favorite screen stories | implemented | **browser** | 5 checks + driven 2026-08-02 |
 | [S49](S49-chat-node-reference-links.md) | Open an existing node from a chat answer | implemented | **browser** | covered + driven 2026-08-02 |
-| [S50](S50-minimal-agent-proposal-boundary.md) | Agents propose only evidence-grounded belief changes | implemented | pytest | covered |
+| [S50](S50-minimal-agent-proposal-boundary.md) | Ordinary agents propose only evidence-grounded belief changes | implemented | pytest | covered |
 | [S51](S51-live-agent-patch-validation.md) | Every patch-producing task checks the exact semantic patch RCP will apply | implemented | pytest | covered |
 | [S52](S52-explicit-rejection-and-node-removal.md) | Judge explicitly and remove current graph nodes without rewriting history | implemented | **browser** | covered + driven 2026-08-03 |
 | [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and run surfaces tell one truthful story | implemented | **browser** | covered + driven 2026-08-08 |
@@ -222,7 +222,7 @@ it but a browser or a machine we do not have.
 | [S74](S74-boundary-inputs-fail-closed.md) | Uncommon boundary inputs fail closed without damaging the project | implemented | pytest + browser | tests + browser 2026-08-06 |
 | [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | blocked-external | pytest + **browser** | provider commands + Codex browser 2026-08-07 |
 | [S76](S76-graph-condition-wake.md) | Wake a conversation when a canonical graph condition becomes true | pending — **not human-confirmed** | pytest | none |
-| [S77](S77-auto-research-stops-at-belief.md) | Let auto-research run the action layer and stop at belief | pending — **not human-confirmed** | pytest | none |
+| [S77](S77-auto-research-stops-at-belief.md) | Let auto-research create freely and propose changes to existing epistemic nodes | pending — **not human-confirmed** | pytest | none |
 | [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | pending — **not human-confirmed** | **browser** | none |
 | [S79](S79-cold-desktop-launch-renders.md) | A cold desktop launch never rests on a blank window | implemented | **desktop** | driven 2026-08-07 |
 | [S80](S80-question-hierarchy-flow-columns.md) | Read question hierarchy from the Research flow columns | implemented | **browser** | layout tests + driven 2026-08-07 |
@@ -237,9 +237,27 @@ it but a browser or a machine we do not have.
 | [S89](S89-provider-native-skill-inventory.md) | Offer provider-native skills beside RCP packages | implemented | pytest + **browser** + ssh | covered + driven 2026-08-08 |
 | [S90](S90-desktop-chat-dictation.md) | Turn one spoken segment into an editable chat draft | pending | **desktop** | native + span tests + desktop control; live audio pending |
 | [S91](S91-chat-input-attachments.md) | Send bounded temporary files with one chat turn | implemented | pytest + **browser** + ssh | tests + remote browser/SSH drive |
-| [S92](S92-actor-identity-and-permission-checks.md) | Bound an agent by its owning person's authority | superseded — replacement scenarios pending | historical | none |
 | [S93](S93-one-hop-relation-map.md) | Read a node's immediate structure without leaving it | implemented | **browser** | tests + browser 2026-08-08 |
-| [S94](S94-decision-ripeness-and-the-agent-contract.md) | Agents queue Decisions; only humans decide them | implemented | pytest | covered |
+| [S94](S94-decision-ripeness-and-the-agent-contract.md) | Ordinary agents queue Decisions; they do not decide them | implemented | pytest | covered |
+| [S95](S95-durable-team-space.md) | A team space outlives every process that serves it | pending — **not human-confirmed** | pytest + api | none |
+| [S96](S96-joining-a-team-space.md) | Join a team space once, and stay joined | pending — **not human-confirmed** | pytest + api | none |
+| [S97](S97-a-project-carries-its-identity.md) | A project says who it is and where it belongs | pending — **not human-confirmed** | pytest | none |
+| [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project over to the lab, once | pending — **not human-confirmed** | pytest + **browser** | none |
+| [S99](S99-attribution-travels-with-history.md) | History says who did it, and still says so elsewhere | pending — **not human-confirmed** | pytest | none |
+| [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts, and nothing unauthorized lands | pending — **not human-confirmed** | pytest | none |
+| [S101](S101-project-membership-and-invitations.md) | Being in the lab is not being on the project | pending — **not human-confirmed** | pytest + **browser** | none |
+| [S102](S102-team-runs-execute-as-the-space-account.md) | Team work runs where the space can reach it, as the space | pending — **not human-confirmed** | pytest + api + ssh | none |
+| [S103](S103-server-operations-are-console-operations.md) | Dangerous operations need the machine, not a login | pending — **not human-confirmed** | pytest + api | none |
+| [S104](S104-backups-never-pause-work.md) | A backup interrupts nothing and overclaims nothing | pending — **not human-confirmed** | pytest | none |
+| [S105](S105-move-between-spaces-in-one-window.md) | One window, several spaces | pending — **not human-confirmed** | **desktop** | none |
+| [S106](S106-cross-project-experiment-board.md) | See every launched Experiment loop before opening a project | implemented | pytest + **browser** | tests + browser 2026-08-09 |
+| [S107](S107-open-project-tabs.md) | Keep several projects open in one RCP window | implemented | **browser** + **desktop** | `web/tests/projectTabs.test.mjs` |
+
+S95–S105 are the team-space set. They come from the confirmed design in
+[`../design/`](../design/README.md) and none of them is human-confirmed yet, so
+no implementation should begin against them. S77 was rewritten in the same pass:
+its earlier child-produced-Proposal approval rule was removed, and every
+agent-produced Proposal now waits for a human.
 
 Ids are never reused. Gaps are retired scenarios or promises folded into another
 scenario or the test-defended list below; a new scenario takes the next free

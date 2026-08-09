@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -227,6 +228,15 @@ export function DagView({
   const dragWatchdogRef = useRef<number | null>(null);
   const suppressClickRef = useRef<string | null>(null);
   const framedLayoutRef = useRef<string | null>(null);
+  const commitViewport = useCallback(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    viewportRef.current = {
+      zoom: zoomRef.current,
+      scrollLeft: scroller.scrollLeft,
+      scrollTop: scroller.scrollTop,
+    };
+  }, [viewportRef]);
   const layout = useForceDag({
     nodes: projection.nodes,
     edges: projection.edges,
@@ -296,12 +306,21 @@ export function DagView({
       });
       if (next.zoom === zoomRef.current) return;
       pendingZoomScrollRef.current = next;
+      viewportRef.current = next;
       zoomRef.current = next.zoom;
       setZoom(next.zoom);
     };
     scroller.addEventListener("wheel", pinchZoom, { passive: false });
     return () => scroller.removeEventListener("wheel", pinchZoom);
-  }, [projection.nodes.length]);
+  }, [projection.nodes.length, viewportRef]);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    commitViewport();
+    scroller.addEventListener("scroll", commitViewport, { passive: true });
+    return () => scroller.removeEventListener("scroll", commitViewport);
+  }, [commitViewport, projection.nodes.length]);
 
   useLayoutEffect(() => {
     const pending = pendingZoomScrollRef.current;

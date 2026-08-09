@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.32
+**Version:** 0.35
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,17 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.35** — added a session-scoped multi-project dock with direct project-tab
+  switching and closing, an index shortcut, and per-tab in-session view state
+  without changing project, draft, or background-task ownership.
+- **0.34** — added a current cross-project Experiment-loop board below the
+  project shelf: one compact row per Experiment that has launched a loop,
+  actionable and active work first, all finished work folded, unavailable
+  projects retained from last-known state, and navigation into the canonical
+  Runs detail rather than duplicate landing-page controls.
+- **0.33** — made click, Enter, and Tab complete a selected official or
+  provider-native skill into the visible Chat or Paper composer while retaining
+  the separate structured invocation receipt.
 - **0.32** — replaced active Ambiguities and agent Decision Proposals with one
   direct Decision lifecycle: agents queue makeable choices as `ready` or reopen
   them as `revisit`, the Inbox opens those node cards for the existing human
@@ -560,10 +571,11 @@ task and its intended graph changes with those descriptions and reads only the
 available package whose trigger matches.
 
 A slash command may proactively invoke only a package currently enabled in
-Settings. The original slash text remains unchanged in the human message. It is
-not replaced with a body or expanded string. A separate short **Invoked this
-turn** block names each exact invoked package and its staged pointer and requires
-the agent to read and follow it for that turn. Other selected packages remain
+Settings. Choosing an entry by click, Enter, or Tab completes the active slash
+query to that package's exact slash token in the visible composer; it never
+inserts a body or expanded prompt. A separate short **Invoked this turn** block
+names each exact invoked package and its staged pointer and requires the agent
+to read and follow it for that turn. Other selected packages remain
 description-triggered pointers. Packages never widen the captured surface
 capability. The composer does not render persistent package chips.
 
@@ -602,9 +614,10 @@ Chat and Paper slash menus place **RCP Official Workflows** and **RCP Official
 Skills** before the native group for the currently selected provider and
 execution machine. A native selection is per-turn structured metadata carrying
 provider, machine, successful provider version, inventory hash, and skill name.
-It leaves the human text unchanged and does not alter launch flags, permissions,
-graph authority, or repository authority. A stale native selection that the CLI
-no longer accepts fails visibly without falling back.
+Click, Enter, or Tab completes its generic slash token into the visible composer
+without altering launch flags, permissions, graph authority, or repository
+authority. A stale native selection that the CLI no longer accepts fails visibly
+without falling back.
 
 ## Experiment control and watchers
 
@@ -1014,6 +1027,32 @@ graceful takeover after recoverable work is paused.
 
 ## Reader-facing application surfaces
 
+- The project shell places one compact, horizontally scrollable project-tab dock
+  immediately to the right of its back/index control. Opening a project from a
+  project card or the cross-project Experiments board appends and activates its
+  named tab, while reopening a docked project activates it without duplicating
+  or moving it. The dock remains visible on the project index. `Command–T`
+  returns there without closing tabs; `Option–Command–Left` and
+  `Option–Command–Right` wrap through open project tabs unless focus is in an
+  editable control.
+- Each tab restores that project's panel and ephemeral in-session view state.
+  Closing a tab removes only that dock entry: it never deletes the project,
+  changes canonical state or staged drafts, or stops background work. Closing
+  the active tab selects the right neighbor, otherwise the left, and closing the
+  last tab returns to the index; reopening a closed project starts at Overview.
+  Tabs cannot be reordered, and deleting a project through the index removes its
+  tab. Open tabs survive hiding and reopening the same desktop window but reset
+  on page reload or full app quit/relaunch. A docked inactive project is not kept
+  mounted or polled merely because its tab is open.
+- The **project index** keeps project cards first, followed by one distinct
+  cross-project **Experiments** board. The board includes only Experiment nodes
+  with loop history and projects each node's current or latest episode into one
+  compact horizontal row. It reports current state using the same health truth
+  as Runs: Needs action before In progress, with all Finished rows folded by
+  default and successful, abandoned, and superseded outcomes kept distinct.
+  Last-known rows from an unavailable project remain visible and labelled
+  unavailable. Selecting a row opens that project's Runs detail; the index adds
+  no loop-control authority and no unread or since-last-visit bookkeeping.
 - **Overview** shows current project state and the latest plain-language revision
   summary.
 - **Inbox** contains pending Hypothesis-status Proposals, Decisions whose status

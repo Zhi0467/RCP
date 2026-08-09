@@ -238,6 +238,15 @@ export function NodeChat({
     providerLabel: readiness?.label || config.provider,
     machine: config.run_on,
     inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
+    message,
+    onComplete: (next) => {
+      setMessage(next);
+      setSubmitError(null);
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(next.length, next.length);
+      });
+    },
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);

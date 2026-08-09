@@ -43,19 +43,19 @@ explicitly invoke a subset of those packages with slash syntax.
 5. Open a project or node chat. The composer shows no persistent skill or
    workflow chips. Type `/`. A dropdown shows only workflows and skills
    enabled in Settings, filtered as the trigger word is typed. Up and down
-   arrows move the highlight, Enter selects the highlighted entry, and Escape
-   closes the dropdown without sending. While the dropdown is open, Enter never
-   sends the turn. The selected entry is transient invocation metadata for this
+   arrows move the highlight, and click, Enter, or Tab selects the highlighted
+   entry. Escape closes the dropdown without sending. While the dropdown is
+   open, Enter never sends the turn. Selection completes the active query to the
+   exact slash token in the composer and leaves the caret ready for the rest of
+   the message. The selected entry is transient invocation metadata for this
    turn; it is not rendered as a removable chip and does not change Settings.
-   The literal slash token remains unchanged in the visible and persisted human
-   message.
 6. Send the turn in either Discuss or Work mode. The captured mode remains the
    authority: selecting a skill never grants graph or repository permissions.
 7. Open the resulting Agent task. Its immutable contract shows the Settings-
    enabled workflows, resolved dependency skills, their ids and versions,
    descriptions, and pointers to the staged folders. It does not embed their
    bodies. A short, separate **Invoked this turn** block names the exact package
-   selected by the slash picker and its staged pointer, while the unchanged
+   selected by the slash picker and its staged pointer, while the completed
    slash token remains in the human message the agent reads.
 8. Start a Seed or Refresh task. It stages only the project defaults from
    Settings; there is no separate per-run skill selector. A selected workflow
@@ -82,7 +82,7 @@ explicitly invoke a subset of those packages with slash syntax.
   into `.research` or a project repository and remain disposable scratch.
 - A slash invocation may name only a workflow or skill enabled directly in
   Settings. It never stages an additional package and never grants authority.
-  The invocation reaches the agent both as the unchanged literal token in the
+  The invocation reaches the agent both as the completed exact token in the
   human message and as one short activation block naming the exact invoked id,
   version, and staged pointer. The block requires the agent to read and follow
   that package for the turn; it never embeds the package body.
@@ -118,17 +118,17 @@ explicitly invoke a subset of those packages with slash syntax.
 - A catalog card shows its name and selection state only; package text is
   reachable through an explicit read-only inspector, never as caption copy
   under the card.
-- The slash/dollar interaction produces structured invocation metadata rather
-  than relying on the provider to parse chat text, resolves only to
-  Settings-enabled packages, and is fully operable from the keyboard: arrows
-  highlight, Enter selects, Escape dismisses, and an open dropdown suppresses
-  send.
+- The slash interaction produces structured invocation metadata rather than
+  relying on the provider to parse chat text, resolves only to Settings-enabled
+  packages, and is fully operable by mouse and keyboard: arrows highlight;
+  click, Enter, and Tab complete and select; Escape dismisses; and an open
+  dropdown suppresses send.
 - Chat and paper coaching do not render persistent skill/workflow chips. The
   task contract and inspector remain the visible receipt of staged packages, and
   the persisted human message is the receipt of what was invoked.
 - The provider contract separately names every explicitly invoked package and
-  its exact staged pointer, requires its use for that turn, preserves the human
-  message byte-for-byte, and leaves unrelated enabled packages as pointers.
+  its exact staged pointer, requires its use for that turn, and leaves unrelated
+  enabled packages as pointers.
 - Retrying a task after its package was upgraded runs the new version and says
   so, rather than failing on the older recorded version.
 - Workflow dependency preflight catches missing entries, cycles, invalid paths,
@@ -142,8 +142,9 @@ explicitly invoke a subset of those packages with slash syntax.
 
 ## Failure means
 
-The catalog is only decorative, slash invocation is lost on the wire or is
-mouse-only, a slash command can stage a package not enabled in Settings,
+The catalog is only decorative, slash invocation is lost on the wire, click,
+Enter, or Tab closes the menu without completing the token, a slash command can
+stage a package not enabled in Settings,
 workflow dependencies are silently omitted, an upgraded package makes an
 existing task un-retryable, an attempt reports a version its staged folder
 does not contain, skill content enters `.research`, selected skills widen

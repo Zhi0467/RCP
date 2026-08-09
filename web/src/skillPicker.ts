@@ -35,6 +35,33 @@ export interface ProviderSkillTarget {
   inventory?: ProviderSkillInventory | null;
 }
 
+/** The generic slash token shown in the composer for a selected entry. */
+export function skillSlashToken(entry: SkillPickerEntry): string {
+  return `/${entry.source === "rcp" ? entry.id : entry.name}`;
+}
+
+/** Replace the active trailing trigger with the selected entry's exact token. */
+export function completeSkillTrigger(message: string, entry: SkillPickerEntry): string {
+  const match = message.match(TRIGGER);
+  if (!match || match.index === undefined) return message;
+  const boundaryLength = match[0].length - match[1].length - 1;
+  const triggerStart = match.index + boundaryLength;
+  return `${message.slice(0, triggerStart)}${skillSlashToken(entry)} `;
+}
+
+export function isSkillPickerChooseKey(
+  key: string,
+  shiftKey: boolean,
+  altKey: boolean,
+  ctrlKey: boolean,
+  metaKey: boolean,
+): boolean {
+  return (
+    (key === "Enter" && !shiftKey) ||
+    (key === "Tab" && !shiftKey && !altKey && !ctrlKey && !metaKey)
+  );
+}
+
 function skillSelectionKey(kind: SkillKind): keyof SkillDefaults {
   return kind === "workflow" ? "workflow_ids" : "skill_ids";
 }

@@ -232,6 +232,14 @@ Graph reflection and authority:
   is `[]`, the Patch must explicitly record success or an authority pause through a queued
   Decision, Hypothesis Proposal, or same-Patch Blocker. RCP rejects the two files as one handoff
   when that pairing is absent.
+- Before finishing the turn, judge the resulting Patch and watcher list together. If no detached
+  work remains but the focused Experiment would remain `proposed`, `designing`, `implementing`,
+  `debugging`, `running`, or `analyzing` without an authority pause, continue the useful
+  synchronous work in this turn. Do not finish with `[]` merely to defer ordinary work to a
+  later Run, and do not invent a watcher: watchers observe real detached work only.
+- Never set the focused Experiment to `completed` while leaving a non-empty `next_action`. That pair
+  contradicts itself: continue the named work until `next_action` can truthfully be null, or keep a
+  nonterminal status and use a real watcher or human-authority pause as appropriate.
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping. Record
@@ -418,10 +426,13 @@ For this turn, take whichever path matches the operational state:
 
 3. The Experiment is operationally finished.
 
-   This means no detached mechanical work remains; the scientific result may be successful,
-   unsuccessful, inconclusive, or invalid. Write `{watch_path}` as `[]`. At `{patch_path}`, write a
-   schema-valid Patch that updates this Experiment's `status` to `completed`, preserves and closes
-   its attempts truthfully, and creates any warranted Evidence, edges, or Hypothesis Proposal.
+   This means all useful synchronous work for the focused Experiment is finished in this turn, no
+   detached mechanical work remains, and the Experiment has reached a terminal
+   operational result; the scientific result may be successful, unsuccessful, inconclusive, or
+   invalid. Merely observing that all jobs ended is not enough when analysis or another ordinary
+   in-scope step remains. Write `{watch_path}` as `[]`. At `{patch_path}`, write a schema-valid Patch
+   that updates this Experiment's `status` to `completed`, preserves and closes its attempts
+   truthfully, and creates any warranted Evidence, edges, or Hypothesis Proposal.
    Experiment-loop authority may update only this Experiment's `status`, complete `attempts` list,
    `current_summary`, and `next_action`. When this turn introduces or closes attempts or changes
    what should happen next, keep those two prose fields consistent with the resulting
@@ -439,7 +450,8 @@ For this turn, take whichever path matches the operational state:
            {{
              "id": "{focused_experiment_id}",
              "changes": {{
-               "status": "completed"
+               "status": "completed",
+               "next_action": null
              }}
            }}
          ]
@@ -561,11 +573,17 @@ Correct only the mandatory watcher handoff in the same native Work session.
 
 Preserve the completed operational result. Do not rerun the Experiment, resubmit work, or cause a
 new external side effect. Inspect authoritative scheduler, process, job, result, and log state as
-needed. If detached work still exists, reconstruct a valid non-empty watcher list using the exact
-schema and cold-shell semantics in the original contract and preserve the Patch. If authoritative
-inspection confirms work finished or requires human authority, write `[]` and make `{patch_path}`
-explicitly record success, queue a Decision, create a Hypothesis Proposal, or create a same-Patch
-Blocker. Never use an empty list merely because the state is uncertain. Validate every Patch rewrite
+needed. Judge the terminal Patch/watch pair, not whether either file changed. If detached work still
+exists, reconstruct a valid non-empty watcher list using the exact schema and cold-shell semantics
+in the original contract and preserve the Patch. If no detached work remains but useful synchronous
+work is still required, continue that work now without repeating completed side effects. Then either
+finish the Experiment, or explicitly pause for human authority by queuing a Decision, creating a
+Hypothesis Proposal, or creating a same-Patch Blocker. Write `[]` when no detached observer is
+needed; an already-correct `[]` may remain byte-identical when the Patch changes to make the joint
+handoff valid. Never invent a watcher merely to satisfy correction, and never use an empty list
+merely because external state is uncertain. A `completed` Experiment with a non-empty `next_action`
+is still invalid: continue the named work until `next_action` can truthfully be null, or retain a
+nonterminal status and choose a real watcher or human-authority pause. Validate every Patch rewrite
 with the exact command below. Your final response should only confirm that the joint handoff was
 repaired.
 

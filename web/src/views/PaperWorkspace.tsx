@@ -108,6 +108,7 @@ export function PaperWorkspace({
   });
   const workspace = useRef<HTMLElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const coachTextarea = useRef<HTMLTextAreaElement>(null);
   const latestContent = useRef(content);
   const handledCoachTask = useRef<string | null>(
     tasks.find((task) => task.kind === "paper_coach" && task.status === "succeeded")
@@ -178,6 +179,15 @@ export function PaperWorkspace({
     providerLabel: readiness?.label || config.provider,
     machine: config.run_on,
     inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
+    message,
+    onComplete: (next) => {
+      setMessage(next);
+      setSubmitError(null);
+      window.requestAnimationFrame(() => {
+        coachTextarea.current?.focus();
+        coachTextarea.current?.setSelectionRange(next.length, next.length);
+      });
+    },
   });
 
   useEffect(() => {
@@ -571,6 +581,7 @@ export function PaperWorkspace({
         <div className="coach-composer">
           <SkillPicker {...skills.props} />
           <textarea
+            ref={coachTextarea}
             aria-label="Message"
             value={message}
             onChange={(event) => updateMessage(event.target.value)}

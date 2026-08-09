@@ -21,15 +21,19 @@ def decision_transition_error(decision: Decision, changes: dict[str, Any]) -> st
 
     selected_option = changes.get("selected_option", decision.selected_option)
     status = changes.get("status", decision.status)
+    options = changes.get("options", decision.options)
     if (
         changes.get("selected_option") is not None
-        and changes["selected_option"] not in decision.options
+        and isinstance(options, list)
+        and changes["selected_option"] not in options
     ):
-        return f"Decision {decision.id} can select only an option listed in its current options."
-    if status == "decided" and (selected_option is None or selected_option not in decision.options):
+        return f"Decision {decision.id} can select only an option listed in its resulting options."
+    if status == "decided" and (
+        selected_option is None or not isinstance(options, list) or selected_option not in options
+    ):
         return (
             f"Decision {decision.id} can be decided only with a selected option listed in its "
-            "current options."
+            "resulting options."
         )
     if status == "revisit" and decision.status != "revisit" and decision.selected_option is None:
         return f"Decision {decision.id} can be revisited only after it has a prior decision."

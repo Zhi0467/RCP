@@ -215,6 +215,43 @@ def test_graph_sync_directly_decides_an_ungoverned_decision(manifest, tmp_path) 
     assert "status" in HUMAN_EDITABLE_NODE_FIELDS["decision"]
 
 
+def test_graph_sync_atomically_edits_and_selects_a_decision_option(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    service.history.append(seed_patch())
+    append_decision_fixture(service, with_proposals=False)
+    decision = service.history.state().nodes["dec/evaluation-rule"]
+    revised_option = "shifted, with the human's additional rationale"
+    revised_options = ["matched", revised_option]
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/sync",
+        json={
+            "base_revision": 2,
+            "nodes": [
+                {
+                    "node_id": decision.id,
+                    "base_updated_rev": decision.updated_rev,
+                    "changes": {
+                        "options": revised_options,
+                        "selected_option": revised_option,
+                        "status": "decided",
+                    },
+                    "standing": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    chosen = response.json()["nodes"][decision.id]
+    assert chosen["options"] == revised_options
+    assert chosen["selected_option"] == revised_option
+    assert chosen["status"] == "decided"
+    assert chosen["standing"] == "accepted"
+
+
 def test_graph_sync_queues_a_decision_without_claiming_choice_authority(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service

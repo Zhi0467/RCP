@@ -737,6 +737,16 @@ carrying forward, and correct an entry when they change their mind.
   human-action boundary. Deterministic history rendering is a safety net that
   resolves ids to titles and derives truthful operation fallbacks; it does not
   invent scientific causality.
+- **RCP is not a version-control system.** Every project already lives in a git
+  repository with an append-only patch log inside it. Do not add a third layer:
+  no forking, branching, merging, or divergent-copy reconciliation. Where a
+  duplicate or a moved project must be recognized, the answer is a nameplate the
+  project carries and a refusal, not history semantics.
+- **Borrow the host's privilege system; do not restate it.** Where an operation
+  needs real authority — installing, backing up, restoring, removing a person —
+  require operating-system privilege on the machine rather than inventing an RCP
+  admin role. RCP does not tell a lab who may administer its server, and a rule
+  that reduces to "admins are admins" is circular and should be deleted.
 
 ## Repeated failures
 
@@ -748,6 +758,11 @@ longer apply.
   change that adds new files proves nothing about them, and the human's commit
   is where the hooks finally see them and fail. When a change adds files, run
   `git add -A` first, then the hooks.
+- `--all-files` also **rewrites files you are not working on**. A docs-only pass
+  reformatted `src/rcp/api/app.py` while another session was mid-edit on it
+  (2026-08-09). When the working tree holds changes that are not yours, scope the
+  run — `pre-commit run --files <paths>` — and stage only your own paths, then
+  `git reset` to leave the human's index as you found it.
 - Every test builds a fresh SQLite file, so a green suite says nothing about
   migration. New watcher columns were declared in the `CREATE TABLE IF NOT
   EXISTS` *and* indexed in the same `executescript`, which on any existing

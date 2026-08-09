@@ -246,6 +246,26 @@ test("direct Decision choices merge with wording edits and supersede targeted pr
     custom_nodes: [],
   });
 
+  const revisedMedium = "Medium, with more time for validation";
+  let editedOptionDraft = stageNodeEdit(emptyHumanDraft(4), decisionGraph, decision.id, {
+    options: ["Small", revisedMedium, "Large"],
+  });
+  editedOptionDraft = stageDecisionChoice(
+    editedOptionDraft,
+    decisionGraph,
+    decision.id,
+    revisedMedium,
+  );
+  assert.deepEqual(editedOptionDraft.nodes[decision.id].changes, {
+    options: ["Small", revisedMedium, "Large"],
+    selected_option: revisedMedium,
+    status: "decided",
+  });
+  assert.equal(
+    toHumanSyncRequest(editedOptionDraft).nodes[0].changes.selected_option,
+    revisedMedium,
+  );
+
   const replaced = stageDecisionChoice(restored, decisionGraph, decision.id, "Large");
   assert.equal(replaced.nodes[decision.id].changes.selected_option, "Large");
   assert.equal(stageDecisionChoice(replaced, decisionGraph, decision.id, "Unlisted"), replaced);

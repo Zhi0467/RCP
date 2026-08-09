@@ -17,6 +17,11 @@ last_passed: 2026-08-08 — isolated acceptance-agent browser drive covered all
 
 # Attention and run surfaces tell one truthful story
 
+This implemented scenario owns the current **graph-attention** section. The
+confirmed team-space design later adds project-membership invitations as a
+separate non-graph Inbox item. That addition does not widen the node/status
+predicates or change the three graph-attention tiles asserted here.
+
 Rewritten and confirmed by the human on 2026-08-08.
 
 Human attention is awaiting a human act, not every unresolved condition in the

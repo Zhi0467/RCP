@@ -141,6 +141,14 @@ export interface ExperimentControlState {
   operational: ExperimentOperationalState;
 }
 
+export interface ExperimentLoopIndexEntry {
+  project_id: string;
+  project_name: string;
+  project_reachable: boolean | null;
+  node: GraphNode;
+  control: ExperimentControlState;
+}
+
 export interface WatcherContinuation {
   provider: string;
   model: string | null;

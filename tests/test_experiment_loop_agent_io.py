@@ -248,6 +248,95 @@ async def _events(stream) -> list[AgentEvent]:
     return events
 
 
+@pytest.mark.asyncio
+async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    service.history.append(seed_patch())
+    service.history.append(_experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    episode_id = "00000000-0000-4000-8000-000000000095"
+    request = _loop_request(
+        episode_id,
+        "chat-patch-only-watch-correction",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    execution = _execution(
+        app.state.background_tasks.store,
+        project_id,
+        "loop-patch-only-watch-correction",
+        request,
+    )
+
+    class PatchOnlyCorrectionLauncher:
+        def __init__(self) -> None:
+            self.contracts: list[str] = []
+
+        async def stream(self, _provider, prompt, **kwargs):
+            contract_path = Path(prompt.splitlines()[1])
+            contract = contract_path.read_text(encoding="utf-8")
+            self.contracts.append(contract)
+            workspace = Path(kwargs["cwd"])
+            (workspace / "watch.json").write_text("[]\n", encoding="utf-8")
+            correcting = "watcher correction" in contract.casefold()
+            next_action = None if correcting else "Analyze and document the remaining results."
+            (workspace / "patch.json").write_text(
+                json.dumps(
+                    {
+                        "summary": "Finished the Experiment handoff.",
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "nodes": [
+                                    {
+                                        "id": _EXPERIMENT_ID,
+                                        "changes": {
+                                            "status": "completed",
+                                            "next_action": next_action,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                        "repositories_read": [],
+                        "change_summary": ["Finished the Experiment handoff."],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield AgentEvent(event="session", session_id="patch-only-correction-session")
+            yield AgentEvent(event="answer", text="Repaired the terminal handoff.")
+            yield AgentEvent(event="done")
+
+    launcher = PatchOnlyCorrectionLauncher()
+    events = await _events(
+        stream_work_run(
+            service,
+            launcher,
+            request,
+            data_dir,
+            execution=execution,
+        )
+    )
+
+    assert not [event for event in events if event.event == "error"]
+    assert len(launcher.contracts) == 2
+    assert launcher.contracts[1].startswith("# RCP Experiment-loop watcher correction")
+    assert "Judge the terminal Patch/watch pair" in launcher.contracts[1]
+    assert "completed` Experiment with a non-empty `next_action`" in launcher.contracts[1]
+    graph_update = _graph_update_from_events(events)
+    assert graph_update["status"] == "applied"
+    assert service.history.state().nodes[_EXPERIMENT_ID].status == "completed"
+    assert service.history.state().nodes[_EXPERIMENT_ID].next_action is None
+    assert app.state.background_tasks.store.watchers(project_id) == []
+
+
 def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     stage = tmp_path / "chat-stage"
@@ -399,6 +488,7 @@ def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
     assert "does not mean the work succeeded" in normalized
     assert "submit a replacement only when the authoritative state shows" in normalized
     assert "do not wait or poll for detached work; finish this" in normalized
+    assert "Merely observing that all jobs ended is not enough" in message
     assert "2. You need human input." in message
     assert "3. The Experiment is operationally finished." in message
     assert (

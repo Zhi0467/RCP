@@ -12,7 +12,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.background import AgentTaskExecution
 from rcp.control import decision_drift
-from rcp.core.models import ExperimentDecisionPin
+from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.runs.shared import _stage_json_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
@@ -26,6 +26,11 @@ from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
 
 _EXIT_STATUSES = frozenset({"completed"})
+_COMPLETED_NEXT_ACTION_PROBLEM = (
+    "Experiment status completed conflicts with a non-empty next_action. Continue useful work "
+    "until next_action can truthfully be null, or keep a nonterminal status and arm a watcher "
+    "for real detached work or explicitly pause for human authority."
+)
 _EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
 
 EpisodeWakeReadiness = Literal["ready", "transient", "incompatible", "unavailable"]
@@ -309,6 +314,44 @@ def experiment_watcher_delivery_request(
     )
 
 
+def _completion_problem(operations: list[dict[str, object]], control_node_id: str) -> str | None:
+    for operation in operations:
+        if operation.get("op") != "update_nodes":
+            continue
+        for update in operation.get("nodes", []):
+            if not isinstance(update, dict) or update.get("id") != control_node_id:
+                continue
+            changes = update.get("changes")
+            if not isinstance(changes, dict) or changes.get("status") != "completed":
+                continue
+            next_action = changes.get("next_action")
+            if isinstance(next_action, str) and next_action.strip():
+                return _COMPLETED_NEXT_ACTION_PROBLEM
+    return None
+
+
+def validate_experiment_completion(patch: Patch, control_node_id: str) -> None:
+    """Reject a terminal claim that still names unfinished Experiment work."""
+
+    operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
+    problem = _completion_problem(operations, control_node_id)
+    if problem is not None:
+        raise ValueError(problem)
+
+
+def experiment_exit_problem(patch_text: str | None, control_node_id: str) -> str | None:
+    """Explain a contradictory attempted exit before watcher correction."""
+
+    if patch_text is None:
+        return None
+    try:
+        patch = parse_agent_patch_json(patch_text)
+    except ValueError:
+        return None
+    operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
+    return _completion_problem(operations, control_node_id)
+
+
 def patch_explicitly_exits(patch_text: str | None, control_node_id: str) -> bool:
     """Whether one semantic loop Patch explicitly records a finish or authority pause."""
 
@@ -319,6 +362,8 @@ def patch_explicitly_exits(patch_text: str | None, control_node_id: str) -> bool
     except ValueError:
         return False
     operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
+    if _completion_problem(operations, control_node_id) is not None:
+        return False
     if any(op.get("op") == "create_proposals" and op.get("proposals") for op in operations):
         return True
     created_blockers = {
