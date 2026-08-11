@@ -5,9 +5,12 @@ import {
   type MouseEvent,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math-extended";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
 import { segmentGlossaryText, type GlossaryIndex } from "./glossary";
+import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
 
 const NODE_REFERENCE_CANDIDATE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
@@ -197,12 +200,19 @@ function glossaryDefinitionPlugin(glossaryIndex?: GlossaryIndex) {
 function markdownComponents(
   nodeIds: ReadonlySet<string>,
   onOpenNode?: (nodeId: string) => void,
+  onOpenRepositoryFileLink?: (href: string) => void,
 ): Components {
   return {
     a: ({ href, children, className, node: _node, ...props }: MarkdownLinkProps) => {
       void _node;
       const nodeId = nodeIdFromReferenceHref(href, nodeIds);
-      const nextClassName = [className, nodeId ? "chat-node-reference" : null]
+      const repositoryFile =
+        !nodeId && Boolean(onOpenRepositoryFileLink) && isRepositoryFileHrefCandidate(href);
+      const nextClassName = [
+        className,
+        nodeId ? "chat-node-reference" : null,
+        repositoryFile ? "chat-repository-file-reference" : null,
+      ]
         .filter(Boolean)
         .join(" ");
       const onClick =
@@ -212,7 +222,13 @@ function markdownComponents(
               event.preventDefault();
               onOpenNode(nodeId);
             }
-          : undefined;
+          : repositoryFile && href && onOpenRepositoryFileLink
+            ? (event: MouseEvent<HTMLAnchorElement>) => {
+                if (event.defaultPrevented) return;
+                event.preventDefault();
+                onOpenRepositoryFileLink(href);
+              }
+            : undefined;
       const onKeyDown =
         nodeId && onOpenNode
           ? (event: ReactKeyboardEvent<HTMLAnchorElement>) => {
@@ -227,7 +243,11 @@ function markdownComponents(
           ...props,
           href,
           className: nextClassName || undefined,
-          "aria-label": nodeId ? `Open node ${nodeId}` : props["aria-label"],
+          "aria-label": nodeId
+            ? `Open node ${nodeId}`
+            : repositoryFile
+              ? "Open repository file preview"
+              : props["aria-label"],
           onClick,
           onKeyDown,
         },
@@ -242,6 +262,7 @@ interface MarkdownAnswerProps {
   nodes?: Readonly<Record<string, GraphNode>>;
   onOpenNode?: (nodeId: string) => void;
   glossaryIndex?: GlossaryIndex;
+  onOpenRepositoryFileLink?: (href: string) => void;
 }
 
 export function MarkdownAnswer({
@@ -249,15 +270,18 @@ export function MarkdownAnswer({
   nodes = {},
   onOpenNode,
   glossaryIndex,
+  onOpenRepositoryFileLink,
 }: MarkdownAnswerProps) {
   const nodeIds = onOpenNode ? new Set(Object.keys(nodes)) : new Set<string>();
   return createElement(ReactMarkdown, {
     children: text,
     remarkPlugins: [
       remarkGfm,
+      remarkMath,
       nodeReferencePlugin(nodeIds),
       glossaryDefinitionPlugin(glossaryIndex),
     ],
-    components: markdownComponents(nodeIds, onOpenNode),
+    rehypePlugins: [[rehypeKatex, { strict: false, trust: false }]],
+    components: markdownComponents(nodeIds, onOpenNode, onOpenRepositoryFileLink),
   });
 }

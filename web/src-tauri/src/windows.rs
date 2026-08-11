@@ -1,13 +1,13 @@
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        OnceLock,
+        Mutex, OnceLock,
     },
     time::Duration,
 };
 
 use tauri::{
-    webview::{NewWindowResponse, WebviewWindowBuilder},
+    webview::{NewWindowResponse, PageLoadEvent, WebviewWindow, WebviewWindowBuilder},
     AppHandle, Emitter, Manager, WebviewUrl,
 };
 use tauri_plugin_opener::OpenerExt;
@@ -17,7 +17,9 @@ use crate::backend::BackendState;
 use crate::{lifecycle::DesktopStatus, navigation};
 
 static PREVIEW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static SHOW_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 static INITIAL_URL: OnceLock<Url> = OnceLock::new();
+static PENDING_RECOVERY: OnceLock<Mutex<Option<PendingRecovery>>> = OnceLock::new();
 
 /// How long the hidden window waits for the frontend handshake before showing
 /// itself anyway. A window that only ever appears on success turns any failure
@@ -35,6 +37,14 @@ const FRONTEND_URL_VARIABLE: &str = "RCP_DESKTOP_FRONTEND_URL";
 enum InitialNavigation {
     Eager(Url),
     AfterBackendReady(Url),
+}
+
+#[derive(Debug)]
+struct PendingRecovery {
+    generation: u64,
+    base_url: String,
+    instance_id: String,
+    reason: String,
 }
 
 pub fn create_main(app: &AppHandle) -> Result<(), String> {
@@ -59,6 +69,9 @@ pub fn create_main(app: &AppHandle) -> Result<(), String> {
         .min_inner_size(880.0, 600.0)
         .visible(false)
         .zoom_hotkeys_enabled(false)
+        .on_page_load(|window, payload| {
+            finish_recovered_page_load(&window, payload.url(), payload.event());
+        })
         .on_navigation(move |url| {
             if url.as_str() == BLANK_URL {
                 return true;
@@ -92,12 +105,55 @@ pub fn create_main(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn prepare_show(app: &AppHandle, status: &DesktopStatus, reason: &str) -> Result<(), String> {
+    emit_prepare_show(app, &status.instance_id, reason)
+}
+
+fn emit_prepare_show(app: &AppHandle, instance_id: &str, reason: &str) -> Result<(), String> {
     app.emit_to(
         "main",
         "rcp://prepare-show",
-        serde_json::json!({"reason": reason, "instanceId": status.instance_id}),
+        serde_json::json!({"reason": reason, "instanceId": instance_id}),
     )
     .map_err(|error| format!("could not request a window refresh: {error}"))
+}
+
+/// Repair a hidden main window before asking the frontend to refresh. The
+/// window stays hidden across the navigation so an API response or another
+/// same-origin error document is never flashed as the RCP surface.
+pub fn recover_then_prepare_show(
+    app: &AppHandle,
+    status: &DesktopStatus,
+    reason: &str,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "the RCP window is unavailable".to_string())?;
+    let current = window
+        .url()
+        .map_err(|error| format!("could not inspect the RCP window: {error}"))?;
+    if let Some(target) =
+        reopen_navigation_target(&current, &status.base_url, uses_vite_dev_server())?
+    {
+        eprintln!("[rcp] recovering the main window from {current} to {target}");
+        let generation = arm_handshake_fallback(app);
+        stage_pending_recovery(PendingRecovery {
+            generation,
+            base_url: status.base_url.clone(),
+            instance_id: status.instance_id.clone(),
+            reason: reason.to_string(),
+        })?;
+        window
+            .hide()
+            .map_err(|error| format!("could not hide the invalid RCP window: {error}"))?;
+        window
+            .navigate(target)
+            .map_err(|error| format!("could not recover the RCP window: {error}"))?;
+        return Ok(());
+    }
+
+    let result = prepare_show(app, status, reason);
+    show_when_handshake_does_not_arrive(app);
+    result
 }
 
 /// The backend origin the window must move to, or `None` when it is already
@@ -114,22 +170,35 @@ pub fn navigation_target(base_url: &str) -> Option<Url> {
 }
 
 pub fn show_when_handshake_does_not_arrive(app: &AppHandle) {
+    let _ = arm_handshake_fallback(app);
+}
+
+fn arm_handshake_fallback(app: &AppHandle) -> u64 {
+    let generation = begin_show_request();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(HANDSHAKE_SHOW_TIMEOUT).await;
+        if !show_request_is_current(generation) {
+            return;
+        }
         let Some(window) = app.get_webview_window("main") else {
             return;
         };
-        if !window.is_visible().unwrap_or(false) {
-            eprintln!("[rcp] the frontend handshake did not arrive; showing the window anyway");
-            if let Err(error) = show_main(&app) {
-                eprintln!("[rcp] the window could not be shown: {error}");
-            }
+        let action = if window.is_visible().unwrap_or(false) {
+            "focusing"
+        } else {
+            "showing"
+        };
+        eprintln!("[rcp] the frontend handshake did not arrive; {action} the window anyway");
+        if let Err(error) = show_main(&app) {
+            eprintln!("[rcp] the window could not be shown: {error}");
         }
     });
+    generation
 }
 
 pub fn show_main(app: &AppHandle) -> Result<(), String> {
+    cancel_pending_show();
     eprintln!("[rcp] showing the RCP window");
     let window = app
         .get_webview_window("main")
@@ -137,6 +206,16 @@ pub fn show_main(app: &AppHandle) -> Result<(), String> {
     window.show().map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
+}
+
+/// Invalidate a timeout belonging to an earlier show request. In particular,
+/// closing the window after a Dock reopen must not let that request's fallback
+/// show it again several seconds later.
+pub fn cancel_pending_show() {
+    SHOW_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut pending) = pending_recovery().lock() {
+        *pending = None;
+    }
 }
 
 pub fn open_preview(app: &AppHandle, url: Url, base_url: String) -> Result<(), String> {
@@ -180,6 +259,77 @@ pub fn open_preview(app: &AppHandle, url: Url, base_url: String) -> Result<(), S
 
 pub fn uses_vite_dev_server() -> bool {
     cfg!(debug_assertions) && !crate::backend::is_bundled_dev_app()
+}
+
+fn reopen_navigation_target(
+    current: &Url,
+    base_url: &str,
+    allow_dev: bool,
+) -> Result<Option<Url>, String> {
+    if navigation::is_rcp_app_document_url(current, base_url, allow_dev) {
+        return Ok(None);
+    }
+    let mut target =
+        Url::parse(base_url).map_err(|error| format!("invalid verified backend URL: {error}"))?;
+    target.set_path("/");
+    target.set_query(None);
+    target.set_fragment(None);
+    Ok(Some(target))
+}
+
+fn pending_recovery() -> &'static Mutex<Option<PendingRecovery>> {
+    PENDING_RECOVERY.get_or_init(|| Mutex::new(None))
+}
+
+fn stage_pending_recovery(pending: PendingRecovery) -> Result<(), String> {
+    *pending_recovery()
+        .lock()
+        .map_err(|_| "the recovered-window handshake state is unavailable".to_string())? =
+        Some(pending);
+    Ok(())
+}
+
+fn finish_recovered_page_load(window: &WebviewWindow, url: &Url, event: PageLoadEvent) {
+    let pending = {
+        let Ok(mut slot) = pending_recovery().lock() else {
+            eprintln!("[rcp] the recovered-window handshake state is unavailable");
+            return;
+        };
+        let Some(pending) = slot.as_ref() else {
+            return;
+        };
+        if !is_finished_recovered_document(event, url, &pending.base_url) {
+            return;
+        }
+        slot.take()
+    };
+    let Some(pending) = pending else {
+        return;
+    };
+    if !show_request_is_current(pending.generation) {
+        return;
+    }
+    if let Err(error) =
+        emit_prepare_show(window.app_handle(), &pending.instance_id, &pending.reason)
+    {
+        eprintln!("[rcp] the recovered window could not request a refresh: {error}");
+    }
+}
+
+fn is_finished_recovered_document(event: PageLoadEvent, url: &Url, base_url: &str) -> bool {
+    event == PageLoadEvent::Finished && navigation::is_rcp_app_document_url(url, base_url, false)
+}
+
+fn begin_show_request() -> u64 {
+    let generation = SHOW_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Ok(mut pending) = pending_recovery().lock() {
+        *pending = None;
+    }
+    generation
+}
+
+fn show_request_is_current(generation: u64) -> bool {
+    SHOW_REQUEST_GENERATION.load(Ordering::SeqCst) == generation
 }
 
 /// Resolve the requested frontend without reading process-global state, then
@@ -234,5 +384,57 @@ mod tests {
             initial_navigation(true, Some("http://127.0.0.1:8421")).unwrap(),
             InitialNavigation::AfterBackendReady(url("http://127.0.0.1:8421")),
         );
+    }
+
+    #[test]
+    fn reopen_keeps_app_root_and_repairs_same_origin_error_documents() {
+        let base = "http://127.0.0.1:18421";
+        assert_eq!(
+            reopen_navigation_target(&url("http://127.0.0.1:18421/#/projects/a"), base, false)
+                .unwrap(),
+            None,
+        );
+        assert_eq!(
+            reopen_navigation_target(
+                &url("http://127.0.0.1:18421/api/projects/missing"),
+                base,
+                false,
+            )
+            .unwrap(),
+            Some(url("http://127.0.0.1:18421/")),
+        );
+        assert_eq!(
+            reopen_navigation_target(&url("about:blank"), base, false).unwrap(),
+            Some(url("http://127.0.0.1:18421/")),
+        );
+    }
+
+    #[test]
+    fn cancelling_a_show_request_invalidates_its_fallback() {
+        let generation = begin_show_request();
+        assert!(show_request_is_current(generation));
+        cancel_pending_show();
+        assert!(!show_request_is_current(generation));
+    }
+
+    #[test]
+    fn recovered_handshake_waits_for_the_backend_root_to_finish_loading() {
+        let base = "http://127.0.0.1:18421";
+        let root = url("http://127.0.0.1:18421/");
+        assert!(!is_finished_recovered_document(
+            PageLoadEvent::Started,
+            &root,
+            base,
+        ));
+        assert!(is_finished_recovered_document(
+            PageLoadEvent::Finished,
+            &root,
+            base,
+        ));
+        assert!(!is_finished_recovered_document(
+            PageLoadEvent::Finished,
+            &url("http://127.0.0.1:18421/api/health"),
+            base,
+        ));
     }
 }

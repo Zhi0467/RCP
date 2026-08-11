@@ -283,7 +283,7 @@ test("releasing an attempt stages only that attempt and drops once it closes", (
 
   const staged = stageAttemptRelease(emptyHumanDraft(4), graph, "exp/stuck", "attempt-1");
 
-  assert.deepEqual(toHumanSyncRequest(staged).nodes, [
+  assert.deepEqual(toHumanSyncRequest(staged, graph).nodes, [
     { node_id: "exp/stuck", base_updated_rev: 4, changes: {}, cancel_attempt_ids: ["attempt-1"] },
   ]);
   assert.equal(humanDraftChangeCount(staged), 1);
@@ -300,13 +300,17 @@ test("releasing an attempt stages only that attempt and drops once it closes", (
     },
   };
   assert.deepEqual(
-    toHumanSyncRequest(stageAttemptRelease(emptyHumanDraft(4), closed, "exp/stuck", "attempt-1"))
-      .nodes,
+    toHumanSyncRequest(
+      stageAttemptRelease(emptyHumanDraft(4), closed, "exp/stuck", "attempt-1"),
+      closed,
+    ).nodes,
     [],
   );
   assert.deepEqual(
-    toHumanSyncRequest(stageAttemptRelease(emptyHumanDraft(4), graph, "exp/stuck", "attempt-2"))
-      .nodes,
+    toHumanSyncRequest(
+      stageAttemptRelease(emptyHumanDraft(4), graph, "exp/stuck", "attempt-2"),
+      graph,
+    ).nodes,
     [],
   );
 });

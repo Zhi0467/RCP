@@ -19,11 +19,14 @@
     "@tailwindcss/vite": "^4.1.11",
     "@tauri-apps/api": "^2.11.1",
     "d3-force": "^3.0.0",
+    "katex": "^0.16.47",
     "lucide-react": "^0.525.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math-extended": "^6.1.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

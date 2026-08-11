@@ -88,6 +88,38 @@ def test_opening_project_does_not_reorder_catalog(tmp_path) -> None:
     assert [project.project_id for project in store.projects()] == expected_order
 
 
+def test_existing_paper_draft_database_gains_ancestor_without_losing_draft(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE paper_drafts (
+                project_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                base_hash TEXT,
+                updated_at TEXT NOT NULL,
+                cursor_state TEXT
+            );
+            INSERT INTO paper_drafts(project_id, content, base_hash, updated_at, cursor_state)
+            VALUES ('project', '# Existing draft', 'old-base', '2026-08-01T00:00:00+00:00', NULL);
+            """
+        )
+
+    store = AppStore(path)
+
+    with store.connection() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(paper_drafts)")}
+        draft = connection.execute(
+            "SELECT content, base_hash, ancestor_content FROM paper_drafts WHERE project_id = ?",
+            ("project",),
+        ).fetchone()
+    assert "ancestor_content" in columns
+    assert draft is not None
+    assert draft["content"] == "# Existing draft"
+    assert draft["base_hash"] == "old-base"
+    assert draft["ancestor_content"] is None
+
+
 class _TracingAppStore(AppStore):
     """Count projection reads without changing the production connection path."""
 

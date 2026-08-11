@@ -3041,6 +3041,15 @@ button:disabled {
   font-size: 10px;
   gap: 8px;
 }
+.node-draft-behind {
+  border: 1px solid var(--mustard);
+  border-radius: 999px;
+  color: var(--walnut);
+  font: 700 8px/1 var(--mono);
+  letter-spacing: 0.07em;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
 .drawer-content {
   flex: 1;
   overflow: auto;
@@ -3662,6 +3671,33 @@ button.relation-map-node:hover {
 .node-edit-field textarea:disabled {
   opacity: 0.65;
 }
+.node-edit-field > .node-edit-incoming {
+  background: color-mix(in srgb, var(--amber-soft) 60%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--mustard) 55%, var(--line));
+  border-radius: 5px;
+  color: var(--ink-soft);
+  display: grid;
+  gap: 7px;
+  letter-spacing: 0;
+  margin: 7px 0 0;
+  padding: 8px 9px;
+  text-transform: none;
+}
+.node-edit-incoming-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+.node-edit-incoming-heading > span {
+  color: var(--walnut);
+  font: 700 8px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.node-edit-incoming-value {
+  font: 12px/1.5 var(--editorial);
+  white-space: pre-wrap;
+}
 .node-edit-status {
   color: var(--muted);
   font-size: 9px;
@@ -4167,6 +4203,11 @@ button.relation-map-node:hover {
   justify-content: space-between;
   padding: 0 2px 11px;
 }
+.paper-view-controls {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
 .paper-view-toggle {
   background: color-mix(in srgb, var(--sheet) 55%, var(--paper-deep));
   border: 1px solid var(--rule);
@@ -4187,6 +4228,9 @@ button.relation-map-node:hover {
   background: var(--sheet);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--walnut) 14%, transparent);
   color: var(--teal);
+}
+.paper-apply-incoming {
+  min-height: 31px;
 }
 .paper-toolbar .eyebrow,
 .paper-toolbar strong {
@@ -4211,7 +4255,7 @@ button.relation-map-node:hover {
   background: var(--amber-soft);
   color: var(--amber);
 }
-.sync-state.conflict {
+.sync-state.behind {
   background: var(--red-soft);
   color: var(--red);
 }
@@ -4238,27 +4282,6 @@ button.relation-map-node:hover {
 .paper-markdown-preview {
   overflow: auto;
   white-space: normal;
-}
-.conflict-banner {
-  align-items: center;
-  background: var(--rose-paper);
-  border: 1px solid color-mix(in srgb, var(--coral) 42%, var(--rule));
-  border-radius: 7px;
-  color: var(--oxblood-dark);
-  display: flex;
-  flex: none;
-  font-size: 10px;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 8px 9px;
-}
-.conflict-banner span {
-  flex: 1;
-}
-.conflict-banner .button {
-  font-size: 9px;
-  min-height: 27px;
-  padding: 0 8px;
 }
 .paper-save-error {
   align-items: center;
@@ -4803,6 +4826,11 @@ button.relation-map-node:hover {
   font-family: var(--mono);
   white-space: pre;
 }
+.chat-markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 .chat-markdown blockquote {
   border-left: 2px solid var(--line-strong);
   color: var(--ink-soft);
@@ -4834,6 +4862,13 @@ button.relation-map-node:hover {
 }
 .chat-markdown a.chat-node-reference:hover {
   background: color-mix(in srgb, var(--oxblood) 16%, transparent);
+}
+.chat-repository-file-error {
+  color: var(--red);
+  display: block;
+  font-size: 10px;
+  font-weight: 650;
+  margin-top: 5px;
 }
 .chat-artifact {
   align-items: center;
@@ -5669,6 +5704,27 @@ button.relation-map-node:hover {
 .draft-sync.stale:disabled {
   opacity: 1;
 }
+.draft-behind-count {
+  align-items: center;
+  color: var(--walnut);
+  display: inline-flex;
+  font: 700 8px/1 var(--mono);
+  gap: 4px;
+  letter-spacing: 0.05em;
+  margin-left: 4px;
+  text-transform: uppercase;
+}
+.draft-behind-count small {
+  align-items: center;
+  background: var(--amber-soft);
+  border: 1px solid var(--mustard);
+  border-radius: 999px;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 4px;
+}
 .draft-reset {
   border-color: transparent;
   color: var(--oxblood-dark);
@@ -6067,6 +6123,9 @@ button.relation-map-node:hover {
 }
 .node-detail-drawer.draft-touched {
   border-left: 3px solid var(--oxblood);
+}
+.node-detail-drawer.draft-behind {
+  border-left-color: var(--mustard);
 }
 .view-panel {
   max-width: 1180px;

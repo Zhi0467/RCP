@@ -40,6 +40,12 @@ export interface ArtifactCommand {
   artifactId: string;
 }
 
+export interface RepositoryFileCommand {
+  projectId: string;
+  path: string;
+  line: number | null;
+}
+
 export interface DictationResultEvent {
   session_id: string;
   text: string;
@@ -152,6 +158,19 @@ export async function openDesktopArtifactPreview(command: ArtifactCommand): Prom
   );
   if (!result.opened)
     throw new Error(result.error || "The desktop host could not open this artifact.");
+}
+
+export async function openDesktopRepositoryFilePreview(
+  command: RepositoryFileCommand,
+): Promise<void> {
+  if (!isDesktopRuntime())
+    throw new Error("Desktop repository file preview is unavailable in this browser.");
+  const result = await invokeDesktop<{ opened: boolean; error?: string }>(
+    "open_repository_file_preview",
+    command,
+  );
+  if (!result.opened)
+    throw new Error(result.error || "The desktop host could not open this repository file.");
 }
 
 export async function downloadDesktopArtifact(

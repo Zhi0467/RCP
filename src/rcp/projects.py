@@ -26,14 +26,18 @@ from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
 from rcp.service import ProjectService, ProjectSettingsRequest
 from rcp.storage import AppStore, ProjectRecord, ProjectStageRecord
-from rcp.transport import RemoteRunStage, prepare_state_workspace
+from rcp.transport import RemoteRunStage, StateUnavailable, prepare_state_workspace
+from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 
-_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 1
+_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 2
 _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
+_PATCH_LOG_HEAD_UNSET = object()
 _DISPLAY_SNAPSHOT_FIELDS = {
     "id",
     "name",
     "revision",
+    "snapshot_freshness",
+    "last_remote_sync_at",
     "state_repository",
     "canonical_state",
     "run_on",
@@ -84,6 +88,8 @@ class ProjectCatalog:
         self._snapshot_locks: dict[str, threading.Lock] = {}
         self._snapshot_generations: dict[str, int] = {}
         self._committed_snapshot_generations: dict[str, int] = {}
+        self._cached_snapshot_patch_heads: dict[str, int | None] = {}
+        self._candidate_snapshot_patch_heads: dict[str, int | None] = {}
 
     def register(self, locator: str) -> ProjectRecord:
         manifest = load_manifest(locator)
@@ -139,7 +145,68 @@ class ProjectCatalog:
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
         service, initialized_state = self._service_or_open(project_id)
-        return service, service.project_snapshot(state=initialized_state)
+        snapshot = service.project_snapshot(state=initialized_state)
+        self.mark_snapshot_fresh(snapshot)
+        return service, snapshot
+
+    def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
+        """Refresh canonical state and build one fresh display-snapshot candidate."""
+
+        service, initialized_state = self._service_or_open(project_id)
+        if initialized_state is None:
+            refreshed = service.history.workspace.refresh()
+            if service.history.workspace.remote and not refreshed:
+                raise StateUnavailable("Remote canonical state has no readable manifest.")
+            initialized_state = service.history.materialize(write_outputs=False).state
+        snapshot = service.project_snapshot(state=initialized_state)
+        snapshot["id"] = project_id
+        self.mark_snapshot_fresh(snapshot)
+        return service, snapshot
+
+    def probe_remote_patch_log_head(
+        self,
+        project_id: str,
+    ) -> Literal["moved", "unchanged", "unavailable"]:
+        """Compare canonical and cached patch heads without opening the project."""
+
+        with self._services_lock:
+            if project_id in self._deleting:
+                raise KeyError(project_id)
+            service = self._services.get(project_id)
+        if service is not None:
+            workspace = service.history.workspace
+        else:
+            record = self.store.project(project_id)
+            if record is None:
+                raise KeyError(project_id)
+            workspace = state_workspace_for_probe(load_manifest(record.locator), self.data_dir)
+        if isinstance(workspace, SSHStateWorkspace):
+            available, canonical_head = workspace.probe_remote_patch_log_head()
+            if not available:
+                return "unavailable"
+        else:
+            canonical_head = workspace.cached_patch_log_head()
+        snapshot = self.cached_snapshot(project_id)
+        if snapshot is None:
+            raise KeyError(project_id)
+        return (
+            "moved"
+            if canonical_head != self._cached_snapshot_patch_heads.get(project_id)
+            else "unchanged"
+        )
+
+    @staticmethod
+    def mark_snapshot_fresh(snapshot: dict[str, object]) -> None:
+        canonical = snapshot.get("canonical_state")
+        unreachable_remote = (
+            isinstance(canonical, dict)
+            and canonical.get("remote") is True
+            and canonical.get("reachable") is False
+        )
+        _ensure_snapshot_freshness(
+            snapshot,
+            freshness="stale" if unreachable_remote else "fresh",
+        )
 
     def _service_or_open(
         self,
@@ -242,6 +309,8 @@ class ProjectCatalog:
                 removed_paper = _unlink_regular_app_file(paper_snapshot)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
+                self._cached_snapshot_patch_heads.pop(project_id, None)
+                self._candidate_snapshot_patch_heads.pop(project_id, None)
                 database_records = self.store.delete_project_records(project_id)
             return ProjectDeletionResult(
                 project_id=project_id,
@@ -283,10 +352,15 @@ class ProjectCatalog:
         project_id: str,
         snapshot: dict[str, object],
     ) -> None:
+        _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id) or self.store.project(project_id) is None:
                 raise KeyError(project_id)
-            self._write_cached_snapshot_locked(project_id, snapshot)
+            self._candidate_snapshot_patch_heads[project_id] = _display_patch_log_head(snapshot)
+            try:
+                self._write_cached_snapshot_locked(project_id, snapshot)
+            finally:
+                self._candidate_snapshot_patch_heads.pop(project_id, None)
 
     def commit_cached_snapshot(
         self,
@@ -294,9 +368,11 @@ class ProjectCatalog:
         snapshot: dict[str, object],
         *,
         generation: int,
+        patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
     ) -> bool:
         """Commit a display snapshot unless a newer project view already won."""
 
+        _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id):
                 raise KeyError(project_id)
@@ -317,6 +393,14 @@ class ProjectCatalog:
                 if revision is not None
             ]
             candidate_revision = int(snapshot["revision"])
+            if patch_log_head is _PATCH_LOG_HEAD_UNSET:
+                patch_log_head = (
+                    self._cached_snapshot_patch_heads.get(project_id)
+                    if cached is not None and int(cached["revision"]) == candidate_revision
+                    else _display_patch_log_head(snapshot)
+                )
+            if not _valid_patch_log_head(patch_log_head):
+                raise ValueError("Project display snapshot patch-log head is invalid")
             if persisted_revisions:
                 persisted_revision = max(persisted_revisions)
                 if candidate_revision < persisted_revision:
@@ -326,13 +410,37 @@ class ProjectCatalog:
                     and generation < self._committed_snapshot_generations.get(project_id, 0)
                 ):
                     return False
-            self._write_cached_snapshot_locked(project_id, snapshot)
+            assert patch_log_head is None or isinstance(patch_log_head, int)
+            self._candidate_snapshot_patch_heads[project_id] = patch_log_head
+            try:
+                self._write_cached_snapshot_locked(project_id, snapshot)
+            finally:
+                self._candidate_snapshot_patch_heads.pop(project_id, None)
             self._committed_snapshot_generations[project_id] = max(
                 generation,
                 self._committed_snapshot_generations.get(project_id, 0),
             )
             self.update_summary(project_id, snapshot)
             return True
+
+    def update_cached_snapshot_freshness(
+        self,
+        project_id: str,
+        freshness: Literal["fresh", "reconciling", "stale"],
+    ) -> bool:
+        """Version one freshness-only cache update through the normal guards."""
+
+        current = self.cached_snapshot(project_id)
+        if current is None:
+            return False
+        if current.get("snapshot_freshness") == freshness:
+            return True
+        generation = self.reserve_cached_snapshot_generation(project_id)
+        snapshot = self.cached_snapshot(project_id)
+        if snapshot is None:
+            return False
+        snapshot["snapshot_freshness"] = freshness
+        return self.commit_cached_snapshot(project_id, snapshot, generation=generation)
 
     def reserve_cached_snapshot_generation(self, project_id: str) -> int:
         """Reserve construction order for one future display snapshot candidate."""
@@ -351,9 +459,14 @@ class ProjectCatalog:
     ) -> None:
         if not _valid_display_snapshot(project_id, snapshot):
             raise ValueError("Project display snapshot is invalid")
+        patch_log_head = self._candidate_snapshot_patch_heads.get(
+            project_id,
+            _display_patch_log_head(snapshot),
+        )
         envelope = {
             "schema_version": _DISPLAY_SNAPSHOT_SCHEMA_VERSION,
             "project_id": project_id,
+            "canonical_patch_head": patch_log_head,
             "snapshot": snapshot,
         }
         content = (
@@ -385,6 +498,7 @@ class ProjectCatalog:
                 os.fsync(handle.fileno())
             os.replace(temporary, target)
             _fsync_directory(target.parent)
+            self._cached_snapshot_patch_heads[project_id] = patch_log_head
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
@@ -410,6 +524,7 @@ class ProjectCatalog:
         self,
         project_id: str,
     ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
+        self._cached_snapshot_patch_heads.pop(project_id, None)
         path = self._cached_snapshot_path(project_id)
         try:
             metadata = path.lstat()
@@ -433,21 +548,38 @@ class ProjectCatalog:
             envelope = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             return "invalid", None
-        if not isinstance(envelope, dict) or set(envelope) != {
+        if not isinstance(envelope, dict):
+            return "invalid", None
+        schema_version = envelope.get("schema_version")
+        if schema_version == 1 and set(envelope) == {
             "schema_version",
             "project_id",
             "snapshot",
         }:
+            patch_log_head = None
+        elif schema_version == _DISPLAY_SNAPSHOT_SCHEMA_VERSION and set(envelope) == {
+            "schema_version",
+            "project_id",
+            "canonical_patch_head",
+            "snapshot",
+        }:
+            patch_log_head = envelope["canonical_patch_head"]
+            if not _valid_patch_log_head(patch_log_head):
+                return "invalid", None
+        else:
             return "invalid", None
-        if (
-            type(envelope["schema_version"]) is not int
-            or envelope["schema_version"] != _DISPLAY_SNAPSHOT_SCHEMA_VERSION
-            or envelope["project_id"] != project_id
-        ):
+        if envelope["project_id"] != project_id:
             return "invalid", None
         snapshot = envelope["snapshot"]
-        if not isinstance(snapshot, dict) or not _valid_display_snapshot(project_id, snapshot):
+        if not isinstance(snapshot, dict):
             return "invalid", None
+        _ensure_snapshot_freshness(snapshot)
+        if not _valid_display_snapshot(project_id, snapshot):
+            return "invalid", None
+        if schema_version == 1:
+            patch_log_head = _display_patch_log_head(snapshot)
+        assert patch_log_head is None or isinstance(patch_log_head, int)
+        self._cached_snapshot_patch_heads[project_id] = patch_log_head
         return "valid", snapshot
 
     def loaded_service(self, project_id: str) -> ProjectService | None:
@@ -532,11 +664,19 @@ class ProjectCatalog:
         project_id: str,
         request: ProjectSettingsRequest,
     ) -> dict[str, object]:
+        generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         service.update_settings(request)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = service.project_snapshot()
-        self.update_summary(project_id, snapshot)
+        snapshot["id"] = project_id
+        self.mark_snapshot_fresh(snapshot)
+        self.commit_cached_snapshot(
+            project_id,
+            snapshot,
+            generation=generation,
+            patch_log_head=service.history.workspace.cached_patch_log_head(),
+        )
         return snapshot
 
     def resolve_provider_path(
@@ -545,11 +685,19 @@ class ProjectCatalog:
         machine_alias: str,
         provider: ProviderId,
     ) -> dict[str, object]:
+        generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         readiness = service.resolve_provider_path(machine_alias, provider)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = service.project_snapshot()
-        self.update_summary(project_id, snapshot)
+        snapshot["id"] = project_id
+        self.mark_snapshot_fresh(snapshot)
+        self.commit_cached_snapshot(
+            project_id,
+            snapshot,
+            generation=generation,
+            patch_log_head=service.history.workspace.cached_patch_log_head(),
+        )
         return {
             "machine": machine_alias,
             "provider": provider,
@@ -646,6 +794,11 @@ def _valid_display_snapshot(project_id: str, snapshot: dict[str, object]) -> boo
     revision = snapshot.get("revision")
     if type(revision) is not int or revision < 0:
         return False
+    if snapshot.get("snapshot_freshness") not in {"fresh", "reconciling", "stale"}:
+        return False
+    last_remote_sync_at = snapshot.get("last_remote_sync_at")
+    if last_remote_sync_at is not None and not isinstance(last_remote_sync_at, str):
+        return False
     if not all(
         isinstance(snapshot.get(key), dict)
         for key in (
@@ -678,6 +831,38 @@ def _valid_display_snapshot(project_id: str, snapshot: dict[str, object]) -> boo
     assert isinstance(graph, dict)
     graph_revision = graph.get("revision")
     return type(graph_revision) is int and graph_revision == revision
+
+
+def _ensure_snapshot_freshness(
+    snapshot: dict[str, object],
+    *,
+    freshness: Literal["fresh", "reconciling", "stale"] | None = None,
+) -> None:
+    canonical = snapshot.get("canonical_state")
+    remote = isinstance(canonical, dict) and canonical.get("remote") is True
+    if freshness is not None:
+        snapshot["snapshot_freshness"] = freshness
+    elif snapshot.get("snapshot_freshness") not in {"fresh", "reconciling", "stale"}:
+        snapshot["snapshot_freshness"] = "stale" if remote else "fresh"
+    if "last_remote_sync_at" not in snapshot:
+        last_synced_at = canonical.get("last_synced_at") if isinstance(canonical, dict) else None
+        snapshot["last_remote_sync_at"] = str(last_synced_at) if remote and last_synced_at else None
+
+
+def _display_patch_log_head(snapshot: dict[str, object]) -> int | None:
+    revisions = [snapshot.get("revision")]
+    graph = snapshot.get("graph")
+    replay_failure = graph.get("replay_failure") if isinstance(graph, dict) else None
+    if isinstance(replay_failure, dict):
+        revisions.append(replay_failure.get("revision"))
+    return max(
+        (revision for revision in revisions if type(revision) is int and revision > 0),
+        default=None,
+    )
+
+
+def _valid_patch_log_head(value: object) -> bool:
+    return value is None or (type(value) is int and value > 0)
 
 
 def _fsync_directory(path: Path) -> None:

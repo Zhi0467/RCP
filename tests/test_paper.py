@@ -95,6 +95,25 @@ def test_create_preserves_synced_cached_canonical_without_workspace_io(manifest,
     assert workspace.published == []
 
 
+def test_cached_canonical_without_draft_is_unsynced_while_remote_is_unavailable(
+    manifest, tmp_path
+) -> None:
+    canonical = manifest.research_dir / "paper" / "introduction.md"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("# Cached introduction\n", encoding="utf-8")
+    service = PaperService(
+        manifest,
+        AppStore(tmp_path / "app.sqlite3"),
+        UnavailableWorkspace(manifest.research_dir),
+    )
+
+    snapshot = service.snapshot()
+
+    assert snapshot.sync_state == "unsynced"
+    assert snapshot.content == "# Cached introduction\n"
+    assert snapshot.canonical_available is False
+
+
 def test_save_keeps_local_draft_when_workspace_is_unavailable(manifest, tmp_path) -> None:
     workspace = UnavailableWorkspace(manifest.research_dir)
     store = AppStore(tmp_path / "app.sqlite3")
@@ -133,34 +152,79 @@ def test_template_is_created_once_and_remains_freeform(manifest, tmp_path) -> No
     assert recreated.sync_state == "synced"
 
 
-def test_external_change_creates_conflict_without_overwrite(manifest, tmp_path) -> None:
-    service = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))
+def test_external_change_preserves_draft_until_later_edit_repins(manifest, tmp_path) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    service = PaperService(manifest, store)
     created = service.create()
     synchronized = service.save(created.content, created.base_hash)
     canonical = manifest.research_dir / "paper" / "introduction.md"
     canonical.write_text("# Changed elsewhere\n", encoding="utf-8")
 
-    conflicted = service.save("# Local human draft\n", synchronized.base_hash)
-    assert conflicted.sync_state == "conflict"
+    behind = service.save("# Local human draft\n", synchronized.base_hash)
+    assert behind.sync_state == "behind"
+    assert behind.content == "# Local human draft\n"
+    assert behind.incoming_content == "# Changed elsewhere\n"
+    assert behind.base_hash == synchronized.base_hash
+    assert behind.canonical_hash != synchronized.base_hash
+    assert canonical.read_text(encoding="utf-8") == "# Changed elsewhere\n"
+    with store.connection() as connection:
+        draft = connection.execute(
+            "SELECT content, base_hash, ancestor_content FROM paper_drafts WHERE project_id = ?",
+            (manifest.name,),
+        ).fetchone()
+    assert draft is not None
+    assert draft["content"] == "# Local human draft\n"
+    assert draft["base_hash"] == synchronized.base_hash
+    assert draft["ancestor_content"] == INTRODUCTION_TEMPLATE
+
+    unchanged_retry = service.save(behind.content, behind.canonical_hash)
+    assert unchanged_retry.sync_state == "behind"
     assert canonical.read_text(encoding="utf-8") == "# Changed elsewhere\n"
 
-    resolved = service.resolve_conflict("use_canonical")
-    assert resolved.sync_state == "synced"
-    assert resolved.content == "# Changed elsewhere\n"
+    repinned = service.save("# Local human draft\n\nOne later edit.\n", behind.canonical_hash)
+    assert repinned.sync_state == "synced"
+    assert repinned.incoming_content is None
+    assert canonical.read_text(encoding="utf-8") == repinned.content
+    with store.connection() as connection:
+        draft = connection.execute(
+            "SELECT base_hash, ancestor_content FROM paper_drafts WHERE project_id = ?",
+            (manifest.name,),
+        ).fetchone()
+    assert draft is not None
+    assert draft["base_hash"] == repinned.canonical_hash
+    assert draft["ancestor_content"] == repinned.content
+
+
+def test_snapshot_discovers_external_change_without_replacing_editor_content(
+    manifest, tmp_path
+) -> None:
+    service = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))
+    created = service.create()
+    synchronized = service.save(created.content, created.base_hash)
+    canonical = manifest.research_dir / "paper" / "introduction.md"
+    canonical.write_text("# Incoming canonical\n", encoding="utf-8")
+
+    behind = service.snapshot()
+
+    assert behind.sync_state == "behind"
+    assert behind.content == synchronized.content
+    assert behind.incoming_content == "# Incoming canonical\n"
 
 
 def test_legacy_named_draft_is_copied_to_stable_project_id(manifest, tmp_path) -> None:
     store = AppStore(tmp_path / "app.sqlite3")
     legacy = PaperService(manifest, store)
-    legacy.create()
-    legacy.save("# Unsynced legacy draft\n", "not-the-canonical-hash")
+    created = legacy.create()
+    synchronized = legacy.save(created.content, created.base_hash)
+    legacy.save("# Legacy draft\n", synchronized.base_hash)
 
     store.migrate_legacy_project_data(manifest.name, "stable-project-id")
 
     with store.connection() as connection:
         copied = connection.execute(
-            "SELECT content FROM paper_drafts WHERE project_id = ?",
+            "SELECT content, ancestor_content FROM paper_drafts WHERE project_id = ?",
             ("stable-project-id",),
         ).fetchone()
     assert copied is not None
-    assert copied["content"] == "# Unsynced legacy draft\n"
+    assert copied["content"] == "# Legacy draft\n"
+    assert copied["ancestor_content"] == "# Legacy draft\n"

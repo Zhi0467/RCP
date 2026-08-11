@@ -103,7 +103,7 @@ test("a terminal task stays reachable when durable transcript persistence failed
   assert.deepEqual(conversations[0].tasks, [completed]);
 });
 
-test("entry routes active then unread and never a read terminal activity task", () => {
+test("entry preserves the previous chat before routing active or unread work", () => {
   const active = task({
     operation_id: "active",
     status: "running",
@@ -155,15 +155,19 @@ test("entry routes active then unread and never a read terminal activity task", 
   );
   assert.equal(
     chatEntryConversationId(conversations, active, new Set(["unread"]), "read-chat"),
-    "active-chat",
+    "read-chat",
   );
   assert.equal(
     chatEntryConversationId(conversations, terminal, new Set(["unread"]), "read-chat"),
-    "unread-chat",
+    "read-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, terminal, new Set(), "read-chat"),
-    "read-chat",
+    chatEntryConversationId(conversations, active, new Set(["unread"]), "missing-chat"),
+    "active-chat",
+  );
+  assert.equal(
+    chatEntryConversationId(conversations, terminal, new Set(["unread"]), "missing-chat"),
+    "unread-chat",
   );
 });
 

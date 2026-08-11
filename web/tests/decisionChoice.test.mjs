@@ -93,6 +93,36 @@ test("Decision detail renders one accessible staged ballot above Context", () =>
   assert.deepEqual(contextKeys, ["rationale", "consequences"]);
 });
 
+test("a behind node opens its staged editor with reversible incoming field controls", () => {
+  const canonicalNode = {
+    ...decision,
+    title: "Incoming canonical title",
+    updated_rev: 5,
+  };
+  const stagedNode = {
+    ...canonicalNode,
+    title: "My staged title",
+  };
+  const html = renderDrawer({
+    node: stagedNode,
+    allNodes: { [stagedNode.id]: stagedNode },
+    canonicalNode,
+    canonicalStanding: canonicalNode.standing,
+    behind: true,
+    draftNodeChange: {
+      base_updated_rev: 4,
+      changes: { title: "My staged title" },
+    },
+    onApplyField() {},
+  });
+
+  assert.match(html, /class="detail-drawer node-detail-drawer[^"]* draft-behind"/);
+  assert.match(html, /class="node-draft-behind">behind<\/span>/);
+  assert.match(html, /value="My staged title"/);
+  assert.match(html, /class="node-edit-incoming-value">Incoming canonical title<\/span>/);
+  assert.match(html, />Apply<\/button>/);
+});
+
 test("Decision editor exposes queue status only, including the ready to open path", () => {
   const readyDecision = { ...decision, status: "ready", selected_option: null };
   const statusField = editableNodeFields(readyDecision).find((field) => field.key === "status");

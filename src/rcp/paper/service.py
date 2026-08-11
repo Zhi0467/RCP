@@ -31,9 +31,10 @@ INTRODUCTION_TEMPLATE = """# Introduction
 
 class PaperSnapshot(BaseModel):
     content: str
-    sync_state: Literal["not_created", "synced", "unsynced", "conflict"]
+    sync_state: Literal["not_created", "synced", "unsynced", "behind"]
     base_hash: str | None = None
     canonical_hash: str | None = None
+    incoming_content: str | None = None
     updated_at: datetime | None = None
     canonical_available: bool
 
@@ -73,40 +74,22 @@ class PaperService:
     def snapshot(self) -> PaperSnapshot:
         draft = self._draft()
         canonical_content, canonical_available = self._read_canonical()
-        canonical_hash = _hash(canonical_content) if canonical_content is not None else None
         if draft is None and canonical_content is None:
-            state = "not_created"
-            content = ""
-            base_hash = None
-            updated_at = None
-        elif draft is None:
-            state = "synced"
-            content = canonical_content or ""
-            base_hash = canonical_hash
-            updated_at = None
-        else:
-            content = draft["content"]
-            base_hash = draft["base_hash"]
-            updated_at = datetime.fromisoformat(draft["updated_at"])
-            draft_hash = _hash(content)
-            if not canonical_available:
-                state = "unsynced"
-            elif canonical_hash == draft_hash:
-                state = "synced"
-            elif canonical_hash != base_hash:
-                state = "conflict"
-            else:
-                state = "unsynced"
-        if not canonical_available and state != "not_created":
-            state = "unsynced"
-        return PaperSnapshot(
-            content=content,
-            sync_state=state,
-            base_hash=base_hash,
-            canonical_hash=canonical_hash,
-            updated_at=updated_at,
-            canonical_available=canonical_available,
-        )
+            return PaperSnapshot(
+                content="",
+                sync_state="not_created",
+                canonical_available=canonical_available,
+            )
+        if draft is None:
+            canonical_hash = _hash(canonical_content)
+            return PaperSnapshot(
+                content=canonical_content or "",
+                sync_state="synced" if canonical_available else "unsynced",
+                base_hash=canonical_hash,
+                canonical_hash=canonical_hash,
+                canonical_available=canonical_available,
+            )
+        return self._draft_snapshot(draft, canonical_content, canonical_available)
 
     def create(self) -> PaperSnapshot:
         draft = self._draft()
@@ -114,47 +97,37 @@ class PaperService:
             canonical_content = self._read_cached_canonical()
             content = canonical_content if canonical_content is not None else INTRODUCTION_TEMPLATE
             base_hash = _hash(canonical_content) if canonical_content is not None else None
-            self._save_draft(content, base_hash)
+            self._save_draft(content, base_hash, canonical_content)
             draft = self._draft()
         return self._local_draft_snapshot(draft)
 
     def save(self, content: str, base_hash: str | None) -> PaperSnapshot:
-        self._save_draft(content, base_hash)
+        draft = self._draft()
+        stored_content = draft["content"] if draft is not None else None
+        stored_base_hash = draft["base_hash"] if draft is not None else base_hash
+        ancestor_content = draft["ancestor_content"] if draft is not None else None
+        self._save_draft(content, stored_base_hash, ancestor_content)
         try:
             with self.workspace.transaction():
                 canonical_content = self._read_cached_canonical()
                 canonical_hash = _hash(canonical_content) if canonical_content is not None else None
                 if canonical_hash == _hash(content):
-                    self._save_draft(content, canonical_hash)
+                    self._save_draft(content, canonical_hash, canonical_content)
                     return self.snapshot()
                 if canonical_hash != base_hash:
                     return self.snapshot()
+                if (
+                    draft is not None
+                    and stored_base_hash != base_hash
+                    and stored_content == content
+                ):
+                    return self.snapshot()
                 self._write_canonical(content)
                 new_hash = _hash(content)
-                self._save_draft(content, new_hash)
+                self._save_draft(content, new_hash, content)
                 return self.snapshot()
         except StateUnavailable:
             return self.snapshot()
-
-    def resolve_conflict(
-        self, strategy: Literal["use_canonical", "overwrite_canonical"]
-    ) -> PaperSnapshot:
-        snapshot = self.snapshot()
-        if snapshot.sync_state != "conflict":
-            return snapshot
-        try:
-            with self.workspace.transaction():
-                canonical_content = self._read_cached_canonical()
-                if canonical_content is None:
-                    return self.snapshot()
-                if strategy == "use_canonical":
-                    self._save_draft(canonical_content, _hash(canonical_content))
-                else:
-                    self._write_canonical(snapshot.content)
-                    self._save_draft(snapshot.content, _hash(snapshot.content))
-                return self.snapshot()
-        except StateUnavailable:
-            return snapshot
 
     def sessions(self) -> list[WritingSession]:
         with self.store.connection() as connection:
@@ -196,38 +169,63 @@ class PaperService:
                 "SELECT * FROM paper_drafts WHERE project_id = ?", (self.project_id,)
             ).fetchone()
 
-    def _save_draft(self, content: str, base_hash: str | None) -> None:
+    def _save_draft(
+        self,
+        content: str,
+        base_hash: str | None,
+        ancestor_content: str | None,
+    ) -> None:
         with self.store.connection() as connection:
             connection.execute(
                 """
-                INSERT INTO paper_drafts(project_id, content, base_hash, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO paper_drafts(
+                    project_id, content, base_hash, ancestor_content, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(project_id) DO UPDATE SET
                     content = excluded.content,
                     base_hash = excluded.base_hash,
+                    ancestor_content = excluded.ancestor_content,
                     updated_at = excluded.updated_at
                 """,
-                (self.project_id, content, base_hash, self.store.now()),
+                (self.project_id, content, base_hash, ancestor_content, self.store.now()),
             )
 
     def _local_draft_snapshot(self, draft) -> PaperSnapshot:
-        content = draft["content"]
-        base_hash = draft["base_hash"]
         canonical_content = self._read_cached_canonical()
+        return self._draft_snapshot(draft, canonical_content, self.workspace.reachable)
+
+    def _draft_snapshot(
+        self,
+        draft,
+        canonical_content: str | None,
+        canonical_available: bool,
+    ) -> PaperSnapshot:
+        content = draft["content"]
+        stored_base_hash = draft["base_hash"]
         canonical_hash = _hash(canonical_content) if canonical_content is not None else None
-        synchronized = (
-            self.workspace.reachable
-            and canonical_hash is not None
-            and canonical_hash == _hash(content)
-            and canonical_hash == base_hash
-        )
+        incoming_content = None
+        if not canonical_available:
+            state = "unsynced"
+            base_hash = stored_base_hash
+        elif canonical_hash == _hash(content):
+            state = "synced"
+            base_hash = canonical_hash
+        elif canonical_hash == stored_base_hash:
+            state = "unsynced"
+            base_hash = stored_base_hash
+        else:
+            state = "behind"
+            base_hash = stored_base_hash
+            incoming_content = canonical_content
         return PaperSnapshot(
             content=content,
-            sync_state="synced" if synchronized else "unsynced",
+            sync_state=state,
             base_hash=base_hash,
             canonical_hash=canonical_hash,
+            incoming_content=incoming_content,
             updated_at=datetime.fromisoformat(draft["updated_at"]),
-            canonical_available=self.workspace.reachable,
+            canonical_available=canonical_available,
         )
 
     def _read_canonical(self) -> tuple[str | None, bool]:

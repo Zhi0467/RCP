@@ -252,6 +252,9 @@ it but a browser or a machine we do not have.
 | [S105](S105-move-between-spaces-in-one-window.md) | One window, several spaces | pending — **not human-confirmed** | **desktop** | none |
 | [S106](S106-cross-project-experiment-board.md) | See every launched Experiment loop before opening a project | implemented | pytest + **browser** | tests + browser 2026-08-09 |
 | [S107](S107-open-project-tabs.md) | Keep several projects open in one RCP window | implemented | **browser** + **desktop** | `web/tests/projectTabs.test.mjs` |
+| [S108](S108-repository-file-links-preserve-desktop-window.md) | A repository file link never strands the desktop window | implemented | **desktop** | tests + desktop 2026-08-09 |
+| [S109](S109-tabs-stay-current-without-freezing.md) | A project tab stays current without ever waiting on the remote | implemented | pytest + **browser** | transport/API + tab/draft UI checks |
+| [S110](S110-paper-draft-survives-a-canonical-change.md) | A paper draft survives a canonical change without choosing a side | implemented | pytest + **browser** | paper/storage + Incoming UI checks |
 
 S95–S105 are the team-space set. They come from the confirmed design in
 [`../design/`](../design/README.md) and none of them is human-confirmed yet, so

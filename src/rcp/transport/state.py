@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 from rcp.config import Manifest, load_manifest
 from rcp.limits import (
+    REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
+    REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS,
     STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
@@ -157,6 +159,16 @@ with os.fdopen(descriptor, "a+") as handle:
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 """
 
+_REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
+patches=$1
+if [ ! -d "$patches" ]; then
+    exit 0
+fi
+find "$patches" -maxdepth 2 -type f -name '[0-9][0-9][0-9][0-9][0-9][0-9].json' \
+    ! -path "$patches/.*/*" \
+    -exec basename {} \\; | LC_ALL=C sort | tail -n 1
+"""
+
 
 def _snapshot_lock(root: Path) -> threading.RLock:
     key = os.path.normcase(str(root.resolve()))
@@ -282,8 +294,23 @@ class StateWorkspace:
         self.reachable = True
         return True
 
-    def refresh_if_stale(self, max_age_seconds: float = 2.0) -> bool:
+    def refresh_if_stale(
+        self,
+        max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+    ) -> bool:
         return self.refresh()
+
+    def cached_patch_log_head(self) -> int | None:
+        patches = self.root / "patches"
+        revisions = [
+            int(path.stem)
+            for path in (
+                *patches.glob("[0-9][0-9][0-9][0-9][0-9][0-9].json"),
+                *patches.glob("batch-*/[0-9][0-9][0-9][0-9][0-9][0-9].json"),
+            )
+            if path.is_file()
+        ]
+        return max(revisions, default=None)
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -708,6 +735,28 @@ class SSHStateWorkspace(StateWorkspace):
             raise StateUnavailable(self.error or "canonical state is unreachable")
         return True
 
+    def probe_remote_patch_log_head(self) -> tuple[bool, int | None]:
+        """Read only the remote patch-log head without changing workspace health."""
+
+        result = self._ssh(
+            [
+                "sh",
+                "-c",
+                _REMOTE_PATCH_LOG_HEAD_SCRIPT,
+                "rcp-patch-log-head",
+                str(self.remote_root / "patches"),
+            ],
+            timeout=REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            return False, None
+        head = result.stdout.strip()
+        if not head:
+            return True, None
+        if not re.fullmatch(r"[0-9]{6}\.json", head):
+            return False, None
+        return True, int(head[:-5])
+
     def _sync_remote_tree(self) -> bool:
         remote = f"{self.host}:{shlex.quote(str(self.remote_root))}/"
         result = subprocess.run(
@@ -733,7 +782,10 @@ class SSHStateWorkspace(StateWorkspace):
         self._mark_reachable(synced=True)
         return True
 
-    def refresh_if_stale(self, max_age_seconds: float = 2.0) -> bool:
+    def refresh_if_stale(
+        self,
+        max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+    ) -> bool:
         with self.snapshot_lock:
             if time.monotonic() - self._last_refresh_monotonic < max_age_seconds:
                 return self.reachable
@@ -1039,14 +1091,19 @@ class SSHStateWorkspace(StateWorkspace):
             commit_status=status,
         ) from error
 
-    def _ssh(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    def _ssh(
+        self,
+        arguments: list[str],
+        *,
+        timeout: float = 30,
+    ) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
             return subprocess.run(
                 ssh_arguments(self.host, command),
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1095,9 +1152,9 @@ def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manife
             str(bootstrap.research_dir),
         )
 
-    cache_key = hashlib.sha256(f"{machine.host}\0{state_repository.path}".encode()).hexdigest()[:16]
-    cache_root = data_dir / "state-cache" / cache_key / ".research"
-    workspace = SSHStateWorkspace(cache_root, machine.host, state_repository.path)
+    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    assert isinstance(workspace, SSHStateWorkspace)
+    cache_root = workspace.root
     try:
         workspace.refresh()
     except StateUnavailable:
@@ -1110,6 +1167,21 @@ def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manife
     manifest = load_manifest(cache_manifest)
     _validate_remote_identity(bootstrap, manifest, machine.host, state_repository.path)
     return manifest, workspace
+
+
+def state_workspace_for_probe(bootstrap: Manifest, data_dir: Path) -> StateWorkspace:
+    """Construct the canonical workspace without refreshing or taking its lock."""
+
+    state_repository = bootstrap.repository_map[bootstrap.state.repository]
+    machine = bootstrap.machine_map[state_repository.machine]
+    if not machine.host:
+        return LocalStateWorkspace(
+            bootstrap.research_dir,
+            str(bootstrap.research_dir),
+        )
+    cache_key = hashlib.sha256(f"{machine.host}\0{state_repository.path}".encode()).hexdigest()[:16]
+    cache_root = data_dir / "state-cache" / cache_key / ".research"
+    return SSHStateWorkspace(cache_root, machine.host, state_repository.path)
 
 
 def _validate_remote_identity(

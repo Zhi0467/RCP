@@ -10,7 +10,7 @@ import {
   nodeEditDraft,
   type NodeEditField,
 } from "../nodeEditing";
-import type { DraftNodeValue } from "../humanDraft";
+import type { DraftNodeChange, DraftNodeValue } from "../humanDraft";
 import { beliefCausePresentation, nodeBeliefTransitions } from "../nodeDetail";
 import { humanFieldLabels, humanize, nodeTypeLabel, presentNode } from "../nodePresentation";
 import type {
@@ -38,6 +38,9 @@ interface Props {
   stagedNewNode?: boolean;
   stagedForRemoval?: boolean;
   hasStagedNodeChange?: boolean;
+  draftNodeChange?: DraftNodeChange;
+  canonicalNode?: GraphNode;
+  behind?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
   experimentRunDisabled?: boolean;
@@ -51,6 +54,7 @@ interface Props {
   onBeginEdit: () => void;
   onStanding: (standing: GraphNode["standing"]) => void;
   onStage: (changes: Record<string, DraftNodeValue>) => void;
+  onApplyField?: (changes: Record<string, DraftNodeValue>, fieldKey: string) => void;
   onDecisionChoice?: (selectedOption: string) => void;
   onRunExperiment?: () => void;
   onOpenChat: () => void;
@@ -95,6 +99,9 @@ export function DetailDrawer({
   stagedNewNode = false,
   stagedForRemoval = false,
   hasStagedNodeChange = false,
+  draftNodeChange,
+  canonicalNode,
+  behind = false,
   canonicalStanding = node.standing,
   experimentControl = null,
   experimentRunDisabled = false,
@@ -108,16 +115,23 @@ export function DetailDrawer({
   onBeginEdit,
   onStanding,
   onStage,
+  onApplyField,
   onDecisionChoice,
   onRunExperiment,
   onOpenChat,
   onOpenRelatedNode,
   onSelectNode,
 }: Props) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(behind);
   const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
   const [editBase, setEditBase] = useState(node);
   const [draft, setDraft] = useState<Record<string, string>>(() => nodeEditDraft(node, ontology));
+  const [referenceDraft, setReferenceDraft] = useState<Record<string, string>>(() =>
+    canonicalNode ? nodeEditDraft(canonicalNode, ontology) : {},
+  );
+  const [referenceFieldKeys, setReferenceFieldKeys] = useState<Set<string>>(() =>
+    stagedFieldKeys(draftNodeChange, editableNodeFields(node, ontology)),
+  );
   const standingBeforeEdit = useRef<GraphNode["standing"] | null>(null);
   const editFields = useMemo(() => editableNodeFields(editBase, ontology), [editBase, ontology]);
   const changes = useMemo(
@@ -152,6 +166,13 @@ export function DetailDrawer({
   }, [editing, node, ontology]);
 
   useEffect(() => {
+    if (!behind || !canonicalNode || !draftNodeChange) return;
+    setReferenceDraft(nodeEditDraft(canonicalNode, ontology));
+    setReferenceFieldKeys(stagedFieldKeys(draftNodeChange, editableNodeFields(node, ontology)));
+    setEditing(true);
+  }, [behind, canonicalNode, draftNodeChange, node, ontology]);
+
+  useEffect(() => {
     if (nodeMutationDisabled) setEditing(false);
   }, [nodeMutationDisabled]);
 
@@ -177,6 +198,20 @@ export function DetailDrawer({
     onStage(changes);
     standingBeforeEdit.current = null;
     setEditing(false);
+  };
+  const applyReference = (field: NodeEditField) => {
+    const nextDraft = {
+      ...draft,
+      [field.key]: referenceDraft[field.key] ?? "",
+    };
+    setReferenceDraft((current) => ({
+      ...current,
+      [field.key]: draft[field.key] ?? "",
+    }));
+    setDraft(nextDraft);
+    if (canonicalNode && onApplyField) {
+      onApplyField(changedNodeFields(canonicalNode, nextDraft, ontology), field.key);
+    }
   };
   const close = () => {
     if (editing && standingBeforeEdit.current && standingBeforeEdit.current !== "asserted") {
@@ -246,7 +281,7 @@ export function DetailDrawer({
       focusRequestToken={focusRequestToken}
     >
       <aside
-        className={`detail-drawer node-detail-drawer${node.draft_touched ? " draft-touched" : ""}`}
+        className={`detail-drawer node-detail-drawer${node.draft_touched ? " draft-touched" : ""}${behind ? " draft-behind" : ""}`}
         role="dialog"
         aria-modal="false"
         aria-labelledby={drawerTitleId}
@@ -263,6 +298,7 @@ export function DetailDrawer({
                 {node.standing}
                 {canonicalStanding !== node.standing && " · staged"}
               </span>
+              {behind && <span className="node-draft-behind">behind</span>}
               {node.type === "evidence" && node.origin && (
                 <span className="node-origin">{originLabels[node.origin]}</span>
               )}
@@ -367,6 +403,23 @@ export function DetailDrawer({
                         setDraft((current) => ({ ...current, [field.key]: event.target.value }))
                       }
                     />
+                  )}
+                  {referenceFieldKeys.has(field.key) && (
+                    <span className="node-edit-incoming" role="status">
+                      <span className="node-edit-incoming-heading">
+                        <span>Incoming</span>
+                        <button
+                          className="button compact"
+                          type="button"
+                          onClick={() => applyReference(field)}
+                        >
+                          Apply
+                        </button>
+                      </span>
+                      <span className="node-edit-incoming-value">
+                        {referenceDraft[field.key] || "—"}
+                      </span>
+                    </span>
                   )}
                 </label>
               ))}
@@ -623,9 +676,11 @@ export function DetailDrawer({
           {editing ? (
             <>
               <span className="node-edit-status">
-                {changeCount > 0
-                  ? `${changeCount} field${changeCount === 1 ? "" : "s"}`
-                  : "No changes"}
+                {behind && changeCount === 0
+                  ? "Behind"
+                  : changeCount > 0
+                    ? `${changeCount} field${changeCount === 1 ? "" : "s"}`
+                    : "No changes"}
               </span>
               <div>
                 <button className="button ghost" type="button" onClick={cancelEditing}>
@@ -750,6 +805,22 @@ function hasValue(value: unknown): boolean {
     value !== undefined &&
     value !== "" &&
     !(Array.isArray(value) && value.length === 0)
+  );
+}
+
+function stagedFieldKeys(entry: DraftNodeChange | undefined, fields: NodeEditField[]): Set<string> {
+  if (!entry) return new Set();
+  return new Set(
+    fields.flatMap((field) => {
+      if (!field.extensionName) return field.key in entry.changes ? [field.key] : [];
+      const extensions = entry.changes.extension_fields;
+      return extensions &&
+        typeof extensions === "object" &&
+        !Array.isArray(extensions) &&
+        field.extensionName in extensions
+        ? [field.key]
+        : [];
+    }),
   );
 }
 

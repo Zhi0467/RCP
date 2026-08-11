@@ -13,6 +13,9 @@ use crate::{
     navigation, updates, windows,
 };
 
+const ARTIFACT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+const REPOSITORY_PREVIEW_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(35);
+
 #[derive(Serialize)]
 pub struct ShowResult {
     shown: bool,
@@ -110,7 +113,28 @@ pub async fn open_artifact_preview(
         &artifact_id,
         "preview",
     )?;
-    ensure_available(&url).await?;
+    ensure_available(&url, "artifact", ARTIFACT_AVAILABILITY_TIMEOUT).await?;
+    backend::reverify_identity(&state, &status).await?;
+    windows::open_preview(&app, url, status.base_url)?;
+    Ok(OpenResult { opened: true })
+}
+
+#[tauri::command]
+pub async fn open_repository_file_preview(
+    app: AppHandle,
+    state: State<'_, BackendState>,
+    project_id: String,
+    path: String,
+    line: Option<u64>,
+) -> Result<OpenResult, String> {
+    let status = state.status()?;
+    let url = repository_file_preview_url(&status.base_url, &project_id, &path, line)?;
+    ensure_available(
+        &url,
+        "repository file",
+        REPOSITORY_PREVIEW_AVAILABILITY_TIMEOUT,
+    )
+    .await?;
     backend::reverify_identity(&state, &status).await?;
     windows::open_preview(&app, url, status.base_url)?;
     Ok(OpenResult { opened: true })
@@ -267,17 +291,66 @@ fn artifact_url(
     Ok(url)
 }
 
-async fn ensure_available(url: &Url) -> Result<(), String> {
+fn repository_file_preview_url(
+    base_url: &str,
+    project_id: &str,
+    path: &str,
+    line: Option<u64>,
+) -> Result<Url, String> {
+    validate_repository_path(path)?;
+    if line == Some(0) {
+        return Err("repository file line must be a positive integer".into());
+    }
+
+    let mut url = Url::parse(base_url).map_err(|error| format!("invalid backend URL: {error}"))?;
+    url.path_segments_mut()
+        .map_err(|_| "backend URL cannot contain path segments".to_string())?
+        .extend([
+            "api",
+            "projects",
+            project_id,
+            "repositories",
+            "files",
+            "preview",
+        ]);
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("path", path);
+        if let Some(line) = line {
+            query.append_pair("line", &line.to_string());
+        }
+    }
+    Ok(url)
+}
+
+fn validate_repository_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/')
+        || path.contains('\\')
+        || path.contains('\0')
+        || path
+            .split('/')
+            .skip(1)
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+    {
+        return Err(
+            "repository file path must be an absolute POSIX path without empty or dot segments"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+async fn ensure_available(url: &Url, description: &str, timeout: Duration) -> Result<(), String> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(timeout)
         .build()
         .map_err(|error| error.to_string())?
         .head(url.clone())
         .send()
         .await
-        .map_err(|error| format!("artifact is unavailable: {error}"))?
+        .map_err(|error| format!("{description} is unavailable: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("artifact is unavailable: {error}"))?;
+        .map_err(|error| format!("{description} is unavailable: {error}"))?;
     Ok(())
 }
 
@@ -287,4 +360,69 @@ fn safe_filename(suggested: &str) -> &str {
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("artifact")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_preview_url_encodes_identifiers_path_and_optional_line() {
+        let url = repository_file_preview_url(
+            "http://127.0.0.1:8421",
+            "project id",
+            "/Users/example/origin repo/src/a file.rs",
+            Some(27),
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:8421/api/projects/project%20id/repositories/files/preview?path=%2FUsers%2Fexample%2Forigin+repo%2Fsrc%2Fa+file.rs&line=27"
+        );
+    }
+
+    #[test]
+    fn repository_preview_url_omits_absent_line() {
+        let url = repository_file_preview_url(
+            "http://127.0.0.1:8421",
+            "project",
+            "/Users/example/repo/README.md",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.query(),
+            Some("path=%2FUsers%2Fexample%2Frepo%2FREADME.md")
+        );
+    }
+
+    #[test]
+    fn repository_preview_rejects_unsafe_paths_and_zero_line() {
+        for path in [
+            "",
+            "relative/path",
+            "src\\main.rs",
+            "/Users/example/repo/bad\0name",
+            "/",
+            "/Users/example/repo/./main.rs",
+            "/Users/example/repo/../main.rs",
+            "/Users/example/repo//main.rs",
+            "/Users/example/repo/",
+        ] {
+            assert!(
+                repository_file_preview_url("http://127.0.0.1:8421", "project", path, None,)
+                    .is_err(),
+                "accepted unsafe path {path:?}"
+            );
+        }
+        assert!(repository_file_preview_url(
+            "http://127.0.0.1:8421",
+            "project",
+            "/Users/example/repo/src/main.rs",
+            Some(0),
+        )
+        .is_err());
+    }
 }

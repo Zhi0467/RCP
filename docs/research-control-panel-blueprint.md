@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.36
+**Version:** 0.38
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,14 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.38** — made project-tab activation entirely cache-backed while a
+  lock-free remote-head probe triggers single-flight reconciliation in the
+  background; preserved staged node and paper edits across canonical movement
+  with explicit behind state and reversible per-field or whole-paper swaps.
+- **0.37** — made repository-file links in rendered answers resolve through
+  configured repository identity, with bounded local or SSH reads into the
+  existing secondary preview window and explicit refusal of every multiply
+  matching path.
 - **0.36** — changed the project dock from horizontal overflow to browser-like
   proportional tab compression inside one capped span, with the active project
   retaining more width than inactive tabs.
@@ -562,6 +570,17 @@ RCP discovers only bounded direct regular HTML or raster-image children. Bytes
 stay in temporary scratch and are served or proxied on demand. Artifact failure,
 expiry, SSH unavailability, or Download failure never changes the reply, task
 status, or graph outcome. HTML runs in an opaque sandbox with no RCP authority.
+
+A repository-file Markdown link in an answer never becomes navigation inside
+the main RCP webview. RCP resolves an absolute execution-host path against the
+project's configured repository roots. Exactly one matching repository opens an
+escaped, bounded, read-only source page through the same secondary preview
+window as an HTML artifact; a remote file is read on demand over that
+repository's configured SSH host and is not retained locally. No match, multiple
+matching roots (including nested roots), an unavailable host, a non-regular or
+non-text file, or a file over the preview bound produces a visible
+non-navigating error. RCP never prefers the longest root or guesses a host from
+path text.
 
 ## Skills and workflows
 
@@ -1133,6 +1152,14 @@ canonical sections cover the research question, adjacent questions, literature,
 high-level methods, main results, and why the work deserves publication and
 communication.
 
+The local paper draft retains the canonical content it was written against.
+When canonical introduction content moves, autosave preserves the draft and
+marks it behind rather than forcing either version to win. The existing paper
+view toggle exposes the incoming canonical content in the preview pane, and one
+reversible Apply action swaps it with the editor content. Only a later human
+edit re-pins and resumes canonical save; no conflict strategy may discard a
+whole version.
+
 The writing coach may read the draft and graph, identify unsupported claims,
 ask focused questions, and point to relevant evidence. It may not edit the draft,
 emit replacement prose, write a Patch, or turn paper text into graph truth.
@@ -1156,12 +1183,22 @@ The frontend is never the owner of background work. Desktop window close, app
 Quit, backend ownership, packaging, and update behavior follow their acceptance
 scenarios and must preserve resumability and ownership truth.
 
-An open project probes only the current accepted canonical graph revision while
-visible. A newer revision triggers the existing authoritative project
-reconciliation, so graph content and Proposals converge across browser and
-desktop clients without manual reload. An unchanged probe neither replays
-history nor returns the graph. Reconciliation preserves client-side human drafts;
-the existing stale-base state exposes conflicts after the graph advances.
+Activating a project tab renders its bounded per-project frontend cache and the
+backend display snapshot without waiting on remote I/O. While that tab is
+visible, a bounded lock-free remote-head probe asks only whether the canonical
+patch log moved. A changed head starts one background reconciliation for that
+project; an unchanged or transiently unavailable probe neither takes the
+canonical lock nor copies state. Snapshot freshness and the last successful
+remote synchronization time remain explicit, and revision and generation guards
+prevent an older result from replacing newer cached state.
+
+Reconciliation preserves client-side human drafts. A staged node whose canonical
+revision did not move stays committable. One that moved is behind and excluded
+from Sync until the human edits it or reversibly swaps an incoming field into
+the editor. The whole-draft revision does not block independently pinned node
+edits; ontology remains the narrow exception because it has no per-item pin.
+Display caches never enter canonical history, agent context, Sync preparation,
+or paper-write authority.
 
 ## Verification and change discipline
 

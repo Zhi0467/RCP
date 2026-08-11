@@ -18,6 +18,7 @@
     "allow-desktop-start-dictation",
     "allow-desktop-stop-dictation",
     "allow-open-artifact-preview",
+    "allow-open-repository-file-preview",
     "allow-download-artifact",
     "allow-open-external",
     "allow-request-quit",

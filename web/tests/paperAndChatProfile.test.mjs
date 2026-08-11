@@ -12,7 +12,9 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
-const { PaperWorkspace } = await server.ssrLoadModule("/src/views/PaperWorkspace.tsx");
+const { loadPaperSnapshot, PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
+  "/src/views/PaperWorkspace.tsx",
+);
 
 after(() => server.close());
 
@@ -152,4 +154,62 @@ test("paper preview renders unsaved Markdown in the editor pane and keeps status
   assert.doesNotMatch(html, />Model</);
   assert.doesNotMatch(html, />Reasoning</);
   assert.doesNotMatch(html, />Run on/);
+});
+
+test("behind paper exposes one reversible Incoming swap without destructive controls", () => {
+  const previousStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem(key) {
+      return key === "rcp:paper-view:project" ? "incoming" : null;
+    },
+  };
+  let html;
+  try {
+    html = renderToStaticMarkup(
+      React.createElement(PaperWorkspace, {
+        apiBase: "/api/projects/project",
+        project,
+        initialPaper: {
+          content: "## Local draft\n\nTyped words",
+          sync_state: "behind",
+          base_hash: "old-base",
+          canonical_hash: "incoming-hash",
+          incoming_content: "## Incoming canonical\n\nRemote words",
+          canonical_available: true,
+        },
+        tasks: [],
+        activeTask: null,
+        onStartTask() {},
+        onPaperChange() {},
+      }),
+    );
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
+
+  assert.match(html, /aria-pressed="false"[^>]*>Write</);
+  assert.match(html, /aria-pressed="false"[^>]*>Preview</);
+  assert.match(html, /aria-pressed="true"[^>]*>Incoming</);
+  assert.match(html, /aria-label="Swap editor and incoming introduction"[^>]*>Apply</);
+  assert.match(html, /paper-markdown-preview chat-markdown/);
+  assert.match(html, /<h2>Incoming canonical<\/h2>/);
+  assert.match(html, /sync-state behind/);
+  assert.doesNotMatch(html, /Use canonical|Overwrite canonical|conflict-banner/);
+
+  const first = swapPaperBuffers("local", "canonical");
+  assert.deepEqual(first, ["canonical", "local"]);
+  assert.deepEqual(swapPaperBuffers(...first), ["local", "canonical"]);
+});
+
+test("paper freshness checks use the paper snapshot endpoint", async () => {
+  const requested = [];
+  const expected = { content: "draft", sync_state: "synced", canonical_available: true };
+  const snapshot = await loadPaperSnapshot(async (path) => {
+    requested.push(path);
+    return expected;
+  }, "/api/projects/project");
+
+  assert.strictEqual(snapshot, expected);
+  assert.deepEqual(requested, ["/api/projects/project/paper"]);
 });

@@ -120,3 +120,127 @@ test("chat Markdown marks glossary terms only in prose and preserves node links"
   assert.match(rendered, /href="#rcp-node=exp%2Fknown"/);
   assert.doesNotMatch(rendered, /<dfn[^>]*>exp\/known<\/dfn>/);
 });
+
+test("project chat Markdown identifies repository file links without changing other links", () => {
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: [
+        "[Source](/Users/example/repo/src/main.py:17:4)",
+        "[Web](https://example.test/docs)",
+        "[App](/#/projects/example)",
+        "[Node](#rcp-node=exp%2Fknown)",
+      ].join(" "),
+      nodes: { "exp/known": { id: "exp/known" } },
+      onOpenNode() {},
+      onOpenRepositoryFileLink() {},
+    }),
+  );
+
+  assert.match(rendered, /class="chat-repository-file-reference"/);
+  assert.match(rendered, /aria-label="Open repository file preview"/);
+  assert.match(rendered, /href="https:\/\/example\.test\/docs"/);
+  assert.doesNotMatch(rendered, /https:\/\/example\.test\/docs" class=/);
+  assert.match(rendered, /href="\/#\/projects\/example"/);
+  assert.doesNotMatch(rendered, /\/#\/projects\/example" class=/);
+  assert.match(rendered, /class="chat-node-reference"/);
+
+  const unchanged = renderToStaticMarkup(
+    MarkdownAnswer({ text: "[Source](/Users/example/repo/src/main.py:17)" }),
+  );
+  assert.doesNotMatch(unchanged, /chat-repository-file-reference/);
+});
+
+test("chat Markdown renders dollar and TeX bracket math with KaTeX", () => {
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: [
+        "Inline dollar: $z_{pg}$.",
+        "Inline bracket: \\(w_{pg}\\).",
+        "",
+        "$$",
+        "\\bar z_p = \\frac{1}{G} \\sum_{g=1}^{G} z_{pg}",
+        "$$",
+        "",
+        "\\[",
+        "s_i = \\frac{\\operatorname{SD}(\\bar z_1, \\ldots, \\bar z_P)}{\\sqrt{P}}",
+        "\\]",
+      ].join("\n"),
+    }),
+  );
+
+  assert.equal(rendered.match(/class="katex"/g)?.length, 4);
+  assert.equal(rendered.match(/class="katex-display"/g)?.length, 2);
+  assert.equal(rendered.match(/<math\b/g)?.length, 4);
+  assert.equal(rendered.match(/<math[^>]* display="block"/g)?.length, 2);
+  assert.match(rendered, /<p>Inline dollar: <span class="katex">/);
+  assert.match(rendered, /Inline bracket: <span class="katex">/);
+});
+
+test("chat math delimiters remain literal inside code spans and fences", () => {
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: ["`$x$` and `\\(y\\)`", "", "```text", "$$ z $$", "\\[w\\]", "```"].join("\n"),
+    }),
+  );
+
+  assert.doesNotMatch(rendered, /class="katex/);
+  assert.match(rendered, /<code>\$x\$<\/code>/);
+  assert.match(rendered, /<code>\\\(y\\\)<\/code>/);
+  assert.match(
+    rendered,
+    /<pre><code class="language-text">\$\$ z \$\$\n\\\[w\\\]\n<\/code><\/pre>/,
+  );
+});
+
+test("chat Markdown leaves unmatched math and a lone currency marker readable", () => {
+  const unmatchedOpen = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: "Price: $5. Unmatched: \\(x and \\[y.",
+    }),
+  );
+  const unmatchedClose = renderToStaticMarkup(
+    MarkdownAnswer({ text: "Closing only: \\) and \\]." }),
+  );
+
+  assert.doesNotMatch(unmatchedOpen, /class="katex/);
+  assert.doesNotMatch(unmatchedClose, /class="katex/);
+  assert.match(unmatchedOpen, /<p>Price: \$5\. Unmatched: \(x and \[y\.<\/p>/);
+  assert.match(unmatchedClose, /<p>Closing only: \) and \]\.<\/p>/);
+});
+
+test("chat math is isolated from node and glossary transforms", () => {
+  const glossaryIndex = buildGlossaryIndex({
+    mopd: {
+      term: "MOPD",
+      plain_definition: "Mean orthogonal projection distance.",
+    },
+  });
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: "Outside MOPD and exp/known. Inside $\\text{MOPD and exp/known}$.",
+      nodes: { "exp/known": { id: "exp/known" } },
+      onOpenNode() {},
+      glossaryIndex,
+    }),
+  );
+
+  assert.equal(rendered.match(/<dfn\b/g)?.length, 1);
+  assert.equal(rendered.match(/href="#rcp-node=exp%2Fknown"/g)?.length, 1);
+  assert.equal(rendered.match(/class="katex"/g)?.length, 1);
+  assert.match(
+    rendered,
+    /<annotation encoding="application\/x-tex">\\text\{MOPD and exp\/known\}<\/annotation>/,
+  );
+});
+
+test("malformed or untrusted TeX remains visible without breaking the reply", () => {
+  const malformed = renderToStaticMarkup(MarkdownAnswer({ text: "Before $\\frac{1}{2$ after." }));
+  const untrusted = renderToStaticMarkup(
+    MarkdownAnswer({ text: "Unsafe $\\href{javascript:alert(1)}{x}$ stays inert." }),
+  );
+
+  assert.match(malformed, /<p>Before <span class="katex-error"/);
+  assert.match(malformed, />\\frac\{1\}\{2<\/span> after\.<\/p>/);
+  assert.doesNotMatch(untrusted, /href=/);
+  assert.match(untrusted, /class="katex"/);
+});

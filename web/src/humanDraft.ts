@@ -20,6 +20,7 @@ export interface DraftNodeChange {
 export interface HumanDraft {
   version: 1;
   base_revision: number;
+  ontology_base_revision?: number;
   nodes: Record<string, DraftNodeChange>;
   removed_node_ids: string[];
   proposals: Record<string, { decision: ProposalDecision; reason?: string }>;
@@ -57,17 +58,11 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
 export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): HumanDraft {
   const next = cloneDraft(draft);
   const removedNodeIds = draft.removed_node_ids.filter((nodeId) => Boolean(graph.nodes[nodeId]));
-  if (draft.base_revision !== graph.revision) {
-    const stale = { ...next, removed_node_ids: removedNodeIds };
-    return {
-      ...stale,
-      proposals: proposalDecisionsWithoutDirectChoices(stale, graph),
-    };
-  }
   const nodes = Object.fromEntries(
     Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
       const node = graph.nodes[nodeId];
       if (!node) return [];
+      if (entry.base_updated_rev !== node.updated_rev) return [[nodeId, entry]];
       const changes = Object.fromEntries(
         Object.entries(entry.changes).filter(([key, value]) => !sameValue(node[key], value)),
       );
@@ -105,7 +100,16 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
     }),
   );
   const ontology = sameValue(draft.ontology, graph.ontology) ? null : draft.ontology;
-  const normalized = { ...next, nodes, removed_node_ids: removedNodeIds, ontology };
+  const normalized = {
+    ...next,
+    base_revision: graph.revision,
+    nodes,
+    removed_node_ids: removedNodeIds,
+    ontology,
+    ...(ontology
+      ? { ontology_base_revision: draft.ontology_base_revision ?? draft.base_revision }
+      : { ontology_base_revision: undefined }),
+  };
   return {
     ...normalized,
     proposals: proposalDecisionsWithoutDirectChoices(normalized, graph),
@@ -117,15 +121,23 @@ export function stageNodeEdit(
   graph: GraphState,
   nodeId: string,
   changes: Record<string, DraftNodeValue>,
+  replacedFields: string[] = [],
 ): HumanDraft {
   const node = graph.nodes[nodeId];
   if (!node || draft.removed_node_ids.includes(nodeId)) return draft;
   const existing = draft.nodes[nodeId];
   const effectiveStanding = existing?.standing ?? node.standing;
   const next = cloneDraft(draft);
+  const existingChanges = { ...existing?.changes };
+  for (const field of replacedFields) {
+    delete existingChanges[field.startsWith("extension_fields.") ? "extension_fields" : field];
+  }
   next.nodes[nodeId] = {
-    base_updated_rev: existing?.base_updated_rev ?? node.updated_rev,
-    changes: { ...existing?.changes, ...changes },
+    base_updated_rev:
+      existing?.base_updated_rev === node.updated_rev
+        ? existing.base_updated_rev
+        : node.updated_rev,
+    changes: { ...existingChanges, ...changes },
     ...(existing?.standing ? { standing: existing.standing } : {}),
     ...(existing?.standing_origin ? { standing_origin: existing.standing_origin } : {}),
   };
@@ -165,7 +177,10 @@ export function stageNodeStanding(
   const existing = draft.nodes[nodeId];
   const next = cloneDraft(draft);
   next.nodes[nodeId] = {
-    base_updated_rev: existing?.base_updated_rev ?? node.updated_rev,
+    base_updated_rev:
+      existing?.base_updated_rev === node.updated_rev
+        ? existing.base_updated_rev
+        : node.updated_rev,
     changes: { ...existing?.changes },
     standing,
     standing_origin: "judgment",
@@ -194,7 +209,10 @@ export function stageDecisionChoice(
   const existing = draft.nodes[nodeId];
   const next = cloneDraft(draft);
   next.nodes[nodeId] = {
-    base_updated_rev: existing?.base_updated_rev ?? node.updated_rev,
+    base_updated_rev:
+      existing?.base_updated_rev === node.updated_rev
+        ? existing.base_updated_rev
+        : node.updated_rev,
     changes: {
       ...existing?.changes,
       selected_option: selectedOption,
@@ -234,7 +252,10 @@ export function stageAttemptRelease(
   const already = existing?.cancel_attempt_ids ?? [];
   next.nodes[nodeId] = {
     ...existing,
-    base_updated_rev: existing?.base_updated_rev ?? node.updated_rev,
+    base_updated_rev:
+      existing?.base_updated_rev === node.updated_rev
+        ? existing.base_updated_rev
+        : node.updated_rev,
     changes: { ...existing?.changes },
     cancel_attempt_ids: already.includes(attemptId) ? already : [...already, attemptId],
   };
@@ -284,7 +305,10 @@ export function stageOntology(
   graph: GraphState,
   ontology: OntologyState,
 ): HumanDraft {
-  return normalizeHumanDraft({ ...cloneDraft(draft), ontology }, graph);
+  return normalizeHumanDraft(
+    { ...cloneDraft(draft), ontology, ontology_base_revision: graph.revision },
+    graph,
+  );
 }
 
 export function stageCustomNode(draft: HumanDraft, node: GraphNode): HumanDraft {
@@ -341,17 +365,75 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
   );
 }
 
-export function toHumanSyncRequest(draft: HumanDraft): HumanSyncRequest {
+export function humanDraftCommittableCount(draft: HumanDraft | null, graph: GraphState): number {
+  if (!draft) return 0;
+  const behindNodeIds = new Set(
+    Object.entries(draft.nodes).flatMap(([nodeId, entry]) =>
+      draftNodeIsBehind(entry, graph.nodes[nodeId]) ? [nodeId] : [],
+    ),
+  );
+  return humanDraftChangeCount({
+    ...draft,
+    nodes: Object.fromEntries(
+      Object.entries(draft.nodes).filter(([nodeId]) => !behindNodeIds.has(nodeId)),
+    ),
+  });
+}
+
+export function humanDraftBehindCount(draft: HumanDraft | null, graph: GraphState): number {
+  if (!draft) return 0;
+  return Object.entries(draft.nodes).reduce(
+    (count, [nodeId, entry]) => count + (draftNodeIsBehind(entry, graph.nodes[nodeId]) ? 1 : 0),
+    0,
+  );
+}
+
+export function humanDraftOntologyIsStale(draft: HumanDraft | null, graph: GraphState): boolean {
+  return Boolean(
+    draft?.ontology && (draft.ontology_base_revision ?? draft.base_revision) !== graph.revision,
+  );
+}
+
+export function retainBehindDraftAfterSync(
+  draft: HumanDraft,
+  previousGraph: GraphState,
+  nextGraph: GraphState,
+): HumanDraft | null {
+  const nodes = Object.fromEntries(
+    Object.entries(draft.nodes).filter(([nodeId, entry]) =>
+      draftNodeIsBehind(entry, previousGraph.nodes[nodeId]),
+    ),
+  );
+  if (Object.keys(nodes).length === 0) return null;
+  return normalizeHumanDraft({ ...emptyHumanDraft(nextGraph.revision), nodes }, nextGraph);
+}
+
+export function draftNodeIsBehind(
+  entry: DraftNodeChange | undefined,
+  node: GraphNode | undefined,
+): boolean {
+  return Boolean(entry && node && entry.base_updated_rev !== node.updated_rev);
+}
+
+export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanSyncRequest {
   return {
-    base_revision: draft.base_revision,
+    base_revision: graph.revision,
     removed_node_ids: [...draft.removed_node_ids],
-    nodes: Object.entries(draft.nodes).map(([nodeId, entry]) => ({
-      node_id: nodeId,
-      base_updated_rev: entry.base_updated_rev,
-      changes: entry.changes,
-      ...(entry.standing ? { standing: entry.standing } : {}),
-      ...(entry.cancel_attempt_ids?.length ? { cancel_attempt_ids: entry.cancel_attempt_ids } : {}),
-    })),
+    nodes: Object.entries(draft.nodes).flatMap(([nodeId, entry]) =>
+      draftNodeIsBehind(entry, graph.nodes[nodeId])
+        ? []
+        : [
+            {
+              node_id: nodeId,
+              base_updated_rev: entry.base_updated_rev,
+              changes: entry.changes,
+              ...(entry.standing ? { standing: entry.standing } : {}),
+              ...(entry.cancel_attempt_ids?.length
+                ? { cancel_attempt_ids: entry.cancel_attempt_ids }
+                : {}),
+            },
+          ],
+    ),
     proposals: Object.entries(draft.proposals).map(([proposalId, entry]) => ({
       proposal_id: proposalId,
       ...entry,
@@ -376,7 +458,7 @@ export function humanSyncFailure(error: unknown): {
     error.message.includes("graph changed after this draft began");
   return {
     text: revisionConflict
-      ? "Draft base is stale. Reset the draft before syncing."
+      ? "The project moved again before Sync. Your staged changes were kept and refreshed."
       : error instanceof Error
         ? error.message
         : String(error),
@@ -398,6 +480,9 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
     return {
       version: 1,
       base_revision: parsed.base_revision as number,
+      ontology_base_revision: Number.isInteger(parsed.ontology_base_revision)
+        ? (parsed.ontology_base_revision as number)
+        : undefined,
       nodes: parsed.nodes as unknown as HumanDraft["nodes"],
       removed_node_ids: Array.isArray(parsed.removed_node_ids)
         ? parsed.removed_node_ids.filter((id): id is string => typeof id === "string")

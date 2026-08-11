@@ -30,6 +30,7 @@ from rcp.transport import (
     repository_access,
 )
 from rcp.transport.state import (
+    _REMOTE_PATCH_LOG_HEAD_SCRIPT,
     RunLockCancelled,
     RunLockLease,
     RunLockOwnershipLost,
@@ -725,6 +726,68 @@ def test_remote_run_lock_forwards_wait_and_cancellation_hooks(tmp_path, monkeypa
         lease.assert_owned()
 
     assert calls == [("/srv/project/.research/.agent-run.lock", on_wait, cancelled, on_lost)]
+
+
+def test_remote_patch_head_probe_takes_no_lock_and_copies_nothing(tmp_path, monkeypatch) -> None:
+    root = tmp_path / ".research"
+    direct = root / "patches" / "000002.json"
+    batched = root / "patches" / "batch-000003-000004-test" / "000004.json"
+    unpublished = root / "patches" / ".batch-000005-000006-test" / "000006.json"
+    for path in (direct, batched, unpublished):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not read by the probe\n", encoding="utf-8")
+    local_probe = subprocess.run(
+        ["sh", "-c", _REMOTE_PATCH_LOG_HEAD_SCRIPT, "rcp-patch-log-head", str(root / "patches")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert local_probe.stdout == "000004.json\n"
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    ssh_calls: list[tuple[list[str], float]] = []
+
+    def fake_ssh(arguments, *, timeout):
+        ssh_calls.append((arguments, timeout))
+        return subprocess.CompletedProcess(arguments, 0, "000005.json\n", "")
+
+    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(
+        workspace,
+        "_remote_advisory_lock",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("head probe must not take the canonical lock")
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("head probe must not invoke rsync")
+        ),
+    )
+
+    assert workspace.probe_remote_patch_log_head() == (True, 5)
+    assert len(ssh_calls) == 1
+    assert ssh_calls[0][0][0:2] == ["sh", "-c"]
+    assert ssh_calls[0][0][-1] == "/srv/project/.research/patches"
+
+
+def test_transient_remote_patch_head_failure_does_not_change_workspace_health(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = SSHStateWorkspace(tmp_path / ".research", "research.example", "/srv/project")
+    workspace.reachable = True
+    workspace.error = None
+
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda _arguments, **_kwargs: subprocess.CompletedProcess([], 255, "", "timed out"),
+    )
+
+    assert workspace.probe_remote_patch_log_head() == (False, None)
+    assert workspace.reachable is True
+    assert workspace.error is None
 
 
 def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(

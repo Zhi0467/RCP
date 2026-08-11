@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import subprocess
 import threading
 import time
 import uuid
@@ -64,7 +65,7 @@ from rcp.service import (
 )
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
-from rcp.transport import RunLockCancelled, RunLockLease, StateUnavailable
+from rcp.transport import RunLockCancelled, RunLockLease, SSHStateWorkspace, StateUnavailable
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
 from .helpers import agent_patch_json, gated_patch, refresh_patch, seed_patch, shape_invalid_patch
@@ -537,8 +538,20 @@ def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
     created = client.post(f"/api/projects/{project_id}/paper/create")
     assert created.status_code == 200
     assert created.json()["sync_state"] == "unsynced"
+    removed_conflict_route = client.post(
+        f"/api/projects/{project_id}/paper/conflict",
+        json={"strategy": "use_canonical"},
+    )
+    assert removed_conflict_route.status_code == 405
 
     app.state.service.history.append(seed_patch())
+    generation = app.state.catalog.reserve_cached_snapshot_generation(project_id)
+    _, snapshot = app.state.catalog.reconcile_snapshot(project_id)
+    assert app.state.catalog.commit_cached_snapshot(
+        project_id,
+        snapshot,
+        generation=generation,
+    )
     seeded_project = client.get(f"/api/projects/{project_id}")
     assert seeded_project.status_code == 200
     assert seeded_project.json()["primary_question"]["type"] == "research_question"
@@ -732,8 +745,198 @@ def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_p
     assert response.json() == {"detail": "Project not found"}
 
 
-def test_authoritative_project_get_creates_and_replaces_display_snapshot(
+def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_refresh(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    probes = 0
+
+    def unchanged_head(requested_project_id):
+        nonlocal probes
+        assert requested_project_id == project_id
+        probes += 1
+        return "unchanged"
+
+    monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", unchanged_head)
+    monkeypatch.setattr(
+        app.state.catalog,
+        "reconcile_snapshot",
+        lambda _project_id: (_ for _ in ()).throw(
+            AssertionError("an unchanged head must not start a full refresh")
+        ),
+    )
+
+    async def drive() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(f"/api/projects/{project_id}/cached/revision")
+            for _ in range(100):
+                if project_id not in app.state.project_reconciliation_tasks:
+                    break
+                await asyncio.sleep(0.01)
+            return response
+
+    response = asyncio.run(drive())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "revision": initial["revision"],
+        "snapshot_freshness": "fresh",
+        "last_remote_sync_at": None,
+    }
+    assert probes == 1
+
+
+def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reconcile(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    assert initial["revision"] == 0
+
+    app.state.service.history.append(seed_patch())
+    workspace = SSHStateWorkspace(manifest.research_dir, "research.example", "/srv/project")
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments,
+            0,
+            "000001.json\n",
+            "",
+        ),
+    )
+    app.state.catalog._services.clear()
+    monkeypatch.setattr(
+        projects_module,
+        "state_workspace_for_probe",
+        lambda _manifest, _data_dir: workspace,
+    )
+
+    assert app.state.catalog.probe_remote_patch_log_head(project_id) == "moved"
+
+
+def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, monkeypatch) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    app.state.service.history.append(seed_patch())
+    entered = threading.Event()
+    release = threading.Event()
+    probe_calls = 0
+    refresh_calls = 0
+    reconcile_snapshot = app.state.catalog.reconcile_snapshot
+
+    def moved_head(requested_project_id):
+        nonlocal probe_calls
+        assert requested_project_id == project_id
+        probe_calls += 1
+        return "moved"
+
+    def blocked_reconcile(requested_project_id):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        entered.set()
+        assert release.wait(timeout=3)
+        return reconcile_snapshot(requested_project_id)
+
+    monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", moved_head)
+    monkeypatch.setattr(app.state.catalog, "reconcile_snapshot", blocked_reconcile)
+
+    async def drive() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.get(f"/api/projects/{project_id}/cached/revision")
+            assert await asyncio.to_thread(entered.wait, 1)
+            second = await asyncio.wait_for(
+                client.get(f"/api/projects/{project_id}/cached/revision"),
+                timeout=1,
+            )
+            project = await asyncio.wait_for(
+                client.get(f"/api/projects/{project_id}"),
+                timeout=1,
+            )
+            release.set()
+            for _ in range(100):
+                if project_id not in app.state.project_reconciliation_tasks:
+                    break
+                await asyncio.sleep(0.01)
+            return first, second, project
+
+    first, second, project = asyncio.run(drive())
+    refreshed = app.state.catalog.cached_snapshot(project_id)
+
+    assert first.json()["revision"] == initial["revision"]
+    assert second.status_code == 200
+    assert project.status_code == 200
+    assert project.json()["revision"] == initial["revision"]
+    assert probe_calls == 1
+    assert refresh_calls == 1
+    assert refreshed is not None
+    assert refreshed["revision"] == 1
+    assert refreshed["snapshot_freshness"] == "fresh"
+
+
+def test_local_patch_head_refreshes_cache_without_joining_the_write_path(
     manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    app.state.service.history.append(seed_patch())
+
+    async def drive() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(f"/api/projects/{project_id}/cached/revision")
+            for _ in range(100):
+                if project_id not in app.state.project_reconciliation_tasks:
+                    break
+                await asyncio.sleep(0.01)
+            return response
+
+    response = asyncio.run(drive())
+    refreshed = app.state.catalog.cached_snapshot(project_id)
+
+    assert response.json()["revision"] == initial["revision"]
+    assert refreshed is not None
+    assert refreshed["revision"] == 1
+
+
+def test_transient_head_probe_failure_marks_only_display_freshness_stale(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    monkeypatch.setattr(
+        app.state.catalog,
+        "probe_remote_patch_log_head",
+        lambda _project_id: "unavailable",
+    )
+
+    async def drive() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get(f"/api/projects/{project_id}/cached/revision")
+            for _ in range(100):
+                if project_id not in app.state.project_reconciliation_tasks:
+                    break
+                await asyncio.sleep(0.01)
+
+    asyncio.run(drive())
+    cached = app.state.catalog.cached_snapshot(project_id)
+
+    assert cached is not None
+    assert cached["snapshot_freshness"] == "stale"
+    assert cached["canonical_state"] == initial["canonical_state"]
+
+
+def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
+    manifest, tmp_path, monkeypatch
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
@@ -747,19 +950,32 @@ def test_authoritative_project_get_creates_and_replaces_display_snapshot(
     assert len(cached_files) == 1
     cache_path = cached_files[0]
     initial_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert initial_envelope["schema_version"] == 1
+    assert initial_envelope["schema_version"] == 2
+    assert initial_envelope["canonical_patch_head"] is None
     assert initial_envelope["project_id"] == project_id
     assert initial_envelope["snapshot"] == initial.json()
 
-    app.state.service.history.append(seed_patch())
-    refreshed = client.get(f"/api/projects/{project_id}")
+    monkeypatch.setattr(
+        app.state.catalog,
+        "open_snapshot",
+        lambda _project_id: (_ for _ in ()).throw(
+            AssertionError("cached project navigation must not open canonical state")
+        ),
+    )
+    monkeypatch.setattr(
+        app.state.catalog,
+        "probe_remote_patch_log_head",
+        lambda _project_id: (_ for _ in ()).throw(
+            AssertionError("cached project navigation must not issue a remote probe")
+        ),
+    )
+    cached = client.get(f"/api/projects/{project_id}")
 
-    assert refreshed.status_code == 200
-    assert refreshed.json()["revision"] == 1
+    assert cached.status_code == 200
+    assert cached.json() == initial.json()
     assert list((data_dir / "project-snapshots").iterdir()) == [cache_path]
-    replaced_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert replaced_envelope["snapshot"] == refreshed.json()
-    assert client.get(f"/api/projects/{project_id}/cached").json() == refreshed.json()
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == initial_envelope
+    assert client.get(f"/api/projects/{project_id}/cached").json() == initial.json()
 
 
 def test_cached_project_survives_restart_without_opening_history(
@@ -800,7 +1016,7 @@ def test_cached_project_survives_restart_without_opening_history(
     assert project_id not in restarted.state.catalog._services
 
 
-def test_normal_launch_exposes_health_and_cache_before_reconciliation(
+def test_normal_launch_exposes_health_and_cache_without_opening_canonical_state(
     manifest, tmp_path, monkeypatch
 ) -> None:
     data_dir = tmp_path / "data"
@@ -811,39 +1027,34 @@ def test_normal_launch_exposes_health_and_cache_before_reconciliation(
 
     app = create_app(str(manifest.path), data_dir=data_dir)
     assert project_id not in app.state.catalog._services
-    original_open_service = app.state.catalog._open_service
-    entered = threading.Event()
-    release = threading.Event()
 
-    def slow_open_service(requested_project_id):
-        entered.set()
-        assert release.wait(timeout=3)
-        return original_open_service(requested_project_id)
+    def forbidden_open_service(requested_project_id):
+        raise AssertionError(f"cached navigation opened {requested_project_id}")
 
-    monkeypatch.setattr(app.state.catalog, "_open_service", slow_open_service)
+    monkeypatch.setattr(app.state.catalog, "_open_service", forbidden_open_service)
 
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            reconciliation = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
-            try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
-                cached = await asyncio.wait_for(
-                    client.get(f"/api/projects/{project_id}/cached"),
-                    timeout=1,
-                )
-            finally:
-                release.set()
-            return health, cached, await reconciliation
+            project = await asyncio.wait_for(
+                client.get(f"/api/projects/{project_id}"),
+                timeout=1,
+            )
+            health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+            cached = await asyncio.wait_for(
+                client.get(f"/api/projects/{project_id}/cached"),
+                timeout=1,
+            )
+            return health, cached, project
 
-    health, cached, reconciled = asyncio.run(drive_concurrently())
+    health, cached, project = asyncio.run(drive_concurrently())
 
     assert health.status_code == 200
     assert health.json()["project"] == manifest.name
     assert cached.status_code == 200
     assert cached.json() == authoritative.json()
-    assert reconciled.status_code == 200
+    assert project.status_code == 200
+    assert project.json() == authoritative.json()
 
 
 def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
@@ -1403,6 +1614,10 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert response.json()["default_run_truth_scope"] == ["repo-b"]
     assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"
     assert "write_path" not in response.json()["agent_profiles"]["refresh"]
+    assert (
+        client.get(f"/api/projects/{project_id}").json()["agent_profiles"]["seed"]["model"]
+        == "claude-seed"
+    )
     content = manifest.path.read_text(encoding="utf-8")
     assert "[execution]" not in content
     assert "[paper.coach]" not in content

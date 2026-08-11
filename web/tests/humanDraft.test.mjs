@@ -7,9 +7,13 @@ import {
   deserializeHumanDraft,
   emptyHumanDraft,
   humanDraftChangeCount,
+  humanDraftBehindCount,
+  humanDraftCommittableCount,
+  humanDraftOntologyIsStale,
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
+  retainBehindDraftAfterSync,
   proposalTargetsNode,
   serializeHumanDraft,
   stageDecisionChoice,
@@ -226,7 +230,7 @@ test("direct Decision choices merge with wording edits and supersede targeted pr
 
   const restored = deserializeHumanDraft(serializeHumanDraft(draft));
   assert.deepEqual(restored, draft);
-  assert.deepEqual(toHumanSyncRequest(restored), {
+  assert.deepEqual(toHumanSyncRequest(restored, decisionGraph), {
     base_revision: 4,
     removed_node_ids: [],
     nodes: [
@@ -262,7 +266,7 @@ test("direct Decision choices merge with wording edits and supersede targeted pr
     status: "decided",
   });
   assert.equal(
-    toHumanSyncRequest(editedOptionDraft).nodes[0].changes.selected_option,
+    toHumanSyncRequest(editedOptionDraft, decisionGraph).nodes[0].changes.selected_option,
     revisedMedium,
   );
 
@@ -313,7 +317,7 @@ test("serialization survives localStorage round trips and request conversion str
   assert.deepEqual(restoredLegacyDraft, draft);
   assert.equal("ambiguities" in restoredLegacyDraft, false);
 
-  assert.deepEqual(toHumanSyncRequest(restored), {
+  assert.deepEqual(toHumanSyncRequest(restored, graph), {
     base_revision: 4,
     removed_node_ids: [],
     nodes: [
@@ -373,7 +377,7 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
   const presented = applyHumanDraft(graph, draft);
   assert.deepEqual(presented.ontology, ontology);
   assert.equal(presented.nodes[customNode.id].draft_touched, true);
-  assert.deepEqual(toHumanSyncRequest(draft), {
+  assert.deepEqual(toHumanSyncRequest(draft, graph), {
     base_revision: 4,
     removed_node_ids: [],
     nodes: [],
@@ -383,7 +387,7 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
   });
   const ontologyOnly = unstageCustomNode(draft, customNode.id);
   assert.equal(humanDraftChangeCount(ontologyOnly), 1);
-  assert.deepEqual(toHumanSyncRequest(ontologyOnly).custom_nodes, []);
+  assert.deepEqual(toHumanSyncRequest(ontologyOnly, graph).custom_nodes, []);
 });
 
 test("node removal is persistent, reversible, normalized, and mutually exclusive with node changes", () => {
@@ -417,7 +421,7 @@ test("node removal is persistent, reversible, normalized, and mutually exclusive
   assert.deepEqual(draft.removed_node_ids, [contested.id]);
   assert.equal(humanDraftChangeCount(draft), 1);
   assert.equal(applyHumanDraft(removalGraph, draft).nodes[contested.id].draft_touched, true);
-  assert.deepEqual(toHumanSyncRequest(draft).removed_node_ids, [contested.id]);
+  assert.deepEqual(toHumanSyncRequest(draft, removalGraph).removed_node_ids, [contested.id]);
 
   assert.equal(stageNodeStanding(draft, removalGraph, contested.id, "accepted"), draft);
   assert.equal(stageNodeEdit(draft, removalGraph, contested.id, { title: "Ignored" }), draft);
@@ -462,8 +466,169 @@ test("Sync conflicts preserve exact removal guards and rewrite only revision con
   assert.deepEqual(
     humanSyncFailure(new ApiError("The graph changed after this draft began.", 409)),
     {
-      text: "Draft base is stale. Reset the draft before syncing.",
+      text: "The project moved again before Sync. Your staged changes were kept and refreshed.",
       revisionConflict: true,
     },
   );
+});
+
+test("canonical movement rebases the draft and quarantines only nodes that moved", () => {
+  const unchanged = {
+    ...graph.nodes["hyp/example"],
+    id: "hyp/unchanged",
+    title: "Unchanged canonical title",
+  };
+  const before = { ...graph, nodes: { ...graph.nodes, [unchanged.id]: unchanged } };
+  let draft = stageNodeEdit(emptyHumanDraft(4), before, "hyp/example", {
+    title: "My changed-node title",
+  });
+  draft = stageNodeEdit(draft, before, unchanged.id, { title: "My unchanged-node title" });
+
+  const after = {
+    ...before,
+    revision: 5,
+    nodes: {
+      ...before.nodes,
+      "hyp/example": {
+        ...before.nodes["hyp/example"],
+        title: "Incoming canonical title",
+        updated_rev: 5,
+      },
+    },
+  };
+  const rebased = normalizeHumanDraft(draft, after);
+
+  assert.equal(rebased.base_revision, 5);
+  assert.equal(rebased.nodes["hyp/example"].base_updated_rev, 4);
+  assert.equal(rebased.nodes[unchanged.id].base_updated_rev, 4);
+  assert.equal(humanDraftBehindCount(rebased, after), 1);
+  assert.equal(humanDraftCommittableCount(rebased, after), 2);
+  assert.deepEqual(
+    toHumanSyncRequest(rebased, after).nodes.map((entry) => entry.node_id),
+    [unchanged.id],
+  );
+  assert.equal(applyHumanDraft(after, rebased).nodes["hyp/example"].title, "My changed-node title");
+});
+
+test("editing a behind node re-pins the entry and makes it committable", () => {
+  const draft = stageNodeEdit(emptyHumanDraft(4), graph, "hyp/example", {
+    title: "My staged title",
+  });
+  const moved = {
+    ...graph,
+    revision: 5,
+    nodes: {
+      ...graph.nodes,
+      "hyp/example": {
+        ...graph.nodes["hyp/example"],
+        title: "Incoming title",
+        updated_rev: 5,
+      },
+    },
+  };
+  const behind = normalizeHumanDraft(draft, moved);
+  const touched = stageNodeEdit(behind, moved, "hyp/example", {
+    statement: "Touched after seeing incoming",
+  });
+
+  assert.equal(touched.nodes["hyp/example"].base_updated_rev, 5);
+  assert.equal(humanDraftBehindCount(touched, moved), 0);
+  assert.equal(toHumanSyncRequest(touched, moved).nodes.length, 1);
+});
+
+test("Apply can swap an incoming field in and restore the displaced staged value", () => {
+  const staged = stageNodeEdit(emptyHumanDraft(4), graph, "hyp/example", {
+    title: "My staged title",
+  });
+  const moved = {
+    ...graph,
+    revision: 5,
+    nodes: {
+      ...graph.nodes,
+      "hyp/example": {
+        ...graph.nodes["hyp/example"],
+        title: "Incoming title",
+        updated_rev: 5,
+      },
+    },
+  };
+  const behind = normalizeHumanDraft(staged, moved);
+  const applied = stageNodeEdit(behind, moved, "hyp/example", {}, ["title"]);
+  const restored = stageNodeEdit(applied, moved, "hyp/example", { title: "My staged title" }, [
+    "title",
+  ]);
+
+  assert.deepEqual(applied.nodes, {});
+  assert.equal(restored.nodes["hyp/example"].base_updated_rev, 5);
+  assert.equal(restored.nodes["hyp/example"].changes.title, "My staged title");
+});
+
+test("Sync retains quarantined node edits while clearing what it committed", () => {
+  const unchanged = {
+    ...graph.nodes["hyp/example"],
+    id: "hyp/unchanged",
+    title: "Unchanged canonical title",
+  };
+  const moved = {
+    ...graph,
+    revision: 5,
+    nodes: {
+      ...graph.nodes,
+      "hyp/example": {
+        ...graph.nodes["hyp/example"],
+        title: "Incoming title",
+        updated_rev: 5,
+      },
+      [unchanged.id]: unchanged,
+    },
+  };
+  let draft = stageNodeEdit(emptyHumanDraft(4), graph, "hyp/example", {
+    title: "My staged title",
+  });
+  draft = {
+    ...normalizeHumanDraft(draft, moved),
+    nodes: {
+      ...normalizeHumanDraft(draft, moved).nodes,
+      [unchanged.id]: {
+        base_updated_rev: 4,
+        changes: { title: "Committed title" },
+        standing: "asserted",
+      },
+    },
+  };
+  const afterSync = {
+    ...moved,
+    revision: 6,
+    nodes: {
+      ...moved.nodes,
+      [unchanged.id]: { ...unchanged, title: "Committed title", updated_rev: 6 },
+    },
+  };
+
+  const retained = retainBehindDraftAfterSync(draft, moved, afterSync);
+  assert.deepEqual(Object.keys(retained.nodes), ["hyp/example"]);
+  assert.equal(retained.base_revision, 6);
+  assert.equal(humanDraftBehindCount(retained, afterSync), 1);
+});
+
+test("ontology keeps its own stale gate after ordinary draft rebasing", () => {
+  const ontologyDraft = stageOntology(emptyHumanDraft(4), graph, {
+    types: [
+      {
+        name: "mechanism",
+        definition: "A mechanism.",
+        base_type: "hypothesis",
+        layer: "epistemic",
+        deprecated: false,
+      },
+    ],
+    fields: [],
+    relations: [],
+  });
+  const moved = { ...graph, revision: 5 };
+  const rebased = normalizeHumanDraft(ontologyDraft, moved);
+
+  assert.equal(rebased.base_revision, 5);
+  assert.equal(rebased.ontology_base_revision, 4);
+  assert.equal(humanDraftOntologyIsStale(rebased, moved), true);
 });

@@ -6,7 +6,6 @@ import {
   History,
   LoaderCircle,
   MessageSquarePlus,
-  RotateCcw,
   Send,
   WifiOff,
 } from "lucide-react";
@@ -41,8 +40,9 @@ const MIN_EDITOR_WIDTH = 360;
 const MIN_COACH_WIDTH = 320;
 const DIVIDER_WIDTH = 9;
 const PAPER_VIEW_STORAGE_PREFIX = "rcp:paper-view";
+const PAPER_REFRESH_INTERVAL_MS = 5_000;
 
-type PaperView = "write" | "preview";
+type PaperView = "write" | "preview" | "incoming";
 
 interface EditorShareBounds {
   minimum: number;
@@ -66,14 +66,25 @@ function clampEditorShare(value: number, bounds: EditorShareBounds): number {
   return Math.min(bounds.maximum, Math.max(bounds.minimum, value));
 }
 
-function storedPaperView(projectId: string): PaperView {
+function storedPaperView(projectId: string, allowIncoming: boolean): PaperView {
   try {
-    return localStorage.getItem(`${PAPER_VIEW_STORAGE_PREFIX}:${projectId}`) === "preview"
-      ? "preview"
-      : "write";
+    const stored = localStorage.getItem(`${PAPER_VIEW_STORAGE_PREFIX}:${projectId}`);
+    if (stored === "preview" || (allowIncoming && stored === "incoming")) return stored;
+    return "write";
   } catch {
     return "write";
   }
+}
+
+export function swapPaperBuffers(editor: string, incoming: string): [string, string] {
+  return [incoming, editor];
+}
+
+export function loadPaperSnapshot(
+  load: (path: string) => Promise<PaperSnapshot>,
+  apiBase: string,
+): Promise<PaperSnapshot> {
+  return load(`${apiBase}/paper`);
 }
 
 export function PaperWorkspace({
@@ -86,6 +97,13 @@ export function PaperWorkspace({
 }: Props) {
   const [paper, setPaper] = useState(initialPaper);
   const [content, setContent] = useState(initialPaper.content);
+  const [incomingContent, setIncomingContent] = useState(initialPaper.incoming_content ?? "");
+  // Keep the version paired with the visible Incoming buffer. Canonical may
+  // advance again while that buffer temporarily holds the displaced draft.
+  const [incomingCanonicalHash, setIncomingCanonicalHash] = useState(
+    initialPaper.sync_state === "behind" ? (initialPaper.canonical_hash ?? null) : null,
+  );
+  const [saveBaseHash, setSaveBaseHash] = useState(initialPaper.base_hash ?? null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -100,7 +118,9 @@ export function PaperWorkspace({
   );
   const [message, setMessage] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [paperView, setPaperView] = useState<PaperView>(() => storedPaperView(project.id));
+  const [paperView, setPaperView] = useState<PaperView>(() =>
+    storedPaperView(project.id, initialPaper.sync_state === "behind"),
+  );
   const [editorShare, setEditorShare] = useState(62);
   const [editorShareBounds, setEditorShareBounds] = useState<EditorShareBounds>({
     minimum: MIN_EDITOR_SHARE,
@@ -110,6 +130,8 @@ export function PaperWorkspace({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const coachTextarea = useRef<HTMLTextAreaElement>(null);
   const latestContent = useRef(content);
+  const buffersSwapped = useRef(false);
+  const paperRequestGeneration = useRef(0);
   const handledCoachTask = useRef<string | null>(
     tasks.find((task) => task.kind === "paper_coach" && task.status === "succeeded")
       ?.operation_id ?? null,
@@ -118,6 +140,36 @@ export function PaperWorkspace({
   useEffect(() => {
     latestContent.current = content;
   }, [content]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      const generation = ++paperRequestGeneration.current;
+      try {
+        const next = await loadPaperSnapshot(api, apiBase);
+        if (cancelled || generation !== paperRequestGeneration.current) return;
+        setPaper(next);
+        if (!buffersSwapped.current) {
+          setIncomingContent(next.incoming_content ?? "");
+          setIncomingCanonicalHash(
+            next.sync_state === "behind" ? (next.canonical_hash ?? null) : null,
+          );
+        }
+        if (next.sync_state !== "behind") setSaveBaseHash(next.base_hash ?? null);
+        onPaperChange(next);
+      } catch {
+        // A background freshness check must not turn a usable local editor into an error state.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), PAPER_REFRESH_INTERVAL_MS);
+      }
+    };
+    timer = window.setTimeout(() => void poll(), PAPER_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [apiBase, onPaperChange]);
 
   const attachSession = (session: WritingSession) => {
     setActiveSession(session);
@@ -208,12 +260,20 @@ export function PaperWorkspace({
     const timer = window.setTimeout(async () => {
       setSaving(true);
       const savedContent = latestContent.current;
+      const generation = ++paperRequestGeneration.current;
       try {
         const next = await api<PaperSnapshot>(`${apiBase}/paper`, {
           method: "PUT",
-          body: JSON.stringify({ content: savedContent, base_hash: paper.base_hash ?? null }),
+          body: JSON.stringify({ content: savedContent, base_hash: saveBaseHash }),
         });
+        if (generation !== paperRequestGeneration.current) return;
         setPaper(next);
+        setIncomingContent(next.incoming_content ?? "");
+        setIncomingCanonicalHash(
+          next.sync_state === "behind" ? (next.canonical_hash ?? null) : null,
+        );
+        if (next.sync_state !== "behind") setSaveBaseHash(next.base_hash ?? null);
+        buffersSwapped.current = false;
         onPaperChange(next);
         setDirty(next.content !== latestContent.current);
         setSaveError(null);
@@ -224,7 +284,7 @@ export function PaperWorkspace({
       }
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [apiBase, dirty, onPaperChange, paper.base_hash, paper.sync_state, saveError, saving]);
+  }, [apiBase, dirty, onPaperChange, paper.sync_state, saveBaseHash, saveError, saving]);
 
   const create = async () => {
     if (creating) return;
@@ -234,6 +294,10 @@ export function PaperWorkspace({
       const next = await api<PaperSnapshot>(`${apiBase}/paper/create`, { method: "POST" });
       setPaper(next);
       setContent(next.content);
+      setIncomingContent(next.incoming_content ?? "");
+      setIncomingCanonicalHash(next.sync_state === "behind" ? (next.canonical_hash ?? null) : null);
+      setSaveBaseHash(next.base_hash ?? null);
+      buffersSwapped.current = false;
       latestContent.current = next.content;
       setDirty(next.sync_state === "unsynced");
       onPaperChange(next);
@@ -242,23 +306,6 @@ export function PaperWorkspace({
       setSaveError(error instanceof Error ? error.message : String(error));
     } finally {
       setCreating(false);
-    }
-  };
-
-  const resolve = async (strategy: "use_canonical" | "overwrite_canonical") => {
-    try {
-      const next = await api<PaperSnapshot>(`${apiBase}/paper/conflict`, {
-        method: "POST",
-        body: JSON.stringify({ strategy }),
-      });
-      setPaper(next);
-      setContent(next.content);
-      latestContent.current = next.content;
-      setDirty(false);
-      setSaveError(null);
-      onPaperChange(next);
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -321,6 +368,28 @@ export function PaperWorkspace({
       localStorage.setItem(`${PAPER_VIEW_STORAGE_PREFIX}:${project.id}`, next);
     } catch {}
   };
+  const applyIncoming = () => {
+    const [nextContent, nextIncoming] = swapPaperBuffers(content, incomingContent);
+    setContent(nextContent);
+    setIncomingContent(nextIncoming);
+    latestContent.current = nextContent;
+    setSaveBaseHash(incomingCanonicalHash);
+    buffersSwapped.current = !buffersSwapped.current;
+    setDirty(false);
+    setSaveError(null);
+  };
+
+  useEffect(() => {
+    if (paperView === "incoming") setSaveBaseHash(incomingCanonicalHash);
+  }, [incomingCanonicalHash, paperView]);
+
+  useEffect(() => {
+    if (paper.sync_state === "behind" || paperView !== "incoming") return;
+    setPaperView("write");
+    try {
+      localStorage.setItem(`${PAPER_VIEW_STORAGE_PREFIX}:${project.id}`, "write");
+    } catch {}
+  }, [paper.sync_state, paperView, project.id]);
 
   const paperCreated = paper.sync_state !== "not_created";
   useEffect(() => {
@@ -375,24 +444,46 @@ export function PaperWorkspace({
     >
       <div className="paper-editor-column">
         <header className="paper-toolbar">
-          <div className="paper-view-toggle" role="group" aria-label="Paper view">
-            {(["write", "preview"] as const).map((view) => (
+          <div className="paper-view-controls">
+            <div className="paper-view-toggle" role="group" aria-label="Paper view">
+              {(["write", "preview"] as const).map((view) => (
+                <button
+                  aria-pressed={paperView === view}
+                  key={view}
+                  onClick={() => selectPaperView(view)}
+                  type="button"
+                >
+                  {view === "write" ? "Write" : "Preview"}
+                </button>
+              ))}
+              {paper.sync_state === "behind" && (
+                <button
+                  aria-pressed={paperView === "incoming"}
+                  onClick={() => selectPaperView("incoming")}
+                  type="button"
+                >
+                  Incoming
+                </button>
+              )}
+            </div>
+            {paper.sync_state === "behind" && (
               <button
-                aria-pressed={paperView === view}
-                key={view}
-                onClick={() => selectPaperView(view)}
+                aria-label="Swap editor and incoming introduction"
+                className="button compact secondary paper-apply-incoming"
+                disabled={saving}
+                onClick={applyIncoming}
                 type="button"
               >
-                {view === "write" ? "Write" : "Preview"}
+                Apply
               </button>
-            ))}
+            )}
           </div>
           <div className="paper-status">
             <span>{wordCount} words</span>
             <span className={`sync-state ${saveError ? "save-error" : paper.sync_state}`}>
               {!saveError && paper.sync_state === "synced" && <Check size={13} />}
               {!saveError && paper.sync_state === "unsynced" && <WifiOff size={13} />}
-              {(saveError || paper.sync_state === "conflict") && <AlertTriangle size={13} />}
+              {(saveError || paper.sync_state === "behind") && <AlertTriangle size={13} />}
               {saveError
                 ? "save failed"
                 : saving
@@ -414,21 +505,6 @@ export function PaperWorkspace({
             </button>
           </div>
         )}
-        {paper.sync_state === "conflict" && (
-          <div className="conflict-banner">
-            <AlertTriangle size={17} />
-            <span>
-              <strong>The canonical introduction changed elsewhere.</strong> Automatic sync stopped.
-              Choose which version survives.
-            </span>
-            <button className="button secondary" onClick={() => void resolve("use_canonical")}>
-              <RotateCcw size={14} /> Use canonical
-            </button>
-            <button className="button danger" onClick={() => void resolve("overwrite_canonical")}>
-              Overwrite canonical
-            </button>
-          </div>
-        )}
         {paperView === "write" ? (
           <textarea
             ref={textarea}
@@ -447,7 +523,7 @@ export function PaperWorkspace({
             aria-label="Paper introduction preview"
             className="markdown-editor paper-markdown-preview chat-markdown"
           >
-            <MarkdownAnswer text={content} />
+            <MarkdownAnswer text={paperView === "incoming" ? incomingContent : content} />
           </article>
         )}
       </div>

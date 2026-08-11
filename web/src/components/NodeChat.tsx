@@ -52,9 +52,11 @@ import {
   isDesktopRuntime,
   listenDesktopEvent,
   openDesktopArtifactPreview,
+  openDesktopRepositoryFilePreview,
   startDesktopDictation,
   stopDesktopDictation,
 } from "../desktopRuntime";
+import { repositoryFilePreviewUrl, resolveRepositoryFileHref } from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
   AgentTask,
@@ -229,6 +231,9 @@ export function NodeChat({
   const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [watchersOpen, setWatchersOpen] = useState(false);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
@@ -305,6 +310,7 @@ export function NodeChat({
     if (lastChatIdRef.current !== chatId) {
       lastChatIdRef.current = chatId;
       shouldStickToBottomRef.current = true;
+      setRepositoryFileErrors(new Map());
     }
     const element = chatLinesRef.current;
     if (!element || !shouldStickToBottomRef.current) return;
@@ -727,6 +733,56 @@ export function NodeChat({
     }
   };
 
+  const openRepositoryFile = async (messageId: string, href: string) => {
+    const resolution = resolveRepositoryFileHref(href, project.repositories);
+    if (resolution.kind === "error") {
+      setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
+      return;
+    }
+
+    setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
+    const target = resolution.target;
+    if (desktop) {
+      try {
+        await openDesktopRepositoryFilePreview({ projectId: project.id, ...target });
+      } catch (error) {
+        setRepositoryFileErrors((current) =>
+          withMapValue(
+            current,
+            messageId,
+            `Open failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+      }
+      return;
+    }
+
+    const preview = window.open("about:blank", "_blank");
+    if (!preview) {
+      setRepositoryFileErrors((current) =>
+        withMapValue(current, messageId, "Repository file preview could not be opened."),
+      );
+      return;
+    }
+    preview.opener = null;
+    const url = repositoryFilePreviewUrl(project.id, target);
+    if (!(await artifactIsAvailable(url))) {
+      preview.close();
+      setRepositoryFileErrors((current) =>
+        withMapValue(current, messageId, "Repository file preview is unavailable."),
+      );
+      return;
+    }
+    try {
+      preview.location.replace(url);
+    } catch {
+      preview.close();
+      setRepositoryFileErrors((current) =>
+        withMapValue(current, messageId, "Repository file preview could not be opened."),
+      );
+    }
+  };
+
   const watcherToggle = liveWatchers.length > 0 && (
     <button
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
@@ -845,7 +901,13 @@ export function NodeChat({
                       nodes={nodes}
                       glossaryIndex={glossaryIndex}
                       onOpenNode={onOpenNode}
+                      onOpenRepositoryFileLink={(href) => void openRepositoryFile(messageId, href)}
                     />
+                    {repositoryFileErrors.get(messageId) && (
+                      <strong className="chat-repository-file-error" role="alert">
+                        {repositoryFileErrors.get(messageId)}
+                      </strong>
+                    )}
                   </div>
                 )
               ) : line.role === "human" ? (

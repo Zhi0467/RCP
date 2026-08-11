@@ -6,12 +6,14 @@ driver: api + browser
 covered_by:
   - tests/test_api.py::test_project_revision_probe_is_small_and_does_not_replay_history
   - tests/test_api.py::test_project_revision_probe_returns_normal_project_not_found
+  - tests/test_api.py::test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_refresh
+  - tests/test_api.py::test_moved_head_refreshes_in_background_singleflight
   - tests/test_api.py::test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate
   - web/tests/canonicalRevisionRefresh.test.mjs
-last_passed: 2026-08-07 — two clients against a throwaway acceptance-agent
-  project; client B reconciled revision 8 without reload, preserved its unsynced
-  node draft as a visible stale-base conflict, and both browser consoles and the
-  server traceback log remained clean
+  - web/tests/humanDraft.test.mjs
+last_passed: 2026-08-11 — an isolated served project reconciled an external
+  revision without reload, preserved three staged nodes as two committable plus
+  one behind, and kept both the browser console and server traceback log clean
 invariants: [1, 2, 3, 6, 10b]
 ---
 
@@ -23,12 +25,13 @@ revision and reconciles its project snapshot. Newly asserted graph content and
 new Proposals therefore appear without a browser reload, desktop restart, view
 change, or agent Refresh run.
 
-Detection is cheap and read-only. An unchanged project does not repeatedly
-replay canonical history or transfer the full graph. A client fetches the full
-project snapshot only after the backend reports a newer canonical revision.
-Reconciliation preserves unsynced human draft edits; if those edits were based
-on the previous revision, the existing stale-draft state makes that conflict
-visible rather than discarding or silently rebasing the draft.
+Detection is cheap and read-only. A cache-only client heartbeat schedules a
+throttled patch-head probe; an unchanged project does not replay canonical
+history or transfer the full graph. A client fetches the full project snapshot
+only after background reconciliation advances the cached revision.
+Reconciliation preserves unsynced human draft edits. Entries whose canonical
+node moved become behind and cannot enter Sync untouched; independently pinned
+entries remain committable.
 
 ## UI path
 
@@ -40,8 +43,8 @@ visible rather than discarding or silently rebasing the draft.
 - The circular project Refresh action keeps its existing meaning: run the
   Seed/Refresh ingestion agent. It is never repurposed as a display reload.
 - A transient detection or reconciliation failure leaves the last truthful
-  snapshot visible and surfaces the existing connection/error treatment; it
-  never clears the graph or staged human work.
+  snapshot visible and marks only display-snapshot freshness stale; it never
+  declares canonical state unreachable, clears the graph, or drops staged work.
 
 Deliberately not possible: a second canonical state path, a client-side graph
 patch, silent draft loss, or continuous full-project replay while nothing has
@@ -66,7 +69,7 @@ changed.
 - `new_proposal_appears_without_manual_reload`
 - `external_client_changes_are_detected`
 - `same_client_work_completion_still_reconciles_immediately`
-- `unsynced_human_draft_is_preserved_and_marked_stale`
+- `unsynced_human_draft_is_preserved_and_moved_entries_are_behind`
 - `refresh_agent_control_keeps_its_existing_meaning`
 - `probe_or_reload_failure_keeps_the_last_snapshot_visible`
 

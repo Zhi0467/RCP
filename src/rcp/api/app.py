@@ -35,7 +35,7 @@ from rcp.background import (
     AgentTaskRequest,
     BackgroundAgentTasks,
 )
-from rcp.config import AgentSurface
+from rcp.config import AgentSurface, load_manifest
 from rcp.control import (
     ExperimentControlState,
     ExperimentOperationalState,
@@ -49,11 +49,17 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
+    REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
 )
 from rcp.paper import PaperSnapshot
 from rcp.projects import ProjectCatalog
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, profile_for
+from rcp.repository_preview import (
+    REPOSITORY_PREVIEW_CSP,
+    load_repository_source_for_path,
+    repository_source_document,
+)
 from rcp.runs.chat import _logical_chat_turn_operation_id
 from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
@@ -97,10 +103,6 @@ logger = logging.getLogger(__name__)
 class PaperSaveRequest(BaseModel):
     content: str
     base_hash: str | None = None
-
-
-class ConflictRequest(BaseModel):
-    strategy: Literal["use_canonical", "overwrite_canonical"]
 
 
 class ProjectRegisterRequest(BaseModel):
@@ -168,6 +170,8 @@ def create_app(
     )
     experiment_operation_locks: dict[str, threading.RLock] = {}
     experiment_operation_locks_guard = threading.Lock()
+    project_reconciliation_tasks: dict[str, asyncio.Task[None]] = {}
+    project_probe_started_at: dict[str, float] = {}
 
     def experiment_operation_lock(project_id: str) -> threading.RLock:
         with experiment_operation_locks_guard:
@@ -281,8 +285,14 @@ def create_app(
             paper = PaperSnapshot.model_validate(cached["paper"])
             snapshot = service.project_snapshot(state=state, paper=paper)
             snapshot["id"] = project_id
+            catalog.mark_snapshot_fresh(snapshot)
             attach_experiment_control(project_id, snapshot)
-            catalog.commit_cached_snapshot(project_id, snapshot, generation=generation)
+            catalog.commit_cached_snapshot(
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=service.history.workspace.cached_patch_log_head(),
+            )
         except Exception as exc:
             logger.warning(
                 "Could not refresh display snapshot after task %s for project %s: %s",
@@ -542,7 +552,12 @@ def create_app(
         finally:
             for task in startup_maintenance:
                 task.cancel()
+            for task in list(project_reconciliation_tasks.values()):
+                task.cancel()
             for task in startup_maintenance:
+                with suppress(asyncio.CancelledError):
+                    await task
+            for task in list(project_reconciliation_tasks.values()):
                 with suppress(asyncio.CancelledError):
                     await task
             watcher_poller.stop()
@@ -562,6 +577,7 @@ def create_app(
     app.state.service = default_service
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
+    app.state.project_reconciliation_tasks = project_reconciliation_tasks
     app.state.watcher_poller = watcher_poller
     app.state.instance_metadata = identity
     app.state.launcher = launcher
@@ -767,14 +783,86 @@ def create_app(
             for experiment_id in experiment_ids
         }
 
+    async def reconcile_cached_project(project_id: str) -> None:
+        try:
+            head_status = await asyncio.to_thread(catalog.probe_remote_patch_log_head, project_id)
+            if head_status == "unavailable":
+                await asyncio.to_thread(
+                    catalog.update_cached_snapshot_freshness,
+                    project_id,
+                    "stale",
+                )
+                return
+            if head_status == "unchanged":
+                await asyncio.to_thread(
+                    catalog.update_cached_snapshot_freshness,
+                    project_id,
+                    "fresh",
+                )
+                return
+
+            await asyncio.to_thread(
+                catalog.update_cached_snapshot_freshness,
+                project_id,
+                "reconciling",
+            )
+            generation = await asyncio.to_thread(
+                catalog.reserve_cached_snapshot_generation,
+                project_id,
+            )
+            service, snapshot = await asyncio.to_thread(catalog.reconcile_snapshot, project_id)
+            attach_experiment_control(project_id, snapshot)
+            await asyncio.to_thread(
+                catalog.commit_cached_snapshot,
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=service.history.workspace.cached_patch_log_head(),
+            )
+        except KeyError:
+            return
+        except Exception as exc:
+            logger.warning("Could not reconcile display snapshot for %s: %s", project_id, exc)
+            with suppress(KeyError, OSError, TypeError, ValueError):
+                await asyncio.to_thread(
+                    catalog.update_cached_snapshot_freshness,
+                    project_id,
+                    "stale",
+                )
+
+    def schedule_project_reconciliation(project_id: str) -> None:
+        task = project_reconciliation_tasks.get(project_id)
+        if task is not None and not task.done():
+            return
+        now = time.monotonic()
+        last_started = project_probe_started_at.get(project_id)
+        if (
+            last_started is not None
+            and now - last_started < REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS
+        ):
+            return
+        project_probe_started_at[project_id] = now
+        task = asyncio.create_task(reconcile_cached_project(project_id))
+        project_reconciliation_tasks[project_id] = task
+
+        def forget(completed: asyncio.Task[None]) -> None:
+            if project_reconciliation_tasks.get(project_id) is completed:
+                project_reconciliation_tasks.pop(project_id, None)
+
+        task.add_done_callback(forget)
+
     @app.get("/api/projects/{project_id}")
-    def project(project_id: str) -> dict[str, object]:
+    async def project(project_id: str) -> dict[str, object]:
+        cached = catalog.cached_snapshot(project_id)
+        if cached is not None:
+            attach_experiment_control(project_id, cached)
+            return cached
         try:
             generation = catalog.reserve_cached_snapshot_generation(project_id)
-            _, snapshot = catalog.open_snapshot(project_id)
+            service, snapshot = await asyncio.to_thread(catalog.open_snapshot, project_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (FileNotFoundError, OSError, ValueError) as exc:
+        except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         snapshot["id"] = project_id
         attach_experiment_control(project_id, snapshot)
@@ -783,6 +871,7 @@ def create_app(
                 project_id,
                 snapshot,
                 generation=generation,
+                patch_log_head=service.history.workspace.cached_patch_log_head(),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -804,6 +893,18 @@ def create_app(
         attach_experiment_control(project_id, snapshot)
         return snapshot
 
+    @app.get("/api/projects/{project_id}/cached/revision")
+    async def cached_project_revision(project_id: str) -> dict[str, object]:
+        snapshot = catalog.cached_snapshot(project_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="Cached project snapshot not found")
+        schedule_project_reconciliation(project_id)
+        return {
+            "revision": snapshot["revision"],
+            "snapshot_freshness": snapshot["snapshot_freshness"],
+            "last_remote_sync_at": snapshot["last_remote_sync_at"],
+        }
+
     @app.get("/api/projects/{project_id}/readiness")
     def project_readiness(project_id: str, refresh: bool = False) -> dict[str, object]:
         try:
@@ -821,6 +922,38 @@ def create_app(
     def project_revision(project_id: str) -> dict[str, int]:
         service = _project_service(catalog, project_id)
         return {"revision": service.history.current_accepted_revision()}
+
+    @app.get("/api/projects/{project_id}/repositories/files/preview")
+    @app.head("/api/projects/{project_id}/repositories/files/preview")
+    def preview_repository_file(
+        project_id: str,
+        request: Request,
+        path: str = Query(min_length=1),
+        line: int | None = Query(default=None, ge=1),
+    ) -> Response:
+        record = store.project(project_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        try:
+            manifest = load_manifest(record.locator)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        try:
+            source = load_repository_source_for_path(manifest, path)
+            document = repository_source_document(source, line=line)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            b"" if request.method == "HEAD" else document,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": REPOSITORY_PREVIEW_CSP,
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.put("/api/projects/{project_id}/settings")
     def update_project_settings(
@@ -1413,11 +1546,6 @@ def create_app(
     def save_paper(project_id: str, body: PaperSaveRequest):
         paper = _project_service(catalog, project_id).paper
         return paper.save(body.content, body.base_hash).model_dump(mode="json")
-
-    @app.post("/api/projects/{project_id}/paper/conflict")
-    def resolve_paper_conflict(project_id: str, body: ConflictRequest):
-        paper = _project_service(catalog, project_id).paper
-        return paper.resolve_conflict(body.strategy).model_dump(mode="json")
 
     @app.get("/api/projects/{project_id}/paper/sessions")
     def paper_sessions(project_id: str):

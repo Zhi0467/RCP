@@ -100,11 +100,16 @@ import { RunDialog } from "./components/RunDialog";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
+  draftNodeIsBehind,
   emptyHumanDraft,
+  humanDraftBehindCount,
   humanDraftChangeCount,
+  humanDraftCommittableCount,
+  humanDraftOntologyIsStale,
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
+  retainBehindDraftAfterSync,
   serializeHumanDraft,
   stageDecisionChoice,
   stageNodeEdit,
@@ -240,7 +245,7 @@ export async function loadCanonicalRevision(
   fetchJson: <T>(path: string) => Promise<T>,
   apiBase: string,
 ): Promise<number> {
-  const snapshot = await fetchJson<{ revision: number }>(`${apiBase}/revision`);
+  const snapshot = await fetchJson<{ revision: number }>(`${apiBase}/cached/revision`);
   return snapshot.revision;
 }
 
@@ -344,8 +349,81 @@ export async function loadExperimentWatcherPoll(
 }
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
+export const PROJECT_TAB_CACHE_LIMIT = 8;
 
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
+
+interface CachedProjectTabState {
+  project: ProjectSnapshot;
+  viewState: ProjectViewState;
+  projectHeaderCollapsed: boolean;
+  runScope: string[];
+  selectedNodeId: string | null;
+  companionNodeId: string | null;
+  detailFocusTokens: Record<DetailWindowSlot, number>;
+  selectedExperimentRunId: string | null;
+  focusExperimentRunId: string | null;
+  dockedNodeIds: string[];
+  floatingChat: { chatId: string; nodeId: string } | null;
+  draftConversations: DraftConversation[];
+  selectedChatId: string | null;
+  unreadChatTaskIds: Set<string>;
+  chatSummaries: ChatSummary[];
+  chatSummaryTotal: number;
+  chatSummaryNextOffset: number;
+  chatTranscripts: Map<string, ChatTranscript>;
+  selectedCanonicalChat: ChatSummary | null;
+  chatTaskStatuses: Map<string, AgentTask["status"]>;
+  dagRelationFocusId: string | null;
+  retryTask: AgentTask | null;
+  humanDraft: HumanDraft | null;
+  tasks: AgentTask[];
+  latestRevisionSummary: RevisionSummary | null;
+  historyRevisionSummaries: RevisionSummary[];
+  historySummariesRevision: number | null;
+  historySummariesError: string | null;
+  projectHistoryOpen: boolean;
+  usage: AgentUsageSnapshot | null;
+  watchers: WatcherRecord[];
+  taskInspectorId: string | null;
+  inspectedTask: AgentTask | null;
+  activityTaskId: string | null;
+  dismissedTaskIds: Set<string>;
+  dismissedHistoryNoticeIds: Set<string>;
+}
+
+export function cacheProjectTabState<T>(
+  cache: Map<string, T>,
+  projectId: string,
+  state: T,
+  limit = PROJECT_TAB_CACHE_LIMIT,
+): void {
+  cache.delete(projectId);
+  cache.set(projectId, state);
+  while (cache.size > limit) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+export function cachedSnapshotCanReplace(
+  renderedProjectId: string | null,
+  renderedRevision: number,
+  snapshot: ProjectSnapshot,
+): boolean {
+  return snapshot.id !== renderedProjectId || snapshot.graph.revision >= renderedRevision;
+}
+
+export function projectTabStateForOpen<T>(
+  cache: Map<string, T>,
+  projectId: string,
+): { state: T; loading: false } | null {
+  const state = cache.get(projectId);
+  if (!state) return null;
+  cacheProjectTabState(cache, projectId, state);
+  return { state, loading: false };
+}
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
@@ -464,7 +542,8 @@ export default function App() {
   const researchSubviewRef = useRef<AppView>("scientific");
   const dagViewportRefsRef = useRef(new Map<string, { current: DagViewport | null }>());
   const openProjectTabsRef = useRef(openProjectTabs);
-  const projectViewStatesRef = useRef(new Map<string, ProjectViewState>());
+  const projectTabStatesRef = useRef(new Map<string, CachedProjectTabState>());
+  const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
   openProjectTabsRef.current = openProjectTabs;
   activeProjectId.current = projectId;
   renderedRevisionRef.current = graph.revision;
@@ -474,16 +553,75 @@ export default function App() {
     ? projectViewportRef(dagViewportRefsRef.current, projectId)
     : null;
 
-  const rememberProjectView = useCallback((id: string | null) => {
+  currentProjectStateRef.current = project
+    ? {
+        project,
+        projectHeaderCollapsed,
+        runScope,
+        selectedNodeId: selectedNode?.id ?? null,
+        companionNodeId: companionNode?.id ?? null,
+        detailFocusTokens,
+        selectedExperimentRunId,
+        focusExperimentRunId,
+        dockedNodeIds,
+        floatingChat,
+        draftConversations,
+        selectedChatId,
+        unreadChatTaskIds,
+        chatSummaries,
+        chatSummaryTotal,
+        chatSummaryNextOffset,
+        chatTranscripts,
+        selectedCanonicalChat,
+        chatTaskStatuses: chatTaskStatuses.current,
+        dagRelationFocusId,
+        retryTask,
+        humanDraft,
+        tasks,
+        latestRevisionSummary,
+        historyRevisionSummaries,
+        historySummariesRevision,
+        historySummariesError,
+        projectHistoryOpen,
+        usage,
+        watchers,
+        taskInspectorId,
+        inspectedTask,
+        activityTaskId,
+        dismissedTaskIds,
+        dismissedHistoryNoticeIds,
+      }
+    : null;
+
+  const rememberProjectState = useCallback((id: string | null) => {
     if (!id) return;
+    const current = currentProjectStateRef.current;
+    if (!current || current.project.id !== id) return;
     const panelScroll = new Map(panelScrollRef.current);
     const dagViewport = dagViewportRefsRef.current.get(id)?.current ?? null;
     if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
-    projectViewStatesRef.current.set(id, {
-      view: viewRef.current,
-      panelScroll: [...panelScroll.entries()],
-      researchSubview: researchSubviewRef.current,
-      dagViewport: dagViewport ? { ...dagViewport } : null,
+    cacheProjectTabState(projectTabStatesRef.current, id, {
+      ...current,
+      runScope: [...current.runScope],
+      detailFocusTokens: { ...current.detailFocusTokens },
+      dockedNodeIds: [...current.dockedNodeIds],
+      floatingChat: current.floatingChat ? { ...current.floatingChat } : null,
+      draftConversations: [...current.draftConversations],
+      unreadChatTaskIds: new Set(current.unreadChatTaskIds),
+      chatSummaries: [...current.chatSummaries],
+      chatTranscripts: new Map(current.chatTranscripts),
+      chatTaskStatuses: new Map(current.chatTaskStatuses),
+      tasks: [...current.tasks],
+      historyRevisionSummaries: [...current.historyRevisionSummaries],
+      watchers: [...current.watchers],
+      dismissedTaskIds: new Set(current.dismissedTaskIds),
+      dismissedHistoryNoticeIds: new Set(current.dismissedHistoryNoticeIds),
+      viewState: {
+        view: viewRef.current,
+        panelScroll: [...panelScroll.entries()],
+        researchSubview: researchSubviewRef.current,
+        dagViewport: dagViewport ? { ...dagViewport } : null,
+      },
     });
   }, []);
 
@@ -513,14 +651,101 @@ export default function App() {
     }
   }, []);
 
+  const restoreProjectTabState = useCallback(
+    (id: string, state: CachedProjectTabState, requestedView?: AppView) => {
+      const nextGraph = state.project.graph;
+      const presented = applyHumanDraft(nextGraph, state.humanDraft);
+      cacheProjectTabState(projectTabStatesRef.current, id, state);
+      renderedRevisionRef.current = nextGraph.revision;
+      authoritativeProjectId.current = id;
+      setProject(state.project);
+      setGraph(nextGraph);
+      setPaper(state.project.paper);
+      setProjectHeaderCollapsed(state.projectHeaderCollapsed);
+      setRunScope([...state.runScope]);
+      setSelectedNode(
+        state.selectedNodeId ? (presented.nodes[state.selectedNodeId] ?? null) : null,
+      );
+      setCompanionNode(
+        state.companionNodeId ? (presented.nodes[state.companionNodeId] ?? null) : null,
+      );
+      setDetailFocusTokens({ ...state.detailFocusTokens });
+      setSelectedExperimentRunId(state.selectedExperimentRunId);
+      setFocusExperimentRunId(state.focusExperimentRunId);
+      setExperimentStopId(null);
+      setDockedNodeIds(state.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
+      setFloatingChat(state.floatingChat ? { ...state.floatingChat } : null);
+      setDraftConversations([...state.draftConversations]);
+      selectChat(state.selectedChatId);
+      setUnreadChatTaskIds(new Set(state.unreadChatTaskIds));
+      chatSummaryRefreshGeneration.current += 1;
+      chatSummariesRef.current = [...state.chatSummaries];
+      setChatSummaries([...state.chatSummaries]);
+      setChatSummaryTotal(state.chatSummaryTotal);
+      setChatSummaryNextOffset(state.chatSummaryNextOffset);
+      setChatSummariesLoading(false);
+      setChatTranscripts(new Map(state.chatTranscripts));
+      selectedCanonicalChatRef.current = state.selectedCanonicalChat;
+      setSelectedCanonicalChat(state.selectedCanonicalChat);
+      chatTaskStatuses.current = new Map(state.chatTaskStatuses);
+      setDagRelationFocusId(state.dagRelationFocusId);
+      setRetryTask(state.retryTask);
+      setHumanDraft(state.humanDraft);
+      setSyncingDraft(false);
+      setTasks([...state.tasks]);
+      setLatestRevisionSummary(state.latestRevisionSummary);
+      setHistoryRevisionSummaries([...state.historyRevisionSummaries]);
+      setHistorySummariesRevision(state.historySummariesRevision);
+      setHistorySummariesError(state.historySummariesError);
+      setProjectHistoryOpen(state.projectHistoryOpen);
+      setUsage(state.usage);
+      setWatchers([...state.watchers]);
+      setTaskInspectorId(state.taskInspectorId);
+      setInspectedTask(state.inspectedTask);
+      setActivityTaskId(state.activityTaskId);
+      setDismissedTaskIds(new Set(state.dismissedTaskIds));
+      setDismissedHistoryNoticeIds(new Set(state.dismissedHistoryNoticeIds));
+      panelScrollRef.current = new Map(state.viewState.panelScroll);
+      researchSubviewRef.current = state.viewState.researchSubview;
+      const viewportRef = projectViewportRef(dagViewportRefsRef.current, id);
+      viewportRef.current = state.viewState.dagViewport ? { ...state.viewState.dagViewport } : null;
+      setView(requestedView ?? state.viewState.view);
+      setProjectReconciliation("authoritative");
+      setLoading(false);
+    },
+    [selectChat],
+  );
+
   const applyProjectSnapshot = useCallback(
     (nextProject: ProjectSnapshot, preserveReadiness: boolean) => {
       const nextGraph = nextProject.graph;
+      if (
+        !cachedSnapshotCanReplace(activeProjectId.current, renderedRevisionRef.current, nextProject)
+      )
+        return;
+      renderedRevisionRef.current = nextGraph.revision;
       setProject((current) =>
         preserveReadiness ? preserveProjectReadiness(nextProject, current) : nextProject,
       );
       setGraph(nextGraph);
       setPaper(nextProject.paper);
+      setHumanDraft((current) => {
+        if (!current) return null;
+        const rebased = normalizeHumanDraft(current, nextGraph);
+        try {
+          if (humanDraftChangeCount(rebased) > 0) {
+            localStorage.setItem(
+              humanDraftStorageKey(nextProject.id),
+              serializeHumanDraft(rebased),
+            );
+            return rebased;
+          }
+          localStorage.removeItem(humanDraftStorageKey(nextProject.id));
+          return null;
+        } catch {
+          return rebased;
+        }
+      });
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
       setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
       setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
@@ -1031,6 +1256,9 @@ export default function App() {
   useEffect(() => {
     const handleHashChange = () => {
       const route = parseProjectHash(window.location.hash);
+      if (route.projectId !== activeProjectId.current) {
+        rememberProjectState(activeProjectId.current);
+      }
       setSetupOpen(isSetupRoute());
       setProjectId(route.projectId);
       setView(route.view);
@@ -1039,74 +1267,72 @@ export default function App() {
     };
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
-  }, []);
+  }, [rememberProjectState]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!identityReady || identityIssue) return;
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
-    const rememberedView =
-      routeMatchesProject && !requestedRoute.experimentId && projectId
-        ? projectViewStatesRef.current.get(projectId)
-        : undefined;
-    setLoading(true);
-    setProjectReconciliation("opening");
-    authoritativeProjectId.current = null;
+    const retainedOpen = projectId
+      ? projectTabStateForOpen(projectTabStatesRef.current, projectId)
+      : null;
+    const retained = retainedOpen?.state;
     setNotice(null);
-    setProject(null);
-    setGraph(emptyGraph);
-    setPaper(null);
-    setSelectedNode(null);
-    setCompanionNode(null);
-    setSelectedExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
-    setFocusExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
-    setExperimentStopId(null);
-    setDockedNodeIds([]);
-    setFloatingChat(null);
-    setDraftConversations([]);
-    selectChat(null);
-    setUnreadChatTaskIds(new Set());
-    chatSummaryRefreshGeneration.current += 1;
-    chatSummariesRef.current = [];
-    setChatSummaries([]);
-    setChatSummaryTotal(0);
-    setChatSummaryNextOffset(0);
-    setChatSummariesLoading(false);
-    setChatTranscripts(new Map());
-    chatTaskStatuses.current = new Map();
-    setDagRelationFocusId(null);
-    setRetryTask(null);
-    setRunScope([]);
-    setTasks([]);
-    setLatestRevisionSummary(null);
-    setHistoryRevisionSummaries([]);
-    setHistorySummariesRevision(null);
-    setHistorySummariesError(null);
-    setProjectHistoryOpen(false);
-    setWatchers([]);
-    setTaskInspectorId(null);
-    setInspectedTask(null);
-    setActivityTaskId(null);
-    setDismissedTaskIds(readDismissedTaskIds(projectId));
-    setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(projectId));
-    setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
-    setHumanDraft(null);
-    setSyncingDraft(false);
-    panelScrollRef.current = new Map(rememberedView?.panelScroll ?? []);
-    researchSubviewRef.current = rememberedView?.researchSubview ?? "scientific";
-    if (projectId) {
-      const viewportRef = projectViewportRef(dagViewportRefsRef.current, projectId);
-      if (viewportRef.current === null && rememberedView?.dagViewport) {
-        viewportRef.current = { ...rememberedView.dagViewport };
-      }
+    if (projectId && retained) {
+      restoreProjectTabState(
+        projectId,
+        retained,
+        routeMatchesProject && requestedRoute.experimentId ? requestedRoute.view : undefined,
+      );
+    } else {
+      setLoading(true);
+      setProjectReconciliation("opening");
+      authoritativeProjectId.current = null;
+      renderedRevisionRef.current = 0;
+      setProject(null);
+      setGraph(emptyGraph);
+      setPaper(null);
+      setSelectedNode(null);
+      setCompanionNode(null);
+      setSelectedExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
+      setFocusExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
+      setExperimentStopId(null);
+      setDockedNodeIds([]);
+      setFloatingChat(null);
+      setDraftConversations([]);
+      selectChat(null);
+      setUnreadChatTaskIds(new Set());
+      chatSummaryRefreshGeneration.current += 1;
+      chatSummariesRef.current = [];
+      setChatSummaries([]);
+      setChatSummaryTotal(0);
+      setChatSummaryNextOffset(0);
+      setChatSummariesLoading(false);
+      setChatTranscripts(new Map());
+      chatTaskStatuses.current = new Map();
+      setDagRelationFocusId(null);
+      setRetryTask(null);
+      setRunScope([]);
+      setTasks([]);
+      setLatestRevisionSummary(null);
+      setHistoryRevisionSummaries([]);
+      setHistorySummariesRevision(null);
+      setHistorySummariesError(null);
+      setProjectHistoryOpen(false);
+      setUsage(null);
+      setWatchers([]);
+      setTaskInspectorId(null);
+      setInspectedTask(null);
+      setActivityTaskId(null);
+      setDismissedTaskIds(readDismissedTaskIds(projectId));
+      setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(projectId));
+      setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
+      setHumanDraft(null);
+      setSyncingDraft(false);
+      panelScrollRef.current = new Map();
+      researchSubviewRef.current = "scientific";
+      setView(routeMatchesProject ? requestedRoute.view : "overview");
     }
-    setView(
-      routeMatchesProject
-        ? requestedRoute.experimentId
-          ? requestedRoute.view
-          : (rememberedView?.view ?? requestedRoute.view)
-        : "overview",
-    );
     if (setupOpen) {
       setLoading(false);
       return;
@@ -1123,10 +1349,12 @@ export default function App() {
         .finally(() => setLoading(false));
       return;
     }
-    try {
-      setHumanDraft(deserializeHumanDraft(localStorage.getItem(humanDraftStorageKey(projectId))));
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    if (!retained) {
+      try {
+        setHumanDraft(deserializeHumanDraft(localStorage.getItem(humanDraftStorageKey(projectId))));
+      } catch (error) {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
     }
     let cancelled = false;
     const openProject = async () => {
@@ -1135,7 +1363,7 @@ export default function App() {
         const cachedProject = await api<ProjectSnapshot>(cachedPath);
         if (cancelled || activeProjectId.current !== projectId) return;
         applyProjectSnapshot(cachedProject, false);
-        setProjectReconciliation("reconciling");
+        setProjectReconciliation("authoritative");
         setLoading(false);
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 404) && !cancelled) {
@@ -1149,7 +1377,9 @@ export default function App() {
         await reload();
       } catch (error) {
         if (cancelled || activeProjectId.current !== projectId) return;
-        if (authoritativeProjectId.current !== projectId) setProjectReconciliation("failed");
+        if (!retained && authoritativeProjectId.current !== projectId) {
+          setProjectReconciliation("failed");
+        }
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       } finally {
         if (!cancelled && activeProjectId.current === projectId) setLoading(false);
@@ -1165,6 +1395,7 @@ export default function App() {
     identityReady,
     projectId,
     reload,
+    restoreProjectTabState,
     selectChat,
     setupOpen,
   ]);
@@ -1397,7 +1628,9 @@ export default function App() {
     )
     .join("|");
   const draftChangeCount = humanDraftChangeCount(humanDraft);
-  const draftIsStale = Boolean(humanDraft && humanDraft.base_revision !== graph.revision);
+  const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
+  const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
+  const ontologyDraftIsStale = humanDraftOntologyIsStale(humanDraft, graph);
   const activityTask = projectActivityTask(tasks, activityTaskId);
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
 
@@ -1767,20 +2000,28 @@ export default function App() {
   };
 
   const syncHumanDraft = async () => {
-    if (!humanDraft || syncingDraft || draftIsStale || mutationsDisabled) return;
-    const normalized = normalizeHumanDraft(humanDraft, graph);
-    if (humanDraftChangeCount(normalized) === 0) {
-      resetHumanDraft();
+    if (!projectId || !humanDraft || syncingDraft || ontologyDraftIsStale || mutationsDisabled)
       return;
-    }
+    const normalized = normalizeHumanDraft(humanDraft, graph);
+    if (humanDraftCommittableCount(normalized, graph) === 0) return;
     setSyncingDraft(true);
     setNotice(null);
     try {
       const nextGraph = await api<GraphState>(`${apiBase}/sync`, {
         method: "POST",
-        body: JSON.stringify(toHumanSyncRequest(normalized)),
+        body: JSON.stringify(toHumanSyncRequest(normalized, graph)),
       });
-      resetHumanDraft();
+      const retained = retainBehindDraftAfterSync(normalized, graph, nextGraph);
+      setHumanDraft(retained);
+      try {
+        if (retained) {
+          localStorage.setItem(humanDraftStorageKey(projectId), serializeHumanDraft(retained));
+        } else {
+          localStorage.removeItem(humanDraftStorageKey(projectId));
+        }
+      } catch (error) {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
       setGraph(nextGraph);
       setProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
@@ -2076,7 +2317,7 @@ export default function App() {
   };
 
   const commitProjectOpen = (id: string, experimentId: string | null = null) => {
-    if (projectId !== id) rememberProjectView(projectId);
+    if (projectId !== id) rememberProjectState(projectId);
     setTabs(openProjectTab(openProjectTabsRef.current, tabForProject(id)));
     setSetupOpen(false);
     window.location.hash = experimentId
@@ -2120,7 +2361,7 @@ export default function App() {
     window.location.hash = "/projects/new";
   };
   const returnToProjects = () => {
-    rememberProjectView(projectId);
+    rememberProjectState(projectId);
     setSetupOpen(false);
     setProjectId(null);
     window.location.hash = "";
@@ -2130,7 +2371,7 @@ export default function App() {
     await api(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
     setProjects((current) => current.filter((item) => item.id !== id));
     setExperimentLoops((current) => current.filter((item) => item.project_id !== id));
-    projectViewStatesRef.current.delete(id);
+    projectTabStatesRef.current.delete(id);
     dagViewportRefsRef.current.delete(id);
     setTabs(closeProjectTab(openProjectTabsRef.current, projectId, id).tabs);
     try {
@@ -2148,7 +2389,7 @@ export default function App() {
   const closeDockedProject = (id: string) => {
     const result = closeProjectTab(openProjectTabsRef.current, projectId, id);
     if (result.tabs === openProjectTabsRef.current) return;
-    projectViewStatesRef.current.delete(id);
+    projectTabStatesRef.current.delete(id);
     dagViewportRefsRef.current.delete(id);
     setTabs(result.tabs);
     if (id !== projectId) return;
@@ -2440,35 +2681,41 @@ export default function App() {
                   </button>
                 )}
                 <button
-                  className={`button draft-sync${draftChangeCount > 0 ? " active" : ""}${draftIsStale ? " stale" : ""}`}
+                  className={`button draft-sync${committableDraftCount > 0 ? " active" : ""}${ontologyDraftIsStale ? " stale" : ""}`}
                   disabled={
                     mutationsDisabled ||
-                    projectReconciliation !== "authoritative" ||
-                    draftChangeCount === 0 ||
+                    committableDraftCount === 0 ||
                     syncingDraft ||
-                    draftIsStale ||
+                    ontologyDraftIsStale ||
                     !project.canonical_state.reachable
                   }
-                  title={draftIsStale ? "Draft base is stale" : undefined}
+                  title={ontologyDraftIsStale ? "Ontology draft base is stale" : undefined}
                   aria-label={
                     syncingDraft
                       ? "Syncing staged changes"
-                      : draftIsStale
-                        ? `Sync conflict, ${draftChangeCount} staged changes`
-                        : undefined
+                      : ontologyDraftIsStale
+                        ? `Ontology conflict, ${committableDraftCount} committable changes`
+                        : behindDraftCount > 0
+                          ? `Sync ${committableDraftCount} committable changes, ${behindDraftCount} behind`
+                          : undefined
                   }
                   onClick={() => void syncHumanDraft()}
                 >
                   {syncingDraft ? (
                     <LoaderCircle className="spin" size={14} />
-                  ) : draftIsStale ? (
+                  ) : ontologyDraftIsStale ? (
                     <AlertTriangle size={14} />
                   ) : (
                     <CloudUpload size={14} />
                   )}
                   <span>Sync</span>
-                  {draftChangeCount > 0 && <small>{draftChangeCount}</small>}
+                  {committableDraftCount > 0 && <small>{committableDraftCount}</small>}
                 </button>
+                {behindDraftCount > 0 && (
+                  <span className="draft-behind-count" role="status">
+                    Behind <small>{behindDraftCount}</small>
+                  </span>
+                )}
               </div>
               <button
                 className="button secondary"
@@ -2785,6 +3032,7 @@ export default function App() {
           )}
           {view === "paper" && (
             <PaperWorkspace
+              key={project.id}
               apiBase={apiBase}
               project={project}
               initialPaper={paper}
@@ -2881,6 +3129,9 @@ export default function App() {
             stagedNewNode={Boolean(humanDraft?.custom_nodes[node.id])}
             stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(node.id))}
             hasStagedNodeChange={Boolean(humanDraft?.nodes[node.id])}
+            draftNodeChange={humanDraft?.nodes[node.id]}
+            canonicalNode={graph.nodes[node.id]}
+            behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
             experimentRunDisabled={false}
@@ -2909,6 +3160,9 @@ export default function App() {
             }
             onStage={(changes) =>
               updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes))
+            }
+            onApplyField={(changes, fieldKey) =>
+              updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes, [fieldKey]))
             }
             onDecisionChoice={(selectedOption) =>
               updateHumanDraft((draft) =>

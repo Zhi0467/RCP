@@ -296,7 +296,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     stream_closed_statuses: list[str] = []
     stream_closed = threading.Event()
 
-    def capture_commit(requested_project_id, snapshot, *, generation):
+    def capture_commit(requested_project_id, snapshot, *, generation, patch_log_head=None):
         record = store.agent_task(operation["id"])
         assert record is not None
         stream_closed_statuses.append(record.status)
@@ -304,6 +304,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
             requested_project_id,
             snapshot,
             generation=generation,
+            patch_log_head=patch_log_head,
         )
         stream_closed.set()
         return committed
@@ -370,8 +371,8 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
         yield _event_frame(AgentEvent(event="answer", text="Work completed."))
         yield _event_frame(AgentEvent(event="done"))
 
-    def fail_cache_write(_project_id, _snapshot, *, generation):
-        del generation
+    def fail_cache_write(_project_id, _snapshot, *, generation, patch_log_head=None):
+        del generation, patch_log_head
         raise OSError("display cache is unavailable")
 
     monkeypatch.setattr(api_app_module, "stream_work_run", finish_work)
@@ -551,7 +552,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     catalog = app.state.catalog
     original_commit = catalog.commit_cached_snapshot
 
-    def block_cache(requested_project_id, snapshot, *, generation):
+    def block_cache(requested_project_id, snapshot, *, generation, patch_log_head=None):
         if snapshot["graph"]["nodes"]["exp/launched"]["current_summary"]:
             entered_cache.set()
             assert release_cache.wait(timeout=2)
@@ -559,6 +560,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
             requested_project_id,
             snapshot,
             generation=generation,
+            patch_log_head=patch_log_head,
         )
 
     monkeypatch.setattr(catalog, "commit_cached_snapshot", block_cache)

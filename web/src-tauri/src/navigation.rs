@@ -22,6 +22,20 @@ pub fn is_main_window_url(url: &Url, current_base_url: Option<&str>, allow_dev: 
     )
 }
 
+/// Whether `url` is an RCP application root document. Hash routes remain on
+/// that document; same-origin API and arbitrary paths do not.
+pub fn is_rcp_app_document_url(url: &Url, base_url: &str, allow_dev: bool) -> bool {
+    let Ok(base) = Url::parse(base_url) else {
+        return false;
+    };
+    (same_origin(url, &base) && url.path() == "/")
+        || (allow_dev
+            && url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.port_or_known_default() == Some(5173)
+            && url.path() == "/")
+}
+
 pub fn is_external_reference(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
 }
@@ -99,5 +113,45 @@ mod tests {
         assert!(!is_external_reference(
             &Url::parse("file:///tmp/a").unwrap()
         ));
+    }
+
+    #[test]
+    fn app_document_must_be_the_root_but_may_use_a_hash_route() {
+        let base = "http://127.0.0.1:8421";
+        assert!(is_rcp_app_document_url(
+            &Url::parse("http://127.0.0.1:8421/").unwrap(),
+            base,
+            false,
+        ));
+        assert!(is_rcp_app_document_url(
+            &Url::parse("http://127.0.0.1:8421/#/projects/a").unwrap(),
+            base,
+            false,
+        ));
+        assert!(!is_rcp_app_document_url(
+            &Url::parse("http://127.0.0.1:8421/api/projects").unwrap(),
+            base,
+            false,
+        ));
+        assert!(!is_rcp_app_document_url(
+            &Url::parse("http://127.0.0.1:8421/some/path").unwrap(),
+            base,
+            false,
+        ));
+        assert!(!is_rcp_app_document_url(
+            &Url::parse("http://127.0.0.1:19421/#/projects/a").unwrap(),
+            base,
+            false,
+        ));
+    }
+
+    #[test]
+    fn vite_is_an_app_document_only_at_its_root_in_dev() {
+        let base = "http://127.0.0.1:8421";
+        let root = Url::parse("http://127.0.0.1:5173/#/projects/a").unwrap();
+        let error = Url::parse("http://127.0.0.1:5173/api/projects").unwrap();
+        assert!(is_rcp_app_document_url(&root, base, true));
+        assert!(!is_rcp_app_document_url(&root, base, false));
+        assert!(!is_rcp_app_document_url(&error, base, true));
     }
 }

@@ -713,6 +713,7 @@ class AppStore:
             )
             # Existing v0.2 databases need additive migration before the index
             # can include the new transitional state.
+            self._ensure_column(connection, "paper_drafts", "ancestor_content", "TEXT")
             self._ensure_column(connection, "graph_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "graph_runs", "parent_operation_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
@@ -1124,9 +1125,9 @@ class AppStore:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO paper_drafts (
-                    project_id, content, base_hash, updated_at, cursor_state
+                    project_id, content, base_hash, updated_at, cursor_state, ancestor_content
                 )
-                SELECT ?, content, base_hash, updated_at, cursor_state
+                SELECT ?, content, base_hash, updated_at, cursor_state, ancestor_content
                 FROM paper_drafts
                 WHERE project_id = ?
                 """,

@@ -64,6 +64,7 @@ pub fn run() {
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
             commands::open_artifact_preview,
+            commands::open_repository_file_preview,
             commands::download_artifact,
             commands::open_external,
             commands::request_quit,
@@ -80,6 +81,7 @@ pub fn run() {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     dictation::stop_active();
                     api.prevent_close();
+                    windows::cancel_pending_show();
                     let _ = window.hide();
                 }
             }
@@ -158,7 +160,9 @@ fn verify_then_prepare_show(app: tauri::AppHandle, reason: &'static str) {
                     && health.data_dir_id == status.data_dir_id =>
             {
                 state.update_health(&health);
-                let _ = windows::prepare_show(&app, &status, reason);
+                if let Err(error) = windows::recover_then_prepare_show(&app, &status, reason) {
+                    eprintln!("[rcp] the main window could not be prepared: {error}");
+                }
             }
             Ok(_) => {
                 let _ = app.emit_to(

@@ -237,6 +237,8 @@ export function chatEntryConversationId(
   unreadTaskIds: Set<string>,
   previousChatId: string | null,
 ): string | null {
+  if (previousChatId && conversations.some((item) => item.chatId === previousChatId))
+    return previousChatId;
   const activeChatId =
     activityTask && chatTaskNeedsAttention(activityTask) ? chatIdForTask(activityTask) : null;
   if (activeChatId && conversations.some((item) => item.chatId === activeChatId))
@@ -245,8 +247,6 @@ export function chatEntryConversationId(
     conversation.tasks.some((task) => unreadTaskIds.has(task.operation_id)),
   );
   if (unread) return unread.chatId;
-  if (previousChatId && conversations.some((item) => item.chatId === previousChatId))
-    return previousChatId;
   return conversations[0]?.chatId ?? null;
 }
 

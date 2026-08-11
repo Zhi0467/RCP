@@ -674,9 +674,10 @@ export interface ProviderReadiness {
 
 export interface PaperSnapshot {
   content: string;
-  sync_state: "not_created" | "synced" | "unsynced" | "conflict";
+  sync_state: "not_created" | "synced" | "unsynced" | "behind";
   base_hash?: string | null;
   canonical_hash?: string | null;
+  incoming_content?: string | null;
   updated_at?: string | null;
   canonical_available: boolean;
 }
@@ -685,6 +686,8 @@ export interface ProjectSnapshot {
   id: string;
   name: string;
   revision: number;
+  snapshot_freshness: "fresh" | "reconciling" | "stale";
+  last_remote_sync_at: string | null;
   state_repository: string;
   canonical_state: {
     remote: boolean;
