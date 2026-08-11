@@ -6,18 +6,21 @@ driver: pytest + browser
 covered_by:
   - tests/test_transport.py
   - tests/test_api.py
+  - tests/test_api.py::test_cached_revision_heartbeat_enforces_three_second_probe_cooldown
   - web/tests/canonicalRevisionRefresh.test.mjs
   - web/tests/humanDraft.test.mjs
   - web/tests/decisionChoice.test.mjs
   - web/tests/chatWorkspace.test.mjs
   - browser 2026-08-11 — isolated two-project tab, external patch, behind, Apply, Sync
+  - browser 2026-08-11 — inactive revision advanced before selection and active revision appeared inside five seconds
   - live SSH 2026-08-11 — unchanged head probe and forced-local-stale reconciliation
+  - live SSH 2026-08-11 — 7.5–13.0 ms cache heartbeats, no probe at 2.9 seconds, second unchanged probe at 3.1 seconds
 invariants: [1, 3, 6]
-last_passed: 2026-08-11 — isolated local projects verified an immediate retained tab
-  render with no loading or inert frame, automatic external-patch reconciliation,
-  two committable plus one behind staged node, reversible Apply, and exact Sync;
-  the live remote verified a cache-only heartbeat, lock-free unchanged probe, and
-  one background locked rsync after only the temporary local cache head was made stale
+last_passed: 2026-08-11 — two isolated open tabs polled at the three-second and
+  one-second cadences; an inactive tab fetched revision 8 before selection with
+  no loading frame, the active tab displayed revision 9 within five seconds,
+  and live SSH enforced the three-second probe cap while heartbeat responses
+  remained cache-only
 ---
 
 # A project tab stays current without ever waiting on the remote
@@ -32,9 +35,18 @@ human work they have already typed.
   state immediately: graph, tasks, watchers, chat summaries and loaded
   transcripts, revision summaries, view, selection, and scroll. There is no
   blank frame and no spinner between tabs.
-- While a project tab is active, RCP asks the remote a cheap question on an
-  interval: has the canonical patch log moved. That question takes no canonical
-  lock and copies nothing.
+- While the app is visible, every open project tab — selected or not — receives
+  a cache heartbeat at least every three seconds. The selected tab also checks
+  cached revision once per second so a completed reconciliation appears quickly.
+- Heartbeats may schedule the remote's cheap patch-head question, but each
+  project is capped at one remote probe every three seconds and remains
+  single-flight. Switching tabs itself never synchronously starts or waits for
+  SSH. Returning to a visible app immediately sweeps the open tabs.
+- When an inactive tab's cached revision advances, RCP updates that tab's
+  retained snapshot and rebases its draft in the background. Selecting it does
+  not become the event that discovers or loads the change. With a healthy,
+  reachable remote, a selected tab is expected to be current within roughly
+  three to five seconds.
 - When the answer is yes, RCP performs the full refresh in the background and
   the tab updates in place. The human presses nothing. There is no Pull
   control, no "remote changed" banner, and no confirmation.
@@ -61,10 +73,12 @@ human work they have already typed.
 2. Switch to the second project and back. Confirm the first tab returns with its
    staged edits, scroll position, view, and open conversation intact, and that
    no blank frame appears between them.
-3. With the first tab active, append a patch to its canonical state repository
-   from outside the app, touching exactly one of the three staged nodes.
-4. Wait through one probe interval without touching the UI. Confirm the tab
-   moves to the new revision on its own.
+3. Leave the first tab inactive and append a patch to its canonical state
+   repository from outside the app, touching exactly one of the three staged
+   nodes.
+4. Wait through the open-tab polling window, then switch back. Confirm the tab
+   either already holds the new revision or advances within five seconds,
+   without the switch synchronously waiting on SSH.
 5. Confirm the two untouched staged nodes are unchanged and still committable,
    and the third is marked behind.
 6. Open the behind node. Confirm the staged text is still in the editor and the
@@ -73,9 +87,14 @@ human work they have already typed.
 
 ## Assert
 
-- `switching_tabs_issues_no_remote_call`
+- `switching_tabs_issues_no_synchronous_remote_call`
 - `returning_tab_restores_graph_tasks_chats_scroll_and_view`
 - `returning_tab_never_renders_an_empty_state`
+- `every_open_tab_is_polled_while_visible`
+- `inactive_tab_cache_advances_before_selection`
+- `selected_tab_checks_completed_reconciliation_each_second`
+- `remote_probe_is_capped_at_once_per_project_per_three_seconds`
+- `visibility_resume_sweeps_every_open_tab`
 - `probe_takes_no_canonical_lock_and_copies_nothing`
 - `unchanged_remote_head_starts_no_refresh`
 - `moved_remote_head_refreshes_without_human_action`

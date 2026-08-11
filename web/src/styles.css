@@ -4156,6 +4156,12 @@ button.relation-map-node:hover {
   font-family: var(--mono);
   font-size: 8px;
 }
+.run-events .history-attribution-detail {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 8px;
+  margin-top: 3px;
+}
 .run-events li.warning p {
   color: color-mix(in srgb, var(--mustard) 62%, var(--walnut));
 }
@@ -6708,6 +6714,75 @@ button.relation-map-node:hover {
   justify-content: flex-end;
   padding: 14px 24px;
 }
+.identity-name-backdrop {
+  background: rgb(34 29 23 / 46%);
+  z-index: 180;
+}
+.identity-name-dialog {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+  width: min(430px, 96vw);
+}
+.identity-name-dialog > header {
+  border-bottom: 1px solid var(--line);
+  padding: 20px 22px 15px;
+}
+.identity-name-dialog h2 {
+  font-family: var(--editorial);
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0;
+}
+.identity-name-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 22px 20px;
+}
+.identity-name-body p {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 0;
+}
+.identity-name-body label,
+.identity-settings-row label {
+  color: var(--ink-soft);
+  display: grid;
+  font-size: 9px;
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.identity-name-body input,
+.identity-settings-row input {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+  min-height: 36px;
+  padding: 8px 10px;
+  text-transform: none;
+  width: 100%;
+}
+.identity-name-error {
+  background: var(--rose-paper);
+  border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
+  color: var(--red);
+  font-size: 10px;
+  padding: 9px 22px;
+}
+.identity-name-dialog > footer {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 13px 22px;
+}
 .run-dialog {
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -7059,6 +7134,45 @@ button.relation-map-node:hover {
   background: color-mix(in srgb, var(--sheet) 78%, transparent);
   border: 1px solid var(--rule);
   margin-bottom: 20px;
+}
+.identity-settings > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  padding: 16px 20px;
+}
+.identity-settings > header > span:first-child {
+  align-items: center;
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+.identity-settings h2 {
+  font-family: var(--editorial);
+  font-size: 21px;
+  font-weight: 550;
+  margin: 0;
+}
+.identity-settings-row {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 360px) auto;
+  padding: 16px 20px;
+}
+.identity-settings-status {
+  border-top: 1px solid var(--line);
+  color: var(--green);
+  font-size: 10px;
+  padding: 9px 20px;
+}
+.identity-settings-status.error {
+  color: var(--red);
 }
 .display-settings > header {
   align-items: center;

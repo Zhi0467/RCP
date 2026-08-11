@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+DISPLAY_NAME_MAX_LENGTH = 120
+
+
+def normalize_display_name(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("display name must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("display name must not be blank")
+    if len(normalized) > DISPLAY_NAME_MAX_LENGTH:
+        raise ValueError(f"display name must be at most {DISPLAY_NAME_MAX_LENGTH} characters")
+    if any(unicodedata.category(character) in {"Cc", "Zl", "Zp"} for character in normalized):
+        raise ValueError("display name must be a single line without control characters")
+    return normalized
 
 
 def utc_now() -> datetime:
@@ -444,10 +461,44 @@ class GraphState(BaseModel):
     last_refresh_at: datetime | None = None
 
 
+def _canonical_uuid4(value: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("must be a canonical UUIDv4") from exc
+    if str(parsed) != value or parsed.version != 4:
+        raise ValueError("must be a canonical UUIDv4")
+    return value
+
+
+class ProjectIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    home_space_id: str
+    action: Literal["created", "adopted"]
+
+    _validate_uuid4 = field_validator("project_id", "home_space_id")(_canonical_uuid4)
+
+
+class AuthorizedHuman(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: str
+    user_id: str
+    display_name: str = Field(min_length=1, max_length=DISPLAY_NAME_MAX_LENGTH)
+
+    _validate_uuid4 = field_validator("space_id", "user_id")(_canonical_uuid4)
+    _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
+
+
 class Patch(BaseModel):
     revision: int = 0
-    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval"]
-    author: Literal["agent", "human"]
+    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval", "identity"]
+    # ``author`` retains its historical human/agent role semantics. Identity
+    # revisions have no such author; their separate producer is RCP itself.
+    author: Literal["agent", "human"] | None
+    producer: Literal["agent", "human", "system"]
     created_at: datetime = Field(default_factory=utc_now)
     summary: str
     ops: list[dict[str, Any]]
@@ -468,3 +519,18 @@ class Patch(BaseModel):
     # persisted so canonical replay enforces the same control boundary.
     experiment_control_node_id: str | None = None
     experiment_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
+    project_identity: ProjectIdentity | None = None
+    authorized_by: AuthorizedHuman | None = None
+    profile: Literal["ordinary"] | None = None
+    task_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_producer(cls, value: Any) -> Any:
+        """Treat the legacy author role as producer when no producer was stored."""
+
+        if not isinstance(value, dict) or "producer" in value or "author" not in value:
+            return value
+        migrated = dict(value)
+        migrated["producer"] = migrated["author"]
+        return migrated

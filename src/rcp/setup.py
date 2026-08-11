@@ -216,7 +216,9 @@ class ProjectSetupManager:
                         status="pass",
                         detail=(
                             f"Found existing RCP project “{existing_name}”. Its configuration "
-                            "will be connected without being overwritten."
+                            "will be connected without being overwritten. Accepting the final "
+                            "confirmation makes this active RCP space the project's sole "
+                            "writable home."
                         ),
                     )
                 )
@@ -330,7 +332,10 @@ class ProjectSetupManager:
             content = existing_content or preview.manifest_preview
             locator = str(self._write_bootstrap(canonical, content))
 
-        record = self.catalog.register(locator)
+        record = self.catalog.register(
+            locator,
+            identity_action="created" if preview.action == "create" else "adopted",
+        )
         _, snapshot = self.catalog.open_snapshot(record.project_id)
         self.catalog.update_summary(record.project_id, snapshot)
         return self.catalog.card(record.project_id)

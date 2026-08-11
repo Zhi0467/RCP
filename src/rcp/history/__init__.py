@@ -6,11 +6,18 @@ from rcp.history.delta import (
     build_revision_summaries,
     render_revision_summary,
 )
-from rcp.history.manager import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
+from rcp.history.manager import (
+    HistoryManager,
+    PatchRejected,
+    ProjectIdentityConflict,
+    ReplayHalted,
+    RevisionConflict,
+)
 
 __all__ = [
     "HistoryManager",
     "PatchRejected",
+    "ProjectIdentityConflict",
     "ReplayHalted",
     "RevisionConflict",
     "RefreshDelta",

@@ -8,9 +8,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
-from rcp.api.app import create_app
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
+
+from .helpers import append_fixture_patch
+from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/acceptance-loop"
 _HYPOTHESIS_ID = "hyp/acceptance-sequence"
@@ -186,7 +188,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     project_id = app.state.default_project_id
     assert project_id is not None
     service = app.state.service
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     baseline_patches = service.history.load_patches()
     chat_id = str(uuid.uuid4())
 
@@ -279,7 +281,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
     project_id = app.state.default_project_id
     assert project_id is not None
     service = app.state.service
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     baseline_patches = service.history.load_patches()
     chat_id = str(uuid.uuid4())
 

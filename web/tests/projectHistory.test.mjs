@@ -12,6 +12,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ProjectOverview } = await server.ssrLoadModule("/src/views/ProjectOverview.tsx");
+const { setupFinalConfirmation } = await server.ssrLoadModule("/src/views/ProjectSetup.tsx");
 const { ProjectHistoryDrawer } = await server.ssrLoadModule(
   "/src/components/ProjectHistoryDrawer.tsx",
 );
@@ -69,6 +70,10 @@ const latestSummary = {
   to_revision: 5,
   kind: "refresh",
   author: "agent",
+  producer: "agent",
+  authorized_by: null,
+  profile: null,
+  task_id: null,
   created_at: "2026-08-03T08:00:00Z",
   sentences: [
     "Updated the third-stream ordering.",
@@ -152,7 +157,8 @@ test("Project history separates revision prose from the complete clickable Agent
   const html = renderToStaticMarkup(React.createElement(ProjectHistoryDrawer, props));
 
   assert.match(html, /aria-label="Agent tasks"/);
-  assert.match(html, /aria-label="Graph revision summaries"/);
+  assert.match(html, /aria-label="Project revision summaries"/);
+  assert.match(html, /Project revisions/);
   assert.match(html, /Revision 4 to revision 5/);
   assert.match(html, /Updated the third-stream ordering\./);
   assert.ok(html.indexOf("Revision 4 to revision 5") < html.indexOf("Revision 3 to revision 4"));
@@ -183,9 +189,102 @@ test("Project history reports loading without hiding the already-loaded Agent ta
   );
 
   assert.match(html, /role="status"/);
-  assert.match(html, /Loading graph revisions…/);
-  assert.doesNotMatch(html, /No graph revisions yet/);
+  assert.match(html, /Loading project revisions…/);
+  assert.doesNotMatch(html, /No project revisions yet/);
   assert.match(html, /data-task-id="active-task"/);
+});
+
+test("Project history labels system, attributed, and legacy revisions without inferring identity", () => {
+  const authorized = {
+    space_id: "123e4567-e89b-42d3-a456-426614174000",
+    user_id: "123e4567-e89b-42d3-a456-426614174001",
+    display_name: "Ada Researcher",
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectHistoryDrawer, {
+      summaries: [
+        {
+          ...latestSummary,
+          from_revision: 0,
+          to_revision: 1,
+          kind: "identity",
+          author: null,
+          producer: "system",
+          sentences: ["Project identity adopted."],
+        },
+        {
+          ...latestSummary,
+          from_revision: 1,
+          to_revision: 2,
+          producer: "human",
+          author: "human",
+          authorized_by: authorized,
+          sentences: ["Recorded a human change."],
+        },
+        {
+          ...latestSummary,
+          from_revision: 2,
+          to_revision: 3,
+          authorized_by: authorized,
+          profile: "ordinary",
+          task_id: "task-ordinary",
+          sentences: ["Recorded an Agent change."],
+        },
+        {
+          ...latestSummary,
+          from_revision: 3,
+          to_revision: 4,
+          producer: "human",
+          author: "human",
+          authorized_by: null,
+          sentences: ["Recorded a legacy change."],
+        },
+      ],
+      tasks: [],
+      loading: false,
+      error: null,
+      onInspectTask() {},
+      onClose() {},
+    }),
+  );
+
+  assert.match(html, /Identity · RCP/);
+  assert.match(html, /Refresh · Ada Researcher/);
+  assert.match(html, /Ordinary Agent task · task-ordinary/);
+  assert.match(html, /Refresh · Human · Unattributed/);
+});
+
+test("an identity revision does not make an unseeded project look refreshed", () => {
+  const identityOnlyGraph = { ...graph, revision: 1, nodes: {} };
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectOverview, {
+      project: {
+        ...project,
+        primary_question: null,
+        last_refresh_at: null,
+      },
+      graph: identityOnlyGraph,
+      decisionsAwaitingChoice: [],
+      latestRevisionSummary: null,
+      onNavigate() {},
+    }),
+  );
+
+  assert.match(html, /The project has not been seeded yet\./);
+  assert.match(html, /Seed the graph from the selected truth repositories\./);
+  assert.match(html, /Project revision 1/);
+  assert.doesNotMatch(html, /Graph revision/);
+});
+
+test("connecting an existing project names the active space as its sole writable home", () => {
+  assert.match(
+    setupFinalConfirmation({
+      action: "connect",
+      remote_write: false,
+      canonical_location: "/research/project",
+    }),
+    /this active space becomes the project's sole writable home/,
+  );
 });
 
 function task(operationId, kind, status, attempt) {

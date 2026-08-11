@@ -8,6 +8,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import uuid
 from concurrent.futures import Future
 from contextlib import suppress
 from datetime import datetime
@@ -17,16 +18,22 @@ from typing import Literal
 from pydantic import BaseModel, TypeAdapter
 
 from rcp.agents import AgentLauncher
+from rcp.attachments import ChatAttachmentStore
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import GraphState
-from rcp.history import HistoryManager
+from rcp.history import HistoryManager, ProjectIdentityConflict
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
 from rcp.paper import PaperService
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
 from rcp.service import ProjectService, ProjectSettingsRequest
 from rcp.storage import AppStore, ProjectRecord, ProjectStageRecord
-from rcp.transport import RemoteRunStage, StateUnavailable, prepare_state_workspace
+from rcp.transport import (
+    RemoteRunStage,
+    StateUnavailable,
+    StateWorkspace,
+    prepare_state_workspace,
+)
 from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 
 _DISPLAY_SNAPSHOT_SCHEMA_VERSION = 2
@@ -34,6 +41,7 @@ _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
 _PATCH_LOG_HEAD_UNSET = object()
 _DISPLAY_SNAPSHOT_FIELDS = {
     "id",
+    "home_space_id",
     "name",
     "revision",
     "snapshot_freshness",
@@ -90,12 +98,114 @@ class ProjectCatalog:
         self._committed_snapshot_generations: dict[str, int] = {}
         self._cached_snapshot_patch_heads: dict[str, int | None] = {}
         self._candidate_snapshot_patch_heads: dict[str, int | None] = {}
+        self._registration_lock = threading.Lock()
+        self._project_aliases = self.store.project_aliases()
 
-    def register(self, locator: str) -> ProjectRecord:
-        manifest = load_manifest(locator)
-        canonical_locator = str(manifest.path)
-        existing = self.store.project_by_locator(canonical_locator)
-        project_id = existing.project_id if existing else _project_id(manifest)
+    def register(
+        self,
+        locator: str,
+        *,
+        identity_action: Literal["created", "adopted"] | None = None,
+    ) -> ProjectRecord:
+        """Register one canonical project after its durable nameplate is settled."""
+
+        with self._registration_lock:
+            bootstrap = load_manifest(locator)
+            canonical_locator = str(bootstrap.path)
+            existing = self.store.project_by_locator(canonical_locator)
+            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+            history = self._history_for_manifest(manifest, workspace)
+            identity = history.project_identity()
+            if identity is None:
+                if existing is not None:
+                    claim_action: Literal["created", "adopted"] = "adopted"
+                elif identity_action is not None:
+                    claim_action = identity_action
+                else:
+                    raise ValueError(
+                        "This existing project has no durable identity. Connect it through "
+                        "project setup and confirm that this space becomes its sole writable home."
+                    )
+                identity = history.claim_project_identity(claim_action)
+            else:
+                # The idempotent claim path also enforces the expected home-space boundary.
+                identity = history.claim_project_identity(identity.action)
+
+            if existing is None:
+                existing = self.store.project(identity.project_id)
+
+            if existing is not None:
+                old_project_id = existing.project_id
+            elif identity.action == "adopted":
+                old_project_id = _project_id(manifest)
+            else:
+                old_project_id = identity.project_id
+
+            record = self._record_for_identity(
+                bootstrap,
+                existing,
+                project_id=old_project_id,
+                home_space_id=(
+                    self.store.space_id if old_project_id == identity.project_id else None
+                ),
+            )
+            if old_project_id == identity.project_id:
+                stored = self.store.upsert_project(record)
+            else:
+                resolved_old = self.store.resolve_project_id(old_project_id)
+                if resolved_old != old_project_id:
+                    if resolved_old != identity.project_id:
+                        raise ValueError(
+                            f"Legacy project alias {old_project_id!r} already belongs to "
+                            f"{resolved_old!r}."
+                        )
+                    self._refresh_project_aliases()
+                    canonical_record = self._record_for_identity(
+                        bootstrap,
+                        self.store.project(identity.project_id),
+                        project_id=identity.project_id,
+                        home_space_id=self.store.space_id,
+                    )
+                    stored = self.store.upsert_project(canonical_record)
+                else:
+                    migration = self._prepare_app_file_migration(
+                        old_project_id,
+                        identity.project_id,
+                    )
+                    attachment_store = ChatAttachmentStore(self.data_dir / "chat-attachments")
+                    attachment_migration = attachment_store.prepare_project_identity_migration(
+                        old_project_id,
+                        identity.project_id,
+                    )
+                    self.store.upsert_project(record)
+                    stored = self.store.migrate_project_identity(
+                        old_project_id,
+                        identity.project_id,
+                        self.store.space_id,
+                    )
+                    self._refresh_project_aliases()
+                    self._apply_app_file_migration(migration)
+                    attachment_store.apply_project_identity_migration(attachment_migration)
+                    self._migrate_runtime_keys(old_project_id, identity.project_id)
+                stored = self.store.upsert_project(
+                    self._record_for_identity(
+                        bootstrap,
+                        stored,
+                        project_id=identity.project_id,
+                        home_space_id=self.store.space_id,
+                    )
+                )
+            self._finish_alias_file_migrations(identity.project_id)
+            return stored
+
+    def _record_for_identity(
+        self,
+        manifest: Manifest,
+        existing: ProjectRecord | None,
+        *,
+        project_id: str,
+        home_space_id: str | None,
+    ) -> ProjectRecord:
         state_repository = manifest.repository_map[manifest.state.repository]
         state_machine = manifest.machine_map[state_repository.machine]
         state_location = (
@@ -103,9 +213,10 @@ class ProjectCatalog:
             if state_machine.host
             else str(manifest.research_dir)
         )
-        record = ProjectRecord(
+        return ProjectRecord(
             project_id=project_id,
-            locator=canonical_locator,
+            home_space_id=home_space_id,
+            locator=str(manifest.path),
             name=manifest.name,
             state_location=state_location,
             state_remote=bool(state_machine.host),
@@ -118,12 +229,206 @@ class ProjectCatalog:
             reachable=existing.reachable if existing else None,
             error=existing.error if existing else None,
         )
-        return self.store.upsert_project(record)
+
+    def resolve_project_id(self, project_id: str) -> str:
+        """Resolve a project URL without opening SQLite on the request path."""
+
+        return self._project_aliases.get(project_id, project_id)
+
+    def _canonical_project_id(self, project_id: str) -> str:
+        return self.resolve_project_id(project_id)
+
+    def _refresh_project_aliases(self) -> None:
+        # Replace the snapshot as one object so concurrent request reads never
+        # observe a partially refreshed mapping.
+        self._project_aliases = self.store.project_aliases()
+
+    def _history_for_manifest(
+        self,
+        manifest: Manifest,
+        workspace: StateWorkspace,
+    ) -> HistoryManager:
+        return HistoryManager(
+            manifest,
+            workspace,
+            expected_space_id=self.store.space_id,
+            require_attribution=True,
+            agent_authorizer_resolver=self.store.agent_task_authorizer,
+        )
+
+    def _ensure_registered_identity(self, project_id: str) -> str:
+        project_id = self._canonical_project_id(project_id)
+        record = self.store.project(project_id)
+        if record is None:
+            raise KeyError(project_id)
+        if record.home_space_id is not None:
+            if record.home_space_id != self.store.space_id:
+                raise ProjectIdentityConflict(
+                    f"Project {project_id} belongs to space {record.home_space_id}; "
+                    f"this space is {self.store.space_id}. Canonical writes are refused."
+                )
+            return record.project_id
+        return self.register(record.locator).project_id
+
+    def _stamp_snapshot_identity(
+        self,
+        snapshot: dict[str, object],
+        project_id: str,
+    ) -> None:
+        project_id = self._canonical_project_id(project_id)
+        record = self.store.project(project_id)
+        if record is None or record.home_space_id is None:
+            raise KeyError(project_id)
+        snapshot["id"] = project_id
+        snapshot["home_space_id"] = record.home_space_id
+
+    def _finish_alias_file_migrations(self, canonical_project_id: str) -> None:
+        for alias_id, destination in self._project_aliases.items():
+            if destination != canonical_project_id:
+                continue
+            migration = self._prepare_app_file_migration(alias_id, canonical_project_id)
+            attachment_store = ChatAttachmentStore(self.data_dir / "chat-attachments")
+            attachment_migration = attachment_store.prepare_project_identity_migration(
+                alias_id,
+                canonical_project_id,
+            )
+            self._apply_app_file_migration(migration)
+            attachment_store.apply_project_identity_migration(attachment_migration)
+            self._migrate_runtime_keys(alias_id, canonical_project_id)
+
+    def _prepare_app_file_migration(
+        self,
+        old_project_id: str,
+        canonical_project_id: str,
+    ) -> list[tuple[Literal["display", "paper"], Path, Path, bytes | None]]:
+        migrations: list[tuple[Literal["display", "paper"], Path, Path, bytes | None]] = []
+        display_source = self._cached_snapshot_path_for_id(old_project_id)
+        display_target = self._cached_snapshot_path_for_id(canonical_project_id)
+        if display_source != display_target and display_source.exists():
+            _require_regular_app_file(display_source, "legacy display snapshot")
+            try:
+                envelope = json.loads(display_source.read_bytes())
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("Legacy project display snapshot is invalid.") from exc
+            if not isinstance(envelope, dict) or not isinstance(envelope.get("snapshot"), dict):
+                raise ValueError("Legacy project display snapshot is invalid.")
+            if envelope.get("project_id") != old_project_id:
+                raise ValueError("Legacy project display snapshot names a different project.")
+            snapshot = envelope["snapshot"]
+            assert isinstance(snapshot, dict)
+            if snapshot.get("id") != old_project_id:
+                raise ValueError("Legacy project display snapshot names a different project.")
+            envelope["project_id"] = canonical_project_id
+            snapshot["id"] = canonical_project_id
+            snapshot["home_space_id"] = self.store.space_id
+            content = (
+                json.dumps(envelope, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n"
+            ).encode()
+            if len(content) > PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES:
+                raise ValueError("Migrated project display snapshot exceeds its size limit.")
+            if display_target.exists():
+                _require_regular_app_file(display_target, "project display snapshot destination")
+                if display_target.read_bytes() != content:
+                    raise ValueError(
+                        "Project display snapshot migration destination already exists; "
+                        "nothing was overwritten."
+                    )
+            migrations.append(("display", display_source, display_target, content))
+
+        paper_source = self._paper_snapshot_path_for_id(old_project_id)
+        paper_target = self._paper_snapshot_path_for_id(canonical_project_id)
+        if paper_source != paper_target and paper_source.exists():
+            _require_regular_app_file(paper_source, "legacy paper snapshot")
+            if paper_target.exists():
+                raise ValueError(
+                    "Project paper snapshot migration destination already exists; "
+                    "nothing was overwritten."
+                )
+            migrations.append(("paper", paper_source, paper_target, None))
+        return migrations
+
+    def _apply_app_file_migration(
+        self,
+        migrations: list[tuple[Literal["display", "paper"], Path, Path, bytes | None]],
+    ) -> None:
+        for kind, source, target, content in migrations:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if kind == "paper":
+                os.replace(source, target)
+                _fsync_directory(target.parent)
+                continue
+            assert content is not None
+            if target.exists():
+                _require_regular_app_file(target, "project display snapshot destination")
+                if target.read_bytes() != content:
+                    raise ValueError(
+                        "Project display snapshot migration destination already exists; "
+                        "nothing was overwritten."
+                    )
+                source.unlink(missing_ok=True)
+                _fsync_directory(source.parent)
+                continue
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=target.parent,
+                    prefix=f".{target.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+                source.unlink()
+                _fsync_directory(target.parent)
+                if source.parent != target.parent:
+                    _fsync_directory(source.parent)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+
+    def _migrate_runtime_keys(self, old_project_id: str, canonical_project_id: str) -> None:
+        if old_project_id == canonical_project_id:
+            return
+        with self._services_lock:
+            old_service = self._services.pop(old_project_id, None)
+            current_service = self._services.get(canonical_project_id)
+            if old_service is not None:
+                if current_service is not None and current_service is not old_service:
+                    raise RuntimeError("Project identity migration found duplicate open services.")
+                self._services[canonical_project_id] = old_service
+            old_opening = self._opening.pop(old_project_id, None)
+            if old_opening is not None:
+                if canonical_project_id in self._opening:
+                    raise RuntimeError("Project identity migration found duplicate open attempts.")
+                self._opening[canonical_project_id] = old_opening
+            if old_project_id in self._deleting:
+                self._deleting.remove(old_project_id)
+                self._deleting.add(canonical_project_id)
+            for mapping in (
+                self._snapshot_locks,
+                self._snapshot_generations,
+                self._committed_snapshot_generations,
+                self._cached_snapshot_patch_heads,
+                self._candidate_snapshot_patch_heads,
+            ):
+                if old_project_id not in mapping:
+                    continue
+                old_value = mapping.pop(old_project_id)
+                if canonical_project_id in mapping and mapping[canonical_project_id] != old_value:
+                    raise RuntimeError(
+                        "Project identity migration found conflicting in-memory cache state."
+                    )
+                mapping[canonical_project_id] = old_value
 
     def cards(self) -> list[dict[str, object]]:
         return [self._card(record) for record in self.store.projects()]
 
     def card(self, project_id: str) -> dict[str, object]:
+        project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
@@ -132,6 +437,7 @@ class ProjectCatalog:
     def state_host(self, project_id: str) -> str:
         """Read the registered state host without opening canonical history."""
 
+        project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
@@ -144,22 +450,27 @@ class ProjectCatalog:
         return service
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
+        project_id = self._canonical_project_id(project_id)
         service, initialized_state = self._service_or_open(project_id)
+        project_id = self._canonical_project_id(project_id)
         snapshot = service.project_snapshot(state=initialized_state)
+        self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, snapshot
 
     def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
         """Refresh canonical state and build one fresh display-snapshot candidate."""
 
+        project_id = self._canonical_project_id(project_id)
         service, initialized_state = self._service_or_open(project_id)
+        project_id = self._canonical_project_id(project_id)
         if initialized_state is None:
             refreshed = service.history.workspace.refresh()
             if service.history.workspace.remote and not refreshed:
                 raise StateUnavailable("Remote canonical state has no readable manifest.")
             initialized_state = service.history.materialize(write_outputs=False).state
         snapshot = service.project_snapshot(state=initialized_state)
-        snapshot["id"] = project_id
+        self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, snapshot
 
@@ -169,6 +480,7 @@ class ProjectCatalog:
     ) -> Literal["moved", "unchanged", "unavailable"]:
         """Compare canonical and cached patch heads without opening the project."""
 
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             if project_id in self._deleting:
                 raise KeyError(project_id)
@@ -214,6 +526,7 @@ class ProjectCatalog:
     ) -> tuple[ProjectService, GraphState | None]:
         """Open once per project while leaving snapshot work outside the lock."""
 
+        project_id = self._ensure_registered_identity(project_id)
         with self._services_lock:
             if project_id in self._deleting:
                 raise KeyError(project_id)
@@ -256,6 +569,7 @@ class ProjectCatalog:
         *,
         refresh: bool = False,
     ) -> dict[str, object]:
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             cached = self._services.get(project_id)
         if cached is not None:
@@ -288,6 +602,7 @@ class ProjectCatalog:
 
     def delete(self, project_id: str) -> ProjectDeletionResult:
         """Forget one RCP registration without touching any research source."""
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             if self.store.project(project_id) is None or project_id in self._deleting:
                 raise KeyError(project_id)
@@ -324,10 +639,12 @@ class ProjectCatalog:
                 self._deleting.discard(project_id)
 
     def _snapshot_lock(self, project_id: str) -> threading.Lock:
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             return self._snapshot_locks.setdefault(project_id, threading.Lock())
 
     def _is_deleting(self, project_id: str) -> bool:
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             return project_id in self._deleting
 
@@ -352,6 +669,8 @@ class ProjectCatalog:
         project_id: str,
         snapshot: dict[str, object],
     ) -> None:
+        project_id = self._canonical_project_id(project_id)
+        self._stamp_snapshot_identity(snapshot, project_id)
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id) or self.store.project(project_id) is None:
@@ -372,6 +691,8 @@ class ProjectCatalog:
     ) -> bool:
         """Commit a display snapshot unless a newer project view already won."""
 
+        project_id = self._canonical_project_id(project_id)
+        self._stamp_snapshot_identity(snapshot, project_id)
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id):
@@ -430,6 +751,7 @@ class ProjectCatalog:
     ) -> bool:
         """Version one freshness-only cache update through the normal guards."""
 
+        project_id = self._canonical_project_id(project_id)
         current = self.cached_snapshot(project_id)
         if current is None:
             return False
@@ -445,6 +767,7 @@ class ProjectCatalog:
     def reserve_cached_snapshot_generation(self, project_id: str) -> int:
         """Reserve construction order for one future display snapshot candidate."""
 
+        project_id = self._canonical_project_id(project_id)
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id) or self.store.project(project_id) is None:
                 raise KeyError(project_id)
@@ -457,6 +780,7 @@ class ProjectCatalog:
         project_id: str,
         snapshot: dict[str, object],
     ) -> None:
+        project_id = self._canonical_project_id(project_id)
         if not _valid_display_snapshot(project_id, snapshot):
             raise ValueError("Project display snapshot is invalid")
         patch_log_head = self._candidate_snapshot_patch_heads.get(
@@ -504,6 +828,7 @@ class ProjectCatalog:
                 temporary.unlink(missing_ok=True)
 
     def cached_snapshot(self, project_id: str) -> dict[str, object] | None:
+        project_id = self._canonical_project_id(project_id)
         _status, snapshot = self.cached_snapshot_status(project_id)
         return snapshot
 
@@ -511,12 +836,14 @@ class ProjectCatalog:
         self,
         project_id: str,
     ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
+        project_id = self._canonical_project_id(project_id)
         with self._snapshot_lock(project_id):
             if self._is_deleting(project_id) or self.store.project(project_id) is None:
                 return "missing", None
             return self._cached_snapshot_status_locked(project_id)
 
     def _cached_snapshot_locked(self, project_id: str) -> dict[str, object] | None:
+        project_id = self._canonical_project_id(project_id)
         _status, snapshot = self._cached_snapshot_status_locked(project_id)
         return snapshot
 
@@ -524,6 +851,7 @@ class ProjectCatalog:
         self,
         project_id: str,
     ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
+        project_id = self._canonical_project_id(project_id)
         self._cached_snapshot_patch_heads.pop(project_id, None)
         path = self._cached_snapshot_path(project_id)
         try:
@@ -585,14 +913,23 @@ class ProjectCatalog:
     def loaded_service(self, project_id: str) -> ProjectService | None:
         """Return an already-open service without opening or refreshing it."""
 
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             return self._services.get(project_id)
 
     def _cached_snapshot_path(self, project_id: str) -> Path:
+        project_id = self._canonical_project_id(project_id)
+        return self._cached_snapshot_path_for_id(project_id)
+
+    def _cached_snapshot_path_for_id(self, project_id: str) -> Path:
         digest = hashlib.sha256(project_id.encode()).hexdigest()
         return self.data_dir / "project-snapshots" / f"{digest}.json"
 
     def _paper_snapshot_path(self, project_id: str) -> Path:
+        project_id = self._canonical_project_id(project_id)
+        return self._paper_snapshot_path_for_id(project_id)
+
+    def _paper_snapshot_path_for_id(self, project_id: str) -> Path:
         safe_project_id = re.sub(r"[^A-Za-z0-9._-]+", "_", project_id).strip("._")
         return (
             self.data_dir
@@ -601,13 +938,25 @@ class ProjectCatalog:
         )
 
     def _open_service(self, project_id: str) -> tuple[ProjectService, GraphState]:
+        project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
         bootstrap = load_manifest(record.locator)
         manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
-        history = HistoryManager(manifest, workspace)
-        initialized_state = history.initialize().state
+        history = self._history_for_manifest(manifest, workspace)
+        initialized = history.initialize()
+        identity = history.project_identity(initialized)
+        if identity is None:
+            raise RuntimeError(
+                "Registered project identity disappeared before the project could open."
+            )
+        if identity.project_id != project_id:
+            raise RuntimeError(
+                f"Registered project id {project_id!r} does not match canonical history "
+                f"{identity.project_id!r}."
+            )
+        initialized_state = initialized.state
         self.store.migrate_legacy_project_data(history.manifest.name, project_id)
         paper = PaperService(
             history.manifest,
@@ -630,6 +979,7 @@ class ProjectCatalog:
         project_id: str,
         snapshot: dict[str, object],
     ) -> ProjectRecord:
+        project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             if project_id in self._deleting or self.store.project(project_id) is None:
                 raise KeyError(project_id)
@@ -664,12 +1014,14 @@ class ProjectCatalog:
         project_id: str,
         request: ProjectSettingsRequest,
     ) -> dict[str, object]:
+        project_id = self._canonical_project_id(project_id)
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
+        project_id = self._canonical_project_id(project_id)
         service.update_settings(request)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = service.project_snapshot()
-        snapshot["id"] = project_id
+        self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         self.commit_cached_snapshot(
             project_id,
@@ -685,12 +1037,14 @@ class ProjectCatalog:
         machine_alias: str,
         provider: ProviderId,
     ) -> dict[str, object]:
+        project_id = self._canonical_project_id(project_id)
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
+        project_id = self._canonical_project_id(project_id)
         readiness = service.resolve_provider_path(machine_alias, provider)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = service.project_snapshot()
-        snapshot["id"] = project_id
+        self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         self.commit_cached_snapshot(
             project_id,
@@ -711,6 +1065,7 @@ class ProjectCatalog:
         project_id: str,
         service: ProjectService,
     ) -> None:
+        project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         assert record is not None
         locator = Path(record.locator)
@@ -723,6 +1078,7 @@ class ProjectCatalog:
     def _card(record: ProjectRecord) -> dict[str, object]:
         return {
             "id": record.project_id,
+            "home_space_id": record.home_space_id,
             "name": record.name,
             "locator": record.locator,
             "state_location": record.state_location,
@@ -786,10 +1142,28 @@ def _unlink_regular_app_file(target: Path) -> bool:
     return True
 
 
+def _require_regular_app_file(target: Path, label: str) -> None:
+    try:
+        metadata = target.lstat()
+    except OSError as exc:
+        raise ValueError(f"Could not inspect {label}: {target}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Refusing to migrate non-file {label}: {target}")
+
+
 def _valid_display_snapshot(project_id: str, snapshot: dict[str, object]) -> bool:
     if not _DISPLAY_SNAPSHOT_FIELDS.issubset(snapshot):
         return False
     if snapshot.get("id") != project_id or not isinstance(snapshot.get("name"), str):
+        return False
+    home_space_id = snapshot.get("home_space_id")
+    if not isinstance(home_space_id, str):
+        return False
+    try:
+        parsed_home = uuid.UUID(home_space_id)
+    except ValueError:
+        return False
+    if str(parsed_home) != home_space_id or parsed_home.version != 4:
         return False
     revision = snapshot.get("revision")
     if type(revision) is not int or revision < 0:

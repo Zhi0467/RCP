@@ -52,6 +52,7 @@ import {
   ApiError,
   loadProjectReadiness,
   pinApiInstance,
+  registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
 } from "./api";
 import {
@@ -137,6 +138,7 @@ import type {
   GraphNode,
   GraphState,
   Health,
+  IdentityResponse,
   PaperSnapshot,
   ProjectCard,
   ProjectSnapshot,
@@ -145,6 +147,7 @@ import type {
   ValidationMessage,
   WatcherRecord,
 } from "./types";
+import { DISPLAY_NAME_MAX_LENGTH } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
@@ -171,6 +174,8 @@ import {
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
 const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
+export const OPEN_PROJECT_HEARTBEAT_INTERVAL_MS = 3_000;
+export const ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS = 1_000;
 
 export function shouldPollProviderSkillReadiness(
   inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
@@ -254,10 +259,6 @@ export function canonicalRevisionNeedsReload(
   renderedRevision: number,
 ): boolean {
   return observedRevision > renderedRevision;
-}
-
-export function canonicalRevisionPollDelay(consecutiveFailures: number): number {
-  return Math.min(30_000, 2_000 * 2 ** Math.max(0, consecutiveFailures));
 }
 
 export function relatedNodeWindowAction(
@@ -425,6 +426,99 @@ export function projectTabStateForOpen<T>(
   return { state, loading: false };
 }
 
+export function projectIdsForCacheHeartbeat(tabs: ProjectTab[]): string[] {
+  return [...new Set(tabs.map((tab) => tab.id))];
+}
+
+export function inactiveProjectTabState<T>(
+  cache: Map<string, T>,
+  tabs: ProjectTab[],
+  activeProjectId: string | null,
+  requestedProjectId: string,
+): T | null {
+  if (activeProjectId === requestedProjectId || !tabs.some((tab) => tab.id === requestedProjectId))
+    return null;
+  return cache.get(requestedProjectId) ?? null;
+}
+
+export function reconcileInactiveProjectTabState(
+  state: CachedProjectTabState,
+  snapshot: ProjectSnapshot,
+): CachedProjectTabState {
+  if (
+    !cachedSnapshotCanReplace(state.project.id, state.project.graph.revision, snapshot) ||
+    snapshot.id !== state.project.id
+  )
+    return state;
+  const rebased = state.humanDraft ? normalizeHumanDraft(state.humanDraft, snapshot.graph) : null;
+  return {
+    ...state,
+    project: snapshot,
+    humanDraft: rebased && humanDraftChangeCount(rebased) > 0 ? rebased : null,
+  };
+}
+
+export function persistProjectHumanDraft(
+  storage: Pick<Storage, "setItem" | "removeItem">,
+  projectId: string,
+  draft: HumanDraft | null,
+): void {
+  if (draft && humanDraftChangeCount(draft) > 0) {
+    storage.setItem(humanDraftStorageKey(projectId), serializeHumanDraft(draft));
+  } else {
+    storage.removeItem(humanDraftStorageKey(projectId));
+  }
+}
+
+interface ProjectCachePollingClock {
+  setInterval(callback: () => void, delay: number): number;
+  clearInterval(intervalId: number): void;
+}
+
+interface ProjectCachePollingVisibility {
+  isHidden(): boolean;
+  listen(callback: () => void): () => void;
+}
+
+export function startProjectCachePolling(
+  clock: ProjectCachePollingClock,
+  visibility: ProjectCachePollingVisibility,
+  sweepOpenProjects: () => void,
+  observeActiveProject: () => void,
+): () => void {
+  const runWhenVisible = (callback: () => void) => () => {
+    if (!visibility.isHidden()) callback();
+  };
+  const sweepInterval = clock.setInterval(
+    runWhenVisible(sweepOpenProjects),
+    OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
+  );
+  const activeInterval = clock.setInterval(
+    runWhenVisible(observeActiveProject),
+    ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
+  );
+  const stopListening = visibility.listen(runWhenVisible(sweepOpenProjects));
+  return () => {
+    clock.clearInterval(sweepInterval);
+    clock.clearInterval(activeInterval);
+    stopListening();
+  };
+}
+
+export function singleFlightProjectCacheHeartbeat(
+  inFlight: Map<string, Promise<void>>,
+  projectId: string,
+  heartbeat: () => Promise<void>,
+): Promise<void> {
+  const pending = inFlight.get(projectId);
+  if (pending) return pending;
+  const request = heartbeat().finally(() => {
+    if (inFlight.get(projectId) === request) inFlight.delete(projectId);
+  });
+  inFlight.set(projectId, request);
+  return request;
+}
+
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const [initialRoute] = useState(() => {
@@ -439,6 +533,12 @@ export default function App() {
   const [identityReady, setIdentityReady] = useState(false);
   const [identityIssue, setIdentityIssue] = useState<string | null>(null);
   const [verifiedHealth, setVerifiedHealth] = useState<Health | null>(null);
+  const [actorIdentity, setActorIdentity] = useState<IdentityResponse | null>(null);
+  const [actorIdentityError, setActorIdentityError] = useState<string | null>(null);
+  const [actorNamePromptOpen, setActorNamePromptOpen] = useState(false);
+  const [actorNameDraft, setActorNameDraft] = useState("");
+  const [actorNameSaving, setActorNameSaving] = useState(false);
+  const [actorNameError, setActorNameError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdate | null>(null);
   const [updateExpanded, setUpdateExpanded] = useState(false);
@@ -526,6 +626,9 @@ export default function App() {
     projectId: string;
     request: Promise<void>;
   } | null>(null);
+  const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
+  const actorIdentityRef = useRef<IdentityResponse | null>(null);
+  const actorNamePromptResolver = useRef<((saved: boolean) => void) | null>(null);
   const renderedRevisionRef = useRef(graph.revision);
   const verifiedHealthRef = useRef<Health | null>(null);
   const initialShowHandshake = useRef(false);
@@ -546,6 +649,7 @@ export default function App() {
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
   openProjectTabsRef.current = openProjectTabs;
   activeProjectId.current = projectId;
+  actorIdentityRef.current = actorIdentity;
   renderedRevisionRef.current = graph.revision;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
@@ -732,19 +836,13 @@ export default function App() {
       setHumanDraft((current) => {
         if (!current) return null;
         const rebased = normalizeHumanDraft(current, nextGraph);
+        const retained = humanDraftChangeCount(rebased) > 0 ? rebased : null;
         try {
-          if (humanDraftChangeCount(rebased) > 0) {
-            localStorage.setItem(
-              humanDraftStorageKey(nextProject.id),
-              serializeHumanDraft(rebased),
-            );
-            return rebased;
-          }
-          localStorage.removeItem(humanDraftStorageKey(nextProject.id));
-          return null;
+          persistProjectHumanDraft(localStorage, nextProject.id, retained);
         } catch {
-          return rebased;
+          // The in-memory draft remains usable if browser storage is unavailable.
         }
+        return retained;
       });
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
       setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
@@ -919,86 +1017,102 @@ export default function App() {
   );
   reloadRef.current = reload;
 
-  const reloadAuthoritativeProject = useCallback(() => {
-    if (!projectId) return Promise.resolve();
-    if (authoritativeReloadInFlight.current?.projectId === projectId) {
+  const reloadAuthoritativeProject = useCallback((requestedProjectId?: string | null) => {
+    const activeId = requestedProjectId ?? activeProjectId.current;
+    if (!activeId || activeProjectId.current !== activeId) return Promise.resolve();
+    if (authoritativeReloadInFlight.current?.projectId === activeId) {
       return authoritativeReloadInFlight.current.request;
     }
-    const request = reload().finally(() => {
+    const request = reloadRef.current().finally(() => {
       if (authoritativeReloadInFlight.current?.request === request) {
         authoritativeReloadInFlight.current = null;
       }
     });
-    authoritativeReloadInFlight.current = { projectId, request };
+    authoritativeReloadInFlight.current = { projectId: activeId, request };
     return request;
-  }, [projectId, reload]);
+  }, []);
+
+  const heartbeatProjectCache = useCallback(
+    (requestedProjectId: string): Promise<void> =>
+      singleFlightProjectCacheHeartbeat(
+        projectCacheHeartbeatInFlight.current,
+        requestedProjectId,
+        async () => {
+          const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+          const observedRevision = await loadCanonicalRevision(api, base);
+          const tabIsOpen = () =>
+            openProjectTabsRef.current.some((tab) => tab.id === requestedProjectId);
+          if (!tabIsOpen()) return;
+          if (activeProjectId.current === requestedProjectId) {
+            if (canonicalRevisionNeedsReload(observedRevision, renderedRevisionRef.current)) {
+              await reloadAuthoritativeProject(requestedProjectId);
+            }
+            return;
+          }
+
+          const retained = inactiveProjectTabState(
+            projectTabStatesRef.current,
+            openProjectTabsRef.current,
+            activeProjectId.current,
+            requestedProjectId,
+          );
+          if (!retained || observedRevision <= retained.project.graph.revision) return;
+          const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
+          const current = inactiveProjectTabState(
+            projectTabStatesRef.current,
+            openProjectTabsRef.current,
+            activeProjectId.current,
+            requestedProjectId,
+          );
+          if (!current) {
+            if (!tabIsOpen()) return;
+            if (
+              activeProjectId.current === requestedProjectId &&
+              canonicalRevisionNeedsReload(snapshot.graph.revision, renderedRevisionRef.current)
+            ) {
+              await reloadAuthoritativeProject(requestedProjectId);
+            }
+            return;
+          }
+          const next = reconcileInactiveProjectTabState(current, snapshot);
+          if (next === current) return;
+          cacheProjectTabState(projectTabStatesRef.current, requestedProjectId, next);
+          try {
+            persistProjectHumanDraft(localStorage, requestedProjectId, next.humanDraft);
+          } catch {
+            // A background cache refresh must not discard the in-memory draft.
+          }
+        },
+      ),
+    [reloadAuthoritativeProject],
+  );
 
   useEffect(() => {
-    if (
-      !projectId ||
-      !apiBase ||
-      project?.id !== projectId ||
-      projectReconciliation !== "authoritative"
-    )
-      return;
-    const requestedProjectId = projectId;
-    let stopped = false;
-    let checking = false;
-    let timer: number | null = null;
-    let consecutiveFailures = 0;
-
-    const schedule = (delay: number) => {
-      if (stopped || pageIsHidden()) return;
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        timer = null;
-        void check();
-      }, delay);
+    if (!identityReady || identityIssue) return;
+    const runHeartbeat = (id: string) => {
+      void heartbeatProjectCache(id).catch(() => {
+        // Heartbeat failures leave the last usable display cache intact.
+      });
     };
-    const check = async () => {
-      if (stopped || checking || pageIsHidden()) return;
-      checking = true;
-      try {
-        const observedRevision = await loadCanonicalRevision(api, apiBase);
-        if (stopped || pageIsHidden() || activeProjectId.current !== requestedProjectId) return;
-        if (canonicalRevisionNeedsReload(observedRevision, renderedRevisionRef.current)) {
-          await reloadAuthoritativeProject();
-        }
-        consecutiveFailures = 0;
-      } catch (error) {
-        if (!stopped && activeProjectId.current === requestedProjectId) {
-          if (consecutiveFailures === 0) {
-            setNotice({
-              kind: "error",
-              text: `Automatic graph refresh is temporarily unavailable: ${error instanceof Error ? error.message : String(error)}`,
-            });
-          }
-          consecutiveFailures += 1;
-        }
-      } finally {
-        checking = false;
-        if (!stopped && activeProjectId.current === requestedProjectId) {
-          schedule(canonicalRevisionPollDelay(consecutiveFailures));
-        }
-      }
-    };
-    const handleVisibilityChange = () => {
-      if (pageIsHidden()) {
-        if (timer !== null) window.clearTimeout(timer);
-        timer = null;
-        return;
-      }
-      schedule(0);
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    schedule(canonicalRevisionPollDelay(0));
-    return () => {
-      stopped = true;
-      if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [apiBase, project?.id, projectId, projectReconciliation, reloadAuthoritativeProject]);
+    return startProjectCachePolling(
+      {
+        setInterval: (callback, delay) => window.setInterval(callback, delay),
+        clearInterval: (intervalId) => window.clearInterval(intervalId),
+      },
+      {
+        isHidden: pageIsHidden,
+        listen: (callback) => {
+          document.addEventListener("visibilitychange", callback);
+          return () => document.removeEventListener("visibilitychange", callback);
+        },
+      },
+      () => projectIdsForCacheHeartbeat(openProjectTabsRef.current).forEach(runHeartbeat),
+      () => {
+        const activeId = activeProjectId.current;
+        if (activeId) runHeartbeat(activeId);
+      },
+    );
+  }, [heartbeatProjectCache, identityIssue, identityReady]);
 
   useEffect(() => {
     if (!projectId || !apiBase || project?.id !== projectId) return;
@@ -1068,6 +1182,44 @@ export default function App() {
     }
   }, [desktop]);
 
+  const requestActorName = useCallback((): Promise<boolean> => {
+    if (actorNamePromptResolver.current) return Promise.resolve(false);
+    setActorNameDraft(actorIdentityRef.current?.user.display_name ?? "");
+    setActorNameError(null);
+    setActorNamePromptOpen(true);
+    return new Promise((resolve) => {
+      actorNamePromptResolver.current = resolve;
+    });
+  }, []);
+
+  const settleActorNamePrompt = useCallback((saved: boolean) => {
+    const resolve = actorNamePromptResolver.current;
+    actorNamePromptResolver.current = null;
+    setActorNamePromptOpen(false);
+    setActorNameSaving(false);
+    setActorNameError(null);
+    resolve?.(saved);
+  }, []);
+
+  const saveActorName = useCallback(async () => {
+    const displayName = actorNameDraft.trim();
+    if (!displayName || actorNameSaving) return;
+    setActorNameSaving(true);
+    setActorNameError(null);
+    try {
+      const saved = await api<IdentityResponse>("/api/identity", {
+        method: "PATCH",
+        body: JSON.stringify({ display_name: displayName }),
+      });
+      setActorIdentity(saved);
+      setActorIdentityError(null);
+      settleActorNamePrompt(true);
+    } catch (error) {
+      setActorNameError(error instanceof Error ? error.message : String(error));
+      setActorNameSaving(false);
+    }
+  }, [actorNameDraft, actorNameSaving, settleActorNamePrompt]);
+
   useEffect(() => {
     const onIdentity = (event: Event) => {
       const detail = (event as CustomEvent<BackendIdentityEventDetail>).detail;
@@ -1087,6 +1239,32 @@ export default function App() {
       window.removeEventListener(BACKEND_IDENTITY_EVENT, onIdentity);
     };
   }, []);
+
+  useEffect(() => {
+    registerIdentityNameRequiredHandler(requestActorName);
+    return () => {
+      registerIdentityNameRequiredHandler(null);
+      const resolve = actorNamePromptResolver.current;
+      actorNamePromptResolver.current = null;
+      resolve?.(false);
+    };
+  }, [requestActorName]);
+
+  useEffect(() => {
+    if (!identityReady || identityIssue) return;
+    let stopped = false;
+    setActorIdentityError(null);
+    void api<IdentityResponse>("/api/identity")
+      .then((identity) => {
+        if (!stopped) setActorIdentity(identity);
+      })
+      .catch((error) => {
+        if (!stopped) setActorIdentityError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [identityIssue, identityReady]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -2014,11 +2192,7 @@ export default function App() {
       const retained = retainBehindDraftAfterSync(normalized, graph, nextGraph);
       setHumanDraft(retained);
       try {
-        if (retained) {
-          localStorage.setItem(humanDraftStorageKey(projectId), serializeHumanDraft(retained));
-        } else {
-          localStorage.removeItem(humanDraftStorageKey(projectId));
-        }
+        persistProjectHumanDraft(localStorage, projectId, retained);
       } catch (error) {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
@@ -2170,7 +2344,7 @@ export default function App() {
 
   const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
     if (!project || taskStarting || mutationsDisabled) return;
-    const runKind = graph.revision === 0 ? "seed" : "refresh";
+    const runKind = project.last_refresh_at ? "refresh" : "seed";
     setRunScope(scope);
     try {
       await startAgentTask(runKind, {
@@ -2534,6 +2708,63 @@ export default function App() {
       </section>
     </div>
   ) : null;
+  const actorNameSurface = actorNamePromptOpen ? (
+    <div className="modal-backdrop identity-name-backdrop">
+      <form
+        className="identity-name-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="identity-name-title"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void saveActorName();
+        }}
+      >
+        <header>
+          <h2 id="identity-name-title">Choose your name</h2>
+        </header>
+        <div className="identity-name-body">
+          <p>Your chosen name is copied into permanent project history.</p>
+          <label>
+            Display name
+            <input
+              autoFocus
+              autoComplete="off"
+              maxLength={DISPLAY_NAME_MAX_LENGTH}
+              value={actorNameDraft}
+              onChange={(event) => {
+                setActorNameDraft(event.target.value);
+                setActorNameError(null);
+              }}
+            />
+          </label>
+        </div>
+        {actorNameError && (
+          <div className="identity-name-error" role="alert">
+            {actorNameError}
+          </div>
+        )}
+        <footer>
+          <button
+            className="button secondary"
+            type="button"
+            disabled={actorNameSaving}
+            onClick={() => settleActorNamePrompt(false)}
+          >
+            Cancel
+          </button>
+          <button
+            className="button primary"
+            type="submit"
+            disabled={!actorNameDraft.trim() || actorNameSaving}
+          >
+            {actorNameSaving ? <LoaderCircle className="spin" size={14} /> : null}
+            {actorNameSaving ? "Saving" : "Save and continue"}
+          </button>
+        </footer>
+      </form>
+    </div>
+  ) : null;
   const acceptanceAgentSurface = (
     <AcceptanceAgentIndicator agentMode={verifiedHealth?.agent_mode} />
   );
@@ -2571,6 +2802,7 @@ export default function App() {
         <span>{projectId ? "Opening project" : "Reading the project index"}</span>
         {updateSurface}
         {desktopAccessSurface}
+        {actorNameSurface}
         {acceptanceAgentSurface}
       </div>
     );
@@ -2580,6 +2812,7 @@ export default function App() {
         <ProjectSetup onCancel={returnToProjects} onCreated={openProject} />
         {updateSurface}
         {desktopAccessSurface}
+        {actorNameSurface}
         {acceptanceAgentSurface}
       </>
     );
@@ -2604,6 +2837,7 @@ export default function App() {
         )}
         {updateSurface}
         {desktopAccessSurface}
+        {actorNameSurface}
         {acceptanceAgentSurface}
       </>
     );
@@ -2614,6 +2848,7 @@ export default function App() {
         <span>Opening project</span>
         {updateSurface}
         {desktopAccessSurface}
+        {actorNameSurface}
         {acceptanceAgentSurface}
       </div>
     );
@@ -2628,13 +2863,14 @@ export default function App() {
         </button>
         {updateSurface}
         {desktopAccessSurface}
+        {actorNameSurface}
         {acceptanceAgentSurface}
       </div>
     );
 
   const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
   const showTrustFilter = view === "scientific" || view === "dag";
-  const runKind = graph.revision === 0 ? "seed" : "refresh";
+  const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = replayFailureLabel(graph);
 
   return (
@@ -3052,6 +3288,9 @@ export default function App() {
               showDisplaySettings={desktop}
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
+              identity={actorIdentity}
+              identityError={actorIdentityError}
+              onIdentitySaved={setActorIdentity}
               onRefreshReadiness={refreshReadiness}
               onCacheMetricsChange={(cacheMetrics) => {
                 setProject((current) =>
@@ -3294,6 +3533,7 @@ export default function App() {
         </button>
       )}
       {desktopAccessSurface}
+      {actorNameSurface}
     </div>
   );
 }

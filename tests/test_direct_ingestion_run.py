@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 import rcp.runs.graph as graph_run
 from rcp.agents import AgentEvent
-from rcp.api import create_app
 from rcp.runs.experiment_loop import patch_explicitly_exits
 from rcp.runs.graph import (
     _agent_read_dirs,
@@ -23,7 +22,15 @@ from rcp.runs.graph import (
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
 
-from .helpers import agent_patch_json, refresh_patch, seed_patch
+from .helpers import (
+    agent_patch_json,
+    append_fixture_patch,
+    refresh_patch,
+    seed_patch,
+)
+from .helpers import (
+    create_named_app as create_app,
+)
 
 
 class _FailingLauncher:
@@ -73,7 +80,7 @@ def test_successful_ingest_answer_is_persisted_and_readable(
     service = app.state.service
     patch = seed_patch() if kind == "seed" else refresh_patch()
     if kind == "refresh":
-        service.history.append(seed_patch())
+        append_fixture_patch(service, seed_patch())
     answer = (
         "Wrote the graph Patch. Hypothesis scope remains empty because no cited excerpt states "
         "the exact boundary."
@@ -104,7 +111,7 @@ def test_successful_ingest_answer_is_persisted_and_readable(
 
     assert completed["status"] == "succeeded"
     assert completed["result"] == {"messages": [answer]}
-    assert completed["applied_revision"] == (1 if kind == "seed" else 2)
+    assert completed["applied_revision"] == (2 if kind == "seed" else 3)
 
 
 def test_failed_ingest_keeps_its_independent_answer(manifest, tmp_path) -> None:
@@ -355,7 +362,7 @@ async def test_failed_graph_run_stages_no_conversation_bytes_and_keeps_watermark
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     watermark = service.history.state().last_refresh_at
     provider_marker = b"provider-owned-native-transcript-marker"
     provider_log = Path(manifest.sources.codex_roots[0]) / "native-session.jsonl"

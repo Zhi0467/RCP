@@ -241,9 +241,9 @@ it but a browser or a machine we do not have.
 | [S94](S94-decision-ripeness-and-the-agent-contract.md) | Ordinary agents queue Decisions; they do not decide them | implemented | pytest | covered |
 | [S95](S95-durable-team-space.md) | A team space outlives every process that serves it | pending — **not human-confirmed** | pytest + api | none |
 | [S96](S96-joining-a-team-space.md) | Join a team space once, and stay joined | pending — **not human-confirmed** | pytest + api | none |
-| [S97](S97-a-project-carries-its-identity.md) | A project says who it is and where it belongs | pending — **not human-confirmed** | pytest | none |
+| [S97](S97-a-project-carries-its-identity.md) | A project says who it is and where it belongs | implemented | pytest + **browser** | tests + browser 2026-08-11 |
 | [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project over to the lab, once | pending — **not human-confirmed** | pytest + **browser** | none |
-| [S99](S99-attribution-travels-with-history.md) | History says who did it, and still says so elsewhere | pending — **not human-confirmed** | pytest | none |
+| [S99](S99-attribution-travels-with-history.md) | History says who authorized a change | implemented | pytest + **browser** | tests + browser 2026-08-11 |
 | [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts, and nothing unauthorized lands | pending — **not human-confirmed** | pytest | none |
 | [S101](S101-project-membership-and-invitations.md) | Being in the lab is not being on the project | pending — **not human-confirmed** | pytest + **browser** | none |
 | [S102](S102-team-runs-execute-as-the-space-account.md) | Team work runs where the space can reach it, as the space | pending — **not human-confirmed** | pytest + api + ssh | none |
@@ -253,14 +253,18 @@ it but a browser or a machine we do not have.
 | [S106](S106-cross-project-experiment-board.md) | See every launched Experiment loop before opening a project | implemented | pytest + **browser** | tests + browser 2026-08-09 |
 | [S107](S107-open-project-tabs.md) | Keep several projects open in one RCP window | implemented | **browser** + **desktop** | `web/tests/projectTabs.test.mjs` |
 | [S108](S108-repository-file-links-preserve-desktop-window.md) | A repository file link never strands the desktop window | implemented | **desktop** | tests + desktop 2026-08-09 |
-| [S109](S109-tabs-stay-current-without-freezing.md) | A project tab stays current without ever waiting on the remote | implemented | pytest + **browser** | transport/API + tab/draft UI checks |
+| [S109](S109-tabs-stay-current-without-freezing.md) | A project tab stays current without ever waiting on the remote | implemented | pytest + **browser** | tests + browser + live SSH 2026-08-11 |
 | [S110](S110-paper-draft-survives-a-canonical-change.md) | A paper draft survives a canonical change without choosing a side | implemented | pytest + **browser** | paper/storage + Incoming UI checks |
+| [S111](S111-durable-space-identity.md) | A space keeps one identity across process and path changes | implemented | pytest + api | tests + api 2026-08-11 |
+| [S112](S112-basic-human-identity.md) | A person has one durable identity inside a space | implemented | pytest + api + **browser** | tests + api + browser 2026-08-11 |
+| [S113](S113-campaign-attribution.md) | Campaign work retains its authorization lineage | pending — **not human-confirmed** | pytest + **browser** | none |
 
-S95–S105 are the team-space set. They come from the confirmed design in
-[`../design/`](../design/README.md) and none of them is human-confirmed yet, so
-no implementation should begin against them. S77 was rewritten in the same pass:
-its earlier child-produced-Proposal approval rule was removed, and every
-agent-produced Proposal now waits for a human.
+S95–S105 are the original team-space set. They come from the confirmed design in
+[`../design/`](../design/README.md). S97, S99, and the narrower S111–S112
+prerequisites are implemented; the other team-space scenarios are not
+human-confirmed and do not authorize implementation. S77 was rewritten in the
+same design pass: its earlier child-produced-Proposal approval rule was removed,
+and every agent-produced Proposal now waits for a human.
 
 Ids are never reused. Gaps are retired scenarios or promises folded into another
 scenario or the test-defended list below; a new scenario takes the next free

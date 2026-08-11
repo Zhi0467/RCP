@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 
@@ -11,6 +12,7 @@ import rcp.config as config_module
 from rcp.config import load_manifest
 from rcp.core.models import Patch, ValidationMessage
 from rcp.history import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
+from rcp.history.manager import ProjectIdentityConflict
 from tests.helpers import refresh_patch, seed_patch, shape_invalid_patch
 
 
@@ -1085,3 +1087,242 @@ def test_append_refuses_a_patch_written_against_a_moved_revision(manifest) -> No
     assert history.state().revision == 2
     assert not (manifest.research_dir / "patches" / "000004.json").exists()
     assert "rq/written-against-revision-1" not in history.state().nodes
+
+
+@pytest.mark.parametrize("action", ["created", "adopted"])
+def test_project_identity_claim_is_visible_idempotent_and_semantically_empty(
+    manifest,
+    action,
+) -> None:
+    space_id = str(uuid.uuid4())
+    history = HistoryManager(manifest, expected_space_id=space_id)
+
+    identity = history.claim_project_identity(action)
+    again = history.claim_project_identity(action)
+    result = history.current_materialization()
+
+    assert again == identity
+    assert uuid.UUID(identity.project_id).version == 4
+    assert identity.project_id != space_id
+    assert identity.home_space_id == space_id
+    assert identity.action == action
+    assert result.state.revision == 1
+    assert result.state.nodes == {}
+    assert result.state.edges == {}
+    assert result.state.last_refresh_at is None
+    assert len(history.load_patches()) == 1
+    stored = history.load_patches()[0]
+    assert stored.kind == "identity"
+    assert stored.author is None
+    assert stored.producer == "system"
+    assert stored.ops == []
+    assert stored.summary == (
+        "Project created." if action == "created" else "Project identity adopted."
+    )
+    assert identity.home_space_id not in stored.summary
+    assert result.patches == [stored]
+
+
+@pytest.mark.parametrize("write_outputs", [False, True])
+def test_replay_refuses_missing_scope_provenance_once_history_exists(
+    manifest,
+    write_outputs,
+) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    scope_base = manifest.research_dir / "scope-base.json"
+    scope_base.unlink()
+
+    with pytest.raises(FileNotFoundError, match="scope provenance.*absent.*history exists"):
+        HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=write_outputs)
+    assert not scope_base.exists()
+
+
+def test_empty_history_may_bootstrap_scope_provenance_from_manifest(manifest) -> None:
+    scope_base = manifest.research_dir / "scope-base.json"
+    assert not scope_base.exists()
+
+    result = HistoryManager(manifest).materialize(write_outputs=False)
+
+    assert result.state.project_truth_scope == manifest.project.truth_scope
+    assert result.patches == []
+    assert not scope_base.exists()
+
+
+def test_adopting_identity_never_mutates_prior_patches_or_research_semantics(manifest) -> None:
+    legacy = HistoryManager(manifest)
+    legacy.append(seed_patch())
+    original_path = manifest.research_dir / "patches" / "000001.json"
+    original_bytes = original_path.read_bytes()
+    original_state = legacy.state()
+
+    history = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    identity = history.claim_project_identity("adopted")
+    adopted_state = history.state()
+
+    assert identity.action == "adopted"
+    assert original_path.read_bytes() == original_bytes
+    assert adopted_state.revision == 2
+    assert adopted_state.nodes == original_state.nodes
+    assert adopted_state.edges == original_state.edges
+    assert adopted_state.coverage == original_state.coverage
+    assert adopted_state.last_refresh_at == original_state.last_refresh_at
+
+
+def test_concurrent_same_home_claim_has_one_identity_revision(manifest) -> None:
+    space_id = str(uuid.uuid4())
+    first = HistoryManager(manifest, expected_space_id=space_id)
+    second = HistoryManager(load_manifest(manifest.path), expected_space_id=space_id)
+    ready = threading.Barrier(3)
+
+    def claim(history: HistoryManager):
+        ready.wait()
+        return history.claim_project_identity("adopted")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(claim, first)
+        second_future = executor.submit(claim, second)
+        ready.wait()
+        identities = [first_future.result(timeout=5), second_future.result(timeout=5)]
+
+    assert identities[0] == identities[1]
+    assert len(first.load_patches()) == 1
+    assert first.state().revision == 1
+
+
+def test_competing_home_claims_leave_first_winner_and_refuse_other(manifest) -> None:
+    spaces = [str(uuid.uuid4()), str(uuid.uuid4())]
+    managers = [HistoryManager(manifest, expected_space_id=item) for item in spaces]
+    ready = threading.Barrier(3)
+
+    def claim(history: HistoryManager):
+        ready.wait()
+        return history.claim_project_identity("adopted")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(claim, manager) for manager in managers]
+        ready.wait()
+        outcomes: list[object] = []
+        for future in futures:
+            try:
+                outcomes.append(future.result(timeout=5))
+            except ProjectIdentityConflict as exc:
+                outcomes.append(exc)
+
+    winners = [item for item in outcomes if not isinstance(item, Exception)]
+    refusals = [item for item in outcomes if isinstance(item, ProjectIdentityConflict)]
+    assert len(winners) == 1
+    assert len(refusals) == 1
+    assert managers[0].project_identity() == winners[0]
+    assert len(managers[0].load_patches()) == 1
+
+
+def test_foreign_home_refuses_single_batch_and_settings_writes(manifest) -> None:
+    home = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    identity = home.claim_project_identity("created")
+    foreign = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    manifest_before = manifest.path.read_bytes()
+
+    with pytest.raises(ProjectIdentityConflict, match="belongs to space"):
+        foreign.append(seed_patch())
+    with pytest.raises(ProjectIdentityConflict, match="belongs to space"):
+        foreign.append_batch(
+            [Patch(kind="approval", author="human", summary="Must not land.", ops=[])]
+        )
+    with pytest.raises(ProjectIdentityConflict, match="belongs to space"):
+        foreign.update_machine_provider_paths({"laptop": {"codex": "/foreign/codex"}})
+
+    assert home.project_identity() == identity
+    assert len(home.load_patches()) == 1
+    assert manifest.path.read_bytes() == manifest_before
+
+
+def test_foreign_home_refuses_coherent_initialization(manifest) -> None:
+    home = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    home.claim_project_identity("created")
+    foreign = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+
+    with pytest.raises(ProjectIdentityConflict, match="belongs to space"):
+        foreign.initialize()
+
+
+def test_foreign_home_forensic_replay_is_read_only(manifest) -> None:
+    home = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    home.claim_project_identity("created")
+    for name in HistoryManager._materialized_paths():
+        if name.name == "scope-base.json":
+            continue
+        path = manifest.research_dir / name
+        if path.exists():
+            path.unlink()
+    files_before = sorted(
+        path.relative_to(manifest.research_dir)
+        for path in manifest.research_dir.rglob("*")
+        if path.is_file()
+    )
+    foreign = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+
+    result = foreign.materialize(write_outputs=False)
+
+    files_after = sorted(
+        path.relative_to(manifest.research_dir)
+        for path in manifest.research_dir.rglob("*")
+        if path.is_file()
+    )
+    assert result.state.revision == 1
+    assert result.state.nodes == {}
+    assert files_after == files_before
+    with pytest.raises(ProjectIdentityConflict, match="belongs to space"):
+        foreign.initialize()
+    assert (
+        sorted(
+            path.relative_to(manifest.research_dir)
+            for path in manifest.research_dir.rglob("*")
+            if path.is_file()
+        )
+        == files_before
+    )
+
+
+def test_conflicting_identity_revisions_degrade_identity_and_refuse_writes(manifest) -> None:
+    low_level = HistoryManager(manifest)
+    for action in ("created", "adopted"):
+        low_level.append(
+            Patch.model_validate(
+                {
+                    "kind": "identity",
+                    "author": None,
+                    "producer": "system",
+                    "summary": "Conflicting fixture identity.",
+                    "ops": [],
+                    "project_identity": {
+                        "project_id": str(uuid.uuid4()),
+                        "home_space_id": str(uuid.uuid4()),
+                        "action": action,
+                    },
+                }
+            )
+        )
+    guarded = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+
+    with pytest.raises(ProjectIdentityConflict, match="conflicting"):
+        guarded.project_identity()
+    with pytest.raises(ProjectIdentityConflict, match="conflicting"):
+        guarded.append(seed_patch())
+    assert low_level.materialize(write_outputs=False).state.revision == 2
+
+
+def test_legacy_patch_without_producer_replays_without_rewriting_history(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    path = manifest.research_dir / "patches" / "000001.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw.pop("producer")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    legacy_bytes = path.read_bytes()
+
+    state = HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=False).state
+
+    assert state.revision == 1
+    assert "rq/learning-after-shift" in state.nodes
+    assert path.read_bytes() == legacy_bytes

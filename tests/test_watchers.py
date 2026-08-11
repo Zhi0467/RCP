@@ -1547,6 +1547,56 @@ def test_stop_acknowledges_pending_completion_and_conflicts_after_claim(tmp_path
         store.stop_watchers("project", ["claimed"])
 
 
+def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically(
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    watcher = _record("legacy-loop", origin="loop-root", status="completed").model_copy(
+        update={
+            "experiment_episode_id": episode_id,
+            "continuation": _loop_continuation(episode_id),
+        }
+    )
+    store.create_watchers([watcher])
+
+    authorized_by, diagnostic = store.resolve_watcher_delivery_authorizer([watcher.watcher_id])
+
+    terminal = store.watcher(watcher.watcher_id)
+    episode = store.experiment_episode(episode_id)
+    assert authorized_by is None
+    assert diagnostic is not None
+    assert "predates durable human attribution" in diagnostic
+    assert terminal is not None
+    assert terminal.status == "stopped"
+    assert terminal.notified is True
+    assert terminal.stop_reason == diagnostic
+    assert episode is not None
+    assert episode.session_diagnostic == diagnostic
+    assert store.completed_watcher_groups() == []
+
+
+def test_authorizer_terminalization_loses_cleanly_to_notification_claim(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_watchers([_record("claimed-first", status="completed")])
+    assert store.create_watcher_notification_task(
+        _task(store, "delivery-first", ["claimed-first"]),
+        ["claimed-first"],
+    )
+
+    authorized_by, diagnostic = store.resolve_watcher_delivery_authorizer(["claimed-first"])
+
+    claimed = store.watcher("claimed-first")
+    assert authorized_by is None
+    assert diagnostic is None
+    assert claimed is not None
+    assert claimed.status == "completed"
+    assert claimed.notified is True
+    assert claimed.notification_operation_id == "delivery-first"
+    assert claimed.stop_reason is None
+
+
 def test_poller_isolates_completion_callback_failures_between_groups(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     first = _record("first", status="completed")

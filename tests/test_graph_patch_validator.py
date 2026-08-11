@@ -10,12 +10,15 @@ from pathlib import Path
 import pytest
 
 import rcp.runs.graph as graph_run
-from rcp.agents import AgentEvent
-from rcp.api import create_app
+from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.background import AgentTaskExecution
+from rcp.core.models import AuthorizedHuman
 from rcp.runs.graph import stream_graph_run
 from rcp.runs.patch_validator import VALIDATOR_CLIENT_SOURCE
 from rcp.service import RunRequest
+from rcp.storage import AgentTaskRecord
 from tests.helpers import agent_patch_json, seed_patch
+from tests.helpers import create_named_app as create_app
 
 
 @pytest.mark.asyncio
@@ -24,6 +27,33 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
+    store = app.state.background_tasks.store
+    owner = store.local_owner
+    assert owner is not None and owner.display_name is not None
+    operation_id = "seed-live-validator"
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=app.state.default_project_id,
+            kind="seed",
+            status="running",
+            request={"run_truth_scope": ["repo-a"]},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+            authorized_by=AuthorizedHuman(
+                space_id=app.state.space_id,
+                user_id=owner.user_id,
+                display_name=owner.display_name,
+            ),
+        )
+    )
+    execution = AgentTaskExecution(
+        operation_id=operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
     monkeypatch.setattr(graph_run, "PATCH_SELF_CHECK_TIMEOUT_SECONDS", 2)
 
     class ValidatingLauncher:
@@ -52,7 +82,7 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             )
             assert self.validator_result.returncode == 0
             assert json.loads(self.validator_result.stdout)["status"] == "valid"
-            assert service.history.state().revision == 0
+            assert service.history.state().revision == 1
             yield AgentEvent(event="session", session_id="seed-validator-session")
             yield AgentEvent(event="done")
 
@@ -65,10 +95,11 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             "seed",
             RunRequest(run_truth_scope=["repo-a"]),
             tmp_path / "data",
+            execution=execution,
         )
     ]
 
     assert launcher.validator_result is not None
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     assert any("applied_revision" in frame for frame in frames)
     assert '"event":"done"' in frames[-1]

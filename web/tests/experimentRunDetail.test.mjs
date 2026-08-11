@@ -214,6 +214,56 @@ function recoveryTask(fields = {}) {
   };
 }
 
+test("first Experiment action starts an episode regardless of semantic status", () => {
+  const html = render({
+    node: node({ status: "completed", invocation_ceiling: 7 }),
+    control: control(
+      {
+        invocations_used: 0,
+        invocation_ceiling: 7,
+        invocations_remaining: 7,
+        episode_id: null,
+        paused: false,
+      },
+      { current_invocation: null },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "completed",
+  });
+
+  assert.match(html, /<button[^>]*>.*Start episode<\/button>/s);
+  assert.doesNotMatch(html, /Start new episode/);
+  assert.doesNotMatch(html, /Next episode limit/);
+});
+
+test("prior invocation totals stay pinned beside the edited next episode limit", () => {
+  const html = render({
+    node: node({ status: "planned", invocation_ceiling: 7 }),
+    control: control(
+      {
+        invocations_used: 4,
+        invocation_ceiling: 5,
+        invocations_remaining: 1,
+        paused: false,
+      },
+      { current_invocation: null },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "completed",
+  });
+
+  assert.match(html, /Invocation<\/span>4\s*\/ 5/);
+  assert.match(html, /Next episode limit<\/span>7/);
+  assert.match(html, /<button[^>]*>.*Start new episode<\/button>/s);
+  assert.doesNotMatch(html, />Start episode<\/button>/);
+});
+
 test("provider-limited Experiment recovery stays on the loop detail", () => {
   const task = recoveryTask();
   const diagnostic =
@@ -264,7 +314,7 @@ test("a paused Experiment offers native-session resume and disables recovery whi
   assert.match(html, /Switch provider…/);
 });
 
-test("completed watcher at the ceiling leaves human Run enabled", () => {
+test("completed watcher at the ceiling leaves Start new episode enabled", () => {
   const completed = watcher();
   const html = render({
     node: node(),
@@ -277,8 +327,8 @@ test("completed watcher at the ceiling leaves human Run enabled", () => {
   });
 
   assert.match(html, /Paused at invocation limit/);
-  assert.match(html, /Run pending wake/);
-  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Run pending wake<\/button>/s);
+  assert.match(html, /Start new episode/);
+  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.match(html, /Stop loop/);
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
 });

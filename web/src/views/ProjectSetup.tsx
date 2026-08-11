@@ -572,15 +572,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                   disabled={!preview.can_create}
                   onChange={(event) => setConfirmed(event.target.checked)}
                 />
-                <span>
-                  {preview.action === "connect"
-                    ? "Connect this project"
-                    : "Create the project manifest"}{" "}
-                  ·{" "}
-                  {preview.remote_write
-                    ? `RCP may write canonical project state over SSH at ${preview.canonical_location}`
-                    : `RCP may initialize canonical project state at ${preview.canonical_location}`}
-                </span>
+                <span>{setupFinalConfirmation(preview)}</span>
               </label>
             </div>
           )}
@@ -671,6 +663,17 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
       </main>
     </div>
   );
+}
+
+export function setupFinalConfirmation(preview: SetupPreview): string {
+  const action =
+    preview.action === "connect"
+      ? "Connect this project; this active space becomes the project's sole writable home"
+      : "Create the project manifest";
+  const location = preview.remote_write
+    ? `RCP may write canonical project state over SSH at ${preview.canonical_location}`
+    : `RCP may initialize canonical project state at ${preview.canonical_location}`;
+  return `${action} · ${location}`;
 }
 
 function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) {

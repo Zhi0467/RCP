@@ -16,11 +16,11 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+import rcp.api.app as api_app_module
 import rcp.projects as projects_module
 import rcp.runs.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactory, ProviderReadiness
 from rcp.agents.context import RepositoryPointer
-from rcp.api import create_app
 from rcp.api.app import (
     _generic_watcher_delivery_request,
     _validate_stored_task_request,
@@ -29,7 +29,7 @@ from rcp.api.app import (
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig, load_manifest
-from rcp.core.models import Blocker, Decision, GraphState, Patch
+from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.paper import WritingSession
@@ -57,6 +57,7 @@ from rcp.runs.shared import (
     _sweep_stale_stages,
 )
 from rcp.runs.work import stream_work_run
+from rcp.server_runtime import ServerMetadata
 from rcp.service import (
     CoachRequest,
     ReviewRequest,
@@ -68,7 +69,26 @@ from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherR
 from rcp.transport import RunLockCancelled, RunLockLease, SSHStateWorkspace, StateUnavailable
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
-from .helpers import agent_patch_json, gated_patch, refresh_patch, seed_patch, shape_invalid_patch
+from .helpers import (
+    agent_patch_json,
+    append_fixture_patch,
+    create_named_app,
+    gated_patch,
+    refresh_patch,
+    seed_patch,
+    shape_invalid_patch,
+)
+
+
+def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
+    owner = store.local_owner
+    assert owner is not None
+    assert owner.display_name == "Test researcher"
+    return AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
+    )
 
 
 def _persist_skill_defaults(service, defaults: SkillDefaults) -> None:
@@ -123,8 +143,24 @@ def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
 def test_generic_watcher_delivery_wakes_its_own_project_chat(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    authorized_by = _named_test_authorizer(store)
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="generic-project-chat-origin",
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="Generic watcher origin fixture.",
+            authorized_by=authorized_by,
+        )
+    )
     watcher = WatcherRecord(
         watcher_id="generic-project-chat-wake",
         project_id=project_id,
@@ -143,14 +179,16 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
         status="completed",
         created_at="2026-08-08T00:00:00Z",
     )
+    store.create_watchers([watcher])
     captured: dict[str, object] = {}
 
-    def capture(project, kind, request, watcher_ids, **_kwargs):
+    def capture(project, kind, request, watcher_ids, **kwargs):
         captured.update(
             project_id=project,
             kind=kind,
             request=request,
             watcher_ids=watcher_ids,
+            authorized_by=kwargs["authorized_by"],
         )
 
     monkeypatch.setattr(app.state.background_tasks, "start_watcher_notification", capture)
@@ -163,6 +201,7 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
     assert captured["project_id"] == project_id
     assert captured["kind"] == "project_chat"
     assert captured["watcher_ids"] == [watcher.watcher_id]
+    assert captured["authorized_by"] == authorized_by
     assert request.chat_scope == "project"
     assert request.chat_id == watcher.chat_id
     assert request.node_id is None
@@ -189,13 +228,13 @@ def test_create_app_canonicalizes_a_symlinked_data_directory(manifest, tmp_path)
     alias = tmp_path / "data-alias"
     alias.symlink_to(canonical, target_is_directory=True)
 
-    app = create_app(str(manifest.path), data_dir=alias)
+    app = create_named_app(str(manifest.path), data_dir=alias)
 
     assert app.state.data_dir == canonical.resolve()
 
 
 def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, monkeypatch) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     entered = threading.Event()
     release = threading.Event()
     calls: list[tuple[str, str, str | None]] = []
@@ -231,7 +270,7 @@ def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, mo
 def test_startup_marks_all_skill_targets_then_refreshes_each_once(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     targets = [
         ("codex", "", "/opt/agents/codex"),
         ("claude", "research.example", "/opt/agents/claude"),
@@ -277,7 +316,7 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(
 
 
 def test_project_snapshot_and_resolution_use_last_good_provider_skills(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     app.state.catalog.store.save_provider_skill_inventory_success(
         "codex",
         "",
@@ -360,7 +399,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
         assert release.wait(timeout=3)
 
     monkeypatch.setattr("rcp.api.app.RemoteRunStage.sweep", blocked_sweep)
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: [])
 
     assert not entered.is_set()
@@ -373,7 +412,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
 
 
 def test_stale_instance_guard_rejects_mutation_before_side_effect(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
 
@@ -522,7 +561,7 @@ def _graph_update(frames: list[str]) -> dict[str, object] | None:
 
 
 def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
 
     health = client.get("/api/health")
@@ -544,7 +583,7 @@ def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
     )
     assert removed_conflict_route.status_code == 405
 
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
     generation = app.state.catalog.reserve_cached_snapshot_generation(project_id)
     _, snapshot = app.state.catalog.reconcile_snapshot(project_id)
     assert app.state.catalog.commit_cached_snapshot(
@@ -558,11 +597,11 @@ def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
     reviewed = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "nodes": [
                 {
                     "node_id": "hyp/replanning-restores-plasticity",
-                    "base_updated_rev": 1,
+                    "base_updated_rev": 2,
                     "standing": "accepted",
                 }
             ],
@@ -572,16 +611,51 @@ def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
     assert reviewed.json()["nodes"]["hyp/replanning-restores-plasticity"]["standing"] == "accepted"
 
 
+def test_health_separates_durable_space_process_and_data_directory_identity(tmp_path) -> None:
+    original_dir = tmp_path / "original-data"
+    first_metadata = ServerMetadata.create(
+        original_dir.resolve(), host="127.0.0.1", port=8421, owner_kind="embedded"
+    )
+    first_app = create_named_app(data_dir=original_dir, instance_metadata=first_metadata)
+    with TestClient(first_app) as client:
+        first = client.get("/api/health").json()
+
+    restarted_metadata = ServerMetadata.create(
+        original_dir.resolve(), host="127.0.0.2", port=9443, owner_kind="embedded"
+    )
+    restarted_app = create_named_app(data_dir=original_dir, instance_metadata=restarted_metadata)
+    with TestClient(restarted_app) as client:
+        restarted = client.get("/api/health").json()
+
+    assert restarted["space_id"] == first["space_id"] == first_app.state.space_id
+    assert restarted["instance_id"] != first["instance_id"]
+    assert restarted["data_dir_id"] == first["data_dir_id"]
+    assert restarted["space_id"] not in {restarted["instance_id"], restarted["data_dir_id"]}
+
+    relocated_dir = tmp_path / "relocated-data"
+    original_dir.rename(relocated_dir)
+    relocated_metadata = ServerMetadata.create(
+        relocated_dir.resolve(), host="127.0.0.1", port=8421, owner_kind="embedded"
+    )
+    relocated_app = create_named_app(data_dir=relocated_dir, instance_metadata=relocated_metadata)
+    with TestClient(relocated_app) as client:
+        relocated = client.get("/api/health").json()
+
+    assert relocated["space_id"] == first["space_id"]
+    assert relocated["instance_id"] != restarted["instance_id"]
+    assert relocated["data_dir_id"] != restarted["data_dir_id"]
+
+
 def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     project_id = app.state.default_project_id
-    service.history.append(seed_patch())
-    service.history.append(refresh_patch("rq/tampered"))
-    service.history.append(refresh_patch("rq/not-replayed"))
-    patch_path = manifest.research_dir / "patches" / "000002.json"
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, refresh_patch("rq/tampered"))
+    append_fixture_patch(service, refresh_patch("rq/not-replayed"))
+    patch_path = manifest.research_dir / "patches" / "000003.json"
     raw = json.loads(patch_path.read_text(encoding="utf-8"))
     raw["ops"][0]["nodes"][0]["type"] = "not-a-node-type"
     patch_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -589,27 +663,27 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
 
     graph = client.get(f"/api/projects/{project_id}/graph")
 
-    assert graph.status_code == 200
+    assert graph.status_code == 200, graph.json()
     assert graph.json()["replay_status"] == "degraded"
-    assert graph.json()["revision"] == 1
-    assert graph.json()["replay_failure"]["revision"] == 2
+    assert graph.json()["revision"] == 2
+    assert graph.json()["replay_failure"]["revision"] == 3
     assert "rq/not-replayed" not in graph.json()["nodes"]
 
     sync = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "nodes": [
                 {
                     "node_id": "rq/learning-after-shift",
-                    "base_updated_rev": 1,
+                    "base_updated_rev": 2,
                     "standing": "accepted",
                 }
             ],
         },
     )
     assert sync.status_code == 409
-    assert sync.json()["failed_revision"] == 2
+    assert sync.json()["failed_revision"] == 3
 
     refresh = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
     assert refresh.status_code == 409
@@ -628,7 +702,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
         },
     )
     assert settings.status_code == 409
-    assert settings.json()["coherent_revision"] == 1
+    assert settings.json()["coherent_revision"] == 2
 
     # Conversations stay usable: a degraded graph refuses the patch at append
     # time rather than blocking the turn that might not write one.
@@ -648,7 +722,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
 
 
 def test_project_open_reuses_its_single_materialization(manifest, tmp_path, monkeypatch) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
@@ -683,15 +757,19 @@ def test_project_open_reuses_its_single_materialization(manifest, tmp_path, monk
 def test_project_revision_probe_is_small_and_does_not_replay_history(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     history = app.state.service.history
 
-    assert client.get(f"/api/projects/{project_id}/revision").json() == {"revision": 0}
-    history.append(seed_patch())
-    rejected, _ = history.append(gated_patch(), raise_on_reject=False)
-    assert rejected.revision == 2
+    assert client.get(f"/api/projects/{project_id}/revision").json() == {"revision": 1}
+    append_fixture_patch(app.state.service, seed_patch())
+    rejected, _ = append_fixture_patch(
+        app.state.service,
+        gated_patch(),
+        raise_on_reject=False,
+    )
+    assert rejected.revision == 3
     assert rejected.admission == "rejected"
 
     monkeypatch.setattr(
@@ -733,12 +811,12 @@ def test_project_revision_probe_is_small_and_does_not_replay_history(
     response = client.get(f"/api/projects/{project_id}/revision")
 
     assert response.status_code == 200
-    assert response.json() == {"revision": 1}
+    assert response.json() == {"revision": 2}
     assert list(response.json()) == ["revision"]
 
 
 def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     response = TestClient(app).get(f"/api/projects/{uuid.uuid4()}/revision")
 
     assert response.status_code == 404
@@ -748,7 +826,7 @@ def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_p
 def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_refresh(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
     probes = 0
@@ -789,15 +867,65 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
     assert probes == 1
 
 
+def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
+    clock = 100.0
+    probes = 0
+
+    class FakeTime:
+        @staticmethod
+        def monotonic() -> float:
+            return clock
+
+    def unchanged_head(_project_id):
+        nonlocal probes
+        probes += 1
+        return "unchanged"
+
+    monkeypatch.setattr(api_app_module, "time", FakeTime)
+    monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", unchanged_head)
+
+    async def wait_for_probe() -> None:
+        for _ in range(100):
+            if project_id not in app.state.project_reconciliation_tasks:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("background probe did not complete")
+
+    async def drive() -> list[httpx.Response]:
+        nonlocal clock
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.get(f"/api/projects/{project_id}/cached/revision")
+            await wait_for_probe()
+            clock = 102.999
+            inside_cooldown = await client.get(f"/api/projects/{project_id}/cached/revision")
+            await asyncio.sleep(0)
+            assert project_id not in app.state.project_reconciliation_tasks
+            clock = 103.0
+            at_boundary = await client.get(f"/api/projects/{project_id}/cached/revision")
+            await wait_for_probe()
+            return [first, inside_cooldown, at_boundary]
+
+    responses = asyncio.run(drive())
+
+    assert all(response.status_code == 200 for response in responses)
+    assert probes == 2
+
+
 def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reconcile(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
-    assert initial["revision"] == 0
+    assert initial["revision"] == 1
 
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
     workspace = SSHStateWorkspace(manifest.research_dir, "research.example", "/srv/project")
     monkeypatch.setattr(
         workspace,
@@ -805,7 +933,7 @@ def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reco
         lambda arguments, **_kwargs: subprocess.CompletedProcess(
             arguments,
             0,
-            "000001.json\n",
+            "000002.json\n",
             "",
         ),
     )
@@ -820,10 +948,10 @@ def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reco
 
 
 def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, monkeypatch) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
     entered = threading.Event()
     release = threading.Event()
     probe_calls = 0
@@ -876,17 +1004,17 @@ def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, mon
     assert probe_calls == 1
     assert refresh_calls == 1
     assert refreshed is not None
-    assert refreshed["revision"] == 1
+    assert refreshed["revision"] == 2
     assert refreshed["snapshot_freshness"] == "fresh"
 
 
 def test_local_patch_head_refreshes_cache_without_joining_the_write_path(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
 
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -903,13 +1031,13 @@ def test_local_patch_head_refreshes_cache_without_joining_the_write_path(
 
     assert response.json()["revision"] == initial["revision"]
     assert refreshed is not None
-    assert refreshed["revision"] == 1
+    assert refreshed["revision"] == 2
 
 
 def test_transient_head_probe_failure_marks_only_display_freshness_stale(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
     monkeypatch.setattr(
@@ -939,7 +1067,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     manifest, tmp_path, monkeypatch
 ) -> None:
     data_dir = tmp_path / "data"
-    app = create_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = TestClient(app)
     project_id = app.state.default_project_id
 
@@ -951,7 +1079,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     cache_path = cached_files[0]
     initial_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
     assert initial_envelope["schema_version"] == 2
-    assert initial_envelope["canonical_patch_head"] is None
+    assert initial_envelope["canonical_patch_head"] == 1
     assert initial_envelope["project_id"] == project_id
     assert initial_envelope["snapshot"] == initial.json()
 
@@ -982,12 +1110,12 @@ def test_cached_project_survives_restart_without_opening_history(
     manifest, tmp_path, monkeypatch
 ) -> None:
     data_dir = tmp_path / "data"
-    first_app = create_app(str(manifest.path), data_dir=data_dir)
+    first_app = create_named_app(str(manifest.path), data_dir=data_dir)
     project_id = first_app.state.default_project_id
     authoritative = TestClient(first_app).get(f"/api/projects/{project_id}")
     assert authoritative.status_code == 200
 
-    restarted = create_app(data_dir=data_dir)
+    restarted = create_named_app(data_dir=data_dir)
     monkeypatch.setattr(
         restarted.state.catalog,
         "_open_service",
@@ -1020,12 +1148,12 @@ def test_normal_launch_exposes_health_and_cache_without_opening_canonical_state(
     manifest, tmp_path, monkeypatch
 ) -> None:
     data_dir = tmp_path / "data"
-    first_app = create_app(str(manifest.path), data_dir=data_dir)
+    first_app = create_named_app(str(manifest.path), data_dir=data_dir)
     project_id = first_app.state.default_project_id
     authoritative = TestClient(first_app).get(f"/api/projects/{project_id}")
     assert authoritative.status_code == 200
 
-    app = create_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
     assert project_id not in app.state.catalog._services
 
     def forbidden_open_service(requested_project_id):
@@ -1061,7 +1189,7 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     manifest, tmp_path, monkeypatch
 ) -> None:
     data_dir = tmp_path / "data"
-    app = create_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = TestClient(app)
     project_id = app.state.default_project_id
     authoritative = client.get(f"/api/projects/{project_id}")
@@ -1092,7 +1220,7 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
 def test_slow_project_open_does_not_block_concurrent_task_history(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     original_open_service = app.state.catalog._open_service
@@ -1138,7 +1266,7 @@ def test_slow_project_open_does_not_block_concurrent_task_history(
 def test_blocking_project_source_read_does_not_stall_health(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     entered = threading.Event()
     release = threading.Event()
@@ -1171,7 +1299,7 @@ def test_blocking_project_source_read_does_not_stall_health(
 def test_project_readiness_does_not_open_or_materialize_project(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
@@ -1236,7 +1364,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
 def test_concurrent_project_calls_share_first_open_without_blocking_health(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     original_open_service = app.state.catalog._open_service
@@ -1276,7 +1404,7 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
 def test_failed_singleflight_open_preserves_error_and_can_retry(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     catalog._services.clear()
@@ -1302,7 +1430,7 @@ def test_failed_singleflight_open_preserves_error_and_can_retry(
 
 def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatch) -> None:
     data_dir = tmp_path / "data"
-    app = create_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     original_open_service = catalog._open_service
@@ -1346,7 +1474,7 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
 def test_delete_serializes_against_display_snapshot_replacement(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     snapshot = TestClient(app).get(f"/api/projects/{project_id}").json()
@@ -1392,7 +1520,7 @@ def test_delete_serializes_against_display_snapshot_replacement(
 
 
 def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     snapshot = service.project_snapshot()
@@ -1421,7 +1549,7 @@ def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch
 def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     blockers = [
         Blocker(
             id="blk/asserted-open",
@@ -1491,7 +1619,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
 def test_cached_catalog_open_returns_service_without_building_snapshot(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
     monkeypatch.setattr(
@@ -1508,7 +1636,7 @@ def test_cached_catalog_open_returns_service_without_building_snapshot(
 def test_non_main_project_route_does_not_build_project_snapshot(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     monkeypatch.setattr(
         app.state.service,
@@ -1525,10 +1653,10 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
 
 def test_legacy_direct_human_write_endpoints_are_not_exposed(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
     node_path = "hyp/replanning-restores-plasticity"
 
     responses = [
@@ -1547,12 +1675,12 @@ def test_legacy_direct_human_write_endpoints_are_not_exposed(manifest, tmp_path)
     ]
 
     assert [response.status_code for response in responses] == [405, 405, 405]
-    assert app.state.service.history.current_materialization().state.revision == 1
+    assert app.state.service.history.current_materialization().state.revision == 2
 
 
 def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
-    app = create_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = TestClient(app)
     project_id = app.state.default_project_id
     cached = data_dir / "source-cache" / "remote" / "codex" / "source.jsonl"
@@ -1591,7 +1719,7 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
 
 
 def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
@@ -1629,7 +1757,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
 def test_project_settings_merge_partial_provider_paths_and_preserve_omitted_values(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
@@ -1680,7 +1808,7 @@ def test_project_settings_merge_partial_provider_paths_and_preserve_omitted_valu
 
 
 def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
@@ -1704,7 +1832,7 @@ def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:
 
 
 def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     calls: list[str | None] = []
@@ -1748,7 +1876,7 @@ def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -
 def test_project_settings_reject_invalid_scope_without_changing_manifest(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
@@ -1772,22 +1900,22 @@ def test_project_settings_reject_invalid_scope_without_changing_manifest(
 
 def test_project_registry_survives_hub_restart(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
-    registered = create_app(str(manifest.path), data_dir=data_dir)
+    registered = create_named_app(str(manifest.path), data_dir=data_dir)
     project_id = registered.state.default_project_id
     assert TestClient(registered).get(f"/api/projects/{project_id}").status_code == 200
 
-    hub = create_app(data_dir=data_dir)
+    hub = create_named_app(data_dir=data_dir)
     client = TestClient(hub)
     cards = client.get("/api/projects")
 
     assert cards.status_code == 200
     assert cards.json()[0]["id"] == project_id
     assert cards.json()[0]["name"] == "test-paper"
-    assert cards.json()[0]["revision"] == 0
+    assert cards.json()[0]["revision"] == 1
 
 
 def test_seed_runs_in_background_and_keeps_api_responsive(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
     async def stream(*_args):
@@ -1814,7 +1942,7 @@ def test_seed_runs_in_background_and_keeps_api_responsive(manifest, tmp_path) ->
 def test_seed_waits_for_live_canonical_owner_without_failing(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     workspace = app.state.service.history.workspace
     lock_waiting = threading.Event()
@@ -1859,7 +1987,7 @@ def test_seed_waits_for_live_canonical_owner_without_failing(
 
 
 def test_seed_can_pause_while_waiting_for_canonical_owner(manifest, tmp_path, monkeypatch) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     workspace = app.state.service.history.workspace
     lock_waiting = threading.Event()
@@ -1896,7 +2024,7 @@ def test_seed_can_pause_while_waiting_for_canonical_owner(manifest, tmp_path, mo
 def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     workspace = app.state.service.history.workspace
     provider_started = threading.Event()
@@ -1941,14 +2069,14 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
     assert "paused before applying further graph changes" in paused["status_message"]
     assert paused["stage_root"] is not None
     assert (Path(paused["stage_root"]) / "patch.json").is_file()
-    assert client.get(f"/api/projects/{project_id}").json()["revision"] == 0
+    assert client.get(f"/api/projects/{project_id}").json()["revision"] == 1
     categories = {item["category"] for item in paused["debug_receipts"]}
     assert "canonical_state_lock_lost" in categories
 
 
 @pytest.mark.parametrize("kind", ["seed", "refresh"])
 def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, kind) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     session_id = str(uuid.uuid4())
@@ -1963,7 +2091,7 @@ def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, ki
 
 
 def test_project_usage_endpoint_returns_counted_and_excluded_records(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     now = store.now()
@@ -2006,7 +2134,7 @@ def test_project_usage_endpoint_returns_counted_and_excluded_records(manifest, t
 async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     launcher = FakeLauncher([AgentEvent(event="done")])
 
     events = [
@@ -2028,9 +2156,9 @@ async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
 async def test_graph_stream_launches_with_degraded_source_fallback(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
 
     monkeypatch.setattr(
         "rcp.service.preflight_provider_roots",
@@ -2046,6 +2174,10 @@ async def test_graph_stream_launches_with_degraded_source_fallback(
             "refresh",
             RunRequest(run_truth_scope=["repo-a"]),
             tmp_path / "data",
+            execution=_agent_task_execution(
+                app.state.background_tasks.store,
+                "degraded-source-refresh",
+            ),
         )
     ]
 
@@ -2069,14 +2201,14 @@ async def test_graph_stream_launches_with_degraded_source_fallback(
 async def test_graph_stream_reuses_revision_from_assembled_context(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     context = service.assemble_run(
         RunRequest(run_truth_scope=["repo-a"]),
         surface="refresh",
     )
-    assert context.graph_revision == 1
+    assert context.graph_revision == 2
     monkeypatch.setattr(service, "assemble_run", lambda *_args, **_kwargs: context)
     monkeypatch.setattr(
         service,
@@ -2095,14 +2227,18 @@ async def test_graph_stream_reuses_revision_from_assembled_context(
             "refresh",
             RunRequest(run_truth_scope=["repo-a"]),
             tmp_path / "data",
+            execution=_agent_task_execution(
+                app.state.background_tasks.store,
+                "assembled-context-refresh",
+            ),
         )
     ]
 
-    assert _applied_revision(frames) == 2
+    assert _applied_revision(frames) == 3
 
 
 def test_legacy_run_with_caller_session_cannot_resume(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     session_id = str(uuid.uuid4())
@@ -2130,7 +2266,7 @@ def test_legacy_run_with_caller_session_cannot_resume(manifest, tmp_path) -> Non
 
 
 def test_background_seed_persists_exact_failure(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
     async def stream(*_args):
@@ -2165,10 +2301,10 @@ def test_background_seed_persists_exact_failure(manifest, tmp_path) -> None:
 
 def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_path) -> None:
     """A validator rejection is a correctable authoring error, not history."""
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher(
         [
             {"patch.json": agent_patch_json(gated_patch())},
@@ -2200,7 +2336,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
 
     completed = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert completed["status"] == "succeeded"
-    assert completed["applied_revision"] == 2
+    assert completed["applied_revision"] == 3
     assert launcher.calls == 2
     assert len(launcher.prompts[0].splitlines()) < 200
     assert "Specialists remain\n  read-only" not in launcher.prompts[0]
@@ -2218,7 +2354,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
         if name.endswith("correction-1.json")
     )
     assert "requires a Proposal and human approval" in rejection_diagnostic
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
     assert "rq/transfer-after-shift" in service.history.state().nodes
     receipt_categories = {receipt["category"] for receipt in completed["debug_receipts"]}
     assert {
@@ -2262,9 +2398,9 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
 
 @pytest.mark.asyncio
 async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
     launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
 
@@ -2276,6 +2412,10 @@ async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_pa
             "refresh",
             RunRequest(provider="codex", run_truth_scope=["repo-a"]),
             tmp_path / "data",
+            execution=_agent_task_execution(
+                app.state.background_tasks.store,
+                "provider-binary-refresh",
+            ),
         )
     ]
 
@@ -2288,9 +2428,9 @@ async def test_patch_under_an_unexpected_filename_is_still_applied(
     manifest, tmp_path, file_name
 ) -> None:
     """Rung 1: a filename mismatch must not throw away a whole run's work."""
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher([{file_name: agent_patch_json(refresh_patch())}])
 
     frames = [
@@ -2301,11 +2441,15 @@ async def test_patch_under_an_unexpected_filename_is_still_applied(
             "refresh",
             RunRequest(run_truth_scope=["repo-a"]),
             tmp_path / "data",
+            execution=_agent_task_execution(
+                app.state.background_tasks.store,
+                f"unexpected-filename-{file_name}",
+            ),
         )
     ]
 
     assert launcher.calls == 1
-    assert _applied_revision(frames) == 2
+    assert _applied_revision(frames) == 3
     assert _events(frames)[-1].event == "done"
     assert "rq/transfer-after-shift" in service.history.state().nodes
 
@@ -2313,9 +2457,9 @@ async def test_patch_under_an_unexpected_filename_is_still_applied(
 @pytest.mark.asyncio
 async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, tmp_path) -> None:
     """Rung 2: hand the concrete problem back to the session holding the analysis."""
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher(
         [
             {"patch.json": agent_patch_json(shape_invalid_patch())},
@@ -2331,12 +2475,16 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
             "refresh",
             RunRequest(run_truth_scope=["repo-a"]),
             tmp_path / "data",
+            execution=_agent_task_execution(
+                app.state.background_tasks.store,
+                "invalid-patch-correction",
+            ),
         )
     ]
 
     assert launcher.calls == 2
-    assert _applied_revision(frames) == 2
-    assert service.history.state().revision == 2
+    assert _applied_revision(frames) == 3
+    assert service.history.state().revision == 3
     # The second launch continues the first native session rather than starting over.
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     correction = launcher.prompts[1]
@@ -2358,9 +2506,9 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
 @pytest.mark.asyncio
 async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_path) -> None:
     """Rung 3 plus the round limit: no patch at all, corrected only twice."""
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher([{}])
 
     frames = [
@@ -2380,14 +2528,14 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
     )
     assert _applied_revision(frames) is None
     assert any("without writing any JSON file" in text for text in _error_texts(frames))
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
 
 
 def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> None:
     """Retention: a failure keeps its evidence; a success cleans up after itself."""
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     rejected = agent_patch_json(gated_patch())
 
@@ -2429,8 +2577,8 @@ def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> 
 
     # Rejected agent drafts never enter canonical history, so the next accepted
     # patch receives the next coherent revision.
-    assert _applied_revision(applied_frames) == 2
-    assert service.history.state().revision == 2
+    assert _applied_revision(applied_frames) == 3
+    assert service.history.state().revision == 3
     assert "rq/transfer-after-shift" in service.history.state().nodes
     assert not applied_launcher.workspaces[0].exists()
     assert store.agent_task("applied-operation").stage_root is None
@@ -2459,7 +2607,7 @@ def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> N
 
 def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp_path) -> None:
     """The canonical `.research/` on the execution machine is pointed at, never staged."""
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
 
@@ -2490,6 +2638,7 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp
 
 def _agent_task_execution(store, operation_id: str) -> AgentTaskExecution:
     now = store.now()
+    authorized_by = _named_test_authorizer(store)
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -2500,6 +2649,7 @@ def _agent_task_execution(store, operation_id: str) -> AgentTaskExecution:
             created_at=now,
             updated_at=now,
             status_message="running",
+            authorized_by=authorized_by,
         )
     )
     return AgentTaskExecution(
@@ -2553,7 +2703,7 @@ def test_paper_snapshot_filename_cannot_escape_data_directory(tmp_path) -> None:
 def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     context = service.assemble_run(
         RunRequest(run_truth_scope=["repo-a"]),
@@ -2589,7 +2739,7 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
 async def test_remote_stage_is_retained_after_failure_and_after_pause(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     context = service.assemble_run(
         RunRequest(run_truth_scope=["repo-a"]),
@@ -2729,7 +2879,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
 
 
 def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     native_session_id = str(uuid.uuid4())
     resumed_requests: list[RunRequest] = []
@@ -2787,7 +2937,7 @@ def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> Non
 
 
 def test_background_shutdown_records_reload_provenance_not_human_pause(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
     async def pausable_stream(_project_id, _kind, _request, execution):
@@ -2814,9 +2964,9 @@ def test_background_shutdown_records_reload_provenance_not_human_pause(manifest,
 async def test_closing_paused_background_stream_awaits_launcher_cleanup(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     project_id = app.state.default_project_id
     request = RunRequest(
         chat_scope="project",
@@ -2888,7 +3038,7 @@ async def test_closing_paused_background_stream_awaits_launcher_cleanup(
 
 
 def test_failed_background_seed_can_retry_without_native_session(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
     async def failed_stream(*_args):
@@ -2933,7 +3083,7 @@ def test_failed_background_seed_can_retry_without_native_session(manifest, tmp_p
 
 
 def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     stage = tmp_path / "retained-stage"
     stage.mkdir()
@@ -2976,7 +3126,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> Non
 
 
 def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     stage = tmp_path / "exhausted-stage"
     stage.mkdir()
@@ -3042,7 +3192,7 @@ def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_pa
 def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3160,7 +3310,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
 
     assert completed["status"] == "succeeded"
-    assert completed["applied_revision"] == 1
+    assert completed["applied_revision"] == 2
     assert assemble_calls == 1
     assert [item["provider"] for item in launcher.calls] == ["claude", "codex"]
     assert launcher.calls[1]["session_id"] is None
@@ -3192,7 +3342,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
 def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3281,7 +3431,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
 def test_same_provider_retry_reuses_its_session_with_a_followup_only(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3393,7 +3543,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> No
     A provider that writes nothing must not have that earlier file collected as
     its own work: applying it would attribute inherited output to the Retry.
     """
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
 
@@ -3447,7 +3597,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> No
     assert completed["error"].index("provider connection dropped") < completed["error"].index(
         "did not write a new patch"
     )
-    assert service.history.state().revision == 0
+    assert service.history.state().revision == 1
     assert not service.history.state().nodes
     assert any(
         receipt["category"] == "patch_predates_launch" and receipt["payload"]["accepted"] is False
@@ -3458,7 +3608,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> No
 def test_literal_resume_uses_saved_context_without_reassembly(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3534,7 +3684,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
 
 
 def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
 
@@ -3580,7 +3730,7 @@ def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> No
 
 
 def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
 
@@ -3610,14 +3760,14 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_pa
     client = TestClient(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
 
     correction = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
     )
     moved = _wait_for_run(client, project_id, correction.json()["operation_id"])
     assert moved["status"] == "failed"
-    assert "graph revision moved from 0 to 1" in moved["error"]
+    assert "graph revision moved from 1 to 2" in moved["error"]
     assert "Retry this task" in moved["error"]
     assert launcher.calls == 1
     assert any(
@@ -3640,8 +3790,8 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_pa
 
 
 def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    app.state.service.history.append(seed_patch())
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
     project_id = app.state.default_project_id
     descriptor = AgentArtifactDescriptor(
         artifact_id="b" * 24,
@@ -3674,7 +3824,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, t
 
 
 def test_server_shutdown_pauses_live_background_seed(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
     async def pausable_stream(_project_id, _kind, _request, execution):
@@ -3696,10 +3846,10 @@ def test_server_shutdown_pauses_live_background_seed(manifest, tmp_path) -> None
 
 
 def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     chat_id = str(uuid.uuid4())
     answer = "The node remains proposed because the matched forward test has not run."
     patch = Patch(
@@ -3756,7 +3906,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
     # A question costs no graph revision, even when the agent writes a patch file:
     # this turn carried no human authorization and the patch changed nothing anyway.
     assert completed["applied_revision"] is None
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     transcript = next((manifest.research_dir / "chat").glob("*.jsonl"))
     records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
     assert [record["role"] for record in records] == ["user", "assistant"]
@@ -3767,7 +3917,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
 def test_chat_history_is_paginated_from_full_canonical_transcripts(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
     chat_dir = manifest.research_dir / "chat"
@@ -3869,7 +4019,7 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
 def test_chat_history_reports_remote_refresh_failure_as_unavailable(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     project_id = app.state.default_project_id
     service.history.workspace.remote = True
@@ -3890,7 +4040,7 @@ def test_chat_history_reports_remote_refresh_failure_as_unavailable(
 
 
 def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
@@ -3930,7 +4080,7 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
 def test_remote_artifact_read_does_not_stall_health(
     manifest, tmp_path, monkeypatch, action
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     descriptor = AgentArtifactDescriptor(
         artifact_id="a" * 24,
         name="plot.png",
@@ -3969,9 +4119,9 @@ def test_remote_artifact_read_does_not_stall_health(
 def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     answer = "# Result\n\n```unknown-language\nkept as code\n```"
     html_source = (
         b"<!doctype html><button id='go'>Run</button>"
@@ -4025,7 +4175,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
 
     assert completed["status"] == "succeeded"
     assert completed["result"]["messages"] == [answer]
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     artifacts = completed["result"]["artifacts"]
     assert [item["name"] for item in artifacts] == ["plot.png", "preview.html"]
     assert all("path" not in item and "host" not in item for item in artifacts)
@@ -4134,9 +4284,9 @@ def test_chat_artifact_discovery_enforces_every_central_bound(tmp_path, monkeypa
 async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     answer = "The reply remains available."
     launcher = FakeLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
     monkeypatch.setattr(
@@ -4163,9 +4313,9 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
 async def test_chat_does_not_assemble_or_project_transcripts(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
 
     def index_must_not_run(*_args, **_kwargs):
         raise AssertionError("chat must not assemble a source index")
@@ -4210,9 +4360,9 @@ async def test_chat_does_not_assemble_or_project_transcripts(
 async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="The answer survived."), AgentEvent(event="done")]
     )
@@ -4242,9 +4392,9 @@ async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
 @pytest.mark.asyncio
 async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest, tmp_path) -> None:
     shared_data = tmp_path / "data"
-    first_app = create_app(str(manifest.path), data_dir=shared_data)
+    first_app = create_named_app(str(manifest.path), data_dir=shared_data)
     first_service = first_app.state.service
-    first_service.history.append(seed_patch())
+    append_fixture_patch(first_service, seed_patch())
 
     second_repo = tmp_path / "second-repo-a"
     second_research = second_repo / ".research"
@@ -4255,9 +4405,9 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
         manifest.path.read_text(encoding="utf-8").replace(str(first_repo), str(second_repo)),
         encoding="utf-8",
     )
-    second_app = create_app(str(second_manifest_path), data_dir=shared_data)
+    second_app = create_named_app(str(second_manifest_path), data_dir=shared_data)
     second_service = second_app.state.service
-    second_service.history.append(seed_patch())
+    append_fixture_patch(second_service, seed_patch())
 
     store = first_app.state.background_tasks.store
     chat_id = str(uuid.uuid4())
@@ -4332,9 +4482,9 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
 async def test_pause_before_native_checkpoint_reclaims_claude_projection(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     codex_root = Path(next(iter(manifest.sources.codex_roots)))
     (codex_root / "source.jsonl").write_text(
         json.dumps(
@@ -4396,9 +4546,9 @@ async def test_pause_before_native_checkpoint_reclaims_claude_projection(
 async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     patch = refresh_patch("rq/artifact-backed-change").model_copy(update={"kind": "work"})
 
     class ArtifactPatchLauncher(ScriptedLauncher):
@@ -4422,8 +4572,21 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
         mode="work",
     )
 
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="artifact-backed-work",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
     frames = [
-        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
     ]
 
     assert not _error_texts(frames)
@@ -4437,9 +4600,9 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
 async def test_chat_launch_exception_keeps_workspace_without_transcript_projection(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
 
     class ExplodingLauncher:
         async def stream(self, *_args, **kwargs):
@@ -4491,8 +4654,8 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
     would leave the chat showing an error where its reply should be.
     """
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    app.state.service.history.append(seed_patch())
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
     answer = "Recorded — though staging the follow-up failed right afterwards."
 
     async def stream(_project_id, _kind, _request, _execution):
@@ -4520,7 +4683,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
 
 
 def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.paper.create()
     answer = "State the comparison before introducing the endpoint-KL terminology."
@@ -4575,7 +4738,7 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path
 def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.paper.create()
     session_id = str(uuid.uuid4())
@@ -4654,9 +4817,9 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
 
 
 def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     project_id = app.state.default_project_id
 
     async def stream(_project_id, kind, _request, _execution):
@@ -4709,9 +4872,9 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     chat_id = str(uuid.uuid4())
     answer = "Added the transfer question you described."
     patch = refresh_patch().model_copy(update={"kind": "work"})
@@ -4726,11 +4889,26 @@ async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_pa
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="streamed-node-chat-work",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
 
-    frames = [item async for item in stream_work_run(service, launcher, request, tmp_path / "data")]
+    frames = [
+        item
+        async for item in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
 
     assert answer in [event.text for event in _events(frames) if event.event == "answer"]
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
     transcript = next((manifest.research_dir / "chat").glob("*.jsonl"))
     records = [json.loads(line) for line in transcript.read_text(encoding="utf-8").splitlines()]
     assert [record["role"] for record in records] == ["user", "assistant"]
@@ -4740,9 +4918,9 @@ async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_pa
 
 @pytest.mark.asyncio
 async def test_node_chat_answers_without_writing_a_patch(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     revision_before = service.history.state().revision
     answer = "It is still proposed because no matched forward test has run yet."
     launcher = ScriptedLauncher([{}], message=answer)
@@ -4774,9 +4952,9 @@ async def test_node_chat_answers_without_writing_a_patch(manifest, tmp_path) -> 
 async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> None:
     """The reported failure: a corrupt ingest cursor must not block a question."""
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     raw_path = Path(next(iter(manifest.sources.codex_roots))) / "stale.jsonl"
     raw_path.write_text(
         json.dumps(
@@ -4815,9 +4993,9 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
 
 @pytest.mark.asyncio
 async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher([{}], message="Answered.")
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
@@ -4854,9 +5032,9 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
 
 @pytest.mark.asyncio
 async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     revision_before = service.history.state().revision
     patch = Patch(
         kind="work",
@@ -4890,9 +5068,9 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_project_chat_persists_project_scoped_transcript(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     chat_id = str(uuid.uuid4())
     answer = "The project is testing whether matched trajectories preserve future learning."
     patch = Patch(
@@ -4929,9 +5107,9 @@ async def test_project_chat_persists_project_scoped_transcript(manifest, tmp_pat
 async def test_unauthorized_chat_patch_is_discarded_not_applied(manifest, tmp_path) -> None:
     """Writing the file does not grant the authority to change the graph."""
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     revision_before = service.history.state().revision
     answer = "It is still proposed because no matched forward test has run."
     launcher = ScriptedLauncher(
@@ -4968,9 +5146,9 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     The same folder must not hand turn two the patch file turn one left behind.
     """
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     chat_id = str(uuid.uuid4())
     patch = refresh_patch().model_copy(update={"kind": "work"})
     first = ScriptedLauncher([{"patch.json": agent_patch_json(patch)}], message="First answer.")
@@ -4981,26 +5159,52 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
         run_truth_scope=["repo-a"],
         mode="work",
     )
-    async for _ in stream_work_run(service, first, request, tmp_path / "data"):
+    first_execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="shared-chat-first-work",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    async for _ in stream_work_run(
+        service,
+        first,
+        request,
+        tmp_path / "data",
+        execution=first_execution,
+    ):
         pass
     applied = service.history.state().revision
+    app.state.background_tasks.store.complete_agent_task(
+        first_execution.operation_id,
+        applied_revision=applied,
+        result={"messages": ["First answer."]},
+    )
     workspace = first.workspaces[0]
     assert workspace.is_dir()
 
     # Turn two writes no patch at all, in the same folder, and must not inherit one.
     second = ScriptedLauncher([{}], message="Second answer.")
+    second.native_session_id = first.native_session_id
+    second_request = request.model_copy(
+        update={
+            "message": "Thanks — what does that node mean?",
+            "session_id": first.native_session_id,
+        }
+    )
+    second_execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="shared-chat-second-work",
+        project_id=app.state.default_project_id,
+        request=second_request,
+    )
     frames = [
         item
         async for item in stream_work_run(
             service,
             second,
-            request.model_copy(
-                update={
-                    "message": "Thanks — what does that node mean?",
-                    "session_id": first.native_session_id,
-                }
-            ),
+            second_request,
             tmp_path / "data",
+            execution=second_execution,
         )
     ]
 
@@ -5014,16 +5218,16 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
 
 @pytest.mark.asyncio
 async def test_chat_patch_is_applied_to_live_state_when_the_graph_moves(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     answer = "Recorded."
     patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "work"})
 
     class RacingLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, **kwargs):
             # A refresh lands between context assembly and the patch being applied.
-            service.history.append(refresh_patch("rq/landed-first"))
+            append_fixture_patch(service, refresh_patch("rq/landed-first"))
             async for event in super().stream(provider, prompt, **kwargs):
                 yield event
 
@@ -5036,14 +5240,29 @@ async def test_chat_patch_is_applied_to_live_state_when_the_graph_moves(manifest
         mode="work",
     )
 
-    frames = [item async for item in stream_work_run(service, launcher, request, tmp_path / "data")]
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="live-state-work",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    frames = [
+        item
+        async for item in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
 
     assert not _error_texts(frames)
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
     graph_update = _graph_update(frames)
     assert graph_update is not None
     assert graph_update["status"] == "applied"
-    assert graph_update["applied_revision"] == 3
+    assert graph_update["applied_revision"] == 4
     assert graph_update["correction_rounds"] == 0
     assert "rq/landed-first" in service.history.state().nodes
     assert "rq/late-arrival" in service.history.state().nodes
@@ -5052,9 +5271,9 @@ async def test_chat_patch_is_applied_to_live_state_when_the_graph_moves(manifest
 def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path) -> None:
     """A semantically valid resumed patch is revalidated against current state."""
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     session_id = str(uuid.uuid4())
     patch = refresh_patch("rq/written-before-the-pause").model_copy(update={"kind": "work"})
 
@@ -5117,7 +5336,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
     assert [item.name for item in (launcher.workspaces[0] / "turns").iterdir()] == [operation_id]
 
     # The human works on the graph while the turn is paused.
-    service.history.append(refresh_patch("rq/landed-while-paused"))
+    append_fixture_patch(service, refresh_patch("rq/landed-while-paused"))
     resumed_response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/resume")
 
     assert resumed_response.status_code == 202
@@ -5136,7 +5355,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
     assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [operation_id]
     assert resumed["status"] == "succeeded"
     assert resumed["result"]["graph_update"]["status"] == "applied"
-    assert resumed["result"]["graph_update"]["applied_revision"] == 3
+    assert resumed["result"]["graph_update"]["applied_revision"] == 4
     assert "rq/landed-while-paused" in service.history.state().nodes
     assert "rq/written-before-the-pause" in service.history.state().nodes
 
@@ -5144,9 +5363,9 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
 def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
 
     class RetryLauncher:
         def __init__(self) -> None:
@@ -5200,9 +5419,9 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
 async def test_resumed_chat_rejects_a_mismatched_saved_stage(
     manifest, tmp_path, fault: str
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     _record_lineage_task(
         store,
@@ -5271,9 +5490,9 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
 async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
         message="Continue remotely.",
@@ -5392,7 +5611,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
 
 @pytest.mark.asyncio
 async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     paper = service.paper
     session_id = str(uuid.uuid4())
@@ -5436,7 +5655,7 @@ async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_
 
 @pytest.mark.asyncio
 async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.manifest.machine_map["laptop"].provider_paths["codex"] = "/opt/agents/codex"
     paper = service.paper
@@ -5508,9 +5727,9 @@ def _wait_for_status(
 
 @pytest.mark.asyncio
 async def test_work_without_patch_succeeds_without_spending_a_revision(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher([{}], message="The requested check completed.")
     request = RunRequest(
         chat_scope="project",
@@ -5534,7 +5753,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
         "correction_rounds": 0,
         "repairable": False,
     }
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     assert launcher.launch_kwargs[0]["capability"] == "work_auto"
     assert launcher.launch_kwargs[0]["write_dirs"] == [Path(manifest.repository_map["repo-a"].path)]
     transcript = service.chat_transcript(request.chat_id)
@@ -5546,9 +5765,9 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
 async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelopes(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
@@ -5676,9 +5895,9 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
 def test_work_launch_receipt_names_the_canonical_state_boundary(
     manifest, tmp_path, provider: str
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher([{}], message="Finished.")
 
     async def stream(_project_id, _kind, request, execution):
@@ -5714,9 +5933,9 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
 def test_work_write_dirs_passes_canonical_research_pointer(
     manifest, tmp_path, remote: bool
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     request = RunRequest(
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -5745,9 +5964,9 @@ def test_work_write_dirs_passes_canonical_research_pointer(
 def test_work_write_dirs_passes_pointer_with_parent_segments(
     manifest, tmp_path, remote: bool
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     context = service.assemble_chat(
         RunRequest(
             chat_scope="project",
@@ -5776,9 +5995,9 @@ def test_work_write_dirs_passes_pointer_with_parent_segments(
 
 @pytest.mark.parametrize("target", ["research", "ancestor"])
 def test_local_work_write_dirs_passes_symlinked_pointer(manifest, tmp_path, target: str) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     context = service.assemble_chat(
         RunRequest(
             chat_scope="project",
@@ -5811,9 +6030,9 @@ def test_local_work_write_dirs_passes_symlinked_pointer(manifest, tmp_path, targ
 async def test_invalid_work_patch_is_corrected_without_repeating_operational_work(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     invalid = shape_invalid_patch().model_copy(update={"kind": "work"})
     valid = refresh_patch("rq/work-corrected").model_copy(update={"kind": "work"})
 
@@ -5841,16 +6060,29 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="corrected-work-patch",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
 
     frames = [
-        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
     ]
 
     assert not _error_texts(frames)
     graph_update = _graph_update(frames)
     assert graph_update is not None
     assert graph_update["status"] == "applied"
-    assert graph_update["applied_revision"] == 2
+    assert graph_update["applied_revision"] == 3
     assert graph_update["correction_rounds"] == 1
     assert launcher.operational_effects == 1
     assert [item["capability"] for item in launcher.launch_kwargs] == [
@@ -5876,9 +6108,9 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
 async def test_exhausted_work_patch_correction_preserves_successful_answer(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
     launcher = ScriptedLauncher([{"patch.json": invalid}], message="The run finished.")
     request = RunRequest(
@@ -5901,7 +6133,7 @@ async def test_exhausted_work_patch_correction_preserves_successful_answer(
     assert graph_update["correction_rounds"] == 2
     assert graph_update["repairable"] is False
     assert launcher.calls == 3
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     # The agent rewrote nothing, so the second correction must say so instead of
     # repeating the first diagnostic as though the file had changed.
     second_correction = next(
@@ -5921,9 +6153,9 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
     unreadable bytes and spend the whole correction budget on the wrong problem.
     """
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
 
     class UnreadableCorrectionLauncher(ScriptedLauncher):
@@ -5952,7 +6184,7 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
     assert graph_update is not None
     assert graph_update["status"] == "rejected"
     assert graph_update["correction_rounds"] == 2
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     second_correction = next(
         content
         for name, content in launcher.input_snapshots[2].items()
@@ -5965,14 +6197,14 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
 
 @pytest.mark.asyncio
 async def test_work_patch_is_applied_to_live_state_without_correction(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     work_patch = refresh_patch("rq/live-work").model_copy(update={"kind": "work"})
 
     class MovingGraphLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, **kwargs):
-            service.history.append(refresh_patch("rq/concurrent-human-work"))
+            append_fixture_patch(service, refresh_patch("rq/concurrent-human-work"))
             async for event in super().stream(provider, prompt, **kwargs):
                 yield event
 
@@ -5986,16 +6218,29 @@ async def test_work_patch_is_applied_to_live_state_without_correction(manifest, 
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="moving-live-work",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
 
     frames = [
-        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
     ]
 
     assert not _error_texts(frames)
     graph_update = _graph_update(frames)
     assert graph_update is not None
     assert graph_update["status"] == "applied"
-    assert graph_update["applied_revision"] == 3
+    assert graph_update["applied_revision"] == 4
     assert graph_update["correction_rounds"] == 0
     assert launcher.calls == 1
     assert "rq/concurrent-human-work" in service.history.state().nodes
@@ -6006,9 +6251,9 @@ async def test_work_patch_is_applied_to_live_state_without_correction(manifest, 
 async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_apply(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     workspace = service.history.workspace
     work_patch = refresh_patch("rq/lost-lock-work").model_copy(update={"kind": "work"})
 
@@ -6047,19 +6292,20 @@ async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_app
     assert graph_update["repairable"] is False
     assert "lock holder" in graph_update["validation_messages"][0]
     assert launcher.calls == 1
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
 
 
 @pytest.mark.asyncio
 async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_correction(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     service.review_node(
         "rq/learning-after-shift",
         ReviewRequest(standing="accepted"),
+        authorized_by=_named_test_authorizer(app.state.background_tasks.store),
     )
     patch = Patch(
         kind="work",
@@ -6115,9 +6361,22 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="accepted-question-decisions",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
 
     frames = [
-        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
     ]
 
     graph_update = _graph_update(frames)
@@ -6135,9 +6394,9 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
 async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     patch = Patch(
         kind="work",
         author="agent",
@@ -6196,7 +6455,7 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
                             }
                         ],
                         "related_node_ids": ["hyp/replanning-restores-plasticity"],
-                        "base_rev": 1,
+                        "base_rev": 2,
                     }
                 ],
             },
@@ -6213,9 +6472,22 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="work-proposal",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
 
     frames = [
-        frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
     ]
 
     graph_update = _graph_update(frames)
@@ -6232,9 +6504,9 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
 def test_background_work_can_pause_while_waiting_for_canonical_state(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     workspace = service.history.workspace
     waiting = threading.Event()
     answer = "The operational work completed."
@@ -6288,7 +6560,7 @@ def test_background_work_can_pause_while_waiting_for_canonical_state(
     assert paused["result"] == {"messages": [answer]}
     assert "answer and retained patch are preserved" in paused["status_message"]
     assert app.state.background_tasks.store.agent_task_patch_output(operation_id) == patch_text
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
     categories = {item["category"] for item in paused["debug_receipts"]}
     assert "canonical_state_lock_wait" in categories
     assert "operation_paused" in categories
@@ -6297,9 +6569,9 @@ def test_background_work_can_pause_while_waiting_for_canonical_state(
 def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
     valid = agent_patch_json(
         refresh_patch("rq/manually-repaired-work").model_copy(update={"kind": "work"})
@@ -6367,7 +6639,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
         "_session_is_rcp_owned",
         ownership_check,
     )
-    service.history.append(refresh_patch("rq/landed-before-manual-repair"))
+    append_fixture_patch(service, refresh_patch("rq/landed-before-manual-repair"))
 
     repaired_response = client.post(
         f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update"
@@ -6384,7 +6656,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert repaired["request"]["message"] is None
     assert repaired["result"]["messages"] == []
     assert repaired["result"]["graph_update"]["status"] == "applied"
-    assert repaired["result"]["graph_update"]["applied_revision"] == 3
+    assert repaired["result"]["graph_update"]["applied_revision"] == 4
     assert "rq/landed-before-manual-repair" in service.history.state().nodes
     assert "rq/manually-repaired-work" in service.history.state().nodes
     parent_after = client.get(f"/api/projects/{project_id}/tasks/{parent['operation_id']}").json()
@@ -6430,10 +6702,10 @@ def _experiment_fixture_patch(
 def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenance(
     manifest, tmp_path: Path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch(invocation_ceiling=3))
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=3))
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     episode_id = str(uuid.uuid4())
@@ -6442,6 +6714,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     stage_root = tmp_path / "episode-stage"
     stage_root.mkdir()
     now = store.now()
+    authorized_by = _named_test_authorizer(store)
     root_request = RunRequest(
         provider="codex",
         model="episode-model",
@@ -6455,7 +6728,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=episode_id,
         control_invocation=1,
         control_invocation_ceiling=3,
@@ -6472,6 +6745,20 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
             created_at=now,
             updated_at=now,
             status_message="Loop waiting on detached work.",
+            authorized_by=authorized_by,
+        )
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="maintenance-project-chat-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="Maintenance watcher origin fixture.",
+            authorized_by=authorized_by,
         )
     )
     store.commit_experiment_episode_turn(
@@ -6510,7 +6797,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
             run_truth_scope=["repo-b"],
             patch_kind="experiment_loop",
             control_node_id="exp/bounded-loop",
-            control_revision=2,
+            control_revision=3,
             control_episode_id=episode_id,
             control_invocation=1,
             control_invocation_ceiling=3,
@@ -6565,6 +6852,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     notification = store.agent_task(delivered.notification_operation_id)
     assert notification is not None
     assert notification.kind == "node_chat"
+    assert notification.authorized_by == authorized_by
     assert notification.stage_host is None
     assert notification.stage_root == str(stage_root)
 
@@ -6577,6 +6865,7 @@ def _chat_task_execution(
     request: RunRequest,
 ) -> AgentTaskExecution:
     now = store.now()
+    authorized_by = _named_test_authorizer(store)
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -6587,6 +6876,7 @@ def _chat_task_execution(
             created_at=now,
             updated_at=now,
             status_message="running",
+            authorized_by=authorized_by,
         )
     )
     return AgentTaskExecution(
@@ -6597,7 +6887,7 @@ def _chat_task_execution(
 
 
 def test_public_task_request_cannot_select_watcher_or_control_authority(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     request = _validated_task_request(
         service,
@@ -6621,10 +6911,10 @@ def test_public_task_request_cannot_select_watcher_or_control_authority(manifest
 
 
 def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     entered = threading.Event()
     release = threading.Event()
 
@@ -6633,7 +6923,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         assert request.trigger == "experiment_run"
         assert request.patch_kind == "experiment_loop"
         assert request.control_node_id == "exp/bounded-loop"
-        assert request.control_revision == 2
+        assert request.control_revision == 3
         assert request.control_episode_id is not None
         uuid.UUID(request.control_episode_id)
         assert request.control_invocation == 1
@@ -6683,16 +6973,17 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
 
 
 def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch(invocation_ceiling=1))
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=1))
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     old_episode = str(uuid.uuid4())
     loop_chat_id = str(uuid.uuid4())
     maintenance_chat_id = str(uuid.uuid4())
     now = store.now()
+    authorized_by = _named_test_authorizer(store)
     old_request = RunRequest(
         provider="codex",
         run_on="laptop",
@@ -6704,7 +6995,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=old_episode,
         control_invocation=1,
         control_invocation_ceiling=1,
@@ -6721,6 +7012,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
             created_at=now,
             updated_at=now,
             status_message="complete",
+            authorized_by=authorized_by,
         )
     )
     store.create_watchers(
@@ -6743,7 +7035,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
                     run_truth_scope=["repo-b"],
                     patch_kind="experiment_loop",
                     control_node_id="exp/bounded-loop",
-                    control_revision=2,
+                    control_revision=3,
                     control_episode_id=old_episode,
                     control_invocation=1,
                     control_invocation_ceiling=1,
@@ -6844,10 +7136,10 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
 def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     project_id = app.state.default_project_id
     winner_barrier = threading.Barrier(2)
     release_winner = threading.Event()
@@ -6866,7 +7158,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
             removal = asyncio.create_task(
                 client.post(
                     f"/api/projects/{project_id}/sync",
-                    json={"base_revision": 2, "removed_node_ids": ["exp/bounded-loop"]},
+                    json={"base_revision": 3, "removed_node_ids": ["exp/bounded-loop"]},
                 )
             )
             try:
@@ -6893,10 +7185,10 @@ def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
 def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     project_id = app.state.default_project_id
     winner_barrier = threading.Barrier(2)
     release_winner = threading.Event()
@@ -6932,7 +7224,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
                 removal = asyncio.create_task(
                     client.post(
                         f"/api/projects/{project_id}/sync",
-                        json={"base_revision": 2, "removed_node_ids": ["exp/bounded-loop"]},
+                        json={"base_revision": 3, "removed_node_ids": ["exp/bounded-loop"]},
                     )
                 )
                 await asyncio.sleep(0)
@@ -6953,15 +7245,15 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
 def test_removed_experiment_fails_closed_for_every_continuation_admission(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     project_id = app.state.default_project_id
     client = TestClient(app)
     removed = client.post(
         f"/api/projects/{project_id}/sync",
-        json={"base_revision": 2, "removed_node_ids": ["exp/bounded-loop"]},
+        json={"base_revision": 3, "removed_node_ids": ["exp/bounded-loop"]},
     )
     assert removed.status_code == 200
 
@@ -6975,7 +7267,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7026,7 +7318,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         run_on="laptop",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7046,6 +7338,19 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         created_at=now,
         completed_at=now,
     )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="removed-experiment-origin",
+            project_id=project_id,
+            kind="node_chat",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="Removed Experiment watcher origin fixture.",
+            authorized_by=_named_test_authorizer(store),
+        )
+    )
     store.create_watchers([watcher])
     assert app.state.watcher_poller.on_completed is not None
     app.state.watcher_poller.on_completed([store.watcher(watcher.watcher_id)])
@@ -7059,10 +7364,10 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
 async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     attempt = {
         "id": "attempt-1",
         "sequence": 1,
@@ -7099,7 +7404,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7240,10 +7545,10 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
 async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
     manifest, tmp_path, initial_watch, expected_calls
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     patch = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7266,7 +7571,7 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7307,10 +7612,10 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
 async def test_experiment_loop_missing_handoff_fails_without_done_after_one_correction(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     request = RunRequest(
         node_id="exp/bounded-loop",
         message="Run the bounded loop.",
@@ -7320,7 +7625,7 @@ async def test_experiment_loop_missing_handoff_fails_without_done_after_one_corr
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7347,17 +7652,17 @@ async def test_experiment_loop_missing_handoff_fails_without_done_after_one_corr
     assert launcher.calls == 2
     assert any("watcher handoff failed" in text for text in _error_texts(frames))
     assert all(event.event != "done" for event in _events(frames))
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
 
 
 @pytest.mark.asyncio
 async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     invalid_exit = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7386,7 +7691,7 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7418,7 +7723,7 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
 
     assert any("Patch could not be validated" in text for text in _error_texts(frames))
     assert all(event.event != "done" for event in _events(frames))
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
     assert not any(
         receipt.category == "experiment_loop_exit"
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
@@ -7434,10 +7739,10 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
     session instead of one correction round.
     """
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     invalid_exit = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7465,7 +7770,7 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7502,17 +7807,17 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
     ]
 
     assert any("could not be read" in text for text in _error_texts(frames))
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
 
 
 @pytest.mark.asyncio
 async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_rejected(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     invalid = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7540,7 +7845,7 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7574,17 +7879,17 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
     assert _events(frames)[-1].event == "done"
     assert _graph_update(frames)["status"] == "rejected"
     assert len(execution.store.watchers(app.state.default_project_id)) == 1
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
 
 
 @pytest.mark.asyncio
 async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_fixture_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
     operation_id = "experiment-committed-before-receipt"
     exit_patch = Patch(
         kind="experiment_loop",
@@ -7601,8 +7906,8 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
             }
         ],
     )
-    service.history.append(exit_patch)
-    service.history.append(refresh_patch("rq/after-committed-loop"))
+    append_fixture_patch(service, exit_patch)
+    append_fixture_patch(service, refresh_patch("rq/after-committed-loop"))
     request = RunRequest(
         node_id="exp/bounded-loop",
         message="Recover the committed invocation.",
@@ -7612,7 +7917,7 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
         trigger="experiment_run",
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
-        control_revision=2,
+        control_revision=3,
         control_episode_id=str(uuid.uuid4()),
         control_invocation=1,
         control_invocation_ceiling=2,
@@ -7653,9 +7958,9 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     ]
 
     assert not _error_texts(frames)
-    assert _graph_update(frames)["applied_revision"] == 3
-    assert service.history.state().revision == 4
-    assert len(service.history.load_patches()) == 4
+    assert _graph_update(frames)["applied_revision"] == 4
+    assert service.history.state().revision == 5
+    assert len(service.history.load_patches()) == 5
     watchers = execution.store.watchers(app.state.default_project_id)
     assert len(watchers) == 1
     stored = watchers[0]
@@ -7697,9 +8002,9 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
 async def test_readable_watch_value_error_gets_same_session_correction(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     request = RunRequest(
         chat_scope="project",
         message="Launch the detached fixture.",
@@ -7759,9 +8064,9 @@ async def test_readable_watch_value_error_gets_same_session_correction(
 async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     manifest, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     chat_id = str(uuid.uuid4())
     request = RunRequest(
@@ -7894,11 +8199,11 @@ def _stuck_experiment_patch() -> Patch:
 
 
 def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_stuck_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _stuck_experiment_patch())
     client = TestClient(app)
 
     control = client.get(f"/api/projects/{project_id}").json()["experiment_control"]["exp/stuck"]
@@ -7909,11 +8214,11 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp
     released = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "nodes": [
                 {
                     "node_id": "exp/stuck",
-                    "base_updated_rev": 2,
+                    "base_updated_rev": 3,
                     "cancel_attempt_ids": ["attempt-1"],
                 }
             ],
@@ -7931,11 +8236,11 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp
     again = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 3,
+            "base_revision": 4,
             "nodes": [
                 {
                     "node_id": "exp/stuck",
-                    "base_updated_rev": 3,
+                    "base_updated_rev": 4,
                     "cancel_attempt_ids": ["attempt-1"],
                 }
             ],
@@ -7950,7 +8255,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
 ) -> None:
     """S64: the selection is structured task metadata, not text the agent parses."""
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
     _persist_skill_defaults(service, SkillDefaults(workflow_ids=["research-graph-audit"]))
@@ -8018,7 +8323,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
 def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tmp_path) -> None:
     """S64: the registry is authoritative; a recorded version is a receipt, not a pin."""
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.catalog.open(app.state.default_project_id)
     _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"]))
     stored_request = {
@@ -8039,7 +8344,7 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tm
 def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
     _persist_skill_defaults(service, SkillDefaults(workflow_ids=["research-graph-audit"]))

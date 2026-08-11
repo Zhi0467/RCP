@@ -14,7 +14,7 @@ from rcp.agents.acceptance import (
     AcceptanceAgentLauncher,
 )
 from rcp.agents.schema import parse_agent_patch_json
-from rcp.api import create_app
+from tests.helpers import create_named_app as create_app
 
 
 async def _events(launcher: AcceptanceAgentLauncher, prompt: str, cwd: Path, **kwargs):

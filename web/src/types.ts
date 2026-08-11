@@ -11,10 +11,14 @@ export type TaskTrigger = "human" | "experiment_run" | "watcher";
 export type GraphPatchKind = "work" | "experiment_loop";
 export type AgentCapability = "discuss" | "work_auto" | "scratch_patch" | "paper_readonly";
 
+export const DISPLAY_NAME_MAX_LENGTH = 120;
+
 export interface Health {
   status: string;
   agent_mode: "provider" | "acceptance";
   version: string;
+  space_id: string;
+  space_kind: "personal" | "team";
   instance_id: string;
   data_dir_id: string;
   owner_kind: string;
@@ -22,6 +26,26 @@ export interface Health {
   pid: number;
   projects?: number;
   project?: string | null;
+}
+
+export interface AuthorizedHuman {
+  space_id: string;
+  user_id: string;
+  display_name: string;
+}
+
+export interface SpaceUser {
+  user_id: string;
+  display_name: string | null;
+  identity_kind: "local_owner" | "team_member";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IdentityResponse {
+  space_id: string;
+  space_kind: "personal" | "team";
+  user: SpaceUser;
 }
 
 export interface SourceRef {
@@ -496,8 +520,12 @@ export interface GraphUpdateResult {
 export interface RevisionSummary {
   from_revision: number;
   to_revision: number;
-  kind: "seed" | "refresh" | "chat" | "work" | "experiment_loop" | "approval";
-  author: "agent" | "human";
+  kind: "seed" | "refresh" | "chat" | "work" | "experiment_loop" | "approval" | "identity";
+  author: "agent" | "human" | null;
+  producer: "agent" | "human" | "system";
+  authorized_by: AuthorizedHuman | null;
+  profile: "ordinary" | null;
+  task_id: string | null;
   created_at: string;
   sentences: string[];
 }
@@ -541,6 +569,7 @@ export interface AgentTask {
   estimate_samples: number;
   phase: string;
   last_activity_at?: string | null;
+  authorized_by?: AuthorizedHuman | null;
   elapsed_seconds: number;
   progress: number;
   can_pause: boolean;
@@ -684,6 +713,7 @@ export interface PaperSnapshot {
 
 export interface ProjectSnapshot {
   id: string;
+  home_space_id: string | null;
   name: string;
   revision: number;
   snapshot_freshness: "fresh" | "reconciling" | "stale";
@@ -760,6 +790,7 @@ export interface ProjectCacheMetrics {
 
 export interface ProjectCard {
   id: string;
+  home_space_id: string | null;
   name: string;
   locator: string;
   state_location: string;

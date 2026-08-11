@@ -14,6 +14,7 @@ import {
   Trash2,
   TriangleAlert,
   Type,
+  UserRound,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, clearProjectCaches } from "../api";
@@ -36,6 +37,7 @@ import type {
   AgentSurface,
   AgentUsageSnapshot,
   CacheMetric,
+  IdentityResponse,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
   ProjectSnapshot,
@@ -44,6 +46,7 @@ import type {
   ProviderReadiness,
   SkillDefaults,
 } from "../types";
+import { DISPLAY_NAME_MAX_LENGTH } from "../types";
 
 interface Props {
   apiBase: string;
@@ -58,6 +61,9 @@ interface Props {
   showDisplaySettings: boolean;
   textScale: number;
   onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
+  identity: IdentityResponse | null;
+  identityError: string | null;
+  onIdentitySaved: (identity: IdentityResponse) => void;
 }
 
 const surfaces: Array<{ id: AgentSurface; label: string }> = [
@@ -128,6 +134,9 @@ export function ProjectSettings({
   showDisplaySettings,
   textScale,
   onTextScaleChange,
+  identity,
+  identityError,
+  onIdentitySaved,
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
@@ -147,6 +156,12 @@ export function ProjectSettings({
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
+  const [identityName, setIdentityName] = useState(identity?.user.display_name ?? "");
+  const [identitySaving, setIdentitySaving] = useState(false);
+  const [identityStatus, setIdentityStatus] = useState<{
+    kind: "saved" | "error";
+    text: string;
+  } | null>(null);
 
   // Reload the form only when the project itself changes. Keying this on the
   // whole snapshot discarded in-progress edits every time an unrelated refresh
@@ -164,6 +179,11 @@ export function ProjectSettings({
   useEffect(() => {
     setCacheMetrics(project.cache_metrics);
   }, [project.cache_metrics]);
+
+  useEffect(() => {
+    setIdentityName(identity?.user.display_name ?? "");
+    setIdentityStatus(null);
+  }, [identity]);
 
   useEffect(() => {
     void onRefreshUsage();
@@ -377,9 +397,79 @@ export function ProjectSettings({
     }
   };
 
+  const saveIdentity = async () => {
+    const displayName = identityName.trim();
+    if (!displayName || identitySaving || displayName === identity?.user.display_name) return;
+    setIdentitySaving(true);
+    setIdentityStatus(null);
+    try {
+      const saved = await api<IdentityResponse>("/api/identity", {
+        method: "PATCH",
+        body: JSON.stringify({ display_name: displayName }),
+      });
+      setIdentityName(saved.user.display_name ?? "");
+      onIdentitySaved(saved);
+      setIdentityStatus({ kind: "saved", text: "Name saved." });
+    } catch (caught) {
+      setIdentityStatus({
+        kind: "error",
+        text: caught instanceof Error ? caught.message : String(caught),
+      });
+    } finally {
+      setIdentitySaving(false);
+    }
+  };
+
   return (
     <section className="settings-page">
       <AgentUsageWidgets usage={usage} providers={project.providers} />
+
+      <section className="settings-section identity-settings">
+        <header>
+          <span>
+            <UserRound size={16} />
+          </span>
+          <h2>Your identity</h2>
+        </header>
+        <div className="identity-settings-row">
+          <label>
+            Display name
+            <input
+              type="text"
+              autoComplete="off"
+              maxLength={DISPLAY_NAME_MAX_LENGTH}
+              value={identityName}
+              disabled={!identity}
+              onChange={(event) => {
+                setIdentityName(event.target.value);
+                setIdentityStatus(null);
+              }}
+            />
+          </label>
+          <button
+            className="button primary compact"
+            type="button"
+            disabled={
+              !identity ||
+              !identityName.trim() ||
+              identityName.trim() === identity.user.display_name ||
+              identitySaving
+            }
+            onClick={() => void saveIdentity()}
+          >
+            {identitySaving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />}
+            {identitySaving ? "Saving" : "Save name"}
+          </button>
+        </div>
+        {(identityError || identityStatus) && (
+          <div
+            className={`identity-settings-status ${identityStatus?.kind ?? "error"}`}
+            role={identityError || identityStatus?.kind === "error" ? "alert" : "status"}
+          >
+            {identityError || identityStatus?.text}
+          </div>
+        )}
+      </section>
 
       {showDisplaySettings && (
         <section className="settings-section display-settings">

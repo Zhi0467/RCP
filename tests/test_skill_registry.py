@@ -7,10 +7,11 @@ import pytest
 
 from rcp import skill_registry
 from rcp.agents.prompts import PromptFactory
-from rcp.api.app import create_app
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillDefaults, SkillReference, SkillSelection, official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
+
+from .helpers import create_named_app as create_app
 
 
 def test_official_registry_exposes_workflows_and_skills_with_declared_dependencies() -> None:

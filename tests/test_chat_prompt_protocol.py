@@ -9,7 +9,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.api import create_app
 from rcp.background import AgentTaskExecution
 from rcp.providers import ProviderSkillReference
 from rcp.runs.discuss import stream_discuss_run
@@ -18,7 +17,15 @@ from rcp.service import RunRequest
 from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore
 
-from .helpers import agent_patch_json, refresh_patch, seed_patch
+from .helpers import (
+    agent_patch_json,
+    append_fixture_patch,
+    refresh_patch,
+    seed_patch,
+)
+from .helpers import (
+    create_named_app as create_app,
+)
 
 
 class _RecordingLauncher:
@@ -108,7 +115,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = "contract-version-chat"
@@ -195,7 +202,7 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     session_id = "native-discuss-session"
@@ -281,7 +288,7 @@ async def test_fresh_discuss_passes_provider_native_receipt_beside_unchanged_mes
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     message = "/native-review  preserve  spacing\nand this line."
@@ -336,7 +343,7 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     _enable_graph_audit(service)
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = "74fd1a76-c6ee-4f5e-a0af-6d80f69297b5"
@@ -438,7 +445,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     _enable_graph_audit(service)
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     project_id = app.state.default_project_id
     chat_id = "65d1ae3c-f234-4abe-96b7-f28c40d85a1b"
     session_id = "native-mode-switch-session"
@@ -514,7 +521,7 @@ async def test_node_chat_master_carries_the_focused_node_and_its_relations(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     session_id = "native-node-snapshot-session"
@@ -554,7 +561,7 @@ async def test_node_chat_master_carries_the_focused_node_and_its_relations(
 def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     project_id = app.state.default_project_id
     chat_id = "0b1c2d3e-4f50-4a61-8b72-9c83d4e5f607"
     session_id = "native-sync-delta-session"
@@ -592,7 +599,7 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
     assert "RCP context update" not in launcher.prompts[1]
 
     # A human Sync between turns is the case this signal exists for.
-    service.history.append(refresh_patch())
+    append_fixture_patch(service, refresh_patch())
     turn("Third question, after a Sync.", resume=True)
 
     update = launcher.prompts[2]
@@ -621,7 +628,7 @@ class _PatchWritingLauncher(_RecordingLauncher):
 def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     project_id = app.state.default_project_id
     chat_id = "5f6a7b8c-9d01-4e12-8f23-0a1b2c3d4e5f"
     session_id = "native-own-revision-session"
@@ -658,6 +665,6 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert "RCP context update" not in launcher.prompts[1]
 
     # A Sync by someone else still reaches the conversation.
-    service.history.append(refresh_patch("rq/a-third-question"))
+    append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
     assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in launcher.prompts[2]

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import uuid
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
@@ -119,6 +120,20 @@ _ALLOWED_EXTENSIONS = {
     **_SOURCE_MEDIA_TYPES,
 }
 _STORE_LOCK = threading.RLock()
+_ATTACHMENT_METADATA_MAX_BYTES = 128 * 1024
+_ATTACHMENT_SET_MIGRATION_MAX_COUNT = 10_000
+
+
+@dataclass(frozen=True)
+class _AttachmentMetadataRewrite:
+    destination: Path
+    expected: bytes
+    replacement: bytes
+
+
+@dataclass(frozen=True)
+class _AttachmentProjectIdentityMigration:
+    rewrites: tuple[_AttachmentMetadataRewrite, ...]
 
 
 class ChatAttachmentStore:
@@ -129,6 +144,64 @@ class ChatAttachmentStore:
         # Runs reconstruct the lightweight store from data_dir. One process-wide
         # lock keeps ingress, claim, sweep, and staging atomic across those handles.
         self._lock = _STORE_LOCK
+
+    def prepare_project_identity_migration(
+        self,
+        old_project_id: str,
+        canonical_project_id: str,
+    ) -> _AttachmentProjectIdentityMigration:
+        """Validate and prepare bounded metadata-only project-id rewrites."""
+
+        if old_project_id == canonical_project_id or not self.root.exists():
+            return _AttachmentProjectIdentityMigration(rewrites=())
+        rewrites: list[_AttachmentMetadataRewrite] = []
+        with self._lock:
+            candidates: list[Path] = []
+            for candidate in self.root.iterdir():
+                if candidate.is_symlink() or not candidate.is_dir():
+                    continue
+                candidates.append(candidate)
+                if len(candidates) > _ATTACHMENT_SET_MIGRATION_MAX_COUNT:
+                    raise ValueError("Too many attachment sets to migrate safely.")
+            for candidate in candidates:
+                set_id = _canonical_uuid(candidate.name, "saved attachment set id")
+                metadata = candidate / "metadata.json"
+                expected = _read_bounded_metadata(metadata)
+                try:
+                    stored = _StoredSet.model_validate_json(expected)
+                except ValueError as exc:
+                    raise ValueError("Saved attachment metadata is invalid.") from exc
+                if stored.attachment_set_id != set_id:
+                    raise ValueError("Saved attachment metadata names a different set.")
+                self._verify(stored)
+                if stored.project_id != old_project_id:
+                    continue
+                replacement = _stored_set_bytes(
+                    stored.model_copy(update={"project_id": canonical_project_id})
+                )
+                rewrites.append(
+                    _AttachmentMetadataRewrite(
+                        destination=metadata,
+                        expected=expected,
+                        replacement=replacement,
+                    )
+                )
+        return _AttachmentProjectIdentityMigration(rewrites=tuple(rewrites))
+
+    def apply_project_identity_migration(
+        self,
+        migration: _AttachmentProjectIdentityMigration,
+    ) -> None:
+        """Apply a prepared migration without weakening chat or client scope."""
+
+        with self._lock:
+            for rewrite in migration.rewrites:
+                current = _read_bounded_metadata(rewrite.destination)
+                if current == rewrite.replacement:
+                    continue
+                if current != rewrite.expected:
+                    raise ValueError("Saved attachment metadata changed during migration.")
+                _atomic_write_metadata(rewrite.destination, rewrite.replacement)
 
     def add(
         self,
@@ -405,16 +478,37 @@ class ChatAttachmentStore:
 
     def _write(self, stored: _StoredSet) -> None:
         destination = self._metadata_path(stored.attachment_set_id)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".metadata-", dir=destination.parent)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(stored.model_dump(mode="json"), handle, ensure_ascii=False)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _atomic_write_metadata(destination, _stored_set_bytes(stored))
+
+
+def _stored_set_bytes(stored: _StoredSet) -> bytes:
+    return json.dumps(stored.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
+
+
+def _read_bounded_metadata(path: Path) -> bytes:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ValueError("Saved attachment metadata is unavailable.") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_size > _ATTACHMENT_METADATA_MAX_BYTES:
+        raise ValueError("Saved attachment metadata is invalid.")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ValueError("Saved attachment metadata is unavailable.") from exc
+
+
+def _atomic_write_metadata(destination: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".metadata-", dir=destination.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _canonical_uuid(value: str, label: str) -> str:

@@ -13,6 +13,7 @@ from typing import Literal
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import CHAT_ARTIFACT_MAX_COUNT
 from rcp.providers import classify_terminal_error
 from rcp.service import CoachRequest, GraphUpdateResult, RunRequest
@@ -33,6 +34,16 @@ _EXPERIMENT_SESSION_LIMIT_DIAGNOSTIC = (
     "The provider session reached its limit. Retry the same provider to recheck the limit and "
     "resume this episode, or switch provider to continue this same episode and invocation."
 )
+
+
+def _task_is_patch_capable(kind: AgentTaskKind, request: AgentTaskRequest) -> bool:
+    if kind in {"seed", "refresh"}:
+        return True
+    return (
+        kind in {"node_chat", "project_chat"}
+        and isinstance(request, RunRequest)
+        and (request.mode == "work")
+    )
 
 
 def _skill_update(
@@ -149,6 +160,7 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         *,
         operation_id: str | None = None,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
         if kind in {"seed", "refresh"} and request.session_id:
             raise ValueError(
@@ -165,6 +177,7 @@ class BackgroundAgentTasks:
             estimate_seconds=estimate,
             estimate_samples=samples,
             operation_id=operation_id,
+            authorized_by=authorized_by,
         )
 
     def start_watcher_notification(
@@ -174,6 +187,7 @@ class BackgroundAgentTasks:
         request: RunRequest,
         watcher_ids: list[str],
         *,
+        authorized_by: AuthorizedHuman,
         episode_stage_host: str | None = None,
         episode_stage_root: str | None = None,
     ) -> AgentTaskRecord | None:
@@ -183,6 +197,9 @@ class BackgroundAgentTasks:
         continues that bounded session. It is still a new task at the next
         invocation, so it uses the `watcher_wake` cause rather than Resume.
         """
+
+        if not authorized_by.display_name.strip():
+            raise ValueError("A watcher notification requires a named human authorizer snapshot.")
 
         experiment_reauthorization = (
             request.trigger == "experiment_run"
@@ -224,6 +241,7 @@ class BackgroundAgentTasks:
             estimate_samples=samples,
             phase="queued",
             last_activity_at=now,
+            authorized_by=authorized_by,
         )
         stored = self.store.create_watcher_notification_task(record, watcher_ids)
         if stored is None:
@@ -234,7 +252,13 @@ class BackgroundAgentTasks:
             continuation="watcher_wake" if experiment_wake else "fresh",
         )
 
-    def resume(self, operation_id: str, *, skills: SkillSelection | None = None) -> AgentTaskRecord:
+    def resume(
+        self,
+        operation_id: str,
+        *,
+        skills: SkillSelection | None = None,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
         if not previous.can_resume or not previous.native_session_id:
             raise ValueError(
@@ -264,6 +288,7 @@ class BackgroundAgentTasks:
             estimate_samples=previous.estimate_samples,
             stage_host=previous.stage_host,
             stage_root=previous.stage_root,
+            authorized_by=authorized_by,
         )
 
     def retry(
@@ -275,6 +300,7 @@ class BackgroundAgentTasks:
         reasoning: str | None = None,
         run_on: str | None = None,
         skills: SkillSelection | None = None,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
         if not previous.can_retry:
@@ -297,6 +323,7 @@ class BackgroundAgentTasks:
                     model=model,
                     reasoning=reasoning,
                     skills=skills,
+                    authorized_by=authorized_by,
                 )
         updates = {
             key: value
@@ -364,6 +391,7 @@ class BackgroundAgentTasks:
                 estimate_samples=previous.estimate_samples,
                 stage_host=previous.stage_host,
                 stage_root=previous.stage_root,
+                authorized_by=authorized_by,
             )
         retry_same_provider = (
             previous.status == "failed"
@@ -385,6 +413,7 @@ class BackgroundAgentTasks:
                 estimate_samples=previous.estimate_samples,
                 stage_host=previous.stage_host,
                 stage_root=previous.stage_root,
+                authorized_by=authorized_by,
             )
         estimate, samples = self.store.agent_task_estimate(
             previous.project_id,
@@ -399,6 +428,7 @@ class BackgroundAgentTasks:
             continuation="handoff",
             estimate_seconds=estimate,
             estimate_samples=samples,
+            authorized_by=authorized_by,
         )
         if same_provider and session_limit:
             self.store.record_agent_task_receipt(
@@ -442,6 +472,7 @@ class BackgroundAgentTasks:
         model: str | None,
         reasoning: str | None,
         skills: SkillSelection | None,
+        authorized_by: AuthorizedHuman | None,
     ) -> AgentTaskRecord:
         """Recover an Experiment attempt without starting or spending a new episode turn."""
 
@@ -496,6 +527,7 @@ class BackgroundAgentTasks:
                 continuation="handoff",
                 estimate_seconds=estimate,
                 estimate_samples=samples,
+                authorized_by=authorized_by,
             )
 
         active_config = (
@@ -536,6 +568,7 @@ class BackgroundAgentTasks:
                 estimate_samples=previous.estimate_samples,
                 stage_host=stage_host,
                 stage_root=stage_root,
+                authorized_by=authorized_by,
             )
 
         reason = (
@@ -574,6 +607,7 @@ class BackgroundAgentTasks:
             continuation="handoff",
             estimate_seconds=estimate,
             estimate_samples=samples,
+            authorized_by=authorized_by,
         )
         self.store.record_agent_task_receipt(
             retried.operation_id,
@@ -589,7 +623,12 @@ class BackgroundAgentTasks:
         )
         return retried
 
-    def repair_graph_update(self, operation_id: str) -> AgentTaskRecord:
+    def repair_graph_update(
+        self,
+        operation_id: str,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> AgentTaskRecord:
         """Create one idempotent patch-only continuation for a rejected Work result."""
 
         previous = self._require_operation(operation_id)
@@ -622,6 +661,7 @@ class BackgroundAgentTasks:
                 estimate_samples=previous.estimate_samples,
                 stage_host=previous.stage_host,
                 stage_root=previous.stage_root,
+                authorized_by=authorized_by,
             )
         except Exception:
             self.store.restore_agent_task_graph_repair(operation_id)
@@ -666,7 +706,12 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
         operation_id: str | None = None,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
+        if _task_is_patch_capable(kind, request) and authorized_by is None:
+            raise ValueError("A patch-capable agent task requires a human authorizer snapshot.")
+        if authorized_by is not None and not authorized_by.display_name.strip():
+            raise ValueError("A human authorizer snapshot must include a nonblank display name.")
         operation_id = operation_id or str(uuid.uuid4())
         now = self.store.now()
         verb = (
@@ -697,6 +742,7 @@ class BackgroundAgentTasks:
                 estimate_samples=estimate_samples,
                 phase="queued",
                 last_activity_at=now,
+                authorized_by=authorized_by,
             )
         )
         return self._spawn_record(record, request, continuation=continuation, parent=parent)

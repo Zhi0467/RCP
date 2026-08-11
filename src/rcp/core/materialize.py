@@ -39,6 +39,7 @@ class MaterializationResult:
     reports: dict[int, ValidationReport] = field(default_factory=dict)
     repository_descriptors: list[dict[str, str]] = field(default_factory=list)
     processed_cursors: dict[str, str] = field(default_factory=dict)
+    patches: list[Patch] = field(default_factory=list)
 
 
 def materialize_patches(
@@ -52,6 +53,7 @@ def materialize_patches(
 ) -> MaterializationResult:
     """Replay patches, optionally observing successful applications through a read-only callback."""
 
+    replayed_patches = list(patches)
     initial_scope = list(initial_truth_scope)
     state = GraphState(project_truth_scope=initial_scope)
     state.coverage = state.coverage.model_copy(
@@ -61,7 +63,7 @@ def materialize_patches(
     descriptors: list[dict[str, str]] = []
     processed_cursors: dict[str, str] = {}
 
-    for patch in patches:
+    for patch in replayed_patches:
         if patch.admission == "rejected":
             report = ValidationReport()
             report.messages.extend(patch.admission_messages)
@@ -123,6 +125,7 @@ def materialize_patches(
         reports=reports,
         repository_descriptors=descriptors,
         processed_cursors=processed_cursors,
+        patches=replayed_patches,
     )
 
 

@@ -48,8 +48,8 @@ Its powers:
 
 The orchestrator may expand the research framing by creating new questions and
 hypotheses. Once a ResearchQuestion or Hypothesis exists, the orchestrator may
-change it only through a Proposal. It may approve a protected Proposal produced
-by an ordinary child agent, but it may not approve one it produced itself.
+change it only through a Proposal. Every agent-produced Proposal waits for a
+human; neither the orchestrator nor an ordinary child approves one.
 
 The earlier whole-layer split was wrong. Authority follows the semantic
 operation, not the node's layer:
@@ -59,8 +59,7 @@ operation, not the node's layer:
 | Create a new ResearchQuestion or Hypothesis in its normal unresolved initial state | direct |
 | Change ordinary content, status, standing, or meaning-bearing relations of an existing ResearchQuestion or Hypothesis | Proposal |
 | Remove an existing ResearchQuestion or Hypothesis | Proposal |
-| Approve a protected Proposal produced by an eligible ordinary child in this campaign | direct |
-| Approve a protected Proposal produced by the orchestrator itself | forbidden |
+| Approve any agent-produced Proposal | forbidden; human only |
 | Create, edit, judge, or remove Evidence | direct |
 | Create, edit, decide, judge, or remove a Decision | direct |
 | Create, edit, advance, judge, or remove an Experiment or Blocker | direct |
@@ -69,10 +68,9 @@ The permission boundary is therefore **new versus existing** for these two node
 types. Ordinary editing of an existing question or hypothesis is protected just
 as status, standing, relation, and removal changes are. The orchestrator can
 raise those changes as Proposals and continue independent campaign work. A
-human may judge them, or an eligible ordinary child may independently produce a
-Proposal that the orchestrator may judge. The exact eligibility rule beyond a
-direct child in the same campaign still needs grilling; the implementation must
-never reduce it to “the orchestrator may approve any Proposal.”
+human judges them. An ordinary child may independently produce another Proposal,
+but that Proposal has the same human-only decision boundary; task or campaign
+lineage never gives an agent approval authority.
 
 These operations widen the future Proposal vocabulary beyond the current
 ordinary-agent Hypothesis-status-only contract. They never reintroduce Decision

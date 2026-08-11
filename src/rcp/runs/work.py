@@ -592,8 +592,9 @@ async def stream_work_run(
         context = service.assemble_chat(request)
         _record_chat_context_receipt(execution, context, surface=surface)
         stage_name = _chat_stage_name(service, request, execution)
+        saved_stage = execution is not None and execution.stage_root is not None
         if execution_host:
-            if reusing_checkpoint:
+            if saved_stage:
                 stage_root = _validated_remote_chat_resume_stage(
                     execution, execution_host, stage_name
                 )
@@ -610,7 +611,7 @@ async def stream_work_run(
         else:
             stage_root = _swept_stage_root(data_dir)
             expected_stage = stage_root / stage_name
-            if reusing_checkpoint:
+            if saved_stage:
                 local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
             else:
                 local_stage = expected_stage

@@ -10,12 +10,12 @@ from fastapi.testclient import TestClient
 
 import rcp.attachments as attachments_module
 from rcp.agents import AgentEvent, PromptFactory
-from rcp.api import create_app
 from rcp.attachments import ChatAttachmentStore
 from rcp.runs.discuss import stream_discuss_run
 from rcp.service import RunRequest
 
-from .helpers import seed_patch
+from .helpers import append_fixture_patch, seed_patch
+from .helpers import create_named_app as create_app
 
 
 def _ids() -> tuple[str, str, str, str]:
@@ -115,6 +115,61 @@ def test_attachment_set_scope_claim_and_release_are_enforced(tmp_path: Path) -> 
         attachment_set_id=uploaded.attachment_set_id,
         attachment_id=uploaded.attachment.attachment_id,
     )
+
+
+def test_attachment_project_identity_migration_preserves_chat_and_client_scope(
+    tmp_path: Path,
+) -> None:
+    old_project_id = "legacy-project"
+    canonical_project_id = str(uuid.uuid4())
+    _project_id, chat_id, client_id, operation_id = _ids()
+    store = ChatAttachmentStore(tmp_path / "attachments")
+    uploaded = store.add(
+        project_id=old_project_id,
+        chat_id=chat_id,
+        client_id=client_id,
+        filename="notes.txt",
+        media_type="text/plain",
+        source=io.BytesIO(b"notes"),
+    )
+
+    migration = store.prepare_project_identity_migration(
+        old_project_id,
+        canonical_project_id,
+    )
+    store.apply_project_identity_migration(migration)
+    store.apply_project_identity_migration(migration)
+
+    with pytest.raises(ValueError, match="does not belong"):
+        store.claim(
+            project_id=canonical_project_id,
+            chat_id=str(uuid.uuid4()),
+            client_id=client_id,
+            attachment_set_id=uploaded.attachment_set_id,
+            operation_id=operation_id,
+        )
+    claimed = store.claim(
+        project_id=canonical_project_id,
+        chat_id=chat_id,
+        client_id=client_id,
+        attachment_set_id=uploaded.attachment_set_id,
+        operation_id=operation_id,
+    )
+    assert [item.attachment_id for item in claimed.attachments] == [
+        uploaded.attachment.attachment_id
+    ]
+
+
+def test_attachment_project_identity_migration_rejects_invalid_metadata(
+    tmp_path: Path,
+) -> None:
+    set_path = tmp_path / "attachments" / str(uuid.uuid4())
+    set_path.mkdir(parents=True)
+    (set_path / "metadata.json").write_text("not-json", encoding="utf-8")
+    store = ChatAttachmentStore(tmp_path / "attachments")
+
+    with pytest.raises(ValueError, match="metadata is invalid"):
+        store.prepare_project_identity_migration("legacy-project", str(uuid.uuid4()))
 
 
 def test_attachment_access_sweeps_expired_bytes(tmp_path: Path) -> None:
@@ -297,7 +352,7 @@ def test_attachment_api_claims_set_into_server_owned_task_metadata(
     manifest, tmp_path: Path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
     client_id = str(uuid.uuid4())
@@ -343,7 +398,7 @@ def test_attachment_claim_rolls_back_when_task_creation_fails(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    app.state.service.history.append(seed_patch())
+    append_fixture_patch(app.state.service, seed_patch())
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
     client_id = str(uuid.uuid4())
@@ -388,7 +443,7 @@ async def test_discuss_stages_attachment_as_exact_read_dir_and_persists_metadata
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     project_id, chat_id, client_id, operation_id = (
         app.state.default_project_id,
         str(uuid.uuid4()),

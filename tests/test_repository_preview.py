@@ -8,7 +8,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rcp.repository_preview as preview_module
-from rcp.api import create_app
 from rcp.repository_preview import (
     RepositorySource,
     load_repository_source,
@@ -17,6 +16,8 @@ from rcp.repository_preview import (
 )
 from rcp.transport import StateUnavailable
 from rcp.transport.ssh import SSH_OPTIONS
+
+from .helpers import create_named_app as create_app
 
 
 def test_local_repository_source_is_bounded_utf8_and_does_not_follow_symlinks(

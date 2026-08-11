@@ -10,10 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.api import create_app
 from rcp.api.app import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
-from rcp.core.models import Patch
+from rcp.core.models import AuthorizedHuman, Patch
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
 from rcp.service import RunRequest
@@ -21,10 +20,23 @@ from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.watchers import WatcherBinding
 
-from .helpers import seed_patch
+from .helpers import append_fixture_patch, seed_patch
+from .helpers import create_named_app as create_app
 
 EXPERIMENT_ID = "exp/bounded-loop"
 NODE_PATH = "exp%2Fbounded-loop"
+
+
+def _authorized_human(store: AppStore) -> AuthorizedHuman:
+    owner = store.local_owner
+    assert owner is not None
+    if owner.display_name is None:
+        owner = store.rename_space_user(owner.user_id, "Test researcher")
+    return AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
+    )
 
 
 def _experiment_patch(*, invocation_ceiling: int = 2) -> Patch:
@@ -58,10 +70,12 @@ class _Loop:
     def __init__(self, app, *, invocation_ceiling: int = 2) -> None:
         self.app = app
         self.service = app.state.service
-        self.service.history.append(seed_patch())
-        self.service.history.append(_experiment_patch(invocation_ceiling=invocation_ceiling))
+        append_fixture_patch(self.service, seed_patch())
+        append_fixture_patch(self.service, _experiment_patch(invocation_ceiling=invocation_ceiling))
+        self.control_revision = self.service.history.state().revision
         self.project_id = app.state.default_project_id
         self.store: AppStore = app.state.background_tasks.store
+        self.authorizer = _authorized_human(self.store)
         self.client = TestClient(app)
         self.chat_id = str(uuid.uuid4())
         self.episode_id = str(uuid.uuid4())
@@ -82,7 +96,7 @@ class _Loop:
             trigger="experiment_run",
             patch_kind="experiment_loop",
             control_node_id=EXPERIMENT_ID,
-            control_revision=2,
+            control_revision=self.control_revision,
             control_episode_id=self.episode_id,
             control_invocation=invocation,
             control_invocation_ceiling=self.invocation_ceiling,
@@ -104,6 +118,7 @@ class _Loop:
                 status_message="Working on the bounded loop.",
                 phase="agent",
                 last_activity_at=now,
+                authorized_by=self.authorizer,
             )
         )
         return operation_id
@@ -144,7 +159,7 @@ class _Loop:
             "run_truth_scope": ["repo-a"],
             "patch_kind": "experiment_loop",
             "control_node_id": EXPERIMENT_ID,
-            "control_revision": 2,
+            "control_revision": self.control_revision,
             "control_episode_id": self.episode_id,
             "control_invocation": 1,
             "control_invocation_ceiling": self.invocation_ceiling,
@@ -762,6 +777,7 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
             "node_chat",
             no_session,
             ["ready"],
+            authorized_by=loop.authorizer,
             episode_stage_root=str(stage),
         )
 
@@ -824,6 +840,7 @@ def test_provider_default_model_stays_pinned_after_settings_change(manifest, tmp
             created_at=now,
             updated_at=now,
             status_message="Waiting on the bounded loop.",
+            authorized_by=loop.authorizer,
         )
     )
     loop.bind_session(tmp_path / "stage")
@@ -880,6 +897,7 @@ def test_default_truth_scope_is_pinned_before_watcher_completion(
             created_at=now,
             updated_at=now,
             status_message="Waiting on the bounded loop.",
+            authorized_by=loop.authorizer,
         )
     )
     loop.bind_session(tmp_path / "scope-stage")
@@ -1084,7 +1102,10 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    recovered = getattr(app.state.background_tasks, action)("repair-attempt")
+    recovered = getattr(app.state.background_tasks, action)(
+        "repair-attempt",
+        authorized_by=_authorized_human(store),
+    )
 
     assert observed.wait(timeout=2)
     assert continuations == ["graph_repair"]
@@ -1217,7 +1238,10 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    retried = app.state.background_tasks.retry("limited-wake")
+    retried = app.state.background_tasks.retry(
+        "limited-wake",
+        authorized_by=loop.authorizer,
+    )
 
     assert observed.wait(timeout=2)
     request = captured["request"]
@@ -1278,6 +1302,7 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
         provider="claude",
         model="sonnet",
         reasoning="high",
+        authorized_by=loop.authorizer,
     )
 
     assert observed.wait(timeout=2)
@@ -1380,7 +1405,10 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    retried = app.state.background_tasks.retry("failed-provisional-switch")
+    retried = app.state.background_tasks.retry(
+        "failed-provisional-switch",
+        authorized_by=loop.authorizer,
+    )
 
     assert observed.wait(timeout=2)
     retried_request = captured["request"]
@@ -1671,7 +1699,10 @@ def test_unbound_initial_provider_limit_remains_clean_retry_eligible(manifest, t
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = clean_retry_stream
-    child = app.state.background_tasks.retry(task.operation_id)
+    child = app.state.background_tasks.retry(
+        task.operation_id,
+        authorized_by=loop.authorizer,
+    )
 
     assert retried.wait(timeout=2)
     assert child.parent_operation_id == task.operation_id

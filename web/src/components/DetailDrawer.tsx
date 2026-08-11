@@ -487,14 +487,20 @@ export function DetailDrawer({
                 >
                   <div className="experiment-control-heading">
                     <div>
-                      <span className="eyebrow">Episode invocations</span>
-                      <strong>
-                        {experimentControl.invocations_used} /{" "}
-                        {experimentControl.invocation_ceiling}
-                      </strong>
-                      <span className="experiment-invocations-remaining">
-                        {experimentControl.invocations_remaining} remaining
-                      </span>
+                      {experimentControl.episode_id && (
+                        <>
+                          <span className="eyebrow">Episode invocations</span>
+                          <strong>
+                            {experimentControl.invocations_used} /{" "}
+                            {experimentControl.invocation_ceiling}
+                          </strong>
+                          <span className="experiment-invocations-remaining">
+                            {experimentControl.invocations_remaining} remaining
+                          </span>
+                        </>
+                      )}
+                      <span className="eyebrow">Next episode limit</span>
+                      <strong>{node.invocation_ceiling}</strong>
                     </div>
                     {experimentControlActive && (
                       <span className="experiment-loop-marker">Active loop</span>
@@ -517,16 +523,11 @@ export function DetailDrawer({
                       <FlaskConical size={13} />{" "}
                       {experimentRunBusy
                         ? "Starting"
-                        : experimentPausedAtLimit
-                          ? "Run pending wake"
-                          : "Run"}
+                        : experimentControl.episode_id
+                          ? "Start new episode"
+                          : "Start episode"}
                     </button>
                   </div>
-                  {experimentPausedAtLimit && (
-                    <p className="experiment-loop-resume">
-                      New episode · pending watcher continues as invocation 1
-                    </p>
-                  )}
                   {experimentControl.reasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
                       {experimentControl.reasons.map((reason) => (

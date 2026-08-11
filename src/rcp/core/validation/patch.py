@@ -98,6 +98,8 @@ def _validate_patch(
             ctx.revision,
         )
     _validate_authorship(ctx)
+    _validate_identity_shape(ctx)
+    _validate_attribution_shape(ctx)
     _validate_declared_scope(ctx)
 
     if patch.kind == "experiment_loop":
@@ -202,6 +204,21 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
 
 
 def _validate_authorship(ctx: OpContext) -> None:
+    if ctx.patch.kind == "identity":
+        if ctx.patch.producer != "system":
+            ctx.report.reject(
+                "wrong-producer",
+                "Identity patches must be produced by RCP's system producer.",
+                ctx.revision,
+            )
+        if ctx.patch.author is not None:
+            ctx.report.reject(
+                "wrong-author",
+                "Identity patches have no human or agent author.",
+                ctx.revision,
+            )
+        return
+
     expected_author = "human" if ctx.patch.kind == "approval" else "agent"
     if ctx.patch.author != expected_author:
         ctx.report.reject(
@@ -209,10 +226,114 @@ def _validate_authorship(ctx: OpContext) -> None:
             f"{ctx.patch.kind} patches must be authored by {expected_author}.",
             ctx.revision,
         )
+    if ctx.patch.producer == "system":
+        ctx.report.reject(
+            "system-producer-forbidden",
+            "The system producer is reserved for identity patches.",
+            ctx.revision,
+        )
+    elif ctx.patch.producer != ctx.patch.author:
+        ctx.report.reject(
+            "producer-author-mismatch",
+            "Human and agent patches must retain the same producer and legacy author role.",
+            ctx.revision,
+        )
+
+
+def _validate_identity_shape(ctx: OpContext) -> None:
+    patch = ctx.patch
+    if patch.kind != "identity":
+        if patch.project_identity is not None:
+            ctx.report.reject(
+                "unexpected-project-identity",
+                "Project identity is legal only on identity patches.",
+                ctx.revision,
+            )
+        return
+
+    if patch.project_identity is None:
+        ctx.report.reject(
+            "missing-project-identity",
+            "Identity patches require exactly one project identity payload.",
+            ctx.revision,
+        )
+    if patch.ops:
+        ctx.report.reject(
+            "identity-has-operations",
+            "Identity patches cannot carry graph operations.",
+            ctx.revision,
+        )
+    if patch.run_truth_scope or patch.repositories_read:
+        ctx.report.reject(
+            "identity-has-run-scope",
+            "Identity patches cannot carry raw repository scope.",
+            ctx.revision,
+        )
+    if patch.processed_cursors:
+        ctx.report.reject(
+            "identity-has-cursors",
+            "Identity patches cannot carry coverage cursors.",
+            ctx.revision,
+        )
+    if patch.source_operation_id is not None:
+        ctx.report.reject(
+            "identity-has-operation-id",
+            "Identity patches cannot carry an operation id.",
+            ctx.revision,
+        )
+    if patch.human_action is not None:
+        ctx.report.reject(
+            "identity-has-human-action",
+            "Identity patches cannot carry a human authority action.",
+            ctx.revision,
+        )
+    if patch.experiment_control_node_id is not None or patch.experiment_decision_bundle:
+        ctx.report.reject(
+            "identity-has-experiment-control",
+            "Identity patches cannot carry experiment control metadata.",
+            ctx.revision,
+        )
+    if patch.authorized_by is not None or patch.profile is not None or patch.task_id is not None:
+        ctx.report.reject(
+            "identity-has-attribution",
+            "Identity patches cannot carry human or task attribution.",
+            ctx.revision,
+        )
+
+
+def _validate_attribution_shape(ctx: OpContext) -> None:
+    patch = ctx.patch
+    if patch.kind == "identity":
+        return
+    has_attribution = (
+        patch.authorized_by is not None or patch.profile is not None or patch.task_id is not None
+    )
+    if not has_attribution:
+        return
+
+    if patch.kind == "approval":
+        if patch.authorized_by is None or patch.profile is not None or patch.task_id is not None:
+            ctx.report.reject(
+                "invalid-human-attribution",
+                "An attributed human approval requires authorized_by and cannot carry an "
+                "agent profile or task id.",
+                ctx.revision,
+            )
+        return
+
+    if patch.authorized_by is None or patch.profile != "ordinary" or not patch.task_id:
+        ctx.report.reject(
+            "invalid-agent-attribution",
+            "An attributed agent patch requires authorized_by, profile='ordinary', and a "
+            "non-empty direct task id.",
+            ctx.revision,
+        )
 
 
 def _validate_declared_scope(ctx: OpContext) -> None:
     patch = ctx.patch
+    if patch.kind == "identity":
+        return
     if patch.kind == "approval":
         if patch.run_truth_scope or patch.repositories_read:
             ctx.report.reject(

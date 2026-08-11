@@ -26,7 +26,7 @@ from rcp.core.materialize import (
     materialize_patches,
     prepare_patch_bookkeeping,
 )
-from rcp.core.models import GraphState, Patch
+from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import ValidationReport, validate_patch
 from rcp.history.delta import (
@@ -81,12 +81,24 @@ class PatchRejected(ValueError):
         )
 
 
+class ProjectIdentityConflict(ValueError):
+    """Canonical project identity is missing, conflicting, or owned elsewhere."""
+
+
 class HistoryManager:
     def __init__(
         self,
         manifest: Manifest,
         workspace: StateWorkspace | None = None,
+        *,
+        expected_space_id: str | None = None,
+        require_attribution: bool = False,
+        agent_authorizer_resolver: Callable[[str], AuthorizedHuman | None] | None = None,
     ) -> None:
+        if expected_space_id is not None:
+            parsed = uuid.UUID(expected_space_id)
+            if str(parsed) != expected_space_id or parsed.version != 4:
+                raise ValueError("expected_space_id must be a canonical UUIDv4")
         self.manifest = manifest
         self.workspace = workspace or LocalStateWorkspace(
             manifest.research_dir, str(manifest.research_dir)
@@ -95,12 +107,16 @@ class HistoryManager:
         self.patches_dir = self.root / "patches"
         self._process_lock = self.workspace.snapshot_lock
         self._accepted_revision: int | None = None
+        self.expected_space_id = expected_space_id
+        self.require_attribution = require_attribution
+        self.agent_authorizer_resolver = agent_authorizer_resolver
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
             self._reload_manifest()
             coherent = self._coherent_materialization()
             if coherent is not None:
+                self._require_writable_home_locked(coherent)
                 self._remember_accepted_revision(coherent)
                 return coherent
 
@@ -110,8 +126,12 @@ class HistoryManager:
                 self._reload_manifest()
                 coherent = self._coherent_materialization()
                 if coherent is not None:
+                    self._require_writable_home_locked(coherent)
                     self._remember_accepted_revision(coherent)
                     return coherent
+                current = self.materialize(write_outputs=False)
+                self.require_writable(current.state)
+                self._require_writable_home_locked(current)
                 self.ensure_layout()
                 result = self.materialize()
                 self._synchronize_manifest_from_history(result)
@@ -127,6 +147,9 @@ class HistoryManager:
                 raise
             with self._append_lock():
                 self._reload_manifest()
+                current = self.materialize(write_outputs=False)
+                self.require_writable(current.state)
+                self._require_writable_home_locked(current)
                 self.ensure_layout()
                 result = self.materialize()
                 self._synchronize_manifest_from_history(result)
@@ -168,6 +191,61 @@ class HistoryManager:
                 Patch.model_validate_json(path.read_text(encoding="utf-8"))
                 for path in self._patch_paths()
             ]
+
+    def project_identity(
+        self,
+        materialization: MaterializationResult | None = None,
+    ) -> ProjectIdentity | None:
+        """Return the unique accepted nameplate without adding it to graph state."""
+
+        if materialization is not None:
+            return self._project_identity_from_replay(materialization)
+        with self._process_lock:
+            with suppress(StateUnavailable):
+                self.workspace.refresh_if_stale()
+            self._reload_manifest()
+            result = self.materialize(write_outputs=False)
+            return self._project_identity_from_replay(result)
+
+    def claim_project_identity(self, action: str) -> ProjectIdentity:
+        """Idempotently claim an untagged project for this manager's space."""
+
+        if action not in {"created", "adopted"}:
+            raise ValueError("project identity action must be 'created' or 'adopted'")
+        if self.expected_space_id is None:
+            raise ValueError("claiming project identity requires expected_space_id")
+
+        with self.workspace.transaction(), self._append_lock():
+            self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            existing = self._project_identity_from_replay(current)
+            if existing is not None:
+                self._require_expected_home(existing)
+                return existing
+
+            identity = ProjectIdentity(
+                project_id=str(uuid.uuid4()),
+                home_space_id=self.expected_space_id,
+                action=action,
+            )
+            patch = Patch(
+                kind="identity",
+                author=None,
+                producer="system",
+                summary=(
+                    "Project created." if action == "created" else "Project identity adopted."
+                ),
+                ops=[],
+                project_identity=identity,
+            )
+            appended, _result = self._append_locked(
+                patch,
+                discard_on_reject=True,
+                allow_identity_claim=True,
+            )
+            assert appended.project_identity is not None
+            return appended.project_identity
 
     def current_accepted_revision(self) -> int:
         """Return the cached accepted revision without reading canonical patch bodies."""
@@ -211,6 +289,7 @@ class HistoryManager:
         raise_on_reject: bool = True,
         discard_on_reject: bool = False,
         expected_revision: int | None = None,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> tuple[Patch, MaterializationResult]:
         """Append a patch to the log and rematerialize.
 
@@ -227,74 +306,110 @@ class HistoryManager:
         the write — a freshness check made outside this lock cannot say that.
         """
         with self.workspace.transaction(), self._append_lock():
-            self._reload_manifest()
-            self.ensure_layout()
+            return self._append_locked(
+                patch,
+                raise_on_reject=raise_on_reject,
+                discard_on_reject=discard_on_reject,
+                expected_revision=expected_revision,
+                authorized_by=authorized_by,
+            )
+
+    def _append_locked(
+        self,
+        patch: Patch,
+        *,
+        raise_on_reject: bool = True,
+        discard_on_reject: bool = False,
+        expected_revision: int | None = None,
+        allow_identity_claim: bool = False,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> tuple[Patch, MaterializationResult]:
+        """Use the single-patch commit path while the canonical append lock is held."""
+
+        self._reload_manifest()
+        current = self.materialize(write_outputs=False)
+        self.require_writable(current.state)
+        self._require_writable_home_locked(
+            current,
+            identity_claim=patch.project_identity if allow_identity_claim else None,
+        )
+        self.ensure_layout()
+        if self.workspace.materialization_repair_required:
             self._repair_materializations_locked()
             current = self.materialize(write_outputs=False)
-            self.require_writable(current.state)
-            if expected_revision is not None and current.state.revision != expected_revision:
-                raise RevisionConflict(
-                    f"the graph moved from revision {expected_revision} to "
-                    f"{current.state.revision} while this patch was being written"
-                )
-            revision = self._next_revision()
-            patch, report, _preflight_state = self._validate_candidate_locked(
-                current,
-                patch,
-                revision,
+        if expected_revision is not None and current.state.revision != expected_revision:
+            raise RevisionConflict(
+                f"the graph moved from revision {expected_revision} to "
+                f"{current.state.revision} while this patch was being written"
             )
-            if discard_on_reject and report.rejected:
-                raise PatchRejected(report)
-            patch = patch.model_copy(
-                update={
-                    "admission": "rejected" if report.rejected else "accepted",
-                    "admission_messages": list(report.messages),
-                }
+        revision = self._next_revision()
+        patch, report, _preflight_state = self._validate_candidate_locked(
+            current,
+            patch,
+            revision,
+            authorized_by=authorized_by,
+        )
+        if discard_on_reject and report.rejected:
+            raise PatchRejected(report)
+        patch = patch.model_copy(
+            update={
+                "admission": "rejected" if report.rejected else "accepted",
+                "admission_messages": list(report.messages),
+            }
+        )
+        target = self.patches_dir / f"{revision:06d}.json"
+        manifest_path = self.root / "manifest.toml"
+        manifest_before = manifest_path.read_text(encoding="utf-8")
+        self._atomic_text(target, patch.model_dump_json(indent=2) + "\n")
+        result = self.materialize(write_outputs=True)
+        scope_changed = False
+        if not result.reports[revision].rejected:
+            scope_changed = self._synchronize_manifest_scope(result, patch)
+        paths = [target.relative_to(self.root), *self._materialized_paths()]
+        if scope_changed:
+            paths.append(Path("manifest.toml"))
+        try:
+            self.workspace.publish_committed_patch(
+                paths,
+                target.relative_to(self.root),
             )
-            target = self.patches_dir / f"{revision:06d}.json"
-            manifest_path = self.root / "manifest.toml"
-            manifest_before = manifest_path.read_text(encoding="utf-8")
-            self._atomic_text(target, patch.model_dump_json(indent=2) + "\n")
-            result = self.materialize(write_outputs=True)
-            scope_changed = False
-            if not result.reports[revision].rejected:
-                scope_changed = self._synchronize_manifest_scope(result, patch)
-            paths = [target.relative_to(self.root), *self._materialized_paths()]
-            if scope_changed:
-                paths.append(Path("manifest.toml"))
-            try:
-                self.workspace.publish_committed_patch(
-                    paths,
-                    target.relative_to(self.root),
-                )
-            except Exception as exc:
-                if not self.workspace.remote:
-                    raise
-                if not self._reconcile_remote_publish_failure(
-                    exc,
-                    target,
-                    scope_changed=scope_changed,
-                    manifest_before=manifest_before,
-                ):
-                    raise
-            self._remember_accepted_revision(result)
-            if raise_on_reject and result.reports[revision].rejected:
-                raise PatchRejected(result.reports[revision])
-            return patch, result
+        except Exception as exc:
+            if not self.workspace.remote:
+                raise
+            if not self._reconcile_remote_publish_failure(
+                exc,
+                target,
+                scope_changed=scope_changed,
+                manifest_before=manifest_before,
+            ):
+                raise
+        self._remember_accepted_revision(result)
+        if raise_on_reject and result.reports[revision].rejected:
+            raise PatchRejected(result.reports[revision])
+        return patch, result
 
-    def validate_candidate(self, patch: Patch) -> tuple[Patch, ValidationReport, GraphState]:
+    def validate_candidate(
+        self,
+        patch: Patch,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> tuple[Patch, ValidationReport, GraphState]:
         """Validate without writing, against canonical state held under the append lock."""
 
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
-            self.ensure_layout()
-            self._repair_materializations_locked()
             current = self.materialize(write_outputs=False)
             self.require_writable(current.state)
+            self._require_writable_home_locked(current)
+            self.ensure_layout()
+            if self.workspace.materialization_repair_required:
+                self._repair_materializations_locked()
+                current = self.materialize(write_outputs=False)
             prepared, report, _candidate = self._validate_candidate_locked(
                 current,
                 patch,
                 self._next_revision(),
+                authorized_by=authorized_by,
             )
             return prepared, report, current.state
 
@@ -303,7 +418,10 @@ class HistoryManager:
         current: MaterializationResult,
         patch: Patch,
         revision: int,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> tuple[Patch, ValidationReport, GraphState | None]:
+        patch = self._stamp_attribution_for_admission(patch, authorized_by=authorized_by)
         patch = patch.model_copy(update={"revision": revision})
         patch = prepare_patch_bookkeeping(current.state, patch)
         report = validate_patch(
@@ -347,6 +465,74 @@ class HistoryManager:
                 report.reject("invalid-project-scope", str(exc), revision)
         return patch, report, preflight_state
 
+    def _stamp_attribution_for_admission(
+        self,
+        patch: Patch,
+        *,
+        authorized_by: AuthorizedHuman | None,
+    ) -> Patch:
+        if not self.require_attribution:
+            return patch
+
+        if patch.kind == "identity":
+            if authorized_by is not None or any(
+                value is not None for value in (patch.authorized_by, patch.profile, patch.task_id)
+            ):
+                raise ValueError("identity patches are system-owned and cannot carry attribution")
+            return patch
+
+        if patch.kind == "approval":
+            if authorized_by is None:
+                raise ValueError(
+                    "human approval patches require an explicit authorized_by snapshot"
+                )
+            authorizer = self._canonical_authorizer(authorized_by)
+            return patch.model_copy(
+                update={
+                    "authorized_by": authorizer,
+                    "profile": None,
+                    "task_id": None,
+                }
+            )
+
+        if authorized_by is not None:
+            raise ValueError("explicit authorized_by is only valid for human approval patches")
+        operation_id = patch.source_operation_id
+        if not operation_id or not operation_id.strip():
+            raise ValueError("agent patches require a non-empty direct source_operation_id")
+        if self.agent_authorizer_resolver is None:
+            raise ValueError("agent attribution requires an agent_authorizer_resolver")
+        try:
+            resolved = self.agent_authorizer_resolver(operation_id)
+        except KeyError as exc:
+            raise ValueError(f"unknown agent task {operation_id!r}") from exc
+        if resolved is None:
+            raise ValueError(f"agent task {operation_id!r} has no authorizer snapshot")
+        authorizer = self._canonical_authorizer(resolved)
+        canonical = (authorizer, "ordinary", operation_id)
+        supplied = (patch.authorized_by, patch.profile, patch.task_id)
+        if any(value is not None for value in supplied) and supplied != canonical:
+            raise ValueError(
+                "agent patch attribution does not match the canonical task authorizer snapshot"
+            )
+        return patch.model_copy(
+            update={
+                "authorized_by": authorizer,
+                "profile": "ordinary",
+                "task_id": operation_id,
+            }
+        )
+
+    @staticmethod
+    def _canonical_authorizer(authorizer: AuthorizedHuman) -> AuthorizedHuman:
+        try:
+            snapshot = AuthorizedHuman.model_validate(authorizer.model_dump(mode="python"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("authorized_by must be a valid authorizer snapshot") from exc
+        if not snapshot.display_name.strip():
+            raise ValueError("authorized_by must name the authorizing human")
+        return snapshot
+
     def update_agent_settings(
         self,
         default_run_truth_scope: list[str],
@@ -356,8 +542,10 @@ class HistoryManager:
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            self._require_writable_home_locked(current)
             self._repair_materializations_locked()
-            self.require_writable(self.materialize(write_outputs=False).state)
             self.manifest = write_agent_settings(
                 self.manifest,
                 default_run_truth_scope,
@@ -374,8 +562,10 @@ class HistoryManager:
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            self._require_writable_home_locked(current)
             self._repair_materializations_locked()
-            self.require_writable(self.materialize(write_outputs=False).state)
             self.manifest = write_machine_provider_paths(
                 self.manifest,
                 provider_path_updates,
@@ -388,6 +578,7 @@ class HistoryManager:
         patches: list[Patch],
         *,
         expected_revision: int | None = None,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> tuple[list[Patch], MaterializationResult]:
         """Append a validated human transaction and publish materializations once."""
 
@@ -396,6 +587,7 @@ class HistoryManager:
         return self.append_batch_from_state(
             lambda _state: patches,
             expected_revision=expected_revision,
+            authorized_by=authorized_by,
         )
 
     def append_batch_from_state(
@@ -403,15 +595,19 @@ class HistoryManager:
         build_patches: Callable[[GraphState], list[Patch]],
         *,
         expected_revision: int | None = None,
+        authorized_by: AuthorizedHuman | None = None,
     ) -> tuple[list[Patch], MaterializationResult]:
         """Build and append a human transaction from the fresh, append-locked state."""
 
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
-            self.ensure_layout()
-            self._repair_materializations_locked()
             current = self.materialize(write_outputs=False)
             self.require_writable(current.state)
+            self._require_writable_home_locked(current)
+            self.ensure_layout()
+            if self.workspace.materialization_repair_required:
+                self._repair_materializations_locked()
+                current = self.materialize(write_outputs=False)
             if expected_revision is not None and current.state.revision != expected_revision:
                 raise ValueError(
                     "The graph changed after this draft began; reload before syncing it."
@@ -423,7 +619,11 @@ class HistoryManager:
             next_revision = self._next_revision()
             prepared: list[Patch] = []
             for offset, raw_patch in enumerate(patches):
-                patch = raw_patch.model_copy(update={"revision": next_revision + offset})
+                patch = self._stamp_attribution_for_admission(
+                    raw_patch,
+                    authorized_by=authorized_by,
+                )
+                patch = patch.model_copy(update={"revision": next_revision + offset})
                 patch = prepare_patch_bookkeeping(state, patch)
                 report = validate_patch(
                     state,
@@ -517,7 +717,6 @@ class HistoryManager:
         accepted_patch_observer: AcceptedPatchObserver | None = None,
     ) -> MaterializationResult:
         with self._process_lock:
-            self.ensure_layout()
             if accepted_patch_observer is None:
                 result = self._replay(pending_patch_paths)
             else:
@@ -526,6 +725,7 @@ class HistoryManager:
                     accepted_patch_observer=accepted_patch_observer,
                 )
             if write_outputs:
+                self.ensure_layout()
                 self._write_materialized_outputs(result)
             return result
 
@@ -577,10 +777,21 @@ class HistoryManager:
         patches = [
             Patch.model_validate_json(path.read_text(encoding="utf-8")) for path in patch_paths
         ]
-        scope_base = json.loads((self.root / "scope-base.json").read_text(encoding="utf-8"))
+        scope_base_path = self.root / "scope-base.json"
+        if scope_base_path.is_file():
+            initial_truth_scope = json.loads(scope_base_path.read_text(encoding="utf-8"))[
+                "truth_scope"
+            ]
+        elif patches:
+            raise FileNotFoundError(
+                f"Canonical scope provenance {scope_base_path} is absent while patch history "
+                "exists; replay is refused rather than substituting the current manifest scope."
+            )
+        else:
+            initial_truth_scope = self.manifest.project.truth_scope
         return materialize_patches(
             patches,
-            initial_truth_scope=list(scope_base["truth_scope"]),
+            initial_truth_scope=list(initial_truth_scope),
             repository_aliases=sorted(self.manifest.repository_map),
             machine_aliases=sorted(self.manifest.machine_map),
             default_run_truth_scope=list(self.manifest.agent.default_run_truth_scope),
@@ -612,7 +823,7 @@ class HistoryManager:
 
         with self._process_lock:
             result = materialization or self.materialize(write_outputs=False)
-            return build_refresh_delta(self.load_patches(), result)
+            return build_refresh_delta(result.patches, result)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
         with self._process_lock:
@@ -658,6 +869,61 @@ class HistoryManager:
         paths = self._patch_paths()
         return int(paths[-1].stem) + 1 if paths else 1
 
+    def _project_identity_from_replay(
+        self,
+        result: MaterializationResult,
+    ) -> ProjectIdentity | None:
+        identities = [
+            patch.project_identity
+            for patch in result.patches
+            if patch.kind == "identity"
+            and patch.project_identity is not None
+            and (report := result.reports.get(patch.revision)) is not None
+            and not report.rejected
+        ]
+        if not identities:
+            return None
+        identity = identities[0]
+        conflict = next((item for item in identities[1:] if item != identity), None)
+        if conflict is not None:
+            raise ProjectIdentityConflict(
+                "Canonical history contains conflicting project identity revisions "
+                f"({identity.project_id} in {identity.home_space_id} and "
+                f"{conflict.project_id} in {conflict.home_space_id}); it is read-only until "
+                "the history is repaired."
+            )
+        return identity
+
+    def _require_expected_home(self, identity: ProjectIdentity) -> None:
+        if self.expected_space_id is not None and identity.home_space_id != self.expected_space_id:
+            raise ProjectIdentityConflict(
+                f"Project {identity.project_id} belongs to space {identity.home_space_id}; "
+                f"this space is {self.expected_space_id}. Canonical writes are refused."
+            )
+
+    def _require_writable_home_locked(
+        self,
+        result: MaterializationResult,
+        *,
+        identity_claim: ProjectIdentity | None = None,
+    ) -> None:
+        if self.expected_space_id is None:
+            return
+        identity = self._project_identity_from_replay(result)
+        if identity is not None:
+            self._require_expected_home(identity)
+            if identity_claim is not None:
+                raise ProjectIdentityConflict(
+                    f"Project {identity.project_id} already has a canonical identity."
+                )
+            return
+        if identity_claim is not None:
+            self._require_expected_home(identity_claim)
+            return
+        raise ProjectIdentityConflict(
+            "Canonical project identity must be claimed before this space can write."
+        )
+
     def _remember_accepted_revision(self, result: MaterializationResult) -> None:
         self._accepted_revision = max(
             (revision for revision, report in result.reports.items() if not report.rejected),
@@ -698,7 +964,7 @@ class HistoryManager:
         if result.state.project_truth_scope == self.manifest.project.truth_scope:
             return False
         descriptor = None
-        for patch in reversed(self.load_patches()):
+        for patch in reversed(result.patches):
             operation = next(
                 (op for op in reversed(patch.ops) if op.get("op") == "set_project_truth_scope"),
                 None,
@@ -718,6 +984,9 @@ class HistoryManager:
             return
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            self._require_writable_home_locked(current)
             self.ensure_layout()
             self._repair_materializations_locked()
 

@@ -5,8 +5,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from rcp.api.app import create_app
 from rcp.storage import AgentTaskRecord
+
+from .helpers import create_named_app as create_app
 
 
 def _tree_digest(root: Path) -> str:

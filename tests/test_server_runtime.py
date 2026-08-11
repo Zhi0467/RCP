@@ -5,7 +5,6 @@ import json
 from fastapi.testclient import TestClient
 
 from rcp import __version__
-from rcp.api import create_app
 from rcp.server_runtime import (
     ServerMetadata,
     data_dir_identity,
@@ -14,6 +13,8 @@ from rcp.server_runtime import (
     remove_server_metadata,
 )
 from rcp.sources import indexer
+
+from .helpers import create_named_app as create_app
 
 
 def test_metadata_is_published_atomically_and_removed_by_its_owner(tmp_path, monkeypatch) -> None:
@@ -124,6 +125,8 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
     assert response.json() == {
         "status": "ok",
         "version": __version__,
+        "space_id": app.state.space_id,
+        "space_kind": "personal",
         "instance_id": metadata.instance_id,
         "pid": metadata.pid,
         "data_dir_id": data_dir_identity(data_dir),

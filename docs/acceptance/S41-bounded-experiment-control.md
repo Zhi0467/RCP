@@ -9,21 +9,24 @@ covered_by:
   - tests/test_api.py::test_human_run_claims_over_ceiling_completion_into_a_new_episode
   - web/tests/acceptanceAgentMode.test.mjs
   - web/tests/experimentControlRefresh.test.mjs
+  - web/tests/experimentRunDetail.test.mjs
+  - web/tests/runDialog.test.mjs
 invariants: [3, 4, 4b, 10, 10b]
-last_passed: 2026-08-08 — hermetic prompt and loop suites proved same-machine
-  watcher maintenance uses a local cold-login shell without self-SSH and
-  provider-limit recovery keeps the current episode and invocation; the
-  isolated served app rendered the matching direct recovery controls.
+last_passed: 2026-08-12 — an isolated acceptance-agent served-app drive changed
+  the node ceiling before and after a bounded episode, kept the settled episode
+  pinned at its original ceiling, and rendered the changed prospective limit
+  separately with Start episode and Start new episode at the correct times.
 ---
 
 # Run an experiment through a bounded control loop
 
 An Experiment node can turn its graph preconditions into a bounded sequence of
-Work turns. The graph decides whether **Run** is available; each human **Run**
-authorizes one episode with a fresh bounded number of agent invocations; the
-agent executes and records scientifically meaningful attempts at its own
-discretion; and the human remains the only authority that accepts evidence or
-decides an upstream choice.
+Work turns. The graph decides whether its episode-start action is available;
+**Start episode** authorizes the first episode, and **Start new episode**
+authorizes every later one. Each episode has a fresh bounded number of agent
+invocations; the agent executes and records scientifically meaningful attempts
+at its own discretion; and the human remains the only authority that accepts
+evidence or decides an upstream choice.
 
 Experiment attempts and generic watchers are separate records. This scenario
 uses the watcher machinery promised by S42, with S88's node-owned Experiment
@@ -37,19 +40,26 @@ spend nor reset that budget.
 Confirmed by the human on 2026-08-05.
 
 - Open an Experiment node whose governing decision is decided, whose blockers
-  are closed, and which has no automatically continuing loop episode. The node
-  shows a live **Run** action and its per-episode invocation ceiling.
+  are closed, and which has no prior episode. The node shows a live **Start
+  episode** action and labels the current node ceiling **Next episode limit**.
+- Open otherwise-ready Experiments with prior episode history in both completed
+  and nonterminal semantic states. Each action reads **Start new episode**;
+  episode history, not `Experiment.status`, selects the label.
+- On the node with a completed prior episode, change **Next episode limit**. Its
+  pinned used / ceiling history stays unchanged in Runs, while Runs and the node
+  drawer both show the changed prospective limit separately.
 - Open otherwise identical nodes with an open decision, a pending proposal, an
   open blocker, or a loop episode that still has automatic invocations available.
-  **Run** is disabled and the exact gating reason is visible. Ordinary Work
-  conversation remains available.
-- Press **Run**. RCP opens the first bounded Experiment-loop invocation with the
-  governing decision bundle pinned, assigns a durable episode id and a fresh
-  native provider session, and records invocation 1 of the canonical ceiling. No
-  semantic attempt record exists merely because the button was pressed. Per S72
-  the app navigates to Runs and opens this Experiment's run detail rather than a
-  floating node-chat window. While that episode can continue automatically, a
-  second **Run** is refused; ordinary Work remains available.
+  The corresponding episode-start action is disabled and the exact gating reason
+  is visible. Ordinary Work conversation remains available.
+- Press **Start episode**. RCP opens the first bounded Experiment-loop invocation
+  with the governing decision bundle pinned, assigns a durable episode id and a
+  fresh native provider session, and records invocation 1 of the current **Next
+  episode limit**. No semantic attempt record exists merely because the button
+  was pressed. Per S72 the app navigates to Runs and opens this Experiment's run
+  detail rather than a floating node-chat window. While that episode can continue
+  automatically, another episode start is refused; ordinary Work remains
+  available.
 - Inspect the staged contract file. It contains the normal RCP ontology,
   authority, focused-node/one-hop context, repository pointers, and exact Patch,
   validator, watcher, schema, and artifact paths. It points separately to one
@@ -123,16 +133,19 @@ Confirmed by the human on 2026-08-05.
 - Drive a turn whose changed evidence makes an upstream choice ready or
   undermines its prior selection. It queues that pinned Decision as `ready` or
   `revisit` in Inbox and pauses the episode. Choosing in the existing ballot does
-  not resume automatically; the human presses **Run**, which starts a new episode
-  at invocation 1.
+  not resume automatically; the human presses **Start new episode**, which starts
+  a new episode at invocation 1 with the current **Next episode limit**.
 - Reach the configured invocation ceiling after the last allowed turn arms a
   watcher. When that watcher completes, RCP does not start an over-budget wake or
   mark the completion delivered. The Experiment visibly says the loop is paused
-  at its limit. Press **Run**; RCP starts a fresh episode and atomically delivers
-  the pending watcher or ready group as invocation 1 with its original attribution and
-  current loop context. The control phase says `human_reauthorization`, rather
-  than mislabelling it an automatic wake. Nothing is discarded and the human
-  need not raise the ceiling merely to resume from this pause.
+  at its limit. Press **Start new episode**. The prior episode keeps its pinned
+  used / ceiling history; Runs and the node drawer show the current prospective
+  limit separately. RCP starts the fresh episode at invocation 1 of that current
+  limit and atomically delivers the pending watcher or ready group with its
+  original attribution and current loop context. The control phase says
+  `human_reauthorization`, rather than mislabelling it an automatic wake. Nothing
+  is discarded and the human need not raise the limit merely to resume from this
+  pause.
 - Let compatible ungrouped watchers and ready labelled groups from different
   invocations and permitted arming conversations become deliverable together.
   Their immutable origin
@@ -148,6 +161,10 @@ Confirmed by the human on 2026-08-05.
   `completion_criteria` exists, the pinned criterion is shown with the proposed
   belief change but never controlled the loop. Only human acceptance updates the
   downstream belief; edges have no standing.
+- Have a later graph-writing task materially introduce new work to that completed
+  Experiment. The same Patch reopens it to an appropriate nonterminal status and
+  refreshes `current_summary` and `next_action`; its episode action still reads
+  **Start new episode** because prior episode history exists.
 - While the loop is active, edit the repository manually through ordinary Work.
   RCP shows an advisory active-loop marker but neither locks the repository nor
   blocks the human action.
@@ -157,6 +174,11 @@ Confirmed by the human on 2026-08-05.
 - `readiness_is_derived_from_decisions_proposals_blockers_and_episode_state`
 - `same_machine_watcher_contract_uses_local_shell_not_self_ssh`
 - `provider_limit_recovery_stays_inside_current_episode_and_invocation`
+- `first_episode_action_reads_start_episode`
+- `later_episode_actions_read_start_new_episode_regardless_of_experiment_status`
+- `completed_episode_retains_its_pinned_used_and_ceiling_history`
+- `runs_and_node_drawer_show_the_current_next_episode_limit_separately`
+- `new_episode_starts_at_invocation_one_with_the_current_node_limit`
 - `run_is_disabled_with_the_exact_gate_reason`
 - `ordinary_work_remains_available_when_run_is_disabled`
 - `run_pins_the_governing_decision_bundle`
@@ -202,6 +224,7 @@ Confirmed by the human on 2026-08-05.
 - `loop_patch_cannot_decide_set_standing_or_edit_the_pinned_bundle`
 - `successful_operational_work_survives_a_rejected_graph_reflection`
 - `successful_completion_produces_one_human_authority_item`
+- `new_work_reopens_completed_experiment_and_refreshes_summary_and_next_action`
 - `human_acceptance_is_required_for_the_evidence_grounded_belief_change`
 - `active_loop_marker_derives_from_control_tasks_and_watchers_not_semantic_attempts`
 - `generic_watchers_never_define_the_active_loop_marker`

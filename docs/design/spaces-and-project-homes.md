@@ -40,6 +40,11 @@ A space is not a process, installation, window, hostname, port, filesystem
 path, or source checkout. Those may change while the durable space stays the
 same.
 
+Personal versus team is an immutable control-plane fact stored beside
+`space_id`. Existing installations migrate to personal; a team server is
+initialized as team explicitly. RCP never guesses the kind from its machine,
+path, credentials, or current users.
+
 ## Deployment ladder
 
 The same ownership rule applies at all three deployment levels:
@@ -181,27 +186,32 @@ project's identity is a fact about one local catalog, but it cannot survive a
 project moving between spaces, and two catalogs can derive the same id for two
 independently writable copies.
 
-A project therefore carries two facts in its own canonical history, written once
-at creation:
+A project therefore carries two initial facts in its own canonical history,
+written in a visible identity revision at creation or legacy adoption:
 
 - a durable, randomly generated `project_id`; and
 - `home_space_id`, the one space allowed to admit writes.
 
+The `project_id` never changes. `home_space_id` changes only through the later
+visible transfer revision defined by the transfer workflow.
+
 Every catalog caches those values; none of them owns the values. A repository
 copied to any machine announces who it is and where it belongs. The existing
-derived id is retained as a legacy alias for one release so that operational
-rows keyed on it—tasks, usage, watchers, experiment episodes, chat session
-contexts, paper drafts, writing sessions—migrate without a data rewrite.
+derived id is retained as a legacy alias for one release so old URLs and
+operational rows—tasks, usage, watchers, experiment episodes, chat session
+contexts, paper drafts, and writing sessions—survive the atomic catalog
+migration.
 
 This is a nameplate, not version control. RCP's append-only patch log already
 lives inside a git repository, and the project deliberately does not add a third
 layer of history, branching, or merge semantics on top of them.
 
-**Replay records home; it never refuses on it.** A graph must still materialize
-in the wrong space, for offline reading, forensics, or a repository found on a
-disk. Only the backend refuses writes when `home_space_id` is not its own
-`space_id`. This preserves the rule that replay never depends on identity or
-permission data.
+**Replay records home; it never refuses on it.** The low-level replay engine
+must still materialize the graph in the wrong space for recovery or forensics.
+That does not create an ordinary read-only project mode: the product refuses to
+register the repository, and canonical admission refuses writes when
+`home_space_id` is not the backend's own `space_id`. Replay never consults local
+space, membership, or permission state.
 
 ## One writable project home
 
@@ -336,19 +346,17 @@ Credential handling for that navigation is specified in
 
 ## Remaining acceptance and implementation work
 
-These are required details for turning the confirmed design into code. They are
-not entries for `open-questions.md` and do not reopen the architecture above.
+S111, S97, S99, and S112 now implement the durable space, project nameplate,
+base attribution, and human-identity foundations above. The remaining work does
+not reopen those contracts:
 
-- Define the SQLite schema, initialization transaction, and migration path for
-  `space_id`, project homes, project memberships and invitations, and the
-  related space records.
-- Define the canonical genesis record carrying `project_id` and
-  `home_space_id`, the patch that changes home on transfer, and the legacy-alias
-  migration for existing projects.
+- Add the later project-membership and invitation records.
+- Define the later Patch that changes project home during transfer.
 - Specify and test normal restart, address change, unexpected-`space_id`, and
   manual exclusive-recovery behavior.
-- Write acceptance scenarios for a durable space, team-only execution, the
-  multi-space project index, offline team connections, and project transfer.
+- Write or confirm the remaining scenarios for full team durability, team-only
+  execution, the multi-space project index, offline team connections, and
+  project transfer.
 - Write acceptance scenarios for project creation, invitation delivery through
   the project index, joining, membership-gated access, and equal project-member
   actions.

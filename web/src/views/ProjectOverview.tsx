@@ -56,10 +56,10 @@ export function ProjectOverview({
       prompt: "Where are we?",
       answer: activeExperiments.length
         ? `${activeExperiments.length} active experiment${activeExperiments.length === 1 ? "" : "s"}`
-        : graph.revision === 0
+        : !project.last_refresh_at
           ? "The project has not been seeded yet."
           : "Understanding and review",
-      detail: `Graph revision ${graph.revision}`,
+      detail: `Project revision ${graph.revision}`,
       view: "execution",
     },
     {
@@ -97,7 +97,7 @@ export function ProjectOverview({
       prompt: "What happens next?",
       answer: String(
         nextExperiment?.next_action ||
-          (graph.revision === 0
+          (!project.last_refresh_at
             ? "Seed the graph from the selected truth repositories."
             : "Refresh when new research work lands."),
       ),
@@ -110,7 +110,7 @@ export function ProjectOverview({
     <section className="overview-page">
       <header className="overview-heading">
         <div className="overview-revision">
-          <span>Graph revision · {project.canonical_state.remote ? "remote" : "local"}</span>
+          <span>Project revision · {project.canonical_state.remote ? "remote" : "local"}</span>
           <strong>{String(graph.revision).padStart(3, "0")}</strong>
         </div>
       </header>

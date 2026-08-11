@@ -12,9 +12,14 @@ from pathlib import Path
 from statistics import median
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.core.models import (
+    DISPLAY_NAME_MAX_LENGTH,
+    AuthorizedHuman,
+    normalize_display_name,
+)
 from rcp.limits import (
     AGENT_TASK_ESTIMATE_HISTORY_LIMIT,
     AGENT_TASK_ESTIMATE_SAMPLE_LIMIT,
@@ -44,8 +49,38 @@ if TYPE_CHECKING:
     from rcp.watchers import WatcherBinding
 
 
+SpaceKind = Literal["personal", "team"]
+SpaceUserKind = Literal["local_owner", "team_member"]
+
+
+class SpaceUserRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    user_id: str
+    identity_kind: SpaceUserKind
+    display_name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
+    created_at: str
+    updated_at: str
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str) -> str:
+        try:
+            return _canonical_uuid4(value, label="user identity")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_display_name(value)
+
+
 class ProjectRecord(BaseModel):
     project_id: str
+    home_space_id: str | None = None
     locator: str
     name: str
     state_location: str
@@ -58,6 +93,22 @@ class ProjectRecord(BaseModel):
     last_refresh_at: str | None = None
     reachable: bool | None = None
     error: str | None = None
+
+    @field_validator("home_space_id")
+    @classmethod
+    def validate_home_space_id(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return None
+        try:
+            home_space_id = _canonical_uuid4(value, label="project home space identity")
+            _canonical_uuid4(info.data.get("project_id"), label="canonical project identity")
+            return home_space_id
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class ProjectStageRecord(BaseModel):
@@ -177,6 +228,7 @@ class AgentTaskRecord(BaseModel):
     estimate_samples: int = 0
     phase: str = "queued"
     last_activity_at: str | None = None
+    authorized_by: AuthorizedHuman | None = None
     elapsed_seconds: float = 0.0
     progress: float = 0.0
     can_pause: bool = False
@@ -463,11 +515,46 @@ def _experiment_pinned_value(request: dict[str, object], field: str) -> object:
     return value
 
 
+def _canonical_uuid4(value: object, *, label: str) -> str:
+    identifier = str(value)
+    try:
+        parsed = uuid.UUID(identifier)
+    except ValueError as exc:
+        raise RuntimeError(f"RCP {label} is invalid.") from exc
+    if str(parsed) != identifier or parsed.version != 4:
+        raise RuntimeError(f"RCP {label} is not a canonical UUIDv4.")
+    return identifier
+
+
+def _canonical_space_id(value: object) -> str:
+    return _canonical_uuid4(value, label="space identity")
+
+
+def _stored_space_kind(value: object) -> SpaceKind:
+    if value == "personal" or value == "team":
+        return value
+    raise RuntimeError("RCP space kind is invalid.")
+
+
+_PROJECT_ID_TABLES = (
+    "projects",
+    "paper_drafts",
+    "writing_sessions",
+    "chat_session_contexts",
+    "graph_runs",
+    "agent_usage",
+    "watchers",
+    "experiment_episodes",
+)
+
+
 class AppStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
+        if space_kind is not None and space_kind not in ("personal", "team"):
+            raise ValueError("space kind must be 'personal' or 'team'")
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self._initialize(space_kind)
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -479,11 +566,172 @@ class AppStore:
         finally:
             connection.close()
 
-    def _initialize(self) -> None:
+    def _initialize(self, requested_space_kind: SpaceKind | None) -> None:
         with self.connection() as connection:
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                # A concurrent first opener may be changing the journal mode.
+                # Waiting for a write boundary proves that transaction finished
+                # before retrying the same required mode change.
+                connection.execute("BEGIN IMMEDIATE")
+                connection.rollback()
+                connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("BEGIN IMMEDIATE")
+            identity_table_exists = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'space_identity'"
+                ).fetchone()
+                is not None
+            )
+            if not identity_table_exists:
+                legacy_database = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                    ).fetchone()
+                    is not None
+                )
+                stored_space_kind = (
+                    "personal" if legacy_database else requested_space_kind or "personal"
+                )
+                if requested_space_kind is not None and requested_space_kind != stored_space_kind:
+                    raise ValueError(
+                        "An existing RCP database migrates to personal; it cannot be opened "
+                        f"as {requested_space_kind}."
+                    )
+                connection.execute(
+                    """
+                    CREATE TABLE space_identity (
+                        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                        space_id TEXT NOT NULL UNIQUE,
+                        space_kind TEXT NOT NULL CHECK(space_kind IN ('personal', 'team'))
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO space_identity(singleton, space_id, space_kind)
+                    VALUES (1, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), stored_space_kind),
+                )
+            else:
+                identity_columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(space_identity)")
+                }
+                if "space_id" not in identity_columns:
+                    raise RuntimeError("RCP space identity schema is invalid.")
+                identity = connection.execute(
+                    "SELECT space_id FROM space_identity WHERE singleton = 1"
+                ).fetchone()
+                if identity is None:
+                    raise RuntimeError("RCP space identity is unavailable.")
+                _canonical_space_id(identity["space_id"])
+                if "space_kind" not in identity_columns:
+                    connection.execute(
+                        """
+                        ALTER TABLE space_identity
+                        ADD COLUMN space_kind TEXT CHECK(space_kind IN ('personal', 'team'))
+                        """
+                    )
+                    connection.execute(
+                        "UPDATE space_identity SET space_kind = 'personal' WHERE singleton = 1"
+                    )
+                    stored_space_kind = "personal"
+                else:
+                    identity = connection.execute(
+                        "SELECT space_kind FROM space_identity WHERE singleton = 1"
+                    ).fetchone()
+                    assert identity is not None
+                    stored_space_kind = _stored_space_kind(identity["space_kind"])
+
+                if requested_space_kind is not None and requested_space_kind != stored_space_kind:
+                    raise ValueError(
+                        f"RCP space is {stored_space_kind}; it cannot be opened as "
+                        f"{requested_space_kind}."
+                    )
+
+            identity = connection.execute(
+                "SELECT space_id, space_kind FROM space_identity WHERE singleton = 1"
+            ).fetchone()
+            if identity is None:
+                raise RuntimeError("RCP space identity is unavailable.")
+            _canonical_space_id(identity["space_id"])
+            stored_space_kind = _stored_space_kind(identity["space_kind"])
+
+            users_table_exists = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'space_users'"
+                ).fetchone()
+                is not None
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS space_users (
+                    user_id TEXT PRIMARY KEY,
+                    identity_kind TEXT NOT NULL
+                        CHECK(identity_kind IN ('local_owner', 'team_member')),
+                    display_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            if not users_table_exists and stored_space_kind == "personal":
+                now = self.now()
+                owner = SpaceUserRecord(
+                    user_id=str(uuid.uuid4()),
+                    identity_kind="local_owner",
+                    created_at=now,
+                    updated_at=now,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO space_users (
+                        user_id, identity_kind, display_name, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        owner.user_id,
+                        owner.identity_kind,
+                        owner.display_name,
+                        owner.created_at,
+                        owner.updated_at,
+                    ),
+                )
+            users = self._space_users_from_connection(connection)
+            if stored_space_kind == "personal":
+                if len(users) != 1 or users[0].identity_kind != "local_owner":
+                    raise RuntimeError("A personal RCP space must contain exactly one local owner.")
+            elif any(user.identity_kind == "local_owner" for user in users):
+                raise RuntimeError("A team RCP space cannot contain a local owner.")
+
+            # S111 stores may already have the earlier trigger that protected
+            # only ``space_id``. Replace it atomically so the additive kind is
+            # covered as soon as the migration commits.
+            connection.execute("DROP TRIGGER IF EXISTS space_identity_immutable")
+            connection.execute(
+                """
+                CREATE TRIGGER space_identity_immutable
+                BEFORE UPDATE OF singleton, space_id, space_kind ON space_identity
+                BEGIN
+                    SELECT RAISE(ABORT, 'space identity is immutable');
+                END
+                """
+            )
+            connection.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS space_user_identity_immutable
+                BEFORE UPDATE OF user_id, identity_kind ON space_users
+                BEGIN
+                    SELECT RAISE(ABORT, 'space user identity is immutable');
+                END
+                """
+            )
+            connection.commit()
             connection.executescript(
                 """
-                PRAGMA journal_mode = WAL;
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS paper_drafts (
                     project_id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
@@ -529,6 +777,7 @@ class AppStore:
                     ON chat_session_contexts(native_session_id);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT PRIMARY KEY,
+                    home_space_id TEXT,
                     locator TEXT NOT NULL UNIQUE,
                     name TEXT NOT NULL,
                     state_location TEXT NOT NULL,
@@ -544,6 +793,12 @@ class AppStore:
                 );
                 CREATE INDEX IF NOT EXISTS projects_recent
                     ON projects(last_opened_at DESC, added_at DESC);
+                CREATE TABLE IF NOT EXISTS project_aliases (
+                    alias_id TEXT PRIMARY KEY,
+                    canonical_project_id TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS project_aliases_canonical
+                    ON project_aliases(canonical_project_id, alias_id);
                 CREATE TABLE IF NOT EXISTS provider_skill_inventories (
                     provider TEXT NOT NULL,
                     host TEXT NOT NULL,
@@ -582,7 +837,10 @@ class AppStore:
                     estimate_seconds REAL NOT NULL DEFAULT 300,
                     estimate_samples INTEGER NOT NULL DEFAULT 0,
                     phase TEXT NOT NULL DEFAULT 'queued',
-                    last_activity_at TEXT
+                    last_activity_at TEXT,
+                    authorized_space_id TEXT,
+                    authorized_user_id TEXT,
+                    authorized_display_name TEXT
                 );
                 CREATE INDEX IF NOT EXISTS graph_runs_project
                     ON graph_runs(project_id, created_at DESC);
@@ -713,6 +971,7 @@ class AppStore:
             )
             # Existing v0.2 databases need additive migration before the index
             # can include the new transitional state.
+            self._ensure_column(connection, "projects", "home_space_id", "TEXT")
             self._ensure_column(connection, "paper_drafts", "ancestor_content", "TEXT")
             self._ensure_column(connection, "graph_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "graph_runs", "parent_operation_id", "TEXT")
@@ -728,6 +987,9 @@ class AppStore:
             self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
             self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
             self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
+            self._ensure_column(connection, "graph_runs", "authorized_space_id", "TEXT")
+            self._ensure_column(connection, "graph_runs", "authorized_user_id", "TEXT")
+            self._ensure_column(connection, "graph_runs", "authorized_display_name", "TEXT")
             self._ensure_column(connection, "watchers", "next_check_at", "TEXT")
             self._ensure_column(
                 connection,
@@ -770,6 +1032,127 @@ class AppStore:
             )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
+
+    @property
+    def space_id(self) -> str:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT space_id FROM space_identity WHERE singleton = 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("RCP space identity is unavailable.")
+        return _canonical_space_id(row["space_id"])
+
+    @property
+    def space_kind(self) -> SpaceKind:
+        with self.connection() as connection:
+            return self._space_kind_from_connection(connection)
+
+    def space_users(self) -> list[SpaceUserRecord]:
+        with self.connection() as connection:
+            return self._space_users_from_connection(connection)
+
+    def space_user(self, user_id: str) -> SpaceUserRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM space_users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return self._space_user_record(row) if row is not None else None
+
+    @property
+    def local_owner(self) -> SpaceUserRecord | None:
+        if self.space_kind != "personal":
+            return None
+        users = self.space_users()
+        if len(users) != 1 or users[0].identity_kind != "local_owner":
+            raise RuntimeError("A personal RCP space must contain exactly one local owner.")
+        return users[0]
+
+    def preprovision_team_member(self, display_name: str | None = None) -> SpaceUserRecord:
+        now = self.now()
+        member = SpaceUserRecord(
+            user_id=str(uuid.uuid4()),
+            identity_kind="team_member",
+            display_name=display_name,
+            created_at=now,
+            updated_at=now,
+        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._space_kind_from_connection(connection) != "team":
+                raise ValueError("Only a team space can preprovision team members.")
+            connection.execute(
+                """
+                INSERT INTO space_users (
+                    user_id, identity_kind, display_name, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    member.user_id,
+                    member.identity_kind,
+                    member.display_name,
+                    member.created_at,
+                    member.updated_at,
+                ),
+            )
+        return member
+
+    def rename_space_user(
+        self,
+        user_id: str,
+        display_name: str | None,
+    ) -> SpaceUserRecord:
+        _canonical_uuid4(user_id, label="user identity")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM space_users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown RCP space user {user_id}.")
+            current = self._space_user_record(row)
+            updated = SpaceUserRecord.model_validate(
+                {
+                    **current.model_dump(),
+                    "display_name": display_name,
+                    "updated_at": self.now(),
+                }
+            )
+            connection.execute(
+                """
+                UPDATE space_users
+                SET display_name = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (updated.display_name, updated.updated_at, user_id),
+            )
+        return updated
+
+    @staticmethod
+    def _space_kind_from_connection(connection: sqlite3.Connection) -> SpaceKind:
+        row = connection.execute(
+            "SELECT space_kind FROM space_identity WHERE singleton = 1"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("RCP space identity is unavailable.")
+        return _stored_space_kind(row["space_kind"])
+
+    @classmethod
+    def _space_users_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> list[SpaceUserRecord]:
+        rows = connection.execute(
+            "SELECT * FROM space_users ORDER BY created_at, user_id"
+        ).fetchall()
+        return [cls._space_user_record(row) for row in rows]
+
+    @staticmethod
+    def _space_user_record(row: sqlite3.Row) -> SpaceUserRecord:
+        try:
+            return SpaceUserRecord.model_validate(dict(row))
+        except (RuntimeError, ValueError) as exc:
+            raise RuntimeError("RCP space user record is invalid.") from exc
 
     def provider_skill_inventory(
         self,
@@ -909,7 +1292,12 @@ class AppStore:
     ) -> None:
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
         if name not in columns:
-            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            try:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            except sqlite3.OperationalError:
+                columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if name not in columns:
+                    raise
 
     def project_by_locator(self, locator: str) -> ProjectRecord | None:
         with self.connection() as connection:
@@ -920,10 +1308,31 @@ class AppStore:
 
     def project(self, project_id: str) -> ProjectRecord | None:
         with self.connection() as connection:
+            canonical_project_id = self._resolve_project_id_from_connection(connection, project_id)
             row = connection.execute(
-                "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                "SELECT * FROM projects WHERE project_id = ?", (canonical_project_id,)
             ).fetchone()
         return self._project_record(row) if row else None
+
+    def resolve_project_id(self, project_id: str) -> str:
+        with self.connection() as connection:
+            return self._resolve_project_id_from_connection(connection, project_id)
+
+    def project_aliases(self) -> dict[str, str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT alias_id, canonical_project_id
+                FROM project_aliases
+                ORDER BY alias_id
+                """
+            ).fetchall()
+        aliases: dict[str, str] = {}
+        for row in rows:
+            aliases[str(row["alias_id"])] = _canonical_uuid4(
+                row["canonical_project_id"], label="canonical project identity"
+            )
+        return aliases
 
     def projects(self) -> list[ProjectRecord]:
         with self.connection() as connection:
@@ -934,6 +1343,164 @@ class AppStore:
                 """
             ).fetchall()
         return [self._project_record(row) for row in rows]
+
+    def migrate_project_identity(
+        self,
+        old_project_id: str,
+        canonical_project_id: str,
+        home_space_id: str,
+    ) -> ProjectRecord:
+        try:
+            canonical_project_id = _canonical_uuid4(
+                canonical_project_id, label="canonical project identity"
+            )
+            home_space_id = _canonical_uuid4(home_space_id, label="project home space identity")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                alias = connection.execute(
+                    "SELECT canonical_project_id FROM project_aliases WHERE alias_id = ?",
+                    (old_project_id,),
+                ).fetchone()
+                if alias is not None and alias["canonical_project_id"] != canonical_project_id:
+                    raise ValueError(
+                        f"Project alias {old_project_id!r} already resolves to "
+                        f"{alias['canonical_project_id']!r}."
+                    )
+                canonical_alias = connection.execute(
+                    "SELECT canonical_project_id FROM project_aliases WHERE alias_id = ?",
+                    (canonical_project_id,),
+                ).fetchone()
+                if canonical_alias is not None:
+                    raise ValueError(
+                        f"Canonical project id {canonical_project_id!r} is already an alias."
+                    )
+
+                old_row = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (old_project_id,)
+                ).fetchone()
+                canonical_row = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (canonical_project_id,)
+                ).fetchone()
+
+                if old_project_id == canonical_project_id:
+                    if old_row is None:
+                        raise KeyError(old_project_id)
+                    stored_home = old_row["home_space_id"]
+                    if stored_home is not None and stored_home != home_space_id:
+                        raise ValueError(
+                            f"Project {canonical_project_id!r} already belongs to {stored_home!r}."
+                        )
+                    if stored_home is None:
+                        connection.execute(
+                            "UPDATE projects SET home_space_id = ? WHERE project_id = ?",
+                            (home_space_id, canonical_project_id),
+                        )
+                    row = connection.execute(
+                        "SELECT * FROM projects WHERE project_id = ?", (canonical_project_id,)
+                    ).fetchone()
+                    assert row is not None
+                    return self._project_record(row)
+
+                if old_row is None:
+                    if alias is None:
+                        if canonical_row is not None:
+                            raise ValueError(
+                                f"Project identity destination {canonical_project_id!r} "
+                                "already exists without the requested alias."
+                            )
+                        raise KeyError(old_project_id)
+                    if canonical_row is None:
+                        raise KeyError(canonical_project_id)
+                    if canonical_row["home_space_id"] != home_space_id:
+                        raise ValueError(
+                            f"Project {canonical_project_id!r} already belongs to "
+                            f"{canonical_row['home_space_id']!r}."
+                        )
+                    for table in _PROJECT_ID_TABLES:
+                        if (
+                            connection.execute(
+                                f"SELECT 1 FROM {table} WHERE project_id = ? LIMIT 1",
+                                (old_project_id,),
+                            ).fetchone()
+                            is not None
+                        ):
+                            raise RuntimeError(
+                                f"Project alias {old_project_id!r} still has rows in {table}."
+                            )
+                    return self._project_record(canonical_row)
+
+                if canonical_row is not None:
+                    raise ValueError(
+                        f"Project identity destination {canonical_project_id!r} "
+                        "already contains a project registration."
+                    )
+                for table in _PROJECT_ID_TABLES[1:]:
+                    if (
+                        connection.execute(
+                            f"SELECT 1 FROM {table} WHERE project_id = ? LIMIT 1",
+                            (canonical_project_id,),
+                        ).fetchone()
+                        is not None
+                    ):
+                        raise ValueError(
+                            f"Project identity destination {canonical_project_id!r} "
+                            f"already contains rows in {table}."
+                        )
+
+                connection.execute(
+                    """
+                    UPDATE projects
+                    SET project_id = ?, home_space_id = ?
+                    WHERE project_id = ?
+                    """,
+                    (canonical_project_id, home_space_id, old_project_id),
+                )
+                for table in _PROJECT_ID_TABLES[1:]:
+                    connection.execute(
+                        f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
+                        (canonical_project_id, old_project_id),
+                    )
+                if alias is None:
+                    connection.execute(
+                        """
+                        INSERT INTO project_aliases(alias_id, canonical_project_id)
+                        VALUES (?, ?)
+                        """,
+                        (old_project_id, canonical_project_id),
+                    )
+                row = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (canonical_project_id,)
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        "Canonical project registration disappeared during migration."
+                    )
+                return self._project_record(row)
+            except sqlite3.IntegrityError as exc:
+                connection.rollback()
+                raise ValueError(
+                    f"Project identity migration to {canonical_project_id!r} conflicted."
+                ) from exc
+            except Exception:
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _resolve_project_id_from_connection(
+        connection: sqlite3.Connection,
+        project_id: str,
+    ) -> str:
+        row = connection.execute(
+            "SELECT canonical_project_id FROM project_aliases WHERE alias_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            return project_id
+        return _canonical_uuid4(row["canonical_project_id"], label="canonical project identity")
 
     def project_deletion_stages(self, project_id: str) -> list[ProjectStageRecord]:
         """Return the saved scratch stages after proving deletion is currently safe."""
@@ -1053,10 +1620,10 @@ class AppStore:
             connection.execute(
                 """
                 INSERT INTO projects (
-                    project_id, locator, name, state_location, state_remote, added_at,
+                    project_id, home_space_id, locator, name, state_location, state_remote, added_at,
                     last_opened_at, revision, primary_question, attention_count,
                     last_refresh_at, reachable, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id) DO UPDATE SET
                     locator = excluded.locator,
                     name = excluded.name,
@@ -1065,6 +1632,7 @@ class AppStore:
                 """,
                 (
                     record.project_id,
+                    record.home_space_id,
                     record.locator,
                     record.name,
                     record.state_location,
@@ -1172,6 +1740,7 @@ class AppStore:
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> None:
+        self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
         connection.execute(
             """
@@ -1181,8 +1750,9 @@ class AppStore:
                 status_message, error, applied_revision, result_json, attempt,
                 parent_operation_id, native_session_id, stage_host,
                 stage_root, estimate_seconds, estimate_samples, phase,
-                last_activity_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_activity_at, authorized_space_id, authorized_user_id,
+                authorized_display_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -1207,8 +1777,88 @@ class AppStore:
                 record.estimate_samples,
                 record.phase,
                 record.last_activity_at,
+                record.authorized_by.space_id if record.authorized_by is not None else None,
+                record.authorized_by.user_id if record.authorized_by is not None else None,
+                record.authorized_by.display_name if record.authorized_by is not None else None,
             ),
         )
+
+    @staticmethod
+    def _bind_chat_stage(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> None:
+        """Keep one exact scratch directory bound to a conversation.
+
+        Every later task in the same chat inherits the prior host/root pair
+        while it is inserted under the same write transaction. This makes the
+        task ledger authoritative even when project identity adoption rewrites
+        ``graph_runs.project_id``; a provider's saved cwd is never renamed or
+        re-derived. Multiple saved pairs mean the durable conversation binding
+        is already ambiguous, so continuing would risk resuming a native
+        session in the wrong directory.
+        """
+
+        if record.kind not in {"node_chat", "project_chat"}:
+            return
+        # Resume, Retry, provider handoff, and Experiment recovery already carry
+        # an exact server-owned stage. They are authoritative and may
+        # deliberately replace an older binding; only a missing binding is
+        # recovered from the durable conversation ledger here.
+        if record.stage_root is not None:
+            return
+        chat_id = record.request.get("chat_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            return
+        session_id = record.request.get("session_id")
+        watcher_ids = record.request.get("watcher_ids")
+        if isinstance(session_id, str) and session_id:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
+                FROM graph_runs
+                WHERE project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND native_session_id = ?
+                  AND stage_root IS NOT NULL AND stage_root != ''
+                """,
+                (record.project_id, record.kind, chat_id, session_id),
+            ).fetchall()
+        elif (
+            record.request.get("trigger") == "watcher"
+            and isinstance(watcher_ids, list)
+            and watcher_ids
+            and all(isinstance(item, str) and item for item in watcher_ids)
+        ):
+            placeholders = ",".join("?" for _ in watcher_ids)
+            rows = connection.execute(
+                f"""
+                SELECT DISTINCT COALESCE(run.stage_host, '') AS host,
+                                run.stage_root AS root
+                FROM watchers AS watcher
+                JOIN graph_runs AS run
+                  ON run.operation_id = watcher.origin_operation_id
+                WHERE watcher.watcher_id IN ({placeholders})
+                  AND watcher.project_id = ?
+                  AND watcher.origin_task_kind = ?
+                  AND watcher.chat_id = ?
+                  AND run.stage_root IS NOT NULL AND run.stage_root != ''
+                """,
+                (*watcher_ids, record.project_id, record.kind, chat_id),
+            ).fetchall()
+        else:
+            return
+        bindings = {(str(row["host"]), str(row["root"])) for row in rows}
+        if len(bindings) > 1:
+            raise ValueError(
+                "This conversation has conflicting saved workspace bindings and cannot "
+                "continue safely."
+            )
+        if not bindings:
+            return
+        saved_host, saved_root = next(iter(bindings))
+        record.stage_host = saved_host or None
+        record.stage_root = saved_root
 
     @staticmethod
     def _validate_experiment_task_insert(
@@ -3648,6 +4298,132 @@ class AppStore:
         assert stored is not None
         return stored
 
+    def resolve_watcher_delivery_authorizer(
+        self,
+        watcher_ids: list[str],
+    ) -> tuple[AuthorizedHuman | None, str | None]:
+        """Resolve one automatic wake's human authority or terminalize it.
+
+        Legacy tasks have no trustworthy authorizer to inherit. Missing tasks,
+        partial snapshots, and a delivery unit assembled from different humans
+        are equally non-recoverable without a new human action. Consume those
+        completed watchers with a durable, UI-visible diagnostic so the poller
+        cannot retry an unauthorized wake forever.
+
+        The resolution and terminal transition share the same write transaction
+        as the watcher readiness check. A concurrent notification claim or Stop
+        therefore wins cleanly instead of producing both a wake and a terminal
+        diagnostic.
+        """
+
+        ids = list(dict.fromkeys(watcher_ids))
+        if not ids or len(ids) != len(watcher_ids):
+            raise ValueError("watcher delivery authorization requires unique watcher ids")
+        placeholders = ",".join("?" for _ in ids)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"""
+                SELECT * FROM watchers
+                WHERE watcher_id IN ({placeholders})
+                  AND status IN ('completed', 'degraded')
+                  AND notified = 0 AND notification_operation_id IS NULL
+                """,
+                ids,
+            ).fetchall()
+            if {str(row["watcher_id"]) for row in rows} != set(ids):
+                return None, None
+            watchers = [self._watcher_record(row) for row in rows]
+            self._validate_watcher_notification_members(connection, watchers)
+
+            origin_ids = sorted({item.origin_operation_id for item in watchers})
+            origin_placeholders = ",".join("?" for _ in origin_ids)
+            origin_rows = connection.execute(
+                f"""
+                SELECT operation_id, authorized_space_id, authorized_user_id,
+                       authorized_display_name
+                FROM graph_runs
+                WHERE operation_id IN ({origin_placeholders})
+                """,
+                origin_ids,
+            ).fetchall()
+            by_operation = {str(row["operation_id"]): row for row in origin_rows}
+
+            diagnostic: str | None = None
+            if set(by_operation) != set(origin_ids):
+                diagnostic = (
+                    "Automatic watcher wake stopped: an originating task is unavailable, so "
+                    "RCP cannot prove who authorized the wake. Start a new Work turn or "
+                    "Experiment Run to continue."
+                )
+            else:
+                try:
+                    authorizers = [
+                        self._authorized_human_snapshot(by_operation[operation_id])
+                        for operation_id in origin_ids
+                    ]
+                except RuntimeError:
+                    diagnostic = (
+                        "Automatic watcher wake stopped: an originating task has an invalid "
+                        "human authorizer snapshot, so RCP cannot prove who authorized the "
+                        "wake. Start a new Work turn or Experiment Run to continue."
+                    )
+                else:
+                    if any(authorizer is None for authorizer in authorizers):
+                        diagnostic = (
+                            "Automatic watcher wake stopped: an originating task predates "
+                            "durable human attribution, so RCP cannot prove who authorized the "
+                            "wake. Start a new Work turn or Experiment Run to continue."
+                        )
+                    else:
+                        authorized_by = authorizers[0]
+                        assert authorized_by is not None
+                        if any(authorizer != authorized_by for authorizer in authorizers[1:]):
+                            diagnostic = (
+                                "Automatic watcher wake stopped: the originating tasks have "
+                                "different human authorizers, so RCP cannot choose one. Start a "
+                                "new Work turn or Experiment Run to continue."
+                            )
+                        else:
+                            return authorized_by, None
+
+            assert diagnostic is not None
+            timestamp = self.now()
+            cursor = connection.execute(
+                f"""
+                UPDATE watchers
+                SET status = 'stopped', notified = 1, next_check_at = NULL,
+                    stop_reason = ?, stopped_at = COALESCE(stopped_at, ?)
+                WHERE watcher_id IN ({placeholders})
+                  AND status IN ('completed', 'degraded')
+                  AND notified = 0 AND notification_operation_id IS NULL
+                """,
+                [diagnostic, timestamp, *ids],
+            )
+            if cursor.rowcount != len(ids):
+                raise RuntimeError(
+                    "Watcher delivery changed during its authorizer terminalization."
+                )
+
+            episode_ids = sorted(
+                {
+                    item.experiment_episode_id
+                    for item in watchers
+                    if item.experiment_episode_id is not None
+                }
+            )
+            if episode_ids:
+                episode_placeholders = ",".join("?" for _ in episode_ids)
+                connection.execute(
+                    f"""
+                    UPDATE experiment_episodes
+                    SET session_diagnostic = ?, updated_at = ?
+                    WHERE episode_id IN ({episode_placeholders})
+                    """,
+                    [diagnostic, timestamp, *episode_ids],
+                )
+            return None, diagnostic
+
     def _validate_watcher_notification_members(
         self,
         connection: sqlite3.Connection,
@@ -3857,6 +4633,20 @@ class AppStore:
                 (operation_id,),
             ).fetchone()
         return self._agent_task_record(row) if row else None
+
+    def agent_task_authorizer(self, operation_id: str) -> AuthorizedHuman | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT authorized_space_id, authorized_user_id, authorized_display_name
+                FROM graph_runs
+                WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        return self._authorized_human_snapshot(row)
 
     def claim_agent_task_graph_repair(self, operation_id: str) -> AgentTaskRecord:
         """Atomically consume one rejected Work result's manual repair eligibility."""
@@ -5238,6 +6028,10 @@ class AppStore:
     def _agent_task_record(self, row: sqlite3.Row) -> AgentTaskRecord:
         data = dict(row)
         recovery_abandoned = bool(data.pop("recovery_abandoned", False))
+        data["authorized_by"] = self._authorized_human_snapshot(data)
+        data.pop("authorized_space_id", None)
+        data.pop("authorized_user_id", None)
+        data.pop("authorized_display_name", None)
         data["request"] = json.loads(data.pop("request_json"))
         result_json = data.pop("result_json", None)
         data["result"] = json.loads(result_json) if result_json else None
@@ -5270,6 +6064,27 @@ class AppStore:
             status in {"paused", "interrupted", "failed"} and not active and not recovery_abandoned
         )
         return AgentTaskRecord.model_validate(data)
+
+    @staticmethod
+    def _authorized_human_snapshot(
+        row: sqlite3.Row | dict[str, object],
+    ) -> AuthorizedHuman | None:
+        values = {
+            "space_id": row["authorized_space_id"],
+            "user_id": row["authorized_user_id"],
+            "display_name": row["authorized_display_name"],
+        }
+        present = {name for name, value in values.items() if value is not None}
+        if not present:
+            return None
+        if len(present) != len(values):
+            raise RuntimeError(
+                "Agent task authorizer snapshot is partial; refusing to infer identity."
+            )
+        try:
+            return AuthorizedHuman.model_validate(values)
+        except ValueError as exc:
+            raise RuntimeError("Agent task authorizer snapshot is invalid.") from exc
 
     @staticmethod
     def _agent_usage_record(row: sqlite3.Row) -> AgentUsageRecord:

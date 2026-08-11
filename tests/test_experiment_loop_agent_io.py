@@ -8,9 +8,8 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.experiment_loop_prompt import experiment_loop_wake_message
-from rcp.api import create_app
 from rcp.background import AgentTaskExecution
-from rcp.core.models import Patch
+from rcp.core.models import AuthorizedHuman, Patch
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
@@ -31,7 +30,8 @@ from rcp.storage import (
     WatcherRecord,
 )
 
-from .helpers import seed_patch
+from .helpers import append_fixture_patch, seed_patch
+from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/native-wake"
 
@@ -156,6 +156,10 @@ def _execution(
     retry_feedback: tuple[str, ...] = (),
 ) -> AgentTaskExecution:
     now = store.now()
+    owner = store.local_owner
+    assert owner is not None
+    if owner.display_name is None:
+        owner = store.rename_space_user(owner.user_id, "Test researcher")
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -170,6 +174,11 @@ def _execution(
             parent_operation_id=parent_operation_id,
             native_session_id=request.session_id,
             stage_root=stage_root,
+            authorized_by=AuthorizedHuman(
+                space_id=store.space_id,
+                user_id=owner.user_id,
+                display_name=owner.display_name,
+            ),
         )
     )
     store.record_agent_task_receipt(
@@ -256,8 +265,8 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     assert project_id is not None
     episode_id = "00000000-0000-4000-8000-000000000095"
@@ -601,8 +610,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     assert project_id is not None
     store: AppStore = app.state.background_tasks.store
@@ -796,8 +805,8 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     assert project_id is not None
     store: AppStore = app.state.background_tasks.store
@@ -880,8 +889,8 @@ async def test_unbound_initial_handoff_does_not_claim_provider_switch_recovery(
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     assert project_id is not None
     store: AppStore = app.state.background_tasks.store
@@ -932,8 +941,8 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     assert project_id is not None
     store: AppStore = app.state.background_tasks.store

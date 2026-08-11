@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.38
+**Version:** 0.43
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,27 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.43** — distinguished first and later Experiment episode starts by episode
+  history, preserved pinned historical invocation budgets beside the current
+  next-episode limit, and made concise graph nodes point to useful durable
+  repository artifacts while reopening completed Experiments that gain new work.
+- **0.42** — made project-identity adoption resume safely across native chat
+  workspaces, temporary attachment metadata, and interrupted display-cache
+  publication; bounded human display names as one-line 120-character labels;
+  made unverifiable legacy watcher authority stop once with a durable diagnostic;
+  and named the shared canonical counter as a project revision in the UI.
+- **0.41** — polled every open project tab's display cache while the app is
+  visible, with a three-second per-project remote-probe cap, one-second active
+  observation, visibility-resume sweep, and background rebase of retained
+  inactive-tab drafts while tab activation remains cache-only.
+- **0.40** — made personal versus team an immutable stored space fact; gave
+  projects a durable canonical identity and one writable home through visible
+  system-produced creation or adoption revisions; and defined durable human
+  identity plus portable base attribution for human and ordinary-agent Patches.
+- **0.39** — gave every personal and team space one durable random `space_id`
+  stored in its SQLite control plane, distinct from both transient process
+  identity and path-derived data-directory identity, and preserved it across
+  restart, address changes, upgrades, and complete data-directory relocation.
 - **0.38** — made project-tab activation entirely cache-backed while a
   lock-free remote-head probe triggers single-flight reconciliation in the
   background; preserved staged node and paper edits across canonical movement
@@ -152,10 +173,38 @@ may evolve behind those commitments.
 
 ## Project, repository, and state boundary
 
+A **space** is the durable RCP authority domain stored in one SQLite control
+plane. Every personal or team space mints one random `space_id` exactly once;
+an older database receives one through an additive migration. That id survives
+backend restart, address or port changes, upgrades, machine replacement, and
+relocation or authorized restoration of the complete data directory.
+
+`space_id` is not the transient process `instance_id` and is not the
+path-derived `data_dir_id`. A new process changes the first, moving the data
+directory changes the second, and neither event changes the space. Copying or
+restoring the complete control plane also copies the authority id; the id alone
+cannot prove that another restored copy is offline, so exclusive recovery
+remains an operator responsibility.
+
+Every space also stores one immutable `personal | team` kind beside its id.
+Existing installations migrate to `personal`; creating a team space selects
+`team` explicitly. The kind is never guessed from process ownership, host,
+path, credentials, or user count, and restart or relocation cannot change it.
+
 A project has a manifest, one global graph, a guarded project truth scope, and
 exactly one canonical state repository. The state repository may be local or
 remote. Its `.research/` directory contains append-only Patch history and
 materialized outputs.
+
+The project carries a random durable `project_id` and its current
+`home_space_id` in canonical Patch history. Creation or legacy adoption appends
+one visible identity revision without changing research-graph semantics. The
+project id never derives from its name, state host, or repository path and
+never changes. The home is the sole space whose ordinary backend may register
+or write the project; a different space refuses registration rather than
+inventing a read-only catalog mode or a second identity. Low-level replay stays
+space-neutral for recovery and forensics and never consults local admission
+state.
 
 Repository membership and run focus are different:
 
@@ -247,9 +296,33 @@ or glossary-authority questions stay in
 [`open-questions.md`](open-questions.md), not in agent prompts or opportunistic
 implementation changes.
 
+An already-registered legacy project without a nameplate is adopted
+automatically into that registration's current space. A separately discovered
+legacy repository requires explicit confirmation before the first canonical
+claim. The append lock makes that first claim authoritative; reopening is
+idempotent, and no prior Patch is edited. The catalog atomically migrates its
+operational rows to the canonical random id and retains the prior derived id as
+a one-release alias for old URLs and durable task, chat, paper, and watcher
+references. A canonical claim that committed before an operational migration
+failure is resumed from the recorded identity rather than duplicated.
+The migration preserves the exact saved native-session workspace instead of
+deriving a new one from the replacement id, rekeys temporary attachment sets,
+and converges after interruption when a deterministically identical display
+cache was already published.
+
 ## Human and agent authority
 
 Agents assert research structure. Humans hold semantic authority.
+
+Every human in a space has one random immutable `user_id` and a mutable display
+name. Names are single-line labels of at most 120 characters, not identity, and
+duplicate names are legal. A personal space owns one durable local human
+identity with no team credential; that person chooses an explicit RCP display
+name before the first newly attributed write.
+RCP never guesses it from the operating-system account. A team request derives
+the acting user from trusted server admission and never accepts a user id from
+the request body. Full enrollment, credentials, and browser-session lifecycle
+remain outside this basic identity contract.
 
 Only human actions may:
 
@@ -342,6 +415,24 @@ operations, authoring provenance, and revision metadata. Materialized
 `graph.json`, `research.md`, `glossary.json`, `proposals.json`, and related files
 are derived outputs and are never hand-edited.
 
+Patch `producer` is `human`, `agent`, or the reserved `system`. `system` is
+legal only for RCP-owned identity and migration revisions; agents and ordinary
+requests cannot select it. The legacy `author` field keeps its existing
+human-or-agent meaning, and materialized `created_by` values do not widen.
+
+Every newly admitted human or ordinary-agent research Patch snapshots its root
+authorizer as `{space_id, user_id, display_name}`. An ordinary-agent Patch also
+records `profile="ordinary"` and the direct producing task id. RCP supplies this
+block after admission; neither the request nor agent output controls it. A name
+change affects only future snapshots. Legacy Patches remain valid and render as
+unattributed, and replay never loads users, memberships, tasks, or credentials.
+An automatic watcher wake inherits one exact human-authorizer snapshot from its
+originating task set. If a legacy or missing task leaves that authority
+unprovable, or the set names different people, RCP stops the ready watcher unit
+with a durable visible diagnostic; it never guesses a person or retries forever.
+Campaign, orchestrator, parent-task, and worker lineage is a later additive
+contract rather than part of base attribution.
+
 Patch publication is atomic. Human Sync publishes one visible batch directory.
 Agent graph runs write exactly one semantic `patch.json` in RCP-owned scratch;
 RCP supplies patch kind, author, revision, run scope, Proposal dependencies,
@@ -388,6 +479,20 @@ produces, which downstream Decision that Evidence `informs` or Blocker it
 precursor Experiment and Evidence handoff. Edge directions and node prose must
 tell the same causal story; a downstream output must not be attached backward
 as its precursor's input.
+
+Any graph-writing task that creates or materially updates a node also keeps the
+node a concise index into useful durable work. When a design, plan, TODO, result,
+or handoff file already exists in a run-scope repository, or the task naturally
+produces one there, the appropriate node prose fields name its exact
+repository-relative path and explain the file's purpose. This guidance never
+requires a ceremonial file, reaches outside run-scope repositories, or widens
+the task's existing node, field, edge, or graph authority.
+
+A material update that introduces new work to an Experiment whose `status` is
+`completed` must, in the same Patch, reopen it to the appropriate nonterminal
+status and refresh `current_summary` and `next_action` to describe the resulting
+state and next step. This is a coherence requirement inside existing Patch
+authority, not a new authority path.
 
 Each such pass also receives an RCP-staged validator client and exact command.
 It checks the current `patch.json` against live canonical state through a
@@ -650,7 +755,7 @@ work remains in its system and requests a wake of the conversation that armed it
 
 ### Readiness and loop invocation budget
 
-An Experiment's **Run** action is available only when:
+An Experiment's episode-start action is available only when:
 
 1. every `governed_by` Decision is decided with a selected option;
 2. none of those Decisions has a pending Proposal;
@@ -659,15 +764,25 @@ An Experiment's **Run** action is available only when:
    queued/running task or a live/pending watcher.
 
 Readiness is derived and never reads `Experiment.status`. Ordinary Work remains
-available while Run is disabled. The active marker suppresses duplicate loops
-but is not a repository lease.
+available while the episode-start action is disabled. The active marker
+suppresses duplicate loops but is not a repository lease.
 
-A human pressing Run starts one bounded Experiment-loop episode with a durable
-episode id and invocation 1. Every attributed watcher wake consumes one further
-unit of the human-set `invocation_ceiling`. The button itself creates no semantic
-`ExperimentAttempt`; the agent records and closes attempts only when that is
-useful scientific bookkeeping. Attempt status never gates Run, advances the
-counter, identifies a watcher, or resets an episode.
+Before any episode exists for the Experiment, the action reads **Start episode**.
+Once any prior episode exists, every later human episode-start action reads
+**Start new episode**. This label depends only on episode history, never on
+semantic `Experiment.status` or the latest episode's outcome.
+
+Activating either label starts one bounded Experiment-loop episode with a durable
+episode id, invocation 1, and the current node `invocation_ceiling` pinned as
+that episode's ceiling. Every attributed watcher wake consumes one further unit
+of the pinned ceiling. A prior completed episode retains its own used / ceiling
+values as immutable operational history even if the node setting later changes.
+Runs and the node drawer separately show the current node value as **Next episode
+limit**; that prospective value never repaints historical episode budgets, and
+the next episode pins it when invocation 1 starts. The start action itself
+creates no semantic `ExperimentAttempt`; the agent records and closes attempts
+only when that is useful scientific bookkeeping. Attempt status never gates an
+episode start, advances the counter, identifies a watcher, or resets an episode.
 
 Provider-task Resume and Retry retain the episode id and invocation number of
 the interrupted or failed turn. Live Patch validation, in-session Patch
@@ -696,10 +811,10 @@ the loop's authority beyond its own Experiment.
 
 Every episode has exactly one active validated native-session binding at a
 time: provider, session id, execution host, and the exact reusable chat stage. A
-human Run always
-starts a fresh episode and a fresh native session — including Proposal or Blocker
-resolution, invocation-limit reauthorization, and restart after **Stop loop** —
-so native context never grows across a human authority boundary. An automatic
+human episode start always creates a fresh episode and a fresh native session —
+including Proposal or Blocker resolution, invocation-limit reauthorization, and
+restart after **Stop loop** — so native context never grows across a human
+authority boundary. An automatic
 watcher wake instead resumes that binding: it is a new durable RCP task with
 `trigger="watcher"`, the next invocation number, its own answer and handoff, and
 an explicit `watcher_wake` continuation cause that is not task Resume. Task
@@ -761,9 +876,10 @@ created. Stop never cancels the current task, kills external work, deletes a
 watcher, edits Experiment status, creates or closes an attempt, or discards a
 valid Patch. Task Resume and Retry remain recovery of the already-authorized
 turn but can never clear the stop intent or reenable automatic delivery, and a
-fresh human Run stays disabled until the turn resolves. The next Run starts a
-fresh episode whose staged watcher state includes the stopped episode's records
-as inspectable context with no delivered trigger.
+fresh human episode start stays disabled until the turn resolves. The next
+**Start new episode** action creates a fresh episode whose staged watcher state
+includes the stopped episode's records as inspectable context with no delivered
+trigger.
 
 Recovery of a bound episode never silently falls back to a fresh provider
 session. If RCP proves the pinned session, exact stage, or continuation context
@@ -773,23 +889,25 @@ machine and episode context remain usable. A subsequent or already-persisted
 **Stop loop** may abandon only recovery of that
 already-terminal task, with a durable receipt and all task, Patch, watcher, and
 event history preserved; it terminalizes compatible watchers and settles so the
-next human Run can establish a new authority boundary. An in-flight graph repair
-that was created before Stop remains part of the authorized turn and may finish,
-but Stop prevents launching a new repair from an old rejected result.
+next human episode start can establish a new authority boundary. An in-flight
+graph repair that was created before Stop remains part of the authorized turn and
+may finish, but Stop prevents launching a new repair from an old rejected result.
 
 When the current episode reaches `invocation_ceiling`, RCP starts no automatic
 wake. Completed ungrouped watchers and ready groups remain visibly pending and
-unconsumed. The next human Run starts a fresh episode and, when a compatible
-watcher or group is pending, atomically claims and delivers it as invocation 1
-with its original attribution. This is the only counter reset; creating or
-resolving a Proposal does not reset or resume the loop by itself.
+unconsumed. The next human **Start new episode** action creates a fresh episode
+and, when a compatible watcher or group is pending, atomically claims and
+delivers it as invocation 1 with its original attribution. This is the only
+counter reset; creating or resolving a Proposal does not reset or resume the
+loop by itself.
 
 Debug bookkeeping precommits a mechanical fault, change, and predicted effect
 when the agent chooses to record a debug attempt. Scientific disappointment is
 not a mechanical fault. Optional completion criteria are pinned and shown for
 interpretation but never mechanically control start, retry, or exit. A Proposal,
 Blocker, or other human-authority pause is an exit from the current episode;
-after resolution, a human Run starts the next authorized episode.
+after resolution, a human **Start new episode** action starts the next authorized
+episode.
 
 ### Experiment-loop context
 
@@ -814,16 +932,17 @@ fallback wording. A missing or inconsistent Experiment, episode, invocation,
 pinned ceiling, decision bundle, or watcher binding fails closed before provider
 launch; RCP never substitutes semantic attempt counts or a generic Work contract.
 
-An initial Run is marked as the beginning of an episode. A watcher wake resumes
-the episode's native session and distinguishes the delivered coalesced watcher
-set or immutable watcher group from other active, degraded, completed, or stopped
-Experiment watchers. It never interprets one completion as an attempt boundary. Resume and Retry preserve the
-original objective and binding but receive a compact live control file before
-acting. Patch and watcher corrections receive only the retained contract,
-current output paths, and exact diagnostics needed to repair their deliverable.
-When a human Run reauthorizes pending completion, the phase explicitly names
-human reauthorization: it is invocation 1 of the new episode while the staged
-watcher records retain their older origin provenance.
+An initial episode start is marked as the beginning of an episode. A watcher wake
+resumes the episode's native session and distinguishes the delivered coalesced
+watcher set or immutable watcher group from other active, degraded, completed,
+or stopped Experiment watchers. It never interprets one completion as an attempt
+boundary. Resume and Retry preserve the original objective and binding but
+receive a compact live control file before acting. Patch and watcher corrections
+receive only the retained contract, current output paths, and exact diagnostics
+needed to repair their deliverable.
+When a human **Start new episode** action reauthorizes pending completion, the
+phase explicitly names human reauthorization: it is invocation 1 of the new
+episode while the staged watcher records retain their older origin provenance.
 The validator receives the immutable Experiment, episode, and pinned-decision
 binding and validates against live canonical state; it receives no conversational
 context. No additional loop-context validation layer exists: atomic invocation
@@ -940,7 +1059,7 @@ or invocation, so ready work from different invocations and arming conversations
 on the same Experiment can share one wake while retaining individual
 provenance. The transaction proves that the queued task still matches the
 watchers' project, node, live episode, and check execution host. It
-also distinguishes an automatic next invocation from a human Run that
+also distinguishes an automatic next invocation from a human episode start that
 reauthorizes pending completion as invocation 1 of a fresh episode. A wake never
 occupies the human message slot, never mechanically creates or closes an
 `ExperimentAttempt`, and never widens its bound Patch policy. It consumes one
@@ -1097,10 +1216,12 @@ graceful takeover after recoverable work is paused.
   state winning. Accepted and contested Blockers leave **Needs action** after
   Sync without being operationally resolved.
   An Experiment-loop task is the deliberate exception to the chat exclusion
-  because its Patch kind and control node make it research execution. Pressing an
-  Experiment's Run navigates here and opens its run detail rather than a floating
-  node-chat window. That detail reports loop health, current activity, invocation
-  budget, watcher health and provenance, and each immutable watcher group as its
+  because its Patch kind and control node make it research execution. Activating
+  an Experiment's **Start episode** or **Start new episode** action navigates here
+  and opens its run detail rather than a floating node-chat window. That detail
+  reports loop health, current activity, each episode's pinned invocation budget,
+  the current node's separate **Next episode limit**, watcher health and
+  provenance, and each immutable watcher group as its
   own operational unit with per-status summary, member status, and degraded-error
   detail. It reports resolved execution with native-session continuity and the
   Experiment's meaning. Failed or paused loop turns expose direct **Retry
@@ -1116,6 +1237,14 @@ graceful takeover after recoverable work is paused.
 - **History/Agent tasks** retains complete operational attempts, continuations,
   diagnostics, provider identity, graph outcomes, and versions of staged
   packages.
+
+History labels the canonical list **Project revisions**. Project creation and
+legacy adoption appear there as **Project created in _space_** and **Project
+identity adopted in _space_**, produced by RCP rather than a human or agent.
+New human and ordinary-agent revisions show the stored authorizer-name snapshot;
+older revisions say **Unattributed** and are never repainted after a rename. An
+unnamed personal owner who begins a Patch-capable action gets one compact naming
+prompt; cancelling preserves the draft or run form and starts no write.
 
 Glossary terms already in history render as best-effort whole-term inline
 definitions in node prose, chat answers, and Proposals. There is no standalone
@@ -1175,6 +1304,14 @@ assembly, run policies, transport, history, graph validation, paper storage,
 skills, and web views remain explicit module boundaries documented in
 [`../AGENTS.md`](../AGENTS.md).
 
+SQLite is the authority for `space_id`, immutable space kind, current human
+records, and catalog aliases. Store initialization creates or migrates this
+identity transactionally and never remints a malformed or
+missing-after-initialization value silently. `/api/health` reports `space_id`,
+space kind, process `instance_id`, and path-derived `data_dir_id` separately so
+callers never substitute one lifecycle for another. Canonical Patch history,
+not SQLite, owns portable project identity, home, and attribution snapshots.
+
 Pydantic models are the schema layer. Agent-facing schemas are strict. Limits,
 timeouts, retention windows, and cache bounds live in central configuration;
 schema constants remain next to the model contract they constrain.
@@ -1184,13 +1321,20 @@ Quit, backend ownership, packaging, and update behavior follow their acceptance
 scenarios and must preserve resumability and ownership truth.
 
 Activating a project tab renders its bounded per-project frontend cache and the
-backend display snapshot without waiting on remote I/O. While that tab is
-visible, a bounded lock-free remote-head probe asks only whether the canonical
-patch log moved. A changed head starts one background reconciliation for that
-project; an unchanged or transiently unavailable probe neither takes the
-canonical lock nor copies state. Snapshot freshness and the last successful
-remote synchronization time remain explicit, and revision and generation guards
-prevent an older result from replacing newer cached state.
+backend display snapshot without starting or waiting on remote I/O. While the
+app is visible, every open project tab sends a cache-only heartbeat at least
+every three seconds, the active tab observes the completed cached revision once
+per second, and returning from hidden state immediately sweeps all open tabs.
+Heartbeats may schedule a bounded lock-free remote-head probe, capped at one
+single-flight probe per project every three seconds, which asks only whether the
+canonical patch log moved. A changed head starts one background reconciliation
+for that project; an unchanged or transiently unavailable probe neither takes
+the canonical lock nor copies state. When an inactive tab's display snapshot
+advances, its bounded frontend cache and retained human draft reconcile without
+rendering the tab or disturbing its tasks, chats, selection, view, or scroll.
+Snapshot freshness and the last successful remote synchronization time remain
+explicit, and revision and generation guards prevent an older result from
+replacing newer cached state.
 
 Reconciliation preserves client-side human drafts. A staged node whose canonical
 revision did not move stays committable. One that moved is behind and excluded

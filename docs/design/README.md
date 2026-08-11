@@ -59,6 +59,7 @@ would otherwise make them look like local choices.
 ## Acceptance scenarios
 
 The promises above are being turned into scenarios in
-[`../acceptance/`](../acceptance/README.md): S95–S105. They are `pending` and
-not yet human-confirmed, and no implementation should begin against them until
-they are.
+[`../acceptance/`](../acceptance/README.md). S97 and S99, plus their narrower
+S111–S112 prerequisites, were implemented and passed on 2026-08-11. The
+remaining team-space and campaign scenarios are still proposals and do not
+authorize implementation.

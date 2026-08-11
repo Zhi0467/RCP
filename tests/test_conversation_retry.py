@@ -8,12 +8,19 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
-from rcp.api import create_app
 from rcp.runs.coach import stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.work import stream_work_run
 
-from .helpers import agent_patch_json, refresh_patch, seed_patch
+from .helpers import (
+    agent_patch_json,
+    append_fixture_patch,
+    refresh_patch,
+    seed_patch,
+)
+from .helpers import (
+    create_named_app as create_app,
+)
 
 
 class _FailThenSucceedLauncher:
@@ -150,7 +157,7 @@ def _assert_retry_receipt(app, operation_id: str) -> None:
 def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     failure = "Discuss provider lost its response stream after reading the node."
     objective = "Explain why this hypothesis is still proposed."
     launcher = _FailThenSucceedLauncher(failure)
@@ -191,7 +198,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
 def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     failure = "Work provider disconnected after an external submission may have completed."
     objective = "Submit the bounded run once and report its result."
@@ -265,7 +272,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     failure = "Work provider failed before returning its graph reflection."
     retried_patch = refresh_patch("rq/retry-applied-live").model_copy(update={"kind": "work"})
     launcher = _FailThenSucceedLauncher(
@@ -300,7 +307,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
     failed = _wait_for_task(client, project_id, started.json()["operation_id"])
     assert failed["status"] == "failed"
 
-    service.history.append(refresh_patch("rq/landed-before-work-retry"))
+    append_fixture_patch(service, refresh_patch("rq/landed-before-work-retry"))
     retried_response = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry"
     )
@@ -310,7 +317,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
     assert retried["status"] == "succeeded"
     graph_update = retried["result"]["graph_update"]
     assert graph_update["status"] == "applied"
-    assert graph_update["applied_revision"] == 3
+    assert graph_update["applied_revision"] == 4
     assert "rq/landed-before-work-retry" in service.history.state().nodes
     assert "rq/retry-applied-live" in service.history.state().nodes
 
@@ -318,7 +325,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
 def test_cross_provider_work_retry_uses_a_fresh_retry_contract(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     failure = "The first provider disconnected after a submission may have completed."
     objective = "Check whether the bounded run landed before taking any further action."
     launcher = _FailThenSucceedLauncher(failure)

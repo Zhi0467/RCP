@@ -91,6 +91,17 @@ def _assert_base_authoring_guidance(contract: str) -> None:
     assert "state that plainly in the final answer, name the missing vocabulary" in compact
     assert "continue with the records that can be expressed" in compact
     assert "Do not create a node for the gap" in compact
+    assert "For any node type in an already-authorized graph-writing task" in compact
+    assert "exact repository-relative path and its purpose" in compact
+    assert "Prefer a useful existing document" in compact
+    assert "never create a ceremonial file merely to satisfy this guidance" in compact
+    assert "Preview artifacts are temporary, not durable substitutes" in compact
+    assert "does not authorize a repository change, graph change, node, or field" in compact
+    assert "material change introduces ordinary new work into an Experiment" in compact
+    assert "reopen it to an appropriate nonterminal status" in compact
+    assert "refresh its `current_summary` and `next_action`" in compact
+    assert "A clarification that introduces no new work need not reopen" in compact
+    assert "does not itself authorize editing an Experiment" in compact
     assert "Project Settings" not in contract
     assert "Ambiguity" not in contract
     assert "may neither apply nor propose `set_ontology`" in contract
@@ -769,6 +780,24 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "do not invent a watcher" in compact.casefold()
     assert "Never set the focused Experiment to `completed`" in contract
     assert "until `next_action` can truthfully be null" in contract
+    assert "exact repository-relative path and its purpose" in compact
+    assert "only in an appropriate field this contract already allows you to write" in compact
+    assert (
+        "newly appended or validly closed attempt record, `current_summary`, or `next_action`"
+        in compact
+    )
+    assert "Prefer a useful existing document" in compact
+    assert "Preview artifacts are temporary, not durable substitutes" in compact
+    assert "Do not change an immutable attempt field, an Experiment design field" in compact
+    assert "newly authorized material work remains" in compact
+    assert "reopen it to an honest nonterminal status" in compact
+    assert "A clarification that introduces no work need not reopen it" in compact
+    assert (
+        "Do not leave it `completed` or write `[]` merely because it was previously terminal"
+        in compact
+    )
+    assert "use only the watcher handoff exits above" in compact
+    assert "do not alter design fields" in compact
     assert "remaining_invocations` is zero" in contract
     assert "pause automatic delivery until a human presses Run" in compact
     assert "no watcher api to" in contract.casefold()

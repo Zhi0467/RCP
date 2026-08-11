@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
+from rcp.api import create_app
 from rcp.core.models import Patch
+from rcp.history import HistoryManager
 
 _RCP_OWNED_ITEM_FIELDS = {
     "create_nodes": ("nodes", {"standing", "created_rev", "updated_rev"}),
@@ -22,6 +25,29 @@ _RCP_OWNED_ITEM_FIELDS = {
     ),
     "upsert_glossary": ("terms", {"updated_rev"}),
 }
+
+
+def create_named_app(*args: Any, **kwargs: Any):
+    """Create an app whose personal test owner has accepted the write precondition."""
+
+    app = create_app(*args, **kwargs)
+    if app.state.space_kind == "personal":
+        store = app.state.background_tasks.store
+        owner = store.local_owner
+        if owner is not None and owner.display_name is None:
+            store.rename_space_user(owner.user_id, "Test researcher")
+    return app
+
+
+def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):
+    """Prepare canonical graph state without impersonating a production agent task."""
+
+    fixture_history = HistoryManager(service.manifest, service.history.workspace)
+    appended, result = fixture_history.append(patch, **kwargs)
+    # Mirror the cache update that the production manager would have performed
+    # if this test-only legacy fixture had gone through its guarded admission.
+    service.history._remember_accepted_revision(result)
+    return appended, result
 
 
 def agent_patch_json(patch: Patch) -> str:

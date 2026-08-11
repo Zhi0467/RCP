@@ -11,12 +11,12 @@ from fastapi.testclient import TestClient
 
 import rcp.api.app as api_app_module
 from rcp.agents import AgentEvent
-from rcp.api import create_app
-from rcp.core.models import Patch
+from rcp.core.models import AuthorizedHuman, Patch
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, ProjectRecord
 
-from .helpers import seed_patch
+from .helpers import append_fixture_patch, seed_patch
+from .helpers import create_named_app as create_app
 
 
 def _experiment_patch() -> Patch:
@@ -48,6 +48,16 @@ def _experiment_patch() -> Patch:
                 ],
             }
         ],
+    )
+
+
+def _authorized_human(app) -> AuthorizedHuman:
+    owner = app.state.background_tasks.store.local_owner
+    assert owner is not None and owner.display_name is not None
+    return AuthorizedHuman(
+        space_id=app.state.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
     )
 
 
@@ -140,8 +150,8 @@ def _record_loop(
 
 def _seed_indexed_project(app) -> tuple[str, str]:
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(_experiment_patch())
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     old_episode = str(uuid.uuid4())
     current_episode = str(uuid.uuid4())
@@ -187,7 +197,7 @@ def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
 
     cached = client.get(f"/api/projects/{project_id}")
     assert cached.status_code == 200
-    app.state.service.history.append(_update_experiment_summary("Current graph summary."))
+    append_fixture_patch(app.state.service, _update_experiment_summary("Current graph summary."))
 
     def refuse_current_state_read():
         raise AssertionError("landing polling must not read current project history")
@@ -286,7 +296,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     async def update_graph(service, _launcher, _request, _data_dir, *, execution):
         del execution
         await asyncio.to_thread(release.wait)
-        service.history.append(_update_experiment_summary("Refreshed after Work."))
+        append_fixture_patch(service, _update_experiment_summary("Refreshed after Work."))
         yield _event_frame(AgentEvent(event="answer", text="Updated the experiment."))
         yield _event_frame(AgentEvent(event="done"))
 
@@ -320,7 +330,12 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
         mode="work",
         patch_kind="work",
     )
-    task = app.state.background_tasks.start(project_id, "project_chat", request)
+    task = app.state.background_tasks.start(
+        project_id,
+        "project_chat",
+        request,
+        authorized_by=_authorized_human(app),
+    )
     operation["id"] = task.operation_id
     release.set()
     completed = _wait_for_task(store, task.operation_id)
@@ -388,7 +403,12 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
         mode="work",
         patch_kind="work",
     )
-    task = app.state.background_tasks.start(project_id, "project_chat", request)
+    task = app.state.background_tasks.start(
+        project_id,
+        "project_chat",
+        request,
+        authorized_by=_authorized_human(app),
+    )
     completed = _wait_for_task(store, task.operation_id)
 
     assert completed.status == "succeeded"
@@ -415,7 +435,9 @@ def test_versioned_cache_commit_cannot_regress_graph_or_project_summary(
     project_id, _current_episode = _seed_indexed_project(app)
     client = TestClient(app)
     older = client.get(f"/api/projects/{project_id}").json()
-    app.state.service.history.append(_update_primary_question("What is the newest question?"))
+    append_fixture_patch(
+        app.state.service, _update_primary_question("What is the newest question?")
+    )
     state = app.state.service.history.materialize(write_outputs=False).state
     newer = app.state.service.project_snapshot(state=state)
     newer["id"] = project_id
@@ -544,7 +566,9 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
 
     async def update_graph(service, _launcher, _request, _data_dir, *, execution):
         del execution
-        service.history.append(_update_experiment_summary("Graph visible with terminal task."))
+        append_fixture_patch(
+            service, _update_experiment_summary("Graph visible with terminal task.")
+        )
         yield _event_frame(AgentEvent(event="answer", text="Updated the experiment."))
         yield _event_frame(AgentEvent(event="done"))
 
@@ -586,7 +610,12 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
         control_decision_bundle=[],
         control_completion_criteria=["The indexed loop reaches a conclusion."],
     )
-    task = app.state.background_tasks.start(project_id, "node_chat", request)
+    task = app.state.background_tasks.start(
+        project_id,
+        "node_chat",
+        request,
+        authorized_by=_authorized_human(app),
+    )
     assert entered_cache.wait(timeout=1)
 
     running = app.state.background_tasks.store.agent_task(task.operation_id)
@@ -620,7 +649,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
 
     async def update_then_stop(service, _launcher, _request, _data_dir, *, execution):
         del execution
-        service.history.append(_update_experiment_summary(f"Graph before {terminal_event}."))
+        append_fixture_patch(service, _update_experiment_summary(f"Graph before {terminal_event}."))
         yield _event_frame(AgentEvent(event=terminal_event, text=f"Task {terminal_event}."))
 
     monkeypatch.setattr(api_app_module, "stream_work_run", update_then_stop)
@@ -634,7 +663,12 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
         mode="work",
         patch_kind="work",
     )
-    task = app.state.background_tasks.start(project_id, "project_chat", request)
+    task = app.state.background_tasks.start(
+        project_id,
+        "project_chat",
+        request,
+        authorized_by=_authorized_human(app),
+    )
     completed = _wait_for_task(app.state.background_tasks.store, task.operation_id)
 
     assert completed.status == expected_status

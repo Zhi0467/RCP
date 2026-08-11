@@ -32,6 +32,7 @@ from rcp.control import derive_experiment_control_state
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
+    AuthorizedHuman,
     Decision,
     ExperimentDecisionPin,
     GraphState,
@@ -930,7 +931,13 @@ class ProjectService:
             }
         return validated
 
-    def review_node(self, node_id: str, request: ReviewRequest) -> GraphState:
+    def review_node(
+        self,
+        node_id: str,
+        request: ReviewRequest,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> GraphState:
         state = self.history.state()
         self.history.require_writable(state)
         if node_id not in state.nodes:
@@ -943,7 +950,7 @@ class ProjectService:
             ops=[{"op": "set_standing", "node_id": node_id, "standing": request.standing}],
             change_summary=[f"“{node.title}” is now {request.standing}."],
         )
-        _, result = self.history.append(patch)
+        _, result = self.history.append(patch, authorized_by=authorized_by)
         return result.state
 
     def sync_graph(
@@ -951,6 +958,7 @@ class ProjectService:
         request: GraphSyncRequest,
         *,
         active_control_node_ids: set[str],
+        authorized_by: AuthorizedHuman | None = None,
     ) -> GraphState:
         """Commit one project-wide human draft in one canonical transaction."""
 
@@ -975,6 +983,7 @@ class ProjectService:
                     active_control_node_ids=active_control_node_ids,
                 ),
                 expected_revision=request.base_revision,
+                authorized_by=authorized_by,
             )
         except ValueError as exc:
             if "graph changed after this draft began" in str(exc):
@@ -1405,7 +1414,13 @@ class ProjectService:
             for attempt in node.attempts
         ]
 
-    def edit_node(self, node_id: str, request: NodeEditRequest) -> GraphState:
+    def edit_node(
+        self,
+        node_id: str,
+        request: NodeEditRequest,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> GraphState:
         state = self.history.state()
         self.history.require_writable(state)
         node = state.nodes.get(node_id)
@@ -1454,7 +1469,7 @@ class ProjectService:
                 f"Updated human-authored wording for “{request.changes.get('title', node.title)}”."
             ],
         )
-        _, result = self.history.append(patch)
+        _, result = self.history.append(patch, authorized_by=authorized_by)
         return result.state
 
     @staticmethod
@@ -1485,7 +1500,13 @@ class ProjectService:
                 f"cannot be changed: {', '.join(protected)}."
             )
 
-    def decide_proposal(self, proposal_id: str, request: ProposalDecisionRequest) -> GraphState:
+    def decide_proposal(
+        self,
+        proposal_id: str,
+        request: ProposalDecisionRequest,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> GraphState:
         state = self.history.state()
         self.history.require_writable(state)
         proposal = state.proposals.get(proposal_id)
@@ -1540,7 +1561,7 @@ class ProjectService:
                 ],
                 change_summary=[f"The proposal “{proposal.title}” was {request.decision}."],
             )
-        _, result = self.history.append(patch)
+        _, result = self.history.append(patch, authorized_by=authorized_by)
         return result.state
 
     def resolve_agent_profile(

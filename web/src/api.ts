@@ -1,8 +1,10 @@
 import type { ChatAttachmentDescriptor, ProjectCacheMetrics, ProjectSnapshot } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
+type IdentityNameRequiredHandler = () => Promise<boolean>;
 
 let mutationFailureHandler: MutationFailureHandler | null = null;
+let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
 export class ApiError extends Error {
@@ -22,21 +24,36 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
   if (mutation && pinnedInstanceId) headers.set("X-RCP-Instance-ID", pinnedInstanceId);
-  let response: Response;
-  try {
-    response = await fetch(path, {
+  const request = () =>
+    fetch(path, {
       ...init,
       headers,
     });
+  let response: Response;
+  try {
+    response = await request();
   } catch (error) {
     if (mutation) await notifyMutationFailure(path);
     throw error;
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    if (mutation && identityNameIsRequired(response.status, body) && identityNameRequiredHandler) {
+      const originalError = apiError(response.status, body);
+      if (!(await identityNameRequiredHandler())) throw originalError;
+      try {
+        response = await request();
+      } catch (error) {
+        await notifyMutationFailure(path);
+        throw error;
+      }
+      if (response.ok) return response.json() as Promise<T>;
+      const retryBody = await response.json().catch(() => ({ detail: response.statusText }));
+      await notifyMutationFailure(path);
+      throw apiError(response.status, retryBody);
+    }
     if (mutation) await notifyMutationFailure(path);
-    throw new ApiError(detail, response.status);
+    throw apiError(response.status, body);
   }
   return response.json() as Promise<T>;
 }
@@ -49,12 +66,36 @@ export function registerMutationFailureHandler(handler: MutationFailureHandler |
   mutationFailureHandler = handler;
 }
 
+export function registerIdentityNameRequiredHandler(
+  handler: IdentityNameRequiredHandler | null,
+): void {
+  identityNameRequiredHandler = handler;
+}
+
 export function pinApiInstance(instanceId: string | null): void {
   pinnedInstanceId = instanceId;
 }
 
 async function notifyMutationFailure(path: string): Promise<void> {
   if (mutationFailureHandler) await mutationFailureHandler(path);
+}
+
+function identityNameIsRequired(status: number, body: unknown): boolean {
+  if (status !== 428 || !body || typeof body !== "object") return false;
+  const detail = (body as { detail?: unknown }).detail;
+  return (
+    Boolean(detail) &&
+    typeof detail === "object" &&
+    (detail as { code?: unknown }).code === "identity_name_required"
+  );
+}
+
+function apiError(status: number, body: unknown): ApiError {
+  const detail =
+    body && typeof body === "object" && "detail" in body
+      ? (body as { detail: unknown }).detail
+      : undefined;
+  return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
 }
 
 export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics> {

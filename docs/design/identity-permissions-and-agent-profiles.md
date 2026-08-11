@@ -314,10 +314,22 @@ authority.** It must stay legible standalone, forever, on a repository someone
 finds on a disk:
 
 ```text
-authorized_by: { space_id, user_id, display_name }
-profile:       ordinary | orchestrator | null      # null when a human authorized
-task_id, campaign_id                               # join keys to receipts
+producer:      human | agent | system
+authorized_by: { space_id, user_id, display_name } | null
+profile:       ordinary | null
+task_id:       string | null
 ```
+
+`system` is reserved for RCP-owned identity and migration revisions. It is not
+available to an agent or ordinary request and never widens materialized
+`created_by` beyond its legacy human-or-agent meaning.
+
+The confirmed base contract in S99 populates `authorized_by` for every new
+human or ordinary-agent Patch, `profile="ordinary"` for an ordinary-agent
+Patch, and `task_id` with the direct producing task. Human Patches have no
+profile or task id. Campaign and orchestrator fields do not enter the envelope
+until S77, S78, and S113 settle that later lifecycle; current Experiment-loop
+tasks are ordinary.
 
 **Task receipts carry how it was computed**: execution profile, machine,
 provider, model, session id, budget spend, task contract, and resolved scope.
@@ -329,6 +341,8 @@ is what keeps the record truthful after a project moves to another space, where
 consequence as an authorship line in a commit: a name written into append-only
 history can never be removed or corrected, by anyone. That is accepted
 deliberately.
+It is a one-line label capped at 120 characters so a team member cannot amplify
+every future task, Patch, and History response with an unbounded stored value.
 
 Three constraints on the change:
 
@@ -340,9 +354,11 @@ Three constraints on the change:
 - **Replay never requires it.** A patch with no attribution block materializes
   exactly as it does today; renderers show it as an unattributed pre-team
   change rather than guessing or backfilling.
-- **Personal spaces participate.** A personal space mints a `space_id` and its
-  owner has a display name, so a project transferred into a team space arrives
-  with continuous attribution instead of a blank prefix.
+- **Personal spaces participate.** A personal space mints a `space_id` and one
+  durable local-owner `user_id`. Before the first newly attributed write, its
+  owner chooses an explicit RCP display name that warns it will be snapshotted
+  into permanent project history. Reads, Discuss, and the paper coach remain
+  available before then; RCP never guesses from the operating-system account.
 
 This is a stored-graph schema change, not a team API change, though it touches
 `src/rcp/core/models.py` and `web/src/types.ts` and therefore lands serially
@@ -352,7 +368,7 @@ The earlier proposal for an empty Patch signature field is not part of this
 design. Authentication is provided by server admission. Any future signing
 design must not make replay depend on current users or credentials.
 
-## Details to settle before acceptance scenarios
+## Details still to settle after base attribution
 
 The confirmed boundaries above are ready to be turned into smaller design and
 acceptance passes. Those passes still need to specify:
@@ -361,8 +377,9 @@ acceptance passes. Those passes still need to specify:
 - the exact Proposal operation shapes for every permitted modification of an
   existing ResearchQuestion or Hypothesis;
 - whether ordinary and orchestrator profiles are fixed, editable, or versioned;
-- the final immutable provenance schema across task receipts and Patch history;
-- the permission and provenance UI and the campaign HTML report lifecycle; and
+- the campaign, parent-task, and worker extension to the now-settled base Patch
+  attribution fields, plus the final immutable receipt schema;
+- the permission UI and campaign HTML report lifecycle; and
 - how future human or peer-agent messaging consumes budget and authorization.
 
 These details remain with this module rather than as separate entries in the

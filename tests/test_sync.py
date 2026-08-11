@@ -10,14 +10,25 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.api import create_app
 from rcp.core.materialize import apply_valid_patch
-from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, Patch, ValidationMessage
+from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, AuthorizedHuman, Patch, ValidationMessage
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest
 from rcp.storage import AgentTaskRecord
-from tests.helpers import seed_patch
+from tests.helpers import append_fixture_patch, seed_patch
+from tests.helpers import create_named_app as create_app
+
+
+def _authorized_human(app) -> AuthorizedHuman:
+    store = app.state.background_tasks.store
+    owner = store.local_owner
+    assert owner is not None and owner.display_name is not None
+    return AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
+    )
 
 
 def ontology_payload() -> dict[str, object]:
@@ -89,7 +100,8 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
                 ],
             }
         )
-    service.history.append(
+    append_fixture_patch(
+        service,
         Patch(
             kind="refresh",
             author="agent",
@@ -97,7 +109,7 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
             run_truth_scope=["repo-a"],
             repositories_read=["repo-a"],
             ops=ops,
-        )
+        ),
     )
     if not with_proposals:
         return
@@ -151,14 +163,14 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
 def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     node = service.history.state().nodes["rq/learning-after-shift"]
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "nodes": [
                 {
                     "node_id": node.id,
@@ -171,10 +183,10 @@ def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path)
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 2
+    assert response.json()["revision"] == 3
     assert response.json()["nodes"][node.id]["standing"] == "accepted"
     assert response.json()["nodes"][node.id]["title"] == "Learning after a task shift"
-    assert len(service.history.load_patches()) == 2
+    assert len(service.history.load_patches()) == 3
     assert "Learning after a task shift" in (manifest.research_dir / "research.md").read_text(
         encoding="utf-8"
     )
@@ -183,7 +195,7 @@ def test_graph_sync_commits_staged_wording_and_judgment_once(manifest, tmp_path)
 def test_graph_sync_directly_decides_an_ungoverned_decision(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     decision = service.history.state().nodes["dec/evaluation-rule"]
     client = TestClient(app)
@@ -191,7 +203,7 @@ def test_graph_sync_directly_decides_an_ungoverned_decision(manifest, tmp_path) 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "nodes": [
                 {
                     "node_id": decision.id,
@@ -218,7 +230,7 @@ def test_graph_sync_directly_decides_an_ungoverned_decision(manifest, tmp_path) 
 def test_graph_sync_atomically_edits_and_selects_a_decision_option(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     decision = service.history.state().nodes["dec/evaluation-rule"]
     revised_option = "shifted, with the human's additional rationale"
@@ -228,7 +240,7 @@ def test_graph_sync_atomically_edits_and_selects_a_decision_option(manifest, tmp
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "nodes": [
                 {
                     "node_id": decision.id,
@@ -255,7 +267,7 @@ def test_graph_sync_atomically_edits_and_selects_a_decision_option(manifest, tmp
 def test_graph_sync_queues_a_decision_without_claiming_choice_authority(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     decision = state.nodes["dec/evaluation-rule"]
@@ -284,7 +296,7 @@ def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=True)
     before_sync = service.history.state()
     decision = before_sync.nodes["dec/evaluation-rule"]
@@ -293,7 +305,7 @@ def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 3,
+            "base_revision": 4,
             "nodes": [
                 {
                     "node_id": decision.id,
@@ -320,7 +332,7 @@ def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 4
+    assert response.json()["revision"] == 5
     decision_payload = response.json()["nodes"][decision.id]
     assert decision_payload["selected_option"] == "shifted"
     assert decision_payload["status"] == "decided"
@@ -349,7 +361,7 @@ def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     legacy_patch = Patch(
@@ -435,7 +447,7 @@ def test_direct_choice_validator_requires_every_targeted_proposal_withdrawal(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=True)
     state = service.history.state()
     decision = state.nodes["dec/evaluation-rule"]
@@ -492,7 +504,7 @@ def test_direct_choice_validator_requires_every_targeted_proposal_withdrawal(
 def test_graph_sync_rejects_incoherent_direct_decision_choice(manifest, tmp_path, changes) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     decision = service.history.state().nodes["dec/evaluation-rule"]
     client = TestClient(app)
@@ -500,7 +512,7 @@ def test_graph_sync_rejects_incoherent_direct_decision_choice(manifest, tmp_path
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "nodes": [
                 {
                     "node_id": decision.id,
@@ -513,7 +525,7 @@ def test_graph_sync_rejects_incoherent_direct_decision_choice(manifest, tmp_path
 
     assert response.status_code == 422
     assert decision.id in response.text
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
 
 
 def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp_path) -> None:
@@ -525,7 +537,7 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     legacy_proposal = Patch(
@@ -608,7 +620,7 @@ def test_graph_sync_approves_a_legacy_decision_proposal_through_decision_choice(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     legacy_proposal = Patch(
@@ -679,7 +691,7 @@ def test_a_decision_choice_patch_that_does_not_name_the_action_is_refused(
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     decision = state.nodes["dec/evaluation-rule"]
@@ -710,7 +722,7 @@ def test_a_decision_choice_patch_that_does_not_name_the_action_is_refused(
 def test_direct_choice_refuses_a_proposal_withdrawal_without_an_id(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     append_decision_fixture(service, with_proposals=True)
     state = service.history.state()
     decision = state.nodes["dec/evaluation-rule"]
@@ -763,8 +775,9 @@ def test_graph_sync_updates_blocker_lifecycle_directly(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(
+        service,
         Patch(
             kind="refresh",
             author="agent",
@@ -785,9 +798,10 @@ def test_graph_sync_updates_blocker_lifecycle_directly(
                     ],
                 }
             ],
-        )
+        ),
     )
-    service.history.append(
+    append_fixture_patch(
+        service,
         Patch(
             kind="approval",
             author="human",
@@ -799,14 +813,14 @@ def test_graph_sync_updates_blocker_lifecycle_directly(
                     "standing": initial_standing,
                 }
             ],
-        )
+        ),
     )
     blocker = service.history.state().nodes["blk/missing-capacity"]
 
     response = TestClient(app).post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 3,
+            "base_revision": 4,
             "nodes": [
                 {
                     "node_id": blocker.id,
@@ -845,7 +859,7 @@ def test_graph_sync_updates_blocker_lifecycle_directly(
         },
     ]
     assert stored.change_summary == expected_history_sentences
-    assert service.history.revision_summaries(from_revision=4, to_revision=4)[0]["sentences"] == (
+    assert service.history.revision_summaries(from_revision=5, to_revision=5)[0]["sentences"] == (
         expected_history_sentences
     )
 
@@ -855,7 +869,7 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     node = service.history.state().nodes["rq/learning-after-shift"]
     calls: list[tuple[bool, bool]] = []
     materialize = service.history.materialize
@@ -871,7 +885,7 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
 
     state = service.sync_graph(
         GraphSyncRequest(
-            base_revision=1,
+            base_revision=2,
             nodes=[
                 GraphSyncNodeChange(
                     node_id=node.id,
@@ -881,9 +895,10 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
             ],
         ),
         active_control_node_ids=set(),
+        authorized_by=_authorized_human(app),
     )
 
-    assert state.revision == 2
+    assert state.revision == 3
     assert calls == [(False, False), (False, True)]
 
 
@@ -912,16 +927,20 @@ def test_project_service_coalesces_concurrent_index_builds(manifest, tmp_path, m
 def test_graph_sync_withdraws_to_asserted_and_rewrites_research_once(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     node = service.history.state().nodes["rq/learning-after-shift"]
-    service.review_node(node.id, ReviewRequest(standing="accepted"))
+    service.review_node(
+        node.id,
+        ReviewRequest(standing="accepted"),
+        authorized_by=_authorized_human(app),
+    )
     accepted = service.history.state().nodes[node.id]
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "nodes": [
                 {
                     "node_id": node.id,
@@ -933,7 +952,7 @@ def test_graph_sync_withdraws_to_asserted_and_rewrites_research_once(manifest, t
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 3
+    assert response.json()["revision"] == 4
     assert response.json()["nodes"][node.id]["standing"] == "asserted"
     assert (manifest.research_dir / "research.md").read_text(encoding="utf-8") == ""
 
@@ -941,14 +960,14 @@ def test_graph_sync_withdraws_to_asserted_and_rewrites_research_once(manifest, t
 def test_graph_sync_no_net_change_writes_no_patch(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     node = service.history.state().nodes["rq/learning-after-shift"]
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "nodes": [
                 {
                     "node_id": node.id,
@@ -960,26 +979,26 @@ def test_graph_sync_no_net_change_writes_no_patch(manifest, tmp_path) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 1
-    assert len(service.history.load_patches()) == 1
+    assert response.json()["revision"] == 2
+    assert len(service.history.load_patches()) == 2
 
 
 def test_graph_sync_removes_node_and_its_incident_edges(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "removed_node_ids": ["rq/learning-after-shift"],
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 2
+    assert response.json()["revision"] == 3
     assert "rq/learning-after-shift" not in response.json()["nodes"]
     assert response.json()["edges"] == {}
     stored = service.history.load_patches()[-1]
@@ -991,8 +1010,9 @@ def test_graph_sync_removes_node_and_its_incident_edges(manifest, tmp_path) -> N
 def test_graph_sync_removal_preserves_base_revision_conflict(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(
+        service,
         Patch(
             kind="approval",
             author="human",
@@ -1004,14 +1024,14 @@ def test_graph_sync_removal_preserves_base_revision_conflict(manifest, tmp_path)
                     "standing": "contested",
                 }
             ],
-        )
+        ),
     )
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "removed_node_ids": ["rq/learning-after-shift"],
         },
     )
@@ -1019,7 +1039,7 @@ def test_graph_sync_removal_preserves_base_revision_conflict(manifest, tmp_path)
     assert response.status_code == 409
     assert "graph changed after this draft began" in response.json()["detail"]
     assert "rq/learning-after-shift" in service.history.state().nodes
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
 
 
 @pytest.mark.parametrize("same_draft", [False, True])
@@ -1029,8 +1049,9 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.history.append(
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(
+        service,
         Patch(
             kind="refresh",
             author="agent",
@@ -1094,7 +1115,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
                     ],
                 },
             ],
-        )
+        ),
     )
     project_id = app.state.default_project_id
     client = TestClient(app)
@@ -1102,7 +1123,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         decided = client.post(
             f"/api/projects/{project_id}/sync",
             json={
-                "base_revision": 2,
+                "base_revision": 3,
                 "removed_node_ids": ["hyp/replanning-restores-plasticity"],
                 "proposals": [
                     {
@@ -1116,7 +1137,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         removed = client.post(
             f"/api/projects/{project_id}/sync",
             json={
-                "base_revision": 2,
+                "base_revision": 3,
                 "removed_node_ids": ["hyp/replanning-restores-plasticity"],
             },
         )
@@ -1128,7 +1149,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         decided = client.post(
             f"/api/projects/{project_id}/sync",
             json={
-                "base_revision": 3,
+                "base_revision": 4,
                 "proposals": [
                     {
                         "proposal_id": "prop/activate-replanning-hypothesis",
@@ -1139,7 +1160,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         )
 
     assert decided.status_code == 200
-    assert decided.json()["revision"] == 4
+    assert decided.json()["revision"] == 5
     assert (
         decided.json()["proposals"]["prop/activate-replanning-hypothesis"]["status"] == "withdrawn"
     )
@@ -1160,17 +1181,18 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
 def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     service.review_node(
         "rq/learning-after-shift",
         ReviewRequest(standing="accepted"),
+        authorized_by=_authorized_human(app),
     )
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "removed_node_ids": ["rq/learning-after-shift"],
         },
     )
@@ -1184,7 +1206,7 @@ def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> Non
     combined = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 2,
+            "base_revision": 3,
             "nodes": [
                 {
                     "node_id": accepted.id,
@@ -1197,7 +1219,7 @@ def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> Non
     )
     assert combined.status_code == 422
     assert "cannot both change and remove the same node" in combined.text
-    assert service.history.state().revision == 2
+    assert service.history.state().revision == 3
 
 
 def test_graph_sync_request_rejects_duplicate_and_conflicting_removals() -> None:
@@ -1236,7 +1258,7 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
             "status": "running",
         }
     )
-    service.history.append(initial)
+    append_fixture_patch(service, initial)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     now = datetime.now(UTC).isoformat()
@@ -1266,29 +1288,29 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
 
     response = client.post(
         f"/api/projects/{project_id}/sync",
-        json={"base_revision": 1, "removed_node_ids": ["exp/active-loop"]},
+        json={"base_revision": 2, "removed_node_ids": ["exp/active-loop"]},
     )
 
     assert response.status_code == 409
     assert response.json()["detail"] == (
         "Experiment exp/active-loop cannot be removed while its bounded experiment loop is active."
     )
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
 
 
 def test_graph_sync_commits_ontology_as_human_approval_patch(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
-        json={"base_revision": 1, "ontology": ontology_payload()},
+        json={"base_revision": 2, "ontology": ontology_payload()},
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 2
+    assert response.json()["revision"] == 3
     assert response.json()["ontology"] == ontology_payload()
     stored = service.history.load_patches()[-1]
     assert stored.kind == "approval"
@@ -1299,37 +1321,41 @@ def test_graph_sync_commits_ontology_as_human_approval_patch(manifest, tmp_path)
 def test_graph_sync_unchanged_ontology_writes_no_patch(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 1, "ontology": ontology_payload()},
+            json={"base_revision": 2, "ontology": ontology_payload()},
         ).status_code
         == 200
     )
 
     response = client.post(
         f"/api/projects/{project_id}/sync",
-        json={"base_revision": 2, "ontology": ontology_payload()},
+        json={"base_revision": 3, "ontology": ontology_payload()},
     )
 
     assert response.status_code == 200
-    assert response.json()["revision"] == 2
-    assert len(service.history.load_patches()) == 2
+    assert response.json()["revision"] == 3
+    assert len(service.history.load_patches()) == 3
 
 
 def test_graph_sync_refuses_stale_ontology_draft(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
-    service.review_node("rq/learning-after-shift", ReviewRequest(standing="accepted"))
+    append_fixture_patch(service, seed_patch())
+    service.review_node(
+        "rq/learning-after-shift",
+        ReviewRequest(standing="accepted"),
+        authorized_by=_authorized_human(app),
+    )
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
-        json={"base_revision": 1, "ontology": ontology_payload()},
+        json={"base_revision": 2, "ontology": ontology_payload()},
     )
 
     assert response.status_code == 409
@@ -1339,13 +1365,13 @@ def test_graph_sync_refuses_stale_ontology_draft(manifest, tmp_path) -> None:
 def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "ontology": ontology_payload(),
             "custom_nodes": [custom_hypothesis_payload()],
         },
@@ -1354,19 +1380,19 @@ def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(manifest, tmp
     assert response.status_code == 422
     assert "defines and uses a new ontology type" in response.json()["detail"]
     assert "sync the ontology first" in response.json()["detail"].lower()
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
 
 
 def test_graph_sync_does_not_offer_direct_base_node_authoring(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "custom_nodes": [
                 {
                     "id": "hyp/human-base-node",
@@ -1380,19 +1406,19 @@ def test_graph_sync_does_not_offer_direct_base_node_authoring(manifest, tmp_path
 
     assert response.status_code == 422
     assert "base-node authoring is not available" in response.json()["detail"]
-    assert service.history.state().revision == 1
+    assert service.history.state().revision == 2
 
 
 def test_graph_sync_creates_an_asserted_node_of_an_active_custom_type(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 1, "ontology": ontology_payload()},
+            json={"base_revision": 2, "ontology": ontology_payload()},
         ).status_code
         == 200
     )
@@ -1401,7 +1427,7 @@ def test_graph_sync_creates_an_asserted_node_of_an_active_custom_type(manifest, 
     node["standing"] = "accepted"
     response = client.post(
         f"/api/projects/{project_id}/sync",
-        json={"base_revision": 2, "custom_nodes": [node]},
+        json={"base_revision": 3, "custom_nodes": [node]},
     )
 
     assert response.status_code == 200
@@ -1421,20 +1447,20 @@ def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 1, "ontology": ontology_payload()},
+            json={"base_revision": 2, "ontology": ontology_payload()},
         ).status_code
         == 200
     )
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 2, "custom_nodes": [custom_hypothesis_payload()]},
+            json={"base_revision": 3, "custom_nodes": [custom_hypothesis_payload()]},
         ).status_code
         == 200
     )
@@ -1442,11 +1468,11 @@ def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
     response = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 3,
+            "base_revision": 4,
             "nodes": [
                 {
                     "node_id": "mechanism_hypothesis/custom-mechanism",
-                    "base_updated_rev": 3,
+                    "base_updated_rev": 4,
                     "changes": {
                         "extension_fields": {"mechanism": "Replanning refreshes update directions."}
                     },
@@ -1464,7 +1490,7 @@ def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
 def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
     ontology = ontology_payload()
@@ -1482,7 +1508,7 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, 
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 1, "ontology": ontology},
+            json={"base_revision": 2, "ontology": ontology},
         ).status_code
         == 200
     )
@@ -1491,7 +1517,7 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, 
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 2, "custom_nodes": [node]},
+            json={"base_revision": 3, "custom_nodes": [node]},
         ).status_code
         == 200
     )
@@ -1499,7 +1525,7 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, 
     assert (
         client.post(
             f"/api/projects/{project_id}/sync",
-            json={"base_revision": 3, "ontology": ontology},
+            json={"base_revision": 4, "ontology": ontology},
         ).status_code
         == 200
     )
@@ -1507,11 +1533,11 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, 
     omitted = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 4,
+            "base_revision": 5,
             "nodes": [
                 {
                     "node_id": "mechanism_hypothesis/custom-mechanism",
-                    "base_updated_rev": 3,
+                    "base_updated_rev": 4,
                     "changes": {
                         "extension_fields": {"mechanism": "Replanning refreshes update directions."}
                     },
@@ -1525,11 +1551,11 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(manifest, 
     response = client.post(
         f"/api/projects/{project_id}/sync",
         json={
-            "base_revision": 4,
+            "base_revision": 5,
             "nodes": [
                 {
                     "node_id": "mechanism_hypothesis/custom-mechanism",
-                    "base_updated_rev": 3,
+                    "base_updated_rev": 4,
                     "changes": {
                         "extension_fields": {
                             "mechanism": "Replanning refreshes update directions.",
@@ -1657,15 +1683,19 @@ def test_batch_builder_receives_fresh_state_under_append_lock(manifest) -> None:
 def test_graph_sync_refuses_stale_project_draft(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     node = service.history.state().nodes["rq/learning-after-shift"]
-    service.review_node(node.id, ReviewRequest(standing="accepted"))
+    service.review_node(
+        node.id,
+        ReviewRequest(standing="accepted"),
+        authorized_by=_authorized_human(app),
+    )
     client = TestClient(app)
 
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
         json={
-            "base_revision": 1,
+            "base_revision": 2,
             "nodes": [
                 {
                     "node_id": node.id,
@@ -1785,13 +1815,13 @@ def test_graph_sync_refuses_creating_an_already_decided_decision(manifest, tmp_p
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.history.append(seed_patch())
+    append_fixture_patch(service, seed_patch())
     client = TestClient(app)
     project = app.state.default_project_id
 
     ontology = client.post(
         f"/api/projects/{project}/sync",
-        json={"base_revision": 1, "ontology": decision_ontology_payload()},
+        json={"base_revision": 2, "ontology": decision_ontology_payload()},
     )
     assert ontology.status_code == 200, ontology.text
 

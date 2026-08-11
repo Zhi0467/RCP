@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from rcp.agents import ProviderReadiness
 from rcp.api import create_app
 from rcp.config import load_manifest
+from rcp.history import HistoryManager
 from rcp.setup import ProjectSetupRequest, SetupAgents, render_manifest
 
 
@@ -63,7 +64,8 @@ def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:
 
     assert created.status_code == 200
     assert created.json()["name"] == "wizard-paper"
-    assert created.json()["revision"] == 0
+    assert created.json()["revision"] == 1
+    assert created.json()["home_space_id"] == app.state.space_id
     assert created.json()["reachable"] is True
     assert (repository / ".research" / "manifest.toml").is_file()
     assert client.get("/api/projects").json()[0]["id"] == created.json()["id"]
@@ -120,6 +122,43 @@ def test_existing_local_manifest_is_connected_without_overwrite(tmp_path) -> Non
     assert preview.json()["action"] == "connect"
     assert preview.json()["existing_project_name"] == "wizard-paper"
     assert manifest.read_text(encoding="utf-8") == original
+
+
+def test_connect_requires_confirmation_and_names_the_sole_writable_home(
+    manifest,
+    tmp_path,
+) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+    client = TestClient(app)
+    canonical_repository = manifest.repository_map[manifest.state.repository]
+    payload = _local_payload(canonical_repository.path)
+
+    preview = client.post("/api/project-setup/preflight", json=payload)
+
+    assert preview.status_code == 200
+    assert preview.json()["action"] == "connect"
+    canonical_check = next(
+        item for item in preview.json()["checks"] if item["label"] == "Canonical manifest"
+    )
+    assert "active RCP space" in canonical_check["detail"]
+    assert "sole writable home" in canonical_check["detail"]
+    assert not (manifest.research_dir / "patches").exists()
+
+    cancelled = client.post("/api/project-setup/create", json=payload)
+
+    assert cancelled.status_code == 422
+    assert not (manifest.research_dir / "patches").exists()
+
+    payload["confirmed"] = True
+    connected = client.post("/api/project-setup/create", json=payload)
+
+    assert connected.status_code == 200
+    assert connected.json()["home_space_id"] == app.state.space_id
+    patches = HistoryManager(load_manifest(manifest.path)).load_patches()
+    assert len(patches) == 1
+    assert patches[0].kind == "identity"
+    assert patches[0].project_identity is not None
+    assert patches[0].project_identity.action == "adopted"
 
 
 def test_wizard_rejects_blank_name_and_invalid_state_path(tmp_path) -> None:

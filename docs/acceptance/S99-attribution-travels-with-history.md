@@ -1,77 +1,100 @@
 ---
 id: S99-attribution-travels-with-history
-status: pending — not human-confirmed
+status: implemented
 tier: hermetic
-driver: pytest
-covered_by: none
+driver: pytest + browser
+covered_by:
+  - tests/test_identity_patch_contract.py
+  - tests/test_history_attribution.py
+  - tests/test_identity_api.py::test_personal_sync_and_task_records_keep_immutable_identity_snapshots
+  - tests/test_identity_api.py::test_team_sync_and_tasks_use_only_current_trusted_member_snapshot
+  - tests/test_identity_api.py::test_resume_retry_and_repair_capture_the_current_actor_instead_of_parent
+  - tests/test_identity_api.py::test_reopened_poller_terminalizes_legacy_watcher_once_without_wake
+  - web/tests/projectHistory.test.mjs
+  - browser 2026-08-11 — isolated identity prompt, exact task retry, Project revisions
+last_passed: 2026-08-11 — strict admission, replay, API, task, and UI checks
+  preserved immutable authorization snapshots; the served flow retried the exact
+  named task and rendered system history without browser or server errors
 invariants: [1, 2, 3]
 ---
 
-# History says who did it, and still says so somewhere else
+# History says who authorized a change
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Identity, permissions, and agent profiles](../design/identity-permissions-and-agent-profiles.md#provenance).
+This base-attribution scenario was confirmed by the human on 2026-08-11.
+Campaign and orchestrator lineage moved to S113 and is deliberately not implied
+here.
 
-Canonical history can currently record one thing about a human change:
-`"human"`. In a five-person lab that is the entire attribution — nobody can tell
-who chose a Decision, approved a Proposal, or pressed Sync. That breaks on day
-one of a team space, before any project moves anywhere.
+Canonical history currently records only `"human"` or `"agent"`. A team needs
+to know which person authorized a human or ordinary-agent change even after the
+project leaves that space. Each new Patch therefore carries an additive,
+snapshotted attribution block owned by RCP rather than supplied by the agent or
+request body.
 
-Attribution goes into the patch envelope rather than only into task receipts
-because receipts live in SQLite, and SQLite does not travel with a project.
-Opaque ids alone would not survive either: after a transfer, a `user_id` from
-another space is a meaningless string that *looks* like information. So the
-envelope carries a display name snapshotted at append time.
+A human Patch records the authorizing `space_id`, durable `user_id`, and display
+name as it existed when the Patch was appended. An ordinary-agent Patch records
+that same `authorized_by` block, `profile="ordinary"`, and the direct task id.
+It carries no campaign id merely because campaigns may exist later.
 
 ## Setup
 
-A team space with two members, a project both belong to, and existing canonical
-history written before this change. A personal space with one project, for the
-transfer half.
+A team space with two durable human identities who share one project; a personal
+space whose local owner has chosen an explicit RCP display name; existing
+canonical history written before attribution fields existed; and an ordinary
+agent task that produces a Patch.
 
-## Drive — proposal
+## Drive
 
-1. As the first member, choose a Decision option and Sync. As the second, judge
-   a Proposal. Read both patch envelopes.
-2. Run an ordinary agent task that produces a patch, and an orchestrator
-   campaign turn. Read those envelopes.
-3. Read the materialized node fields those patches produced.
-4. Replay the whole project from history with the member records deleted from
-   SQLite.
-5. Read the pre-change patches and the history view that renders them.
-6. Change the second member's display name, then re-read the earlier patches.
-7. Author history in a personal space, transfer that project into the team
-   space, and read the pre-transfer patches from the team space.
+1. As the first team member, choose a Decision option and Sync. As the second,
+   judge a Proposal. Read both Patch envelopes and History entries.
+2. Run the ordinary agent task and read its Patch envelope.
+3. Read the materialized nodes produced by those Patches.
+4. Replay the project after deleting every user record from the operational
+   database.
+5. Read pre-attribution history in History.
+6. Rename the second member, make one new change, and compare both old and new
+   entries.
+7. Make one human and one ordinary-agent change in the personal space.
+8. Reopen an upgraded space with a ready watcher whose legacy origin task has
+   no durable human-attribution snapshot, then poll twice.
 
 ## Assert
 
-- `a_human_authorized_patch_records_space_id_user_id_and_display_name`
-- `an_agent_patch_records_its_profile_and_task_and_campaign_ids`
-- `display_name_is_a_snapshot_and_is_never_re_resolved`
-- `renaming_a_member_does_not_change_earlier_patches`
-- `execution_details_stay_in_receipts_and_not_in_the_envelope`
+- `a_human_patch_snapshots_space_user_and_display_name_at_append`
+- `an_ordinary_agent_patch_records_its_authorizer_profile_and_direct_task_id`
+- `an_agent_cannot_supply_or_replace_canonical_attribution`
+- `a_request_body_cannot_choose_another_users_identity`
+- `renaming_a_member_changes_only_future_patch_snapshots`
+- `execution_details_other_than_direct_task_identity_stay_in_receipts`
 - `legacy_author_field_is_retained_and_unchanged`
 - `materialized_created_by_keeps_its_human_or_agent_values`
 - `a_patch_without_attribution_materializes_exactly_as_before`
-- `pre_change_history_renders_as_unattributed_not_as_a_guess`
+- `legacy_history_is_rendered_as_unattributed_not_as_a_guess`
 - `replay_succeeds_with_no_user_records_present`
-- `a_personal_space_patch_carries_its_space_id_and_owner_display_name`
-- `attribution_authored_before_a_transfer_stays_legible_afterward`
+- `a_personal_space_patch_uses_its_durable_local_owner_identity`
+- `an_unattributable_legacy_watcher_stops_once_with_a_durable_diagnostic`
+- `no_base_attribution_claims_an_orchestrator_or_campaign`
+
+## UI path
+
+History shows the stored display-name snapshot beside each new human or ordinary
+agent revision. Ordinary-agent entries also show that an ordinary task made the
+change without turning its task id into the primary label.
+
+Changing a member's current name does not repaint earlier entries. A legacy
+entry keeps its existing Human or Agent role and adds **Unattributed**; RCP does
+not invent a person.
+
+Before the first newly attributed write in a personal space, RCP asks once for
+an explicit local display name. Reading, Discuss, and the paper coach remain
+available before it is supplied. RCP never guesses from the operating-system
+account name.
 
 ## Boundary
 
-The change is **purely additive**. No historical patch is rewritten, no existing
-field changes meaning, and `created_by` keeps its `"human" | "agent"` values so
-an older client cannot render a person's name where it expects a role word.
+The change is purely additive. No historical Patch is rewritten and
+`created_by` keeps its existing `"human" | "agent"` meaning. Display-name
+snapshots are immutable even if the current member record is renamed or removed.
 
-A name written into append-only history can never be removed or corrected, by
-anyone, including that person. This is the same property a commit authorship
-line has, and it is accepted deliberately rather than inherited by accident. The
-alternative — ids only, resolved live — would keep names correctable at the cost
-of the record going blank the moment the project leaves the space.
-
-This is a stored-graph schema change, not a team API change.
-
-Which lineage the *receipts* must carry, and their final immutable schema,
-remain to be settled; this scenario fixes only the envelope.
+Campaign id, orchestrator profile, parent/worker lineage, and the final immutable
+receipt schema belong to S113 after S77 and S78. Current Experiment-loop tasks
+remain ordinary-agent attribution.

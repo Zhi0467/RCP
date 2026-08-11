@@ -24,7 +24,7 @@ def test_catalog_delete_reclaims_only_app_owned_files_and_persists(manifest, tmp
     data_dir = tmp_path / "app-data"
     store = AppStore(data_dir / "rcp.sqlite3")
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    record = catalog.register(str(manifest.path))
+    record = catalog.register(str(manifest.path), identity_action="adopted")
     repository = Path(manifest.repository_map[manifest.state.repository].path)
     before = _tree_digest(repository)
 
@@ -80,7 +80,7 @@ def test_catalog_delete_reports_remote_cleanup_failure_without_forgetting_projec
     data_dir = tmp_path / "app-data"
     store = AppStore(data_dir / "rcp.sqlite3")
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    record = catalog.register(str(manifest.path))
+    record = catalog.register(str(manifest.path), identity_action="adopted")
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -109,7 +109,7 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
     data_dir = tmp_path / "app-data"
     store = AppStore(data_dir / "rcp.sqlite3")
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    record = catalog.register(str(manifest.path))
+    record = catalog.register(str(manifest.path), identity_action="adopted")
     outside = tmp_path / "repository-owned"
     outside.mkdir()
     marker = outside / "must-remain"
@@ -136,3 +136,24 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
     assert marker.read_text(encoding="utf-8") == "source"
     assert os.path.exists(outside)
     assert store.project(record.project_id) is not None
+
+
+def test_deleted_tagged_project_reregisters_with_canonical_id_and_alias(
+    manifest,
+    tmp_path,
+) -> None:
+    data_dir = tmp_path / "app-data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    first = catalog.register(str(manifest.path), identity_action="adopted")
+    aliases = store.project_aliases()
+    assert len(aliases) == 1
+    old_project_id = next(iter(aliases))
+
+    catalog.delete(first.project_id)
+    restored = catalog.register(str(manifest.path))
+
+    assert restored.project_id == first.project_id
+    assert restored.home_space_id == store.space_id
+    assert store.resolve_project_id(old_project_id) == first.project_id
+    assert catalog.card(old_project_id)["id"] == first.project_id

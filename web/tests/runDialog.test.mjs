@@ -150,7 +150,7 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
     source_refs: [],
     extension_fields: {},
     objective: "Test the mechanism",
-    invocation_ceiling: 3,
+    invocation_ceiling: 7,
     attempts: [
       {
         id: "attempt-1",
@@ -219,11 +219,13 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
   assert.match(html, /Episode invocations/);
   assert.match(html, /2 \/ 3/);
   assert.match(html, /1 remaining/);
+  assert.match(html, /Next episode limit/);
+  assert.match(html, /Next episode limit<\/span><strong>7<\/strong>/);
   assert.match(html, /Active loop/);
   assert.doesNotMatch(html, /Paused at limit/);
   assert.match(html, /Decision decision\/data is still open\./);
   assert.match(html, /decision\/resource moved to 8xA100 after this episode was pinned to 4xA100/);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Run<\/button>/s);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   // Semantic attempts remain visible history but never own loop control.
   assert.match(html, /Train the ablation/);
   assert.doesNotMatch(html, /Stop attempt/);
@@ -231,7 +233,68 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
   assert.match(html, /Ask about this node/);
 });
 
-test("an invocation-limited episode offers a fresh Run for its pending watcher", () => {
+test("a never-run Experiment shows only its next episode limit", () => {
+  const node = {
+    id: "experiment/new",
+    type: "experiment",
+    title: "New experiment",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+    objective: "Test the mechanism",
+    invocation_ceiling: 6,
+    attempts: [],
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  let html;
+  try {
+    html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossaryIndex: { entriesByInitial: new Map() },
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        experimentControl: {
+          ready: true,
+          reasons: [],
+          invocations_used: 0,
+          invocation_ceiling: 6,
+          invocations_remaining: 6,
+          episode_id: null,
+          paused: false,
+          active: false,
+          governing_decisions: [],
+          decision_drift: [],
+        },
+        onClose() {},
+        onBeginEdit() {},
+        onStanding() {},
+        onStage() {},
+        onRunExperiment() {},
+        onOpenChat() {},
+        onExploreRelations() {},
+        onSelectNode() {},
+      }),
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+
+  assert.doesNotMatch(html, /Episode invocations/);
+  assert.doesNotMatch(html, /0 \/ 6/);
+  assert.match(html, /Next episode limit<\/span><strong>6<\/strong>/);
+  assert.match(html, /<button[^>]*>.*Start episode<\/button>/s);
+  assert.doesNotMatch(html, /Start new episode/);
+});
+
+test("an invocation-limited episode offers a new episode for its pending watcher", () => {
   const node = {
     id: "experiment/paused",
     type: "experiment",
@@ -295,10 +358,9 @@ test("an invocation-limited episode offers a fresh Run for its pending watcher",
   }
   assert.match(html, /Paused at limit/);
   assert.match(html, /0 remaining/);
-  assert.match(html, /New episode · pending watcher continues as invocation 1/);
   assert.match(html, /Interpret the pending run/);
-  assert.match(html, /<button[^>]*>.*Run pending wake<\/button>/s);
-  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Run pending wake<\/button>/s);
+  assert.match(html, /<button[^>]*>.*Start new episode<\/button>/s);
+  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.doesNotMatch(html, /Stop watcher/);
 });
 

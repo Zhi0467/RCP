@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.core.models import AuthorizedHuman
 from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
@@ -17,6 +18,7 @@ from rcp.storage import (
     ChatSessionContextRecord,
     ExperimentLoopRuntime,
     ProjectRecord,
+    SpaceUserRecord,
     WatcherContinuation,
     WatcherRecord,
 )
@@ -52,6 +54,323 @@ def _task(store: AppStore, project_id: str, operation_id: str, status: str) -> N
 def _snapshot(value: str) -> tuple[str, str]:
     content = json.dumps({"value": value}, separators=(",", ":"), sort_keys=True)
     return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def test_space_identity_is_canonical_durable_and_distinct_per_store(tmp_path) -> None:
+    first_path = tmp_path / "first" / "rcp.sqlite3"
+    first = AppStore(first_path)
+    space_id = first.space_id
+
+    parsed = uuid.UUID(space_id)
+    assert str(parsed) == space_id
+    assert parsed.version == 4
+    assert AppStore(first_path).space_id == space_id
+    assert AppStore(tmp_path / "second" / "rcp.sqlite3").space_id != space_id
+
+
+def test_existing_database_receives_one_durable_space_identity(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE legacy_data (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO legacy_data(value) VALUES ('preserved')")
+
+    first_store = AppStore(path)
+    first = first_store.space_id
+    owner = first_store.local_owner
+    assert owner is not None
+    second_store = AppStore(path)
+    second = second_store.space_id
+
+    with sqlite3.connect(path) as connection:
+        identities = connection.execute(
+            "SELECT singleton, space_id, space_kind FROM space_identity"
+        ).fetchall()
+        legacy = connection.execute("SELECT value FROM legacy_data").fetchone()
+    assert identities == [(1, first, "personal")]
+    assert second == first
+    assert second_store.space_kind == "personal"
+    assert second_store.local_owner == owner
+    assert legacy == ("preserved",)
+
+
+def test_concurrent_initialization_converges_on_one_space_identity(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+
+    def initialize(_: int) -> tuple[str, str, str]:
+        store = AppStore(path)
+        owner = store.local_owner
+        assert owner is not None
+        return store.space_id, store.space_kind, owner.user_id
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        identities = list(executor.map(initialize, range(4)))
+
+    assert len(set(identities)) == 1
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM space_identity").fetchone() == (1,)
+
+
+def test_space_identity_survives_complete_database_relocation(tmp_path) -> None:
+    original_dir = tmp_path / "original"
+    original_store = AppStore(original_dir / "rcp.sqlite3")
+    original_owner = original_store.local_owner
+    assert original_owner is not None
+    original = (original_store.space_id, original_store.space_kind, original_owner.user_id)
+    relocated_dir = tmp_path / "relocated"
+
+    original_dir.rename(relocated_dir)
+
+    relocated_store = AppStore(relocated_dir / "rcp.sqlite3")
+    relocated_owner = relocated_store.local_owner
+    assert relocated_owner is not None
+    assert (
+        relocated_store.space_id,
+        relocated_store.space_kind,
+        relocated_owner.user_id,
+    ) == original
+
+
+def test_s111_identity_migrates_to_personal_with_one_unnamed_owner(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    space_id = str(uuid.uuid4())
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE space_identity (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                space_id TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO space_identity(singleton, space_id) VALUES (1, ?)",
+            (space_id,),
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER space_identity_immutable
+            BEFORE UPDATE OF singleton, space_id ON space_identity
+            BEGIN
+                SELECT RAISE(ABORT, 'space identity is immutable');
+            END
+            """
+        )
+
+    migrated = AppStore(path)
+    owner = migrated.local_owner
+
+    assert migrated.space_id == space_id
+    assert migrated.space_kind == "personal"
+    assert owner is not None
+    assert owner.identity_kind == "local_owner"
+    assert owner.display_name is None
+    assert uuid.UUID(owner.user_id).version == 4
+    assert AppStore(path).local_owner == owner
+    with (
+        migrated.connection() as connection,
+        pytest.raises(sqlite3.IntegrityError, match="space identity is immutable"),
+    ):
+        connection.execute("UPDATE space_identity SET space_kind = 'team' WHERE singleton = 1")
+
+
+def test_legacy_database_cannot_be_reclassified_as_team_during_migration(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE legacy_data (value TEXT NOT NULL)")
+
+    with pytest.raises(ValueError, match="existing RCP database migrates to personal"):
+        AppStore(path, space_kind="team")
+
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'space_identity'"
+            ).fetchone()
+            is None
+        )
+    assert AppStore(path).space_kind == "personal"
+
+
+def test_explicit_team_space_preprovisions_distinct_members_with_duplicate_names(
+    tmp_path,
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path, space_kind="team")
+
+    assert store.space_kind == "team"
+    assert store.local_owner is None
+    assert store.space_users() == []
+
+    first = store.preprovision_team_member("  Same Name  ")
+    second = store.preprovision_team_member("Same Name")
+
+    assert first.display_name == second.display_name == "Same Name"
+    assert first.user_id != second.user_id
+    assert first.identity_kind == second.identity_kind == "team_member"
+    assert uuid.UUID(first.user_id).version == uuid.UUID(second.user_id).version == 4
+    restarted = AppStore(path)
+    assert restarted.space_kind == "team"
+    assert {user.user_id: user for user in restarted.space_users()} == {
+        first.user_id: first,
+        second.user_id: second,
+    }
+
+    renamed = restarted.rename_space_user(first.user_id, "  Renamed Member ")
+    assert renamed.display_name == "Renamed Member"
+    assert renamed.updated_at != first.updated_at
+    assert renamed.model_dump(exclude={"display_name", "updated_at"}) == first.model_dump(
+        exclude={"display_name", "updated_at"}
+    )
+    assert restarted.space_user(second.user_id) == second
+
+
+def test_space_user_names_reject_blank_without_changing_identity(tmp_path) -> None:
+    team = AppStore(tmp_path / "team.sqlite3", space_kind="team")
+    member = team.preprovision_team_member()
+
+    with pytest.raises(ValueError, match="display name must not be blank"):
+        team.rename_space_user(member.user_id, "  ")
+    assert team.space_user(member.user_id) == member
+
+    for invalid_name, message in (
+        ("line one\nline two", "single line"),
+        ("x" * 121, "at most 120 characters"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            team.rename_space_user(member.user_id, invalid_name)
+        assert team.space_user(member.user_id) == member
+
+    with pytest.raises(ValueError, match="display name must not be blank"):
+        team.preprovision_team_member("\t")
+    assert team.space_users() == [member]
+
+    personal = AppStore(tmp_path / "personal.sqlite3")
+    with pytest.raises(ValueError, match="Only a team space"):
+        personal.preprovision_team_member("Member")
+    assert len(personal.space_users()) == 1
+
+
+@pytest.mark.parametrize(
+    ("created_kind", "requested_kind"),
+    [("personal", "team"), ("team", "personal")],
+)
+def test_explicit_space_kind_mismatch_fails_without_changing_stored_kind(
+    tmp_path,
+    created_kind,
+    requested_kind,
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    original = AppStore(path, space_kind=created_kind)
+    original_users = original.space_users()
+
+    with pytest.raises(ValueError, match=f"RCP space is {created_kind}"):
+        AppStore(path, space_kind=requested_kind)
+
+    reopened = AppStore(path)
+    assert reopened.space_kind == created_kind
+    assert reopened.space_users() == original_users
+
+
+@pytest.mark.parametrize("persisted_kind", [None, "organization"])
+def test_missing_or_invalid_stored_space_kind_is_never_silently_replaced(
+    tmp_path,
+    persisted_kind,
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    space_id = str(uuid.uuid4())
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE space_identity (
+                singleton INTEGER PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                space_kind TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO space_identity(singleton, space_id, space_kind)
+            VALUES (1, ?, ?)
+            """,
+            (space_id, persisted_kind),
+        )
+
+    with pytest.raises(RuntimeError, match="space kind is invalid"):
+        AppStore(path)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT space_id, space_kind FROM space_identity").fetchall() == [
+            (space_id, persisted_kind)
+        ]
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'space_users'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_space_and_user_identity_fields_are_immutable(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    owner = store.local_owner
+    assert owner is not None
+
+    with (
+        store.connection() as connection,
+        pytest.raises(sqlite3.IntegrityError, match="space identity is immutable"),
+    ):
+        connection.execute("UPDATE space_identity SET space_kind = 'team' WHERE singleton = 1")
+    with (
+        store.connection() as connection,
+        pytest.raises(sqlite3.IntegrityError, match="space user identity is immutable"),
+    ):
+        connection.execute(
+            "UPDATE space_users SET identity_kind = 'team_member' WHERE user_id = ?",
+            (owner.user_id,),
+        )
+
+    reopened = AppStore(store.path)
+    assert reopened.space_kind == "personal"
+    assert reopened.local_owner == owner
+
+
+def test_space_user_record_rejects_noncanonical_identity_and_extra_fields(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    owner = store.local_owner
+    assert owner is not None
+
+    with pytest.raises(ValueError, match="canonical UUIDv4"):
+        SpaceUserRecord.model_validate({**owner.model_dump(), "user_id": str(uuid.uuid1())})
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        SpaceUserRecord.model_validate({**owner.model_dump(), "role": "admin"})
+
+
+@pytest.mark.parametrize("persisted", [None, "not-a-uuid", str(uuid.uuid1())])
+def test_existing_space_identity_is_never_silently_replaced(tmp_path, persisted) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE space_identity (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                space_id TEXT NOT NULL UNIQUE
+            )
+            """
+        )
+        if persisted is not None:
+            connection.execute(
+                "INSERT INTO space_identity(singleton, space_id) VALUES (1, ?)",
+                (persisted,),
+            )
+
+    with pytest.raises(RuntimeError, match="space identity"):
+        AppStore(path)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT space_id FROM space_identity").fetchall() == (
+            [] if persisted is None else [(persisted,)]
+        )
 
 
 def test_opening_project_does_not_reorder_catalog(tmp_path) -> None:
@@ -253,6 +572,353 @@ def _create_experiment_runtime_fixture(
             ]
         )
     return episode_id, operation_id
+
+
+_PROJECT_ID_TABLES = (
+    "projects",
+    "paper_drafts",
+    "writing_sessions",
+    "chat_session_contexts",
+    "graph_runs",
+    "agent_usage",
+    "watchers",
+    "experiment_episodes",
+)
+
+
+def _seed_project_identity_rows(
+    store: AppStore,
+    project_id: str,
+    *,
+    label: str,
+) -> ProjectRecord:
+    record = ProjectRecord(
+        project_id=project_id,
+        locator=f"/tmp/{label}/research.yaml",
+        name=f"Project {label}",
+        state_location=f"ssh://host/{label}/.research",
+        state_remote=True,
+        added_at="2026-08-01T01:02:03+00:00",
+        last_opened_at="2026-08-02T01:02:03+00:00",
+        revision=7,
+        primary_question="Does identity survive?",
+        attention_count=3,
+        last_refresh_at="2026-08-03T01:02:03+00:00",
+        reachable=False,
+        error="saved diagnostic",
+    )
+    store.upsert_project(record)
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO paper_drafts (
+                project_id, content, base_hash, updated_at, cursor_state, ancestor_content
+            ) VALUES (?, '# Draft', 'base', '2026-08-04T01:02:03+00:00', 'cursor', '# Ancestor')
+            """,
+            (project_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO writing_sessions (
+                native_session_id, provider, execution_machine, project_id, title, model,
+                reasoning, created_at, last_resumed_at, introduction_hash_examined,
+                graph_revision_examined, research_md_hash_examined
+            ) VALUES (?, 'codex', 'laptop', ?, 'Session title', 'model', 'high', ?, ?,
+                      'introduction', 7, 'research')
+            """,
+            (
+                f"session-{label}",
+                project_id,
+                "2026-08-04T01:02:03+00:00",
+                "2026-08-05T01:02:03+00:00",
+            ),
+        )
+    snapshot_json, snapshot_digest = _snapshot(label)
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id=f"chat-session-{label}",
+        project_id=project_id,
+        kind="project_chat",
+        chat_id=f"chat-{label}",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_digest,
+        committed_operation_id=f"chat-operation-{label}",
+        expected_snapshot_sha256=None,
+    )
+    _, operation_id = _create_experiment_runtime_fixture(
+        store,
+        project_id=project_id,
+        control_node_id=f"exp/{label}",
+        operation_id=f"operation-{label}",
+        status="succeeded",
+        arm_watcher=True,
+    )
+    store.record_agent_usage(
+        operation_id,
+        ProviderUsage(
+            provider_profile="codex.turn.v1",
+            provider_event_type="turn.completed",
+            dedupe_key=f"usage-{label}",
+            processed_input_tokens=101,
+            generated_tokens=17,
+            cached_input_tokens=23,
+            provider_fields={"label": label},
+        ),
+    )
+    return record
+
+
+def _project_identity_rows(store: AppStore) -> dict[str, list[dict[str, object]]]:
+    with store.connection() as connection:
+        rows = {
+            table: [
+                dict(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")
+            ]
+            for table in _PROJECT_ID_TABLES
+        }
+        rows["project_aliases"] = [
+            dict(row)
+            for row in connection.execute("SELECT * FROM project_aliases ORDER BY alias_id")
+        ]
+    return rows
+
+
+def _insert_destination_conflict(
+    store: AppStore,
+    table: str,
+    *,
+    old_project_id: str,
+    canonical_project_id: str,
+) -> None:
+    if table == "projects":
+        store.upsert_project(
+            ProjectRecord(
+                project_id=canonical_project_id,
+                locator="/tmp/destination/research.yaml",
+                name="Destination",
+                state_location="/tmp/destination/.research",
+                state_remote=False,
+                added_at="2026-08-06T01:02:03+00:00",
+            )
+        )
+        return
+
+    primary_keys = {
+        "writing_sessions": "native_session_id",
+        "chat_session_contexts": "native_session_id",
+        "graph_runs": "operation_id",
+        "agent_usage": "usage_id",
+        "watchers": "watcher_id",
+        "experiment_episodes": "episode_id",
+    }
+    with store.connection() as connection:
+        source = connection.execute(
+            f"SELECT * FROM {table} WHERE project_id = ? LIMIT 1", (old_project_id,)
+        ).fetchone()
+        assert source is not None
+        cloned = dict(source)
+        cloned["project_id"] = canonical_project_id
+        primary_key = primary_keys.get(table)
+        if primary_key is not None:
+            cloned[primary_key] = f"destination-{cloned[primary_key]}"
+        columns = list(cloned)
+        connection.execute(
+            f"INSERT INTO {table} ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(cloned[column] for column in columns),
+        )
+
+
+def test_existing_project_table_gains_nullable_home_and_alias_storage(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE projects (
+                project_id TEXT PRIMARY KEY,
+                locator TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                state_location TEXT NOT NULL,
+                state_remote INTEGER NOT NULL,
+                added_at TEXT NOT NULL,
+                last_opened_at TEXT,
+                revision INTEGER,
+                primary_question TEXT,
+                attention_count INTEGER NOT NULL DEFAULT 0,
+                last_refresh_at TEXT,
+                reachable INTEGER,
+                error TEXT
+            );
+            INSERT INTO projects (
+                project_id, locator, name, state_location, state_remote, added_at
+            ) VALUES (
+                'legacy-id', '/tmp/legacy/research.yaml', 'Legacy', '/tmp/legacy/.research',
+                0, '2026-08-01T00:00:00+00:00'
+            );
+            """
+        )
+
+    store = AppStore(path)
+
+    with store.connection() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
+        aliases_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_aliases'"
+        ).fetchone()
+    assert "home_space_id" in columns
+    assert aliases_table is not None
+    assert store.project("legacy-id").home_space_id is None
+    assert store.project_aliases() == {}
+
+
+def test_project_identity_migration_moves_all_rows_and_is_idempotent(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_project_id = "derived-project-id"
+    canonical_project_id = str(uuid.uuid4())
+    home_space_id = store.space_id
+    original = _seed_project_identity_rows(store, old_project_id, label="source")
+    before = _project_identity_rows(store)
+
+    migrated = store.migrate_project_identity(
+        old_project_id,
+        canonical_project_id,
+        home_space_id,
+    )
+
+    assert migrated.project_id == canonical_project_id
+    assert migrated.home_space_id == home_space_id
+    assert migrated.model_dump(exclude={"project_id", "home_space_id"}) == original.model_dump(
+        exclude={"project_id", "home_space_id"}
+    )
+    assert store.resolve_project_id(old_project_id) == canonical_project_id
+    assert store.resolve_project_id(canonical_project_id) == canonical_project_id
+    assert store.project(old_project_id) == migrated
+    assert store.project(canonical_project_id) == migrated
+    assert store.project_aliases() == {old_project_id: canonical_project_id}
+    assert [project.project_id for project in store.projects()] == [canonical_project_id]
+
+    after = _project_identity_rows(store)
+    for table in _PROJECT_ID_TABLES:
+        assert all(row["project_id"] == canonical_project_id for row in after[table])
+        before_without_identity = [
+            {key: value for key, value in row.items() if key not in {"project_id", "home_space_id"}}
+            for row in before[table]
+        ]
+        after_without_identity = [
+            {key: value for key, value in row.items() if key not in {"project_id", "home_space_id"}}
+            for row in after[table]
+        ]
+        assert after_without_identity == before_without_identity
+
+    retry = store.migrate_project_identity(
+        old_project_id,
+        canonical_project_id,
+        home_space_id,
+    )
+    assert retry == migrated
+    assert _project_identity_rows(store) == after
+
+
+@pytest.mark.parametrize("field", ["canonical_project_id", "home_space_id"])
+def test_project_identity_migration_rejects_noncanonical_uuid4(tmp_path, field) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _seed_project_identity_rows(store, "derived-project-id", label="source")
+    values = {
+        "canonical_project_id": str(uuid.uuid4()),
+        "home_space_id": store.space_id,
+    }
+    values[field] = str(uuid.uuid1())
+    before = _project_identity_rows(store)
+
+    with pytest.raises(ValueError, match="canonical UUIDv4"):
+        store.migrate_project_identity(
+            "derived-project-id",
+            values["canonical_project_id"],
+            values["home_space_id"],
+        )
+
+    assert _project_identity_rows(store) == before
+
+
+@pytest.mark.parametrize("field", ["project_id", "home_space_id"])
+def test_project_record_rejects_invalid_canonical_nameplate_ids(field) -> None:
+    values = {
+        **_project(str(uuid.uuid4())).model_dump(),
+        "home_space_id": str(uuid.uuid4()),
+    }
+    values[field] = str(uuid.uuid1())
+    with pytest.raises(ValueError, match="canonical UUIDv4"):
+        ProjectRecord.model_validate(values)
+
+
+@pytest.mark.parametrize("conflict_table", _PROJECT_ID_TABLES)
+def test_project_identity_destination_conflict_rolls_back_every_table(
+    tmp_path,
+    conflict_table,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_project_id = "derived-project-id"
+    canonical_project_id = str(uuid.uuid4())
+    _seed_project_identity_rows(store, old_project_id, label="source")
+    _insert_destination_conflict(
+        store,
+        conflict_table,
+        old_project_id=old_project_id,
+        canonical_project_id=canonical_project_id,
+    )
+    before = _project_identity_rows(store)
+
+    with pytest.raises(ValueError, match="destination"):
+        store.migrate_project_identity(old_project_id, canonical_project_id, store.space_id)
+
+    assert _project_identity_rows(store) == before
+    assert store.project_aliases() == {}
+    assert store.project(old_project_id).project_id == old_project_id
+
+
+def test_project_identity_alias_collision_rolls_back_without_changes(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_project_id = "derived-project-id"
+    canonical_project_id = str(uuid.uuid4())
+    conflicting_project_id = str(uuid.uuid4())
+    _seed_project_identity_rows(store, old_project_id, label="source")
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO project_aliases(alias_id, canonical_project_id)
+            VALUES (?, ?)
+            """,
+            (old_project_id, conflicting_project_id),
+        )
+    before = _project_identity_rows(store)
+
+    with pytest.raises(ValueError, match="already resolves"):
+        store.migrate_project_identity(old_project_id, canonical_project_id, store.space_id)
+
+    assert _project_identity_rows(store) == before
+
+
+def test_project_deletion_preserves_alias_for_canonical_reregistration(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_project_id = "derived-project-id"
+    canonical_project_id = str(uuid.uuid4())
+    home_space_id = store.space_id
+    _seed_project_identity_rows(store, old_project_id, label="source")
+    store.migrate_project_identity(old_project_id, canonical_project_id, home_space_id)
+
+    store.delete_project_records(canonical_project_id)
+
+    assert store.project(old_project_id) is None
+    assert store.resolve_project_id(old_project_id) == canonical_project_id
+    assert store.project_aliases() == {old_project_id: canonical_project_id}
+
+    recovered_id = store.resolve_project_id(old_project_id)
+    recovered = _project(recovered_id).model_copy(update={"home_space_id": home_space_id})
+    store.upsert_project(recovered)
+    assert store.project(old_project_id) == store.project(canonical_project_id) == recovered
 
 
 def test_brief_database_write_contention_waits_then_succeeds(tmp_path) -> None:
@@ -1038,6 +1704,8 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     assert record.attempt == 1
     assert "Resume" in record.status_message
     assert record.result is None
+    assert record.authorized_by is None
+    assert store.agent_task_authorizer("old-operation") is None
     assert store.agent_task_events("old-operation")[0].level == "warning"
     assert [receipt.category for receipt in store.agent_task_receipts("old-operation")] == [
         "operation_created",
@@ -1045,8 +1713,200 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     ]
     with store.connection() as connection:
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(graph_runs)")}
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
     assert "graph_runs_active_project" not in indexes
     assert "agent_tasks_active_project" not in indexes
+    assert {
+        "authorized_space_id",
+        "authorized_user_id",
+        "authorized_display_name",
+    } <= columns
+
+
+def test_agent_task_authorizer_snapshot_round_trips_and_survives_restart(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    authorizer = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=str(uuid.uuid4()),
+        display_name="Original Name",
+    )
+    now = store.now()
+
+    created = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="authorized-operation",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            authorized_by=authorizer,
+        )
+    )
+
+    assert created.authorized_by == authorizer
+    assert store.agent_task_authorizer("authorized-operation") == authorizer
+    restarted = AppStore(path)
+    assert restarted.agent_task("authorized-operation").authorized_by == authorizer
+    assert restarted.agent_task_authorizer("authorized-operation") == authorizer
+    with restarted.connection() as connection:
+        row = connection.execute(
+            """
+            SELECT authorized_space_id, authorized_user_id, authorized_display_name
+            FROM graph_runs WHERE operation_id = 'authorized-operation'
+            """
+        ).fetchone()
+    assert tuple(row) == (authorizer.space_id, authorizer.user_id, authorizer.display_name)
+
+
+def test_space_user_rename_does_not_rewrite_agent_task_authorizer_snapshot(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    owner = store.local_owner
+    assert owner is not None
+    named_owner = store.rename_space_user(owner.user_id, "First Name")
+    authorizer = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=named_owner.user_id,
+        display_name=named_owner.display_name,
+    )
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="before-rename",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            authorized_by=authorizer,
+        )
+    )
+
+    renamed_owner = store.rename_space_user(owner.user_id, "Second Name")
+
+    assert renamed_owner.display_name == "Second Name"
+    assert store.agent_task("before-rename").authorized_by == authorizer
+    assert store.agent_task_authorizer("before-rename") == authorizer
+
+
+@pytest.mark.parametrize("corruption", ["partial", "invalid"])
+def test_agent_task_authorizer_snapshot_corruption_fails_closed(tmp_path, corruption) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _task(store, "project", "operation", "succeeded")
+    with store.connection() as connection:
+        if corruption == "partial":
+            connection.execute(
+                """
+                UPDATE graph_runs SET authorized_space_id = ? WHERE operation_id = 'operation'
+                """,
+                (store.space_id,),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET authorized_space_id = ?, authorized_user_id = 'not-a-uuid',
+                    authorized_display_name = 'Name'
+                WHERE operation_id = 'operation'
+                """,
+                (store.space_id,),
+            )
+
+    with pytest.raises(RuntimeError, match="authorizer snapshot"):
+        store.agent_task("operation")
+    with pytest.raises(RuntimeError, match="authorizer snapshot"):
+        store.agent_task_authorizer("operation")
+
+
+def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    parent_authorizer = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=str(uuid.uuid4()),
+        display_name="Parent Authorizer",
+    )
+    child_authorizer = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=str(uuid.uuid4()),
+        display_name="Child Authorizer",
+    )
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="parent",
+            project_id="project",
+            kind="refresh",
+            status="failed",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="failed",
+            authorized_by=parent_authorizer,
+        )
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="explicit-child",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            parent_operation_id="parent",
+            authorized_by=child_authorizer,
+        )
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="legacy-child",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            parent_operation_id="parent",
+        )
+    )
+
+    assert store.agent_task_authorizer("parent") == parent_authorizer
+    assert store.agent_task_authorizer("explicit-child") == child_authorizer
+    assert store.agent_task_authorizer("legacy-child") is None
+
+
+def test_agent_task_authorizer_distinguishes_unknown_from_legacy_task(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _task(store, "project", "legacy-operation", "succeeded")
+
+    assert store.agent_task_authorizer("legacy-operation") is None
+    with pytest.raises(KeyError, match="unknown-operation"):
+        store.agent_task_authorizer("unknown-operation")
+
+
+def test_agent_task_attribution_schema_has_no_campaign_fields(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    with store.connection() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
+
+    assert {
+        "authorized_space_id",
+        "authorized_user_id",
+        "authorized_display_name",
+    } <= columns
+    assert {
+        "campaign_id",
+        "orchestrator_profile_id",
+        "parent_task_id",
+        "worker_id",
+    }.isdisjoint(columns)
 
 
 def test_existing_watcher_database_opens_and_gains_scheduling_columns(tmp_path) -> None:

@@ -183,7 +183,7 @@ export function ExperimentRunDetail({
             aria-describedby={control?.reasons.length ? `${node.id}-run-requirements` : undefined}
           >
             <FlaskConical size={13} aria-hidden="true" />{" "}
-            {runBusy ? "Starting" : health === "paused_at_limit" ? "Run pending wake" : "Run"}
+            {runBusy ? "Starting" : control?.episode_id ? "Start new episode" : "Start episode"}
           </button>
         </div>
       </div>
@@ -196,6 +196,12 @@ export function ExperimentRunDetail({
               taskInvocation(currentTask) ??
               control.invocations_used}{" "}
             / {control.invocation_ceiling}
+          </span>
+        )}
+        {control?.episode_id && (
+          <span>
+            <span className="eyebrow">Next episode limit</span>
+            {node.invocation_ceiling}
           </span>
         )}
         {(currentTask?.phase || operational?.current_phase) && (

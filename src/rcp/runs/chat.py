@@ -642,6 +642,28 @@ def _chat_stage_name(
     if not request.chat_id:
         raise ValueError("Chat requires a chat_id")
     if execution is not None:
+        if execution.stage_root:
+            if execution.stage_host:
+                prefix = "/tmp/rcp-run."
+                if not execution.stage_root.startswith(prefix):
+                    raise ValueError(
+                        "Cannot safely resume this chat because its saved stage is invalid. "
+                        "Retry the turn from the beginning."
+                    )
+                stage_name = execution.stage_root[len(prefix) :]
+                if "/" in stage_name:
+                    raise ValueError(
+                        "Cannot safely resume this chat because its saved stage is invalid. "
+                        "Retry the turn from the beginning."
+                    )
+            else:
+                stage_name = Path(execution.stage_root).name
+            if not stage_name or _safe_stage_name(stage_name) != stage_name:
+                raise ValueError(
+                    "Cannot safely resume this chat because its saved stage is invalid. "
+                    "Retry the turn from the beginning."
+                )
+            return stage_name
         task = execution.store.agent_task(execution.operation_id)
         if task is None or not task.project_id:
             raise ValueError(

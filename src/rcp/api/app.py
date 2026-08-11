@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal, cast
@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
@@ -43,7 +43,14 @@ from rcp.control import (
     admit_experiment_watcher_invocation,
     derive_experiment_control_state,
 )
-from rcp.core.models import Experiment, ExperimentDecisionPin, GraphState
+from rcp.core.models import (
+    DISPLAY_NAME_MAX_LENGTH,
+    AuthorizedHuman,
+    Experiment,
+    ExperimentDecisionPin,
+    GraphState,
+    normalize_display_name,
+)
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -90,6 +97,7 @@ from rcp.storage import (
     AgentUsageSnapshot,
     AppStore,
     ExperimentLoopRuntime,
+    SpaceUserRecord,
     WatcherClaimConflict,
     WatcherRecord,
 )
@@ -116,6 +124,20 @@ class RetryAgentTaskRequest(BaseModel):
     run_on: str | None = None
 
 
+class SpaceIdentityUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(max_length=DISPLAY_NAME_MAX_LENGTH)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        return normalize_display_name(value)
+
+
+TrustedPrincipalResolver = Callable[[Request, AppStore], SpaceUserRecord | str]
+
+
 class _LazyProjectService:
     """Compatibility handle that opens the default project only when inspected."""
 
@@ -139,6 +161,7 @@ def create_app(
     *,
     instance_metadata: ServerMetadata | None = None,
     acceptance_agent: bool = False,
+    trusted_principal_resolver: TrustedPrincipalResolver | None = None,
 ) -> FastAPI:
     # macOS exposes /tmp through /private/tmp. Keep every cache and manifest
     # pointer in the same canonical spelling so relative canonical-state paths
@@ -153,13 +176,17 @@ def create_app(
     if identity.data_dir_id != data_dir_identity(app_data):
         raise ValueError("Server metadata does not identify this RCP data directory.")
     store = AppStore(app_data / "rcp.sqlite3")
+    space_id = store.space_id
+    space_kind = store.space_kind
     launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     setup = ProjectSetupManager(app_data, catalog, launcher)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
-    default_record = catalog.register(manifest_path) if manifest_path else None
+    default_record = (
+        catalog.register(manifest_path, identity_action="adopted") if manifest_path else None
+    )
     default_project_id = default_record.project_id if default_record else None
     default_project_name = default_record.name if default_record else None
     default_state_host = (
@@ -176,6 +203,61 @@ def create_app(
     def experiment_operation_lock(project_id: str) -> threading.RLock:
         with experiment_operation_locks_guard:
             return experiment_operation_locks.setdefault(project_id, threading.RLock())
+
+    def acting_user(request: Request) -> SpaceUserRecord:
+        if space_kind == "personal":
+            owner = store.local_owner
+            if owner is None:  # pragma: no cover - guarded by the storage invariant
+                raise HTTPException(status_code=500, detail="Personal owner identity is missing.")
+            return owner
+
+        if trusted_principal_resolver is None:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "team_identity_required",
+                    "message": "This team action requires a trusted authenticated member.",
+                },
+            )
+        resolved = trusted_principal_resolver(request, store)
+        user_id = resolved.user_id if isinstance(resolved, SpaceUserRecord) else resolved
+        if not isinstance(user_id, str):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "team_identity_invalid",
+                    "message": "The trusted team identity is invalid for this space.",
+                },
+            )
+        member = store.space_user(user_id)
+        if member is None or member.identity_kind != "team_member":
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "team_identity_invalid",
+                    "message": "The trusted team identity is invalid for this space.",
+                },
+            )
+        return member
+
+    def require_patch_capable_identity(request: Request) -> AuthorizedHuman:
+        user = acting_user(request)
+        if user.display_name is None or not user.display_name.strip():
+            raise HTTPException(
+                status_code=428,
+                detail={
+                    "code": "identity_name_required",
+                    "message": (
+                        "Choose an RCP display name before this action. The name will be "
+                        "copied into permanent project history as a snapshot."
+                    ),
+                },
+            )
+        return AuthorizedHuman(
+            space_id=space_id,
+            user_id=user.user_id,
+            display_name=user.display_name,
+        )
 
     @contextmanager
     def experiment_admission(
@@ -323,9 +405,18 @@ def create_app(
     def deliver_watcher_group(group: list[WatcherRecord]) -> None:
         if not group:
             return
+        watcher_ids = [item.watcher_id for item in group]
+        authorized_by, terminal_diagnostic = store.resolve_watcher_delivery_authorizer(watcher_ids)
+        if authorized_by is None:
+            if terminal_diagnostic is not None:
+                logger.warning(
+                    "Watcher delivery terminalized for %s: %s",
+                    watcher_ids,
+                    terminal_diagnostic,
+                )
+            return
         first = group[0]
         continuation = first.continuation
-        watcher_ids = [item.watcher_id for item in group]
         service = _project_service(catalog, first.project_id)
         if continuation.patch_kind == "experiment_loop":
             control_node_id = continuation.control_node_id
@@ -452,6 +543,7 @@ def create_app(
                     "node_chat",
                     request,
                     watcher_ids,
+                    authorized_by=authorized_by,
                     episode_stage_host=preflight.stage_host,
                     episode_stage_root=preflight.stage_root,
                 )
@@ -464,6 +556,7 @@ def create_app(
                 first.origin_task_kind,
                 request,
                 watcher_ids,
+                authorized_by=authorized_by,
             )
 
     watcher_poller = WatcherPoller(store, on_completed=deliver_watcher_group)
@@ -580,6 +673,8 @@ def create_app(
     app.state.project_reconciliation_tasks = project_reconciliation_tasks
     app.state.watcher_poller = watcher_poller
     app.state.instance_metadata = identity
+    app.state.space_id = space_id
+    app.state.space_kind = space_kind
     app.state.launcher = launcher
     app.state.agent_mode = agent_mode
     app.add_middleware(
@@ -592,6 +687,16 @@ def create_app(
 
     @app.middleware("http")
     async def require_current_instance(request: Request, call_next):
+        project_prefix = "/api/projects/"
+        path = request.scope["path"]
+        if path.startswith(project_prefix):
+            project_id, separator, rest = path[len(project_prefix) :].partition("/")
+            canonical_project_id = catalog.resolve_project_id(project_id)
+            if canonical_project_id != project_id:
+                canonical_path = f"{project_prefix}{canonical_project_id}"
+                if separator:
+                    canonical_path = f"{canonical_path}/{rest}"
+                request.scope["path"] = canonical_path
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             pinned_instance = request.headers.get("X-RCP-Instance-ID")
             if pinned_instance and pinned_instance != identity.instance_id:
@@ -645,6 +750,8 @@ def create_app(
         payload: dict[str, object] = {
             "status": "ok",
             "version": __version__,
+            "space_id": space_id,
+            "space_kind": space_kind,
             "instance_id": identity.instance_id,
             "pid": identity.pid,
             "data_dir_id": identity.data_dir_id,
@@ -656,6 +763,31 @@ def create_app(
         if default_project_name is not None:
             payload["project"] = default_project_name
         return payload
+
+    def identity_payload(user: SpaceUserRecord) -> dict[str, object]:
+        return {
+            "space_id": space_id,
+            "space_kind": space_kind,
+            "user": user.model_dump(mode="json"),
+        }
+
+    @app.get("/api/identity")
+    def get_identity(request: Request) -> dict[str, object]:
+        return identity_payload(acting_user(request))
+
+    @app.patch("/api/identity")
+    def update_identity(
+        request: Request,
+        body: SpaceIdentityUpdateRequest,
+    ) -> dict[str, object]:
+        current = acting_user(request)
+        try:
+            renamed = store.rename_space_user(current.user_id, body.display_name)
+        except KeyError as exc:  # pragma: no cover - resolved and renamed in one local store
+            raise HTTPException(
+                status_code=403, detail="Acting identity is no longer valid."
+            ) from exc
+        return identity_payload(renamed)
 
     @app.get("/api/projects")
     def projects() -> list[dict[str, object]]:
@@ -1009,7 +1141,8 @@ def create_app(
         return service.index_snapshot(refresh=refresh).model_dump(mode="json")
 
     @app.post("/api/projects/{project_id}/sync")
-    def sync_graph(project_id: str, body: GraphSyncRequest):
+    def sync_graph(project_id: str, body: GraphSyncRequest, request: Request):
+        authorized_by = require_patch_capable_identity(request)
         service = _project_service(catalog, project_id)
         try:
             if body.removed_node_ids:
@@ -1017,10 +1150,12 @@ def create_app(
                     return service.sync_graph(
                         body,
                         active_control_node_ids=store.active_experiment_control_ids(project_id),
+                        authorized_by=authorized_by,
                     ).model_dump(mode="json")
             return service.sync_graph(
                 body,
                 active_control_node_ids=store.active_experiment_control_ids(project_id),
+                authorized_by=authorized_by,
             ).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(
@@ -1096,7 +1231,13 @@ def create_app(
         project_id: str,
         kind: AgentTaskKind,
         body: dict[str, object],
+        http_request: Request,
     ) -> dict[str, object]:
+        authorized_by = (
+            require_patch_capable_identity(http_request)
+            if _task_is_patch_capable(kind, body)
+            else None
+        )
         service = _project_service(catalog, project_id)
         try:
             request = _validated_task_request(service, kind, body)
@@ -1148,6 +1289,7 @@ def create_app(
                     kind,
                     request,
                     operation_id=operation_id,
+                    authorized_by=authorized_by,
                 )
             except BaseException:
                 if claimed_set is not None and store.agent_task(operation_id) is None:
@@ -1163,7 +1305,9 @@ def create_app(
         project_id: str,
         node_id: str,
         body: dict[str, object],
+        request: Request,
     ) -> dict[str, object]:
+        authorized_by = require_patch_capable_identity(request)
         service = _project_service(catalog, project_id)
         try:
             with experiment_operation_lock(project_id):
@@ -1219,6 +1363,7 @@ def create_app(
                         "node_chat",
                         request,
                         [item.watcher_id for item in pending_group],
+                        authorized_by=authorized_by,
                     )
                     if record is None:
                         raise ValueError(
@@ -1251,7 +1396,12 @@ def create_app(
                     }
                 )
                 request = _resolved_graph_request(service, "node_chat", request)
-                record = background_tasks.start(project_id, "node_chat", request)
+                record = background_tasks.start(
+                    project_id,
+                    "node_chat",
+                    request,
+                    authorized_by=authorized_by,
+                )
         except ValueError as exc:
             status = 409 if "already running" in str(exc) else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -1457,15 +1607,28 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
-    def resume_agent_task(project_id: str, operation_id: str) -> dict[str, object]:
-        service = _project_service(catalog, project_id)
+    def resume_agent_task(
+        project_id: str,
+        operation_id: str,
+        request: Request,
+    ) -> dict[str, object]:
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id:
             raise HTTPException(status_code=404, detail="Agent task not found")
+        authorized_by = (
+            require_patch_capable_identity(request)
+            if _task_is_patch_capable(previous.kind, previous.request)
+            else None
+        )
+        service = _project_service(catalog, project_id)
         try:
             with experiment_admission(project_id, service, previous.request):
                 skills = _validate_stored_task_request(service, previous.kind, previous.request)
-                return background_tasks.resume(operation_id, skills=skills).model_dump(mode="json")
+                return background_tasks.resume(
+                    operation_id,
+                    skills=skills,
+                    authorized_by=authorized_by,
+                ).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1473,14 +1636,26 @@ def create_app(
         "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update",
         status_code=202,
     )
-    def repair_agent_task_graph_update(project_id: str, operation_id: str) -> dict[str, object]:
-        service = _project_service(catalog, project_id)
+    def repair_agent_task_graph_update(
+        project_id: str,
+        operation_id: str,
+        request: Request,
+    ) -> dict[str, object]:
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id:
             raise HTTPException(status_code=404, detail="Agent task not found")
+        authorized_by = (
+            require_patch_capable_identity(request)
+            if _task_is_patch_capable(previous.kind, previous.request)
+            else None
+        )
+        service = _project_service(catalog, project_id)
         try:
             with experiment_admission(project_id, service, previous.request):
-                return background_tasks.repair_graph_update(operation_id).model_dump(mode="json")
+                return background_tasks.repair_graph_update(
+                    operation_id,
+                    authorized_by=authorized_by,
+                ).model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Agent task not found") from exc
         except ValueError as exc:
@@ -1490,12 +1665,18 @@ def create_app(
     def retry_agent_task(
         project_id: str,
         operation_id: str,
+        request: Request,
         body: RetryAgentTaskRequest | None = None,
     ) -> dict[str, object]:
-        service = _project_service(catalog, project_id)
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id:
             raise HTTPException(status_code=404, detail="Agent task not found")
+        authorized_by = (
+            require_patch_capable_identity(request)
+            if _task_is_patch_capable(previous.kind, previous.request)
+            else None
+        )
+        service = _project_service(catalog, project_id)
         try:
             overrides = body.model_dump(exclude_none=True) if body is not None else {}
             if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
@@ -1512,9 +1693,12 @@ def create_app(
                     previous.kind,
                     candidate.model_dump(mode="json"),
                 )
-                return background_tasks.retry(operation_id, skills=skills, **overrides).model_dump(
-                    mode="json"
-                )
+                return background_tasks.retry(
+                    operation_id,
+                    skills=skills,
+                    authorized_by=authorized_by,
+                    **overrides,
+                ).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1772,6 +1956,19 @@ def _experiment_control_node_id(
     if not isinstance(node_id, str) or not node_id:
         raise ValueError("A bounded experiment-loop task must name its control node.")
     return node_id
+
+
+def _task_is_patch_capable(
+    kind: AgentTaskKind,
+    request: AgentTaskRequest | dict[str, object],
+) -> bool:
+    if kind in {"seed", "refresh"}:
+        return True
+    if kind not in {"node_chat", "project_chat"}:
+        return False
+    if isinstance(request, RunRequest):
+        return request.mode == "work"
+    return request.get("mode") == "work"
 
 
 def _require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:

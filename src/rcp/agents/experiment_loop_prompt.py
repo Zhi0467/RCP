@@ -185,6 +185,14 @@ ExperimentAttempt reading and recording protocol:
   focused Experiment's `current_summary` and `next_action` in the same update. Leave either field
   unchanged when it is still accurate, and set `next_action` to null when nothing remains. The
   summary is concise orientation prose, not a substitute for the attempt ledger or Evidence truth.
+- When a useful durable design, plan, TODO, result, or handoff file exists or is naturally produced
+  in a run-scope project repository, keep the allowed Experiment prose concise and include the exact
+  repository-relative path and its purpose only in an appropriate field this contract already
+  allows you to write, such as an appropriate field in a newly appended or validly closed attempt
+  record, `current_summary`, or `next_action`. Prefer a useful existing document, and never create a
+  ceremonial file merely to satisfy this guidance. Preview artifacts are temporary, not durable
+  substitutes. Do not change an immutable attempt field, an Experiment design field, or any other
+  field merely to add a pointer.
 - Validate `{patch_path}` after every material rewrite and once after the final rewrite. Never write
   attempt state anywhere else in RCP canonical files.
 
@@ -240,6 +248,10 @@ Graph reflection and authority:
 - Never set the focused Experiment to `completed` while leaving a non-empty `next_action`. That pair
   contradicts itself: continue the named work until `next_action` can truthfully be null, or keep a
   nonterminal status and use a real watcher or human-authority pause as appropriate.
+- If newly authorized material work remains for an Experiment that was `completed`, reopen it to an
+  honest nonterminal status and refresh `current_summary` and `next_action`. A clarification that
+  introduces no work need not reopen it. Do not leave it `completed` or write `[]` merely because it
+  was previously terminal; use only the watcher handoff exits above, and do not alter design fields.
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping. Record

@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.core.materialize import MaterializationResult, apply_valid_patch
-from rcp.core.models import GraphState, Patch, Standing
+from rcp.core.models import AuthorizedHuman, GraphState, Patch, Standing
 from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
 
 _MAX_TITLE_CHARS = 240
@@ -44,8 +44,12 @@ class RevisionSummary(BaseModel):
 
     from_revision: int = Field(ge=0)
     to_revision: int = Field(ge=1)
-    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval"]
-    author: Literal["agent", "human"]
+    kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval", "identity"]
+    author: Literal["agent", "human"] | None
+    producer: Literal["agent", "human", "system"]
+    authorized_by: AuthorizedHuman | None = None
+    profile: Literal["ordinary"] | None = None
+    task_id: str | None = None
     created_at: str
     sentences: list[str] = Field(min_length=1)
 
@@ -83,20 +87,33 @@ def render_revision_summary(
 ) -> RevisionSummary:
     """Render one successfully applied patch without changing either replay state."""
 
-    labels = _state_labels(previous_state) | _state_labels(state)
-    sentences = [_plain_history_text(item, labels) for item in patch.change_summary if item.strip()]
-    sentences = [item for item in sentences if item]
-    if not sentences:
-        sentences = _operation_fallbacks(patch, previous_state, state, labels)
-    sentences.extend(_proposal_consequence_sentences(patch, state, labels, sentences))
-    sentences = _unique_sentences(_plain_history_text(item, labels) for item in sentences)
-    if not sentences:
-        sentences = ["Recorded a research graph revision."]
+    if patch.kind == "identity" and patch.project_identity is not None:
+        home_space_id = patch.project_identity.home_space_id
+        if patch.project_identity.action == "created":
+            sentences = [f"Project created in {home_space_id}."]
+        else:
+            sentences = [f"Project identity adopted in {home_space_id}."]
+    else:
+        labels = _state_labels(previous_state) | _state_labels(state)
+        sentences = [
+            _plain_history_text(item, labels) for item in patch.change_summary if item.strip()
+        ]
+        sentences = [item for item in sentences if item]
+        if not sentences:
+            sentences = _operation_fallbacks(patch, previous_state, state, labels)
+        sentences.extend(_proposal_consequence_sentences(patch, state, labels, sentences))
+        sentences = _unique_sentences(_plain_history_text(item, labels) for item in sentences)
+        if not sentences:
+            sentences = ["Recorded a research graph revision."]
     return RevisionSummary(
         from_revision=max(0, patch.revision - 1),
         to_revision=patch.revision,
         kind=patch.kind,
         author=patch.author,
+        producer=patch.producer,
+        authorized_by=patch.authorized_by,
+        profile=patch.profile,
+        task_id=patch.task_id,
         created_at=patch.created_at.isoformat(),
         sentences=sentences,
     )

@@ -7,6 +7,7 @@ import {
   clearProjectCaches,
   loadProjectReadiness,
   pinApiInstance,
+  registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
   removeChatAttachment,
   uploadChatAttachment,
@@ -110,6 +111,119 @@ test("a failed mutation runs the registered identity verifier once", async () =>
     );
     assert.equal(checkedPath, "/api/projects/demo/sync");
   } finally {
+    registerMutationFailureHandler(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a named identity retries the exact mutation once before reconnect handling", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let prompted = 0;
+  let reconnects = 0;
+  const init = { method: "POST", headers: { "X-Caller": "kept" }, body: '{"value":1}' };
+  globalThis.fetch = async (path, requestInit) => {
+    requests.push({ path, init: requestInit });
+    return new Response(
+      requests.length === 1
+        ? JSON.stringify({
+            detail: { code: "identity_name_required", message: "Choose a name." },
+          })
+        : JSON.stringify({ saved: true }),
+      {
+        status: requests.length === 1 ? 428 : 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  };
+  registerIdentityNameRequiredHandler(async () => {
+    prompted += 1;
+    return true;
+  });
+  registerMutationFailureHandler(async () => {
+    reconnects += 1;
+  });
+  try {
+    assert.deepEqual(await api("/api/projects/demo/sync", init), { saved: true });
+    assert.equal(prompted, 1);
+    assert.equal(reconnects, 0);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].path, requests[1].path);
+    assert.equal(requests[0].init.method, requests[1].init.method);
+    assert.equal(requests[0].init.body, requests[1].init.body);
+    assert.equal(new Headers(requests[1].init.headers).get("X-Caller"), "kept");
+  } finally {
+    registerIdentityNameRequiredHandler(null);
+    registerMutationFailureHandler(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("cancelling the identity prompt rejects the original 428 without reconnect handling", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  let reconnects = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return new Response(
+      JSON.stringify({
+        detail: { code: "identity_name_required", message: "Choose a name." },
+      }),
+      { status: 428, headers: { "Content-Type": "application/json" } },
+    );
+  };
+  registerIdentityNameRequiredHandler(async () => false);
+  registerMutationFailureHandler(async () => {
+    reconnects += 1;
+  });
+  try {
+    await assert.rejects(
+      api("/api/projects/demo/sync", { method: "POST", body: "{}" }),
+      (error) =>
+        error instanceof ApiError &&
+        error.status === 428 &&
+        error.message.includes("identity_name_required"),
+    );
+    assert.equal(requests, 1);
+    assert.equal(reconnects, 0);
+  } finally {
+    registerIdentityNameRequiredHandler(null);
+    registerMutationFailureHandler(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a repeated identity 428 is not prompted or retried again", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  let prompts = 0;
+  let reconnects = 0;
+  globalThis.fetch = async () => {
+    requests += 1;
+    return new Response(
+      JSON.stringify({
+        detail: { code: "identity_name_required", message: "Choose a name." },
+      }),
+      { status: 428, headers: { "Content-Type": "application/json" } },
+    );
+  };
+  registerIdentityNameRequiredHandler(async () => {
+    prompts += 1;
+    return true;
+  });
+  registerMutationFailureHandler(async () => {
+    reconnects += 1;
+  });
+  try {
+    await assert.rejects(
+      api("/api/projects/demo/sync", { method: "POST", body: "{}" }),
+      (error) => error instanceof ApiError && error.status === 428,
+    );
+    assert.equal(requests, 2);
+    assert.equal(prompts, 1);
+    assert.equal(reconnects, 1);
+  } finally {
+    registerIdentityNameRequiredHandler(null);
     registerMutationFailureHandler(null);
     globalThis.fetch = originalFetch;
   }

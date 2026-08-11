@@ -62,11 +62,11 @@ export function ProjectHistoryDrawer({
           </nav>
 
           <div className="run-inspector-detail">
-            <section aria-label="Graph revision summaries">
-              <h4>Graph revisions</h4>
+            <section aria-label="Project revision summaries">
+              <h4>Project revisions</h4>
               {loading ? (
                 <div className="quiet-empty" role="status">
-                  Loading graph revisions…
+                  Loading project revisions…
                 </div>
               ) : error ? (
                 <div className="quiet-empty" role="alert">
@@ -87,15 +87,20 @@ export function ProjectHistoryDrawer({
                           <p key={`${summary.to_revision}:${index}`}>{sentence}</p>
                         ))}
                         <time dateTime={summary.created_at}>
-                          {revisionKindLabel(summary.kind)} · {capitalize(summary.author)} ·{" "}
+                          {revisionKindLabel(summary.kind)} · {revisionAttribution(summary)} ·{" "}
                           {formatTimestamp(summary.created_at)}
                         </time>
+                        {summary.producer === "agent" && summary.authorized_by && (
+                          <p className="history-attribution-detail">
+                            Ordinary Agent task{summary.task_id ? ` · ${summary.task_id}` : ""}
+                          </p>
+                        )}
                       </div>
                     </li>
                   ))}
                 </ol>
               ) : (
-                <div className="quiet-empty">No graph revisions yet.</div>
+                <div className="quiet-empty">No project revisions yet.</div>
               )}
             </section>
           </div>
@@ -103,6 +108,13 @@ export function ProjectHistoryDrawer({
       </aside>
     </div>
   );
+}
+
+function revisionAttribution(summary: RevisionSummary): string {
+  if (summary.producer === "system") return "RCP";
+  if (summary.authorized_by) return summary.authorized_by.display_name;
+  const role = summary.author ? capitalize(summary.author) : capitalize(summary.producer);
+  return `${role} · Unattributed`;
 }
 
 function revisionKindLabel(kind: RevisionSummary["kind"]): string {
