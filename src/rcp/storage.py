@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
+import secrets
 import sqlite3
 import uuid
 from collections.abc import Iterable, Iterator
@@ -22,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from rcp.artifacts import AgentArtifactDescriptor, ResultViewDescriptor
+from rcp.artifacts import AgentArtifactDescriptor, ResultViewDescriptor, validate_artifact_bytes
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -52,6 +54,12 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     PATCH_OUTPUT_RETENTION_DAYS,
     RUN_TRACE_RETENTION_DAYS,
+    TEAM_CODE_FAILED_ATTEMPT_LIMIT,
+    TEAM_ENROLLMENT_CODE_MAX_LENGTH,
+    TEAM_INVITATION_TTL_DAYS,
+    TEAM_MEMBER_TOKEN_MAX_LENGTH,
+    TEAM_SESSION_IDLE_DAYS,
+    TEAM_SESSION_TOKEN_MAX_LENGTH,
     WATCHER_ERROR_BACKOFF_SECONDS,
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
     WATCHER_HEALTHY_INTERVAL_SECONDS,
@@ -68,6 +76,13 @@ if TYPE_CHECKING:
 
 SpaceKind = Literal["personal", "team"]
 SpaceUserKind = Literal["local_owner", "team_member"]
+SPACE_NAME_MAX_LENGTH = 120
+
+
+class TeamAuthenticationError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class SpaceUserRecord(BaseModel):
@@ -93,6 +108,19 @@ class SpaceUserRecord(BaseModel):
         if value is None:
             return None
         return normalize_display_name(value)
+
+
+class TeamInvitationRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    invitation_id: str
+    created_by: str
+    created_at: str
+    expires_at: str
+    consumed_at: str | None = None
+    consumed_by: str | None = None
+    failed_attempts: int
+    locked_at: str | None = None
 
 
 class ProjectRecord(BaseModel):
@@ -917,6 +945,73 @@ def _stored_space_kind(value: object) -> SpaceKind:
     raise RuntimeError("RCP space kind is invalid.")
 
 
+def normalize_space_name(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("space name must be text")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("space name must not be blank")
+    if any(character in normalized for character in ("\n", "\r", "\u2028", "\u2029")):
+        raise ValueError("space name must be a single line")
+    if len(normalized) > SPACE_NAME_MAX_LENGTH:
+        raise ValueError(f"space name must be at most {SPACE_NAME_MAX_LENGTH} characters")
+    return normalized
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _new_member_token() -> tuple[str, str]:
+    token = f"rcp_{secrets.token_urlsafe(32)}"
+    return token, _sha256(token)
+
+
+def _new_session_token() -> tuple[str, str]:
+    token = f"rcp_session_{secrets.token_urlsafe(32)}"
+    return token, _sha256(token)
+
+
+def _new_enrollment_code(kind: Literal["bootstrap", "invite"]) -> tuple[str, str, str]:
+    code_id = secrets.token_urlsafe(12)
+    secret = secrets.token_urlsafe(32)
+    return f"rcp_{kind}_{code_id}.{secret}", code_id, _sha256(secret)
+
+
+def _parse_enrollment_code(
+    code: str,
+) -> tuple[Literal["bootstrap", "invite"], str, str] | None:
+    if not isinstance(code, str) or len(code) > TEAM_ENROLLMENT_CODE_MAX_LENGTH or "." not in code:
+        return None
+    public, secret = code.split(".", 1)
+    if not secret:
+        return None
+    for kind in ("bootstrap", "invite"):
+        prefix = f"rcp_{kind}_"
+        if public.startswith(prefix) and len(public) > len(prefix):
+            return kind, public[len(prefix) :], _sha256(secret)
+    return None
+
+
+def _discard_failed_team_initialization(path: Path, expected_space_id: str) -> None:
+    """Remove only the unopened team database created by this failed init attempt."""
+
+    if not path.exists():
+        return
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            identity = connection.execute(
+                "SELECT space_id, space_kind FROM space_identity WHERE singleton = 1"
+            ).fetchone()
+            user_count = connection.execute("SELECT COUNT(*) FROM space_users").fetchone()[0]
+    except (OSError, sqlite3.Error):
+        return
+    if identity != (expected_space_id, "team") or user_count != 0:
+        return
+    for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+        candidate.unlink(missing_ok=True)
+
+
 _PROJECT_ID_TABLES = (
     "projects",
     "paper_drafts",
@@ -939,6 +1034,27 @@ class AppStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(space_kind)
 
+    @classmethod
+    def initialize_team_space(cls, path: Path, name: str) -> tuple[AppStore, str]:
+        store = cls.__new__(cls)
+        store.path = path
+        store.path.parent.mkdir(parents=True, exist_ok=True)
+        initial_space_id = str(uuid.uuid4())
+        try:
+            bootstrap_code = store._initialize(
+                "team",
+                initial_space_id=initial_space_id,
+                initial_space_name=normalize_space_name(name),
+                issue_bootstrap=True,
+                require_new=True,
+            )
+        except Exception:
+            _discard_failed_team_initialization(path, initial_space_id)
+            raise
+        if bootstrap_code is None:  # pragma: no cover - guarded by issue_bootstrap
+            raise RuntimeError("RCP team bootstrap code was not created.")
+        return store, bootstrap_code
+
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30.0)
@@ -949,7 +1065,17 @@ class AppStore:
         finally:
             connection.close()
 
-    def _initialize(self, requested_space_kind: SpaceKind | None) -> None:
+    def _initialize(
+        self,
+        requested_space_kind: SpaceKind | None,
+        *,
+        initial_space_id: str | None = None,
+        initial_space_name: str | None = None,
+        issue_bootstrap: bool = False,
+        require_new: bool = False,
+    ) -> str | None:
+        bootstrap_code: str | None = None
+        recovering_team_initialization = False
         with self.connection() as connection:
             try:
                 connection.execute("PRAGMA journal_mode = WAL")
@@ -967,6 +1093,38 @@ class AppStore:
                 ).fetchone()
                 is not None
             )
+            if require_new and identity_table_exists:
+                identity_columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(space_identity)")
+                }
+                users_table_exists_for_recovery = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'space_users'"
+                    ).fetchone()
+                    is not None
+                )
+                existing_identity = (
+                    connection.execute(
+                        "SELECT space_kind, space_name FROM space_identity WHERE singleton = 1"
+                    ).fetchone()
+                    if {"space_kind", "space_name"}.issubset(identity_columns)
+                    else None
+                )
+                existing_user_count = (
+                    connection.execute("SELECT COUNT(*) FROM space_users").fetchone()[0]
+                    if users_table_exists_for_recovery
+                    else -1
+                )
+                recovering_team_initialization = bool(
+                    issue_bootstrap
+                    and initial_space_name is not None
+                    and existing_identity is not None
+                    and existing_identity["space_kind"] == "team"
+                    and existing_identity["space_name"] == initial_space_name
+                    and existing_user_count == 0
+                )
+                if not recovering_team_initialization:
+                    raise ValueError("This RCP data directory already contains a space.")
             if not identity_table_exists:
                 legacy_database = (
                     connection.execute(
@@ -974,6 +1132,8 @@ class AppStore:
                     ).fetchone()
                     is not None
                 )
+                if require_new and legacy_database:
+                    raise ValueError("This RCP data directory already contains RCP data.")
                 stored_space_kind = (
                     "personal" if legacy_database else requested_space_kind or "personal"
                 )
@@ -987,16 +1147,17 @@ class AppStore:
                     CREATE TABLE space_identity (
                         singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                         space_id TEXT NOT NULL UNIQUE,
-                        space_kind TEXT NOT NULL CHECK(space_kind IN ('personal', 'team'))
+                        space_kind TEXT NOT NULL CHECK(space_kind IN ('personal', 'team')),
+                        space_name TEXT
                     )
                     """
                 )
                 connection.execute(
                     """
-                    INSERT INTO space_identity(singleton, space_id, space_kind)
-                    VALUES (1, ?, ?)
+                    INSERT INTO space_identity(singleton, space_id, space_kind, space_name)
+                    VALUES (1, ?, ?, ?)
                     """,
-                    (str(uuid.uuid4()), stored_space_kind),
+                    (initial_space_id or str(uuid.uuid4()), stored_space_kind, initial_space_name),
                 )
             else:
                 identity_columns = {
@@ -1057,6 +1218,56 @@ class AppStore:
                     display_name TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_bootstrap_codes (
+                    code_id TEXT PRIMARY KEY,
+                    code_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    consumed_by TEXT,
+                    failed_attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_invitations (
+                    invitation_id TEXT PRIMARY KEY,
+                    code_hash TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    consumed_by TEXT,
+                    failed_attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_member_tokens (
+                    token_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    token_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    revoked_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS team_sessions (
+                    session_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
                 )
                 """
             )
@@ -1175,6 +1386,7 @@ class AppStore:
                     source_name TEXT NOT NULL,
                     content_sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+                    html TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
@@ -1182,12 +1394,6 @@ class AppStore:
                     kept_at TEXT,
                     CHECK((kept_filename IS NULL) = (kept_at IS NULL))
                 );
-                CREATE INDEX IF NOT EXISTS result_views_project_experiment
-                    ON result_views(project_id, experiment_id, updated_at DESC, view_id);
-                CREATE INDEX IF NOT EXISTS result_views_project_chat
-                    ON result_views(project_id, chat_id, updated_at DESC, view_id);
-                CREATE INDEX IF NOT EXISTS result_views_expiry
-                    ON result_views(expires_at, kept_filename);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT PRIMARY KEY,
                     home_space_id TEXT,
@@ -1486,7 +1692,14 @@ class AppStore:
             # Existing v0.2 databases need additive migration before the index
             # can include the new transitional state.
             self._ensure_column(connection, "projects", "home_space_id", "TEXT")
+            self._ensure_column(connection, "space_identity", "space_name", "TEXT")
             self._ensure_column(connection, "paper_drafts", "ancestor_content", "TEXT")
+            self._ensure_column(
+                connection,
+                "result_views",
+                "html",
+                "TEXT NOT NULL DEFAULT ''",
+            )
             self._ensure_column(connection, "graph_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "graph_runs", "parent_operation_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
@@ -1549,6 +1762,34 @@ class AppStore:
             self._ensure_column(connection, "watchers", "graph_condition_json", "TEXT")
             self._ensure_column(connection, "watchers", "armed_revision", "INTEGER")
             connection.execute(
+                "CREATE INDEX IF NOT EXISTS result_views_project_experiment "
+                "ON result_views(project_id, experiment_id, updated_at DESC, view_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS result_views_project_chat "
+                "ON result_views(project_id, chat_id, updated_at DESC, view_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS result_views_expiry "
+                "ON result_views(expires_at, kept_filename)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS team_member_tokens_hash "
+                "ON team_member_tokens(token_hash)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS team_member_tokens_active_user "
+                "ON team_member_tokens(user_id) WHERE revoked_at IS NULL"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS team_invitations_creator "
+                "ON team_invitations(created_by, created_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS team_sessions_user_expiry "
+                "ON team_sessions(user_id, expires_at)"
+            )
+            connection.execute(
                 "CREATE INDEX IF NOT EXISTS graph_runs_campaign "
                 "ON graph_runs(campaign_id, created_at, operation_id)"
             )
@@ -1604,6 +1845,22 @@ class AppStore:
             )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
+            if issue_bootstrap:
+                if stored_space_kind != "team" or initial_space_name is None:
+                    raise ValueError("A bootstrap code requires a named team space.")
+                if recovering_team_initialization:
+                    if connection.execute("SELECT 1 FROM space_users LIMIT 1").fetchone():
+                        raise ValueError("This RCP data directory already contains a space.")
+                    connection.execute("DELETE FROM team_bootstrap_codes")
+                bootstrap_code, code_id, code_hash = _new_enrollment_code("bootstrap")
+                connection.execute(
+                    """
+                    INSERT INTO team_bootstrap_codes (code_id, code_hash, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (code_id, code_hash, self.now()),
+                )
+        return bootstrap_code
 
     @property
     def space_id(self) -> str:
@@ -1619,6 +1876,22 @@ class AppStore:
     def space_kind(self) -> SpaceKind:
         with self.connection() as connection:
             return self._space_kind_from_connection(connection)
+
+    @property
+    def space_name(self) -> str | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT space_name FROM space_identity WHERE singleton = 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("RCP space identity is unavailable.")
+        value = row["space_name"]
+        if value is None:
+            return None
+        try:
+            return normalize_space_name(value)
+        except ValueError as exc:
+            raise RuntimeError("RCP space name is invalid.") from exc
 
     def space_users(self) -> list[SpaceUserRecord]:
         with self.connection() as connection:
@@ -1639,6 +1912,340 @@ class AppStore:
         if len(users) != 1 or users[0].identity_kind != "local_owner":
             raise RuntimeError("A personal RCP space must contain exactly one local owner.")
         return users[0]
+
+    def rename_space(self, name: str) -> str:
+        normalized = normalize_space_name(name)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._space_kind_from_connection(connection) != "team":
+                raise ValueError("Only a team space has a mutable team name.")
+            connection.execute(
+                "UPDATE space_identity SET space_name = ? WHERE singleton = 1",
+                (normalized,),
+            )
+        return normalized
+
+    def enroll_team_member(self, code: str, display_name: str) -> tuple[SpaceUserRecord, str]:
+        parsed = _parse_enrollment_code(code)
+        if parsed is None:
+            raise TeamAuthenticationError(
+                "enrollment_code_invalid", "The enrollment code is invalid."
+            )
+        kind, code_id, supplied_hash = parsed
+        now = self.now()
+        error: TeamAuthenticationError | None = None
+        member: SpaceUserRecord | None = None
+        token: str | None = None
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._space_kind_from_connection(connection) != "team":
+                raise ValueError("Only a team space accepts enrollment.")
+            table = "team_bootstrap_codes" if kind == "bootstrap" else "team_invitations"
+            id_column = "code_id" if kind == "bootstrap" else "invitation_id"
+            row = connection.execute(
+                f"SELECT * FROM {table} WHERE {id_column} = ?",  # noqa: S608
+                (code_id,),
+            ).fetchone()
+            if row is None:
+                error = TeamAuthenticationError(
+                    "enrollment_code_invalid", "The enrollment code is invalid."
+                )
+            elif row["consumed_at"] is not None:
+                error = TeamAuthenticationError(
+                    "enrollment_code_consumed", "The enrollment code has already been used."
+                )
+            elif row["locked_at"] is not None:
+                error = TeamAuthenticationError(
+                    "enrollment_code_locked", "The enrollment code is locked."
+                )
+            elif kind == "invite" and row["expires_at"] <= now:
+                error = TeamAuthenticationError(
+                    "enrollment_code_expired", "The enrollment code has expired."
+                )
+            elif not hmac.compare_digest(row["code_hash"], supplied_hash):
+                failed_attempts = int(row["failed_attempts"]) + 1
+                locked_at = now if failed_attempts >= TEAM_CODE_FAILED_ATTEMPT_LIMIT else None
+                connection.execute(
+                    f"UPDATE {table} SET failed_attempts = ?, locked_at = ? "  # noqa: S608
+                    f"WHERE {id_column} = ?",
+                    (failed_attempts, locked_at, code_id),
+                )
+                error = TeamAuthenticationError(
+                    "enrollment_code_locked" if locked_at else "enrollment_code_invalid",
+                    "The enrollment code is locked."
+                    if locked_at
+                    else "The enrollment code is invalid.",
+                )
+            else:
+                if kind == "bootstrap":
+                    first_member = connection.execute(
+                        "SELECT 1 FROM space_users LIMIT 1"
+                    ).fetchone()
+                    if first_member is not None:
+                        error = TeamAuthenticationError(
+                            "enrollment_code_consumed",
+                            "The team space has already been claimed.",
+                        )
+                if error is None:
+                    member = SpaceUserRecord(
+                        user_id=str(uuid.uuid4()),
+                        identity_kind="team_member",
+                        display_name=display_name,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    token, token_hash = _new_member_token()
+                    connection.execute(
+                        """
+                        INSERT INTO space_users (
+                            user_id, identity_kind, display_name, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            member.user_id,
+                            member.identity_kind,
+                            member.display_name,
+                            member.created_at,
+                            member.updated_at,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO team_member_tokens (
+                            token_id, user_id, token_hash, created_at, revoked_at
+                        ) VALUES (?, ?, ?, ?, NULL)
+                        """,
+                        (str(uuid.uuid4()), member.user_id, token_hash, now),
+                    )
+                    connection.execute(
+                        f"UPDATE {table} SET consumed_at = ?, consumed_by = ? "  # noqa: S608
+                        f"WHERE {id_column} = ?",
+                        (now, member.user_id, code_id),
+                    )
+        if error is not None:
+            raise error
+        if member is None or token is None:  # pragma: no cover - exhaustive transition above
+            raise RuntimeError("RCP team enrollment did not produce a member credential.")
+        return member, token
+
+    def create_team_invitation(
+        self,
+        created_by: str,
+    ) -> tuple[TeamInvitationRecord, str]:
+        now = self.now()
+        expires_at = (
+            datetime.fromisoformat(now) + timedelta(days=TEAM_INVITATION_TTL_DAYS)
+        ).isoformat()
+        code, invitation_id, code_hash = _new_enrollment_code("invite")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_team_member_from_connection(connection, created_by)
+            connection.execute(
+                """
+                INSERT INTO team_invitations (
+                    invitation_id, code_hash, created_by, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (invitation_id, code_hash, created_by, now, expires_at),
+            )
+        return (
+            TeamInvitationRecord(
+                invitation_id=invitation_id,
+                created_by=created_by,
+                created_at=now,
+                expires_at=expires_at,
+                failed_attempts=0,
+            ),
+            code,
+        )
+
+    def team_invitations(self, created_by: str) -> list[TeamInvitationRecord]:
+        with self.connection() as connection:
+            self._require_team_member_from_connection(connection, created_by)
+            rows = connection.execute(
+                """
+                SELECT invitation_id, created_by, created_at, expires_at,
+                       consumed_at, consumed_by, failed_attempts, locked_at
+                FROM team_invitations
+                WHERE created_by = ?
+                ORDER BY created_at DESC, invitation_id
+                """,
+                (created_by,),
+            ).fetchall()
+        return [TeamInvitationRecord.model_validate(dict(row)) for row in rows]
+
+    def create_team_session(self, token: str) -> tuple[str, SpaceUserRecord]:
+        if (
+            not isinstance(token, str)
+            or len(token) > TEAM_MEMBER_TOKEN_MAX_LENGTH
+            or not token.startswith("rcp_")
+        ):
+            raise TeamAuthenticationError(
+                "team_token_invalid", "The member token is invalid or revoked."
+            )
+        token_hash = _sha256(token)
+        now = self.now()
+        expires_at = (
+            datetime.fromisoformat(now) + timedelta(days=TEAM_SESSION_IDLE_DAYS)
+        ).isoformat()
+        session, session_hash = _new_session_token()
+        member: SpaceUserRecord | None = None
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._space_kind_from_connection(connection) != "team":
+                raise ValueError("Only a team space accepts member tokens.")
+            row = connection.execute(
+                """
+                SELECT user_id, token_hash FROM team_member_tokens
+                WHERE token_hash = ? AND revoked_at IS NULL
+                """,
+                (token_hash,),
+            ).fetchone()
+            if row is not None and hmac.compare_digest(row["token_hash"], token_hash):
+                member = self._require_team_member_from_connection(connection, row["user_id"])
+                connection.execute(
+                    """
+                    INSERT INTO team_sessions (
+                        session_hash, user_id, created_at, last_seen_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_hash, member.user_id, now, now, expires_at),
+                )
+        if member is None:
+            raise TeamAuthenticationError(
+                "team_token_invalid", "The member token is invalid or revoked."
+            )
+        return session, member
+
+    def resolve_team_session(self, session: str | None) -> SpaceUserRecord | None:
+        if (
+            not session
+            or len(session) > TEAM_SESSION_TOKEN_MAX_LENGTH
+            or not session.startswith("rcp_session_")
+        ):
+            return None
+        session_hash = _sha256(session)
+        now = self.now()
+        expires_at = (
+            datetime.fromisoformat(now) + timedelta(days=TEAM_SESSION_IDLE_DAYS)
+        ).isoformat()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM team_sessions WHERE session_hash = ?",
+                (session_hash,),
+            ).fetchone()
+            if row is None or not hmac.compare_digest(row["session_hash"], session_hash):
+                return None
+            if row["expires_at"] <= now:
+                connection.execute(
+                    "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
+                )
+                return None
+            member = self._space_user_from_connection(connection, row["user_id"])
+            if member is None or member.identity_kind != "team_member":
+                connection.execute(
+                    "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
+                )
+                return None
+            connection.execute(
+                """
+                UPDATE team_sessions SET last_seen_at = ?, expires_at = ?
+                WHERE session_hash = ?
+                """,
+                (now, expires_at, session_hash),
+            )
+            return member
+
+    def delete_team_session(self, session: str | None) -> None:
+        if not session:
+            return
+        with self.connection() as connection:
+            connection.execute(
+                "DELETE FROM team_sessions WHERE session_hash = ?", (_sha256(session),)
+            )
+
+    def _require_authenticating_team_session(
+        self,
+        connection: sqlite3.Connection,
+        session: str | None,
+        user_id: str,
+        now: str,
+    ) -> None:
+        if (
+            not session
+            or len(session) > TEAM_SESSION_TOKEN_MAX_LENGTH
+            or not session.startswith("rcp_session_")
+        ):
+            raise TeamAuthenticationError(
+                "team_session_invalid", "The browser session is invalid or expired."
+            )
+        session_hash = _sha256(session)
+        row = connection.execute(
+            "SELECT session_hash, user_id, expires_at FROM team_sessions WHERE session_hash = ?",
+            (session_hash,),
+        ).fetchone()
+        if (
+            row is None
+            or not hmac.compare_digest(row["session_hash"], session_hash)
+            or row["user_id"] != user_id
+            or row["expires_at"] <= now
+        ):
+            raise TeamAuthenticationError(
+                "team_session_invalid", "The browser session is invalid or expired."
+            )
+
+    def rotate_team_token(
+        self,
+        user_id: str,
+        *,
+        authenticating_session: str | None = None,
+    ) -> str:
+        now = self.now()
+        token, token_hash = _new_member_token()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_team_member_from_connection(connection, user_id)
+            if authenticating_session is not None:
+                self._require_authenticating_team_session(
+                    connection, authenticating_session, user_id, now
+                )
+            connection.execute(
+                "UPDATE team_member_tokens SET revoked_at = ? "
+                "WHERE user_id = ? AND revoked_at IS NULL",
+                (now, user_id),
+            )
+            connection.execute("DELETE FROM team_sessions WHERE user_id = ?", (user_id,))
+            connection.execute(
+                """
+                INSERT INTO team_member_tokens (
+                    token_id, user_id, token_hash, created_at, revoked_at
+                ) VALUES (?, ?, ?, ?, NULL)
+                """,
+                (str(uuid.uuid4()), user_id, token_hash, now),
+            )
+        return token
+
+    def revoke_team_token(
+        self,
+        user_id: str,
+        *,
+        authenticating_session: str | None = None,
+    ) -> None:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_team_member_from_connection(connection, user_id)
+            if authenticating_session is not None:
+                self._require_authenticating_team_session(
+                    connection, authenticating_session, user_id, now
+                )
+            connection.execute(
+                "UPDATE team_member_tokens SET revoked_at = ? "
+                "WHERE user_id = ? AND revoked_at IS NULL",
+                (now, user_id),
+            )
+            connection.execute("DELETE FROM team_sessions WHERE user_id = ?", (user_id,))
 
     def preprovision_team_member(self, display_name: str | None = None) -> SpaceUserRecord:
         now = self.now()
@@ -1718,6 +2325,30 @@ class AppStore:
             "SELECT * FROM space_users ORDER BY created_at, user_id"
         ).fetchall()
         return [cls._space_user_record(row) for row in rows]
+
+    @classmethod
+    def _space_user_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> SpaceUserRecord | None:
+        row = connection.execute(
+            "SELECT * FROM space_users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return cls._space_user_record(row) if row is not None else None
+
+    @classmethod
+    def _require_team_member_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> SpaceUserRecord:
+        if cls._space_kind_from_connection(connection) != "team":
+            raise ValueError("Only a team space has team members.")
+        member = cls._space_user_from_connection(connection, user_id)
+        if member is None or member.identity_kind != "team_member":
+            raise KeyError(f"Unknown RCP team member {user_id}.")
+        return member
 
     @staticmethod
     def _space_user_record(row: sqlite3.Row) -> SpaceUserRecord:
@@ -2378,9 +3009,10 @@ class AppStore:
                 (project_id, legacy_id),
             )
 
-    def create_result_view(self, record: ResultViewRecord) -> ResultViewRecord:
-        """Insert one private result-view binding without storing its bytes."""
+    def create_result_view(self, record: ResultViewRecord, *, html: bytes) -> ResultViewRecord:
+        """Atomically insert one private result-view binding and its verified HTML."""
         record = ResultViewRecord.model_validate(record)
+        stored_html = _validated_result_view_html(record, html)
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -2391,9 +3023,9 @@ class AppStore:
                         origin_operation_id, latest_operation_id,
                         provider, model, reasoning, run_on,
                         native_session_id, stage_host, stage_root, source_name,
-                        content_sha256, size_bytes, created_at, updated_at, expires_at,
+                        content_sha256, size_bytes, html, created_at, updated_at, expires_at,
                         kept_filename, kept_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.view_id,
@@ -2412,6 +3044,7 @@ class AppStore:
                         record.source_name,
                         record.content_sha256,
                         record.size_bytes,
+                        stored_html,
                         record.created_at,
                         record.updated_at,
                         record.expires_at,
@@ -2474,6 +3107,87 @@ class AppStore:
         records = [self._result_view_record(row) for row in rows]
         return [record for record in records if _result_view_is_visible(record, as_of=as_of)]
 
+    def result_view_bytes(
+        self,
+        view_id: str,
+        *,
+        expected_content_sha256: str,
+    ) -> bytes:
+        """Return the bounded stored HTML only when it matches its metadata and caller digest."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM result_views WHERE view_id = ?",
+                (view_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(view_id)
+        record = self._result_view_record(row)
+        if record.content_sha256 != expected_content_sha256:
+            raise ResultViewConflict("result view changed before its stored bytes were read")
+        return _result_view_html_bytes(record, row["html"])
+
+    def delete_expired_result_views(self, *, as_of: datetime | None = None) -> int:
+        """Delete expired unkept views so their stored HTML expires with their metadata."""
+        current = _result_view_reference_time(as_of)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self._delete_expired_result_views_from_connection(connection, current)
+
+    @staticmethod
+    def _delete_expired_result_views_from_connection(
+        connection: sqlite3.Connection,
+        current: datetime,
+    ) -> int:
+        deleted = 0
+        rows = connection.execute(
+            "SELECT view_id, expires_at FROM result_views WHERE kept_filename IS NULL"
+        ).fetchall()
+        for row in rows:
+            if _required_timestamp(row["expires_at"]) > current:
+                continue
+            deleted += connection.execute(
+                """
+                DELETE FROM result_views
+                WHERE view_id = ? AND expires_at = ? AND kept_filename IS NULL
+                """,
+                (row["view_id"], row["expires_at"]),
+            ).rowcount
+        return deleted
+
+    def has_active_result_view_revision(self, record: ResultViewRecord) -> bool:
+        """Return whether this view has an active or recoverable revision task."""
+        record = ResultViewRecord.model_validate(record)
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs AS revision
+                WHERE revision.project_id = ? AND revision.kind = 'node_chat'
+                  AND json_extract(revision.request_json, '$.chat_id') = ?
+                  AND json_extract(revision.request_json, '$.result_view.action') = 'revise'
+                  AND json_extract(revision.request_json, '$.result_view.view_id') = ?
+                  AND (
+                    revision.status IN ('queued', 'running', 'pausing')
+                    OR (
+                      revision.status IN ('paused', 'interrupted')
+                      AND revision.native_session_id IS NOT NULL
+                      AND revision.stage_root IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM graph_runs AS child
+                        WHERE child.parent_operation_id = revision.operation_id
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM graph_run_receipts AS receipt
+                        WHERE receipt.operation_id = revision.operation_id
+                          AND receipt.category = 'experiment_recovery_abandoned'
+                      )
+                    )
+                  )
+                LIMIT 1
+                """,
+                (record.project_id, record.chat_id, record.view_id),
+            ).fetchone()
+        return row is not None
+
     def result_view_descriptor(
         self,
         record: ResultViewRecord,
@@ -2524,6 +3238,7 @@ class AppStore:
         latest_operation_id: str,
         content_sha256: str,
         size_bytes: int,
+        html: bytes,
         updated_at: str,
         expires_at: str,
     ) -> ResultViewRecord:
@@ -2551,10 +3266,11 @@ class AppStore:
                     "expires_at": expires_at,
                 }
             )
+            stored_html = _validated_result_view_html(revised, html)
             updated = connection.execute(
                 """
                 UPDATE result_views
-                SET latest_operation_id = ?, content_sha256 = ?, size_bytes = ?,
+                SET latest_operation_id = ?, content_sha256 = ?, size_bytes = ?, html = ?,
                     updated_at = ?, expires_at = ?
                 WHERE view_id = ? AND content_sha256 = ? AND kept_filename IS NULL
                 """,
@@ -2562,6 +3278,7 @@ class AppStore:
                     revised.latest_operation_id,
                     revised.content_sha256,
                     revised.size_bytes,
+                    stored_html,
                     revised.updated_at,
                     revised.expires_at,
                     view_id,
@@ -8609,7 +9326,7 @@ class AppStore:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT operation_id, project_id, dispatch_authority_json,
+                SELECT operation_id, project_id, campaign_id, dispatch_authority_json,
                        authorized_space_id, authorized_user_id, authorized_display_name
                 FROM graph_runs
                 WHERE project_id = ? AND operation_id = ?
@@ -8623,6 +9340,7 @@ class AppStore:
             operation_id=str(row["operation_id"]),
             project_id=str(row["project_id"]),
             authorized_by=self._authorized_human_snapshot(row),
+            campaign_id=row["campaign_id"],
             dispatch_authority=(
                 AgentDispatchAuthority.model_validate_json(dispatch_json)
                 if dispatch_json is not None
@@ -10202,7 +10920,7 @@ class AppStore:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so
         resume ancestry (invariant 10b) stays walkable for the life of a project."""
 
-        current = now or datetime.now(UTC)
+        current = _result_view_reference_time(now)
         inactive = """
             operation_id NOT IN (
                 SELECT operation_id FROM graph_runs
@@ -10212,6 +10930,10 @@ class AppStore:
         patch_cutoff = (current - timedelta(days=PATCH_OUTPUT_RETENTION_DAYS)).isoformat()
         trace_cutoff = (current - timedelta(days=RUN_TRACE_RETENTION_DAYS)).isoformat()
         with self.connection() as connection:
+            expired_result_views = self._delete_expired_result_views_from_connection(
+                connection,
+                current,
+            )
             outputs = connection.execute(
                 f"DELETE FROM graph_run_outputs WHERE created_at < ? AND {inactive}",
                 (patch_cutoff,),
@@ -10264,6 +10986,7 @@ class AppStore:
             "events": events,
             "receipts": receipts,
             "writing_sessions": len(delete_writing),
+            "result_views": expired_result_views,
         }
 
     @staticmethod
@@ -10322,7 +11045,9 @@ class AppStore:
 
     @staticmethod
     def _result_view_record(row: sqlite3.Row) -> ResultViewRecord:
-        return ResultViewRecord.model_validate(dict(row))
+        data = dict(row)
+        data.pop("html", None)
+        return ResultViewRecord.model_validate(data)
 
     @staticmethod
     def _project_record(row: sqlite3.Row) -> ProjectRecord:
@@ -10514,7 +11239,33 @@ def _result_view_is_visible(
 ) -> bool:
     if record.kept_filename is not None:
         return True
+    return _required_timestamp(record.expires_at) > _result_view_reference_time(as_of)
+
+
+def _result_view_reference_time(as_of: datetime | None) -> datetime:
     current = as_of or datetime.now(UTC)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError("result view visibility time must include a timezone")
-    return _required_timestamp(record.expires_at) > current.astimezone(UTC)
+    return current.astimezone(UTC)
+
+
+def _validated_result_view_html(record: ResultViewRecord, data: bytes) -> str:
+    if not isinstance(data, bytes):
+        raise TypeError("result view HTML must be bytes")
+    if len(data) > CHAT_ARTIFACT_MAX_FILE_BYTES:
+        raise ValueError("result view HTML exceeds its byte limit")
+    if len(data) != record.size_bytes:
+        raise ValueError("result view HTML size does not match its metadata")
+    if hashlib.sha256(data).hexdigest() != record.content_sha256:
+        raise ValueError("result view HTML digest does not match its metadata")
+    if validate_artifact_bytes(record.source_name, data) != "text/html":
+        raise ValueError("result view must be HTML")
+    return data.decode("utf-8")
+
+
+def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
+    if not isinstance(html, str):
+        raise ValueError("stored result view HTML is invalid")
+    data = html.encode("utf-8")
+    _validated_result_view_html(record, data)
+    return data

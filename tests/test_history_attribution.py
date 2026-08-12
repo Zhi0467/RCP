@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
 
 from rcp.config import load_manifest
-from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope, AgentTaskAuthority
-from rcp.core.models import AuthorizedHuman, Patch
-from rcp.history import HistoryManager
+from rcp.core.authority import (
+    AgentDispatchAuthority,
+    AgentDispatchScope,
+    AgentTaskAuthority,
+    require_apply,
+)
+from rcp.core.models import AuthorizedHuman, GraphState, Patch
+from rcp.core.validation import validate_patch
+from rcp.history import HistoryManager, build_revision_summaries
 from tests.helpers import refresh_patch, seed_patch
 
 from .helpers import fabricated_authorizer
@@ -38,19 +45,24 @@ def _task_authority(
     *,
     patch_kind: str = "seed",
     project_id: str = PROJECT_ID,
+    profile: str = "ordinary",
+    task_contract: str = "scratch_patch",
+    campaign_id: str | None = None,
 ) -> AgentTaskAuthority:
     return AgentTaskAuthority(
         operation_id=operation_id,
         project_id=project_id,
         authorized_by=authorizer,
         dispatch_authority=AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="scratch_patch",
+            profile=profile,
+            task_contract=task_contract,
             scope=AgentDispatchScope(
                 run_truth_scope=["repo-a"],
+                campaign_id=campaign_id,
                 patch_kind=patch_kind,
             ),
         ),
+        campaign_id=campaign_id,
     )
 
 
@@ -67,7 +79,9 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
     history.append(_agent_patch("seed-operation"))
 
     single, _ = history.append(
-        _review("rq/learning-after-shift", "accepted", "Accepted the question"),
+        _review("rq/learning-after-shift", "accepted", "Accepted the question").model_copy(
+            update={"campaign_id": "agent-campaign"}
+        ),
         authorized_by=authorizer,
     )
     batch, result = history.append_batch(
@@ -85,6 +99,7 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
     assert single.authorized_by == authorizer
     assert single.profile is None
     assert single.task_id is None
+    assert single.campaign_id is None
     assert [patch.authorized_by for patch in batch] == [authorizer, authorizer]
     assert result.state.revision == 4
     assert [patch.authorized_by for patch in history.load_patches()[1:]] == [
@@ -157,13 +172,157 @@ def test_agent_candidate_and_append_use_resolved_direct_task_snapshot(manifest) 
     assert candidate.authorized_by == authorizer
     assert candidate.profile == "ordinary"
     assert candidate.task_id == operation_id
+    assert candidate.campaign_id is None
     assert history.load_patches() == []
 
     appended, result = history.append(raw)
     assert appended.authorized_by == authorizer
     assert appended.profile == "ordinary"
     assert appended.task_id == appended.source_operation_id == operation_id
+    assert appended.campaign_id is None
     assert result.state.revision == 1
+
+
+def test_campaign_worker_keeps_ordinary_profile_and_campaign_id(manifest) -> None:
+    authorizer = fabricated_authorizer("Alice")
+    operation_id = "worker-operation"
+    campaign_id = "campaign-one"
+    authority = _task_authority(
+        operation_id,
+        authorizer,
+        patch_kind="work",
+        profile="ordinary",
+        task_contract="work_auto",
+        campaign_id=campaign_id,
+    )
+    history = HistoryManager(
+        manifest,
+        project_id=PROJECT_ID,
+        require_attribution=True,
+        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+    )
+    raw = Patch(
+        kind="work",
+        author="agent",
+        summary="Campaign worker result",
+        ops=[],
+        run_truth_scope=["repo-a"],
+        source_operation_id=operation_id,
+    )
+
+    appended, result = history.append(raw)
+
+    assert appended.profile == "ordinary"
+    assert appended.campaign_id == campaign_id
+    assert history.load_patches()[0].campaign_id == campaign_id
+    summary = build_revision_summaries(history.load_patches(), result)[0]
+    assert summary.profile == "ordinary"
+    assert summary.campaign_id == campaign_id
+
+
+def test_campaign_orchestrator_patch_keeps_campaign_id(manifest) -> None:
+    authorizer = fabricated_authorizer("Alice")
+    operation_id = "orchestrator-operation"
+    campaign_id = "campaign-one"
+    authority = _task_authority(
+        operation_id,
+        authorizer,
+        patch_kind="work",
+        profile="orchestrator",
+        task_contract="orchestrate",
+        campaign_id=campaign_id,
+    )
+    history = HistoryManager(
+        manifest,
+        project_id=PROJECT_ID,
+        require_attribution=True,
+        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+    )
+
+    appended, _ = history.append(
+        Patch(
+            kind="work",
+            author="agent",
+            summary="Orchestrator result",
+            ops=[],
+            run_truth_scope=["repo-a"],
+            source_operation_id=operation_id,
+        )
+    )
+
+    assert appended.profile == "orchestrator"
+    assert appended.campaign_id == campaign_id
+
+
+def test_orchestrator_without_canonical_campaign_id_is_refused(manifest) -> None:
+    authorizer = fabricated_authorizer("Alice")
+    operation_id = "orchestrator-operation"
+    authority = AgentTaskAuthority(
+        operation_id=operation_id,
+        project_id=PROJECT_ID,
+        authorized_by=authorizer,
+        dispatch_authority=AgentDispatchAuthority(
+            profile="orchestrator",
+            task_contract="orchestrate",
+            scope=AgentDispatchScope(
+                run_truth_scope=["repo-a"],
+                campaign_id="campaign-one",
+                patch_kind="work",
+            ),
+        ),
+        campaign_id=None,
+    )
+    history = HistoryManager(
+        manifest,
+        project_id=PROJECT_ID,
+        require_attribution=True,
+        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+    )
+    raw = Patch(
+        kind="work",
+        author="agent",
+        summary="Orchestrator result",
+        ops=[],
+        run_truth_scope=["repo-a"],
+        source_operation_id=operation_id,
+    )
+
+    with pytest.raises(ValueError, match="orchestrator.*campaign_id"):
+        history.append(raw)
+
+    assert history.load_patches() == []
+
+
+def test_supplied_campaign_id_must_match_canonical_task(manifest) -> None:
+    authorizer = fabricated_authorizer("Alice")
+    operation_id = "worker-operation"
+    authority = _task_authority(
+        operation_id,
+        authorizer,
+        patch_kind="work",
+        task_contract="work_auto",
+        campaign_id="campaign-one",
+    )
+    history = HistoryManager(
+        manifest,
+        project_id=PROJECT_ID,
+        require_attribution=True,
+        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+    )
+    raw = Patch(
+        kind="work",
+        author="agent",
+        summary="Campaign worker result",
+        ops=[],
+        run_truth_scope=["repo-a"],
+        source_operation_id=operation_id,
+        campaign_id="campaign-other",
+    )
+
+    with pytest.raises(ValueError, match="does not match the canonical"):
+        history.append(raw)
+
+    assert history.load_patches() == []
 
 
 def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> None:
@@ -267,6 +426,7 @@ def test_identity_claim_stays_system_owned_under_attribution_policy(manifest) ->
     assert stored.authorized_by is None
     assert stored.profile is None
     assert stored.task_id is None
+    assert stored.campaign_id is None
 
 
 def test_default_manager_remains_legacy_compatible(manifest) -> None:
@@ -275,6 +435,7 @@ def test_default_manager_remains_legacy_compatible(manifest) -> None:
     appended, result = history.append(seed_patch())
 
     assert appended.authorized_by is None
+    assert appended.campaign_id is None
     assert result.state.revision == 1
 
 
@@ -289,6 +450,37 @@ def test_attribution_policy_does_not_apply_during_legacy_replay(manifest) -> Non
 
     assert state.revision == 1
     assert guarded.load_patches()[0].authorized_by is None
+    assert guarded.load_patches()[0].campaign_id is None
+
+
+def test_campaign_id_is_inert_to_validation_and_apply_permission() -> None:
+    authorizer = fabricated_authorizer("Alice")
+    operation_id = "operation-1"
+    authority = _task_authority(operation_id, authorizer)
+    base = _agent_patch(operation_id).model_copy(update={"revision": 1})
+    verdicts: list[str] = []
+
+    for campaign_id in (None, "campaign-one", "garbage-id"):
+        patch = base.model_copy(update={"campaign_id": campaign_id})
+        report = validate_patch(
+            GraphState(),
+            patch,
+            ["repo-a"],
+            repository_aliases=["repo-a"],
+            default_run_truth_scope=["repo-a"],
+        )
+        dispatch = require_apply(authority, patch)
+        verdicts.append(
+            json.dumps(
+                {
+                    "validation": [message.model_dump(mode="json") for message in report.messages],
+                    "permission": dispatch.model_dump(mode="json"),
+                },
+                sort_keys=True,
+            )
+        )
+
+    assert len(set(verdicts)) == 1
 
 
 def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> None:

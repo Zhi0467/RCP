@@ -15,7 +15,7 @@ const { ProjectOverview } = await server.ssrLoadModule("/src/views/ProjectOvervi
 const { setupExistingResearchSelection, setupFinalConfirmation } = await server.ssrLoadModule(
   "/src/views/ProjectSetup.tsx",
 );
-const { ProjectHistoryDrawer } = await server.ssrLoadModule(
+const { ProjectHistoryDrawer, openHistoryCampaignReport } = await server.ssrLoadModule(
   "/src/components/ProjectHistoryDrawer.tsx",
 );
 const { revisionSummariesUrl } = await server.ssrLoadModule("/src/App.tsx");
@@ -154,6 +154,7 @@ test("Project history separates revision prose from the complete clickable Agent
     onInspectTask(taskId) {
       inspected.push(taskId);
     },
+    async onOpenCampaignReport() {},
     onClose() {},
   };
   const html = renderToStaticMarkup(React.createElement(ProjectHistoryDrawer, props));
@@ -186,6 +187,7 @@ test("Project history reports loading without hiding the already-loaded Agent ta
       loading: true,
       error: null,
       onInspectTask() {},
+      async onOpenCampaignReport() {},
       onClose() {},
     }),
   );
@@ -246,6 +248,7 @@ test("Project history labels system, attributed, and legacy revisions without in
       loading: false,
       error: null,
       onInspectTask() {},
+      async onOpenCampaignReport() {},
       onClose() {},
     }),
   );
@@ -254,6 +257,158 @@ test("Project history labels system, attributed, and legacy revisions without in
   assert.match(html, /Refresh · Ada Researcher/);
   assert.match(html, /Ordinary Agent task · task-ordinary/);
   assert.match(html, /Refresh · Human · Unattributed/);
+});
+
+test("Project history groups campaign envelopes while preserving revision attribution", () => {
+  const authorized = {
+    space_id: "123e4567-e89b-42d3-a456-426614174000",
+    user_id: "123e4567-e89b-42d3-a456-426614174001",
+    display_name: "Ada Researcher",
+  };
+  const report = {
+    report_id: "report-final",
+    ending: "exhausted",
+    created_at: "2026-08-03T09:00:00Z",
+  };
+  const summaries = [
+    {
+      ...latestSummary,
+      from_revision: 5,
+      to_revision: 6,
+      authorized_by: authorized,
+      profile: "orchestrator",
+      task_id: "task-orchestrator",
+      campaign_id: "campaign-live",
+      campaign: { state: "exhausted", report },
+      created_at: "2026-08-03T08:06:00Z",
+      sentences: ["Coordinated the campaign."],
+    },
+    {
+      ...latestSummary,
+      from_revision: 4,
+      to_revision: 5,
+      authorized_by: authorized,
+      profile: "ordinary",
+      task_id: "task-missing-new",
+      campaign_id: "campaign-missing",
+      campaign: null,
+      created_at: "2026-08-03T08:05:00Z",
+      sentences: ["Recorded missing campaign work."],
+    },
+    {
+      ...latestSummary,
+      from_revision: 3,
+      to_revision: 4,
+      kind: "approval",
+      producer: "human",
+      author: "human",
+      authorized_by: authorized,
+      profile: null,
+      task_id: null,
+      campaign_id: null,
+      campaign: null,
+      created_at: "2026-08-03T08:04:00Z",
+      sentences: ["Approved the campaign proposal."],
+    },
+    {
+      ...latestSummary,
+      from_revision: 2,
+      to_revision: 3,
+      authorized_by: authorized,
+      profile: "ordinary",
+      task_id: "task-worker",
+      campaign_id: "campaign-live",
+      campaign: { state: "exhausted", report },
+      created_at: "2026-08-03T08:03:00Z",
+      sentences: ["Recorded worker research."],
+    },
+    {
+      ...latestSummary,
+      from_revision: 1,
+      to_revision: 2,
+      authorized_by: authorized,
+      profile: "ordinary",
+      task_id: "task-missing-old",
+      campaign_id: "campaign-missing",
+      campaign: null,
+      created_at: "2026-08-03T08:02:00Z",
+      sentences: ["Recorded earlier missing campaign work."],
+    },
+    {
+      ...latestSummary,
+      from_revision: 0,
+      to_revision: 1,
+      authorized_by: authorized,
+      profile: "ordinary",
+      task_id: "task-independent",
+      campaign_id: null,
+      campaign: null,
+      created_at: "2026-08-03T08:01:00Z",
+      sentences: ["Recorded independent work."],
+    },
+  ];
+
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectHistoryDrawer, {
+      summaries,
+      tasks: [],
+      loading: false,
+      error: null,
+      onInspectTask() {},
+      async onOpenCampaignReport() {},
+      onClose() {},
+    }),
+  );
+
+  assert.equal(html.match(/class="history-campaign-group"/g)?.length, 2);
+  assert.match(html, /Campaign · Exhausted/);
+  assert.match(html, /Authorized by Ada Researcher/);
+  assert.match(html, /2 revisions/);
+  assert.match(html, /Campaign no longer recorded/);
+  assert.doesNotMatch(html, /campaign-live|campaign-missing/);
+  assert.match(html, /Orchestrator Agent task · task-orchestrator/);
+  assert.match(html, /Ordinary Agent task · task-worker/);
+  assert.match(html, /Approval · Ada Researcher/);
+  assert.equal(html.match(/Open report/g)?.length, 1);
+  assert.ok(html.indexOf("Campaign · Exhausted") < html.indexOf("Campaign no longer recorded"));
+  assert.ok(
+    html.indexOf("Campaign no longer recorded") < html.indexOf("Approved the campaign proposal"),
+  );
+  assert.ok(
+    html.indexOf("</section></li>", html.indexOf("Campaign no longer recorded")) <
+      html.indexOf("Approved the campaign proposal"),
+  );
+});
+
+test("Project history report control forwards the decorated report and surfaces opener errors", async () => {
+  const report = {
+    report_id: "report-final",
+    ending: "completed",
+    created_at: "2026-08-03T09:00:00Z",
+  };
+  const opened = [];
+  const errors = [];
+
+  await openHistoryCampaignReport(
+    async (campaignId, selectedReport) => {
+      opened.push([campaignId, selectedReport]);
+    },
+    "campaign-live",
+    report,
+    (error) => errors.push(error),
+  );
+  assert.deepEqual(opened, [["campaign-live", report]]);
+  assert.deepEqual(errors, [null]);
+
+  await openHistoryCampaignReport(
+    async () => {
+      throw new Error("The campaign report is unavailable.");
+    },
+    "campaign-live",
+    report,
+    (error) => errors.push(error),
+  );
+  assert.equal(errors.at(-1), "The campaign report is unavailable.");
 });
 
 test("an identity revision does not make an unseeded project look refreshed", () => {

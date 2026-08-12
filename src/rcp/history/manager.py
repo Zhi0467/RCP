@@ -520,7 +520,13 @@ class HistoryManager:
 
         if patch.kind == "identity":
             if authorized_by is not None or any(
-                value is not None for value in (patch.authorized_by, patch.profile, patch.task_id)
+                value is not None
+                for value in (
+                    patch.authorized_by,
+                    patch.profile,
+                    patch.task_id,
+                    patch.campaign_id,
+                )
             ):
                 raise ValueError("identity patches are system-owned and cannot carry attribution")
             return patch
@@ -536,6 +542,7 @@ class HistoryManager:
                     "authorized_by": authorizer,
                     "profile": None,
                     "task_id": None,
+                    "campaign_id": None,
                 }
             )
 
@@ -555,19 +562,22 @@ class HistoryManager:
         if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
             raise ValueError("agent authority resolver returned another task or project")
         dispatch = require_apply(resolved, patch)
+        if dispatch.profile == "orchestrator" and resolved.campaign_id is None:
+            raise ValueError("orchestrator agent tasks require a canonical campaign_id")
         assert resolved.authorized_by is not None
         authorizer = self._canonical_authorizer(resolved.authorized_by)
-        canonical = (authorizer, dispatch.profile, operation_id)
-        supplied = (patch.authorized_by, patch.profile, patch.task_id)
+        canonical = (authorizer, dispatch.profile, operation_id, resolved.campaign_id)
+        supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.campaign_id)
         if any(value is not None for value in supplied) and supplied != canonical:
             raise ValueError(
-                "agent patch attribution does not match the canonical task authorizer snapshot"
+                "agent patch attribution does not match the canonical task attribution"
             )
         return patch.model_copy(
             update={
                 "authorized_by": authorizer,
                 "profile": dispatch.profile,
                 "task_id": operation_id,
+                "campaign_id": resolved.campaign_id,
             }
         )
 

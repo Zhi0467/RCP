@@ -87,13 +87,9 @@ from rcp.runs.patch_validator import (
 )
 from rcp.runs.result_views import (
     ResultViewSnapshot,
-    clear_result_view_rollback_snapshot,
     discover_result_view,
-    persist_result_view_rollback_snapshot,
     prepare_result_view_slot,
-    read_result_view_rollback_snapshot,
     require_result_view_changed,
-    restore_result_view,
     touch_conversation_stage,
     touch_saved_conversation_stages,
 )
@@ -184,30 +180,6 @@ class _PreparedResultView:
     before: ResultViewSnapshot | None = None
 
 
-@dataclass(frozen=True)
-class _ResultViewRollbackReceipt:
-    task_operation_id: str
-    task_parent_operation_id: str
-    project_id: str
-    task_kind: str
-    view_id: str
-    experiment_id: str
-    chat_id: str
-    provider: str
-    model: str
-    reasoning: str
-    run_on: str
-    native_session_id: str
-    stage_host: str
-    stage_root: str
-    source_name: str
-    size_bytes: int
-    content_sha256: str
-
-
-_RESULT_VIEW_ROLLBACK_SNAPSHOT_RECEIPT = "result_view_rollback_snapshot"
-
-
 def _result_view_expiry(now: datetime) -> str:
     return (now + timedelta(days=RUN_STAGE_RETENTION_DAYS)).isoformat()
 
@@ -224,8 +196,8 @@ def _result_view_task(execution: AgentTaskExecution | None):
 def _preflight_result_view_revision(
     request: RunRequest,
     execution: AgentTaskExecution | None,
-) -> ResultViewRecord | None:
-    """Require the durable saved session and stage before any stage is opened or checkpointed."""
+) -> tuple[ResultViewRecord, ResultViewSnapshot] | None:
+    """Load the stored bytes and require their durable binding before opening the stage."""
 
     result_view = request.result_view
     if result_view is None or result_view.action != "revise":
@@ -261,233 +233,19 @@ def _preflight_result_view_revision(
             + ", ".join(mismatched)
             + " binding does not match this turn."
         )
-    return record
-
-
-def _persist_result_view_rollback(
-    execution: AgentTaskExecution | None,
-    prepared: _PreparedResultView | None,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-) -> None:
-    """Checkpoint trusted prior bytes and bindings immediately before provider launch."""
-
-    if prepared is None or prepared.action != "revise":
-        return
-    if execution is None or prepared.record is None or prepared.before is None:
-        raise ValueError("The result view revision lost its durable rollback binding.")
-    task = _result_view_task(execution)
-    persist_result_view_rollback_snapshot(
-        local_stage,
-        remote_stage,
-        prepared.view_id,
-        prepared.before,
+    stored = execution.store.result_view_bytes(
+        record.view_id,
+        expected_content_sha256=record.content_sha256,
     )
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        _RESULT_VIEW_ROLLBACK_SNAPSHOT_RECEIPT,
-        {
-            "version": 1,
-            "task_operation_id": task.operation_id,
-            "task_parent_operation_id": task.parent_operation_id or "",
-            "project_id": task.project_id,
-            "task_kind": task.kind,
-            "view_id": prepared.record.view_id,
-            "experiment_id": prepared.record.experiment_id,
-            "chat_id": prepared.record.chat_id,
-            "provider": prepared.record.provider,
-            "model": prepared.record.model,
-            "reasoning": prepared.record.reasoning,
-            "run_on": prepared.record.run_on,
-            "native_session_id": prepared.record.native_session_id,
-            "stage_host": prepared.record.stage_host,
-            "stage_root": prepared.record.stage_root,
-            "source_name": prepared.before.name,
-            "size_bytes": prepared.before.size,
-            "content_sha256": prepared.before.sha256,
-        },
+    return (
+        record,
+        ResultViewSnapshot(
+            name=record.source_name,
+            size=record.size_bytes,
+            sha256=record.content_sha256,
+            data=stored,
+        ),
     )
-
-
-def _result_view_rollback_receipt(
-    execution: AgentTaskExecution,
-    record: ResultViewRecord,
-) -> _ResultViewRollbackReceipt:
-    """Find the nearest exact same-stage snapshot receipt in this task lineage."""
-
-    current = execution.store.agent_task(execution.operation_id)
-    seen: set[str] = set()
-    while current is not None:
-        if current.operation_id in seen:
-            raise ValueError("The result view rollback lineage contains a cycle.")
-        seen.add(current.operation_id)
-        if (
-            current.project_id != record.project_id
-            or current.kind != "node_chat"
-            or (current.stage_host or "") != record.stage_host
-            or current.stage_root != record.stage_root
-        ):
-            raise ValueError("The result view rollback lineage crossed its saved task or stage.")
-        try:
-            current_request = RunRequest.model_validate(current.request)
-        except ValueError as exc:
-            raise ValueError("The result view rollback lineage has an invalid request.") from exc
-        if (
-            current_request.result_view is None
-            or current_request.result_view.action != "revise"
-            or current_request.result_view.view_id != record.view_id
-            or current_request.node_id != record.experiment_id
-            or current_request.chat_id != record.chat_id
-            or current_request.session_id != record.native_session_id
-            or current.native_session_id != record.native_session_id
-        ):
-            raise ValueError("The result view rollback lineage changed its saved binding.")
-        candidates = [
-            receipt
-            for receipt in execution.store.agent_task_receipts(current.operation_id)
-            if receipt.category == _RESULT_VIEW_ROLLBACK_SNAPSHOT_RECEIPT
-        ]
-        if candidates:
-            receipt = _parse_result_view_rollback_receipt(candidates[-1].payload)
-            expected = _ResultViewRollbackReceipt(
-                task_operation_id=current.operation_id,
-                task_parent_operation_id=current.parent_operation_id or "",
-                project_id=record.project_id,
-                task_kind=current.kind,
-                view_id=record.view_id,
-                experiment_id=record.experiment_id,
-                chat_id=record.chat_id,
-                provider=record.provider,
-                model=record.model,
-                reasoning=record.reasoning,
-                run_on=record.run_on,
-                native_session_id=record.native_session_id,
-                stage_host=record.stage_host,
-                stage_root=record.stage_root,
-                source_name=record.source_name,
-                size_bytes=record.size_bytes,
-                content_sha256=record.content_sha256,
-            )
-            if receipt != expected:
-                raise ValueError("The result view rollback receipt does not match its saved view.")
-            return receipt
-        if current.parent_operation_id is None:
-            break
-        parent = execution.store.agent_task(current.parent_operation_id)
-        if parent is None:
-            raise ValueError("The result view rollback lineage lost its parent task.")
-        current = parent
-    raise ValueError("The interrupted result view revision has no durable rollback snapshot.")
-
-
-def _parse_result_view_rollback_receipt(
-    payload: dict[str, object],
-) -> _ResultViewRollbackReceipt:
-    expected_keys = {
-        "version",
-        "task_operation_id",
-        "task_parent_operation_id",
-        "project_id",
-        "task_kind",
-        "view_id",
-        "experiment_id",
-        "chat_id",
-        "provider",
-        "model",
-        "reasoning",
-        "run_on",
-        "native_session_id",
-        "stage_host",
-        "stage_root",
-        "source_name",
-        "size_bytes",
-        "content_sha256",
-    }
-    if set(payload) != expected_keys or payload.get("version") != 1:
-        raise ValueError("The result view rollback receipt is invalid.")
-    string_keys = expected_keys - {"version", "size_bytes"}
-    if any(not isinstance(payload.get(key), str) for key in string_keys):
-        raise ValueError("The result view rollback receipt is invalid.")
-    size = payload.get("size_bytes")
-    if not isinstance(size, int) or isinstance(size, bool) or size < 1:
-        raise ValueError("The result view rollback receipt is invalid.")
-    return _ResultViewRollbackReceipt(
-        task_operation_id=str(payload["task_operation_id"]),
-        task_parent_operation_id=str(payload["task_parent_operation_id"]),
-        project_id=str(payload["project_id"]),
-        task_kind=str(payload["task_kind"]),
-        view_id=str(payload["view_id"]),
-        experiment_id=str(payload["experiment_id"]),
-        chat_id=str(payload["chat_id"]),
-        provider=str(payload["provider"]),
-        model=str(payload["model"]),
-        reasoning=str(payload["reasoning"]),
-        run_on=str(payload["run_on"]),
-        native_session_id=str(payload["native_session_id"]),
-        stage_host=str(payload["stage_host"]),
-        stage_root=str(payload["stage_root"]),
-        source_name=str(payload["source_name"]),
-        size_bytes=size,
-        content_sha256=str(payload["content_sha256"]),
-    )
-
-
-def _recover_result_view_rollback(
-    execution: AgentTaskExecution,
-    record: ResultViewRecord,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    public_problem: str,
-) -> ResultViewSnapshot:
-    """Restore a hard-interrupted revision from its exact trusted ancestor receipt."""
-
-    try:
-        receipt = _result_view_rollback_receipt(execution, record)
-        snapshot = read_result_view_rollback_snapshot(
-            local_stage,
-            remote_stage,
-            receipt.view_id,
-            expected_name=receipt.source_name,
-            expected_size=receipt.size_bytes,
-            expected_sha256=receipt.content_sha256,
-        )
-        restored = restore_result_view(
-            local_stage,
-            remote_stage,
-            receipt.view_id,
-            snapshot,
-        )
-        verified = discover_result_view(
-            local_stage,
-            remote_stage,
-            record.view_id,
-            expected_name=record.source_name,
-        )
-        if verified.sha256 != record.content_sha256 or verified.size != record.size_bytes:
-            raise ValueError("the restored public bytes do not match the saved view")
-        if not clear_result_view_rollback_snapshot(
-            local_stage,
-            remote_stage,
-            receipt.view_id,
-            snapshot,
-        ):
-            raise ValueError("the verified rollback snapshot disappeared before cleanup")
-    except Exception as exc:
-        raise ValueError(
-            "The result view no longer matches its saved revision, and its durable rollback "
-            f"could not be recovered ({public_problem}): {exc}"
-        ) from exc
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        "result_view_rollback_recovered",
-        {
-            "ancestor_operation_id": receipt.task_operation_id,
-            "view_id": receipt.view_id,
-            "content_sha256": receipt.content_sha256,
-            "restored": restored,
-        },
-    )
-    return verified
 
 
 def _roll_result_view_retention(
@@ -629,7 +387,7 @@ def _prepare_result_view_turn(
     *,
     focused_node: dict[str, object] | None,
     logical_operation_id: str,
-    revision_record: ResultViewRecord | None,
+    revision_preflight: tuple[ResultViewRecord, ResultViewSnapshot] | None,
 ) -> _PreparedResultView | None:
     result_view = request.result_view
     if result_view is None:
@@ -726,32 +484,14 @@ def _prepare_result_view_turn(
             origin_operation_id=origin_operation_id,
         )
 
-    record = revision_record
-    if record is None or record.view_id != result_view.view_id:
+    if revision_preflight is None:
+        raise ValueError("The result view revision lost its durable preflight binding.")
+    record, before = revision_preflight
+    if record.view_id != result_view.view_id:
         raise ValueError("The result view revision lost its durable preflight binding.")
     if _result_view_action_was_settled_by_ancestor(request, execution, record):
         return None
-    try:
-        slot = prepare_result_view_slot(local_stage, remote_stage, record.view_id, reuse=True)
-        before = discover_result_view(
-            local_stage,
-            remote_stage,
-            record.view_id,
-            expected_name=record.source_name,
-        )
-        if before.sha256 != record.content_sha256 or before.size != record.size_bytes:
-            raise ValueError("The result view bytes no longer match their saved revision.")
-    except (OSError, StateUnavailable, ValueError) as exc:
-        if execution.continuation not in {"resume", "retry"}:
-            raise
-        before = _recover_result_view_rollback(
-            execution,
-            record,
-            local_stage,
-            remote_stage,
-            str(exc),
-        )
-        slot = prepare_result_view_slot(local_stage, remote_stage, record.view_id, reuse=True)
+    slot = prepare_result_view_slot(local_stage, remote_stage, record.view_id, reuse=True)
     return _PreparedResultView(
         action="revise",
         view_id=record.view_id,
@@ -765,25 +505,12 @@ def _record_result_view_rejection(
     execution: AgentTaskExecution,
     prepared: _PreparedResultView,
     problem: str,
-    *,
-    restored: bool | None = None,
-    restore_problem: str | None = None,
-    snapshot_cleared: bool | None = None,
-    snapshot_clear_problem: str | None = None,
 ) -> None:
     payload: dict[str, object] = {
         "action": prepared.action,
         "view_id": prepared.view_id,
         "problem": problem[:1600],
     }
-    if restored is not None:
-        payload["restored"] = restored
-    if restore_problem is not None:
-        payload["restore_problem"] = restore_problem[:800]
-    if snapshot_cleared is not None:
-        payload["snapshot_cleared"] = snapshot_cleared
-    if snapshot_clear_problem is not None:
-        payload["snapshot_clear_problem"] = snapshot_clear_problem[:800]
     with suppress(Exception):
         execution.store.record_agent_task_receipt(
             execution.operation_id,
@@ -792,73 +519,12 @@ def _record_result_view_rejection(
             tier="diagnostic",
         )
     detail = f"Result view was not updated: {problem}"
-    if restore_problem:
-        detail += f" Its previous bytes also could not be restored: {restore_problem}"
-    if snapshot_clear_problem:
-        detail += f" Its rollback snapshot was retained for stage cleanup: {snapshot_clear_problem}"
     with suppress(Exception):
         execution.store.record_agent_task_event(
             execution.operation_id,
             detail,
             level="warning",
         )
-
-
-def _restore_rejected_result_view(
-    execution: AgentTaskExecution,
-    prepared: _PreparedResultView | None,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    problem: str,
-) -> None:
-    if prepared is None or prepared.action != "revise" or prepared.before is None:
-        return
-    restored: bool | None = None
-    restore_problem: str | None = None
-    snapshot_cleared: bool | None = None
-    snapshot_clear_problem: str | None = None
-    try:
-        restored = restore_result_view(
-            local_stage,
-            remote_stage,
-            prepared.view_id,
-            prepared.before,
-        )
-    except Exception as exc:
-        restore_problem = str(exc)
-    else:
-        try:
-            verified = discover_result_view(
-                local_stage,
-                remote_stage,
-                prepared.view_id,
-                expected_name=prepared.before.name,
-            )
-            if verified.sha256 != prepared.before.sha256 or verified.size != prepared.before.size:
-                raise ValueError("the restored public bytes do not match the saved view")
-        except Exception as exc:
-            restore_problem = str(exc)
-        else:
-            try:
-                snapshot_cleared = clear_result_view_rollback_snapshot(
-                    local_stage,
-                    remote_stage,
-                    prepared.view_id,
-                    prepared.before,
-                )
-                if not snapshot_cleared:
-                    raise ValueError("the rollback snapshot was already absent")
-            except Exception as exc:
-                snapshot_clear_problem = str(exc)
-    _record_result_view_rejection(
-        execution,
-        prepared,
-        problem,
-        restored=restored,
-        restore_problem=restore_problem,
-        snapshot_cleared=snapshot_cleared,
-        snapshot_clear_problem=snapshot_clear_problem,
-    )
 
 
 def _finalize_result_view_turn(
@@ -869,11 +535,11 @@ def _finalize_result_view_turn(
     remote_stage: RemoteRunStage | None,
     *,
     native_session_id: str | None,
-) -> bool:
+) -> None:
     """Validate and bind a view without coupling its outcome to answer or graph delivery."""
 
     if prepared is None:
-        return True
+        return
     assert execution is not None
     try:
         snapshot = discover_result_view(
@@ -911,7 +577,8 @@ def _finalize_result_view_turn(
                     created_at=now.isoformat(),
                     updated_at=now.isoformat(),
                     expires_at=expires_at,
-                )
+                ),
+                html=snapshot.data,
             )
             category = "result_view_created"
         else:
@@ -928,40 +595,14 @@ def _finalize_result_view_turn(
                 latest_operation_id=execution.operation_id,
                 content_sha256=snapshot.sha256,
                 size_bytes=snapshot.size,
+                html=snapshot.data,
                 updated_at=now.isoformat(),
                 expires_at=expires_at,
             )
             category = "result_view_revised"
     except Exception as exc:
-        if prepared.action == "revise":
-            _restore_rejected_result_view(
-                execution,
-                prepared,
-                local_stage,
-                remote_stage,
-                str(exc),
-            )
-        else:
-            _record_result_view_rejection(execution, prepared, str(exc))
-        return True
-
-    if prepared.action == "revise" and prepared.before is not None:
-        try:
-            cleared = clear_result_view_rollback_snapshot(
-                local_stage,
-                remote_stage,
-                prepared.view_id,
-                prepared.before,
-            )
-            if not cleared:
-                raise ValueError("the rollback snapshot was already absent")
-        except Exception as exc:
-            with suppress(Exception):
-                execution.store.record_agent_task_event(
-                    execution.operation_id,
-                    f"The accepted result view's rollback snapshot was retained: {exc}",
-                    level="warning",
-                )
+        _record_result_view_rejection(execution, prepared, str(exc))
+        return
 
     payload = {
         "view_id": record.view_id,
@@ -987,7 +628,6 @@ def _finalize_result_view_turn(
             execution.operation_id,
             "Result view created." if prepared.action == "create" else "Result view revised.",
         )
-    return True
 
 
 def _read_correction_patch(
@@ -1457,7 +1097,7 @@ async def stream_work_run(
             run_on=request.run_on,
         )
         request = _pinned_to_profile(request, profile)
-        revision_record = _preflight_result_view_revision(request, execution)
+        revision_preflight = _preflight_result_view_revision(request, execution)
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
@@ -1545,7 +1185,7 @@ async def stream_work_run(
             remote_stage,
             focused_node=context.node,
             logical_operation_id=artifact_scope_id,
-            revision_record=revision_record,
+            revision_preflight=revision_preflight,
         )
         if remote_stage is not None:
             artifact_directory = remote_stage.prepare_artifact_directory(
@@ -2065,12 +1705,6 @@ async def stream_work_run(
                 },
                 tier="diagnostic",
             )
-        _persist_result_view_rollback(
-            execution,
-            prepared_result_view,
-            local_stage,
-            remote_stage,
-        )
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)
@@ -2118,8 +1752,6 @@ async def stream_work_run(
         except BaseException as exc:
             await validator_lifecycle.close(primary_error=exc)
             raise
-        result_view_settled = False
-        result_view_rollback_problem = "the Work turn ended before the revision could be accepted"
         try:
             try:
                 async with aclosing(
@@ -2151,24 +1783,18 @@ async def stream_work_run(
                         yield frame
             except Exception:
                 outcome.failed = True
-                result_view_rollback_problem = (
-                    "the provider launch failed before the revision could be accepted"
-                )
                 raise
 
             answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
             if not outcome.completed:
                 if outcome.failed or outcome.paused:
-                    result_view_rollback_problem = "the provider did not complete the revision"
                     return
                 outcome.failed = True
-                result_view_rollback_problem = "the provider produced no result"
                 yield _sse(
                     AgentEvent(event="error", text=f"{request.provider} produced no result.")
                 )
                 return
             if not answer:
-                result_view_rollback_problem = "the provider finished without an answer"
                 yield _sse(
                     AgentEvent(
                         event="error", text=f"{request.provider} finished without answering."
@@ -2211,7 +1837,7 @@ async def stream_work_run(
                         detail=str(exc),
                     )
                 artifacts = []
-            result_view_settled = _finalize_result_view_turn(
+            _finalize_result_view_turn(
                 request,
                 execution,
                 prepared_result_view,
@@ -2219,15 +1845,10 @@ async def stream_work_run(
                 remote_stage,
                 native_session_id=outcome.session_id,
             )
-        finally:
-            if not result_view_settled and execution is not None:
-                _restore_rejected_result_view(
-                    execution,
-                    prepared_result_view,
-                    local_stage,
-                    remote_stage,
-                    result_view_rollback_problem,
-                )
+        except BaseException as exc:
+            if execution is not None and prepared_result_view is not None:
+                _record_result_view_rejection(execution, prepared_result_view, str(exc))
+            raise
         yield _sse(AgentEvent(event="answer", text=answer))
         for artifact in artifacts:
             yield _sse(AgentEvent(event="artifact", artifact=artifact))

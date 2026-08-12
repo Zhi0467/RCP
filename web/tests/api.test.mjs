@@ -6,6 +6,9 @@ import {
   api,
   clearAllProjectCaches,
   clearProjectCaches,
+  createTeamInvitation,
+  exchangeTeamSession,
+  loadTeamInvitations,
   loadProjectReadiness,
   pinApiInstance,
   registerIdentityNameRequiredHandler,
@@ -349,6 +352,76 @@ test("removing an unsent attachment preserves the claimed set scope", async () =
     assert.match(request.path, /attachment-a\?/);
     assert.match(request.path, /attachment_set_id=set-a/);
     assert.match(request.path, /client_id=client-a/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("team session exchange sends the raw token once in the JSON body only", async () => {
+  const originalFetch = globalThis.fetch;
+  const rawToken = "rcp_super-secret-member-token";
+  let request;
+  const identity = {
+    space_id: "space-a",
+    space_kind: "team",
+    space_name: "Causal Systems Lab",
+    user: { user_id: "user-a", display_name: "Ada", identity_kind: "team_member" },
+  };
+  globalThis.fetch = async (path, init) => {
+    request = { path, init };
+    return new Response(JSON.stringify(identity), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(await exchangeTeamSession(rawToken), identity);
+    assert.equal(request.path, "/api/team/session/exchange");
+    assert.equal(request.init.method, "POST");
+    assert.deepEqual(JSON.parse(request.init.body), { token: rawToken });
+    assert.doesNotMatch(request.path, new RegExp(rawToken));
+    assert.equal(new Headers(request.init.headers).get("Authorization"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("team invitation helpers use the member-scoped collection without code URLs", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const invitation = {
+    invitation_id: "invite-a",
+    created_by: "user-a",
+    created_at: "2026-08-12T00:00:00Z",
+    expires_at: "2026-08-19T00:00:00Z",
+    consumed_at: null,
+    consumed_by: null,
+    failed_attempts: 0,
+    locked_at: null,
+  };
+  globalThis.fetch = async (path, init) => {
+    requests.push({ path, init });
+    const body =
+      init?.method === "POST"
+        ? { invitation, code: "rcp_invite-secret", space_name: "Causal Systems Lab" }
+        : [invitation];
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(await loadTeamInvitations(), [invitation]);
+    assert.equal((await createTeamInvitation()).code, "rcp_invite-secret");
+    assert.deepEqual(
+      requests.map(({ path, init }) => [path, init?.method ?? "GET"]),
+      [
+        ["/api/team/invitations", "GET"],
+        ["/api/team/invitations", "POST"],
+      ],
+    );
+    assert.deepEqual(JSON.parse(requests[1].init.body), {});
+    assert.ok(requests.every(({ path }) => !path.includes("rcp_invite-secret")));
   } finally {
     globalThis.fetch = originalFetch;
   }

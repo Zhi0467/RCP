@@ -39,6 +39,12 @@ Direct HTTPS or a VPN-protected connection may be supported later without
 changing the identity model. Private-network placement alone is not encryption,
 and a bearer credential must never travel over plaintext HTTP.
 
+That rule is enforced, not merely stated: a team space refuses to serve on
+anything but a loopback host. Adding direct HTTPS therefore means adding a
+deliberate way to declare that the connection is already encrypted, because
+today a routable bind address and an unprotected credential are the same thing
+as far as the server can tell.
+
 The operating-system boundary that this authentication rests on—the dedicated
 `rcp` service account and its exclusively owned data directory—is specified in
 [Spaces and project homes](spaces-and-project-homes.md#the-service-account-and-the-trust-boundary).
@@ -174,8 +180,19 @@ designed, under the same constraint.
 
 ## Server bootstrap and first member
 
-On the first start of a new team space, the server prints a one-time bootstrap
-code to its local terminal. The first member uses the app to:
+`rcp space init --team` creates a new team space and prints its one-time
+bootstrap code to the interactive terminal of the person who ran that command.
+Starting or serving the backend never prints the code. A team backend normally
+runs under systemd without an interactive terminal, so printing a secret on
+first server start would put it in the journal—the same ordinary server log in
+which credentials are forbidden above.
+
+If initialization is interrupted before the code is delivered, rerunning the
+same command and name is allowed only while the team still has no member. It
+invalidates any unseen bootstrap code and prints one replacement, so a terminal
+failure cannot leave the new space permanently unclaimable.
+
+The first member uses the app to:
 
 1. install or build RCP on their own computer;
 2. choose **Add team space**;

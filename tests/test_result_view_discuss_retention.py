@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,8 @@ from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.runs.discuss import _refresh_result_view_retention
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore, ResultViewRecord
+
+_VIEW_HTML = b"<!doctype html><title>Curves</title><p>loss curve</p>"
 
 
 def _request(chat_id: str) -> RunRequest:
@@ -80,8 +83,8 @@ def _view(
         stage_host="",
         stage_root=stage_root,
         source_name="curves.html",
-        content_sha256="b" * 64,
-        size_bytes=128,
+        content_sha256=hashlib.sha256(_VIEW_HTML).hexdigest(),
+        size_bytes=len(_VIEW_HTML),
         created_at=(now - timedelta(minutes=1)).isoformat(),
         updated_at=now.isoformat(),
         expires_at=(now + timedelta(hours=1)).isoformat(),
@@ -121,7 +124,8 @@ def test_discuss_turn_touches_every_saved_stage_before_extending_expiry(
                 chat_id=chat_id,
                 stage_root=str(stage),
                 now=now,
-            )
+            ),
+            html=_VIEW_HTML,
         ),
         store.create_result_view(
             _view(
@@ -130,7 +134,8 @@ def test_discuss_turn_touches_every_saved_stage_before_extending_expiry(
                 chat_id=chat_id,
                 stage_root=str(old_stage),
                 now=now,
-            )
+            ),
+            html=_VIEW_HTML,
         ),
     ]
     real_refresh = store.refresh_result_view_expiry
@@ -186,7 +191,8 @@ def test_discuss_turn_does_not_extend_any_expiry_when_old_stage_is_unavailable(
                 chat_id=chat_id,
                 stage_root=str(stage),
                 now=now,
-            )
+            ),
+            html=_VIEW_HTML,
         ),
         store.create_result_view(
             _view(
@@ -195,7 +201,8 @@ def test_discuss_turn_does_not_extend_any_expiry_when_old_stage_is_unavailable(
                 chat_id=chat_id,
                 stage_root=str(missing_stage),
                 now=now,
-            )
+            ),
+            html=_VIEW_HTML,
         ),
     ]
 

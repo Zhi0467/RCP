@@ -67,6 +67,7 @@ def _orchestrator_patch(
         authorized_by=authorized_by,
         profile="orchestrator",
         task_id="campaign-root",
+        campaign_id="campaign",
     )
 
 
@@ -449,6 +450,7 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
                 patch_kind="work",
             ),
         ),
+        campaign_id="campaign",
     )
     history.project_id = "project"
     history.require_attribution = True

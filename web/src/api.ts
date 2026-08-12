@@ -2,10 +2,13 @@ import type {
   Campaign,
   CampaignMessage,
   ChatAttachmentDescriptor,
+  IdentityResponse,
   ProjectCacheMetrics,
   ProjectSnapshot,
   ResultViewDescriptor,
   StartCampaignRequest,
+  TeamInvitation,
+  TeamInvitationIssue,
 } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
@@ -82,6 +85,24 @@ export function registerIdentityNameRequiredHandler(
 
 export function pinApiInstance(instanceId: string | null): void {
   pinnedInstanceId = instanceId;
+}
+
+export function exchangeTeamSession(token: string): Promise<IdentityResponse> {
+  return api<IdentityResponse>("/api/team/session/exchange", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function loadTeamInvitations(): Promise<TeamInvitation[]> {
+  return api<TeamInvitation[]>("/api/team/invitations");
+}
+
+export function createTeamInvitation(): Promise<TeamInvitationIssue> {
+  return api<TeamInvitationIssue>("/api/team/invitations", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 async function notifyMutationFailure(path: string): Promise<void> {

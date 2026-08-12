@@ -527,6 +527,7 @@ class Patch(BaseModel):
     authorized_by: AuthorizedHuman | None = None
     profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = Field(default=None, min_length=1)
+    campaign_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="before")
     @classmethod
