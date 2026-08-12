@@ -45,7 +45,8 @@ A throwaway data directory, one named team space initialized with
 
 1. Initialize the team space with a required name. Read the one-time bootstrap
    code printed by `rcp space init --team`, then start the server and confirm
-   that serving it prints no credential.
+   that serving it prints no credential. Attempt to serve the same team space on
+   a non-loopback host.
 2. Enroll the first named member with that code and receive their permanent
    token. Attempt to use the bootstrap code again.
 3. Exchange the permanent token at the browser login boundary. Use the issued
@@ -78,6 +79,7 @@ A throwaway data directory, one named team space initialized with
 
 - `team_space_init_requires_a_name_and_prints_the_bootstrap_code_once`
 - `serve_never_prints_a_bootstrap_code_or_other_credential`
+- `a_team_space_refuses_to_serve_on_a_non_loopback_host`
 - `the_first_member_is_created_only_by_the_single_use_bootstrap_code`
 - `an_invitation_is_short_lived_single_use_and_visible_only_to_its_creator`
 - `the_invitation_block_names_the_space_and_its_expiry`
@@ -86,6 +88,7 @@ A throwaway data directory, one named team space initialized with
 - `only_an_indexed_sha256_token_hash_is_stored_and_comparison_is_constant_time`
 - `the_exchange_endpoint_is_the_only_request_that_receives_a_raw_token`
 - `browser_sessions_are_server_side_http_only_secure_same_site_lax_and_slide_for_fourteen_idle_days`
+- `the_session_cookie_carries_the_host_prefix_so_it_cannot_be_scoped_to_a_subdomain`
 - `restart_preserves_members_tokens_and_sessions_without_re_enrollment`
 - `a_member_cannot_authenticate_or_submit_work_as_another_member`
 - `a_member_cannot_read_rotate_or_revoke_another_members_credential`
@@ -133,6 +136,12 @@ request body. The login page holds the pasted value only long enough to make
 that request; it is never accepted in a URL or ordinary API request and never
 enters JavaScript storage, prompts, receipts, diagnostics, or canonical project
 history.
+
+A team space serves only on a loopback host, so a member credential never
+crosses plaintext HTTP. Remote members reach it through the encrypted SSH
+connection. The design's later direct-HTTPS option therefore needs an explicit
+way to say that the connection is already encrypted; until that exists, binding
+a team space to a routable address is refused rather than trusted.
 
 This scenario does not decide whether a client should detect that a familiar
 `space_id` was rolled back to an older restored archive.

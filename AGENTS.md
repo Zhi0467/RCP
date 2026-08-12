@@ -113,6 +113,19 @@ serially, then fan out the consumers.
   interact too much to split safely.
 - Anything the user asked to be done a specific way.
 
+### Integrating work built outside this tree
+
+Another session may be committing to `main` while a long change is being built,
+so an integration must survive drift. Give each parallel worker an APFS clone
+(`cp -c -R`, near-free, and unlike a worktree it carries uncommitted state),
+delete the copied `.venv` before `uv sync` — it holds an editable-install `.pth`
+pointing back at the original checkout, so tests would silently exercise the tree
+they were cloned from. Commit inside the clone, `git fetch <clone> HEAD:refs/…`,
+and merge that ref: the shared ancestor makes it a real three-way merge that
+conflicts only where the drift genuinely overlaps. Do not integrate by piping
+`git diff` into `git apply` — it fails whole-file on drifted context, which is
+the opposite of what is wanted.
+
 ## Commands
 
 Run from the repo root.
@@ -994,7 +1007,18 @@ longer apply.
   also a no-op the whole time because `pytest-randomly` is not installed, which
   turned a concurrent edit to `service.py` into a phantom "order-dependent test".
   Check that a plugin is installed before reasoning about what it did, and never
-  read an exit code through a pipe (2026-08-12).
+  read an exit code through a pipe (2026-08-12). Same shape: BSD `find` rejects
+  `-newermt '30 minutes ago'`, so with stderr suppressed it prints nothing and
+  reads as "no recent edits" — which is how a concurrent session was declared
+  finished while it was still typing. Compare against a reference file made with
+  `touch -t` instead (2026-08-12).
+- A shifting set of failing tests is a changing tree until proven otherwise. Three
+  campaign tests failed in three different combinations across four runs, which
+  looked exactly like load-sensitive races and was diagnosed as one; the real
+  cause was that the runs were not all the same code, and the surviving failure
+  was a deterministic red from an in-flight behavior change. Pin it by running the
+  suspect test in a pristine clone of the exact commit before theorizing about
+  timing (2026-08-12).
 - A test whose fake `stream` callable calls a method that does not exist can
   still pass. The `AttributeError` becomes the task's `failed` status rather than
   a test error, so it only surfaces when the run loses the race against

@@ -521,6 +521,9 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
         "max-age=1209600",
     ):
         assert attribute in cookie
+    # The __Host- prefix is only honoured when the cookie carries no Domain,
+    # which is what keeps a team session from being scoped to a sibling host.
+    assert "domain=" not in cookie
 
     identity = client.get("/api/identity")
     assert identity.status_code == 200

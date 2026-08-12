@@ -39,6 +39,12 @@ Direct HTTPS or a VPN-protected connection may be supported later without
 changing the identity model. Private-network placement alone is not encryption,
 and a bearer credential must never travel over plaintext HTTP.
 
+That rule is enforced, not merely stated: a team space refuses to serve on
+anything but a loopback host. Adding direct HTTPS therefore means adding a
+deliberate way to declare that the connection is already encrypted, because
+today a routable bind address and an unprotected credential are the same thing
+as far as the server can tell.
+
 The operating-system boundary that this authentication rests on—the dedicated
 `rcp` service account and its exclusively owned data directory—is specified in
 [Spaces and project homes](spaces-and-project-homes.md#the-service-account-and-the-trust-boundary).
