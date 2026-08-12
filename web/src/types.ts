@@ -14,6 +14,7 @@ export type AgentCapability =
   "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_readonly";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
+export const SPACE_NAME_MAX_LENGTH = 120;
 
 export interface Health {
   status: string;
@@ -21,6 +22,7 @@ export interface Health {
   version: string;
   space_id: string;
   space_kind: "personal" | "team";
+  space_name: string | null;
   instance_id: string;
   data_dir_id: string;
   owner_kind: string;
@@ -47,7 +49,30 @@ export interface SpaceUser {
 export interface IdentityResponse {
   space_id: string;
   space_kind: "personal" | "team";
+  space_name: string | null;
   user: SpaceUser;
+}
+
+export interface TeamEnrollmentResponse {
+  identity: IdentityResponse;
+  token: string;
+}
+
+export interface TeamInvitation {
+  invitation_id: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  consumed_by: string | null;
+  failed_attempts: number;
+  locked_at: string | null;
+}
+
+export interface TeamInvitationIssue {
+  invitation: TeamInvitation;
+  code: string;
+  space_name: string;
 }
 
 export interface SourceRef {

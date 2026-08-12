@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
@@ -70,6 +71,10 @@ from rcp.limits import (
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
+    TEAM_ENROLLMENT_CODE_MAX_LENGTH,
+    TEAM_MEMBER_TOKEN_MAX_LENGTH,
+    TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
+    TEAM_SESSION_IDLE_DAYS,
     WATCHER_POLL_INTERVAL_SECONDS,
 )
 from rcp.paper import PaperSnapshot
@@ -135,6 +140,7 @@ from rcp.sources import (
     legacy_shared_cache_roots,
 )
 from rcp.storage import (
+    SPACE_NAME_MAX_LENGTH,
     AgentTaskKind,
     AgentUsageSnapshot,
     AppStore,
@@ -147,7 +153,9 @@ from rcp.storage import (
     ResultViewRecord,
     SpaceUserRecord,
     StoredWatcherRecord,
+    TeamAuthenticationError,
     WatcherClaimConflict,
+    normalize_space_name,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import (
@@ -160,6 +168,60 @@ from rcp.watchers import (
 from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
+
+TEAM_SESSION_COOKIE = "__Host-rcp_session"
+TEAM_SESSION_COOKIE_MAX_AGE = TEAM_SESSION_IDLE_DAYS * 24 * 60 * 60
+
+
+class TeamPublicAuthBodyLimit:
+    """Bound unauthenticated credential requests before JSON parsing."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("path") not in {
+            "/api/team/enroll",
+            "/api/team/session/exchange",
+        }:
+            await self.app(scope, receive, send)
+            return
+
+        messages: list[Message] = []
+        total = 0
+        more_body = True
+        while more_body:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                more_body = False
+                continue
+            total += len(message.get("body", b""))
+            if total > TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES:
+                response = JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": {
+                            "code": "team_auth_request_too_large",
+                            "message": "The team authentication request is too large.",
+                        }
+                    },
+                )
+                await response(scope, receive, send)
+                return
+            more_body = message.get("more_body", False)
+
+        message_index = 0
+
+        async def replay() -> Message:
+            nonlocal message_index
+            if message_index >= len(messages):
+                return {"type": "http.request", "body": b"", "more_body": False}
+            message = messages[message_index]
+            message_index += 1
+            return message
+
+        await self.app(scope, replay, send)
 
 
 class PaperSaveRequest(BaseModel):
@@ -187,6 +249,35 @@ class SpaceIdentityUpdateRequest(BaseModel):
     @classmethod
     def normalize_display_name(cls, value: str) -> str:
         return normalize_display_name(value)
+
+
+class TeamEnrollmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    code: str = Field(min_length=1, max_length=TEAM_ENROLLMENT_CODE_MAX_LENGTH)
+    display_name: str = Field(max_length=DISPLAY_NAME_MAX_LENGTH)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        return normalize_display_name(value)
+
+
+class TeamSessionExchangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    token: str = Field(min_length=1, max_length=TEAM_MEMBER_TOKEN_MAX_LENGTH)
+
+
+class TeamSpaceUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str = Field(max_length=SPACE_NAME_MAX_LENGTH)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return normalize_space_name(value)
 
 
 TrustedPrincipalResolver = Callable[[Request, AppStore], SpaceUserRecord | str]
@@ -321,32 +412,60 @@ def create_app(
     class _GraphWatcherReplayDegraded(RuntimeError):
         pass
 
-    def acting_user(request: Request) -> SpaceUserRecord:
-        if space_kind == "personal":
-            owner = store.local_owner
-            if owner is None:  # pragma: no cover - guarded by the storage invariant
-                raise HTTPException(status_code=500, detail="Personal owner identity is missing.")
-            return owner
+    def require_team_space() -> None:
+        if space_kind != "team":
+            raise HTTPException(status_code=404, detail="Team authentication is unavailable.")
+
+    def set_team_session_cookie(response: Response, session: str) -> None:
+        response.set_cookie(
+            TEAM_SESSION_COOKIE,
+            session,
+            max_age=TEAM_SESSION_COOKIE_MAX_AGE,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="lax",
+        )
+
+    def clear_team_session_cookie(response: Response) -> None:
+        response.delete_cookie(
+            TEAM_SESSION_COOKIE,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="lax",
+        )
+
+    def resolve_team_user(request: Request) -> SpaceUserRecord:
+        cached = getattr(request.state, "team_member", None)
+        if isinstance(cached, SpaceUserRecord):
+            return cached
 
         if trusted_principal_resolver is None:
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "code": "team_identity_required",
-                    "message": "This team action requires a trusted authenticated member.",
-                },
-            )
-        resolved = trusted_principal_resolver(request, store)
-        user_id = resolved.user_id if isinstance(resolved, SpaceUserRecord) else resolved
-        if not isinstance(user_id, str):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "team_identity_invalid",
-                    "message": "The trusted team identity is invalid for this space.",
-                },
-            )
-        member = store.space_user(user_id)
+            session = request.cookies.get(TEAM_SESSION_COOKIE)
+            member = store.resolve_team_session(session)
+            if member is None:
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "code": "team_identity_required",
+                        "message": "This team action requires a trusted authenticated member.",
+                    },
+                )
+            request.state.team_session = session
+        else:
+            resolved = trusted_principal_resolver(request, store)
+            user_id = resolved.user_id if isinstance(resolved, SpaceUserRecord) else resolved
+            if not isinstance(user_id, str):
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "team_identity_invalid",
+                        "message": "The trusted team identity is invalid for this space.",
+                    },
+                )
+            member = store.space_user(user_id)
+
         if member is None or member.identity_kind != "team_member":
             raise HTTPException(
                 status_code=403,
@@ -355,7 +474,24 @@ def create_app(
                     "message": "The trusted team identity is invalid for this space.",
                 },
             )
+        request.state.team_member = member
         return member
+
+    def authenticating_team_session(request: Request) -> str | None:
+        if trusted_principal_resolver is not None:
+            return None
+        session = getattr(request.state, "team_session", None)
+        if not isinstance(session, str):  # pragma: no cover - middleware resolves this first
+            raise HTTPException(status_code=401, detail="The browser session is unavailable.")
+        return session
+
+    def acting_user(request: Request) -> SpaceUserRecord:
+        if space_kind == "personal":
+            owner = store.local_owner
+            if owner is None:  # pragma: no cover - guarded by the storage invariant
+                raise HTTPException(status_code=500, detail="Personal owner identity is missing.")
+            return owner
+        return resolve_team_user(request)
 
     def require_patch_capable_identity(request: Request) -> AuthorizedHuman:
         user = acting_user(request)
@@ -1304,6 +1440,8 @@ def create_app(
     app.state.space_kind = space_kind
     app.state.launcher = launcher
     app.state.agent_mode = agent_mode
+    if space_kind == "team":
+        app.add_middleware(TeamPublicAuthBodyLimit)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -1324,10 +1462,78 @@ def create_app(
                 if separator:
                     canonical_path = f"{canonical_path}/{rest}"
                 request.scope["path"] = canonical_path
+                path = canonical_path
+
+        public_team_api_paths = {
+            "/api/health",
+            "/api/team/enroll",
+            "/api/team/session/exchange",
+        }
+        session_ending_paths = {
+            "/api/team/session/logout",
+            "/api/team/credential/rotate",
+            "/api/team/credential/revoke",
+        }
+        if (
+            space_kind == "team"
+            and request.method != "OPTIONS"
+            and (path == "/api" or path.startswith("/api/"))
+            and path not in public_team_api_paths
+        ):
+            try:
+                resolve_team_user(request)
+            except HTTPException as exc:
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                    headers=exc.headers,
+                )
+            if trusted_principal_resolver is None and request.method not in {
+                "GET",
+                "HEAD",
+                "OPTIONS",
+            }:
+                origin = request.headers.get("origin")
+                expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+                if origin is not None and origin.rstrip("/") != expected_origin.rstrip("/"):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": {
+                                "code": "team_origin_invalid",
+                                "message": "The request origin does not match this team server.",
+                            }
+                        },
+                    )
+                media_type = request.headers.get("content-type", "").partition(";")[0].strip()
+                path_parts = path.split("/")
+                attachment_upload = (
+                    request.method == "POST"
+                    and len(path_parts) == 7
+                    and path_parts[1:3] == ["api", "projects"]
+                    and path_parts[4] == "chats"
+                    and path_parts[6] == "attachments"
+                )
+                allowed_media_type = media_type.lower() == "application/json" or (
+                    attachment_upload and media_type.lower() == "multipart/form-data"
+                )
+                if not allowed_media_type:
+                    return JSONResponse(
+                        status_code=415,
+                        content={
+                            "detail": {
+                                "code": "team_json_required",
+                                "message": (
+                                    "Authenticated team mutations require JSON, except for "
+                                    "the bounded attachment upload."
+                                ),
+                            }
+                        },
+                    )
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             pinned_instance = request.headers.get("X-RCP-Instance-ID")
             if pinned_instance and pinned_instance != identity.instance_id:
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=409,
                     content={
                         "detail": (
@@ -1337,7 +1543,15 @@ def create_app(
                         "instance_id": identity.instance_id,
                     },
                 )
-        return await call_next(request)
+                session = getattr(request.state, "team_session", None)
+                if isinstance(session, str) and path not in session_ending_paths:
+                    set_team_session_cookie(response, session)
+                return response
+        response = await call_next(request)
+        session = getattr(request.state, "team_session", None)
+        if isinstance(session, str) and path not in session_ending_paths:
+            set_team_session_cookie(response, session)
+        return response
 
     @app.exception_handler(PatchRejected)
     async def patch_rejected(_: Request, exc: PatchRejected) -> JSONResponse:
@@ -1363,6 +1577,20 @@ def create_app(
             },
         )
 
+    @app.exception_handler(TeamAuthenticationError)
+    async def team_authentication_error(_: Request, exc: TeamAuthenticationError) -> JSONResponse:
+        status_by_code = {
+            "enrollment_code_invalid": 401,
+            "team_token_invalid": 401,
+            "enrollment_code_consumed": 409,
+            "enrollment_code_expired": 410,
+            "enrollment_code_locked": 429,
+        }
+        return JSONResponse(
+            status_code=status_by_code.get(exc.code, 401),
+            content={"detail": {"code": exc.code, "message": str(exc)}},
+        )
+
     @app.get("/api/health")
     async def health() -> dict[str, object]:
         with store.connection() as connection:
@@ -1379,6 +1607,7 @@ def create_app(
             "version": __version__,
             "space_id": space_id,
             "space_kind": space_kind,
+            "space_name": store.space_name,
             "instance_id": identity.instance_id,
             "pid": identity.pid,
             "data_dir_id": identity.data_dir_id,
@@ -1395,6 +1624,7 @@ def create_app(
         return {
             "space_id": space_id,
             "space_kind": space_kind,
+            "space_name": store.space_name,
             "user": user.model_dump(mode="json"),
         }
 
@@ -1415,6 +1645,84 @@ def create_app(
                 status_code=403, detail="Acting identity is no longer valid."
             ) from exc
         return identity_payload(renamed)
+
+    @app.post("/api/team/enroll")
+    def enroll_team_member(body: TeamEnrollmentRequest) -> dict[str, object]:
+        require_team_space()
+        member, token = store.enroll_team_member(body.code, body.display_name)
+        return {"identity": identity_payload(member), "token": token}
+
+    @app.post("/api/team/session/exchange")
+    def exchange_team_session(
+        body: TeamSessionExchangeRequest,
+        response: Response,
+    ) -> dict[str, object]:
+        require_team_space()
+        session, member = store.create_team_session(body.token)
+        set_team_session_cookie(response, session)
+        return identity_payload(member)
+
+    @app.post("/api/team/session/logout")
+    def logout_team_session(request: Request, response: Response) -> dict[str, bool]:
+        require_team_space()
+        acting_user(request)
+        store.delete_team_session(request.cookies.get(TEAM_SESSION_COOKIE))
+        clear_team_session_cookie(response)
+        return {"ok": True}
+
+    @app.get("/api/team/invitations")
+    def team_invitations(request: Request) -> list[dict[str, object]]:
+        require_team_space()
+        member = acting_user(request)
+        return [
+            invitation.model_dump(mode="json")
+            for invitation in store.team_invitations(member.user_id)
+        ]
+
+    @app.post("/api/team/invitations")
+    def create_team_invitation(request: Request) -> dict[str, object]:
+        require_team_space()
+        member = acting_user(request)
+        invitation, code = store.create_team_invitation(member.user_id)
+        space_name = store.space_name
+        if space_name is None:  # pragma: no cover - named team initialization is required
+            raise HTTPException(status_code=500, detail="Team space name is missing.")
+        return {
+            "invitation": invitation.model_dump(mode="json"),
+            "code": code,
+            "space_name": space_name,
+        }
+
+    @app.post("/api/team/credential/rotate")
+    def rotate_team_credential(request: Request, response: Response) -> dict[str, str]:
+        require_team_space()
+        member = acting_user(request)
+        token = store.rotate_team_token(
+            member.user_id,
+            authenticating_session=authenticating_team_session(request),
+        )
+        clear_team_session_cookie(response)
+        return {"token": token}
+
+    @app.post("/api/team/credential/revoke")
+    def revoke_team_credential(request: Request, response: Response) -> dict[str, bool]:
+        require_team_space()
+        member = acting_user(request)
+        store.revoke_team_token(
+            member.user_id,
+            authenticating_session=authenticating_team_session(request),
+        )
+        clear_team_session_cookie(response)
+        return {"ok": True}
+
+    @app.patch("/api/team/space")
+    def update_team_space(
+        request: Request,
+        body: TeamSpaceUpdateRequest,
+    ) -> dict[str, str]:
+        require_team_space()
+        acting_user(request)
+        return {"space_name": store.rename_space(body.name)}
 
     @app.get("/api/projects")
     def projects() -> list[dict[str, object]]:

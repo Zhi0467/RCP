@@ -9,7 +9,8 @@ import {
   UserRound,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import type { IdentityResponse } from "../types";
+import { createTeamInvitation, loadTeamInvitations } from "../api";
+import type { IdentityResponse, TeamInvitation, TeamInvitationIssue } from "../types";
 
 interface Props {
   identity: IdentityResponse | null;
@@ -24,6 +25,7 @@ interface IdentityProvenanceSlipProps {
   copyStatus: "idle" | "copied" | "failed";
   onCopy: () => void;
   onEdit: () => void;
+  teamPanelActive?: boolean;
 }
 
 export async function copyIdentityId(
@@ -43,6 +45,7 @@ export function IdentityProvenanceSlip({
   copyStatus,
   onCopy,
   onEdit,
+  teamPanelActive = true,
 }: IdentityProvenanceSlipProps) {
   const displayName = identity.user.display_name ?? "";
   const spaceLabel = identity.space_kind === "personal" ? "Personal space" : "Team space";
@@ -112,33 +115,209 @@ export function IdentityProvenanceSlip({
         )}
       </div>
 
-      <section
-        className="landing-team-seam"
-        aria-labelledby={`${teamNoticeId}-title`}
-        data-team-space-seam="unimplemented"
-      >
-        <header>
-          <span id={`${teamNoticeId}-title`}>Team spaces</span>
-          <span>Coming later</span>
-        </header>
-        <p id={teamNoticeId}>Team connections are not implemented in this build.</p>
-        <div className="landing-team-seam-actions">
-          <button type="button" disabled aria-describedby={teamNoticeId}>
-            <Link2 size={13} aria-hidden="true" />
-            Join team space
-          </button>
-          <button type="button" disabled aria-describedby={teamNoticeId}>
-            <MailPlus size={13} aria-hidden="true" />
-            Accept invitation
-          </button>
-          <button type="button" disabled aria-describedby={teamNoticeId}>
-            <UserPlus size={13} aria-hidden="true" />
-            Invite member
-          </button>
-        </div>
-      </section>
+      {identity.space_kind === "team" ? (
+        <TeamInvitationPanel identity={identity} active={teamPanelActive} />
+      ) : (
+        <PersonalTeamSeam noticeId={teamNoticeId} />
+      )}
     </>
   );
+}
+
+export function PersonalTeamSeam({ noticeId }: { noticeId: string }) {
+  return (
+    <section
+      className="landing-team-seam"
+      aria-labelledby={`${noticeId}-title`}
+      data-team-space-seam="unimplemented"
+    >
+      <header>
+        <span id={`${noticeId}-title`}>Team spaces</span>
+        <span>Coming later</span>
+      </header>
+      <p id={noticeId}>Team connections are not implemented in this build.</p>
+      <div className="landing-team-seam-actions">
+        <button type="button" disabled aria-describedby={noticeId}>
+          <Link2 size={13} aria-hidden="true" />
+          Join team space
+        </button>
+        <button type="button" disabled aria-describedby={noticeId}>
+          <MailPlus size={13} aria-hidden="true" />
+          Accept invitation
+        </button>
+        <button type="button" disabled aria-describedby={noticeId}>
+          <UserPlus size={13} aria-hidden="true" />
+          Invite member
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function TeamInvitationPanel({
+  identity,
+  active = true,
+}: {
+  identity: IdentityResponse;
+  active?: boolean;
+}) {
+  const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
+  const [issued, setIssued] = useState<TeamInvitationIssue | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const titleId = useId();
+
+  useEffect(() => {
+    if (!active) return;
+    let stopped = false;
+    setLoading(true);
+    setError(null);
+    void loadTeamInvitations()
+      .then((next) => {
+        if (!stopped) setInvitations(next);
+      })
+      .catch(() => {
+        if (!stopped) setError("Invitations could not be loaded. Try opening this panel again.");
+      })
+      .finally(() => {
+        if (!stopped) setLoading(false);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [active, identity.user.user_id]);
+
+  const createInvitation = async () => {
+    if (creating) return;
+    setCreating(true);
+    setError(null);
+    setCopyStatus("idle");
+    try {
+      const next = await createTeamInvitation();
+      setIssued(next);
+      setInvitations((current) => [
+        next.invitation,
+        ...current.filter(
+          (invitation) => invitation.invitation_id !== next.invitation.invitation_id,
+        ),
+      ]);
+    } catch {
+      setError("An invitation could not be created. Try again.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyInvitation = async () => {
+    if (!issued) return;
+    try {
+      await copyIdentityId(invitationCopyBlock(issued));
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  };
+
+  return (
+    <section className="landing-team-invitations" aria-labelledby={titleId}>
+      <header>
+        <span id={titleId}>Team invitations</span>
+        <span>{identity.space_name || "Team space"}</span>
+      </header>
+      <button
+        className="landing-team-invite-action"
+        type="button"
+        disabled={creating}
+        onClick={() => void createInvitation()}
+      >
+        <UserPlus size={13} aria-hidden="true" />
+        {creating ? "Creating" : "Invite member"}
+      </button>
+
+      {issued && (
+        <div className="landing-team-invitation-code" aria-live="polite">
+          <div>
+            <span>Invitation for</span>
+            <strong>{issued.space_name}</strong>
+          </div>
+          <code tabIndex={0} aria-label={`Invitation code ${issued.code}`}>
+            {issued.code}
+          </code>
+          <div className="landing-team-invitation-expiry">
+            Expires {formatInvitationTime(issued.invitation.expires_at)}
+          </div>
+          <button type="button" onClick={() => void copyInvitation()}>
+            {copyStatus === "copied" ? (
+              <Check size={12} aria-hidden="true" />
+            ) : (
+              <Copy size={12} aria-hidden="true" />
+            )}
+            {copyStatus === "copied" ? "Copied" : "Copy invitation"}
+          </button>
+          {copyStatus === "failed" && (
+            <p role="alert">Invitation could not be copied. Select the code to copy it manually.</p>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <p className="landing-team-invitation-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <TeamInvitationLedger invitations={invitations} loading={loading} />
+    </section>
+  );
+}
+
+export function TeamInvitationLedger({
+  invitations,
+  loading = false,
+}: {
+  invitations: TeamInvitation[];
+  loading?: boolean;
+}) {
+  return (
+    <div className="landing-team-invitation-ledger" aria-busy={loading}>
+      <span>Created by you</span>
+      {!loading && invitations.length === 0 && <p>No invitations created yet.</p>}
+      {invitations.length > 0 && (
+        <ul>
+          {invitations.map((invitation) => (
+            <li key={invitation.invitation_id}>
+              <span>{invitationStatus(invitation)}</span>
+              <time dateTime={invitation.expires_at}>
+                Expires {formatInvitationTime(invitation.expires_at)}
+              </time>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function invitationCopyBlock(issue: TeamInvitationIssue): string {
+  return `${issue.space_name}\n${issue.code}\nExpires ${formatInvitationTime(issue.invitation.expires_at)}`;
+}
+
+function invitationStatus(invitation: TeamInvitation): string {
+  if (invitation.consumed_at) return "Used";
+  if (invitation.locked_at) return "Locked";
+  if (new Date(invitation.expires_at).getTime() <= Date.now()) return "Expired";
+  return "Available";
+}
+
+function formatInvitationTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 }
 
 export function LandingIdentityMenu({ identity, identityError, onRequestName }: Props) {
@@ -242,6 +421,7 @@ export function LandingIdentityMenu({ identity, identityError, onRequestName }: 
             copyStatus={copyStatus}
             onCopy={() => void copyUserId()}
             onEdit={requestName}
+            teamPanelActive={open}
           />
         </section>
       )}

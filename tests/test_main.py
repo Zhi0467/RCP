@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import signal
 import sys
 import urllib.error
@@ -33,6 +34,7 @@ from rcp.server_runtime import (
     ServerMetadata,
     read_server_metadata,
 )
+from rcp.storage import AppStore
 
 
 class FakeResponse:
@@ -86,6 +88,130 @@ def test_instance_lock_rejects_a_second_server_for_the_same_data(tmp_path) -> No
         instance_lock(tmp_path),
     ):
         pass
+
+
+def test_space_init_creates_a_named_team_without_locking_or_serving(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        "rcp.__main__.instance_lock",
+        lambda *_args, **_kwargs: pytest.fail("space init took the server singleton lock"),
+    )
+    monkeypatch.setattr(
+        "rcp.__main__._serve_as_owner",
+        lambda *_args, **_kwargs: pytest.fail("space init launched the server"),
+    )
+    monkeypatch.setattr(sys, "argv", ["rcp", "space", "init", "--team", "--name", "Lab"])
+
+    main()
+
+    output = capsys.readouterr().out
+    codes = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", output)
+    assert len(codes) == 1
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    assert store.space_kind == "team"
+    assert store.space_name == "Lab"
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM team_bootstrap_codes").fetchone()[0] == 1
+
+
+def test_space_init_refuses_noninteractive_output_and_an_existing_space(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["rcp", "space", "init", "--team", "--name", "Lab"])
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit, match="interactive terminal"):
+        main()
+    assert not (tmp_path / "rcp.sqlite3").exists()
+    assert capsys.readouterr().out == ""
+
+    AppStore(tmp_path / "rcp.sqlite3")
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with pytest.raises(SystemExit, match="already contains a space"):
+        main()
+    assert capsys.readouterr().out == ""
+
+
+def test_space_init_recovers_an_unclaimed_team_after_terminal_interruption(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    store, unseen_code = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["rcp", "space", "init", "--team", "--name", "Lab"])
+
+    main()
+
+    output = capsys.readouterr().out
+    assert output.startswith("Recovered unclaimed team space")
+    replacement = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", output)
+    assert len(replacement) == 1
+    assert replacement[0] != unseen_code
+    member, _token = store.enroll_team_member(replacement[0], "Alice")
+    assert member.display_name == "Alice"
+
+    AppStore(tmp_path / "rcp.sqlite3")
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with pytest.raises(SystemExit, match="already contains a space"):
+        main()
+    assert capsys.readouterr().out == ""
+
+
+def test_serve_never_emits_the_team_bootstrap_credential(tmp_path, monkeypatch, capsys) -> None:
+    _store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+
+    class FakeSocket:
+        def fileno(self) -> int:
+            return 17
+
+    @contextmanager
+    def fake_socket(_host, _port):
+        yield FakeSocket()
+
+    def fake_run(_args, _metadata, *, server_fd, on_ready):
+        assert server_fd == 17
+        on_ready()
+
+    monkeypatch.setattr("rcp.__main__._reserved_server_socket", fake_socket)
+    monkeypatch.setattr("rcp.__main__._run_server", fake_run)
+    with instance_lock(tmp_path):
+        _serve_as_owner(_serve_args(), tmp_path)
+
+    output = capsys.readouterr().out
+    assert json.loads(output)["outcome"] == "owned"
+    assert bootstrap not in output
+    assert "rcp_bootstrap_" not in output
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.10", "example.test"])
+def test_team_serve_refuses_plaintext_non_loopback_bind(tmp_path, host) -> None:
+    AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+
+    with pytest.raises(SystemExit, match="only to a loopback host"):
+        _serve_as_owner(_serve_args(host=host), tmp_path)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_team_serve_accepts_loopback_bind(tmp_path, monkeypatch, host) -> None:
+    AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+
+    @contextmanager
+    def fake_socket(actual_host, _port):
+        assert actual_host == host
+
+        class FakeSocket:
+            def fileno(self) -> int:
+                return 17
+
+        yield FakeSocket()
+
+    monkeypatch.setattr("rcp.__main__._reserved_server_socket", fake_socket)
+    monkeypatch.setattr("rcp.__main__._run_server", lambda *_args, **_kwargs: None)
+    _serve_as_owner(_serve_args(host=host), tmp_path)
 
 
 def test_open_reuses_the_server_that_holds_the_instance_lock(tmp_path, monkeypatch) -> None:
