@@ -8609,7 +8609,7 @@ class AppStore:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT operation_id, project_id, dispatch_authority_json,
+                SELECT operation_id, project_id, campaign_id, dispatch_authority_json,
                        authorized_space_id, authorized_user_id, authorized_display_name
                 FROM graph_runs
                 WHERE project_id = ? AND operation_id = ?
@@ -8623,6 +8623,7 @@ class AppStore:
             operation_id=str(row["operation_id"]),
             project_id=str(row["project_id"]),
             authorized_by=self._authorized_human_snapshot(row),
+            campaign_id=row["campaign_id"],
             dispatch_authority=(
                 AgentDispatchAuthority.model_validate_json(dispatch_json)
                 if dispatch_json is not None

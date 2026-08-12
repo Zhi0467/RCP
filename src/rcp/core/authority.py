@@ -77,6 +77,7 @@ class AgentTaskAuthority(BaseModel):
     project_id: str = Field(min_length=1)
     authorized_by: AuthorizedHuman | None
     dispatch_authority: AgentDispatchAuthority | None
+    campaign_id: str | None = Field(default=None, min_length=1)
 
 
 ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(

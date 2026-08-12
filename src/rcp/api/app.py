@@ -1760,7 +1760,23 @@ def create_app(
         to_revision: int | None = None,
     ):
         service = _project_service(catalog, project_id)
-        return service.history.revision_summaries(from_revision, to_revision)
+        summaries = service.history.revision_summaries(from_revision, to_revision)
+        campaign_ids = {
+            campaign_id
+            for summary in summaries
+            if isinstance(campaign_id := summary.get("campaign_id"), str)
+        }
+        campaigns = {
+            campaign_id: _history_campaign_decoration(store, project_id, campaign_id)
+            for campaign_id in campaign_ids
+        }
+        return [
+            {
+                **summary,
+                "campaign": campaigns.get(summary.get("campaign_id")),
+            }
+            for summary in summaries
+        ]
 
     @app.get("/api/projects/{project_id}/sources")
     def sources(project_id: str, refresh: bool = False):
@@ -3114,6 +3130,42 @@ def _task_is_patch_capable(
     if isinstance(request, RunRequest):
         return request.mode == "work"
     return request.get("mode") == "work"
+
+
+def _history_campaign_decoration(
+    store: AppStore,
+    project_id: str,
+    campaign_id: str,
+) -> dict[str, object] | None:
+    campaign = store.campaign(campaign_id)
+    if campaign is None or campaign.project_id != project_id:
+        return None
+
+    if campaign.status == "succeeded":
+        state = "completed"
+    elif campaign.ending == "exhausted":
+        state = "exhausted"
+    elif campaign.status in {"stopped", "failed"}:
+        state = campaign.status
+    else:
+        state = "running"
+
+    reports = store.campaign_reports(campaign_id)
+    latest_report = max(
+        reports, key=lambda report: (report.created_at, report.report_id), default=None
+    )
+    return {
+        "state": state,
+        "report": (
+            {
+                "report_id": latest_report.report_id,
+                "ending": latest_report.ending,
+                "created_at": latest_report.created_at,
+            }
+            if latest_report is not None
+            else None
+        ),
+    }
 
 
 def _campaign_for_http(

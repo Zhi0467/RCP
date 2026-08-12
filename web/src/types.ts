@@ -854,8 +854,15 @@ export interface RevisionSummary {
   authorized_by: AuthorizedHuman | null;
   profile: "ordinary" | "orchestrator" | null;
   task_id: string | null;
+  campaign_id: string | null;
+  campaign: HistoryCampaignDecoration | null;
   created_at: string;
   sentences: string[];
+}
+
+export interface HistoryCampaignDecoration {
+  state: "running" | "stopped" | "exhausted" | "failed" | "completed";
+  report: CampaignReportSummary | null;
 }
 
 export interface AgentTaskResult {
