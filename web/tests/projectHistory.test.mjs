@@ -15,7 +15,7 @@ const { ProjectOverview } = await server.ssrLoadModule("/src/views/ProjectOvervi
 const { setupExistingResearchSelection, setupFinalConfirmation } = await server.ssrLoadModule(
   "/src/views/ProjectSetup.tsx",
 );
-const { ProjectHistoryDrawer, openHistoryCampaignReport } = await server.ssrLoadModule(
+const { ProjectHistoryDrawer } = await server.ssrLoadModule(
   "/src/components/ProjectHistoryDrawer.tsx",
 );
 const { revisionSummariesUrl } = await server.ssrLoadModule("/src/App.tsx");
@@ -154,7 +154,7 @@ test("Project history separates revision prose from the complete clickable Agent
     onInspectTask(taskId) {
       inspected.push(taskId);
     },
-    async onOpenCampaignReport() {},
+    campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
     onClose() {},
   };
   const html = renderToStaticMarkup(React.createElement(ProjectHistoryDrawer, props));
@@ -187,7 +187,7 @@ test("Project history reports loading without hiding the already-loaded Agent ta
       loading: true,
       error: null,
       onInspectTask() {},
-      async onOpenCampaignReport() {},
+      campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
       onClose() {},
     }),
   );
@@ -248,7 +248,7 @@ test("Project history labels system, attributed, and legacy revisions without in
       loading: false,
       error: null,
       onInspectTask() {},
-      async onOpenCampaignReport() {},
+      campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
       onClose() {},
     }),
   );
@@ -355,7 +355,7 @@ test("Project history groups campaign envelopes while preserving revision attrib
       loading: false,
       error: null,
       onInspectTask() {},
-      async onOpenCampaignReport() {},
+      campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
       onClose() {},
     }),
   );
@@ -365,7 +365,9 @@ test("Project history groups campaign envelopes while preserving revision attrib
   assert.match(html, /Authorized by Ada Researcher/);
   assert.match(html, /2 revisions/);
   assert.match(html, /Campaign no longer recorded/);
-  assert.doesNotMatch(html, /campaign-live|campaign-missing/);
+  // A campaign id may appear in the report link's href, but never as text a
+  // human reads: a group identifies itself by state, not by a bare id.
+  assert.doesNotMatch(html.replace(/<[^>]*>/g, " "), /campaign-live|campaign-missing/);
   assert.match(html, /Orchestrator Agent task · task-orchestrator/);
   assert.match(html, /Ordinary Agent task · task-worker/);
   assert.match(html, /Approval · Ada Researcher/);
@@ -380,35 +382,38 @@ test("Project history groups campaign envelopes while preserving revision attrib
   );
 });
 
-test("Project history report control forwards the decorated report and surfaces opener errors", async () => {
+test("Project history report control links to the decorated report's preview", () => {
   const report = {
     report_id: "report-final",
     ending: "completed",
     created_at: "2026-08-03T09:00:00Z",
   };
-  const opened = [];
-  const errors = [];
+  const requested = [];
 
-  await openHistoryCampaignReport(
-    async (campaignId, selectedReport) => {
-      opened.push([campaignId, selectedReport]);
-    },
-    "campaign-live",
-    report,
-    (error) => errors.push(error),
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectHistoryDrawer, {
+      summaries: [
+        {
+          ...latestSummary,
+          campaign_id: "campaign-live",
+          campaign: { state: "completed", report },
+        },
+      ],
+      tasks: [],
+      loading: false,
+      error: null,
+      onInspectTask() {},
+      campaignReportHref(campaignId, reportId) {
+        requested.push([campaignId, reportId]);
+        return `/preview/${campaignId}/${reportId}`;
+      },
+      onClose() {},
+    }),
   );
-  assert.deepEqual(opened, [["campaign-live", report]]);
-  assert.deepEqual(errors, [null]);
 
-  await openHistoryCampaignReport(
-    async () => {
-      throw new Error("The campaign report is unavailable.");
-    },
-    "campaign-live",
-    report,
-    (error) => errors.push(error),
-  );
-  assert.equal(errors.at(-1), "The campaign report is unavailable.");
+  assert.deepEqual(requested, [["campaign-live", "report-final"]]);
+  assert.match(html, /href="\/preview\/campaign-live\/report-final"/);
+  assert.match(html, /Open report/);
 });
 
 test("an identity revision does not make an unseeded project look refreshed", () => {

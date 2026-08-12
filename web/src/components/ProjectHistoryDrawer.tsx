@@ -1,7 +1,6 @@
 import { Clock3, ExternalLink, X } from "lucide-react";
-import { useState } from "react";
 import { taskKindLabel, taskStatusLabel } from "../agentTasks";
-import type { AgentTask, CampaignReportSummary, RevisionSummary } from "../types";
+import type { AgentTask, RevisionSummary } from "../types";
 
 interface Props {
   summaries: RevisionSummary[];
@@ -9,7 +8,7 @@ interface Props {
   loading: boolean;
   error: string | null;
   onInspectTask: (taskId: string) => void;
-  onOpenCampaignReport: (campaignId: string, report: CampaignReportSummary) => Promise<void>;
+  campaignReportHref: (campaignId: string, reportId: string) => string;
   onClose: () => void;
 }
 
@@ -23,7 +22,7 @@ export function ProjectHistoryDrawer({
   loading,
   error,
   onInspectTask,
-  onOpenCampaignReport,
+  campaignReportHref,
   onClose,
 }: Props) {
   const historyEntries = groupCampaignRevisions(summaries);
@@ -86,7 +85,7 @@ export function ProjectHistoryDrawer({
                       <CampaignRevisionGroup
                         campaignId={entry.campaignId}
                         summaries={entry.summaries}
-                        onOpenCampaignReport={onOpenCampaignReport}
+                        campaignReportHref={campaignReportHref}
                         key={`campaign:${entry.campaignId}`}
                       />
                     ) : (
@@ -111,13 +110,12 @@ export function ProjectHistoryDrawer({
 function CampaignRevisionGroup({
   campaignId,
   summaries,
-  onOpenCampaignReport,
+  campaignReportHref,
 }: {
   campaignId: string;
   summaries: RevisionSummary[];
-  onOpenCampaignReport: Props["onOpenCampaignReport"];
+  campaignReportHref: Props["campaignReportHref"];
 }) {
-  const [reportError, setReportError] = useState<string | null>(null);
   const newest = summaries[0];
   const campaign = newest.campaign;
   const report = campaign?.report;
@@ -142,27 +140,15 @@ function CampaignRevisionGroup({
             </p>
           </div>
           {report && (
-            <button
+            <a
               className="button compact secondary"
-              type="button"
-              onClick={() => {
-                void openHistoryCampaignReport(
-                  onOpenCampaignReport,
-                  campaignId,
-                  report,
-                  setReportError,
-                );
-              }}
+              href={campaignReportHref(campaignId, report.report_id)}
+              aria-label={`Open the ${report.ending} campaign report`}
             >
               <ExternalLink size={12} /> Open report
-            </button>
+            </a>
           )}
         </header>
-        {reportError && (
-          <p className="history-campaign-error" role="alert">
-            {reportError}
-          </p>
-        )}
         <ol className="history-campaign-revisions">
           {summaries.map((summary) => (
             <RevisionItem summary={summary} key={summary.to_revision} />
@@ -171,20 +157,6 @@ function CampaignRevisionGroup({
       </section>
     </li>
   );
-}
-
-export async function openHistoryCampaignReport(
-  onOpenCampaignReport: Props["onOpenCampaignReport"],
-  campaignId: string,
-  report: CampaignReportSummary,
-  setError: (error: string | null) => void,
-): Promise<void> {
-  setError(null);
-  try {
-    await onOpenCampaignReport(campaignId, report);
-  } catch (error) {
-    setError(error instanceof Error ? error.message : String(error));
-  }
 }
 
 function RevisionItem({ summary }: { summary: RevisionSummary }) {

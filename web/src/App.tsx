@@ -100,7 +100,7 @@ import {
   projectHashAfterViewChange,
 } from "./experimentBoard";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { isLiveCampaign } from "./campaigns";
+import { campaignReportPreviewUrl, isLiveCampaign } from "./campaigns";
 import type { DagViewport } from "./hooks/dagZoom";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
@@ -4339,10 +4339,8 @@ export default function App() {
             setProjectHistoryOpen(false);
             setTaskInspectorId(taskId);
           }}
-          onOpenCampaignReport={(campaignId, report) =>
-            openCampaignReportPreview(
-              campaignReportPreviewUrl(project.id, campaignId, report.report_id),
-            )
+          campaignReportHref={(campaignId, reportId) =>
+            campaignReportPreviewUrl(project.id, campaignId, reportId)
           }
           onClose={() => setProjectHistoryOpen(false)}
         />
