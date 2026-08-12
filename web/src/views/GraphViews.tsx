@@ -760,6 +760,7 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   focusExperimentId: string | null;
   runBusy: boolean;
   stopBusyId: string | null;
+  watcherCheckBusyId: string | null;
   taskActionId: string | null;
   providerLabels?: Record<string, string>;
   mutationsDisabled?: boolean;
@@ -769,6 +770,7 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   onDetailFocused: () => void;
   onRunExperiment: (node: GraphNode) => void;
   onStopExperiment: (nodeId: string) => void;
+  onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
 }
@@ -785,6 +787,7 @@ export function ExecutionView({
   focusExperimentId,
   runBusy,
   stopBusyId,
+  watcherCheckBusyId,
   taskActionId,
   providerLabels = {},
   mutationsDisabled = false,
@@ -794,6 +797,7 @@ export function ExecutionView({
   onDetailFocused,
   onRunExperiment,
   onStopExperiment,
+  onCheckExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
 }: ExecutionProps) {
@@ -842,15 +846,23 @@ export function ExecutionView({
                       }
                       runBusy={runBusy}
                       stopBusy={entry.kind === "experiment" && stopBusyId === entry.id}
+                      watcherCheckBusyId={watcherCheckBusyId}
                       taskActionId={taskActionId}
                       providerLabels={providerLabels}
-                      mutationsDisabled={mutationsDisabled}
+                      mutationsDisabled={
+                        mutationsDisabled ||
+                        runBusy ||
+                        Boolean(stopBusyId) ||
+                        Boolean(taskActionId) ||
+                        Boolean(watcherCheckBusyId)
+                      }
                       onInspectTask={onInspectTask}
                       onDismissTask={onDismissTask}
                       onSelectNode={onSelectNode}
                       onSelectExperiment={onSelectExperiment}
                       onRunExperiment={onRunExperiment}
                       onStopExperiment={onStopExperiment}
+                      onCheckExperimentWatcher={onCheckExperimentWatcher}
                       onRecoverExperiment={onRecoverExperiment}
                       onSwitchExperimentProvider={onSwitchExperimentProvider}
                       key={`${entry.kind}:${entry.id}`}
@@ -871,6 +883,7 @@ function RunEntryRow({
   detailRef,
   runBusy,
   stopBusy,
+  watcherCheckBusyId,
   taskActionId,
   providerLabels,
   mutationsDisabled,
@@ -880,6 +893,7 @@ function RunEntryRow({
   onSelectExperiment,
   onRunExperiment,
   onStopExperiment,
+  onCheckExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
 }: {
@@ -888,6 +902,7 @@ function RunEntryRow({
   detailRef?: Ref<HTMLDivElement>;
   runBusy: boolean;
   stopBusy: boolean;
+  watcherCheckBusyId: string | null;
   taskActionId: string | null;
   providerLabels: Record<string, string>;
   mutationsDisabled: boolean;
@@ -897,6 +912,7 @@ function RunEntryRow({
   onSelectExperiment: (nodeId: string | null) => void;
   onRunExperiment: (node: GraphNode) => void;
   onStopExperiment: (nodeId: string) => void;
+  onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
 }) {
@@ -964,14 +980,16 @@ function RunEntryRow({
           <ExperimentRunDetail
             run={experiment}
             runBusy={runBusy}
-            runDisabled={mutationsDisabled || Boolean(taskActionId)}
+            runDisabled={mutationsDisabled}
             stopBusy={stopBusy}
             recoveryBusy={Boolean(
               experiment.currentTask && taskActionId === experiment.currentTask.operation_id,
             )}
+            watcherCheckBusyId={watcherCheckBusyId}
             providerLabel={experimentProviderLabel(experiment, providerLabels)}
             onRun={() => onRunExperiment(experiment.node)}
             onStopLoop={() => onStopExperiment(experiment.node.id)}
+            onCheckWatcher={onCheckExperimentWatcher}
             onRecover={(action) => {
               if (experiment.currentTask) onRecoverExperiment(experiment.currentTask, action);
             }}

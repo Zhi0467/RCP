@@ -6,6 +6,7 @@ import {
   buildRunProjection,
   buildRunTaskProjection,
   experimentRunSection,
+  experimentRecommendation,
   visibleChatWatchers,
   watcherIsActive,
   watcherIsIndividuallyStoppable,
@@ -627,6 +628,74 @@ test("compatible adopted degraded watchers drive current health through control 
 
   assert.equal(run.currentWatchers.length, 0);
   assert.equal(run.health, "degraded");
+  assert.deepEqual(experimentRecommendation(run), {
+    step: "keep_loop",
+    label: "Keep loop running; check now if needed",
+  });
+});
+
+test("Experiment recommendations follow structured task and control states", () => {
+  const base = {
+    node: experiment("experiment/recommendation"),
+    control: control({ episode_id: "episode-recommendation" }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    watcherItems: [],
+    currentWatchers: [],
+    health: "needs_action",
+  };
+  const running = loopTask(
+    "running-recommendation",
+    base.node.id,
+    "episode-recommendation",
+    "running",
+    "2026-08-06T01:00:00Z",
+  );
+  const resume = {
+    ...loopTask(
+      "resume-recommendation",
+      base.node.id,
+      "episode-recommendation",
+      "paused",
+      "2026-08-06T01:00:00Z",
+    ),
+    can_resume: true,
+    can_retry: true,
+  };
+  const noContinuity = {
+    ...loopTask(
+      "no-continuity-recommendation",
+      base.node.id,
+      "episode-recommendation",
+      "failed",
+      "2026-08-06T01:00:00Z",
+    ),
+    can_resume: false,
+    can_retry: false,
+  };
+
+  assert.equal(experimentRecommendation({ ...base, currentTask: running }).step, "wait");
+  assert.equal(experimentRecommendation({ ...base, currentTask: resume }).step, "resume");
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: control(
+        { episode_id: "episode-recommendation" },
+        { session: { ...control().operational.session, diagnostic: "unavailable" } },
+      ),
+      currentTask: noContinuity,
+    }).step,
+    "stop_and_restart",
+  );
+  assert.equal(
+    experimentRecommendation({ ...base, health: "human_stopped" }).step,
+    "start_episode",
+  );
+  assert.equal(
+    experimentRecommendation({ ...base, health: "paused_at_limit" }).step,
+    "start_episode",
+  );
 });
 
 test("entries remain newest first within each section", () => {

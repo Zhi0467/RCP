@@ -5,6 +5,7 @@ import {
   type ExperimentRun,
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
+  experimentRecommendation,
   watcherIsActive,
 } from "../runProjection";
 import type { WatcherRecord } from "../types";
@@ -68,11 +69,13 @@ interface Props {
   runDisabled: boolean;
   stopBusy: boolean;
   recoveryBusy: boolean;
+  watcherCheckBusyId: string | null;
   providerLabel?: string;
   onRun: () => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
+  onCheckWatcher: (watcherId: string) => void;
 }
 
 export function ExperimentRunDetail({
@@ -81,11 +84,13 @@ export function ExperimentRunDetail({
   runDisabled,
   stopBusy,
   recoveryBusy,
+  watcherCheckBusyId,
   providerLabel,
   onRun,
   onStopLoop,
   onRecover,
   onSwitchProvider,
+  onCheckWatcher,
 }: Props) {
   const { node, control, taskGroup, currentTask, health } = run;
   const operational = control?.operational ?? null;
@@ -113,6 +118,9 @@ export function ExperimentRunDetail({
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
   const canStop = live || Boolean(recoveryAction);
+  const recommendation = experimentRecommendation(run);
+  const watcherActionsDisabled =
+    runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
 
   return (
     <div className={`experiment-run-detail ${healthTones[health]}`}>
@@ -188,6 +196,11 @@ export function ExperimentRunDetail({
         </div>
       </div>
 
+      <div className={`experiment-run-recommendation ${recommendation.step}`}>
+        <span className="eyebrow">Recommended next step</span>
+        <strong>{recommendation.label}</strong>
+      </div>
+
       <p className="experiment-run-meta">
         {control && (
           <span>
@@ -232,10 +245,9 @@ export function ExperimentRunDetail({
 
       <section className="experiment-run-block">
         <div className="experiment-run-block-heading">
-          <h4>Experiment</h4>
-          {node.status && (
-            <span className={`status-pill ${node.status}`}>{String(node.status)}</span>
-          )}
+          <h4>
+            Experiment state: <span>{formatSemanticState(node.status)}</span>
+          </h4>
         </div>
         <p className="experiment-run-prose">
           {String(node.current_summary || node.objective || "No summary recorded")}
@@ -267,13 +279,23 @@ export function ExperimentRunDetail({
           </p>
         ) : (
           <ul className="experiment-run-watchers" aria-label="Experiment watchers">
-            <WatcherItems items={currentWatcherItems} />
+            <WatcherItems
+              items={currentWatcherItems}
+              watcherCheckBusyId={watcherCheckBusyId}
+              actionsDisabled={watcherActionsDisabled}
+              onCheckWatcher={onCheckWatcher}
+            />
           </ul>
         )}
         {stoppedWatcherCount > 0 && (
           <Fold title="Stopped watchers" count={stoppedWatcherCount} nested>
             <ul className="experiment-run-watchers" aria-label="Stopped experiment watchers">
-              <WatcherItems items={stoppedWatcherItems} />
+              <WatcherItems
+                items={stoppedWatcherItems}
+                watcherCheckBusyId={watcherCheckBusyId}
+                actionsDisabled={watcherActionsDisabled}
+                onCheckWatcher={onCheckWatcher}
+              />
             </ul>
           </Fold>
         )}
@@ -438,12 +460,34 @@ function joinFacts(parts: (string | null | undefined)[]): string | null {
   return kept.length > 0 ? kept.join(" · ") : null;
 }
 
-function WatcherItems({ items }: { items: ExperimentWatcherItem[] }) {
+function WatcherItems({
+  items,
+  watcherCheckBusyId,
+  actionsDisabled,
+  onCheckWatcher,
+}: {
+  items: ExperimentWatcherItem[];
+  watcherCheckBusyId: string | null;
+  actionsDisabled: boolean;
+  onCheckWatcher: (watcherId: string) => void;
+}) {
   return items.map((item) =>
     item.kind === "group" ? (
-      <WatcherGroupDetail group={item.group} key={item.group.groupId} />
+      <WatcherGroupDetail
+        group={item.group}
+        watcherCheckBusyId={watcherCheckBusyId}
+        actionsDisabled={actionsDisabled}
+        onCheckWatcher={onCheckWatcher}
+        key={item.group.groupId}
+      />
     ) : (
-      <WatcherDetail watcher={item.watcher} key={item.watcher.watcher_id} />
+      <WatcherDetail
+        watcher={item.watcher}
+        watcherCheckBusyId={watcherCheckBusyId}
+        actionsDisabled={actionsDisabled}
+        onCheckWatcher={onCheckWatcher}
+        key={item.watcher.watcher_id}
+      />
     ),
   );
 }
@@ -458,7 +502,17 @@ function watcherItemIsStopped(item: ExperimentWatcherItem): boolean {
     : item.watcher.status === "stopped";
 }
 
-function WatcherGroupDetail({ group }: { group: ExperimentWatcherGroup }) {
+function WatcherGroupDetail({
+  group,
+  watcherCheckBusyId,
+  actionsDisabled,
+  onCheckWatcher,
+}: {
+  group: ExperimentWatcherGroup;
+  watcherCheckBusyId: string | null;
+  actionsDisabled: boolean;
+  onCheckWatcher: (watcherId: string) => void;
+}) {
   return (
     <li className="experiment-run-watcher-group">
       <details>
@@ -475,7 +529,13 @@ function WatcherGroupDetail({ group }: { group: ExperimentWatcherGroup }) {
         </p>
         <ul className="experiment-run-watcher-group-members" aria-label={`${group.label} watchers`}>
           {group.watchers.map((watcher) => (
-            <WatcherDetail watcher={watcher} key={watcher.watcher_id} />
+            <WatcherDetail
+              watcher={watcher}
+              watcherCheckBusyId={watcherCheckBusyId}
+              actionsDisabled={actionsDisabled}
+              onCheckWatcher={onCheckWatcher}
+              key={watcher.watcher_id}
+            />
           ))}
         </ul>
       </details>
@@ -483,7 +543,19 @@ function WatcherGroupDetail({ group }: { group: ExperimentWatcherGroup }) {
   );
 }
 
-function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
+function WatcherDetail({
+  watcher,
+  watcherCheckBusyId,
+  actionsDisabled,
+  onCheckWatcher,
+}: {
+  watcher: WatcherRecord;
+  watcherCheckBusyId: string | null;
+  actionsDisabled: boolean;
+  onCheckWatcher: (watcherId: string) => void;
+}) {
+  const canCheckNow = watcher.status === "degraded" && !watcher.notified;
+  const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
       <details>
@@ -503,6 +575,14 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
             },
             { label: "Provenance", value: watcherProvenance(watcher) },
             { label: "Last check", value: formatMoment(watcher.last_checked_at) },
+            {
+              label: "Next check",
+              value: watcher.next_check_at ? formatMoment(watcher.next_check_at) : "Not scheduled",
+            },
+            {
+              label: "Consecutive failures",
+              value: watcher.consecutive_error_count,
+            },
             { label: "Exit code", value: watcher.last_exit_code },
             { label: "Completed", value: formatMoment(watcher.completed_at) },
             { label: "Machine", value: watcher.execution_host || "Local" },
@@ -523,6 +603,19 @@ function WatcherDetail({ watcher }: { watcher: WatcherRecord }) {
             },
           ]}
         />
+        {canCheckNow && (
+          <div className="experiment-run-watcher-actions">
+            <button
+              type="button"
+              className="button compact"
+              disabled={actionsDisabled}
+              aria-busy={checkBusy}
+              onClick={() => onCheckWatcher(watcher.watcher_id)}
+            >
+              {checkBusy ? "Checking…" : "Check now"}
+            </button>
+          </div>
+        )}
         <div className="experiment-run-watcher-command">
           <span className="eyebrow">Check command</span>
           <code>{watcher.check_command}</code>
@@ -626,6 +719,11 @@ function watcherStopDisposition(watcher: WatcherRecord): string {
 
 function capitalize(value: string): string {
   return `${value[0].toUpperCase()}${value.slice(1)}`;
+}
+
+function formatSemanticState(value: unknown): string {
+  const text = String(value || "unknown").replaceAll("_", " ");
+  return `${text[0].toUpperCase()}${text.slice(1)}`;
 }
 
 function taskInvocation(task: ExperimentRun["currentTask"]): number | null {

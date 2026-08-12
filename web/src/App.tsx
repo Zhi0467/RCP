@@ -576,6 +576,7 @@ export default function App() {
     initialRoute.project.experimentId,
   );
   const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
+  const [watcherCheckId, setWatcherCheckId] = useState<string | null>(null);
   const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
   const [floatingChat, setFloatingChat] = useState<{ chatId: string; nodeId: string } | null>(null);
   const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([]);
@@ -2286,6 +2287,33 @@ export default function App() {
     }
   };
 
+  const checkExperimentWatcher = async (watcherId: string) => {
+    if (
+      !apiBase ||
+      watcherCheckId ||
+      taskStarting ||
+      taskActionId ||
+      experimentStopId ||
+      mutationsDisabled
+    )
+      return;
+    setWatcherCheckId(watcherId);
+    try {
+      const checked = await api<WatcherRecord>(
+        `${apiBase}/watchers/${encodeURIComponent(watcherId)}/check`,
+        { method: "POST" },
+      );
+      setWatchers((current) =>
+        current.map((watcher) => (watcher.watcher_id === checked.watcher_id ? checked : watcher)),
+      );
+      await reload();
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setWatcherCheckId(null);
+    }
+  };
+
   const runExperiment = async (node: GraphNode) => {
     if (!project || node.type !== "experiment" || mutationsDisabled) return;
     const control = project.experiment_control?.[node.id];
@@ -3247,6 +3275,7 @@ export default function App() {
               focusExperimentId={focusExperimentRunId}
               runBusy={taskStarting}
               stopBusyId={experimentStopId}
+              watcherCheckBusyId={watcherCheckId}
               taskActionId={taskActionId}
               providerLabels={Object.fromEntries(
                 Object.entries(project.providers).map(([id, provider]) => [
@@ -3262,6 +3291,7 @@ export default function App() {
               onDetailFocused={() => setFocusExperimentRunId(null)}
               onRunExperiment={(node) => void runExperiment(node)}
               onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
+              onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
               onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
               onSwitchExperimentProvider={setRetryTask}
             />

@@ -173,10 +173,12 @@ function render(run, props = {}) {
       runDisabled: false,
       stopBusy: false,
       recoveryBusy: false,
+      watcherCheckBusyId: null,
       onRun() {},
       onStopLoop() {},
       onRecover() {},
       onSwitchProvider() {},
+      onCheckWatcher() {},
       ...props,
     }),
   );
@@ -331,6 +333,102 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.match(html, /Stop loop/);
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
+});
+
+test("semantic Experiment state is distinct from loop health", () => {
+  const running = render({
+    node: node({ status: "running" }),
+    control: control({ invocations_used: 1, invocations_remaining: 2 }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+  const debugging = render({
+    node: node({ status: "debugging" }),
+    control: control({ invocations_used: 1, invocations_remaining: 2 }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.match(running, /Experiment state: <span>Running<\/span>/);
+  assert.match(debugging, /Experiment state: <span>Debugging<\/span>/);
+});
+
+test("degraded watcher exposes backoff and Check now without recommending stop", () => {
+  const degraded = watcher({
+    status: "degraded",
+    completed_at: null,
+    last_exit_code: null,
+    last_error: "ssh connection timed out",
+    next_check_at: "2026-08-06T04:30:00Z",
+    consecutive_error_count: 3,
+  });
+  const html = render({
+    node: node({ status: "debugging" }),
+    control: control({ invocations_used: 1, invocations_remaining: 2, paused: false }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [degraded],
+    currentWatchers: [degraded],
+    health: "degraded",
+  });
+
+  assert.match(html, /Keep loop running; check now if needed/);
+  assert.match(html, /Next check/);
+  assert.match(html, /Consecutive failures/);
+  assert.match(html, />3<\/dd>/);
+  assert.match(html, />Check now<\/button>/);
+  assert.doesNotMatch(html, /Recommended next step<\/span><strong>Stop loop/);
+});
+
+test("watcher Check now renders busy and disables concurrent mutations", () => {
+  const degraded = watcher({ status: "degraded", completed_at: null });
+  const html = render(
+    {
+      node: node(),
+      control: control({ invocations_used: 1, invocations_remaining: 2 }),
+      taskGroup: null,
+      currentTask: null,
+      watchers: [degraded],
+      currentWatchers: [degraded],
+      health: "degraded",
+    },
+    { watcherCheckBusyId: degraded.watcher_id, runDisabled: true },
+  );
+
+  assert.match(html, /<button[^>]*disabled=""[^>]*aria-busy="true"[^>]*>Checking…<\/button>/);
+  assert.match(html, /experiment-stop-loop" disabled=""/);
+  assert.match(html, /experiment-run-button" disabled=""/);
+});
+
+test("missing episode continuity recommends stop then start from structured state", () => {
+  const task = recoveryTask({ can_retry: false, can_resume: false });
+  const html = render({
+    node: node(),
+    control: control(
+      { invocations_used: 1, invocations_remaining: 2 },
+      {
+        current_operation_id: task.operation_id,
+        session: {
+          ...operational().session,
+          diagnostic: "The saved continuation no longer exists.",
+        },
+      },
+    ),
+    taskGroup: { rootId: task.operation_id, root: task, latest: task, attempts: [task] },
+    currentTask: task,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.match(html, /Recommended next step/);
+  assert.match(html, /Stop loop, then start a new episode/);
 });
 
 test("detail separates watcher provenance from semantic meaning and execution binding", () => {

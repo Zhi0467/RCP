@@ -1422,6 +1422,17 @@ def create_app(
         _require_registered_project(catalog, project_id)
         return [record.model_dump(mode="json") for record in store.watchers(project_id)]
 
+    @app.post("/api/projects/{project_id}/watchers/{watcher_id}/check")
+    def check_watcher_now(project_id: str, watcher_id: str) -> dict[str, object]:
+        _require_registered_project(catalog, project_id)
+        try:
+            watcher = watcher_poller.check_now(project_id, watcher_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Watcher not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return watcher.model_dump(mode="json")
+
     @app.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
     def stop_watcher(project_id: str, watcher_id: str) -> dict[str, object]:
         _require_registered_project(catalog, project_id)

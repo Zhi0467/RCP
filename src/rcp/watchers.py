@@ -310,6 +310,7 @@ class WatcherPoller:
         self.clock = clock or store.now
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._poll_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -327,7 +328,30 @@ class WatcherPoller:
                 self._thread = None
 
     def poll_once(self) -> list[list[WatcherRecord]]:
-        records = self.store.pollable_watchers(as_of=self.clock())
+        with self._poll_lock:
+            records = self.store.pollable_watchers(as_of=self.clock())
+            self._check_records(records)
+            return self._finish_poll()
+
+    def check_now(self, project_id: str, watcher_id: str) -> WatcherRecord:
+        """Check one degraded external watcher through the ordinary poll path."""
+
+        with self._poll_lock:
+            record = self.store.watcher(watcher_id)
+            if record is None or record.project_id != project_id:
+                raise KeyError(watcher_id)
+            if not isinstance(record, WatcherRecord):
+                raise ValueError("Only an external watcher can be checked now.")
+            if record.status != "degraded" or record.notified:
+                raise ValueError("Only a degraded watcher awaiting delivery can be checked now.")
+            self._check_records([record])
+            self._finish_poll()
+            updated = self.store.watcher(watcher_id)
+            if not isinstance(updated, WatcherRecord):
+                raise RuntimeError("External watcher changed type during its check.")
+            return updated
+
+    def _check_records(self, records: list[WatcherRecord]) -> None:
         if records:
             with ThreadPoolExecutor(max_workers=min(self.workers, len(records))) as executor:
                 futures = {
@@ -362,6 +386,7 @@ class WatcherPoller:
                         checked_at=result.checked_at,
                     )
 
+    def _finish_poll(self) -> list[list[WatcherRecord]]:
         groups = self.store.completed_watcher_groups()
         if self.on_completed is not None:
             for group in groups:

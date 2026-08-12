@@ -2217,6 +2217,26 @@ button:disabled {
   gap: 7px;
   justify-content: flex-end;
 }
+.experiment-run-recommendation {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--experiment-health) 7%, var(--sheet));
+  border-left: 3px solid var(--experiment-health);
+  display: grid;
+  gap: 7px 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 9px 11px;
+}
+.experiment-run-recommendation > .eyebrow {
+  color: var(--muted);
+}
+.experiment-run-recommendation > strong {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.experiment-run-recommendation.stop_and_restart {
+  border-left-color: var(--coral);
+}
 .experiment-run-meta {
   border-top: 1px solid var(--rule);
   display: flex;
@@ -2281,6 +2301,9 @@ button:disabled {
   font-size: 18px;
   font-weight: 550;
   margin: 0;
+}
+.experiment-run-block-heading h4 > span {
+  color: var(--experiment-health);
 }
 .experiment-run-block-heading > span:not(.status-pill) {
   color: var(--muted);
@@ -2511,6 +2534,12 @@ button:disabled {
 }
 .experiment-run-watcher-command {
   border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+.experiment-run-watcher-actions {
+  border-top: 1px solid var(--rule);
+  display: flex;
+  justify-content: flex-end;
   padding-top: 8px;
 }
 .experiment-run-watcher-paths {
@@ -8768,6 +8797,9 @@ button.relation-map-node:hover {
   }
   .experiment-run-actions .button {
     width: 100%;
+  }
+  .experiment-run-recommendation {
+    grid-template-columns: minmax(0, 1fr);
   }
   .experiment-run-facts,
   .experiment-run-watcher-facts,

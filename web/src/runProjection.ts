@@ -43,6 +43,22 @@ export interface ExperimentRun {
   health: ExperimentLoopHealth;
 }
 
+export type ExperimentRecommendedStep =
+  | "wait"
+  | "resume"
+  | "retry"
+  | "keep_loop"
+  | "start_episode"
+  | "stop_and_restart"
+  | "resolve_requirements"
+  | "review"
+  | "none";
+
+export interface ExperimentRecommendation {
+  step: ExperimentRecommendedStep;
+  label: string;
+}
+
 export interface ExperimentWatcherCounts {
   finished: number;
   degraded: number;
@@ -223,6 +239,55 @@ export function deriveExperimentLoopHealth(
   if (stopRequested) return "human_stopped";
   if (remaining <= 0 && used > 0) return "paused_at_limit";
   return "needs_action";
+}
+
+/** Human guidance derived only from canonical task, control, and watcher state. */
+export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
+  const task = run.currentTask;
+  const operational = run.control?.operational;
+  if (task && runningStatuses.has(task.status)) {
+    return { step: "wait", label: "Wait for the agent" };
+  }
+  if (run.health === "stopping") {
+    return { step: "wait", label: "Wait for the current turn to finish" };
+  }
+  if (task?.can_resume && (task.status === "paused" || task.status === "interrupted")) {
+    return {
+      step: "resume",
+      label: task.can_retry ? "Resume this episode, or switch provider" : "Resume this episode",
+    };
+  }
+  if (task?.can_retry) {
+    return { step: "retry", label: "Retry this episode, or switch provider" };
+  }
+  if (operational?.session.diagnostic && run.control?.episode_id) {
+    return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
+  }
+  if (run.health === "paused_at_limit") {
+    return { step: "start_episode", label: "Start a new episode" };
+  }
+  if (run.health === "degraded") {
+    return { step: "keep_loop", label: "Keep loop running; check now if needed" };
+  }
+  if (run.health === "waiting_on_watchers") {
+    return { step: "wait", label: "Wait for watcher completion" };
+  }
+  if (run.health === "human_stopped") {
+    return { step: "start_episode", label: "Start a new episode" };
+  }
+  if (run.health === "completed") {
+    return { step: "none", label: "No action needed" };
+  }
+  if ((run.control?.reasons.length ?? 0) > 0) {
+    return { step: "resolve_requirements", label: "Resolve the run requirements" };
+  }
+  if (!run.control?.episode_id) {
+    return { step: "start_episode", label: "Start an episode" };
+  }
+  if (task && actionableStatuses.has(task.status)) {
+    return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
+  }
+  return { step: "review", label: "Review the loop state" };
 }
 
 export function buildExperimentRun(

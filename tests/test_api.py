@@ -207,6 +207,99 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
     assert request.node_id is None
 
 
+def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path: Path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    now = "2026-08-12T01:00:00+00:00"
+    watcher = WatcherRecord(
+        watcher_id="manual-api-check",
+        project_id=project_id,
+        origin_operation_id="manual-api-origin",
+        origin_task_kind="node_chat",
+        chat_id="manual-api-chat",
+        node_id="exp-one",
+        execution_host="gpu.example",
+        check_command="squeue -h -j 4471 >/dev/null",
+        log_path="/tmp/4471.log",
+        cwd="/tmp",
+        continuation=WatcherContinuation(
+            provider="codex",
+            run_on="laptop",
+            patch_kind="work",
+        ),
+        created_at=now,
+    )
+    store.create_watchers([watcher])
+    degraded = store.record_watcher_check(
+        watcher.watcher_id,
+        status="degraded",
+        exit_code=255,
+        error="transport unavailable",
+        checked_at=now,
+    )
+    assert degraded.next_check_at is not None and degraded.next_check_at > now
+    calls: list[tuple[str, str, float]] = []
+
+    def recovered(spec: WatchSpec, host: str, timeout: float) -> WatcherCheckResult:
+        calls.append((spec.check_command, host, timeout))
+        return WatcherCheckResult(
+            state="active",
+            checked_at="2026-08-12T01:00:01+00:00",
+            exit_code=1,
+        )
+
+    app.state.watcher_poller.check_runner = recovered
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check"
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        (
+            "squeue -h -j 4471 >/dev/null",
+            "gpu.example",
+            app.state.watcher_poller.timeout,
+        )
+    ]
+    assert response.json()["status"] == "active"
+    assert response.json()["consecutive_error_count"] == 0
+    assert response.json()["last_error"] is None
+
+
+def test_check_watcher_now_rejects_missing_and_ineligible_records(manifest, tmp_path: Path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    active = WatcherRecord(
+        watcher_id="active-api-watcher",
+        project_id=project_id,
+        origin_operation_id="active-api-origin",
+        origin_task_kind="node_chat",
+        chat_id="active-api-chat",
+        check_command="true",
+        log_path="/tmp/active-api.log",
+        cwd="/tmp",
+        continuation=WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work"),
+        created_at="2026-08-12T01:00:00+00:00",
+    )
+    store.create_watchers([active])
+    client = TestClient(app)
+
+    missing_project = client.post(
+        f"/api/projects/{uuid.uuid4()}/watchers/{active.watcher_id}/check"
+    )
+    missing_watcher = client.post(f"/api/projects/{project_id}/watchers/missing-api-watcher/check")
+    active_response = client.post(f"/api/projects/{project_id}/watchers/{active.watcher_id}/check")
+
+    assert missing_project.status_code == 404
+    assert missing_watcher.status_code == 404
+    assert active_response.status_code == 409
+    assert active_response.json()["detail"] == (
+        "Only a degraded watcher awaiting delivery can be checked now."
+    )
+
+
 class FakeLauncher:
     def __init__(self, events: list[AgentEvent]) -> None:
         self.events = events

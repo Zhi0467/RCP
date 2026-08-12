@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import sqlite3
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timedelta
 
@@ -1065,6 +1066,165 @@ def test_runtime_error_degrades_only_that_watcher_and_later_clears(tmp_path) -> 
 
     assert store.watcher("bad").status == "active"
     assert store.watcher("bad").last_error is None
+
+
+def test_manual_check_bypasses_backoff_and_keeps_healthy_scheduling(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    record = _record("manual").model_copy(update={"execution_host": "gpu.example"})
+    store.create_watchers([record])
+    degraded = store.record_watcher_check(
+        "manual",
+        status="degraded",
+        exit_code=255,
+        error="ssh unavailable",
+        checked_at="2026-08-01T00:01:00+00:00",
+    )
+    assert degraded.next_check_at is not None
+    assert degraded.next_check_at > "2026-08-01T00:01:30+00:00"
+    calls: list[tuple[str, float]] = []
+
+    def recovered(_spec: WatchSpec, host: str, timeout: float) -> WatcherCheckResult:
+        calls.append((host, timeout))
+        return WatcherCheckResult(
+            state="active",
+            checked_at="2026-08-01T00:01:30+00:00",
+            exit_code=1,
+        )
+
+    poller = WatcherPoller(
+        store,
+        check_runner=recovered,
+        timeout=7,
+        clock=lambda: "2026-08-01T00:01:31+00:00",
+    )
+    updated = poller.check_now("project", "manual")
+
+    assert calls == [("gpu.example", 7)]
+    assert updated.status == "active"
+    assert updated.consecutive_error_count == 0
+    assert updated.last_error is None
+    assert updated.next_check_at == watcher_next_check_at("manual", "2026-08-01T00:01:30+00:00", 0)
+    assert poller.poll_once() == []
+    assert calls == [("gpu.example", 7)]
+
+
+def test_manual_completion_runs_the_ordinary_delivery_callback_once(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_watchers([_record("manual-complete", status="degraded")])
+    delivered: list[list[str]] = []
+
+    def completed(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+        return WatcherCheckResult(
+            state="complete",
+            checked_at="2026-08-01T00:02:00+00:00",
+            exit_code=0,
+        )
+
+    updated = WatcherPoller(
+        store,
+        check_runner=completed,
+        on_completed=lambda group: delivered.append([item.watcher_id for item in group]),
+    ).check_now("project", "manual-complete")
+
+    assert updated.status == "completed"
+    assert updated.next_check_at is None
+    assert delivered == [["manual-complete"]]
+
+
+def test_manual_error_advances_backoff_from_the_new_check_time(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_watchers([_record("manual-error", status="degraded")])
+
+    def still_broken(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+        return WatcherCheckResult(
+            state="error",
+            checked_at="2026-08-01T00:05:00+00:00",
+            exit_code=255,
+            error="still unavailable",
+        )
+
+    updated = WatcherPoller(store, check_runner=still_broken).check_now("project", "manual-error")
+
+    assert updated.status == "degraded"
+    assert updated.consecutive_error_count == 2
+    assert updated.next_check_at == watcher_next_check_at(
+        "manual-error", "2026-08-01T00:05:00+00:00", 2
+    )
+
+
+def test_manual_check_waits_for_a_scheduled_check_of_the_same_watcher(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_watchers([_record("serialized", status="degraded")])
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    manual_started = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def blocked_check(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call_number = calls
+        if call_number == 1:
+            first_started.set()
+            release_first.wait(timeout=2)
+        else:
+            second_started.set()
+        return WatcherCheckResult(
+            state="error",
+            checked_at=f"2026-08-01T00:0{call_number}:00+00:00",
+            exit_code=255,
+            error="still unavailable",
+        )
+
+    poller = WatcherPoller(
+        store,
+        check_runner=blocked_check,
+        clock=lambda: "2027-08-01T00:00:00+00:00",
+    )
+    scheduled = threading.Thread(target=poller.poll_once)
+
+    def check_manually() -> None:
+        manual_started.set()
+        poller.check_now("project", "serialized")
+
+    manual = threading.Thread(target=check_manually)
+    scheduled.start()
+    assert first_started.wait(timeout=1)
+    manual.start()
+    assert manual_started.wait(timeout=1)
+    assert not second_started.wait(timeout=0.1)
+
+    release_first.set()
+    scheduled.join(timeout=2)
+    manual.join(timeout=2)
+
+    assert not scheduled.is_alive()
+    assert not manual.is_alive()
+    assert second_started.is_set()
+    assert calls == 2
+
+
+def test_manual_check_rejects_missing_and_ineligible_watchers(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_watchers(
+        [
+            _record("active"),
+            _record("already-notified", status="degraded").model_copy(update={"notified": True}),
+        ]
+    )
+    poller = WatcherPoller(store)
+
+    with pytest.raises(KeyError):
+        poller.check_now("project", "missing")
+    with pytest.raises(KeyError):
+        poller.check_now("wrong-project", "active")
+    with pytest.raises(ValueError, match="degraded watcher awaiting delivery"):
+        poller.check_now("project", "active")
+    with pytest.raises(ValueError, match="degraded watcher awaiting delivery"):
+        poller.check_now("project", "already-notified")
 
 
 def test_completed_groups_do_not_merge_different_origin_policies(tmp_path) -> None:
