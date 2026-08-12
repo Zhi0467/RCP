@@ -19,6 +19,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, Patch
@@ -474,6 +475,7 @@ async def _stream_agent_events(
     capability: AgentCapability,
     outcome: _ProviderOutcome,
     binary: str | None,
+    invocation_gate: ProviderInvocationGate | None = None,
 ) -> AsyncIterator[str]:
     """Run one provider pass, recording its outcome and forwarding wire events.
 
@@ -504,6 +506,7 @@ async def _stream_agent_events(
                 if execution is not None and remote_stage is not None and remote_stage.root
                 else None
             ),
+            invocation_gate=invocation_gate,
             capability=capability,
             binary=binary,
         )

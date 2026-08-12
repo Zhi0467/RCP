@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import socket
 import tempfile
 import time
 import uuid
@@ -87,7 +88,10 @@ def _credential(workspace, path):
 
 def _parser():
     parser = _Parser(prog="rcp-agent-client")
-    parser.add_argument("--credential", required=True)
+    authority = parser.add_mutually_exclusive_group(required=True)
+    authority.add_argument("--credential")
+    authority.add_argument("--broker")
+    parser.add_argument("--mailbox-id")
     parser.add_argument("--timeout", required=True, type=float)
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
@@ -200,21 +204,35 @@ def _run(namespace):
     workspace = os.path.abspath(namespace.workspace)
     if os.path.islink(workspace) or not os.path.isdir(workspace):
         raise ClientInputError("run workspace is unavailable")
-    mailbox_id, token = _credential(workspace, namespace.credential)
+    if namespace.broker is not None:
+        broker = os.path.abspath(namespace.broker)
+        if not broker.startswith("/tmp/rcp-command-") or not broker.endswith(".sock"):
+            raise ClientInputError("broker path is outside the bounded temporary namespace")
+        mailbox_id = namespace.mailbox_id
+        if not isinstance(mailbox_id, str) or not _MAILBOX_ID.fullmatch(mailbox_id):
+            raise ClientInputError("broker mailbox id is malformed")
+        token = None
+    else:
+        if namespace.mailbox_id is not None:
+            raise ClientInputError("mailbox id is supplied by the credential")
+        mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
     request_id = uuid.uuid4().hex
     prefix = f"rcp-command-{mailbox_id}-{request_id}"
-    request_path = os.path.join(workspace, prefix + ".request.json")
-    response_path = os.path.join(workspace, prefix + ".response.json")
     request = {
         "version": VERSION,
         "mailbox_id": mailbox_id,
         "request_id": request_id,
-        "credential": token,
+        "credential": token or ("0" * 64),
         "verb": verb,
         "idempotency_key": key,
         "arguments": arguments,
     }
+    if namespace.broker is not None:
+        return _run_brokered(namespace, broker, request, request_id)
+
+    request_path = os.path.join(workspace, prefix + ".request.json")
+    response_path = os.path.join(workspace, prefix + ".response.json")
     try:
         _atomic_json(request_path, request)
     except OSError as exc:
@@ -244,6 +262,47 @@ def _run(namespace):
             return INVALID
         return UNAVAILABLE
     print("RCP command did not answer before the timeout.")
+    return UNAVAILABLE
+
+
+def _run_brokered(namespace, broker, request, request_id):
+    connection = None
+    content = bytearray()
+    try:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(namespace.timeout)
+        connection.connect(broker)
+        connection.sendall(
+            json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+        )
+        while len(content) <= 64 * 1024:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            content.extend(chunk)
+            if content.endswith(b"\n"):
+                break
+    except (OSError, TimeoutError) as exc:
+        print(f"RCP command broker is unavailable: {exc}")
+        return UNAVAILABLE
+    finally:
+        if connection is not None:
+            connection.close()
+    try:
+        response = json.loads(content)
+    except (UnicodeError, ValueError) as exc:
+        print(f"RCP command broker returned invalid JSON: {exc}")
+        return UNAVAILABLE
+    if not isinstance(response, dict) or response.get("request_id") != request_id:
+        print("RCP command returned a malformed or mismatched response.")
+        return UNAVAILABLE
+    status = response.get("status")
+    displayed = _display_response(response, namespace.verb)
+    print(json.dumps(displayed, ensure_ascii=False, indent=2, sort_keys=True))
+    if status == "ok":
+        return OK
+    if status == "invalid":
+        return INVALID
     return UNAVAILABLE
 
 

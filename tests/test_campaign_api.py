@@ -812,7 +812,7 @@ def test_startup_reconciles_durable_mail_after_campaign_callbacks_are_wired(
     assert delivery.request["wake_cause"] == "message"
 
 
-def test_startup_fences_a_depleted_crashed_turn_but_waits_for_its_recovery(
+def test_startup_waits_for_a_depleted_crashed_turn_recovery_before_fencing(
     manifest,
     tmp_path,
 ) -> None:
@@ -840,8 +840,8 @@ def test_startup_fences_a_depleted_crashed_turn_but_waits_for_its_recovery(
     assert interrupted is not None and interrupted.status == "interrupted"
     current = tasks.store.campaign(campaign.campaign_id)
     assert current is not None
-    assert current.status == "wrapping_up"
-    assert current.ending == "exhausted"
+    assert current.status == "running"
+    assert current.ending is None
     recovery = tasks.store.campaign_control_recovery(
         campaign.campaign_id,
         interrupted.operation_id,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import socket
 import uuid
 from dataclasses import dataclass, field, replace
 
@@ -502,11 +503,9 @@ async def test_campaign_mailbox_audits_authenticated_mutation_without_key(tmp_pa
     request = _spawn_request(request_id, key=None).model_copy(
         update={
             "mailbox_id": staged.credential.mailbox_id,
-            "credential": staged.credential.token,
+            "credential": "0" * 64,
         }
     )
-    request_name = f"rcp-command-{staged.credential.mailbox_id}-{request_id}.request.json"
-    staged.mailbox.write_text(request_name, request.model_dump_json() + "\n")
     handled = asyncio.Event()
 
     def handler(parsed, identity):
@@ -522,14 +521,29 @@ async def test_campaign_mailbox_audits_authenticated_mutation_without_key(tmp_pa
             handler=handler,
             stop=stop,
             poll_seconds=0.01,
+            invocation_gate=staged.invocation_gate,
         )
     )
-    await asyncio.wait_for(handled.wait(), timeout=2)
+    assert staged.invocation_gate is not None
+    async with staged.invocation_gate.serve_current_session():
+
+        def send_request() -> dict[str, object]:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(staged.invocation_gate.socket_path)
+                client.sendall(request.model_dump_json().encode("utf-8") + b"\n")
+                response = bytearray()
+                while not response.endswith(b"\n"):
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+            return json.loads(response)
+
+        response = await asyncio.to_thread(send_request)
+        await asyncio.wait_for(handled.wait(), timeout=2)
     stop.set()
     await server
 
-    response_name = request_name.removesuffix(".request.json") + ".response.json"
-    response = json.loads(staged.mailbox.read_text(response_name))
     assert response["status"] == "invalid"
     assert "idempotency key" in response["message"]
     assert effects.spawn_calls == []

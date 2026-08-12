@@ -15,13 +15,14 @@ import { taskStatusLabel } from "../agentTasks";
 import {
   campaignEndingLabel,
   campaignProjection,
+  campaignReportPreviewUrl,
   campaignTaskRoleLabel,
   campaignTaskRows,
   formatTokenCount,
   isLiveCampaign,
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
-import type { AgentTask, Campaign, CampaignMessage, CampaignReportSummary } from "../types";
+import type { AgentTask, Campaign, CampaignMessage } from "../types";
 
 interface Props {
   campaigns: Campaign[];
@@ -34,7 +35,6 @@ interface Props {
   onStop: (campaignId: string) => Promise<void>;
   onReauthorize: (campaignId: string, additionalInvocations: number) => Promise<void>;
   onSendMessage: (campaignId: string, body: string) => Promise<void>;
-  onOpenReport: (campaign: Campaign, report: CampaignReportSummary) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
 }
 
@@ -49,7 +49,6 @@ export function CampaignRuns({
   onStop,
   onReauthorize,
   onSendMessage,
-  onOpenReport,
   onOperateTask,
 }: Props) {
   if (campaigns.length === 0) return null;
@@ -73,7 +72,6 @@ export function CampaignRuns({
             onStop={onStop}
             onReauthorize={onReauthorize}
             onSendMessage={onSendMessage}
-            onOpenReport={onOpenReport}
             onOperateTask={onOperateTask}
             key={campaign.campaign_id}
           />
@@ -95,7 +93,6 @@ function CampaignRow({
   onStop,
   onReauthorize,
   onSendMessage,
-  onOpenReport,
   onOperateTask,
 }: {
   campaign: Campaign;
@@ -109,7 +106,6 @@ function CampaignRow({
   onStop: (campaignId: string) => Promise<void>;
   onReauthorize: (campaignId: string, additionalInvocations: number) => Promise<void>;
   onSendMessage: (campaignId: string, body: string) => Promise<void>;
-  onOpenReport: (campaign: Campaign, report: CampaignReportSummary) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
 }) {
   const detailId = useId();
@@ -238,26 +234,24 @@ function CampaignRow({
                   const ending = campaignEndingLabel(report.ending);
                   const timestamp = formatTimestamp(report.created_at, true);
                   return (
-                    <button
+                    <a
                       className={`button compact ${
                         recommendation.kind === "open_report" &&
                         recommendation.reportId === report.report_id
                           ? "primary"
                           : "secondary"
                       }`}
-                      type="button"
+                      href={campaignReportPreviewUrl(
+                        campaign.project_id,
+                        campaign.campaign_id,
+                        report.report_id,
+                      )}
                       aria-label={`Open ${ending} report from ${timestamp}`}
-                      onClick={() => {
-                        setLocalError(null);
-                        void onOpenReport(campaign, report).catch((error) => {
-                          setLocalError(error instanceof Error ? error.message : String(error));
-                        });
-                      }}
                       key={report.report_id}
                     >
                       <ExternalLink size={12} /> Open {ending} report ·{" "}
                       <time dateTime={report.created_at}>{timestamp}</time>
-                    </button>
+                    </a>
                   );
                 })}
               </div>

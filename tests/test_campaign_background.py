@@ -509,11 +509,20 @@ def test_background_exhaustion_callback_leads_to_needs_action_only_after_report(
 def test_report_reconciliation_is_restart_safe_and_allocates_only_once(tmp_path) -> None:
     store = _store(tmp_path)
     release_report = threading.Event()
+    worker_entered = threading.Event()
 
     async def stream(_project_id, _kind, request, execution):
         if request.role == "orchestrator":
             execution.checkpoint_stage("", str(tmp_path / "campaign-stage"))
             yield _sse(AgentEvent(event="session", session_id="orchestrator-session"))
+        elif request.role == "worker":
+            execution.checkpoint_stage("", str(tmp_path / "worker-stage"))
+            yield _sse(AgentEvent(event="session", session_id="worker-session"))
+            if request.session_id is None:
+                worker_entered.set()
+                while not execution.control.pause_requested.is_set():
+                    await asyncio.sleep(0.01)
+                yield _sse(AgentEvent(event="paused", text="Paused worker allocation."))
         else:
             while not release_report.is_set():
                 await asyncio.sleep(0.01)
@@ -528,6 +537,25 @@ def test_report_reconciliation_is_restart_safe_and_allocates_only_once(tmp_path)
         operation_id="root",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
+    worker = tasks.start_campaign_turn(
+        campaign.campaign_id,
+        CampaignRunRequest(
+            campaign_id=campaign.campaign_id,
+            role="worker",
+            control_node_id="exp/check",
+        ),
+        parent_operation_id=root.operation_id,
+        operation_id="worker",
+    )
+    assert worker_entered.wait(timeout=2)
+    tasks.pause(worker.operation_id)
+    worker = wait_for_task(store, worker.operation_id, expect="paused")
+    recovered = wait_for_task(
+        store,
+        tasks.resume(worker.operation_id).operation_id,
+        expect="succeeded",
+    )
+    assert recovered.parent_operation_id == worker.operation_id
     store.begin_campaign_wrapup(campaign.campaign_id, "completed")
     request_factory = lambda current: CampaignRunRequest(  # noqa: E731
         campaign_id=current.campaign_id,
@@ -549,7 +577,7 @@ def test_report_reconciliation_is_restart_safe_and_allocates_only_once(tmp_path)
     assert first is not None and raced is not None
     assert first.operation_id == raced.operation_id == "report-one"
     assert store.agent_task("report-two") is None
-    assert store.campaign_budget_meter(campaign.campaign_id).invocations_used == 2
+    assert store.campaign_budget_meter(campaign.campaign_id).invocations_used == 3
     assert store.campaigns_awaiting_report() == [store.campaign(campaign.campaign_id)]
     release_report.set()
     wait_for_task(store, first.operation_id, expect="succeeded")

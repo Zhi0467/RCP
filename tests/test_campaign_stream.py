@@ -16,6 +16,7 @@ from rcp.agents.campaign_prompt import campaign_orchestrator_task_contract
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
@@ -370,6 +371,30 @@ async def _events(stream) -> list[AgentEvent]:
     ]
 
 
+def _capture_served_invocation_gates(monkeypatch) -> list[ProviderInvocationGate | None]:
+    served: list[ProviderInvocationGate | None] = []
+    original = campaign_stream_module.serve_command_mailbox
+
+    async def capture(*, invocation_gate=None, **kwargs):
+        served.append(invocation_gate)
+        await original(invocation_gate=invocation_gate, **kwargs)
+
+    monkeypatch.setattr(campaign_stream_module, "serve_command_mailbox", capture)
+    return served
+
+
+def _assert_fresh_matching_invocation_gates(
+    served: list[ProviderInvocationGate | None],
+    launched: list[ProviderInvocationGate | None],
+) -> None:
+    assert len(served) == len(launched)
+    assert all(
+        server is launcher and server is not None
+        for server, launcher in zip(served, launched, strict=True)
+    )
+    assert len({id(gate) for gate in served}) == len(served)
+
+
 class _WorkerLauncher:
     def __init__(self, *, session_id: str = "worker-session", writer=None) -> None:
         self.session_id = session_id
@@ -378,21 +403,34 @@ class _WorkerLauncher:
         self.contracts: list[str] = []
         self.requested_session_ids: list[str | None] = []
         self.read_dirs: list[list[Path]] = []
+        self.invocation_gates: list[ProviderInvocationGate | None] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         self.calls += 1
         self.requested_session_ids.append(kwargs["session_id"])
         self.read_dirs.append(list(kwargs["read_dirs"]))
-        workspace = Path(kwargs["cwd"])
-        contract = _contract(prompt)
-        self.contracts.append(contract)
-        if self.writer is not None:
-            result = self.writer(contract, workspace)
-            if asyncio.iscoroutine(result):
-                await result
-        yield AgentEvent(event="session", session_id=self.session_id)
-        yield AgentEvent(event="answer", text="Worker completed the useful operation.")
-        yield AgentEvent(event="done")
+        invocation_gate = kwargs.get("invocation_gate")
+        self.invocation_gates.append(invocation_gate)
+
+        async def events():
+            workspace = Path(kwargs["cwd"])
+            contract = _contract(prompt)
+            self.contracts.append(contract)
+            if self.writer is not None:
+                result = self.writer(contract, workspace)
+                if asyncio.iscoroutine(result):
+                    await result
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="answer", text="Worker completed the useful operation.")
+            yield AgentEvent(event="done")
+
+        if invocation_gate is None:
+            async for event in events():
+                yield event
+            return
+        async with invocation_gate.serve_current_session():
+            async for event in events():
+                yield event
 
 
 def _enable_task_attribution(
@@ -834,6 +872,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
 async def test_orchestrator_stream_rejects_direct_existing_belief_change(
     manifest,
     tmp_path,
+    monkeypatch,
 ) -> None:
     service = _service(manifest, tmp_path)
     service.history.append(
@@ -868,6 +907,7 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
     def writer(_contract_text: str, workspace: Path) -> None:
         (workspace / "patch.json").write_text(candidate, encoding="utf-8")
 
+    served_gates = _capture_served_invocation_gates(monkeypatch)
     launcher = _WorkerLauncher(session_id="orchestrator-session", writer=writer)
     events = await _events(
         stream_campaign_orchestrator_run(
@@ -887,6 +927,7 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
     assert any("not permit" in message for message in updates[-1]["validation_messages"])
     assert service.history.state().nodes["rq/existing"].question == "What already exists?"
     assert launcher.calls == 3
+    _assert_fresh_matching_invocation_gates(served_gates, launcher.invocation_gates)
 
 
 @pytest.mark.asyncio
@@ -1011,6 +1052,13 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     )
     assert retry_events[-1].event == "done"
     assert retry_launcher.requested_session_ids == ["orchestrator-session"]
+    reused_stage_gates = [
+        fresh_launcher.invocation_gates[0],
+        continuation_launcher.invocation_gates[0],
+        retry_launcher.invocation_gates[0],
+    ]
+    assert all(gate is not None for gate in reused_stage_gates)
+    assert len({id(gate) for gate in reused_stage_gates}) == 3
     assert store.campaign_handoffs_cleared(continuation.operation_id) is True
 
 
@@ -1821,6 +1869,8 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
 
     def capture_mailbox(**kwargs):
         staged = _stage_command_mailbox(**kwargs)
+        assert staged.credential_path is None
+        assert not any(name.endswith(".credential.json") for name in staged.mailbox.entry_names())
         staged_mailboxes.append(staged)
         return staged
 
@@ -1857,8 +1907,9 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
     assert started == finished == [f"{worker.operation_id}:worker"]
     assert len(staged_mailboxes) == 1
     staged = staged_mailboxes[0]
+    assert staged.credential_path is None
     assert staged.credential.expired
-    assert not Path(staged.credential_path).exists()
+    assert not any(name.endswith(".credential.json") for name in staged.mailbox.entry_names())
     assert not any(
         name.startswith(("rcp-command-", ".rcp-command-", ".rcp-mailbox-"))
         for name in staged.mailbox.entry_names()
@@ -1911,6 +1962,7 @@ async def test_main_mailbox_preserves_prompt_failure_over_server_and_cleanup_fai
     assert any("mailbox server also failed" in message for message in warnings)
     assert any("mailbox cleanup also failed" in message for message in warnings)
     assert len(staged_mailboxes) == 1
+    assert staged_mailboxes[0].credential_path is None
     assert staged_mailboxes[0].credential.expired
 
 
@@ -1955,8 +2007,9 @@ async def test_close_mailbox_cleans_after_every_serve_task_failure(tmp_path, fai
             )
 
     assert stop.is_set()
+    assert staged.credential_path is None
     assert staged.credential.expired
-    assert not Path(staged.credential_path).exists()
+    assert not any(name.endswith(".credential.json") for name in staged.mailbox.entry_names())
     assert not any(
         name.startswith(("rcp-command-", ".rcp-command-", ".rcp-mailbox-"))
         for name in staged.mailbox.entry_names()
@@ -2014,6 +2067,7 @@ async def test_close_mailbox_finishes_shielded_cleanup_before_reraising_cancella
         await close_task
 
     assert cleanup_finished.is_set()
+    assert staged.credential_path is None
     assert staged.credential.expired
     warnings = [event.message for event in store.agent_task_events(worker.operation_id)]
     assert any("secondary cleanup failure" in message for message in warnings)
@@ -2517,8 +2571,8 @@ async def test_worker_reply_command_uses_one_campaign_mailbox_and_stable_allocat
 
 
 @pytest.mark.asyncio
-async def test_patch_correction_uses_fresh_validate_only_campaign_credential(
-    manifest, tmp_path
+async def test_patch_correction_uses_fresh_validate_only_campaign_gate(
+    manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
     stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
@@ -2576,10 +2630,11 @@ async def test_patch_correction_uses_fresh_validate_only_campaign_credential(
             stderr=asyncio.subprocess.PIPE,
         )
         validation_stdout, validation_stderr = await validation.communicate()
-        assert validation.returncode == 0, validation_stderr.decode()
+        assert validation.returncode == 0, validation_stdout.decode() + validation_stderr.decode()
         command_results.append((validation.returncode, json.loads(validation_stdout)))
         (workspace / "patch.json").write_text(valid_empty_patch, encoding="utf-8")
 
+    served_gates = _capture_served_invocation_gates(monkeypatch)
     launcher = _WorkerLauncher(session_id="worker-session", writer=writer)
     events = await _events(
         stream_campaign_worker_run(
@@ -2593,6 +2648,7 @@ async def test_patch_correction_uses_fresh_validate_only_campaign_credential(
     )
 
     assert launcher.requested_session_ids == ["worker-session", "worker-session"]
+    _assert_fresh_matching_invocation_gates(served_gates, launcher.invocation_gates)
     assert replies == []
     assert command_results[0][1]["status"] == "invalid"
     assert "validation only" in str(command_results[0][1]["message"])
@@ -2692,8 +2748,9 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
     )
     assert len(staged_mailboxes) == 2
     for staged in staged_mailboxes:
+        assert staged.credential_path is None
         assert staged.credential.expired
-        assert not Path(staged.credential_path).exists()
+        assert not any(name.endswith(".credential.json") for name in staged.mailbox.entry_names())
 
 
 @pytest.mark.asyncio
@@ -2754,6 +2811,7 @@ async def test_patch_correction_setup_failure_survives_secondary_cleanup_failure
         )
 
     assert len(staged_mailboxes) == 2
+    assert all(staged.credential_path is None for staged in staged_mailboxes)
     assert all(staged.credential.expired for staged in staged_mailboxes)
     warnings = [event.message for event in store.agent_task_events(retry.operation_id)]
     assert any("secondary correction cleanup failure" in message for message in warnings)

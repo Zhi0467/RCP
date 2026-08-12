@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import inspect
 import math
 import re
@@ -20,11 +21,14 @@ from rcp.agents.command_protocol import (
     CommandCredential,
     CommandRequest,
     CommandResponse,
+    command_authentication_payload,
     command_requires_idempotency_key,
     request_identity_is_well_formed,
+    staged_command_broker_source,
     staged_command_client_source,
     validate_command_request,
 )
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
@@ -79,6 +83,8 @@ class CommandTurnCredential:
         return self._state == "expired"
 
     def document(self) -> CommandCredential:
+        if self.identity.campaign_id is not None:
+            raise RuntimeError("campaign command authority is broker-only")
         return CommandCredential(mailbox_id=self.mailbox_id, token=self.token)
 
     def activate(self) -> None:
@@ -86,12 +92,22 @@ class CommandTurnCredential:
             raise RuntimeError("command credential can serve exactly one turn")
         self._state = "active"
 
-    def accepts(self, *, mailbox_id: str, token: str) -> bool:
+    def accepts(self, request: CommandRequest) -> bool:
+        if self.identity.campaign_id is not None:
+            expected = hmac.new(
+                self._token.encode("ascii"),
+                command_authentication_payload(request),
+                hashlib.sha256,
+            ).hexdigest()
+            proof = request.credential
+        else:
+            expected = self._token
+            proof = request.credential
         return (
             self._state == "active"
-            and _MAILBOX_ID.fullmatch(mailbox_id) is not None
-            and secrets.compare_digest(self.mailbox_id, mailbox_id)
-            and secrets.compare_digest(self._token, token)
+            and _MAILBOX_ID.fullmatch(request.mailbox_id) is not None
+            and secrets.compare_digest(self.mailbox_id, request.mailbox_id)
+            and secrets.compare_digest(expected, proof)
         )
 
     def expire(self) -> None:
@@ -104,7 +120,8 @@ class StagedCommandMailbox:
     mailbox: RunStageMailbox
     credential: CommandTurnCredential
     client_path: str
-    credential_path: str
+    credential_path: str | None
+    invocation_gate: ProviderInvocationGate | None = None
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS
 
     @property
@@ -117,11 +134,15 @@ class StagedCommandMailbox:
         timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("command client timeout must be a positive finite number")
+        authority = (
+            self.invocation_gate.client_arguments()
+            if self.invocation_gate is not None
+            else ("--credential", self.credential_path or "")
+        )
         return (
             "python3",
             self.client_path,
-            "--credential",
-            self.credential_path,
+            *authority,
             "--timeout",
             f"{timeout:g}",
             "--workspace",
@@ -149,7 +170,7 @@ def stage_command_mailbox(
     turn_id: str,
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS,
 ) -> StagedCommandMailbox:
-    """Clear a reusable stage, ship the tested client source, and issue one credential."""
+    """Clear a reusable stage and issue either broker or validate-only authority."""
 
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("command client timeout must be a positive finite number")
@@ -157,6 +178,8 @@ def stage_command_mailbox(
     prepare_command_mailbox(mailbox=mailbox)
     identity = CommandTurnIdentity(campaign_id=campaign_id, task_id=task_id, turn_id=turn_id)
     credential = CommandTurnCredential.issue(identity)
+    credential_path: str | None = None
+    invocation_gate: ProviderInvocationGate | None = None
     try:
         source = staged_command_client_source()
         source_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
@@ -164,11 +187,27 @@ def stage_command_mailbox(
             f"rcp-agent-client-{credential.mailbox_id}-{source_digest}.py",
             source,
         )
-        credential_name = f"rcp-command-{credential.mailbox_id}.credential.json"
-        mailbox.write_text(
-            credential_name,
-            credential.document().model_dump_json(indent=2) + "\n",
-        )
+        if campaign_id is None:
+            credential_name = f"rcp-command-{credential.mailbox_id}.credential.json"
+            mailbox.write_text(
+                credential_name,
+                credential.document().model_dump_json(indent=2) + "\n",
+            )
+            credential_path = str(mailbox.workspace / credential_name)
+        else:
+            broker_source = staged_command_broker_source()
+            broker_digest = hashlib.sha256(broker_source.encode("utf-8")).hexdigest()[:16]
+            broker_path = mailbox.stage_text_input(
+                f"rcp-command-broker-{credential.mailbox_id}-{broker_digest}.py",
+                broker_source,
+            )
+            invocation_gate = ProviderInvocationGate(
+                mailbox_id=credential.mailbox_id,
+                broker_path=broker_path,
+                socket_path=f"/tmp/rcp-command-{credential.mailbox_id}.sock",
+                workspace=str(mailbox.workspace),
+                _token=credential.token,
+            )
     except BaseException:
         with suppress(BaseException):
             cleanup_command_mailbox(mailbox=mailbox, credential=credential)
@@ -177,7 +216,8 @@ def stage_command_mailbox(
         mailbox=mailbox,
         credential=credential,
         client_path=client_path,
-        credential_path=str(mailbox.workspace / credential_name),
+        credential_path=credential_path,
+        invocation_gate=invocation_gate,
         timeout_seconds=timeout_seconds,
     )
 
@@ -206,12 +246,18 @@ async def serve_command_mailbox(
     handler: CommandHandler,
     stop: asyncio.Event,
     poll_seconds: float = COMMAND_MAILBOX_POLL_SECONDS,
+    invocation_gate: ProviderInvocationGate | None = None,
 ) -> None:
     """Validate and dispatch requests; the injected handler owns every effect and record."""
 
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("command mailbox poll interval must be a positive finite number")
     credential = staged.credential
+    if credential.identity.campaign_id is not None:
+        if invocation_gate is None or invocation_gate is not staged.invocation_gate:
+            raise ValueError("campaign command mailbox requires its exact provider invocation gate")
+    elif invocation_gate is not None:
+        raise ValueError("validate-only mailbox does not accept a provider invocation gate")
     credential.activate()
     seen: set[str] = set()
     try:
@@ -266,10 +312,7 @@ async def _answer_request(
             raise ValueError("command request identity is malformed")
         if request.request_id != request_id or request.mailbox_id != staged.credential.mailbox_id:
             raise ValueError("command request identity does not match its file name")
-        if not staged.credential.accepts(
-            mailbox_id=request.mailbox_id,
-            token=request.credential,
-        ):
+        if not staged.credential.accepts(request):
             raise ValueError("command credential is invalid or expired")
         if (
             command_requires_idempotency_key(request.verb)

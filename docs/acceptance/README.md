@@ -223,7 +223,7 @@ it but a browser or a machine we do not have.
 | [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | implemented | pytest + **browser** | tests + Codex 2026-08-07 + Claude 2026-08-12 |
 | [S76](S76-graph-condition-wake.md) | Wake a conversation when a canonical graph condition becomes true | implemented | pytest | tests + web 2026-08-12 |
 | [S77](S77-auto-research-stops-at-belief.md) | Let auto-research create freely and propose changes to existing epistemic nodes | implemented | pytest | covered |
-| [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | pending | **browser** | none |
+| [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | implemented | **browser** | tests + browser 2026-08-12 |
 | [S79](S79-cold-desktop-launch-renders.md) | A cold desktop launch never rests on a blank window | implemented | **desktop** | driven 2026-08-07 |
 | [S80](S80-question-hierarchy-flow-columns.md) | Read question hierarchy from the Research flow columns | implemented | **browser** | layout tests + driven 2026-08-07 |
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without reloading the UI | implemented | api + **browser** | tests + driven 2026-08-07 |
@@ -263,6 +263,7 @@ it but a browser or a machine we do not have.
 | [S116](S116-choose-existing-or-fresh-research.md) | Choose existing research or start fresh before setup changes anything | implemented | pytest + **browser** + ssh | setup, transport, history, browser + live SSH 2026-08-12 |
 | [S117](S117-project-owned-caches.md) | Clear one project's cache without clearing another project's cache | implemented | pytest + **browser** | cache lifecycle, deletion, API, web, browser 2026-08-12 |
 | [S118](S118-identity-and-membership-start-at-the-index.md) | Put personal identity and an explicit team seam on the project index | implemented | pytest + **browser** | tests + browser 2026-08-12 |
+| [S119](S119-stale-processes-cannot-command-the-next-turn.md) | A stale process cannot command the next campaign turn | implemented | pytest + ssh | tests + live SSH 2026-08-12 |
 
 S95–S105 are the original team-space set. They come from the confirmed design in
 [`../design/`](../design/README.md). S97, S99, and the narrower S111–S112

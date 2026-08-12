@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.resources
+import json
 import re
 from functools import lru_cache
 from typing import Annotated, Literal, TypeAlias
@@ -255,6 +256,30 @@ def staged_command_client_source() -> str:
         .joinpath("staged_command_client.py")
         .read_text(encoding="utf-8")
     )
+
+
+@lru_cache(maxsize=1)
+def staged_command_broker_source() -> str:
+    """Load the stdlib broker that authenticates one live provider process tree."""
+
+    return (
+        importlib.resources.files("rcp.agents")
+        .joinpath("staged_command_broker.py")
+        .read_text(encoding="utf-8")
+    )
+
+
+def command_authentication_payload(request: CommandRequest) -> bytes:
+    """Canonical bytes covered by a campaign broker's per-request HMAC."""
+
+    value = request.model_dump(mode="json")
+    value.pop("credential", None)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
 
 
 def credential_matches(value: CommandCredential, *, mailbox_id: str, token: str) -> bool:

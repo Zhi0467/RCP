@@ -295,6 +295,7 @@ async def stream_campaign_orchestrator_run(
                     capability="orchestrate",
                     outcome=outcome,
                     binary=stage.provider_binary,
+                    invocation_gate=staged_commands.invocation_gate,
                 )
             ) as stream:
                 async for frame in stream:
@@ -707,6 +708,7 @@ async def stream_campaign_worker_run(
                     capability="work_auto",
                     outcome=outcome,
                     binary=stage.provider_binary,
+                    invocation_gate=staged_commands.invocation_gate,
                 )
             ) as stream:
                 async for frame in stream:
@@ -1954,7 +1956,12 @@ async def _serve_campaign_commands(
             )
         return await asyncio.to_thread(dispatcher.dispatch, execution.operation_id, request)
 
-    await serve_command_mailbox(staged=staged, handler=handle, stop=stop)
+    await serve_command_mailbox(
+        staged=staged,
+        handler=handle,
+        stop=stop,
+        invocation_gate=staged.invocation_gate,
+    )
 
 
 class _ValidateOnlyCampaignCommandDispatcher(CampaignCommandDispatcher):
@@ -2312,6 +2319,7 @@ async def _settle_worker_patch(
                     capability=_capability,
                     outcome=correction_outcome,
                     binary=provider_binary,
+                    invocation_gate=correction_mailbox.invocation_gate,
                 )
             ) as stream:
                 async for frame in stream:

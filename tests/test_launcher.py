@@ -1,15 +1,19 @@
 import asyncio
 import json
 import shlex
+import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
+from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
+from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
 from rcp.providers import profile_for
 
 
@@ -125,6 +129,186 @@ def test_provider_usage_is_normalized_at_provider_boundaries() -> None:
     assert claude.usage.processed_input_tokens == 1_000
     assert claude.usage.cached_input_tokens == 300
     assert claude.usage.reasoning_output_tokens == 50
+
+
+@pytest.mark.asyncio
+async def test_campaign_broker_wraps_provider_and_preserves_exact_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+    assert staged.invocation_gate is not None
+    handled: list[str] = []
+
+    def handler(request, _identity):
+        handled.append(request.verb)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    client = list(staged.client_argv("status"))
+    provider_script = (
+        "import json,subprocess,sys\n"
+        "prompt=sys.stdin.read()\n"
+        f"result=subprocess.run({client!r},capture_output=True,text=True,check=False)\n"
+        "print(json.dumps({'type':'item','item':{'text':"
+        "json.dumps({'prompt':prompt,'code':result.returncode,'output':result.stdout})}}),flush=True)\n"
+    )
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness",
+        (),
+        {"installed": True, "authenticated": True, "path_state": "resolved"},
+    )()
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
+    )
+    stop = asyncio.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.01,
+            invocation_gate=staged.invocation_gate,
+        )
+    )
+    try:
+        events = [
+            event
+            async for event in launcher.stream(
+                "codex",
+                "exact provider prompt",
+                cwd=tmp_path,
+                capability="orchestrate",
+                invocation_gate=staged.invocation_gate,
+            )
+        ]
+    finally:
+        stop.set()
+        await server
+        staged.cleanup()
+
+    payload = json.loads(next(event.text for event in events if event.event == "message"))
+    assert payload["prompt"] == "exact provider prompt"
+    assert payload["code"] == 0
+    assert json.loads(payload["output"])["status"] == "ok"
+    assert handled == ["status"]
+    assert all(staged.invocation_gate.ready_line not in event.text for event in events)
+
+
+@pytest.mark.asyncio
+async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="task",
+        turn_id="turn",
+    )
+    assert staged.invocation_gate is not None
+    launched = tmp_path / "provider-launched"
+    provider_script = f"from pathlib import Path; Path({str(launched)!r}).write_text('bad')"
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness",
+        (),
+        {"installed": True, "authenticated": True, "path_state": "resolved"},
+    )()
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
+    )
+    occupied = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    occupied.bind(staged.invocation_gate.socket_path)
+    try:
+        events = [
+            event
+            async for event in launcher.stream(
+                "codex",
+                "must not be delivered",
+                cwd=tmp_path,
+                capability="orchestrate",
+                invocation_gate=staged.invocation_gate,
+            )
+        ]
+    finally:
+        occupied.close()
+        Path(staged.invocation_gate.socket_path).unlink(missing_ok=True)
+        staged.cleanup()
+
+    assert not launched.exists()
+    assert any(
+        event.event == "error" and "socket path is already occupied" in event.text
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_campaign_broker_peer_inspection_failure_prevents_provider_prompt_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="task",
+        turn_id="turn",
+    )
+    assert staged.invocation_gate is not None
+    unsupported_broker = tmp_path / "unsupported-broker.py"
+    unsupported_broker.write_text(
+        staged_command_broker_source()
+        .replace('if sys.platform.startswith("linux")', "if False")
+        .replace('if sys.platform == "darwin"', "if False"),
+        encoding="utf-8",
+    )
+    gate = replace(staged.invocation_gate, broker_path=str(unsupported_broker))
+    launched = tmp_path / "provider-launched"
+    provider_script = f"from pathlib import Path; Path({str(launched)!r}).write_text('bad')"
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness",
+        (),
+        {"installed": True, "authenticated": True, "path_state": "resolved"},
+    )()
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
+    )
+
+    try:
+        events = [
+            event
+            async for event in launcher.stream(
+                "codex",
+                "must not be delivered",
+                cwd=tmp_path,
+                capability="orchestrate",
+                invocation_gate=gate,
+            )
+        ]
+    finally:
+        staged.cleanup()
+
+    assert not launched.exists()
+    assert any(
+        event.event == "error" and "cannot authenticate Unix-socket peers" in event.text
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

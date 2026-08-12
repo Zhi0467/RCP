@@ -63,12 +63,6 @@ export interface CampaignProjection {
   taskControl: CampaignTaskControl | null;
 }
 
-interface PreviewTarget {
-  opener: Window | null;
-  location: { replace(url: string): void };
-  close(): void;
-}
-
 export function isLiveCampaign(campaign: Campaign): boolean {
   return LIVE_CAMPAIGN_STATUSES.has(campaign.status);
 }
@@ -246,24 +240,6 @@ export function campaignReportPreviewUrl(
   reportId: string,
 ): string {
   return `/api/projects/${encodeURIComponent(projectId)}/campaigns/${encodeURIComponent(campaignId)}/reports/${encodeURIComponent(reportId)}/preview`;
-}
-
-export async function openCampaignReportPreview(
-  url: string,
-  openTarget: () => PreviewTarget | null = () => window.open("about:blank", "_blank"),
-  fetcher: typeof fetch = fetch,
-): Promise<void> {
-  const target = openTarget();
-  if (!target) throw new Error("The campaign report could not be opened.");
-  target.opener = null;
-  try {
-    const response = await fetcher(url, { method: "HEAD" });
-    if (!response.ok) throw new Error("The campaign report is unavailable.");
-    target.location.replace(url);
-  } catch {
-    target.close();
-    throw new Error("The campaign report is unavailable.");
-  }
 }
 
 export function campaignTaskRows(campaign: Campaign, tasks: AgentTask[]): CampaignTaskRow[] {

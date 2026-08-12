@@ -1,10 +1,20 @@
 ---
 id: S78-one-budget-one-stop
-status: pending
+status: implemented
 tier: hermetic
 driver: browser
-covered_by: none
+covered_by:
+  - tests/test_campaign_lifecycle_acceptance.py
+  - tests/test_campaign_recovery.py
+  - tests/test_campaign_storage.py
+  - tests/test_campaign_api.py
+  - tests/test_campaign_background.py
+  - tests/test_acceptance_agent.py
+  - web/tests/campaigns.test.mjs
 invariants: [8, 10g]
+last_passed: 2026-08-12 — isolated acceptance-agent browser drive covered active,
+  automatic and exact recovery, exhaustion, reauthorization, Stop, failure,
+  nested turns and mail, and opened every ending report
 ---
 
 # One budget, one stop

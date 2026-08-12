@@ -25,7 +25,6 @@ from rcp.runs.campaign import (
     CampaignWakeAdmission,
     PendingCampaignMail,
     begin_campaign_wrapup,
-    campaign_non_report_turns_settled,
     campaign_report_correction,
     campaign_root_request,
     complete_campaign_report,
@@ -614,8 +613,6 @@ class BackgroundAgentTasks:
 
         campaign = self.store.campaign(campaign_id)
         if campaign is None or campaign.status != "wrapping_up" or campaign.ending is None:
-            return None
-        if not campaign_non_report_turns_settled(self.store, campaign_id):
             return None
         try:
             return self.start_campaign_report(

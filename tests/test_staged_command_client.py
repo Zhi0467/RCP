@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -15,7 +17,11 @@ from rcp.agents.command_mailbox import (
     serve_command_mailbox,
     stage_command_mailbox,
 )
-from rcp.agents.command_protocol import CommandResponse, staged_command_client_source
+from rcp.agents.command_protocol import (
+    CommandResponse,
+    staged_command_broker_source,
+    staged_command_client_source,
+)
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
 
@@ -52,14 +58,14 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
         "issue",
         classmethod(capture_issue),
     )
-    original_write = RunStageMailbox.write_text
+    original_stage_input = RunStageMailbox.stage_text_input
 
-    def fail_after_write(self, name, content):
-        original_write(self, name, content)
-        if name.startswith("rcp-command-"):
-            raise RuntimeError("credential staging failed")
+    def fail_broker_stage(self, name, content):
+        if name.startswith("rcp-command-broker-"):
+            raise RuntimeError("broker staging failed")
+        return original_stage_input(self, name, content)
 
-    monkeypatch.setattr(RunStageMailbox, "write_text", fail_after_write)
+    monkeypatch.setattr(RunStageMailbox, "stage_text_input", fail_broker_stage)
     if cleanup_fails:
         original_clear = command_mailbox_module._clear_command_state
         clear_calls = 0
@@ -73,7 +79,7 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
 
         monkeypatch.setattr(command_mailbox_module, "_clear_command_state", fail_cleanup)
 
-    with pytest.raises(RuntimeError, match="credential staging failed"):
+    with pytest.raises(RuntimeError, match="broker staging failed"):
         stage_command_mailbox(
             local_stage=workspace,
             remote_stage=None,
@@ -95,6 +101,25 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
     } == {name: f"retained {name}" for name in ("patch.json", "watch.json", "messages.json")}
 
 
+def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
+    source = staged_command_broker_source()
+    imports: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name.partition(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imports.add(node.module.partition(".")[0])
+    assert imports <= sys.stdlib_module_names
+    assert "from rcp" not in source
+    root = Path(__file__).resolve().parents[1]
+    sidecar = (root / "packaging" / "rcp_backend.spec").read_text(encoding="utf-8")
+    hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text(
+        encoding="utf-8"
+    )
+    assert "STAGED_COMMAND_BROKER" in sidecar
+    assert "staged_command_broker_source" in hook
+
+
 @pytest.mark.asyncio
 async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit_values(
     tmp_path,
@@ -110,6 +135,7 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
         turn_id="turn",
         timeout_seconds=2,
     )
+    broker_token = staged.credential.token
     assert Path(staged.client_path).read_text(encoding="utf-8") == staged_command_client_source()
     imports: set[str] = set()
     for node in ast.walk(ast.parse(staged_command_client_source())):
@@ -149,26 +175,34 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
         )
 
     stop = asyncio.Event()
-    server = asyncio.create_task(
-        serve_command_mailbox(staged=staged, handler=handler, stop=stop, poll_seconds=0.01)
-    )
-    await asyncio.sleep(0)
-    validate_code, validate_output = await _run_client(
-        staged, "validate", str(workspace / "patch.json")
-    )
-    ok_code, ok_output = await _run_client(staged, "status")
-    invalid_code, invalid_output = await _run_client(staged, "status", "--worker-id", "invalid")
-    unavailable_code, unavailable_output = await _run_client(
-        staged, "status", "--worker-id", "unavailable"
-    )
-    finish_code, finish_output = await _run_client(
-        staged,
-        "finish",
-        "--key",
-        "conclude-once",
-    )
-    stop.set()
-    await server
+    assert staged.invocation_gate is not None
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        await asyncio.sleep(0)
+        validate_code, validate_output = await _run_client(
+            staged, "validate", str(workspace / "patch.json")
+        )
+        ok_code, ok_output = await _run_client(staged, "status")
+        invalid_code, invalid_output = await _run_client(staged, "status", "--worker-id", "invalid")
+        unavailable_code, unavailable_output = await _run_client(
+            staged, "status", "--worker-id", "unavailable"
+        )
+        finish_code, finish_output = await _run_client(
+            staged,
+            "finish",
+            "--key",
+            "conclude-once",
+        )
+        stop.set()
+        await server
 
     assert validate_code == 0
     assert json.loads(validate_output)["status"] == "valid"
@@ -194,18 +228,18 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
         }
         assert len(request["request_id"]) == 32
         assert len(request["credential"]) == 64
+        assert request["credential"] != broker_token
 
     assert staged.credential.expired
-    with pytest.raises(RuntimeError, match="expired"):
+    with pytest.raises(RuntimeError, match="broker-only"):
         staged.credential.document()
     with pytest.raises(RuntimeError, match="exactly one turn"):
         staged.credential.activate()
 
     staged.cleanup()
     expired_code, expired_output = await _run_client(staged, "status")
-    assert expired_code == 1
-    assert "credential" in expired_output
-    assert "unavailable or not a regular file" in expired_output
+    assert expired_code == 2
+    assert "broker is unavailable" in expired_output
 
 
 @pytest.mark.asyncio
@@ -246,6 +280,203 @@ async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path)
     assert json.loads(output)["status"] == "invalid"
     assert "campaign-bound credential" in output
     assert not handled
+
+
+@pytest.mark.asyncio
+async def test_campaign_broker_signature_cannot_authorize_a_modified_request(tmp_path) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+    assert staged.invocation_gate is not None
+    assert staged.credential_path is None
+    assert "--credential" not in staged.client_argv()
+    assert not list(workspace.glob("*.credential.json"))
+    token = staged.credential.token
+    assert token not in staged.client_command()
+    assert all(token not in path.read_text(encoding="utf-8") for path in workspace.rglob("*.py"))
+    handled = 0
+
+    def handler(request, _identity):
+        nonlocal handled
+        handled += 1
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            code, _output = await _run_client(staged, "status")
+            assert code == 0
+            original_path = next(workspace.glob("*.request.json"))
+            modified = json.loads(original_path.read_text(encoding="utf-8"))
+            modified_id = "f" * 32
+            modified["request_id"] = modified_id
+            modified["arguments"] = {"worker_id": "different-worker"}
+            modified_path = workspace / (
+                f"rcp-command-{staged.credential.mailbox_id}-{modified_id}.request.json"
+            )
+            modified_path.write_text(json.dumps(modified), encoding="utf-8")
+            response_path = modified_path.with_name(
+                modified_path.name.removesuffix(".request.json") + ".response.json"
+            )
+            for _ in range(200):
+                if response_path.is_file():
+                    break
+                await asyncio.sleep(0.01)
+            assert response_path.is_file()
+            response = json.loads(response_path.read_text(encoding="utf-8"))
+            assert response["status"] == "invalid"
+            assert "credential is invalid" in response["message"]
+            assert handled == 1
+        finally:
+            stop.set()
+            await server
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_detached_prior_turn_process_cannot_command_reused_stage(tmp_path) -> None:
+    workspace = tmp_path / "reused-stage"
+    workspace.mkdir()
+    first = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="first-task",
+        turn_id="first-turn",
+        timeout_seconds=2,
+    )
+    stale_instruction = workspace / "stale-instruction.json"
+    stale_result_path = workspace / "stale-result.json"
+    stale_script = (
+        "import json,os,subprocess,sys,time\n"
+        "instruction,result_path=sys.argv[1:3]\n"
+        "deadline=time.monotonic()+10\n"
+        "while not os.path.isfile(instruction):\n"
+        "  if time.monotonic()>=deadline: raise SystemExit(70)\n"
+        "  time.sleep(0.01)\n"
+        "with open(instruction,encoding='utf-8') as stream: argv=json.load(stream)\n"
+        "result=subprocess.run(argv,capture_output=True,text=True,check=False)\n"
+        "with open(result_path,'w',encoding='utf-8') as stream:\n"
+        "  json.dump({'code':result.returncode,'stdout':result.stdout},stream)\n"
+    )
+    stale = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        stale_script,
+        str(stale_instruction),
+        str(stale_result_path),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert stale.pid is not None
+    assert os.getsid(stale.pid) != os.getsid(0)
+    first.cleanup()
+
+    second = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="second-task",
+        turn_id="second-turn",
+        timeout_seconds=2,
+    )
+    assert second.invocation_gate is not None
+    handled: list[str] = []
+
+    def handler(request, _identity):
+        handled.append(request.verb)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    provider_script = (
+        "import json,os,subprocess,sys,time\n"
+        "instruction,result_path,client_json=sys.argv[1:4]\n"
+        "temporary=instruction+'.tmp'\n"
+        "with open(temporary,'w',encoding='utf-8') as stream: stream.write(client_json)\n"
+        "os.replace(temporary,instruction)\n"
+        "deadline=time.monotonic()+10\n"
+        "while not os.path.isfile(result_path):\n"
+        "  if time.monotonic()>=deadline: raise SystemExit(71)\n"
+        "  time.sleep(0.01)\n"
+        "with open(result_path,encoding='utf-8') as stream: stale=json.load(stream)\n"
+        "current=subprocess.run(json.loads(client_json),capture_output=True,text=True,"
+        "check=False,start_new_session=True)\n"
+        "print(json.dumps({'stale':stale,'current':{'code':current.returncode,"
+        "'stdout':current.stdout}}),flush=True)\n"
+    )
+    provider_command = [
+        sys.executable,
+        "-c",
+        provider_script,
+        str(stale_instruction),
+        str(stale_result_path),
+        json.dumps(list(second.client_argv("status"))),
+    ]
+    stop = asyncio.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=second,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.01,
+            invocation_gate=second.invocation_gate,
+        )
+    )
+    process = await asyncio.create_subprocess_exec(
+        *second.invocation_gate.wrap_command(provider_command),
+        cwd=workspace,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(second.invocation_gate.bootstrap(b"")),
+                timeout=15,
+            )
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            raise
+        await stale.wait()
+    finally:
+        if stale.returncode is None:
+            stale.terminate()
+            await stale.wait()
+        stop.set()
+        await server
+
+    assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
+    lines = stdout.decode("utf-8").splitlines()
+    assert lines[0] == second.invocation_gate.ready_line
+    result = json.loads(lines[-1])
+    assert result["stale"]["code"] == 1, result
+    assert "outside the current provider invocation" in result["stale"]["stdout"]
+    assert result["current"]["code"] == 0, result
+    assert json.loads(result["current"]["stdout"])["status"] == "ok"
+    assert handled == ["status"]
+    assert len(list(workspace.glob("*.request.json"))) == 1
+    assert "--credential" not in shlex.split(second.client_command())
+    second.cleanup()
 
 
 @pytest.mark.asyncio

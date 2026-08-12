@@ -99,7 +99,7 @@ import {
   projectHashAfterViewChange,
 } from "./experimentBoard";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { campaignReportPreviewUrl, isLiveCampaign, openCampaignReportPreview } from "./campaigns";
+import { isLiveCampaign } from "./campaigns";
 import type { DagViewport } from "./hooks/dagZoom";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
@@ -147,7 +147,6 @@ import type {
   AppView,
   Campaign,
   CampaignMessage,
-  CampaignReportSummary,
   ChatSummary,
   ChatTranscript,
   ExperimentControlState,
@@ -3016,11 +3015,6 @@ export default function App() {
     }
   };
 
-  const openCampaignReport = (campaign: Campaign, report: CampaignReportSummary) =>
-    openCampaignReportPreview(
-      campaignReportPreviewUrl(campaign.project_id, campaign.campaign_id, report.report_id),
-    );
-
   const operateTask = async (
     task: AgentTask,
     action: "pause" | "resume" | "retry",
@@ -3991,7 +3985,6 @@ export default function App() {
                 onStop={requestCampaignStop}
                 onReauthorize={requestCampaignReauthorization}
                 onSendMessage={messageCampaignOrchestrator}
-                onOpenReport={openCampaignReport}
                 onOperateTask={operateCampaignOrchestratorTask}
               />
               <ExecutionView

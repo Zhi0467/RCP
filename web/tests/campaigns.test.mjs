@@ -17,7 +17,6 @@ import {
   campaignReportPreviewUrl,
   campaignTaskRows,
   isLiveCampaign,
-  openCampaignReportPreview,
 } from "../src/campaigns.ts";
 
 const server = await createServer({
@@ -325,6 +324,11 @@ test("the campaign parent owns the only meter, nested worker, mail, stop, and re
   assert.doesNotMatch(html, /Message worker/);
   assert.match(html, />Stop</);
   assert.match(html, /Open Exhausted report/);
+  assert.match(
+    html,
+    /href="\/api\/projects\/project%20one\/campaigns\/campaign%2Falpha\/reports\/report%2Fexhausted\/preview"/,
+  );
+  assert.doesNotMatch(html, /target="_blank"/);
 });
 
 test("same-ending reports have distinct visible timestamps and accessible names", () => {
@@ -813,35 +817,6 @@ test("a paid worker continuation is visibly classified as a wake", () => {
       ["turn-worker-wake", "wake"],
     ],
   );
-});
-
-test("report previews sever opener and verify the sandbox endpoint before navigation", async () => {
-  const target = {
-    opener: {},
-    replaced: null,
-    closed: false,
-    location: {
-      replace(url) {
-        target.replaced = url;
-      },
-    },
-    close() {
-      target.closed = true;
-    },
-  };
-  let request;
-  await openCampaignReportPreview(
-    "/preview",
-    () => target,
-    async (path, init) => {
-      request = { path, init };
-      return new Response(null, { status: 200 });
-    },
-  );
-  assert.equal(target.opener, null);
-  assert.equal(target.replaced, "/preview");
-  assert.equal(target.closed, false);
-  assert.deepEqual(request, { path: "/preview", init: { method: "HEAD" } });
 });
 
 test("campaign API calls keep every endpoint and mutation body isolated", async () => {

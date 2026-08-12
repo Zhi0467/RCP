@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.54
+**Version:** 0.55
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,10 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.55** — replaced the campaign command client's staged bearer credential
+  with a per-invocation execution-host broker that authenticates callers as part
+  of the live provider process tree locally and over SSH, while explicitly
+  leaving a fully hostile same-UID account outside RCP's process boundary.
 - **0.54** — added the campaign id to the Patch envelope as the one additive
   campaign-lineage field, stamped from the producing task and inert to every
   authority decision, while keeping parent-task and worker lineage operational;
@@ -1510,9 +1514,21 @@ validated all-or-none where an empty declaration is meaningful.
 
 Three properties make the client safe:
 
-1. **A per-turn credential** bound to the campaign, task, and turn, expiring with
-   the turn. Without it the client is an authority hole rather than an authority
-   surface.
+1. **A per-invocation execution-host broker** bound to the campaign, task, and
+   turn. The reusable actor stage, provider prompt, provider environment, and
+   command-client arguments contain no bearer credential. The client connects
+   to a Unix socket on the execution host; the broker reads the peer process id
+   from the kernel and accepts it only when it is the fresh provider process or
+   a live descendant of that exact process birth. An ordinary provider tool may
+   create a new OS session without losing authority; a process left behind by an
+   earlier provider tree cannot become a descendant of the next one. The broker
+   alone authenticates mailbox requests with ephemeral in-memory authority
+   shared with RCP over its private control channel. Local and SSH execution use
+   the same rule, and an execution host that cannot prove peer identity and live
+   process ancestry fails closed before the provider receives its prompt. This
+   boundary deliberately excludes compromise of the whole OS account: defending
+   against an arbitrary hostile same-UID process requires a separate user,
+   container, sandbox, or VM and is not a claim this broker makes.
 2. **A caller-supplied idempotency key on every mutating command.** The hazard is
    RCP replaying the orchestrator's own turn after a crash, not the agent
    retrying. With no record for a key, the effect happens and the key is

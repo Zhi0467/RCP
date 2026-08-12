@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.providers import (
     AgentCapability,
@@ -439,6 +440,7 @@ class AgentLauncher:
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
@@ -481,6 +483,8 @@ class AgentLauncher:
             write_dirs=write_dirs or [],
             capability=capability,
         )
+        if invocation_gate is not None:
+            command = invocation_gate.wrap_command(command)
         local_cwd: str | None = str(cwd)
         if host:
             command = ssh_arguments(
@@ -515,7 +519,10 @@ class AgentLauncher:
         try:
             assert process.stdin is not None
             assert process.stdout is not None
-            stdin_task = asyncio.create_task(_feed_stdin(process.stdin, prompt.encode("utf-8")))
+            prompt_bytes = prompt.encode("utf-8")
+            if invocation_gate is not None:
+                prompt_bytes = invocation_gate.bootstrap(prompt_bytes)
+            stdin_task = asyncio.create_task(_feed_stdin(process.stdin, prompt_bytes))
             stderr_task = (
                 asyncio.create_task(
                     _read_bounded_text(
@@ -578,6 +585,8 @@ class AgentLauncher:
                 assert raw_line is not None
                 line = raw_line.decode("utf-8", errors="replace").rstrip()
                 if not line:
+                    continue
+                if invocation_gate is not None and line == invocation_gate.ready_line:
                     continue
                 event = self._normalize_event(provider, line)
                 event_counts[event.event] = event_counts.get(event.event, 0) + 1

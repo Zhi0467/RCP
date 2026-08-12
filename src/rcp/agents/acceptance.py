@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.launcher import (
     AgentEvent,
     AgentLauncher,
@@ -166,9 +167,30 @@ class AcceptanceAgentLauncher(AgentLauncher):
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        if invocation_gate is not None:
+            async with invocation_gate.serve_current_session():
+                async for event in self.stream(
+                    provider,
+                    prompt,
+                    cwd=cwd,
+                    model=model,
+                    reasoning=reasoning,
+                    session_id=session_id,
+                    read_dirs=read_dirs,
+                    write_dirs=write_dirs,
+                    host=host,
+                    control=control,
+                    remote_pid_file=remote_pid_file,
+                    invocation_gate=None,
+                    capability=capability,
+                    binary=binary,
+                ):
+                    yield event
+            return
         del (
             model,
             reasoning,
@@ -260,15 +282,19 @@ class AcceptanceAgentLauncher(AgentLauncher):
             if campaign_contract is None:
                 raise ValueError("Acceptance campaign contract is not recognized.")
             campaign_role, campaign_phase = campaign_contract
-            answer = await _accept_campaign_turn(
-                resolved_cwd,
-                state,
-                stable_session,
-                contract=contract,
-                role=campaign_role,
-                phase=campaign_phase,
-                control=control,
-            )
+            try:
+                answer = await _accept_campaign_turn(
+                    resolved_cwd,
+                    state,
+                    stable_session,
+                    contract=contract,
+                    role=campaign_role,
+                    phase=campaign_phase,
+                    control=control,
+                )
+            except _AcceptancePauseRequested:
+                yield AgentEvent(event="paused", text="Paused during acceptance fixture work.")
+                return
         elif scenario == "result_view":
             answer = _author_result_view(
                 resolved_cwd,
@@ -533,6 +559,7 @@ async def _accept_campaign_turn(
                 active_name=_CAMPAIGN_FAILURE_WORKER_ACTIVE_FILE,
                 release_name=_CAMPAIGN_FAILURE_WORKER_RELEASE_FILE,
                 label="terminal-failure worker",
+                control=control,
             )
             return "Settled the admitted acceptance worker before the failed campaign report."
         if worker_fixture and reply_prefix is not None:
@@ -564,6 +591,7 @@ async def _accept_campaign_turn(
                     active_name=ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE,
                     release_name=ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE,
                     label="reauthorized exhaustion",
+                    control=control,
                 )
                 return "Finished the reauthorized acceptance turn after human Stop."
             command_prefix = _campaign_command_prefix_for_orchestrator(contract)
@@ -590,7 +618,7 @@ async def _accept_campaign_turn(
         if directive == "stop":
             updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
             _write_state(cwd, updated_state)
-            await _wait_for_campaign_stop_release(cwd)
+            await _wait_for_campaign_stop_release(cwd, control=control)
             return "Finished the already-authorized acceptance turn after human Stop."
         command_prefix = _campaign_command_prefix_for_orchestrator(contract)
         if command_prefix is None:
@@ -616,6 +644,7 @@ async def _accept_campaign_turn(
                 active_name=_CAMPAIGN_FAILURE_ACTIVE_FILE,
                 release_name=_CAMPAIGN_FAILURE_RELEASE_FILE,
                 label="terminal-failure orchestrator",
+                control=control,
             )
             # This import is intentionally local. AcceptanceAgentLauncher is part of the
             # provider layer, while the typed verdict belongs to campaign orchestration.
@@ -742,12 +771,17 @@ def _campaign_fixture_directive(
     return None
 
 
-async def _wait_for_campaign_stop_release(cwd: Path) -> None:
+async def _wait_for_campaign_stop_release(
+    cwd: Path,
+    *,
+    control: AgentProcessControl | None,
+) -> None:
     await _wait_for_campaign_fixture_release(
         cwd,
         active_name=_CAMPAIGN_STOP_ACTIVE_FILE,
         release_name=_CAMPAIGN_STOP_RELEASE_FILE,
         label="Stop",
+        control=control,
     )
 
 
@@ -785,6 +819,7 @@ async def _wait_for_campaign_fixture_release(
     active_name: str,
     release_name: str,
     label: str,
+    control: AgentProcessControl | None = None,
 ) -> None:
     active_path = cwd / active_name
     release_path = cwd / release_name
@@ -792,6 +827,8 @@ async def _wait_for_campaign_fixture_release(
     try:
         deadline = asyncio.get_running_loop().time() + 120
         while asyncio.get_running_loop().time() < deadline:
+            if control is not None and control.pause_requested.is_set():
+                raise _AcceptancePauseRequested
             if release_path.is_file():
                 return
             await asyncio.sleep(0.01)
@@ -802,6 +839,10 @@ async def _wait_for_campaign_fixture_release(
         for path in (active_path, release_path):
             with suppress(FileNotFoundError):
                 path.unlink()
+
+
+class _AcceptancePauseRequested(Exception):
+    """Translate an in-process acceptance hold into the provider Pause contract."""
 
 
 def _prepare_campaign_fixture_active(cwd: Path, *, active_name: str, label: str) -> None:

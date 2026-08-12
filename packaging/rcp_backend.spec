@@ -8,6 +8,7 @@ SOURCE_ROOT = PROJECT_ROOT / "src"
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 RECORD_PARSER = SOURCE_ROOT / "rcp" / "sources" / "record_parsing.py"
 STAGED_COMMAND_CLIENT = SOURCE_ROOT / "rcp" / "agents" / "staged_command_client.py"
+STAGED_COMMAND_BROKER = SOURCE_ROOT / "rcp" / "agents" / "staged_command_broker.py"
 SKILL_ROOT = SOURCE_ROOT / "rcp" / "skills"
 SKILL_GRAPH_AUDIT = SKILL_ROOT / "graph-audit"
 SKILL_EVIDENCE_TRIAGE = SKILL_ROOT / "evidence-triage"
@@ -27,6 +28,7 @@ analysis = Analysis(
         (str(WEB_DIST), "rcp/web_dist"),
         (str(RECORD_PARSER), "rcp/sources"),
         (str(STAGED_COMMAND_CLIENT), "rcp/agents"),
+        (str(STAGED_COMMAND_BROKER), "rcp/agents"),
         (str(SKILL_GRAPH_AUDIT), "rcp/skills/graph-audit"),
         (str(SKILL_EVIDENCE_TRIAGE), "rcp/skills/evidence-triage"),
         (str(SKILL_EXPERIMENT_CAUSALITY), "rcp/skills/experiment-causality"),

@@ -14,6 +14,7 @@ from rcp.agents.acceptance import (
     ACCEPTANCE_CAMPAIGN_FAIL_MARKER,
     ACCEPTANCE_CAMPAIGN_FINISH_MARKER,
     ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER,
+    ACCEPTANCE_CAMPAIGN_STOP_MARKER,
     ACCEPTANCE_GENERIC_WATCHER_MARKER,
     AcceptanceAgentLauncher,
 )
@@ -23,6 +24,7 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandResponse
+from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.prompts import PromptFactory
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.runs.campaign_recovery import CampaignOrchestratorTerminalFailure
@@ -349,6 +351,7 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
                 handler=handle,
                 stop=stop,
                 poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
             )
         )
         try:
@@ -362,6 +365,7 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
                 AcceptanceAgentLauncher(),
                 _prompt(stage, contract),
                 stage,
+                invocation_gate=staged.invocation_gate,
             )
         finally:
             stop.set()
@@ -377,6 +381,44 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
     assert state["campaign_fixture"]["directive"] == (
         "finish" if expected_verb == "finish" else "spawn_then_finish"
     )
+
+
+def test_acceptance_campaign_held_turn_honors_human_pause(tmp_path: Path) -> None:
+    stage = tmp_path / "campaign-stage"
+    stage.mkdir()
+    instruction = stage / "instruction.md"
+    instruction.write_text(ACCEPTANCE_CAMPAIGN_STOP_MARKER, encoding="utf-8")
+    control = AgentProcessControl()
+
+    async def run():
+        events = asyncio.create_task(
+            _events(
+                AcceptanceAgentLauncher(),
+                _prompt(
+                    stage,
+                    f"""# RCP auto-research orchestrator contract
+
+- starting instruction: `{instruction}`
+""",
+                ),
+                stage,
+                control=control,
+            )
+        )
+        active = stage / ".rcp-acceptance-campaign-active"
+        for _ in range(200):
+            if active.is_file():
+                break
+            await asyncio.sleep(0.01)
+        assert active.is_file()
+        control.request_pause()
+        return await asyncio.wait_for(events, timeout=2)
+
+    events = asyncio.run(run())
+
+    assert [event.event for event in events] == ["session", "paused"]
+    assert events[-1].text == "Paused during acceptance fixture work."
+    assert not (stage / ".rcp-acceptance-campaign-active").exists()
 
 
 def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_session(
@@ -435,6 +477,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
                 handler=handle,
                 stop=stop,
                 poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
             )
         )
         events = []
@@ -453,6 +496,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
                     "codex",
                     _prompt(stage, contract),
                     cwd=stage,
+                    invocation_gate=staged.invocation_gate,
                     capability="orchestrate",
                 ):
                     events.append(event)
