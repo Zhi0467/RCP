@@ -20,6 +20,7 @@ from rcp.storage import (
     ExperimentLoopRuntime,
     ProjectRecord,
     SpaceUserRecord,
+    TeamAuthenticationError,
     WatcherContinuation,
     WatcherRecord,
 )
@@ -84,14 +85,94 @@ def test_existing_database_receives_one_durable_space_identity(tmp_path) -> None
 
     with sqlite3.connect(path) as connection:
         identities = connection.execute(
-            "SELECT singleton, space_id, space_kind FROM space_identity"
+            "SELECT singleton, space_id, space_kind, space_name FROM space_identity"
         ).fetchall()
         legacy = connection.execute("SELECT value FROM legacy_data").fetchone()
-    assert identities == [(1, first, "personal")]
+    assert identities == [(1, first, "personal", None)]
     assert second == first
     assert second_store.space_kind == "personal"
     assert second_store.local_owner == owner
     assert legacy == ("preserved",)
+
+
+def test_team_space_initialization_requires_and_preserves_one_named_bootstrap(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+
+    for invalid_name in ("", "   ", "two\nlines"):
+        with pytest.raises(ValueError, match="space name"):
+            AppStore.initialize_team_space(path, invalid_name)
+        assert not path.exists()
+
+    store, bootstrap = AppStore.initialize_team_space(path, "  Systems Lab  ")
+
+    assert store.space_kind == "team"
+    assert store.space_name == "Systems Lab"
+    assert bootstrap.startswith("rcp_bootstrap_")
+    assert AppStore(path).space_name == "Systems Lab"
+    with store.connection() as connection:
+        identity = connection.execute(
+            "SELECT space_id, space_kind, space_name FROM space_identity WHERE singleton = 1"
+        ).fetchone()
+        bootstrap_rows = connection.execute(
+            "SELECT code_id, code_hash FROM team_bootstrap_codes"
+        ).fetchall()
+    assert tuple(identity) == (store.space_id, "team", "Systems Lab")
+    assert len(bootstrap_rows) == 1
+    assert bootstrap not in path.read_text(encoding="utf-8", errors="ignore")
+
+    with pytest.raises(ValueError, match="already contains a space"):
+        AppStore.initialize_team_space(path, "Replacement")
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM team_bootstrap_codes").fetchone()[0] == 1
+
+
+def test_unclaimed_team_init_reissues_only_with_the_same_name(tmp_path) -> None:
+    store, first_code = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    original_space_id = store.space_id
+
+    with pytest.raises(ValueError, match="already contains a space"):
+        AppStore.initialize_team_space(store.path, "Different lab")
+
+    recovered, replacement_code = AppStore.initialize_team_space(store.path, "Lab")
+    assert recovered.space_id == original_space_id
+    assert replacement_code != first_code
+    with pytest.raises(TeamAuthenticationError) as old_code:
+        recovered.enroll_team_member(first_code, "Alice")
+    assert old_code.value.code == "enrollment_code_invalid"
+    member, _token = recovered.enroll_team_member(replacement_code, "Alice")
+    assert member.display_name == "Alice"
+
+    with pytest.raises(ValueError, match="already contains a space"):
+        AppStore.initialize_team_space(store.path, "Lab")
+
+
+def test_only_a_team_space_name_is_mutable_while_space_identity_is_not(tmp_path) -> None:
+    team, _bootstrap = AppStore.initialize_team_space(tmp_path / "team.sqlite3", "Original name")
+    original_id = team.space_id
+
+    assert team.rename_space("Renamed team") == "Renamed team"
+    assert AppStore(team.path).space_name == "Renamed team"
+    with (
+        team.connection() as connection,
+        pytest.raises(sqlite3.IntegrityError, match="space identity is immutable"),
+    ):
+        connection.execute(
+            "UPDATE space_identity SET space_id = ? WHERE singleton = 1",
+            (str(uuid.uuid4()),),
+        )
+    with (
+        team.connection() as connection,
+        pytest.raises(sqlite3.IntegrityError, match="space identity is immutable"),
+    ):
+        connection.execute("UPDATE space_identity SET space_kind = 'personal' WHERE singleton = 1")
+    assert team.space_id == original_id
+    assert team.space_kind == "team"
+
+    personal = AppStore(tmp_path / "personal.sqlite3")
+    assert personal.space_name is None
+    with pytest.raises(ValueError, match="Only a team space"):
+        personal.rename_space("Not allowed")
+    assert personal.space_name is None
 
 
 def test_concurrent_initialization_converges_on_one_space_identity(tmp_path) -> None:

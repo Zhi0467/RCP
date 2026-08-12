@@ -174,8 +174,19 @@ designed, under the same constraint.
 
 ## Server bootstrap and first member
 
-On the first start of a new team space, the server prints a one-time bootstrap
-code to its local terminal. The first member uses the app to:
+`rcp space init --team` creates a new team space and prints its one-time
+bootstrap code to the interactive terminal of the person who ran that command.
+Starting or serving the backend never prints the code. A team backend normally
+runs under systemd without an interactive terminal, so printing a secret on
+first server start would put it in the journal—the same ordinary server log in
+which credentials are forbidden above.
+
+If initialization is interrupted before the code is delivered, rerunning the
+same command and name is allowed only while the team still has no member. It
+invalidates any unseen bootstrap code and prints one replacement, so a terminal
+failure cannot leave the new space permanently unclaimable.
+
+The first member uses the app to:
 
 1. install or build RCP on their own computer;
 2. choose **Add team space**;

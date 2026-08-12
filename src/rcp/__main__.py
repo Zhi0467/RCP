@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import ipaddress
 import json
 import os
 import signal
@@ -38,6 +39,7 @@ from rcp.server_runtime import (
     published_server_metadata,
     read_server_metadata,
 )
+from rcp.storage import AppStore
 from rcp.web_assets import WebBuildError, prepared_web_assets
 
 RELOAD_PROJECT_ENV = "RCP_RELOAD_PROJECT"
@@ -128,6 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
                 default="cli",
                 help=argparse.SUPPRESS,
             )
+    space = subcommands.add_parser("space")
+    space_commands = space.add_subparsers(dest="space_command", required=True)
+    init = space_commands.add_parser("init")
+    init.add_argument(
+        "--team",
+        action="store_true",
+        required=True,
+        help="Initialize an explicitly named team space",
+    )
+    init.add_argument("--name", required=True, help="Human-readable team space name")
     return parser
 
 
@@ -145,6 +157,9 @@ def reload_app() -> FastAPI:
 def main() -> None:
     args = build_parser().parse_args()
     data_dir = default_data_dir().expanduser().resolve()
+    if args.command == "space":
+        _run_space_command(args, data_dir)
+        return
     if args.command == "serve" and args.reuse_existing:
         if args.force:
             raise SystemExit("--reuse-existing and --force cannot be used together.")
@@ -168,6 +183,29 @@ def main() -> None:
             except ExistingServerUnavailable as exc:
                 print(f"The lock-owning RCP server is unavailable: {exc}", file=sys.stderr)
         _replace_existing_server(args, data_dir)
+
+
+def _run_space_command(args: argparse.Namespace, data_dir: Path) -> None:
+    if args.space_command != "init" or not args.team:  # pragma: no cover - argparse owns this
+        raise SystemExit("Only explicit team-space initialization is supported.")
+    if not sys.stdout.isatty():
+        raise SystemExit(
+            "Team-space initialization requires an interactive terminal so its bootstrap "
+            "code cannot be redirected into a service log."
+        )
+    database_path = data_dir / "rcp.sqlite3"
+    recovering = database_path.exists()
+    try:
+        store, bootstrap_code = AppStore.initialize_team_space(
+            database_path,
+            args.name,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    action = "Recovered unclaimed" if recovering else "Initialized"
+    print(f"{action} team space {store.space_name!r} ({store.space_id}).")
+    print("One-time bootstrap code (shown once):")
+    print(bootstrap_code)
 
 
 def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
@@ -236,6 +274,17 @@ def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
 
 
 def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
+    database_path = data_dir / "rcp.sqlite3"
+    if database_path.exists() and AppStore(database_path).space_kind == "team":
+        try:
+            loopback = ipaddress.ip_address(args.host.split("%", 1)[0]).is_loopback
+        except ValueError:
+            loopback = args.host.casefold() == "localhost"
+        if not loopback:
+            raise SystemExit(
+                "A team space may bind only to a loopback host. Use the encrypted SSH "
+                "connection for remote access; member credentials must never cross plaintext HTTP."
+            )
     metadata = ServerMetadata.create(
         data_dir,
         host=args.host,

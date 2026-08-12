@@ -127,6 +127,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "version": __version__,
         "space_id": app.state.space_id,
         "space_kind": "personal",
+        "space_name": None,
         "instance_id": metadata.instance_id,
         "pid": metadata.pid,
         "data_dir_id": data_dir_identity(data_dir),

@@ -51,6 +51,7 @@ import {
 import {
   api,
   ApiError,
+  exchangeTeamSession,
   keepResultView,
   loadCampaignMessages,
   loadCampaigns as fetchCampaigns,
@@ -110,6 +111,7 @@ import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
 import { ProjectDock } from "./components/ProjectDock";
 import { RunDialog } from "./components/RunDialog";
+import { TeamLoginBoundary } from "./components/TeamLoginBoundary";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
@@ -702,6 +704,8 @@ export default function App() {
   const [verifiedHealth, setVerifiedHealth] = useState<Health | null>(null);
   const [actorIdentity, setActorIdentity] = useState<IdentityResponse | null>(null);
   const [actorIdentityError, setActorIdentityError] = useState<string | null>(null);
+  const [actorIdentityChecked, setActorIdentityChecked] = useState(false);
+  const [teamSessionRequired, setTeamSessionRequired] = useState(false);
   const [actorNamePromptOpen, setActorNamePromptOpen] = useState(false);
   const [actorNameDraft, setActorNameDraft] = useState("");
   const [actorNameSaving, setActorNameSaving] = useState(false);
@@ -1400,7 +1404,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!identityReady || identityIssue) return;
+    if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
     const runHeartbeat = (id: string) => {
       void heartbeatProjectCache(id).catch(() => {
         // Heartbeat failures leave the last usable display cache intact.
@@ -1424,7 +1428,13 @@ export default function App() {
         if (activeId) runHeartbeat(activeId);
       },
     );
-  }, [heartbeatProjectCache, identityIssue, identityReady]);
+  }, [
+    actorIdentityChecked,
+    heartbeatProjectCache,
+    identityIssue,
+    identityReady,
+    teamSessionRequired,
+  ]);
 
   useEffect(() => {
     if (!projectId || !apiBase || project?.id !== projectId) return;
@@ -1563,20 +1573,46 @@ export default function App() {
   }, [requestActorName]);
 
   useEffect(() => {
-    if (!identityReady || identityIssue) return;
+    if (!identityReady || identityIssue || !verifiedHealth) return;
     let stopped = false;
+    setActorIdentityChecked(false);
+    setTeamSessionRequired(false);
     setActorIdentityError(null);
     void api<IdentityResponse>("/api/identity")
       .then((identity) => {
-        if (!stopped) setActorIdentity(identity);
+        if (stopped) return;
+        setActorIdentity(identity);
+        setActorIdentityChecked(true);
       })
       .catch((error) => {
-        if (!stopped) setActorIdentityError(error instanceof Error ? error.message : String(error));
+        if (stopped) return;
+        setActorIdentity(null);
+        if (
+          verifiedHealth.space_kind === "team" &&
+          error instanceof ApiError &&
+          error.status === 401
+        ) {
+          setTeamSessionRequired(true);
+        } else {
+          setActorIdentityError(error instanceof Error ? error.message : String(error));
+        }
+        setActorIdentityChecked(true);
       });
     return () => {
       stopped = true;
     };
-  }, [identityIssue, identityReady]);
+  }, [identityIssue, identityReady, verifiedHealth?.space_id, verifiedHealth?.space_kind]);
+
+  const authenticateTeamSession = useCallback(async (token: string) => {
+    const identity = await exchangeTeamSession(token);
+    setActorIdentity(identity);
+    setActorIdentityError(null);
+    setActorIdentityChecked(true);
+    setTeamSessionRequired(false);
+    setSetupOpen(false);
+    setProjectId(null);
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }, []);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1760,7 +1796,7 @@ export default function App() {
   }, [rememberProjectState]);
 
   useLayoutEffect(() => {
-    if (!identityReady || identityIssue) return;
+    if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId
@@ -1882,6 +1918,7 @@ export default function App() {
     };
   }, [
     applyProjectSnapshot,
+    actorIdentityChecked,
     identityIssue,
     identityReady,
     projectId,
@@ -1889,10 +1926,19 @@ export default function App() {
     restoreProjectTabState,
     selectChat,
     setupOpen,
+    teamSessionRequired,
   ]);
 
   useEffect(() => {
-    if (!identityReady || identityIssue || projectId || setupOpen) return;
+    if (
+      !identityReady ||
+      identityIssue ||
+      !actorIdentityChecked ||
+      teamSessionRequired ||
+      projectId ||
+      setupOpen
+    )
+      return;
     let stopped = false;
     let timer = 0;
     const schedule = () => {
@@ -1922,7 +1968,14 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [identityIssue, identityReady, projectId, setupOpen]);
+  }, [
+    actorIdentityChecked,
+    identityIssue,
+    identityReady,
+    projectId,
+    setupOpen,
+    teamSessionRequired,
+  ]);
 
   useEffect(() => {
     if (!project || project.id !== projectId) return;
@@ -3464,6 +3517,24 @@ export default function App() {
         {updateSurface}
         {acceptanceAgentSurface}
       </div>
+    );
+  if (!actorIdentityChecked)
+    return (
+      <div className="app-loading">
+        <LoaderCircle className="spin" />
+        <span>Verifying your identity</span>
+        {acceptanceAgentSurface}
+      </div>
+    );
+  if (teamSessionRequired)
+    return (
+      <>
+        <TeamLoginBoundary
+          spaceName={verifiedHealth?.space_name ?? null}
+          onAuthenticate={authenticateTeamSession}
+        />
+        {acceptanceAgentSurface}
+      </>
     );
   if (loading)
     return (
