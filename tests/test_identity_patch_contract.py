@@ -164,7 +164,7 @@ def test_legacy_patch_json_infers_producer_without_changing_author_semantics() -
     ).rejected
 
 
-def test_base_attribution_is_strict_additive_and_has_no_campaign_lineage() -> None:
+def test_base_attribution_is_strict_additive_with_nullable_campaign_lineage() -> None:
     authorized_by = _authorized_human()
     patch = Patch(
         kind="work",
@@ -185,7 +185,7 @@ def test_base_attribution_is_strict_additive_and_has_no_campaign_lineage() -> No
     }
     assert dumped["profile"] == "ordinary"
     assert dumped["task_id"] == "task/direct"
-    assert "campaign_id" not in dumped
+    assert dumped["campaign_id"] is None
 
     with pytest.raises(ValidationError):
         AuthorizedHuman.model_validate(
@@ -201,7 +201,7 @@ def test_base_attribution_is_strict_additive_and_has_no_campaign_lineage() -> No
             )
     elevated = Patch.model_validate({**dumped, "profile": "orchestrator"})
     assert elevated.profile == "orchestrator"
-    assert "campaign_id" not in elevated.model_dump(mode="json")
+    assert elevated.campaign_id is None
 
 
 @pytest.mark.parametrize("mode", ["admission", "replay"])

@@ -1,6 +1,7 @@
-import { Clock3, X } from "lucide-react";
+import { Clock3, ExternalLink, X } from "lucide-react";
+import { useState } from "react";
 import { taskKindLabel, taskStatusLabel } from "../agentTasks";
-import type { AgentTask, RevisionSummary } from "../types";
+import type { AgentTask, CampaignReportSummary, RevisionSummary } from "../types";
 
 interface Props {
   summaries: RevisionSummary[];
@@ -8,8 +9,13 @@ interface Props {
   loading: boolean;
   error: string | null;
   onInspectTask: (taskId: string) => void;
+  onOpenCampaignReport: (campaignId: string, report: CampaignReportSummary) => Promise<void>;
   onClose: () => void;
 }
+
+type HistoryEntry =
+  | { kind: "revision"; summary: RevisionSummary }
+  | { kind: "campaign"; campaignId: string; summaries: RevisionSummary[] };
 
 export function ProjectHistoryDrawer({
   summaries,
@@ -17,9 +23,10 @@ export function ProjectHistoryDrawer({
   loading,
   error,
   onInspectTask,
+  onOpenCampaignReport,
   onClose,
 }: Props) {
-  const newestFirst = [...summaries].sort((left, right) => right.to_revision - left.to_revision);
+  const historyEntries = groupCampaignRevisions(summaries);
 
   return (
     <div
@@ -72,32 +79,23 @@ export function ProjectHistoryDrawer({
                 <div className="quiet-empty" role="alert">
                   {error}
                 </div>
-              ) : newestFirst.length > 0 ? (
+              ) : historyEntries.length > 0 ? (
                 <ol className="run-events">
-                  {newestFirst.map((summary) => (
-                    <li className="info" key={summary.to_revision}>
-                      <Clock3 size={12} />
-                      <div>
-                        <p>
-                          <strong>
-                            Revision {summary.from_revision} to revision {summary.to_revision}
-                          </strong>
-                        </p>
-                        {summary.sentences.map((sentence, index) => (
-                          <p key={`${summary.to_revision}:${index}`}>{sentence}</p>
-                        ))}
-                        <time dateTime={summary.created_at}>
-                          {revisionKindLabel(summary.kind)} · {revisionAttribution(summary)} ·{" "}
-                          {formatTimestamp(summary.created_at)}
-                        </time>
-                        {summary.producer === "agent" && summary.authorized_by && (
-                          <p className="history-attribution-detail">
-                            Ordinary Agent task{summary.task_id ? ` · ${summary.task_id}` : ""}
-                          </p>
-                        )}
-                      </div>
-                    </li>
-                  ))}
+                  {historyEntries.map((entry) =>
+                    entry.kind === "campaign" ? (
+                      <CampaignRevisionGroup
+                        campaignId={entry.campaignId}
+                        summaries={entry.summaries}
+                        onOpenCampaignReport={onOpenCampaignReport}
+                        key={`campaign:${entry.campaignId}`}
+                      />
+                    ) : (
+                      <RevisionItem
+                        summary={entry.summary}
+                        key={`revision:${entry.summary.to_revision}`}
+                      />
+                    ),
+                  )}
                 </ol>
               ) : (
                 <div className="quiet-empty">No project revisions yet.</div>
@@ -108,6 +106,145 @@ export function ProjectHistoryDrawer({
       </aside>
     </div>
   );
+}
+
+function CampaignRevisionGroup({
+  campaignId,
+  summaries,
+  onOpenCampaignReport,
+}: {
+  campaignId: string;
+  summaries: RevisionSummary[];
+  onOpenCampaignReport: Props["onOpenCampaignReport"];
+}) {
+  const [reportError, setReportError] = useState<string | null>(null);
+  const newest = summaries[0];
+  const campaign = newest.campaign;
+  const report = campaign?.report;
+  const labelId = `history-campaign-${newest.to_revision}`;
+  const authorizer = newest.authorized_by?.display_name ?? "Unattributed";
+
+  return (
+    <li className="history-campaign-group">
+      <Clock3 size={12} />
+      <section aria-labelledby={labelId}>
+        <header className="history-campaign-header">
+          <div>
+            <h5 id={labelId}>
+              {campaign
+                ? `Campaign · ${campaignStateLabel(campaign.state)}`
+                : "Campaign no longer recorded"}
+            </h5>
+            <p className="history-campaign-meta">
+              Authorized by {authorizer} ·{" "}
+              <time dateTime={newest.created_at}>{formatTimestamp(newest.created_at)}</time> ·{" "}
+              {summaries.length} {summaries.length === 1 ? "revision" : "revisions"}
+            </p>
+          </div>
+          {report && (
+            <button
+              className="button compact secondary"
+              type="button"
+              onClick={() => {
+                void openHistoryCampaignReport(
+                  onOpenCampaignReport,
+                  campaignId,
+                  report,
+                  setReportError,
+                );
+              }}
+            >
+              <ExternalLink size={12} /> Open report
+            </button>
+          )}
+        </header>
+        {reportError && (
+          <p className="history-campaign-error" role="alert">
+            {reportError}
+          </p>
+        )}
+        <ol className="history-campaign-revisions">
+          {summaries.map((summary) => (
+            <RevisionItem summary={summary} key={summary.to_revision} />
+          ))}
+        </ol>
+      </section>
+    </li>
+  );
+}
+
+export async function openHistoryCampaignReport(
+  onOpenCampaignReport: Props["onOpenCampaignReport"],
+  campaignId: string,
+  report: CampaignReportSummary,
+  setError: (error: string | null) => void,
+): Promise<void> {
+  setError(null);
+  try {
+    await onOpenCampaignReport(campaignId, report);
+  } catch (error) {
+    setError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function RevisionItem({ summary }: { summary: RevisionSummary }) {
+  return (
+    <li className="info">
+      <Clock3 size={12} />
+      <div>
+        <p>
+          <strong>
+            Revision {summary.from_revision} to revision {summary.to_revision}
+          </strong>
+        </p>
+        {summary.sentences.map((sentence, index) => (
+          <p key={`${summary.to_revision}:${index}`}>{sentence}</p>
+        ))}
+        <time dateTime={summary.created_at}>
+          {revisionKindLabel(summary.kind)} · {revisionAttribution(summary)} ·{" "}
+          {formatTimestamp(summary.created_at)}
+        </time>
+        {summary.producer === "agent" && summary.authorized_by && (
+          <p className="history-attribution-detail">
+            {summary.profile === "orchestrator" ? "Orchestrator" : "Ordinary"} Agent task
+            {summary.task_id ? ` · ${summary.task_id}` : ""}
+          </p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function groupCampaignRevisions(summaries: RevisionSummary[]): HistoryEntry[] {
+  const newestFirst = [...summaries].sort((left, right) => right.to_revision - left.to_revision);
+  const byCampaign = new Map<string, RevisionSummary[]>();
+  for (const summary of newestFirst) {
+    if (!summary.campaign_id) continue;
+    const group = byCampaign.get(summary.campaign_id) ?? [];
+    group.push(summary);
+    byCampaign.set(summary.campaign_id, group);
+  }
+
+  const seenCampaigns = new Set<string>();
+  const entries: HistoryEntry[] = [];
+  for (const summary of newestFirst) {
+    if (!summary.campaign_id) {
+      entries.push({ kind: "revision", summary });
+      continue;
+    }
+    if (seenCampaigns.has(summary.campaign_id)) continue;
+    seenCampaigns.add(summary.campaign_id);
+    entries.push({
+      kind: "campaign",
+      campaignId: summary.campaign_id,
+      summaries: byCampaign.get(summary.campaign_id) ?? [summary],
+    });
+  }
+  return entries;
+}
+
+function campaignStateLabel(state: NonNullable<RevisionSummary["campaign"]>["state"]): string {
+  return state === "completed" ? "Completed" : capitalize(state);
 }
 
 function revisionAttribution(summary: RevisionSummary): string {

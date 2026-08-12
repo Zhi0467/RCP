@@ -4439,6 +4439,47 @@ button.relation-map-node:hover {
   font-size: 8px;
   margin-top: 3px;
 }
+.run-events .history-campaign-group {
+  border-left-color: var(--cobalt);
+  padding-bottom: 18px;
+}
+.history-campaign-group > section {
+  min-width: 0;
+}
+.history-campaign-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 9px;
+}
+.history-campaign-header h5 {
+  color: var(--ink-strong);
+  font: 650 12px var(--editorial);
+  margin: 0;
+}
+.run-events .history-campaign-meta {
+  color: var(--muted);
+  font: 8px var(--mono);
+  margin-top: 3px;
+}
+.history-campaign-header .button {
+  flex: none;
+}
+.run-events .history-campaign-error {
+  color: var(--red);
+  margin-bottom: 9px;
+}
+.history-campaign-revisions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.run-events .history-campaign-revisions li:last-child {
+  border-left-color: transparent;
+}
 .run-events li.warning p {
   color: color-mix(in srgb, var(--mustard) 62%, var(--walnut));
 }

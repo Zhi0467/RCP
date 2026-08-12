@@ -22,7 +22,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
 from rcp.runs.campaign import CampaignRunRequest
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
-from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
+from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore, CampaignRecord
 from tests.helpers import seed_patch
 
 
@@ -228,6 +228,98 @@ def test_dispatch_binding_is_strict_and_normalized() -> None:
         )
     with pytest.raises(ValidationError, match="sorted and unique"):
         AgentDispatchScope(run_truth_scope=["repo-b", "repo-a"], patch_kind="work")
+
+
+def test_agent_task_authority_carries_campaign_id_from_each_exact_task_row(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    authorizer = _authorizer(store)
+    campaign_id = "campaign-one"
+    project_id = "project-one"
+    root_operation_id = "campaign-root"
+    now = store.now()
+    root_request = CampaignRunRequest(
+        campaign_id=campaign_id,
+        role="orchestrator",
+        actor_operation_id=root_operation_id,
+        run_truth_scope=["repo-a"],
+    )
+    root_authority = resolve_dispatch_authority("campaign", root_request)
+    assert root_authority is not None
+    _, root = store.create_campaign_with_root_task(
+        CampaignRecord(
+            campaign_id=campaign_id,
+            project_id=project_id,
+            status="queued",
+            invocation_ceiling=4,
+            authorized_by=authorizer,
+            created_at=now,
+            updated_at=now,
+        ),
+        AgentTaskRecord(
+            operation_id=root_operation_id,
+            project_id=project_id,
+            campaign_id=campaign_id,
+            kind="campaign",
+            status="succeeded",
+            request=root_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            authorized_by=authorizer,
+            dispatch_authority=root_authority,
+        ),
+    )
+    worker_operation_id = "campaign-worker"
+    worker_request = CampaignRunRequest(
+        campaign_id=campaign_id,
+        role="worker",
+        actor_operation_id=worker_operation_id,
+        control_node_id="exp/seat",
+        run_truth_scope=["repo-a"],
+    )
+    worker_authority = resolve_dispatch_authority("campaign", worker_request)
+    assert worker_authority is not None
+    store.create_campaign_agent_task(
+        AgentTaskRecord(
+            operation_id=worker_operation_id,
+            project_id=project_id,
+            campaign_id=campaign_id,
+            kind="campaign",
+            status="succeeded",
+            request=worker_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+            parent_operation_id=root.operation_id,
+            authorized_by=authorizer,
+            dispatch_authority=worker_authority,
+        ),
+        role="worker",
+    )
+    ordinary_operation_id = "ordinary-task"
+    ordinary_request = _work_request()
+    _record(
+        store,
+        operation_id=ordinary_operation_id,
+        project_id=project_id,
+        request=ordinary_request,
+        authorized_by=authorizer,
+        dispatch_authority=_work_authority(ordinary_request),
+    )
+
+    root_binding = store.agent_task_authority(project_id, root_operation_id)
+    worker_binding = store.agent_task_authority(project_id, worker_operation_id)
+    ordinary_binding = store.agent_task_authority(project_id, ordinary_operation_id)
+
+    assert root_binding.campaign_id == campaign_id
+    assert root_binding.dispatch_authority is not None
+    assert root_binding.dispatch_authority.profile == "orchestrator"
+    assert worker_binding.campaign_id == campaign_id
+    assert worker_binding.dispatch_authority is not None
+    assert worker_binding.dispatch_authority.profile == "ordinary"
+    assert ordinary_binding.campaign_id is None
 
 
 @pytest.mark.parametrize(

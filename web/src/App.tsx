@@ -4275,6 +4275,11 @@ export default function App() {
             setProjectHistoryOpen(false);
             setTaskInspectorId(taskId);
           }}
+          onOpenCampaignReport={(campaignId, report) =>
+            openCampaignReportPreview(
+              campaignReportPreviewUrl(project.id, campaignId, report.report_id),
+            )
+          }
           onClose={() => setProjectHistoryOpen(false)}
         />
       )}

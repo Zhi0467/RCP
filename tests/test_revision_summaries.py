@@ -254,6 +254,8 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
         "authorized_by": None,
         "profile": None,
         "task_id": None,
+        "campaign_id": None,
+        "campaign": None,
         "created_at": raw.json()[-1]["created_at"],
         "sentences": ["Recorded a research question: “Transfer after task shift”."],
     }
@@ -301,6 +303,7 @@ def test_manager_collects_range_during_one_replay_and_skips_stored_rejection(
             "authorized_by": None,
             "profile": None,
             "task_id": None,
+            "campaign_id": None,
             "created_at": accepted.created_at.isoformat(),
             "sentences": ["Added Transfer after task shift."],
         }
