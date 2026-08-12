@@ -13,7 +13,6 @@ from rcp.runs.campaign import (
     CampaignReportCorrectionRequired,
     CampaignRunRequest,
     begin_campaign_wrapup,
-    campaign_non_report_turns_settled,
     campaign_report_correction,
     complete_campaign_report,
     validate_campaign_report,
@@ -177,10 +176,20 @@ def test_report_waits_for_every_already_admitted_non_report_turn(tmp_path) -> No
         store.campaign_invocation_role(task.operation_id) == "report"
         for task in store.campaign_tasks(campaign.campaign_id)
     )
-    assert campaign_non_report_turns_settled(store, campaign.campaign_id) is False
+    # The settlement guard lives inside the allocating transaction, so exercise it
+    # there rather than through a separate read that could disagree with it.
+    with pytest.raises(CampaignNotRunning, match="waiting for already-admitted turns"):
+        store.allocate_campaign_report_task(
+            _report_task(store, fenced, root, "live-worker-report", ending="completed"),
+            ending="completed",
+        )
 
     store.complete_agent_task(worker.operation_id, applied_revision=None, result={})
-    assert campaign_non_report_turns_settled(store, campaign.campaign_id) is True
+    settled, _record = store.allocate_campaign_report_task(
+        _report_task(store, fenced, root, "settled-worker-report", ending="completed"),
+        ending="completed",
+    )
+    assert settled.ending == "completed"
     wrapping = begin_campaign_wrapup(store, campaign.campaign_id, "completed")
     assert wrapping.status == "wrapping_up"
     assert wrapping.ending == "completed"

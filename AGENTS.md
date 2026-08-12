@@ -80,6 +80,7 @@ These boundaries are clean seams; parallel agents rarely collide across them.
 | History | `src/rcp/history/` | append-only patch log, locking, materialized outputs |
 | Run orchestration | `src/rcp/runs/` | distinct Seed/Refresh, Work, Discuss, graph repair, and paper coach workflows; policy-neutral staging and event plumbing |
 | Service/API | `src/rcp/service.py`, `src/rcp/api/app.py`, `src/rcp/projects.py`, `src/rcp/background.py` | app construction, routes, project catalog, background task lifecycle |
+| Storage | `src/rcp/storage/` | one SQLite file; `AppStore` composed from topic mixins (spaces, projects, result_views, campaigns, experiments, watchers, agent_tasks, rows) over `base` |
 | Paper | `src/rcp/paper/` | draft store, canonical introduction, writing sessions |
 | Setup | `src/rcp/setup.py`, `src/rcp/config.py` | manifest rendering, preflight, manifest schema |
 | Providers | `src/rcp/providers.py`, `web/src/providers.ts` | the provider registry: ids, labels, auth probe, model catalog, launch command |
@@ -102,7 +103,7 @@ an explicit empty list, rather than forcing defaults back on after the human
 saves Settings.
 
 `src/rcp/core/models.py`, `src/rcp/config.py`, `src/rcp/providers.py`,
-`src/rcp/skill_registry.py`, and
+`src/rcp/skill_registry.py`, `src/rcp/storage/models.py`, and
 `web/src/types.ts` are shared contracts. **Do not parallelize across them** — land the contract change first,
 serially, then fan out the consumers.
 
@@ -785,6 +786,9 @@ carrying forward, and correct an entry when they change their mind.
   things undecided" are not questions. Name the choice, name what each option
   costs, and say which one you would take. Design documents are where a decision
   is *recorded*, never how it is *asked*.
+- The campaign orchestrator is a Work agent. It gets the project's Settings-enabled
+  skills and workflows, staged and rendered through the same one pointer block every
+  other contract uses. Only the concluding report is narrowed to its one required skill.
 - **Permission is code, not configuration.** Both agent profiles are constants.
   Changing what an agent may do is a code change with a scenario attached, so
   nobody can misconfigure their way into an agent that rewrites their beliefs.
@@ -844,6 +848,11 @@ longer apply.
   interrupted task. Poll through `wait_for_task`/`wait_for_task_response` in
   [helpers.py](tests/helpers.py), which read `ACTIVE_AGENT_TASK_STATUSES` from
   [storage.py](src/rcp/storage.py) rather than restating the set (2026-08-12).
+- The same tight-bound mistake resurfaced: the campaign lifecycle acceptance test kept
+  its own hardcoded 20s wait while the shared bound is 60s, so it failed intermittently
+  in full-suite runs and passed every time in isolation. Two sessions diagnosed it as a
+  behavioral flake before anyone read the literal. Grep for `time.monotonic() + <number>`
+  when a test only fails under load (fixed 2026-08-13).
 - Test timeouts are not tuning knobs. The copies above bounded the same wait at
   2, 4, 5, 60 seconds; the loop returns the moment the task is terminal, so a
   generous bound costs nothing on success while a tight one invents failures
@@ -861,6 +870,20 @@ longer apply.
   Index a new column only in the migration block below the `_ensure_column`
   calls, and verify a schema change by opening a copy of the real store
   (fixed 2026-08-07).
+- Sign the bytes, verify the same bytes. The campaign broker HMAC'd the request as the
+  client wrote it, while RCP recomputed the HMAC from `model_dump()` of the *validated*
+  model. `status_in` is sorted during validation, so `watch-graph` was refused as
+  "credential is invalid or expired" whenever the agent wrote its statuses in any order
+  but alphabetical — breaking the orchestrator's only non-polling wait. Any normalizer
+  (strip, sort, dedupe, filled default) reopens this, so verification canonicalizes the
+  raw request text and never a round-tripped model (fixed 2026-08-13).
+- An end-to-end test that exercises only the simplest case proves the least. The one
+  broker round-trip test used `status`, the single verb whose arguments have no
+  normalizing validator, so a 1844-test green suite said nothing about the six mutating
+  verbs. Cover every verb through the real transport, not one representative.
+- Only the campaign report restricts its packages. Orchestrators and workers resolve
+  Settings packages like any other Work agent; if a staging call asserts an exact skill
+  id, check it is the report path before copying it.
 - Do not copy commands out of the README without running them. `serve --reload`
   was documented there while it exited instantly instead of serving (fixed
   2026-07-28 via the `reload_app` factory).

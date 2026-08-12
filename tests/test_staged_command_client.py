@@ -577,3 +577,105 @@ def test_turn_handoff_cleanup_includes_messages_and_fails_closed(tmp_path) -> No
     with pytest.raises(ValueError, match="unsafe directory"):
         clear_turn_handoff_files(mailbox)
     assert (workspace / "messages.json").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path) -> None:
+    """Sign the bytes the client wrote, not the model they validate into.
+
+    ``watch-graph`` sorts ``status_in`` during validation, so a signature taken
+    over the validated model stopped matching whenever the agent wrote its
+    statuses in any order but alphabetical. Every other mutating verb shares the
+    signing path, so they are exercised here together rather than one at a time.
+    """
+
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    assert staged.invocation_gate is not None
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request, _identity):
+        seen.append((request.verb, request.arguments.model_dump(mode="json")))
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    # Deliberately not alphabetical: this is the ordering that used to be refused.
+    condition = json.dumps({"node_id": "hyp-3", "status_in": ["supported", "refuted"]})
+    calls = [
+        ("spawn", "--seat-node", "exp/run", "--instruction", "measure it", "--key", "k-spawn"),
+        ("pause", "worker-1", "--key", "k-pause"),
+        ("resume", "worker-1", "--key", "k-resume"),
+        ("stop", "worker-1", "--key", "k-stop"),
+        ("message", "keep going", "--recipient", "worker-1", "--key", "k-message"),
+        ("watch-graph", "--condition-json", condition, "--reason", "settle it", "--key", "k-watch"),
+        ("finish", "--key", "k-finish"),
+    ]
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            for arguments in calls:
+                code, output = await _run_client(staged, *arguments)
+                assert code == 0, f"{arguments[0]} was refused: {output}"
+        finally:
+            stop.set()
+            await server
+
+    assert [verb for verb, _ in seen] == [
+        "spawn",
+        "pause",
+        "resume",
+        "stop",
+        "message",
+        "watch_graph",
+        "finish",
+    ]
+    watched = next(arguments for verb, arguments in seen if verb == "watch_graph")
+    # RCP still normalizes for its own use; only the signature stops depending on it.
+    assert watched["condition"]["status_in"] == ["refuted", "supported"]
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) -> None:
+    """A command RCP never answers is not a command the agent got wrong.
+
+    The client distinguishes the two by exit code, and an agent told ``invalid``
+    rewrites a request that was already correct.
+    """
+
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        campaign_id="campaign",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+    assert staged.invocation_gate is not None
+
+    # No serve loop at all, so nothing ever writes the response file.
+    async with staged.invocation_gate.serve_current_session():
+        code, output = await _run_client(staged, "status")
+
+    assert code == 2, output
+    assert "invalid" not in output.lower()
+    staged.cleanup()

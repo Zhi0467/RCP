@@ -30,10 +30,13 @@ from rcp.agents.command_protocol import (
 )
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
+from rcp.limits import (
+    COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
+    COMMAND_MAILBOX_POLL_SECONDS,
+    COMMAND_MAILBOX_TIMEOUT_SECONDS,
+)
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
-COMMAND_MAILBOX_POLL_SECONDS = 0.2
-COMMAND_MAILBOX_TIMEOUT_SECONDS = 30.0
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _REQUEST_FILE = re.compile(
     r"^rcp-command-(?P<mailbox_id>[a-f0-9]{32})-"
@@ -92,22 +95,26 @@ class CommandTurnCredential:
             raise RuntimeError("command credential can serve exactly one turn")
         self._state = "active"
 
-    def accepts(self, request: CommandRequest) -> bool:
+    def accepts(self, request: CommandRequest, document: str) -> bool:
+        """Check one request against this turn's binding.
+
+        ``document`` is the request exactly as it was written, because a campaign
+        broker signs those bytes rather than the model they validate into.
+        """
+
         if self.identity.campaign_id is not None:
             expected = hmac.new(
                 self._token.encode("ascii"),
-                command_authentication_payload(request),
+                command_authentication_payload(document),
                 hashlib.sha256,
             ).hexdigest()
-            proof = request.credential
         else:
             expected = self._token
-            proof = request.credential
         return (
             self._state == "active"
             and _MAILBOX_ID.fullmatch(request.mailbox_id) is not None
             and secrets.compare_digest(self.mailbox_id, request.mailbox_id)
-            and secrets.compare_digest(expected, proof)
+            and secrets.compare_digest(expected, request.credential)
         )
 
     def expire(self) -> None:
@@ -206,6 +213,7 @@ def stage_command_mailbox(
                 broker_path=broker_path,
                 socket_path=f"/tmp/rcp-command-{credential.mailbox_id}.sock",
                 workspace=str(mailbox.workspace),
+                response_timeout_seconds=timeout_seconds + COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
                 _token=credential.token,
             )
     except BaseException:
@@ -312,7 +320,7 @@ async def _answer_request(
             raise ValueError("command request identity is malformed")
         if request.request_id != request_id or request.mailbox_id != staged.credential.mailbox_id:
             raise ValueError("command request identity does not match its file name")
-        if not staged.credential.accepts(request):
+        if not staged.credential.accepts(request, content):
             raise ValueError("command credential is invalid or expired")
         if (
             command_requires_idempotency_key(request.verb)

@@ -12,8 +12,8 @@ from rcp.agents.prompts import (
     _patch_validator_rules,
     _pointer,
     _repository_pointers,
-    _selected_skill_section,
     _watcher_execution_host,
+    selected_skill_section,
 )
 from rcp.core.authority import render_agent_graph_authority_contract
 
@@ -100,7 +100,7 @@ Required current inputs:
 {_pointer("Ontology extensions", ontology_path if ontology_extensions else None)}
 {_pointer("Human introduction", introduction_path)}
 Repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
+{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
 Exact outputs and RCP tooling:
 - Optional semantic graph Patch: `{patch_path}`
 - Existing Patch JSON Schema, including `AgentExperimentAttempt`: `{output_schema_path}`

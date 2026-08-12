@@ -168,7 +168,8 @@ def test_member_tokens_are_prefixed_sha256_indexed_and_compared_in_constant_time
         comparisons.append((left, right))
         return real_compare(left, right)
 
-    monkeypatch.setattr("rcp.storage.hmac.compare_digest", observed_compare)
+    # Token comparison lives in the space/team half of the store.
+    monkeypatch.setattr("rcp.storage.spaces.hmac.compare_digest", observed_compare)
     _session, resolved = store.create_team_session(token)
     assert resolved == member
     assert comparisons == [(token_hash, token_hash)]

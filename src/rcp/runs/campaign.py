@@ -172,16 +172,6 @@ def begin_campaign_wrapup(
     return store.begin_campaign_wrapup(campaign_id, ending, error=error)
 
 
-def campaign_non_report_turns_settled(store: AppStore, campaign_id: str) -> bool:
-    """Return whether every paid non-report turn has reached a terminal task state."""
-
-    return all(
-        store.campaign_invocation_role(task.operation_id) == "report"
-        or task.status not in {"queued", "running", "pausing", "paused"}
-        for task in store.campaign_tasks(campaign_id)
-    )
-
-
 class CampaignReportCorrectionRequired(ValueError):
     """A report candidate needs a bounded correction in its existing session."""
 

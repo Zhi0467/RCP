@@ -144,6 +144,8 @@ function CampaignRevisionGroup({
               className="button compact secondary"
               href={campaignReportHref(campaignId, report.report_id)}
               aria-label={`Open the ${report.ending} campaign report`}
+              target="_blank"
+              rel="noopener noreferrer"
             >
               <ExternalLink size={12} /> Open report
             </a>

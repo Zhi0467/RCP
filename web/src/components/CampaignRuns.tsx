@@ -247,6 +247,11 @@ function CampaignRow({
                         report.report_id,
                       )}
                       aria-label={`Open ${ending} report from ${timestamp}`}
+                      // The report is a sandboxed document, and a report that has
+                      // aged out answers 404. Both belong in their own tab rather
+                      // than replacing the app the human is working in.
+                      target="_blank"
+                      rel="noopener noreferrer"
                       key={report.report_id}
                     >
                       <ExternalLink size={12} /> Open {ending} report ·{" "}

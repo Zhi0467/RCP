@@ -37,6 +37,15 @@ CHAT_PAGE_MAX_LIMIT = 200
 CHAT_TITLE_MAX_CHARS = 120
 CHAT_PREVIEW_MAX_CHARS = 240
 
+# Staged agent command mailbox, and the campaign broker that fronts it.
+# The broker deliberately outwaits the client. Whichever side gives up first owns
+# the diagnostic the agent reads, and the client's is the one that correctly says
+# "unavailable" rather than blaming the request. Keep the grace positive, or a
+# slow RCP starts reporting a perfectly good command as a broker-side failure.
+COMMAND_MAILBOX_TIMEOUT_SECONDS = 30.0
+COMMAND_MAILBOX_POLL_SECONDS = 0.2
+COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
+
 # Temporary agent-created preview artifacts.
 CHAT_ARTIFACT_MAX_COUNT = 8
 CHAT_ARTIFACT_MAX_FILE_BYTES = 16 * 1024 * 1024

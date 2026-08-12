@@ -1,0 +1,43 @@
+"""Every RCP operational record, stored in one SQLite file.
+
+`AppStore` is the whole public surface. Its behaviour is split across topic
+mixins purely so no single module carries ten thousand lines; the split is an
+implementation detail and nothing outside this package should import a mixin.
+Record models and exceptions live in `models` and are re-exported here, so
+`from rcp.storage import CampaignRecord` keeps working unchanged.
+"""
+
+from __future__ import annotations
+
+from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.base import AppStoreBase
+from rcp.storage.campaigns import CampaignStoreMixin
+from rcp.storage.experiments import ExperimentStoreMixin
+from rcp.storage.models import *  # noqa: F401,F403
+from rcp.storage.models import __all__ as _model_names
+from rcp.storage.projects import ProjectStoreMixin
+from rcp.storage.result_views import ResultViewStoreMixin
+from rcp.storage.rows import RowMappingMixin
+from rcp.storage.spaces import SpaceStoreMixin
+from rcp.storage.watchers import WatcherStoreMixin
+
+
+class AppStore(
+    SpaceStoreMixin,
+    ProjectStoreMixin,
+    ResultViewStoreMixin,
+    CampaignStoreMixin,
+    ExperimentStoreMixin,
+    WatcherStoreMixin,
+    AgentTaskStoreMixin,
+    RowMappingMixin,
+    AppStoreBase,
+):
+    """One SQLite file holding every operational record RCP keeps.
+
+    The mixins do not override each other, so the inheritance order carries no
+    precedence meaning; it only groups the methods by topic.
+    """
+
+
+__all__ = [*_model_names, "AppStore"]

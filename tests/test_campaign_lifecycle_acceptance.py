@@ -24,7 +24,12 @@ from rcp.storage import (
     WatcherContinuation,
 )
 
-from .helpers import append_fixture_patch, create_named_app, wait_for_task
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    append_fixture_patch,
+    create_named_app,
+    wait_for_task,
+)
 
 
 def _wait_for_reported_campaign(
@@ -35,7 +40,7 @@ def _wait_for_reported_campaign(
     status: str,
     ending: str,
 ) -> dict:
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + TASK_SETTLE_TIMEOUT
     while time.monotonic() < deadline:
         response = client.get(f"/api/projects/{project_id}/campaigns")
         assert response.status_code == 200, response.text

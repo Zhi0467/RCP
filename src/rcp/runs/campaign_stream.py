@@ -208,6 +208,16 @@ async def stream_campaign_orchestrator_run(
             schema,
         )
         patch_path = str(stage.workspace / "patch.json")
+        # The orchestrator gets the project's enabled packages on the same terms as any
+        # other Work agent: resolved from Settings at launch, never from the task receipt.
+        orchestrator_selection = service.resolve_skill_selection(turn.request)
+        orchestrator_skill_pointers = stage_skill_selection(
+            orchestrator_selection,
+            local_stage=stage.local,
+            remote_stage=stage.remote,
+            label=skill_bundle_label(orchestrator_selection),
+            reuse_existing=True,
+        )
         expected_turn_id = f"{execution.operation_id}:orchestrator"
         staged_commands = stage_command_mailbox(
             local_stage=stage.local,
@@ -241,6 +251,7 @@ async def stream_campaign_orchestrator_run(
                 validator_command=validator_command,
                 command_client=staged_commands.client_command(),
                 messages_path=messages_path,
+                skill_pointers=orchestrator_skill_pointers,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -1746,6 +1757,7 @@ def _orchestrator_prompt(
     validator_command: str,
     command_client: str,
     messages_path: str | None,
+    skill_pointers: list[dict[str, object]],
 ) -> tuple[str, str]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
@@ -1773,6 +1785,7 @@ def _orchestrator_prompt(
             command_client=command_client,
             instruction_path=instruction_path,
             messages_path=messages_path,
+            skill_pointers=skill_pointers,
         )
         role = "campaign_orchestrator"
     else:
@@ -1808,6 +1821,7 @@ def _orchestrator_prompt(
             command_client=command_client,
             messages_path=messages_path,
             retry_diagnostics_path=retry_diagnostics_path,
+            skill_pointers=skill_pointers,
         )
         role = f"campaign_orchestrator_{execution.continuation}"
     return _stage_task_contract(

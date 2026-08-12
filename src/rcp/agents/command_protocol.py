@@ -269,10 +269,19 @@ def staged_command_broker_source() -> str:
     )
 
 
-def command_authentication_payload(request: CommandRequest) -> bytes:
-    """Canonical bytes covered by a campaign broker's per-request HMAC."""
+def command_authentication_payload(document: str) -> bytes:
+    """Canonical bytes covered by a campaign broker's per-request HMAC.
 
-    value = request.model_dump(mode="json")
+    The broker signs the request exactly as the client wrote it, so verification
+    has to canonicalize that same text. Rebuilding the payload from the validated
+    model instead would re-serialize whatever validation normalized — a sorted
+    ``status_in``, a stripped string, a filled default — and the two sides would
+    stop agreeing for reasons that have nothing to do with authenticity.
+    """
+
+    value = json.loads(document)
+    if not isinstance(value, dict):
+        raise ValueError("command request must be one JSON object")
     value.pop("credential", None)
     return json.dumps(
         value,

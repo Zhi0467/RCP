@@ -17,6 +17,7 @@ class ProviderInvocationGate:
     broker_path: str
     socket_path: str
     workspace: str
+    response_timeout_seconds: float
     _token: str = field(repr=False)
     _ready_nonce: str = field(default_factory=lambda: secrets.token_hex(16), repr=False)
 
@@ -24,9 +25,7 @@ class ProviderInvocationGate:
     def ready_line(self) -> str:
         return f"RCP_COMMAND_BROKER_READY:{self._ready_nonce}"
 
-    def wrap_command(self, command: list[str]) -> list[str]:
-        if not command:
-            raise ValueError("provider command must not be empty")
+    def _broker_argv(self) -> list[str]:
         return [
             "python3",
             self.broker_path,
@@ -36,9 +35,14 @@ class ProviderInvocationGate:
             self.mailbox_id,
             "--ready-line",
             self.ready_line,
-            "--",
-            *command,
+            "--response-timeout",
+            f"{self.response_timeout_seconds:g}",
         ]
+
+    def wrap_command(self, command: list[str]) -> list[str]:
+        if not command:
+            raise ValueError("provider command must not be empty")
+        return [*self._broker_argv(), "--", *command]
 
     def bootstrap(self, prompt: bytes) -> bytes:
         document = json.dumps(
@@ -58,14 +62,7 @@ class ProviderInvocationGate:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("broker startup timeout must be a positive finite number")
         process = await asyncio.create_subprocess_exec(
-            "python3",
-            self.broker_path,
-            "--socket",
-            self.socket_path,
-            "--mailbox-id",
-            self.mailbox_id,
-            "--ready-line",
-            self.ready_line,
+            *self._broker_argv(),
             "--standalone",
             cwd=self.workspace,
             stdin=asyncio.subprocess.PIPE,

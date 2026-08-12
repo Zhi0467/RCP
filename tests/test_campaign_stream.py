@@ -12,7 +12,10 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.campaign_prompt import campaign_orchestrator_task_contract
+from rcp.agents.campaign_prompt import (
+    campaign_orchestrator_continuation_contract,
+    campaign_orchestrator_task_contract,
+)
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
@@ -71,9 +74,25 @@ def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty(
     assert "report in prose" in contract
     assert "without changing an existing ResearchQuestion or Hypothesis" in contract
     assert "treating a Proposal as completed work" in contract
-    assert "`watch-graph`, and `finish`" in contract
-    assert "finish --key <stable-key>" in contract
-    assert "Sleeping on a watcher\n  or mail is not completion" in contract
+    # The orchestrator's only way to wait is a graph condition, so the contract has to
+    # say what one looks like rather than just naming the verb.
+    assert "`watch-graph --key <key> --condition-json <json> --reason <text>`" in contract
+    assert '`{"node_id": "<id>", "status_in": ["<status>", ...]}`' in contract
+    assert '`{"node_id": "<id>", "proposal_resolved": true}`' in contract
+    assert "their order does not matter" in contract
+    assert "A wake spends one invocation" in contract
+    assert "finish --key <key>" in contract
+    assert "Sleeping on a watcher or mail\n  is not completion" in contract
+    # Every node type it may touch is defined, not just fenced.
+    for node_type in (
+        "ResearchQuestion",
+        "Hypothesis",
+        "Experiment",
+        "Evidence",
+        "Decision",
+        "Blocker",
+    ):
+        assert f"- {node_type} \u2014" in contract
 
 
 def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
@@ -2270,11 +2289,9 @@ async def test_worker_continuation_replaces_original_repository_pointers(
     current_path = manifest.repository_map["repo-a"].path
 
     def writer(contract_text, _workspace):
-        assert (
-            "Current repository pointers replace every repository pointer in the original "
-            "contract" in contract_text
-        )
-        assert f"- repo-a: host=`` path=`{current_path}`" in contract_text
+        assert "These replace every repository pointer in the original contract" in contract_text
+        # A local repository says so, rather than rendering an empty host.
+        assert f"- repo-a: path=`{current_path}` on this machine" in contract_text
         assert "retired.example" not in contract_text
         assert "/retired/repo-a" not in contract_text
 
@@ -2871,3 +2888,50 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
     assert applied.author == "agent"
     assert applied.source_operation_id == worker.operation_id
     assert store.campaign(campaign.campaign_id).stop_requested_at is not None
+
+
+def test_orchestrator_receives_the_project_settings_packages(manifest) -> None:
+    """The orchestrator is a Work agent and gets Settings packages like any other.
+
+    Only the campaign report is restricted to one required skill; the orchestrator
+    was previously given nothing at all.
+    """
+
+    pointers = [
+        {
+            "label": "Graph audit",
+            "kind": "skill",
+            "id": "graph-audit",
+            "version": "1.0.0",
+            "description": "Check the graph before asserting new claims.",
+            "path": "/stage/inputs/bundle/graph-audit",
+        }
+    ]
+    common = dict(
+        graph_path="/s/graph.json",
+        research_path="/s/research.md",
+        patch_path="/s/patch.json",
+        output_schema_path="/s/schema.json",
+        validator_command="/stage/rcp-agent validate",
+        command_client="/stage/rcp-agent",
+    )
+    contract = campaign_orchestrator_task_contract(
+        project_name="project", repositories=[], skill_pointers=pointers, **common
+    )
+    continuation = campaign_orchestrator_continuation_contract(
+        original_contract_path="/s/original.md",
+        mode="continuation",
+        repositories=[],
+        skill_pointers=pointers,
+        **common,
+    )
+    for text in (contract, continuation):
+        assert "Skills and workflows staged for this run:" in text
+        assert "Graph audit (skill graph-audit v1.0.0)" in text
+        assert "folder: /stage/inputs/bundle/graph-audit" in text
+
+    # No packages means no heading, not an empty one.
+    bare = campaign_orchestrator_task_contract(
+        project_name="project", repositories=[], skill_pointers=[], **common
+    )
+    assert "Skills and workflows" not in bare

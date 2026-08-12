@@ -271,7 +271,7 @@ def _provider_log_pointers(provider_log_roots: dict[str, list[str]]) -> str:
     return "".join(lines)
 
 
-def _selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
+def selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
     """Render staged packages as readable blocks rather than one dense line each."""
 
     if not pointers:
@@ -702,7 +702,7 @@ Provider log roots on this machine — inspect them in place:
 
 If you read conversation logs at all, read only the parts after that watermark.
 {source_preflight}
-{_selected_skill_section(skill_pointers)}
+{selected_skill_section(skill_pointers)}
 Ingestion boundary:
 - Read relevant provider records after the project ingestion watermark. When it is `none`, there is
   no prior successful Seed/Refresh boundary.
@@ -817,7 +817,7 @@ Required current-state pointers:
 Relevant inputs; read only when the question needs them:
 {_pointer("human introduction", introduction_path)}
 Repository pointers:
-{_repository_pointers(repositories)}{experiment_resources}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
+{_repository_pointers(repositories)}{experiment_resources}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
 
 Required objective:
 {objective}
@@ -949,7 +949,7 @@ Required current-state pointers:
 Relevant context:
 {_pointer("human introduction", introduction_path)}
 Relevant repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{experiment_resources}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
+{_repository_pointers(repositories)}{experiment_resources}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
 Required objective:
 {objective}
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
@@ -1040,7 +1040,7 @@ Required inputs:
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 
 Relevant repository inputs; read only when the coaching request needs them:
-{_repository_pointers(repositories)}{_selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
+{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.
@@ -1241,7 +1241,7 @@ Resume authority:
             + _pointer("Patch JSON Schema", output_schema_path)
             + _pointer("Watcher output", watch_path)
         }
-{_selected_skill_section(skill_pointers)}
+{selected_skill_section(skill_pointers)}
 {_invoked_package_section(invoked_skill_pointers)}
 {invoked_provider_skill_section(invoked_provider_skills)}
 {result_view_rules}

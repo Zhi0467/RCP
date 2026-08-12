@@ -25,7 +25,17 @@ _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class BrokerError(Exception):
-    pass
+    """A request this broker refuses. Reported to the agent as ``invalid``."""
+
+
+class BrokerUnavailable(BrokerError):
+    """Machinery that failed rather than a request that was wrong.
+
+    Kept distinct because the agent acts on the difference: ``invalid`` means
+    rewrite the command, ``unavailable`` means the command was fine and the
+    plumbing was not. Collapsing the two sends an agent into a correction loop
+    over a request that has nothing wrong with it.
+    """
 
 
 def _parser():
@@ -33,6 +43,7 @@ def _parser():
     parser.add_argument("--socket", required=True)
     parser.add_argument("--mailbox-id", required=True)
     parser.add_argument("--ready-line", required=True)
+    parser.add_argument("--response-timeout", required=True, type=float)
     parser.add_argument("--standalone", action="store_true")
     parser.add_argument("provider", nargs=argparse.REMAINDER)
     return parser
@@ -75,7 +86,7 @@ def _peer_identity(connection):
         credential = connection.getsockopt(0, 1, 8)
         _version, uid = struct.unpack("II", credential[:8])
         return pid, uid
-    raise BrokerError("execution host cannot authenticate Unix-socket peers")
+    raise BrokerUnavailable("execution host cannot authenticate Unix-socket peers")
 
 
 class _DarwinProcessInfo(ctypes.Structure):
@@ -109,21 +120,21 @@ def _process_record(pid):
     """Return a kernel-sourced parent pid and process birth identity."""
 
     if not isinstance(pid, int) or pid <= 0:
-        raise BrokerError("process identity is malformed")
+        raise BrokerUnavailable("process identity is malformed")
     if sys.platform.startswith("linux"):
         try:
             with open(f"/proc/{pid}/stat", "rb") as stream:
                 content = stream.read(4096)
         except OSError as exc:
-            raise BrokerError(f"process ancestry is unavailable: {exc}") from exc
+            raise BrokerUnavailable(f"process ancestry is unavailable: {exc}") from exc
         closing = content.rfind(b")")
         fields = content[closing + 2 :].split() if closing >= 0 else []
         if len(fields) < 20:
-            raise BrokerError("process ancestry record is malformed")
+            raise BrokerUnavailable("process ancestry record is malformed")
         try:
             return int(fields[1]), ("linux", int(fields[19]))
         except ValueError as exc:
-            raise BrokerError("process ancestry record is malformed") from exc
+            raise BrokerUnavailable("process ancestry record is malformed") from exc
     if sys.platform == "darwin":
         try:
             library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
@@ -145,17 +156,17 @@ def _process_record(pid):
                 ctypes.sizeof(record),
             )
         except (AttributeError, OSError) as exc:
-            raise BrokerError(f"process ancestry is unavailable: {exc}") from exc
+            raise BrokerUnavailable(f"process ancestry is unavailable: {exc}") from exc
         if size != ctypes.sizeof(record) or record.pid != pid:
             error = ctypes.get_errno()
             detail = os.strerror(error) if error else "kernel process record is incomplete"
-            raise BrokerError(f"process ancestry is unavailable: {detail}")
+            raise BrokerUnavailable(f"process ancestry is unavailable: {detail}")
         return int(record.ppid), (
             "darwin",
             int(record.start_seconds),
             int(record.start_microseconds),
         )
-    raise BrokerError("execution host cannot authenticate process ancestry")
+    raise BrokerUnavailable("execution host cannot authenticate process ancestry")
 
 
 def _is_live_descendant(pid, root_pid, root_birth):
@@ -235,27 +246,27 @@ def _read_response(path, request_id, timeout):
         try:
             info = os.lstat(path)
             if not stat.S_ISREG(info.st_mode):
-                raise BrokerError("command response is not a regular file")
+                raise BrokerUnavailable("command response is not a regular file")
             with open(path, encoding="utf-8") as stream:
                 value = json.load(stream)
         except FileNotFoundError:
             time.sleep(0.05)
             continue
         except (OSError, UnicodeError, ValueError) as exc:
-            raise BrokerError(f"command response is unavailable: {exc}") from exc
+            raise BrokerUnavailable(f"command response is unavailable: {exc}") from exc
         if not isinstance(value, dict) or value.get("request_id") != request_id:
-            raise BrokerError("command response identity does not match")
+            raise BrokerUnavailable("command response identity does not match")
         return value
-    raise BrokerError("command response timed out")
+    raise BrokerUnavailable("command response timed out")
 
 
-def _error(request_id, message):
+def _error(request_id, message, status):
     return {
         "version": VERSION,
         "request_id": request_id
         if isinstance(request_id, str) and len(request_id) == 32
         else "0" * 32,
-        "status": "invalid",
+        "status": status,
         "message": message[:2000],
         "result": {},
     }
@@ -270,6 +281,7 @@ def _handle(
     mailbox_id,
     token,
     workspace,
+    response_timeout,
 ):
     request_id = None
     try:
@@ -291,9 +303,20 @@ def _handle(
         name = f"rcp-command-{mailbox_id}-{request_id}.request.json"
         response_name = name.removesuffix(".request.json") + ".response.json"
         _atomic_json(workspace, name, value)
-        response = _read_response(os.path.join(workspace, response_name), request_id, 35.0)
-    except (BrokerError, OSError, ProcessLookupError, ValueError) as exc:
-        response = _error(request_id, f"Campaign command rejected: {exc}")
+        response = _read_response(
+            os.path.join(workspace, response_name), request_id, response_timeout
+        )
+    except BrokerUnavailable as exc:
+        response = _error(
+            request_id, f"Campaign command could not be delivered: {exc}", "unavailable"
+        )
+    except (BrokerError, ValueError) as exc:
+        response = _error(request_id, f"Campaign command rejected: {exc}", "invalid")
+    except OSError as exc:
+        # Sockets and the workspace filesystem. The request itself was fine.
+        response = _error(
+            request_id, f"Campaign command could not be delivered: {exc}", "unavailable"
+        )
     try:
         connection.sendall(
             json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -314,6 +337,7 @@ def _serve(
     mailbox_id,
     token,
     workspace,
+    response_timeout,
 ):
     server.settimeout(0.2)
     workers = []
@@ -322,6 +346,7 @@ def _serve(
             connection, _address = server.accept()
         # Python 3.9 keeps socket.timeout distinct from builtin TimeoutError.
         except socket.timeout:  # noqa: UP041
+            workers = [worker for worker in workers if worker.is_alive()]
             continue
         except OSError:
             break
@@ -335,11 +360,12 @@ def _serve(
                 "mailbox_id": mailbox_id,
                 "token": token,
                 "workspace": workspace,
+                "response_timeout": response_timeout,
             },
             daemon=True,
         )
         worker.start()
-        workers.append(worker)
+        workers = [worker, *(existing for existing in workers if existing.is_alive())]
     for worker in workers:
         worker.join(timeout=1)
 
@@ -365,6 +391,10 @@ def main(argv=None):
     mailbox_id = namespace.mailbox_id
     if not _MAILBOX_ID.fullmatch(mailbox_id):
         print("broker mailbox id is malformed", file=sys.stderr)
+        return 2
+    response_timeout = namespace.response_timeout
+    if not (response_timeout > 0) or response_timeout == float("inf"):
+        print("broker response timeout must be a positive finite number", file=sys.stderr)
         return 2
     workspace = os.getcwd()
     if os.path.islink(workspace) or not os.path.isdir(workspace):
@@ -409,6 +439,7 @@ def main(argv=None):
                 "root_pid": root_pid,
                 "root_birth": root_birth,
                 "expected_session": expected_session,
+                "response_timeout": response_timeout,
                 "mailbox_id": mailbox_id,
                 "token": token,
                 "workspace": workspace,

@@ -328,7 +328,10 @@ test("the campaign parent owns the only meter, nested worker, mail, stop, and re
     html,
     /href="\/api\/projects\/project%20one\/campaigns\/campaign%2Falpha\/reports\/report%2Fexhausted\/preview"/,
   );
-  assert.doesNotMatch(html, /target="_blank"/);
+  // A sandboxed report, and a 404 for one that aged out, both belong in their own
+  // tab rather than replacing the app the human is working in.
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noopener noreferrer"/);
 });
 
 test("same-ending reports have distinct visible timestamps and accessible names", () => {
