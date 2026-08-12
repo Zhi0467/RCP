@@ -170,7 +170,13 @@ export function TeamInvitationPanel({
   const titleId = useId();
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // A raw invitation code is shown once, at the moment it is created.
+      // Closing the panel discards it, so reopening shows only metadata.
+      setIssued(null);
+      setCopyStatus("idle");
+      return;
+    }
     let stopped = false;
     setLoading(true);
     setError(null);

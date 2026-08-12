@@ -160,6 +160,7 @@ def main() -> None:
     if args.command == "space":
         _run_space_command(args, data_dir)
         return
+    _require_team_bind_is_loopback(args, data_dir)
     if args.command == "serve" and args.reuse_existing:
         if args.force:
             raise SystemExit("--reuse-existing and --force cannot be used together.")
@@ -273,18 +274,31 @@ def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
     _emit_launch_outcome(args, "reused", metadata=metadata, owned=False)
 
 
-def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
+def _require_team_bind_is_loopback(args: argparse.Namespace, data_dir: Path) -> None:
+    """Refuse a routable bind for a team space.
+
+    This runs before the singleton takeover, not inside it: a mistyped host must
+    leave a healthy server running rather than shut it down and then refuse.
+    """
     database_path = data_dir / "rcp.sqlite3"
-    if database_path.exists() and AppStore(database_path).space_kind == "team":
-        try:
-            loopback = ipaddress.ip_address(args.host.split("%", 1)[0]).is_loopback
-        except ValueError:
-            loopback = args.host.casefold() == "localhost"
-        if not loopback:
-            raise SystemExit(
-                "A team space may bind only to a loopback host. Use the encrypted SSH "
-                "connection for remote access; member credentials must never cross plaintext HTTP."
-            )
+    if not database_path.exists() or AppStore(database_path).space_kind != "team":
+        return
+    host = getattr(args, "host", None)
+    if host is None:
+        return
+    try:
+        loopback = ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        loopback = host.casefold() == "localhost"
+    if not loopback:
+        raise SystemExit(
+            "A team space may bind only to a loopback host. Use the encrypted SSH "
+            "connection for remote access; member credentials must never cross plaintext HTTP."
+        )
+
+
+def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
+    _require_team_bind_is_loopback(args, data_dir)
     metadata = ServerMetadata.create(
         data_dir,
         host=args.host,

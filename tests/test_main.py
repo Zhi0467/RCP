@@ -195,6 +195,27 @@ def test_team_serve_refuses_plaintext_non_loopback_bind(tmp_path, host) -> None:
         _serve_as_owner(_serve_args(host=host), tmp_path)
 
 
+def test_refused_team_bind_never_reaches_the_singleton_takeover(tmp_path, monkeypatch) -> None:
+    """A mistyped host must not shut down the server that is already running.
+
+    The refusal used to live after the takeover, so a bad `--host` replaced a
+    healthy owner and only then exited.
+    """
+    AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    taken_over = False
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal taken_over
+        taken_over = True
+        raise AssertionError("the takeover ran before the bind was validated")
+
+    monkeypatch.setattr("rcp.__main__.ServerMetadata.create", fail_if_called)
+
+    with pytest.raises(SystemExit, match="only to a loopback host"):
+        _serve_as_owner(_serve_args(host="0.0.0.0"), tmp_path)
+    assert taken_over is False
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
 def test_team_serve_accepts_loopback_bind(tmp_path, monkeypatch, host) -> None:
     AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")

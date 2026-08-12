@@ -46,7 +46,8 @@ A throwaway data directory, one named team space initialized with
 1. Initialize the team space with a required name. Read the one-time bootstrap
    code printed by `rcp space init --team`, then start the server and confirm
    that serving it prints no credential. Attempt to serve the same team space on
-   a non-loopback host.
+   a non-loopback host while that server is running, and check afterwards that it
+   is still serving.
 2. Enroll the first named member with that code and receive their permanent
    token. Attempt to use the bootstrap code again.
 3. Exchange the permanent token at the browser login boundary. Use the issued
@@ -80,6 +81,7 @@ A throwaway data directory, one named team space initialized with
 - `team_space_init_requires_a_name_and_prints_the_bootstrap_code_once`
 - `serve_never_prints_a_bootstrap_code_or_other_credential`
 - `a_team_space_refuses_to_serve_on_a_non_loopback_host`
+- `a_refused_bind_leaves_the_running_server_untouched`
 - `the_first_member_is_created_only_by_the_single_use_bootstrap_code`
 - `an_invitation_is_short_lived_single_use_and_visible_only_to_its_creator`
 - `the_invitation_block_names_the_space_and_its_expiry`
