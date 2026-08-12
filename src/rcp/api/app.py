@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import sys
@@ -111,7 +110,6 @@ from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.experiment_loop import experiment_watcher_delivery_request, preflight_episode_wake
 from rcp.runs.graph import stream_graph_run
-from rcp.runs.result_views import read_local_result_view_bytes
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.work import _validate_work_patch_live, stream_work_run
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
@@ -2427,7 +2425,6 @@ def create_app(
         _, data = await asyncio.to_thread(
             _load_visible_result_view_bytes,
             store,
-            catalog,
             project_id,
             view_id,
         )
@@ -2458,12 +2455,12 @@ def create_app(
             record = _visible_result_view_record(store, project_id, view_id)
             if record.kept_filename is not None:
                 return store.result_view_descriptor(record)
-            if _has_active_result_view_revision(store, record):
+            if store.has_active_result_view_revision(record):
                 raise HTTPException(
                     status_code=409,
                     detail="Wait for the active result view revision before keeping it.",
                 )
-            data = _read_result_view_bytes_for_http(catalog, record)
+            data = _read_result_view_bytes_for_http(store, record)
             service = _project_service(catalog, project_id)
             project_name = catalog.card(project_id)["name"]
             if not isinstance(project_name, str):
@@ -2793,88 +2790,27 @@ def _visible_result_view_record(
     return record
 
 
-def _has_active_result_view_revision(store: AppStore, record: ResultViewRecord) -> bool:
-    with store.connection() as connection:
-        row = connection.execute(
-            """
-            SELECT 1 FROM graph_runs AS revision
-            WHERE revision.project_id = ? AND revision.kind = 'node_chat'
-              AND json_extract(revision.request_json, '$.chat_id') = ?
-              AND json_extract(revision.request_json, '$.result_view.action') = 'revise'
-              AND json_extract(revision.request_json, '$.result_view.view_id') = ?
-              AND (
-                revision.status IN ('queued', 'running', 'pausing')
-                OR (
-                  revision.status IN ('paused', 'interrupted')
-                  AND revision.native_session_id IS NOT NULL
-                  AND revision.stage_root IS NOT NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM graph_runs AS child
-                    WHERE child.parent_operation_id = revision.operation_id
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM graph_run_receipts AS receipt
-                    WHERE receipt.operation_id = revision.operation_id
-                      AND receipt.category = 'experiment_recovery_abandoned'
-                  )
-                )
-              )
-            LIMIT 1
-            """,
-            (record.project_id, record.chat_id, record.view_id),
-        ).fetchone()
-    return row is not None
-
-
 def _load_visible_result_view_bytes(
     store: AppStore,
-    catalog: ProjectCatalog,
     project_id: str,
     view_id: str,
 ) -> tuple[ResultViewRecord, bytes]:
     record = _visible_result_view_record(store, project_id, view_id)
-    return record, _read_result_view_bytes_for_http(catalog, record)
+    return record, _read_result_view_bytes_for_http(store, record)
 
 
 def _read_result_view_bytes_for_http(
-    catalog: ProjectCatalog,
+    store: AppStore,
     record: ResultViewRecord,
 ) -> bytes:
     try:
-        if record.kept_filename is not None:
-            service = _project_service(catalog, record.project_id)
-            data = service.history.workspace.read_kept_result_view(
-                record.kept_filename,
-                max_bytes=record.size_bytes,
-            )
-        elif record.stage_host:
-            stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
-            data = stage.read_result_view_bytes(
-                record.view_id,
-                record.source_name,
-                max_bytes=record.size_bytes,
-            )
-        else:
-            data = read_local_result_view_bytes(
-                Path(record.stage_root),
-                record.view_id,
-                record.source_name,
-                max_bytes=record.size_bytes,
-            )
-        if len(data) != record.size_bytes:
-            raise ValueError("result view size changed")
-        if hashlib.sha256(data).hexdigest() != record.content_sha256:
-            raise ValueError("result view digest changed")
-        if validate_artifact_bytes(record.source_name, data) != "text/html":
-            raise ValueError("result view media type changed")
-        return data
-    except HTTPException as exc:
-        if exc.status_code == 404:
-            raise
-        raise HTTPException(status_code=503, detail="Result view storage unavailable") from exc
+        return store.result_view_bytes(
+            record.view_id,
+            expected_content_sha256=record.content_sha256,
+        )
     except (FileNotFoundError, OSError, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail="Result view storage unavailable") from exc
-    except ValueError as exc:
+    except (KeyError, ResultViewConflict, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Result view unavailable") from exc
 
 

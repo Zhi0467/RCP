@@ -68,6 +68,7 @@ def _create_view(
     expires_at: datetime,
     source_name: str = "curves.html",
     created_at: datetime | None = None,
+    stage_host: str = "",
 ) -> tuple[ResultViewRecord, Path]:
     stage.mkdir(parents=True, exist_ok=True)
     source = prepare_local_result_view_slot(stage, view_id, reuse=False) / source_name
@@ -86,7 +87,7 @@ def _create_view(
             reasoning="high",
             run_on="laptop",
             native_session_id=f"native-{view_id}",
-            stage_host="",
+            stage_host=stage_host,
             stage_root=str(stage),
             source_name=source_name,
             content_sha256=hashlib.sha256(content).hexdigest(),
@@ -94,7 +95,8 @@ def _create_view(
             created_at=created_at.isoformat(),
             updated_at=created_at.isoformat(),
             expires_at=expires_at.isoformat(),
-        )
+        ),
+        html=content,
     )
     return record, source
 
@@ -171,9 +173,33 @@ def test_result_view_list_preview_and_head_are_path_free(manifest, tmp_path: Pat
     assert fixture.client.get(f"{base}/{'f' * 24}/preview").status_code == 404
 
 
-def test_preview_rejects_expired_unavailable_and_mismatched_temporary_bytes(
+def test_preview_uses_stored_bytes_after_local_stage_changes_or_disappears(
     manifest,
     tmp_path: Path,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    preview_url = (
+        f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}/preview"
+    )
+
+    fixture.source.write_bytes(b"<!doctype html><p>changed after discovery</p>")
+    changed = fixture.client.get(preview_url)
+
+    assert changed.status_code == 200
+    assert "loss curve" in changed.text
+    assert "changed after discovery" not in changed.text
+
+    fixture.source.unlink()
+    deleted = fixture.client.get(preview_url)
+
+    assert deleted.status_code == 200
+    assert "loss curve" in deleted.text
+
+
+def test_preview_rejects_expired_unavailable_and_corrupt_stored_bytes(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     fixture = _fixture(manifest, tmp_path)
     base = f"/api/projects/{fixture.project_id}/result-views"
@@ -188,34 +214,25 @@ def test_preview_rejects_expired_unavailable_and_mismatched_temporary_bytes(
         created_at=expired_at - timedelta(seconds=2),
         expires_at=expired_at - timedelta(seconds=1),
     )
-    unavailable_content = b"<html>unavailable</html>"
-    unavailable_at = datetime.now(UTC)
-    unavailable = fixture.store.create_result_view(
-        ResultViewRecord(
-            **{
-                **fixture.record.model_dump(mode="python"),
-                "view_id": "c" * 24,
-                "origin_operation_id": "origin-unavailable",
-                "latest_operation_id": "origin-unavailable",
-                "stage_root": str(tmp_path / "missing-stage"),
-                "content_sha256": hashlib.sha256(unavailable_content).hexdigest(),
-                "size_bytes": len(unavailable_content),
-                "created_at": unavailable_at.isoformat(),
-                "updated_at": unavailable_at.isoformat(),
-                "expires_at": (unavailable_at + timedelta(days=1)).isoformat(),
-            }
-        )
-    )
-
     assert fixture.client.get(f"{base}/{expired.view_id}/preview").status_code == 410
-    unavailable_response = fixture.client.get(f"{base}/{unavailable.view_id}/preview")
-    assert unavailable_response.status_code == 503
-    assert str(tmp_path / "missing-stage") not in unavailable_response.text
 
-    fixture.source.write_bytes(b"<!doctype html><p>changed after discovery</p>")
-    mismatch = fixture.client.get(f"{base}/{fixture.record.view_id}/preview")
-    assert mismatch.status_code == 410
-    assert "changed after discovery" not in mismatch.text
+    def unavailable_result_view_bytes(*args, **kwargs):
+        raise OSError("stored result view unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture.store, "result_view_bytes", unavailable_result_view_bytes)
+        unavailable_response = fixture.client.get(f"{base}/{fixture.record.view_id}/preview")
+    assert unavailable_response.status_code == 503
+    assert "stored result view unavailable" not in unavailable_response.text
+
+    with fixture.store.connection() as connection:
+        connection.execute(
+            "UPDATE result_views SET html = ? WHERE view_id = ?",
+            ("<html>corrupt stored bytes</html>", fixture.record.view_id),
+        )
+    corrupt = fixture.client.get(f"{base}/{fixture.record.view_id}/preview")
+    assert corrupt.status_code == 410
+    assert "corrupt stored bytes" not in corrupt.text
 
 
 def test_keep_is_idempotent_and_kept_preview_never_returns_to_scratch(
@@ -225,6 +242,8 @@ def test_keep_is_idempotent_and_kept_preview_never_returns_to_scratch(
     fixture = _fixture(manifest, tmp_path)
     base = f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}"
     revision_before = fixture.service.history.state().revision
+    fixture.source.write_bytes(b"<!doctype html><p>changed after discovery</p>")
+    fixture.source.unlink()
 
     first = fixture.client.post(f"{base}/keep")
     second = fixture.client.post(f"{base}/keep")
@@ -240,13 +259,19 @@ def test_keep_is_idempotent_and_kept_preview_never_returns_to_scratch(
     assert not (fixture.service.manifest.research_dir / "views").exists()
     assert fixture.service.history.state().revision == revision_before
 
-    fixture.source.unlink()
     preview = fixture.client.get(f"{base}/preview")
     assert preview.status_code == 200
     assert "loss curve" in preview.text
 
     (repository_views / kept_filename).write_bytes(b" " * len(fixture.content))
-    assert fixture.client.get(f"{base}/preview").status_code == 410
+    changed = fixture.client.get(f"{base}/preview")
+    assert changed.status_code == 200
+    assert "loss curve" in changed.text
+
+    (repository_views / kept_filename).unlink()
+    deleted = fixture.client.get(f"{base}/preview")
+    assert deleted.status_code == 200
+    assert "loss curve" in deleted.text
 
 
 def test_failed_keep_preserves_the_temporary_view_and_hides_storage_paths(
@@ -255,21 +280,64 @@ def test_failed_keep_preserves_the_temporary_view_and_hides_storage_paths(
     monkeypatch,
 ) -> None:
     fixture = _fixture(manifest, tmp_path)
+    keep_attempted = False
 
     def fail_keep(**_kwargs) -> str:
+        nonlocal keep_attempted
+        keep_attempted = True
         raise StateUnavailable(f"could not publish from {fixture.stage}")
 
     monkeypatch.setattr(fixture.service.history.workspace, "keep_result_view", fail_keep)
     base = f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}"
+    fixture.source.write_bytes(b"<!doctype html><p>changed after discovery</p>")
+    fixture.source.unlink()
 
     failed = fixture.client.post(f"{base}/keep")
 
     assert failed.status_code == 503
+    assert keep_attempted
     assert str(fixture.stage) not in failed.text
     current = fixture.store.result_view_for_diagnostics(fixture.record.view_id)
     assert current is not None and current.kept_filename is None
-    assert fixture.source.read_bytes() == fixture.content
-    assert fixture.client.get(f"{base}/preview").status_code == 200
+    preview = fixture.client.get(f"{base}/preview")
+    assert preview.status_code == 200
+    assert "loss curve" in preview.text
+
+
+def test_remote_result_view_preview_and_keep_never_read_the_stage(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    remote_content = b"<!doctype html><title>Remote curves</title><p>remote stored curve</p>"
+    remote, source = _create_view(
+        fixture.store,
+        project_id=fixture.project_id,
+        chat_id=fixture.record.chat_id,
+        stage=tmp_path / "irrelevant-local-stage",
+        stage_host="research-host",
+        view_id="d" * 24,
+        content=remote_content,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    source.unlink()
+
+    def must_not_open_remote_stage(*_args, **_kwargs):
+        raise AssertionError("result-view HTTP must not access the remote stage")
+
+    monkeypatch.setattr("rcp.api.app.RemoteRunStage", must_not_open_remote_stage)
+    base = f"/api/projects/{fixture.project_id}/result-views/{remote.view_id}"
+
+    preview = fixture.client.get(f"{base}/preview")
+    kept = fixture.client.post(f"{base}/keep")
+
+    assert preview.status_code == 200
+    assert "remote stored curve" in preview.text
+    assert kept.status_code == 200
+    kept_filename = kept.json()["kept_filename"]
+    repository_view = fixture.service.manifest.research_dir.parent / "views" / kept_filename
+    assert repository_view.read_bytes() == remote_content
 
 
 def test_result_view_admission_pins_revision_and_keep_rejects_its_active_task(

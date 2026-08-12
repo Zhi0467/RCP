@@ -1574,9 +1574,10 @@ def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: s
                 origin_operation_id, latest_operation_id,
                 provider, model, reasoning, run_on,
                 native_session_id, stage_host, stage_root, source_name,
-                content_sha256, size_bytes, created_at, updated_at, expires_at
+                content_sha256, size_bytes, html, created_at, updated_at, expires_at
             ) VALUES (?, ?, ?, ?, ?, ?, 'codex', 'gpt', 'high', 'laptop', ?, '', ?,
-                      'result.html', 'sha256', 7, ?, ?, '2026-08-13T01:02:03+00:00')
+                      'result.html', 'sha256', 7, 'result', ?, ?,
+                      '2026-08-13T01:02:03+00:00')
             """,
             (
                 f"legacy-view-{label}",

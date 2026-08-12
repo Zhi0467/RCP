@@ -22,7 +22,7 @@ from pydantic import (
     model_validator,
 )
 
-from rcp.artifacts import AgentArtifactDescriptor, ResultViewDescriptor
+from rcp.artifacts import AgentArtifactDescriptor, ResultViewDescriptor, validate_artifact_bytes
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -1175,6 +1175,7 @@ class AppStore:
                     source_name TEXT NOT NULL,
                     content_sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+                    html TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
@@ -1182,12 +1183,6 @@ class AppStore:
                     kept_at TEXT,
                     CHECK((kept_filename IS NULL) = (kept_at IS NULL))
                 );
-                CREATE INDEX IF NOT EXISTS result_views_project_experiment
-                    ON result_views(project_id, experiment_id, updated_at DESC, view_id);
-                CREATE INDEX IF NOT EXISTS result_views_project_chat
-                    ON result_views(project_id, chat_id, updated_at DESC, view_id);
-                CREATE INDEX IF NOT EXISTS result_views_expiry
-                    ON result_views(expires_at, kept_filename);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT PRIMARY KEY,
                     home_space_id TEXT,
@@ -1487,6 +1482,12 @@ class AppStore:
             # can include the new transitional state.
             self._ensure_column(connection, "projects", "home_space_id", "TEXT")
             self._ensure_column(connection, "paper_drafts", "ancestor_content", "TEXT")
+            self._ensure_column(
+                connection,
+                "result_views",
+                "html",
+                "TEXT NOT NULL DEFAULT ''",
+            )
             self._ensure_column(connection, "graph_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "graph_runs", "parent_operation_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
@@ -1548,6 +1549,18 @@ class AppStore:
             self._ensure_column(connection, "watchers", "stop_operation_id", "TEXT")
             self._ensure_column(connection, "watchers", "graph_condition_json", "TEXT")
             self._ensure_column(connection, "watchers", "armed_revision", "INTEGER")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS result_views_project_experiment "
+                "ON result_views(project_id, experiment_id, updated_at DESC, view_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS result_views_project_chat "
+                "ON result_views(project_id, chat_id, updated_at DESC, view_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS result_views_expiry "
+                "ON result_views(expires_at, kept_filename)"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS graph_runs_campaign "
                 "ON graph_runs(campaign_id, created_at, operation_id)"
@@ -2378,9 +2391,10 @@ class AppStore:
                 (project_id, legacy_id),
             )
 
-    def create_result_view(self, record: ResultViewRecord) -> ResultViewRecord:
-        """Insert one private result-view binding without storing its bytes."""
+    def create_result_view(self, record: ResultViewRecord, *, html: bytes) -> ResultViewRecord:
+        """Atomically insert one private result-view binding and its verified HTML."""
         record = ResultViewRecord.model_validate(record)
+        stored_html = _validated_result_view_html(record, html)
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -2391,9 +2405,9 @@ class AppStore:
                         origin_operation_id, latest_operation_id,
                         provider, model, reasoning, run_on,
                         native_session_id, stage_host, stage_root, source_name,
-                        content_sha256, size_bytes, created_at, updated_at, expires_at,
+                        content_sha256, size_bytes, html, created_at, updated_at, expires_at,
                         kept_filename, kept_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.view_id,
@@ -2412,6 +2426,7 @@ class AppStore:
                         record.source_name,
                         record.content_sha256,
                         record.size_bytes,
+                        stored_html,
                         record.created_at,
                         record.updated_at,
                         record.expires_at,
@@ -2474,6 +2489,87 @@ class AppStore:
         records = [self._result_view_record(row) for row in rows]
         return [record for record in records if _result_view_is_visible(record, as_of=as_of)]
 
+    def result_view_bytes(
+        self,
+        view_id: str,
+        *,
+        expected_content_sha256: str,
+    ) -> bytes:
+        """Return the bounded stored HTML only when it matches its metadata and caller digest."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM result_views WHERE view_id = ?",
+                (view_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(view_id)
+        record = self._result_view_record(row)
+        if record.content_sha256 != expected_content_sha256:
+            raise ResultViewConflict("result view changed before its stored bytes were read")
+        return _result_view_html_bytes(record, row["html"])
+
+    def delete_expired_result_views(self, *, as_of: datetime | None = None) -> int:
+        """Delete expired unkept views so their stored HTML expires with their metadata."""
+        current = _result_view_reference_time(as_of)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self._delete_expired_result_views_from_connection(connection, current)
+
+    @staticmethod
+    def _delete_expired_result_views_from_connection(
+        connection: sqlite3.Connection,
+        current: datetime,
+    ) -> int:
+        deleted = 0
+        rows = connection.execute(
+            "SELECT view_id, expires_at FROM result_views WHERE kept_filename IS NULL"
+        ).fetchall()
+        for row in rows:
+            if _required_timestamp(row["expires_at"]) > current:
+                continue
+            deleted += connection.execute(
+                """
+                DELETE FROM result_views
+                WHERE view_id = ? AND expires_at = ? AND kept_filename IS NULL
+                """,
+                (row["view_id"], row["expires_at"]),
+            ).rowcount
+        return deleted
+
+    def has_active_result_view_revision(self, record: ResultViewRecord) -> bool:
+        """Return whether this view has an active or recoverable revision task."""
+        record = ResultViewRecord.model_validate(record)
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs AS revision
+                WHERE revision.project_id = ? AND revision.kind = 'node_chat'
+                  AND json_extract(revision.request_json, '$.chat_id') = ?
+                  AND json_extract(revision.request_json, '$.result_view.action') = 'revise'
+                  AND json_extract(revision.request_json, '$.result_view.view_id') = ?
+                  AND (
+                    revision.status IN ('queued', 'running', 'pausing')
+                    OR (
+                      revision.status IN ('paused', 'interrupted')
+                      AND revision.native_session_id IS NOT NULL
+                      AND revision.stage_root IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM graph_runs AS child
+                        WHERE child.parent_operation_id = revision.operation_id
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM graph_run_receipts AS receipt
+                        WHERE receipt.operation_id = revision.operation_id
+                          AND receipt.category = 'experiment_recovery_abandoned'
+                      )
+                    )
+                  )
+                LIMIT 1
+                """,
+                (record.project_id, record.chat_id, record.view_id),
+            ).fetchone()
+        return row is not None
+
     def result_view_descriptor(
         self,
         record: ResultViewRecord,
@@ -2524,6 +2620,7 @@ class AppStore:
         latest_operation_id: str,
         content_sha256: str,
         size_bytes: int,
+        html: bytes,
         updated_at: str,
         expires_at: str,
     ) -> ResultViewRecord:
@@ -2551,10 +2648,11 @@ class AppStore:
                     "expires_at": expires_at,
                 }
             )
+            stored_html = _validated_result_view_html(revised, html)
             updated = connection.execute(
                 """
                 UPDATE result_views
-                SET latest_operation_id = ?, content_sha256 = ?, size_bytes = ?,
+                SET latest_operation_id = ?, content_sha256 = ?, size_bytes = ?, html = ?,
                     updated_at = ?, expires_at = ?
                 WHERE view_id = ? AND content_sha256 = ? AND kept_filename IS NULL
                 """,
@@ -2562,6 +2660,7 @@ class AppStore:
                     revised.latest_operation_id,
                     revised.content_sha256,
                     revised.size_bytes,
+                    stored_html,
                     revised.updated_at,
                     revised.expires_at,
                     view_id,
@@ -10202,7 +10301,7 @@ class AppStore:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so
         resume ancestry (invariant 10b) stays walkable for the life of a project."""
 
-        current = now or datetime.now(UTC)
+        current = _result_view_reference_time(now)
         inactive = """
             operation_id NOT IN (
                 SELECT operation_id FROM graph_runs
@@ -10212,6 +10311,10 @@ class AppStore:
         patch_cutoff = (current - timedelta(days=PATCH_OUTPUT_RETENTION_DAYS)).isoformat()
         trace_cutoff = (current - timedelta(days=RUN_TRACE_RETENTION_DAYS)).isoformat()
         with self.connection() as connection:
+            expired_result_views = self._delete_expired_result_views_from_connection(
+                connection,
+                current,
+            )
             outputs = connection.execute(
                 f"DELETE FROM graph_run_outputs WHERE created_at < ? AND {inactive}",
                 (patch_cutoff,),
@@ -10264,6 +10367,7 @@ class AppStore:
             "events": events,
             "receipts": receipts,
             "writing_sessions": len(delete_writing),
+            "result_views": expired_result_views,
         }
 
     @staticmethod
@@ -10322,7 +10426,9 @@ class AppStore:
 
     @staticmethod
     def _result_view_record(row: sqlite3.Row) -> ResultViewRecord:
-        return ResultViewRecord.model_validate(dict(row))
+        data = dict(row)
+        data.pop("html", None)
+        return ResultViewRecord.model_validate(data)
 
     @staticmethod
     def _project_record(row: sqlite3.Row) -> ProjectRecord:
@@ -10514,7 +10620,33 @@ def _result_view_is_visible(
 ) -> bool:
     if record.kept_filename is not None:
         return True
+    return _required_timestamp(record.expires_at) > _result_view_reference_time(as_of)
+
+
+def _result_view_reference_time(as_of: datetime | None) -> datetime:
     current = as_of or datetime.now(UTC)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError("result view visibility time must include a timezone")
-    return _required_timestamp(record.expires_at) > current.astimezone(UTC)
+    return current.astimezone(UTC)
+
+
+def _validated_result_view_html(record: ResultViewRecord, data: bytes) -> str:
+    if not isinstance(data, bytes):
+        raise TypeError("result view HTML must be bytes")
+    if len(data) > CHAT_ARTIFACT_MAX_FILE_BYTES:
+        raise ValueError("result view HTML exceeds its byte limit")
+    if len(data) != record.size_bytes:
+        raise ValueError("result view HTML size does not match its metadata")
+    if hashlib.sha256(data).hexdigest() != record.content_sha256:
+        raise ValueError("result view HTML digest does not match its metadata")
+    if validate_artifact_bytes(record.source_name, data) != "text/html":
+        raise ValueError("result view must be HTML")
+    return data.decode("utf-8")
+
+
+def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
+    if not isinstance(html, str):
+        raise ValueError("stored result view HTML is invalid")
+    data = html.encode("utf-8")
+    _validated_result_view_html(record, data)
+    return data

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -17,6 +19,8 @@ from rcp.storage import (
 
 _VIEW_ID = "0123456789abcdef01234567"
 _CREATED = datetime(2026, 8, 12, 1, 2, 3, tzinfo=UTC)
+_HTML = b"<!doctype html><html><body>original</body></html>"
+_REVISED_HTML = b"<!doctype html><html><body>revised</body></html>"
 
 
 def _view(
@@ -43,8 +47,8 @@ def _view(
         stage_host="",
         stage_root="/tmp/rcp-run.chat-one",
         source_name="throughput-pilot.html",
-        content_sha256="a" * 64,
-        size_bytes=512,
+        content_sha256=hashlib.sha256(_HTML).hexdigest(),
+        size_bytes=len(_HTML),
         created_at=created_at,
         updated_at=created_at,
         expires_at=(expires_at or _CREATED + timedelta(days=7)).isoformat(),
@@ -121,14 +125,8 @@ def test_result_view_request_requires_node_scoped_work(values: dict[str, object]
         RunRequest.model_validate({**values, "result_view": {"action": "create"}})
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_result_view_table_is_additive_and_contains_metadata_only(tmp_path, legacy: bool) -> None:
+def test_fresh_result_view_schema_stores_html_privately(tmp_path) -> None:
     path = tmp_path / "rcp.sqlite3"
-    if legacy:
-        with sqlite3.connect(path) as connection:
-            connection.execute("CREATE TABLE legacy_data (value TEXT NOT NULL)")
-            connection.execute("INSERT INTO legacy_data(value) VALUES ('preserved')")
-
     AppStore(path)
 
     with sqlite3.connect(path) as connection:
@@ -136,8 +134,6 @@ def test_result_view_table_is_additive_and_contains_metadata_only(tmp_path, lega
         indexes = {
             row[1] for row in connection.execute("PRAGMA index_list(result_views)").fetchall()
         }
-        if legacy:
-            assert connection.execute("SELECT value FROM legacy_data").fetchone() == ("preserved",)
     assert columns == [
         "view_id",
         "project_id",
@@ -155,6 +151,7 @@ def test_result_view_table_is_additive_and_contains_metadata_only(tmp_path, lega
         "source_name",
         "content_sha256",
         "size_bytes",
+        "html",
         "created_at",
         "updated_at",
         "expires_at",
@@ -163,18 +160,65 @@ def test_result_view_table_is_additive_and_contains_metadata_only(tmp_path, lega
     ]
     assert "result_views_project_experiment" in indexes
     assert "result_views_project_chat" in indexes
-    assert not {"bytes", "content", "html", "patch", "proposal", "revision"} & set(columns)
+    assert not {"bytes", "content", "patch", "proposal", "revision"} & set(columns)
+
+
+def test_actual_legacy_result_view_schema_migrates_before_indexes_are_created(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    legacy = _view()
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX result_views_project_experiment")
+        connection.execute("DROP INDEX result_views_project_chat")
+        connection.execute("DROP INDEX result_views_expiry")
+        connection.execute("ALTER TABLE result_views DROP COLUMN html")
+        connection.execute(
+            """
+            INSERT INTO result_views (
+                view_id, project_id, experiment_id, chat_id,
+                origin_operation_id, latest_operation_id,
+                provider, model, reasoning, run_on,
+                native_session_id, stage_host, stage_root, source_name,
+                content_sha256, size_bytes, created_at, updated_at, expires_at,
+                kept_filename, kept_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(legacy.model_dump(mode="python").values()),
+        )
+
+    migrated = AppStore(path)
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(result_views)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(result_views)")}
+        stored = connection.execute(
+            "SELECT html FROM result_views WHERE view_id = ?", (legacy.view_id,)
+        ).fetchone()
+    assert "html" in columns
+    assert indexes >= {
+        "result_views_project_experiment",
+        "result_views_project_chat",
+        "result_views_expiry",
+    }
+    assert stored == ("",)
+    assert migrated.result_view_for_diagnostics(legacy.view_id) == legacy
+    with pytest.raises(ValueError, match="size does not match"):
+        migrated.result_view_bytes(
+            legacy.view_id,
+            expected_content_sha256=legacy.content_sha256,
+        )
 
 
 def test_result_view_insert_fetch_and_filtered_listing(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    first = store.create_result_view(_view())
+    first = store.create_result_view(_view(), html=_HTML)
     second = store.create_result_view(
         _view(
             view_id="1123456789abcdef01234567",
             experiment_id="experiment-two",
             chat_id="chat-two",
-        )
+        ),
+        html=_HTML,
     )
 
     assert store.result_view(first.view_id, as_of=_CREATED) == first
@@ -190,9 +234,10 @@ def test_result_view_insert_fetch_and_filtered_listing(tmp_path) -> None:
 
 def test_expired_temporary_view_is_hidden_but_available_for_diagnostics(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    record = store.create_result_view(_view(expires_at=_CREATED + timedelta(hours=1)))
+    record = store.create_result_view(_view(expires_at=_CREATED + timedelta(hours=1)), html=_HTML)
     after_expiry = _CREATED + timedelta(hours=2)
 
+    assert store.result_view_for_diagnostics(record.view_id) == record
     assert store.result_view(record.view_id, as_of=after_expiry) is None
     assert store.list_result_views(record.project_id, as_of=after_expiry) == []
     assert store.result_view_for_diagnostics(record.view_id) == record
@@ -201,7 +246,7 @@ def test_expired_temporary_view_is_hidden_but_available_for_diagnostics(tmp_path
 
 def test_kept_view_survives_expiry_and_keep_is_idempotent(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    record = store.create_result_view(_view(expires_at=_CREATED + timedelta(hours=1)))
+    record = store.create_result_view(_view(expires_at=_CREATED + timedelta(hours=1)), html=_HTML)
     kept = store.mark_result_view_kept(
         record.view_id,
         expected_content_sha256=record.content_sha256,
@@ -222,12 +267,13 @@ def test_kept_view_survives_expiry_and_keep_is_idempotent(tmp_path) -> None:
 
 def test_active_chat_extends_only_unkept_view_retention(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    unkept = store.create_result_view(_view(expires_at=_CREATED + timedelta(hours=1)))
+    unkept = store.create_result_view(_view(expires_at=_CREATED + timedelta(hours=1)), html=_HTML)
     kept_source = store.create_result_view(
         _view(
             view_id="2123456789abcdef01234567",
             expires_at=_CREATED + timedelta(hours=1),
-        )
+        ),
+        html=_HTML,
     )
     kept = store.mark_result_view_kept(
         kept_source.view_id,
@@ -271,7 +317,8 @@ def test_active_chat_cannot_revive_an_already_expired_unkept_view(tmp_path) -> N
                 "updated_at": created_at.isoformat(),
                 "expires_at": expired_at.isoformat(),
             }
-        )
+        ),
+        html=_HTML,
     )
 
     refreshed = store.refresh_result_view_expiry(
@@ -290,14 +337,15 @@ def test_active_chat_cannot_revive_an_already_expired_unkept_view(tmp_path) -> N
 
 def test_revision_uses_digest_cas_and_preserves_view_identity(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    record = store.create_result_view(_view())
+    record = store.create_result_view(_view(), html=_HTML)
     updated_at = (_CREATED + timedelta(minutes=5)).isoformat()
     revised = store.revise_result_view(
         record.view_id,
         expected_content_sha256=record.content_sha256,
         latest_operation_id="operation-revise",
-        content_sha256="b" * 64,
-        size_bytes=640,
+        content_sha256=hashlib.sha256(_REVISED_HTML).hexdigest(),
+        size_bytes=len(_REVISED_HTML),
+        html=_REVISED_HTML,
         updated_at=updated_at,
         expires_at=(_CREATED + timedelta(days=8)).isoformat(),
     )
@@ -305,23 +353,134 @@ def test_revision_uses_digest_cas_and_preserves_view_identity(tmp_path) -> None:
     assert revised.view_id == record.view_id
     assert revised.origin_operation_id == record.origin_operation_id
     assert revised.latest_operation_id == "operation-revise"
-    assert revised.content_sha256 == "b" * 64
+    assert revised.content_sha256 == hashlib.sha256(_REVISED_HTML).hexdigest()
     with pytest.raises(ResultViewConflict, match="changed before"):
         store.revise_result_view(
             record.view_id,
             expected_content_sha256=record.content_sha256,
             latest_operation_id="operation-stale",
-            content_sha256="c" * 64,
-            size_bytes=700,
+            content_sha256=hashlib.sha256(b"<html>stale</html>").hexdigest(),
+            size_bytes=len(b"<html>stale</html>"),
+            html=b"<html>stale</html>",
             updated_at=(_CREATED + timedelta(minutes=6)).isoformat(),
             expires_at=(_CREATED + timedelta(days=8)).isoformat(),
         )
     assert store.result_view_for_diagnostics(record.view_id) == revised
 
 
+def test_result_view_bytes_are_bounded_digest_validated_and_updated_atomically(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    record = store.create_result_view(_view(), html=_HTML)
+
+    assert (
+        store.result_view_bytes(
+            record.view_id,
+            expected_content_sha256=record.content_sha256,
+        )
+        == _HTML
+    )
+    with pytest.raises(ResultViewConflict, match="changed before"):
+        store.result_view_bytes(record.view_id, expected_content_sha256="f" * 64)
+
+    with pytest.raises(ValueError, match="digest does not match"):
+        store.revise_result_view(
+            record.view_id,
+            expected_content_sha256=record.content_sha256,
+            latest_operation_id="operation-invalid",
+            content_sha256=hashlib.sha256(_REVISED_HTML).hexdigest(),
+            size_bytes=len(_REVISED_HTML),
+            html=_REVISED_HTML.replace(b"revised", b"changed"),
+            updated_at=(_CREATED + timedelta(minutes=1)).isoformat(),
+            expires_at=(_CREATED + timedelta(days=8)).isoformat(),
+        )
+
+    assert store.result_view_for_diagnostics(record.view_id) == record
+    assert (
+        store.result_view_bytes(
+            record.view_id,
+            expected_content_sha256=record.content_sha256,
+        )
+        == _HTML
+    )
+
+
+def test_invalid_create_does_not_leave_metadata_without_bytes(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    record = _view()
+
+    with pytest.raises(ValueError, match="size does not match"):
+        store.create_result_view(record, html=b"<html>short</html>")
+
+    assert store.result_view_for_diagnostics(record.view_id) is None
+
+
+def test_operational_prune_deletes_expired_unkept_html_with_its_record(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    expires_at = _CREATED + timedelta(hours=1)
+    expired = store.create_result_view(_view(expires_at=expires_at), html=_HTML)
+    kept_source = store.create_result_view(
+        _view(view_id="3123456789abcdef01234567", expires_at=expires_at),
+        html=_HTML,
+    )
+    kept = store.mark_result_view_kept(
+        kept_source.view_id,
+        expected_content_sha256=kept_source.content_sha256,
+        kept_filename="kept-project-26-08-12.html",
+        kept_at=(_CREATED + timedelta(minutes=1)).isoformat(),
+    )
+
+    result = store.prune_operational_storage(now=_CREATED + timedelta(hours=2))
+
+    assert result["result_views"] == 1
+    assert store.result_view_for_diagnostics(expired.view_id) is None
+    assert store.result_view_for_diagnostics(kept.view_id) == kept
+    assert (
+        store.result_view_bytes(
+            kept.view_id,
+            expected_content_sha256=kept.content_sha256,
+        )
+        == _HTML
+    )
+
+
+def test_named_active_result_view_revision_query_preserves_route_policy(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    record = store.create_result_view(_view(), html=_HTML)
+    request = json.dumps(
+        {
+            "chat_id": record.chat_id,
+            "result_view": {"action": "revise", "view_id": record.view_id},
+        }
+    )
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, kind, status, request_json,
+                created_at, updated_at, status_message
+            ) VALUES (?, ?, 'node_chat', 'queued', ?, ?, ?, 'queued')
+            """,
+            (
+                "revision-operation",
+                record.project_id,
+                request,
+                record.created_at,
+                record.updated_at,
+            ),
+        )
+
+    assert store.has_active_result_view_revision(record) is True
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status = 'succeeded' WHERE operation_id = ?",
+            ("revision-operation",),
+        )
+    assert store.has_active_result_view_revision(record) is False
+
+
 def test_revision_after_keep_conflicts_without_changing_kept_metadata(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    record = store.create_result_view(_view())
+    record = store.create_result_view(_view(), html=_HTML)
     kept = store.mark_result_view_kept(
         record.view_id,
         expected_content_sha256=record.content_sha256,
@@ -334,8 +493,9 @@ def test_revision_after_keep_conflicts_without_changing_kept_metadata(tmp_path) 
             record.view_id,
             expected_content_sha256=record.content_sha256,
             latest_operation_id="operation-revise-after-keep",
-            content_sha256="b" * 64,
-            size_bytes=640,
+            content_sha256=hashlib.sha256(_REVISED_HTML).hexdigest(),
+            size_bytes=len(_REVISED_HTML),
+            html=_REVISED_HTML,
             updated_at=(_CREATED + timedelta(minutes=2)).isoformat(),
             expires_at=(_CREATED + timedelta(days=8)).isoformat(),
         )
@@ -349,13 +509,14 @@ def test_revision_after_keep_conflicts_without_changing_kept_metadata(tmp_path) 
 
 def test_keep_after_revision_conflicts_without_exposing_stale_keep_metadata(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    record = store.create_result_view(_view())
+    record = store.create_result_view(_view(), html=_HTML)
     revised = store.revise_result_view(
         record.view_id,
         expected_content_sha256=record.content_sha256,
         latest_operation_id="operation-revise-before-keep",
-        content_sha256="b" * 64,
-        size_bytes=640,
+        content_sha256=hashlib.sha256(_REVISED_HTML).hexdigest(),
+        size_bytes=len(_REVISED_HTML),
+        html=_REVISED_HTML,
         updated_at=(_CREATED + timedelta(minutes=1)).isoformat(),
         expires_at=(_CREATED + timedelta(days=8)).isoformat(),
     )
@@ -381,7 +542,7 @@ def test_project_identity_migration_and_deletion_include_result_views(tmp_path) 
     legacy_id = "legacy-project"
     canonical_id = str(uuid.uuid4())
     store.upsert_project(_project(legacy_id))
-    record = store.create_result_view(_view(project_id=legacy_id))
+    record = store.create_result_view(_view(project_id=legacy_id), html=_HTML)
 
     store.migrate_project_identity(legacy_id, canonical_id, store.space_id)
 
@@ -394,7 +555,7 @@ def test_project_identity_migration_and_deletion_include_result_views(tmp_path) 
 
 def test_public_descriptor_exposes_no_private_binding_fields(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    record = store.create_result_view(_view())
+    record = store.create_result_view(_view(), html=_HTML)
 
     descriptor = store.result_view_descriptor(record, as_of=_CREATED)
 

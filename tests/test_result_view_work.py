@@ -348,12 +348,19 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     )
     assert revised.updated_at > created.updated_at
     assert revised.expires_at > created.expires_at
+    assert (
+        store.result_view_bytes(
+            revised.view_id,
+            expected_content_sha256=revised.content_sha256,
+        )
+        == b"<html><body>loss curves v2</body></html>"
+    )
     assert len(_receipts(store, "result-view-revise", "result_view_revised")) == 1
     assert service.history.state().revision == initial_revision
 
 
 @pytest.mark.asyncio
-async def test_rejected_revision_restores_exact_snapshot_without_rejecting_answer_or_graph(
+async def test_rejected_revision_leaves_stored_bytes_without_rejecting_answer_or_graph(
     manifest,
     tmp_path: Path,
 ) -> None:
@@ -429,17 +436,27 @@ async def test_rejected_revision_restores_exact_snapshot_without_rejecting_answe
     assert not [event for event in events if event.event == "error"]
     assert any(event.event == "answer" for event in events)
     assert events[-1].event == "done"
-    assert original.read_bytes() == original_bytes
-    assert sorted(item.name for item in original.parent.iterdir()) == [created.source_name]
+    assert original.read_bytes() != original_bytes
+    assert sorted(item.name for item in original.parent.iterdir()) == [
+        created.source_name,
+        "unexpected-second-view.html",
+    ]
     unchanged = store.result_view_for_diagnostics(created.view_id)
     assert unchanged is not None
     assert unchanged.latest_operation_id == created.latest_operation_id
     assert unchanged.content_sha256 == created.content_sha256
     assert unchanged.size_bytes == created.size_bytes
     assert unchanged.source_name == created.source_name
+    assert (
+        store.result_view_bytes(
+            unchanged.view_id,
+            expected_content_sha256=unchanged.content_sha256,
+        )
+        == original_bytes
+    )
     rejection = _receipts(store, "rejected-view-revise", "result_view_rejected")
     assert len(rejection) == 1
-    assert rejection[0].payload["restored"] is True
+    assert set(rejection[0].payload) == {"action", "view_id", "problem"}
     assert "exactly one" in str(rejection[0].payload["problem"])
     assert service.history.state().revision == initial_revision
 
@@ -516,7 +533,7 @@ async def test_revision_without_inherited_stage_fails_before_provider_launch(
         ("post_provider_error", "failed"),
     ],
 )
-async def test_background_stream_close_restores_rejected_revision(
+async def test_background_stream_close_leaves_stored_bytes_unchanged(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -605,27 +622,26 @@ async def test_background_stream_close_restores_rejected_revision(
     settled = wait_for_task(store, started.operation_id)
 
     assert settled.status == expected_status
-    assert target.read_bytes() == original_bytes
+    assert target.read_bytes() != original_bytes
     unchanged = store.result_view_for_diagnostics(created.view_id)
     assert unchanged is not None
     assert unchanged.latest_operation_id == created.latest_operation_id
     assert unchanged.content_sha256 == created.content_sha256
     assert unchanged.size_bytes == created.size_bytes
-    rejection = _receipts(store, started.operation_id, "result_view_rejected")
-    assert len(rejection) == 1
-    assert rejection[0].payload["restored"] is True
+    assert (
+        store.result_view_bytes(
+            unchanged.view_id,
+            expected_content_sha256=unchanged.content_sha256,
+        )
+        == original_bytes
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("continuation", ["resume", "retry"])
-async def test_hard_interrupted_revision_recovers_exact_ancestor_snapshot_before_launch(
+async def test_hard_interrupted_revision_leaves_stored_bytes_unchanged(
     manifest,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    continuation: str,
 ) -> None:
-    import rcp.runs.work as work_module
-
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -634,8 +650,8 @@ async def test_hard_interrupted_revision_recovers_exact_ancestor_snapshot_before
     append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id
     assert project_id is not None
-    chat_id = f"result-view-crash-{continuation}"
-    session_id = f"result-view-crash-session-{continuation}"
+    chat_id = "result-view-crash"
+    session_id = "result-view-crash-session"
 
     def create_writer(prompt: str, _workspace: Path) -> None:
         _created_slot(prompt).joinpath("crash-safe.html").write_text(
@@ -648,7 +664,7 @@ async def test_hard_interrupted_revision_recovers_exact_ancestor_snapshot_before
         "Create the crash-safe view.",
         result_view={"action": "create"},
     )
-    create_execution = _execution(store, project_id, f"crash-create-{continuation}", create_request)
+    create_execution = _execution(store, project_id, "crash-create", create_request)
     await _events(
         stream_work_run(
             service,
@@ -669,7 +685,7 @@ async def test_hard_interrupted_revision_recovers_exact_ancestor_snapshot_before
         result_view={"action": "revise", "view_id": created.view_id},
         session_id=session_id,
     )
-    crashed_operation = f"crash-revise-{continuation}"
+    crashed_operation = "crash-revise"
     crashed_execution = _execution(
         store,
         project_id,
@@ -680,86 +696,29 @@ async def test_hard_interrupted_revision_recovers_exact_ancestor_snapshot_before
 
     def interrupted_writer(prompt: str, _workspace: Path) -> None:
         interrupted_target = _revised_path(prompt)
-        if continuation == "retry":
-            interrupted_target.unlink()
-            interrupted_target.parent.rmdir()
-        else:
-            interrupted_target.write_text(
-                "<html><body>uncommitted crash mutation</body></html>",
-                encoding="utf-8",
-            )
-
-    with monkeypatch.context() as crash_patch:
-        crash_patch.setattr(work_module, "_restore_rejected_result_view", lambda *_args: None)
-        with pytest.raises(RuntimeError, match="hard process interruption"):
-            await _events(
-                stream_work_run(
-                    service,
-                    _HardCrashViewLauncher(session_id, interrupted_writer),
-                    revision_request,
-                    data_dir,
-                    execution=crashed_execution,
-                )
-            )
-
-    if continuation == "retry":
-        assert not target.exists()
-    else:
-        assert target.read_bytes() != original
-    snapshots = _receipts(store, crashed_operation, "result_view_rollback_snapshot")
-    assert len(snapshots) == 1
-    assert snapshots[0].payload["content_sha256"] == created.content_sha256
-    store.fail_agent_task(
-        crashed_operation,
-        "RCP restarted during the revision.",
-        status="interrupted",
-    )
-
-    recovered_data = f"<html><body>recovered {continuation}</body></html>".encode()
-
-    def recovery_writer(prompt: str, _workspace: Path) -> None:
-        recovery_target = _revised_path(prompt)
-        assert recovery_target == target
-        assert recovery_target.read_bytes() == original
-        recovery_target.write_bytes(recovered_data)
-
-    recovery_operation = f"crash-recovery-{continuation}"
-    recovery_execution = _execution(
-        store,
-        project_id,
-        recovery_operation,
-        revision_request,
-        stage_root=created.stage_root,
-        parent_operation_id=crashed_operation,
-        continuation=continuation,
-    )
-    events = await _events(
-        stream_work_run(
-            service,
-            _ViewLauncher(session_id, recovery_writer),
-            revision_request,
-            data_dir,
-            execution=recovery_execution,
+        interrupted_target.write_text(
+            "<html><body>uncommitted crash mutation</body></html>",
+            encoding="utf-8",
         )
-    )
 
-    assert not [event for event in events if event.event == "error"]
-    assert target.read_bytes() == recovered_data
-    recovered = store.result_view_for_diagnostics(created.view_id)
-    assert recovered is not None
-    assert recovered.latest_operation_id == recovery_operation
-    assert recovered.content_sha256 == hashlib.sha256(recovered_data).hexdigest()
-    recovery_receipts = _receipts(
-        store,
-        recovery_operation,
-        "result_view_rollback_recovered",
+    with pytest.raises(RuntimeError, match="hard process interruption"):
+        await _events(
+            stream_work_run(
+                service,
+                _HardCrashViewLauncher(session_id, interrupted_writer),
+                revision_request,
+                data_dir,
+                execution=crashed_execution,
+            )
+        )
+    assert target.read_bytes() != original
+    assert (
+        store.result_view_bytes(
+            created.view_id,
+            expected_content_sha256=created.content_sha256,
+        )
+        == original
     )
-    assert len(recovery_receipts) == 1
-    assert recovery_receipts[0].payload["ancestor_operation_id"] == crashed_operation
-    saved_snapshot = (
-        Path(created.stage_root) / "views" / ".rcp-result-view-snapshots" / created.view_id
-    )
-    assert not saved_snapshot.exists()
 
 
 def test_background_retry_creates_once_from_the_original_unbound_slot(
@@ -1281,7 +1240,7 @@ def test_unbound_create_recovery_creates_its_missing_deterministic_slot(
         None,
         focused_node={"id": _EXPERIMENT_ID, "type": "experiment"},
         logical_operation_id=original_operation,
-        revision_record=None,
+        revision_preflight=None,
     )
 
     assert prepared is not None
