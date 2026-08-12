@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
+import { createServer } from "vite";
 
 import { ApiError } from "../src/api.ts";
-import {
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const {
   applyHumanDraft,
   deserializeHumanDraft,
   emptyHumanDraft,
@@ -13,6 +22,8 @@ import {
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
+  proposalApprovalConflict,
+  reconcileHumanDraft,
   retainBehindDraftAfterSync,
   proposalTargetsNode,
   serializeHumanDraft,
@@ -27,7 +38,9 @@ import {
   unstageCustomNode,
   unstageNodeRemoval,
   toHumanSyncRequest,
-} from "../src/humanDraft.ts";
+} = await server.ssrLoadModule("/src/humanDraft.ts");
+
+after(() => server.close());
 
 const graph = {
   revision: 4,
@@ -150,6 +163,204 @@ test("judgments and proposal decisions are reversible", () => {
   draft = stageNodeStanding(draft, graph, "hyp/example", "accepted");
   draft = stageProposalDecision(draft, graph, "proposal/1", null);
   assert.equal(humanDraftChangeCount(draft), 0);
+});
+
+test("authoritative reconciliation clears only proposal choices that are no longer pending", () => {
+  const pending = {
+    id: "proposal/pending",
+    status: "pending",
+    related_node_ids: ["hyp/example"],
+    related_edge_ids: [],
+    related_config_keys: [],
+    ops: [],
+  };
+  const withdrawn = { ...pending, id: "proposal/withdrawn", status: "withdrawn" };
+  const movedGraph = {
+    ...graph,
+    revision: 5,
+    proposals: { [pending.id]: pending, [withdrawn.id]: withdrawn },
+  };
+  const draft = {
+    ...emptyHumanDraft(4),
+    nodes: {
+      "hyp/example": {
+        base_updated_rev: 4,
+        changes: { title: "My staged title" },
+        standing: "asserted",
+        standing_origin: "edit",
+      },
+    },
+    proposals: {
+      [pending.id]: { decision: "approved" },
+      [withdrawn.id]: { decision: "rejected" },
+      "proposal/missing": { decision: "approved" },
+    },
+  };
+
+  const reconciliation = reconcileHumanDraft(draft, movedGraph);
+
+  assert.deepEqual(reconciliation.discardedProposalIds, ["proposal/missing", "proposal/withdrawn"]);
+  assert.deepEqual(reconciliation.draft.proposals, {
+    [pending.id]: { decision: "approved" },
+  });
+  assert.deepEqual(reconciliation.draft.nodes["hyp/example"].changes, {
+    title: "My staged title",
+  });
+  assert.equal(reconciliation.draft.base_revision, 5);
+});
+
+test("staging prevents overlapping approvals but permits rejections and independent approvals", () => {
+  const proposal = (id, nodeId, edgeIds = []) => ({
+    id,
+    title: id,
+    card: { situation_cold: "", why_human_now: "", consequences: "", decision_needed: "" },
+    ops: [
+      {
+        op: "update_nodes",
+        intent: "content_change",
+        nodes: [{ id: nodeId, changes: { title: `Change from ${id}` } }],
+      },
+    ],
+    related_node_ids: [nodeId],
+    related_edge_ids: edgeIds,
+    related_config_keys: [],
+    base_rev: 4,
+    raised_rev: 4,
+    resolved_rev: null,
+    status: "pending",
+  });
+  const first = proposal("proposal/first", "hyp/example", ["edge/shared"]);
+  const overlapping = proposal("proposal/overlap", "hyp/example", ["edge/shared"]);
+  const independent = proposal("proposal/independent", "hyp/other");
+  const proposalGraph = {
+    ...graph,
+    proposals: {
+      [first.id]: first,
+      [overlapping.id]: overlapping,
+      [independent.id]: independent,
+    },
+  };
+
+  const firstApproved = stageProposalDecision(
+    emptyHumanDraft(4),
+    proposalGraph,
+    first.id,
+    "approved",
+  );
+  assert.deepEqual(proposalApprovalConflict(firstApproved, proposalGraph, overlapping.id), {
+    proposalIds: [first.id],
+    resourceKeys: ["node:hyp/example"],
+  });
+  assert.strictEqual(
+    stageProposalDecision(firstApproved, proposalGraph, overlapping.id, "approved"),
+    firstApproved,
+  );
+
+  const withRejection = stageProposalDecision(
+    firstApproved,
+    proposalGraph,
+    overlapping.id,
+    "rejected",
+  );
+  assert.equal(withRejection.proposals[overlapping.id].decision, "rejected");
+  const withIndependentApproval = stageProposalDecision(
+    withRejection,
+    proposalGraph,
+    independent.id,
+    "approved",
+  );
+  assert.equal(withIndependentApproval.proposals[independent.id].decision, "approved");
+});
+
+test("approval collisions use semantic effects instead of shared dependency context", () => {
+  const protectedCreation = (id, targetId) => ({
+    id,
+    title: id,
+    card: { situation_cold: "", why_human_now: "", consequences: "", decision_needed: "" },
+    ops: [
+      {
+        op: "create_edges",
+        intent: "protected_relation_change",
+        edges: [
+          {
+            source: "rq/shared",
+            target: targetId,
+            relation: "has_hypothesis",
+          },
+        ],
+      },
+    ],
+    related_node_ids: ["rq/shared", targetId],
+    related_edge_ids: [],
+    related_config_keys: [],
+    base_rev: 4,
+    raised_rev: 4,
+    resolved_rev: null,
+    status: "pending",
+  });
+  const first = protectedCreation("proposal/first-edge", "hyp/first");
+  const independent = protectedCreation("proposal/second-edge", "hyp/second");
+  const duplicate = protectedCreation("proposal/duplicate-edge", "hyp/first");
+  const removal = {
+    ...protectedCreation("proposal/removal", "hyp/unused"),
+    ops: [
+      {
+        op: "remove_nodes",
+        intent: "removal",
+        node_ids: ["hyp/remove"],
+      },
+    ],
+    related_node_ids: ["hyp/remove"],
+    related_edge_ids: ["edge/incident"],
+  };
+  const incidentRemoval = {
+    ...protectedCreation("proposal/remove-incident", "hyp/unused"),
+    ops: [
+      {
+        op: "remove_edges",
+        intent: "protected_relation_change",
+        edge_ids: ["edge/incident"],
+      },
+    ],
+    related_node_ids: ["hyp/remove", "hyp/other"],
+    related_edge_ids: ["edge/incident"],
+  };
+  const proposalGraph = {
+    ...graph,
+    proposals: Object.fromEntries(
+      [first, independent, duplicate, removal, incidentRemoval].map((item) => [item.id, item]),
+    ),
+  };
+
+  const firstApproved = stageProposalDecision(
+    emptyHumanDraft(4),
+    proposalGraph,
+    first.id,
+    "approved",
+  );
+  assert.equal(proposalApprovalConflict(firstApproved, proposalGraph, independent.id), null);
+  const bothApproved = stageProposalDecision(
+    firstApproved,
+    proposalGraph,
+    independent.id,
+    "approved",
+  );
+  assert.equal(bothApproved.proposals[independent.id].decision, "approved");
+  assert.deepEqual(proposalApprovalConflict(bothApproved, proposalGraph, duplicate.id), {
+    proposalIds: [first.id],
+    resourceKeys: ["edge:rq/shared::has_hypothesis::hyp/first"],
+  });
+
+  const removalApproved = stageProposalDecision(
+    emptyHumanDraft(4),
+    proposalGraph,
+    removal.id,
+    "approved",
+  );
+  assert.deepEqual(proposalApprovalConflict(removalApproved, proposalGraph, incidentRemoval.id), {
+    proposalIds: [removal.id],
+    resourceKeys: ["edge:edge/incident"],
+  });
 });
 
 test("direct Decision choices merge with wording edits and supersede targeted proposal resolutions", () => {

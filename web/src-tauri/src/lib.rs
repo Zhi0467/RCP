@@ -8,7 +8,7 @@ mod windows;
 
 use std::time::Duration;
 
-use backend::BackendState;
+use backend::{BackendState, QuitRequest};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     Emitter, Manager, RunEvent, WindowEvent,
@@ -54,7 +54,7 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             if event.id() == QUIT_MENU_ID {
-                quit_from_menu(app.clone());
+                request_app_quit(app.clone());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -89,11 +89,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building RCP desktop app");
 
-    app.run(|app, event| {
-        #[cfg(target_os = "macos")]
-        if matches!(event, RunEvent::Reopen { .. }) {
-            verify_then_prepare_show(app.clone(), "dock-reopen");
+    app.run(|app, event| match event {
+        RunEvent::ExitRequested {
+            code: None, api, ..
+        } => {
+            api.prevent_exit();
+            request_app_quit(app.clone());
         }
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => verify_then_prepare_show(app.clone(), "dock-reopen"),
+        _ => {}
     });
 }
 
@@ -103,6 +108,9 @@ fn start_backend(app: tauri::AppHandle) {
         eprintln!("[rcp] connecting to a backend");
         match backend::connect(&app, &state, "Quit").await {
             Ok(status) => {
+                if state.is_terminal() {
+                    return;
+                }
                 eprintln!(
                     "[rcp] backend ready at {} (owned={})",
                     status.base_url, status.owned
@@ -112,16 +120,23 @@ fn start_backend(app: tauri::AppHandle) {
             Err(error) => {
                 eprintln!("[rcp] backend connection failed: {error}");
                 if error == backend::CONNECT_CANCELLED {
-                    app.exit(1);
+                    request_app_quit(app);
                     return;
                 }
-                app.state::<BackendState>().set_error(error.clone());
+                if error == backend::CONNECT_ABORTED_BY_TERMINAL || state.is_terminal() {
+                    return;
+                }
+                state.set_error(error.clone());
                 app.dialog()
                     .message(format!("RCP could not start.\n\n{error}"))
                     .title("RCP could not start")
                     .buttons(MessageDialogButtons::Ok)
                     .blocking_show();
-                app.exit(1);
+                if state.has_unconfirmed_children() {
+                    request_app_quit_with_code(app, 1);
+                } else {
+                    app.exit(1);
+                }
             }
         }
     });
@@ -182,25 +197,62 @@ fn verify_then_prepare_show(app: tauri::AppHandle, reason: &'static str) {
     });
 }
 
-fn quit_from_menu(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        dictation::stop_active();
-        let state = app.state::<BackendState>().inner().clone();
-        let result = backend::graceful_stop(&state).await;
-        if let Ok(shutdown) = &result {
-            if shutdown.forced {
-                app.dialog()
-                    .message(
-                        shutdown.reason.clone().unwrap_or_else(|| {
-                            "The owned backend required forced termination.".into()
-                        }),
-                    )
-                    .title("RCP shutdown")
-                    .buttons(MessageDialogButtons::Ok)
-                    .blocking_show();
-            }
+fn request_app_quit(app: tauri::AppHandle) -> bool {
+    request_app_quit_with_code(app, 0)
+}
+
+fn request_app_quit_with_code(app: tauri::AppHandle, clean_exit_code: i32) -> bool {
+    let state = app.state::<BackendState>().inner().clone();
+    match state.begin_quit() {
+        Ok(QuitRequest::Started) => {}
+        Ok(QuitRequest::AlreadyQuitting) => return true,
+        Ok(QuitRequest::Updating) => {
+            tauri::async_runtime::spawn(async move {
+                show_shutdown_problem(
+                    &app,
+                    "RCP is installing an update and will restart when it finishes. Quit was not started.",
+                );
+            });
+            return false;
         }
+        Err(error) => {
+            tauri::async_runtime::spawn(async move {
+                show_shutdown_problem(&app, &format!("Quit did not complete.\n\n{error}"));
+            });
+            return false;
+        }
+    }
+    dictation::stop_active();
+    tauri::async_runtime::spawn(async move {
+        let shutdown = backend::stop_for_quit(&state).await;
+        if let Some(message) = shutdown.problem() {
+            let message = if shutdown.may_exit() {
+                message.to_string()
+            } else {
+                format!("Quit did not complete.\n\n{message}")
+            };
+            show_shutdown_problem(&app, &message);
+        }
+        eprintln!("[rcp] desktop shutdown: {shutdown:?}");
+        if !shutdown.may_exit() {
+            state.abort_quit().await;
+            return;
+        }
+        let exit_code = if shutdown.is_clean() {
+            clean_exit_code
+        } else {
+            1
+        };
         tokio::time::sleep(Duration::from_millis(50)).await;
-        app.exit(if result.is_ok() { 0 } else { 1 });
+        app.exit(exit_code);
     });
+    true
+}
+
+fn show_shutdown_problem(app: &tauri::AppHandle, message: &str) {
+    app.dialog()
+        .message(message)
+        .title("RCP shutdown")
+        .buttons(MessageDialogButtons::Ok)
+        .blocking_show();
 }

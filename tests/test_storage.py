@@ -10,8 +10,9 @@ from contextlib import contextmanager
 import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
 from rcp.providers import ProviderUsage
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -234,7 +235,11 @@ def test_space_user_names_reject_blank_without_changing_identity(tmp_path) -> No
 
     for invalid_name, message in (
         ("line one\nline two", "single line"),
-        ("x" * 121, "at most 120 characters"),
+        # A line separator and a paragraph separator are single characters that
+        # still split the name across lines, so they are rejected like "\n".
+        ("line one\u2028line two", "single line"),
+        ("line one\u2029line two", "single line"),
+        ("x" * (DISPLAY_NAME_MAX_LENGTH + 1), f"at most {DISPLAY_NAME_MAX_LENGTH} characters"),
     ):
         with pytest.raises(ValueError, match=message):
             team.rename_space_user(member.user_id, invalid_name)
@@ -248,6 +253,11 @@ def test_space_user_names_reject_blank_without_changing_identity(tmp_path) -> No
     with pytest.raises(ValueError, match="Only a team space"):
         personal.preprovision_team_member("Member")
     assert len(personal.space_users()) == 1
+
+    # The limit is inclusive, so the longest legal name is still accepted. This
+    # runs last because, unlike every rejection above, it does change identity.
+    longest_legal = "x" * DISPLAY_NAME_MAX_LENGTH
+    assert team.rename_space_user(member.user_id, longest_legal).display_name == longest_legal
 
 
 @pytest.mark.parametrize(
@@ -1449,6 +1459,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "chat_session_contexts": 1,
         "watchers": 0,
         "experiment_episodes": 0,
+        "result_views": 0,
+        "campaigns": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
         "graph_run_receipts": 1,
@@ -1478,6 +1490,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
 
 def test_chat_session_context_project_id_migrates_with_legacy_project_data(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = str(uuid.uuid4())
     snapshot_json, snapshot_digest = _snapshot("legacy")
     store.commit_chat_session_context(
         provider="codex",
@@ -1494,19 +1507,230 @@ def test_chat_session_context_project_id_migrates_with_legacy_project_data(tmp_p
         expected_snapshot_sha256=None,
     )
 
-    store.migrate_legacy_project_data("legacy-project", "stable-project")
+    with pytest.raises(ValueError, match="not an exact canonical project registration"):
+        store.migrate_legacy_project_data("legacy-project", project_id)
+    assert (
+        store.validate_chat_session_context_binding(
+            "codex",
+            "laptop",
+            "native-session",
+            project_id="legacy-project",
+            kind="project_chat",
+            chat_id="chat",
+            node_id=None,
+        )
+        is not None
+    )
+
+    store.upsert_project(_project(project_id).model_copy(update={"home_space_id": store.space_id}))
+    store.migrate_legacy_project_data("legacy-project", project_id)
 
     migrated = store.validate_chat_session_context_binding(
         "codex",
         "laptop",
         "native-session",
-        project_id="stable-project",
+        project_id=project_id,
         kind="project_chat",
         chat_id="chat",
         node_id=None,
     )
     assert migrated is not None
-    assert migrated.project_id == "stable-project"
+    assert migrated.project_id == project_id
+
+
+_LEGACY_PROJECT_DATA_TABLES = (
+    "paper_drafts",
+    "writing_sessions",
+    "chat_session_contexts",
+    "result_views",
+    "graph_runs",
+    "campaigns",
+    "agent_usage",
+    "watchers",
+    "experiment_episodes",
+)
+
+
+def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: str) -> str:
+    _seed_project_identity_rows(store, project_id, label=label)
+    operation_id = f"operation-{label}"
+    campaign_id = f"legacy-campaign-{label}"
+    created_at = "2026-08-12T01:02:03+00:00"
+    user_id = str(uuid.uuid4())
+    dispatch_authority_json = json.dumps(
+        {
+            "profile": "ordinary",
+            "scope": {"patch_kind": "refresh", "run_truth_scope": ["repo-a"]},
+            "task_contract": "scratch_patch",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO result_views (
+                view_id, project_id, experiment_id, chat_id,
+                origin_operation_id, latest_operation_id,
+                provider, model, reasoning, run_on,
+                native_session_id, stage_host, stage_root, source_name,
+                content_sha256, size_bytes, created_at, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'codex', 'gpt', 'high', 'laptop', ?, '', ?,
+                      'result.html', 'sha256', 7, ?, ?, '2026-08-13T01:02:03+00:00')
+            """,
+            (
+                f"legacy-view-{label}",
+                project_id,
+                f"legacy-experiment-{label}",
+                f"legacy-chat-{label}",
+                operation_id,
+                operation_id,
+                f"legacy-native-session-{label}",
+                f"/tmp/legacy-stage-{label}",
+                created_at,
+                created_at,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE graph_runs
+            SET campaign_id = ?, dispatch_authority_json = ?,
+                authorized_space_id = ?, authorized_user_id = ?,
+                authorized_display_name = 'Original Authorizer'
+            WHERE operation_id = ?
+            """,
+            (
+                campaign_id,
+                dispatch_authority_json,
+                store.space_id,
+                user_id,
+                operation_id,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO campaigns (
+                campaign_id, project_id, root_operation_id, status, starting_instruction,
+                invocation_ceiling, invocations_used,
+                authorized_space_id, authorized_user_id, authorized_display_name,
+                ending, created_at, updated_at, ended_at
+            ) VALUES (?, ?, ?, 'ended', 'Legacy campaign', 3, 1, ?, ?,
+                      'Original Authorizer', 'completed', ?, ?, ?)
+            """,
+            (
+                campaign_id,
+                project_id,
+                operation_id,
+                store.space_id,
+                user_id,
+                created_at,
+                created_at,
+                created_at,
+            ),
+        )
+    return operation_id
+
+
+def _legacy_project_data_state(store: AppStore) -> dict[str, list[dict[str, object]]]:
+    tables = ("projects", "project_aliases", *_LEGACY_PROJECT_DATA_TABLES)
+    with store.connection() as connection:
+        return {
+            table: [
+                dict(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")
+            ]
+            for table in tables
+        }
+
+
+@pytest.mark.parametrize(
+    ("collision", "diagnostic"),
+    [
+        ("canonical", "registered canonical project"),
+        ("foreign_alias", "belongs to canonical project"),
+    ],
+)
+def test_legacy_project_data_migration_refuses_owned_source_identity_atomically(
+    tmp_path,
+    collision,
+    diagnostic,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    target_project_id = str(uuid.uuid4())
+    store.upsert_project(
+        _project(target_project_id).model_copy(update={"home_space_id": store.space_id})
+    )
+    if collision == "canonical":
+        legacy_id = str(uuid.uuid4())
+        store.upsert_project(
+            _project(legacy_id).model_copy(update={"home_space_id": store.space_id})
+        )
+        operation_id = _seed_legacy_project_data_rows(store, legacy_id, label=collision)
+    else:
+        legacy_id = "foreign-project-alias"
+        operation_id = _seed_legacy_project_data_rows(store, legacy_id, label=collision)
+        foreign_project_id = str(uuid.uuid4())
+        store.upsert_project(
+            _project(foreign_project_id).model_copy(update={"home_space_id": store.space_id})
+        )
+        with store.connection() as connection:
+            connection.execute("DELETE FROM projects WHERE project_id = ?", (legacy_id,))
+            connection.execute(
+                """
+                INSERT INTO project_aliases(alias_id, canonical_project_id)
+                VALUES (?, ?)
+                """,
+                (legacy_id, foreign_project_id),
+            )
+    before = _legacy_project_data_state(store)
+    source_authority = store.agent_task_authority(legacy_id, operation_id)
+    source_authorizer = store.agent_task_authorizer(operation_id)
+
+    with pytest.raises(ValueError, match=diagnostic):
+        store.migrate_legacy_project_data(legacy_id, target_project_id)
+
+    assert _legacy_project_data_state(store) == before
+    assert store.agent_task_authority(legacy_id, operation_id) == source_authority
+    assert store.agent_task_authorizer(operation_id) == source_authorizer
+    with pytest.raises(KeyError, match=operation_id):
+        store.agent_task_authority(target_project_id, operation_id)
+
+
+def test_legacy_project_data_migration_allows_same_target_alias_idempotently(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = str(uuid.uuid4())
+    legacy_id = "same-project-alias"
+    store.upsert_project(_project(project_id).model_copy(update={"home_space_id": store.space_id}))
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO project_aliases(alias_id, canonical_project_id)
+            VALUES (?, ?)
+            """,
+            (legacy_id, project_id),
+        )
+    snapshot_json, snapshot_digest = _snapshot("same-target-alias")
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="laptop",
+        native_session_id="same-target-session",
+        project_id=legacy_id,
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_digest,
+        committed_operation_id="operation",
+        expected_snapshot_sha256=None,
+    )
+
+    store.migrate_legacy_project_data(legacy_id, project_id)
+    store.migrate_legacy_project_data(legacy_id, project_id)
+
+    migrated = store.chat_session_context("codex", "laptop", "same-target-session")
+    assert migrated is not None
+    assert migrated.project_id == project_id
+    assert store.project_aliases() == {legacy_id: project_id}
 
 
 def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_path) -> None:
@@ -1716,7 +1940,10 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
         columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
     assert "graph_runs_active_project" not in indexes
     assert "agent_tasks_active_project" not in indexes
+    assert "graph_runs_campaign" in indexes
     assert {
+        "campaign_id",
+        "campaign_worker_handoffs_cleared_at",
         "authorized_space_id",
         "authorized_user_id",
         "authorized_display_name",
@@ -1836,17 +2063,21 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
         display_name="Child Authorizer",
     )
     now = store.now()
+    request = RunRequest(run_truth_scope=["repo-a"])
+    dispatch_authority = resolve_dispatch_authority("refresh", request)
+    assert dispatch_authority is not None
     store.create_agent_task(
         AgentTaskRecord(
             operation_id="parent",
             project_id="project",
             kind="refresh",
             status="failed",
-            request={},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="failed",
             authorized_by=parent_authorizer,
+            dispatch_authority=dispatch_authority,
         )
     )
     store.create_agent_task(
@@ -1855,12 +2086,13 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
             project_id="project",
             kind="refresh",
             status="succeeded",
-            request={},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="done",
             parent_operation_id="parent",
             authorized_by=child_authorizer,
+            dispatch_authority=dispatch_authority,
         )
     )
     store.create_agent_task(
@@ -1869,11 +2101,12 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
             project_id="project",
             kind="refresh",
             status="succeeded",
-            request={},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="done",
             parent_operation_id="parent",
+            dispatch_authority=dispatch_authority,
         )
     )
 
@@ -1891,7 +2124,9 @@ def test_agent_task_authorizer_distinguishes_unknown_from_legacy_task(tmp_path) 
         store.agent_task_authorizer("unknown-operation")
 
 
-def test_agent_task_attribution_schema_has_no_campaign_fields(tmp_path) -> None:
+def test_agent_task_attribution_schema_has_campaign_lineage_without_duplicate_identity_fields(
+    tmp_path,
+) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     with store.connection() as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
@@ -1900,9 +2135,9 @@ def test_agent_task_attribution_schema_has_no_campaign_fields(tmp_path) -> None:
         "authorized_space_id",
         "authorized_user_id",
         "authorized_display_name",
+        "campaign_id",
     } <= columns
     assert {
-        "campaign_id",
         "orchestrator_profile_id",
         "parent_task_id",
         "worker_id",
@@ -2143,19 +2378,28 @@ def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     chat_id = "1f16a63a-06c8-42b6-a856-c9329e2e9007"
+    request = RunRequest(
+        chat_scope="node",
+        chat_id=chat_id,
+        node_id="rq/one",
+        mode="discuss",
+    )
+    dispatch_authority = resolve_dispatch_authority("node_chat", request)
+    assert dispatch_authority is not None
     store.create_agent_task(
         AgentTaskRecord(
             operation_id="paused-chat",
             project_id="project",
             kind="node_chat",
             status="paused",
-            request={"chat_id": chat_id, "node_id": "rq/one"},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="paused",
             native_session_id="native-session",
             stage_host="",
             stage_root="/tmp/paused-chat",
+            dispatch_authority=dispatch_authority,
         )
     )
 
@@ -2172,11 +2416,12 @@ def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_
             project_id="project",
             kind="node_chat",
             status="succeeded",
-            request={"chat_id": chat_id, "node_id": "rq/one"},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="complete",
             parent_operation_id="paused-chat",
+            dispatch_authority=dispatch_authority,
         )
     )
 

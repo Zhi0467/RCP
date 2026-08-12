@@ -344,6 +344,28 @@ the project in question.
 Credential handling for that navigation is specified in
 [Team authentication and membership](team-authentication-and-membership.md).
 
+### When the connection drops
+
+**Confirmed 2026-08-12.** Navigating the window to the team server's interface
+buys a great deal — no client/server skew, no credential in the page — and it
+creates one cliff, because the page a member is reading is served by the thing
+that just became unreachable.
+
+The **desktop shell** owns that moment. It presents a connection-lost state of
+its own, outside the dead origin, offering reconnect and leaving personal space
+one click away. The shell is the only part of the application that is not a web
+page, so it is the only part that can still render when the backend is gone.
+
+This is real native work rather than a fallback route: an error surface that
+depends on no backend cannot be a page any backend served. Two cheaper options
+were rejected — falling back to the project index throws the member out of what
+they were doing with no account of what was in flight, and serving the last team
+view from cache walks toward the local backend becoming a cache for team
+projects, which the boundary above forbids.
+
+An offline team connection is therefore a shell state, never a degraded
+read-only copy of team truth.
+
 ## Remaining acceptance and implementation work
 
 S111, S97, S99, and S112 now implement the durable space, project nameplate,
@@ -356,7 +378,8 @@ not reopen those contracts:
   manual exclusive-recovery behavior.
 - Write or confirm the remaining scenarios for full team durability, team-only
   execution, the multi-space project index, offline team connections, and
-  project transfer.
+  project transfer. The offline scenario asserts the shell's own connection-lost
+  state above, including that no stale team view is presented as live.
 - Write acceptance scenarios for project creation, invitation delivery through
   the project index, joining, membership-gated access, and equal project-member
   actions.

@@ -63,6 +63,7 @@ def test_system_identity_revision_is_valid_without_graph_scope(action: str, mode
         ("processed_cursors", {"session": "cursor"}, "identity-has-cursors"),
         ("source_operation_id", "operation", "identity-has-operation-id"),
         ("human_action", "decision_choice", "identity-has-human-action"),
+        ("agent_action", "decision_choice", "identity-has-agent-action"),
         (
             "experiment_control_node_id",
             "exp/controlled",
@@ -198,8 +199,9 @@ def test_base_attribution_is_strict_additive_and_has_no_campaign_lineage() -> No
             AuthorizedHuman.model_validate(
                 {**authorized_by.model_dump(), "display_name": invalid_name}
             )
-    with pytest.raises(ValidationError):
-        Patch.model_validate({**dumped, "profile": "orchestrator"})
+    elevated = Patch.model_validate({**dumped, "profile": "orchestrator"})
+    assert elevated.profile == "orchestrator"
+    assert "campaign_id" not in elevated.model_dump(mode="json")
 
 
 @pytest.mark.parametrize("mode", ["admission", "replay"])

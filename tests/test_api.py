@@ -28,7 +28,7 @@ from rcp.api.app import (
 )
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
-from rcp.config import MachineConfig, load_manifest
+from rcp.config import MachineConfig, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
@@ -60,12 +60,23 @@ from rcp.runs.work import stream_work_run
 from rcp.server_runtime import ServerMetadata
 from rcp.service import (
     CoachRequest,
+    ProposalDecisionRequest,
     ReviewRequest,
     RunRequest,
     decision_awaits_choice,
+    resolve_dispatch_authority,
 )
 from rcp.skill_registry import SkillDefaults, official_registry
-from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
+from rcp.sources import project_cache_roots
+from rcp.storage import (
+    AgentTaskRecord,
+    AppStore,
+    GraphWatcherRecord,
+    NodeStatusGraphCondition,
+    ProjectRecord,
+    WatcherContinuation,
+    WatcherRecord,
+)
 from rcp.transport import RunLockCancelled, RunLockLease, SSHStateWorkspace, StateUnavailable
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
@@ -267,10 +278,13 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
     assert response.json()["last_error"] is None
 
 
-def test_check_watcher_now_rejects_missing_and_ineligible_records(manifest, tmp_path: Path) -> None:
+def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
+    manifest, tmp_path: Path
+) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
+    continuation = WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work")
     active = WatcherRecord(
         watcher_id="active-api-watcher",
         project_id=project_id,
@@ -280,10 +294,22 @@ def test_check_watcher_now_rejects_missing_and_ineligible_records(manifest, tmp_
         check_command="true",
         log_path="/tmp/active-api.log",
         cwd="/tmp",
-        continuation=WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work"),
+        continuation=continuation,
+        created_at="2026-08-12T01:00:00+00:00",
+    )
+    graph = GraphWatcherRecord(
+        watcher_id="graph-api-watcher",
+        project_id=project_id,
+        origin_operation_id="graph-api-origin",
+        origin_task_kind="node_chat",
+        chat_id="graph-api-chat",
+        continuation=continuation,
+        condition=NodeStatusGraphCondition(node_id="exp-one", status_in=["resolved"]),
+        armed_revision=0,
         created_at="2026-08-12T01:00:00+00:00",
     )
     store.create_watchers([active])
+    store.create_watchers([graph])
     client = TestClient(app)
 
     missing_project = client.post(
@@ -291,6 +317,7 @@ def test_check_watcher_now_rejects_missing_and_ineligible_records(manifest, tmp_
     )
     missing_watcher = client.post(f"/api/projects/{project_id}/watchers/missing-api-watcher/check")
     active_response = client.post(f"/api/projects/{project_id}/watchers/{active.watcher_id}/check")
+    graph_response = client.post(f"/api/projects/{project_id}/watchers/{graph.watcher_id}/check")
 
     assert missing_project.status_code == 404
     assert missing_watcher.status_code == 404
@@ -298,6 +325,8 @@ def test_check_watcher_now_rejects_missing_and_ineligible_records(manifest, tmp_
     assert active_response.json()["detail"] == (
         "Only a degraded watcher awaiting delivery can be checked now."
     )
+    assert graph_response.status_code == 409
+    assert graph_response.json()["detail"] == "Only an external watcher can be checked now."
 
 
 class FakeLauncher:
@@ -1776,18 +1805,84 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = TestClient(app)
     project_id = app.state.default_project_id
-    cached = data_dir / "source-cache" / "remote" / "codex" / "source.jsonl"
+    source_root, slice_root = project_cache_roots(data_dir, project_id)
+    assert app.state.service.indexer.cache_root == source_root
+    assert app.state.service.indexer.session_artifact_root() == slice_root
+    cached = source_root / "remote" / "codex" / "source.jsonl"
+    cached_slice = slice_root / "slice-a" / "records.jsonl"
     cached.parent.mkdir(parents=True)
-    cached.write_text("cached", encoding="utf-8")
+    cached_slice.parent.mkdir(parents=True)
+    cached.write_text("project-a-source", encoding="utf-8")
+    cached_slice.write_text("project-a-slice", encoding="utf-8")
+
+    store = app.state.background_tasks.store
+    project_b_id = str(uuid.uuid4())
+    store.upsert_project(
+        ProjectRecord(
+            project_id=project_b_id,
+            home_space_id=store.space_id,
+            locator=str(tmp_path / "project-b" / ".research" / "manifest.toml"),
+            name="project-b",
+            state_location=str(tmp_path / "project-b" / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    b_source_root, b_slice_root = project_cache_roots(data_dir, project_b_id)
+    b_cached = b_source_root / "remote" / "codex" / "source.jsonl"
+    b_cached_slice = b_slice_root / "slice-b" / "records.jsonl"
+    b_cached.parent.mkdir(parents=True)
+    b_cached_slice.parent.mkdir(parents=True)
+    b_cached.write_text("project-b-source", encoding="utf-8")
+    b_cached_slice.write_text("project-b-slice", encoding="utf-8")
+
+    legacy_cached = data_dir / "source-cache" / "remote" / "legacy.jsonl"
+    legacy_slice = data_dir / "session-slices" / "legacy" / "records.jsonl"
+    legacy_cached.parent.mkdir(parents=True)
+    legacy_slice.parent.mkdir(parents=True)
+    legacy_cached.write_text("legacy-source", encoding="utf-8")
+    legacy_slice.write_text("legacy-slice", encoding="utf-8")
+    original = Path(manifest.sources.codex_roots[0]) / "provider-original.jsonl"
+    original.write_text("provider-original", encoding="utf-8")
+    manifest_before = manifest.path.read_bytes()
 
     snapshot = client.get(f"/api/projects/{project_id}")
     assert snapshot.status_code == 200
     assert snapshot.json()["cache_metrics"]["remote_sources"]["count"] == 1
+    assert snapshot.json()["cache_metrics"]["session_slices"]["count"] == 1
 
     now = datetime.now(UTC).isoformat()
-    app.state.background_tasks.store.create_agent_task(
+    store.create_agent_task(
         AgentTaskRecord(
-            operation_id="active-cache-reader",
+            operation_id="other-project-cache-reader",
+            project_id=project_b_id,
+            kind="refresh",
+            status="running",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
+    cleared = client.delete(f"/api/projects/{project_id}/caches")
+    assert cleared.status_code == 200
+    assert cleared.json()["remote_sources"]["count"] == 0
+    assert cleared.json()["session_slices"]["count"] == 0
+    assert not cached.exists()
+    assert not cached_slice.exists()
+    assert b_cached.read_text(encoding="utf-8") == "project-b-source"
+    assert b_cached_slice.read_text(encoding="utf-8") == "project-b-slice"
+    assert legacy_cached.read_text(encoding="utf-8") == "legacy-source"
+    assert legacy_slice.read_text(encoding="utf-8") == "legacy-slice"
+
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached_slice.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_text("project-a-source-again", encoding="utf-8")
+    cached_slice.write_text("project-a-slice-again", encoding="utf-8")
+    store.fail_agent_task("other-project-cache-reader", "finished for test")
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="this-project-cache-reader",
             project_id=project_id,
             kind="refresh",
             status="running",
@@ -1797,18 +1892,32 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
             status_message="running",
         )
     )
+
     refused = client.delete(f"/api/projects/{project_id}/caches")
     assert refused.status_code == 409
-    assert cached.exists()
+    assert cached.read_text(encoding="utf-8") == "project-a-source-again"
 
-    app.state.background_tasks.store.fail_agent_task(
-        "active-cache-reader",
-        "finished for test",
-    )
-    cleared = client.delete(f"/api/projects/{project_id}/caches")
-    assert cleared.status_code == 200
-    assert cleared.json()["remote_sources"]["count"] == 0
+    global_refused = client.delete(f"/api/caches?project_id={project_id}")
+    assert global_refused.status_code == 409
+    assert cached.exists()
+    assert b_cached.exists()
+    assert legacy_cached.exists()
+
+    store.fail_agent_task("this-project-cache-reader", "finished for test")
+    all_cleared = client.delete(f"/api/caches?project_id={project_id}")
+    assert all_cleared.status_code == 200
+    assert all_cleared.json()["remote_sources"]["count"] == 0
+    assert all_cleared.json()["remote_sources"]["bytes"] == 0
+    assert all_cleared.json()["session_slices"]["count"] == 0
+    assert all_cleared.json()["session_slices"]["bytes"] == 0
     assert not cached.exists()
+    assert not b_cached.exists()
+    assert not b_cached_slice.exists()
+    assert not legacy_cached.exists()
+    assert not legacy_slice.exists()
+    assert original.read_text(encoding="utf-8") == "provider-original"
+    assert manifest.path.read_bytes() == manifest_before
+    assert store.agent_task("this-project-cache-reader").status == "failed"
 
 
 def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, tmp_path) -> None:
@@ -1816,24 +1925,60 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     client = TestClient(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
+    assert before["default_campaign_invocation_ceiling"] == 10
     profiles = {
         surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in before["agent_profiles"].items()
     }
+    assert set(profiles) == {
+        "seed",
+        "refresh",
+        "node_chat",
+        "project_chat",
+        "paper_coach",
+        "orchestrator",
+    }
     profiles["seed"]["provider"] = "claude"
     profiles["seed"]["model"] = "claude-seed"
+    profiles["orchestrator"]["model"] = "campaign-orchestrator"
+
+    incomplete = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            "default_run_truth_scope": ["repo-b"],
+            "agent_profiles": {
+                surface: profile
+                for surface, profile in profiles.items()
+                if surface != "orchestrator"
+            },
+        },
+    )
+    assert incomplete.status_code == 422
+
+    invalid_budget = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            "default_run_truth_scope": ["repo-b"],
+            "default_campaign_invocation_ceiling": 1,
+            "agent_profiles": profiles,
+        },
+    )
+    assert invalid_budget.status_code == 422
 
     response = client.put(
         f"/api/projects/{project_id}/settings",
         json={
             "default_run_truth_scope": ["repo-b"],
+            "default_campaign_invocation_ceiling": 14,
             "agent_profiles": profiles,
         },
     )
 
     assert response.status_code == 200
     assert response.json()["default_run_truth_scope"] == ["repo-b"]
+    assert response.json()["default_campaign_invocation_ceiling"] == 14
     assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"
+    assert response.json()["agent_profiles"]["orchestrator"]["model"] == "campaign-orchestrator"
     assert "write_path" not in response.json()["agent_profiles"]["refresh"]
     assert (
         client.get(f"/api/projects/{project_id}").json()["agent_profiles"]["seed"]["model"]
@@ -1844,6 +1989,9 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert "[paper.coach]" not in content
     updated = load_manifest(manifest.path)
     assert updated.agent_profile("seed").provider == "claude"
+    assert updated.agent_profile("orchestrator").model == "campaign-orchestrator"
+    assert updated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
+    assert updated.agent.default_campaign_invocation_ceiling == 14
     assert updated.agent_profile("paper_coach").permissions.write_graph_patch is False
 
 
@@ -2732,17 +2880,23 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp
 def _agent_task_execution(store, operation_id: str) -> AgentTaskExecution:
     now = store.now()
     authorized_by = _named_test_authorizer(store)
+    projects = store.projects()
+    assert len(projects) == 1
+    request = RunRequest(run_truth_scope=["repo-a"])
+    dispatch_authority = resolve_dispatch_authority("refresh", request)
+    assert dispatch_authority is not None
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
-            project_id="project",
+            project_id=projects[0].project_id,
             kind="refresh",
             status="running",
-            request={},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="running",
             authorized_by=authorized_by,
+            dispatch_authority=dispatch_authority,
         )
     )
     return AgentTaskExecution(
@@ -2862,6 +3016,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             self.root = None
             self.closed = False
             self.finalized = 0
+            self.workspace_text: dict[str, str] = {}
             self.instances.append(self)
 
         @property
@@ -2877,8 +3032,9 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             assert self.root is not None
             return str(self.root / "inputs" / label)
 
-        def put_directory(self, _source, label):
+        def put_directory(self, _source, label, *, reuse=False):
             assert self.root is not None
+            assert reuse is False
             return str(self.root / "inputs" / label)
 
         def finalize_inputs(self):
@@ -2889,6 +3045,25 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
         def list_workspace_files(self):
             assert self.root is not None
             return []
+
+        def list_workspace_entries(self):
+            assert self.root is not None
+            return sorted(self.workspace_text)
+
+        def write_workspace_text(self, name, content):
+            assert self.root is not None
+            self.workspace_text[name] = content
+
+        def read_workspace_text(self, name, *, max_bytes=None):
+            assert self.root is not None
+            content = self.workspace_text[name]
+            if max_bytes is not None and len(content.encode("utf-8")) > max_bytes:
+                raise ValueError("remote workspace file exceeds the test byte limit")
+            return content
+
+        def remove_workspace_file(self, name):
+            assert self.root is not None
+            self.workspace_text.pop(name, None)
 
         def close(self):
             self.closed = True
@@ -2902,10 +3077,9 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
         run_on="remote-1",
     )
 
-    failed_execution = AgentTaskExecution(
-        operation_id="remote-failure",
-        store=app.state.background_tasks.store,
-        control=AgentProcessControl(),
+    failed_execution = _agent_task_execution(
+        app.state.background_tasks.store,
+        "remote-failure",
     )
     failed_launcher = FakeLauncher([AgentEvent(event="error", text="provider failed")])
     failed_events = [
@@ -2924,12 +3098,12 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     # A failed remote run keeps its scratch folder for inspection and for a
     # Resume that points the native session back at the same directory.
     assert FakeRemoteStage.instances[0].closed is False
-    assert FakeRemoteStage.instances[0].finalized == failed_launcher.calls == 1
+    assert FakeRemoteStage.instances[0].finalized == 2
+    assert failed_launcher.calls == 1
 
-    paused_execution = AgentTaskExecution(
-        operation_id="remote-pause",
-        store=app.state.background_tasks.store,
-        control=AgentProcessControl(),
+    paused_execution = _agent_task_execution(
+        app.state.background_tasks.store,
+        "remote-pause",
     )
     paused_launcher = FakeLauncher([AgentEvent(event="paused", text="paused")])
     paused_events = [
@@ -2946,7 +3120,8 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
 
     assert any('"event":"paused"' in item for item in paused_events)
     assert FakeRemoteStage.instances[1].closed is False
-    assert FakeRemoteStage.instances[1].finalized == paused_launcher.calls == 1
+    assert FakeRemoteStage.instances[1].finalized == 2
+    assert paused_launcher.calls == 1
 
     FakeRemoteStage.finalize_error = True
     blocked_launcher = FakeLauncher([AgentEvent(event="done")])
@@ -2958,10 +3133,9 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             "refresh",
             request,
             tmp_path / "data",
-            execution=AgentTaskExecution(
-                operation_id="remote-incomplete-inputs",
-                store=app.state.background_tasks.store,
-                control=AgentProcessControl(),
+            execution=_agent_task_execution(
+                app.state.background_tasks.store,
+                "remote-incomplete-inputs",
             ),
         )
     ]
@@ -3379,6 +3553,9 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     now = store.now()
     empty_stage = tmp_path / "attempt-2-stage"
     (empty_stage / "inputs").mkdir(parents=True)
+    failed_request = RunRequest.model_validate(failed["request"])
+    failed_dispatch_authority = resolve_dispatch_authority("seed", failed_request)
+    assert failed_dispatch_authority is not None
     attempt_2 = store.create_agent_task(
         AgentTaskRecord(
             operation_id="attempt-2-without-progress",
@@ -3392,6 +3569,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
             attempt=2,
             parent_operation_id=failed["operation_id"],
             stage_root=str(empty_stage),
+            dispatch_authority=failed_dispatch_authority,
         )
     )
 
@@ -5644,6 +5822,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     class RecordingRemoteStage:
         attached: list[tuple[str, str]] = []
         finalized = 0
+        touched = 0
 
         def __init__(self, host: str) -> None:
             self.host = host
@@ -5665,6 +5844,9 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_workspace_files(self):
             return []
 
+        def touch(self):
+            type(self).touched += 1
+
         def prepare_artifact_directory(self, scope_id, *, reuse):
             assert reuse is True
             assert scope_id == "remote-original"
@@ -5672,6 +5854,11 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
 
         def put_file(self, _source, label):
             assert self.root is not None
+            return str(self.root / "inputs" / label)
+
+        def put_directory(self, _source, label, *, reuse=False):
+            assert self.root is not None
+            assert reuse is True
             return str(self.root / "inputs" / label)
 
         def finalize_inputs(self):
@@ -5699,6 +5886,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     assert not _error_texts(frames)
     assert RecordingRemoteStage.attached == [("remote.example", saved_root)]
     assert RecordingRemoteStage.finalized == launcher.calls == 1
+    assert RecordingRemoteStage.touched == 1
     assert launcher.last_kwargs["cwd"] == Path(saved_root) / "workspace"
 
 
@@ -5919,7 +6107,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1
-    assert len(list(inputs.glob("chat-validator-client-*.py"))) == 1
+    assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 1
     assert not list(inputs.glob("*human-request.txt"))
     assert not list(inputs.glob("task-*-initial.md"))
 
@@ -5940,12 +6128,28 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.workspaces == [workspace, workspace]
     second_artifacts = workspace / "turns" / second_operation_id / "artifacts"
-    assert launcher.prompts[1] == (
+    second_prompt = launcher.prompts[1]
+    assert second_prompt.startswith(
         f"This is a Work turn.\nArtifact directory for this turn: {second_artifacts}"
-        f"\n\n{second_message}"
+        f"\n\n{second_message}\n\nRCP context update"
     )
+    second_delta = json.loads(second_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
+    assert set(second_delta) == {"patch"}
+    assert set(second_delta["patch"]) == {
+        "path",
+        "watch_path",
+        "schema_path",
+        "validator_command",
+        "validator_mailbox_id",
+    }
+    assert (
+        second_delta["patch"]["validator_mailbox_id"]
+        != prompt_values["patch"]["validator_mailbox_id"]
+    )
+    assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]
     assert not (workspace / "current-turn.json").exists()
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
+    assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 2
     assert not list(inputs.glob("*human-request.txt"))
     launch_receipt = next(
         item
@@ -5976,9 +6180,12 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         f"\n\n{third_message}"
     )
     delta = json.loads(third_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
-    assert set(delta) == {"settings"}
+    assert set(delta) == {"patch", "settings"}
     assert delta["settings"]["reasoning"] == "high"
+    assert "rcp-agent-client-" in delta["patch"]["validator_command"]
+    assert delta["patch"]["validator_mailbox_id"] != second_delta["patch"]["validator_mailbox_id"]
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
+    assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 3
 
 
 @pytest.mark.parametrize(
@@ -6341,6 +6548,157 @@ async def test_work_patch_is_applied_to_live_state_without_correction(manifest, 
 
 
 @pytest.mark.asyncio
+async def test_work_apply_rechecks_authority_after_human_removes_proposal_target(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    hypothesis_id = "hyp/replanning-restores-plasticity"
+    authorizer = _named_test_authorizer(app.state.background_tasks.store)
+    service.review_node(
+        hypothesis_id,
+        ReviewRequest(standing="accepted"),
+        authorized_by=authorizer,
+    )
+    removal_id = "prop/remove-hypothesis-while-work-runs"
+    append_fixture_patch(
+        service,
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Proposed removing the accepted hypothesis.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": removal_id,
+                            "title": "Remove the replanning hypothesis",
+                            "card": {
+                                "decision_needed": "Decide whether to remove this hypothesis."
+                            },
+                            "ops": [
+                                {
+                                    "op": "remove_nodes",
+                                    "intent": "removal",
+                                    "node_ids": [hypothesis_id],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        ),
+    )
+    work_patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Proposed clarifying the accepted hypothesis.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/clarify-hypothesis-after-dispatch",
+                        "title": "Clarify the replanning hypothesis",
+                        "card": {
+                            "decision_needed": "Decide whether to use the clarified statement."
+                        },
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "intent": "content_change",
+                                "nodes": [
+                                    {
+                                        "id": hypothesis_id,
+                                        "changes": {
+                                            "statement": (
+                                                "Search-time replanning restores plasticity "
+                                                "after repeated task shifts."
+                                            )
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    effect_path = Path(manifest.repository_map["repo-a"].path) / "s100-effect.txt"
+
+    class HeldWorkLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            if self.calls == 0:
+                effect_path.write_text("completed before Apply\n", encoding="utf-8")
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = HeldWorkLauncher(
+        [{"patch.json": agent_patch_json(work_patch)}],
+        message="The operational work completed and the proposed wording is ready for review.",
+    )
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Do the work and propose the clarified hypothesis.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="work-held-before-live-apply",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    workspace = service.history.workspace
+    original_run_lock = workspace.run_lock
+    graph_moved = False
+
+    @contextmanager
+    def move_graph_before_apply(**kwargs):
+        nonlocal graph_moved
+        with original_run_lock(**kwargs) as lease:
+            if not graph_moved:
+                service.decide_proposal(
+                    removal_id,
+                    ProposalDecisionRequest(decision="approved"),
+                    authorized_by=authorizer,
+                )
+                graph_moved = True
+            yield lease
+
+    monkeypatch.setattr(workspace, "run_lock", move_graph_before_apply)
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert graph_moved is True
+    assert effect_path.read_text(encoding="utf-8") == "completed before Apply\n"
+    assert [event.text for event in _events(frames) if event.event == "answer"] == [
+        "The operational work completed and the proposed wording is ready for review."
+    ]
+    graph_update = _graph_update(frames)
+    assert graph_update is not None
+    assert graph_update["status"] == "rejected"
+    assert hypothesis_id not in service.history.state().nodes
+    assert "prop/clarify-hypothesis-after-dispatch" not in service.history.state().proposals
+
+
+@pytest.mark.asyncio
 async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_apply(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -6535,6 +6893,7 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "status_change",
                                 "nodes": [
                                     {
                                         "id": "hyp/replanning-restores-plasticity",
@@ -6959,17 +7318,21 @@ def _chat_task_execution(
 ) -> AgentTaskExecution:
     now = store.now()
     authorized_by = _named_test_authorizer(store)
+    kind = "node_chat" if request.chat_scope == "node" else "project_chat"
+    dispatch_authority = resolve_dispatch_authority(kind, request)
+    assert dispatch_authority is not None
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
-            kind="node_chat" if request.chat_scope == "node" else "project_chat",
+            kind=kind,
             status="running",
             request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="running",
             authorized_by=authorized_by,
+            dispatch_authority=dispatch_authority,
         )
     )
     return AgentTaskExecution(
@@ -7569,13 +7932,16 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
             {
                 "patch.json": agent_patch_json(patch),
                 "watch.json": json.dumps(
-                    [
-                        {
-                            "check_command": "false",
-                            "log_path": "/tmp/bounded-loop.log",
-                            "cwd": "/tmp",
-                        }
-                    ]
+                    {
+                        "external": [
+                            {
+                                "check_command": "false",
+                                "log_path": "/tmp/bounded-loop.log",
+                                "cwd": "/tmp",
+                            }
+                        ],
+                        "graph": [],
+                    }
                 ),
             }
         ],
@@ -7634,7 +8000,10 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("initial_watch, expected_calls", [("[]", 1), (None, 2)])
+@pytest.mark.parametrize(
+    "initial_watch, expected_calls",
+    [('{"external":[],"graph":[]}', 1), (None, 2)],
+)
 async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
     manifest, tmp_path, initial_watch, expected_calls
 ) -> None:
@@ -7678,7 +8047,10 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
     first = {"patch.json": agent_patch_json(patch)}
     if initial_watch is not None:
         first["watch.json"] = initial_watch
-    launcher = ScriptedLauncher([first, {"watch.json": "[]"}], message="Finished.")
+    launcher = ScriptedLauncher(
+        [first, {"watch.json": '{"external":[],"graph":[]}'}],
+        message="Finished.",
+    )
 
     frames = [
         frame
@@ -7797,7 +8169,10 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
     )
     launcher = ScriptedLauncher(
         [
-            {"patch.json": agent_patch_json(invalid_exit), "watch.json": "[]"},
+            {
+                "patch.json": agent_patch_json(invalid_exit),
+                "watch.json": '{"external":[],"graph":[]}',
+            },
             {"patch.json": removed_exit},
         ],
         message="Finished.",
@@ -7884,7 +8259,12 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
                 (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
 
     launcher = UnreadableLoopCorrectionLauncher(
-        [{"patch.json": agent_patch_json(invalid_exit), "watch.json": "[]"}],
+        [
+            {
+                "patch.json": agent_patch_json(invalid_exit),
+                "watch.json": '{"external":[],"graph":[]}',
+            }
+        ],
         message="Finished.",
     )
 
@@ -7952,7 +8332,12 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
     handoff = {
         "patch.json": agent_patch_json(invalid),
         "watch.json": json.dumps(
-            [{"check_command": "false", "log_path": "/tmp/loop.log", "cwd": "/tmp"}]
+            {
+                "external": [
+                    {"check_command": "false", "log_path": "/tmp/loop.log", "cwd": "/tmp"}
+                ],
+                "graph": [],
+            }
         ),
     }
     launcher = ScriptedLauncher([handoff], message="Detached work is still running.")
@@ -8026,13 +8411,16 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
             {
                 "patch.json": agent_patch_json(exit_patch),
                 "watch.json": json.dumps(
-                    [
-                        {
-                            "check_command": "false",
-                            "log_path": "/tmp/recovered-loop.log",
-                            "cwd": "/tmp",
-                        }
-                    ]
+                    {
+                        "external": [
+                            {
+                                "check_command": "false",
+                                "log_path": "/tmp/recovered-loop.log",
+                                "cwd": "/tmp",
+                            }
+                        ],
+                        "graph": [],
+                    }
                 ),
             }
         ],
@@ -8112,13 +8500,16 @@ async def test_readable_watch_value_error_gets_same_session_correction(
         request=request,
     )
     watch = json.dumps(
-        [
-            {
-                "check_command": "false",
-                "log_path": str(tmp_path / "fixture.log"),
-                "cwd": str(tmp_path),
-            }
-        ]
+        {
+            "external": [
+                {
+                    "check_command": "false",
+                    "log_path": str(tmp_path / "fixture.log"),
+                    "cwd": str(tmp_path),
+                }
+            ],
+            "graph": [],
+        }
     )
     launcher = ScriptedLauncher(
         [{"watch.json": watch}, {"watch.json": json.dumps(json.loads(watch), indent=2)}],
@@ -8179,8 +8570,14 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         "log_path": str(tmp_path / "fixture.log"),
         "cwd": str(tmp_path),
     }
-    invalid = json.dumps([{**common, "check_command": "exit 2"}])
-    corrected = json.dumps([{**common, "check_command": "exit 1"}])
+    graph = [
+        {
+            "node_id": "hyp/replanning-restores-plasticity",
+            "proposal_resolved": True,
+        }
+    ]
+    invalid = json.dumps({"external": [{**common, "check_command": "exit 2"}], "graph": graph})
+    corrected = json.dumps({"external": [{**common, "check_command": "exit 1"}], "graph": graph})
     launcher = ScriptedLauncher(
         [{"watch.json": invalid}, {"watch.json": corrected}],
         message="The fixture was launched once.",
@@ -8208,21 +8605,23 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     assert launcher.launch_kwargs[1]["read_dirs"] == launcher.launch_kwargs[0]["read_dirs"]
     assert launcher.launch_kwargs[1]["write_dirs"] == launcher.launch_kwargs[0]["write_dirs"]
     armed = store.watchers(app.state.default_project_id)
-    assert len(armed) == 1
-    assert armed[0].status == "active"
-    assert armed[0].origin_operation_id == "watch-origin"
-    assert armed[0].continuation.patch_kind == "work"
+    assert len(armed) == 2
+    assert {type(record) for record in armed} == {WatcherRecord, GraphWatcherRecord}
+    assert all(record.status == "active" for record in armed)
+    assert all(record.origin_operation_id == "watch-origin" for record in armed)
+    assert all(record.continuation.patch_kind == "work" for record in armed)
     assert any(
         receipt.category == "watchers_armed"
         for receipt in store.agent_task_receipts("watch-origin")
     )
 
     store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
+    external = next(record for record in armed if isinstance(record, WatcherRecord))
     wake = request.model_copy(
         update={
             "message": "RCP watcher update for the completed fixture.",
             "trigger": "watcher",
-            "watcher_ids": [armed[0].watcher_id],
+            "watcher_ids": [external.watcher_id],
         }
     )
     wake_execution = _chat_task_execution(
@@ -8252,7 +8651,9 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         message.text != "RCP watcher update for the completed fixture."
         for message in transcript.messages
     )
-    assert len(store.watchers(app.state.default_project_id)) == 1
+    persisted = store.watchers(app.state.default_project_id)
+    assert len(persisted) == 2
+    assert any(isinstance(record, GraphWatcherRecord) for record in persisted)
 
 
 def _stuck_experiment_patch() -> Patch:
@@ -8351,7 +8752,10 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
-    _persist_skill_defaults(service, SkillDefaults(workflow_ids=["research-graph-audit"]))
+    _persist_skill_defaults(
+        service,
+        SkillDefaults(workflow_ids=["research-graph-audit"], skill_ids=[]),
+    )
     observed: dict[str, object] = {}
 
     class InspectingLauncher(ScriptedLauncher):
@@ -8440,7 +8844,10 @@ def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
-    _persist_skill_defaults(service, SkillDefaults(workflow_ids=["research-graph-audit"]))
+    _persist_skill_defaults(
+        service,
+        SkillDefaults(workflow_ids=["research-graph-audit"], skill_ids=[]),
+    )
 
     async def failing_stream(*_args, **_kwargs):
         yield _event_frame(AgentEvent(event="error", text="Provider exited before writing."))

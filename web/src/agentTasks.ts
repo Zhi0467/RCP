@@ -121,6 +121,8 @@ export function taskKindLabel(kind: AgentTaskKind): string {
       return "Project conversation";
     case "paper_coach":
       return "Writing coach";
+    case "campaign":
+      return "Auto-research campaign";
   }
 }
 

@@ -13,6 +13,8 @@ from pydantic import ValidationError
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    GraphWatcherRecord,
+    NodeStatusGraphCondition,
     WatcherClaimConflict,
     WatcherContinuation,
     WatcherRecord,
@@ -159,36 +161,44 @@ def _loop_task(
     )
 
 
-def test_watch_json_is_a_nonempty_strict_three_field_list() -> None:
+def test_watch_json_is_a_nonempty_strict_two_list_object() -> None:
     parsed = parse_watch_json(
-        '[{"check_command":"squeue -h -j 4471 >/dev/null",'
-        '"log_path":"/logs/4471.log","cwd":"/work"}]'
+        '{"external":[{"check_command":"squeue -h -j 4471 >/dev/null",'
+        '"log_path":"/logs/4471.log","cwd":"/work"}],'
+        '"graph":[{"node_id":"blk/waiting","status_in":["resolved"]}]}'
     )
 
-    assert parsed == [
+    assert parsed.external == [
         WatchSpec(
             check_command="squeue -h -j 4471 >/dev/null",
             log_path="/logs/4471.log",
             cwd="/work",
         )
     ]
+    assert [item.model_dump(mode="json") for item in parsed.graph] == [
+        {"node_id": "blk/waiting", "status_in": ["resolved"]}
+    ]
     for payload in (
+        '{"external":[],"graph":[]}',
         "[]",
         '{"check_command":"true","log_path":"/tmp/x","cwd":"/tmp"}',
-        '[{"check_command":"true","log_path":"relative","cwd":"/tmp"}]',
-        '[{"check_command":"true","log_path":"/tmp/x","cwd":"/tmp","host":"bad"}]',
+        '{"external":[{"check_command":"true","log_path":"relative","cwd":"/tmp"}],"graph":[]}',
+        '{"external":[{"check_command":"true","log_path":"/tmp/x","cwd":"/tmp",'
+        '"host":"bad"}],"graph":[]}',
+        '{"external":[],"graph":[{"node_id":"blk/waiting","standing":"accepted"}]}',
     ):
-        with pytest.raises(ValidationError):
+        with pytest.raises((ValidationError, ValueError)):
             parse_watch_json(payload)
 
 
-def test_experiment_watch_json_accepts_groups_and_staged_stop_items_only() -> None:
+def test_experiment_watch_json_accepts_external_maintenance_and_graph_conditions() -> None:
+    assert parse_experiment_watch_json('{"external":[],"graph":[]}').is_empty
     handoff = parse_experiment_watch_json(
-        "["
+        '{"external":['
         '{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
         '{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/b.log","cwd":"/tmp"},'
         '{"stop_watcher_id":"old-watcher","reason":"Cancelled superseded job"}'
-        "]"
+        '],"graph":[{"node_id":"hyp/result","proposal_resolved":true}]}'
     )
 
     assert handoff.observers == [
@@ -202,13 +212,18 @@ def test_experiment_watch_json_accepts_groups_and_staged_stop_items_only() -> No
     assert handoff.stops == [
         WatcherStopRequest(stop_watcher_id="old-watcher", reason="Cancelled superseded job")
     ]
+    assert [item.model_dump(mode="json") for item in handoff.graph_conditions] == [
+        {"node_id": "hyp/result", "proposal_resolved": True}
+    ]
     with pytest.raises(ValidationError):
         parse_watch_json(
-            '[{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"}]'
+            '{"external":[{"group":"eval-shards","check_command":"exit 1",'
+            '"log_path":"/tmp/a.log","cwd":"/tmp"}],"graph":[]}'
         )
     with pytest.raises(ValueError, match="at least two"):
         parse_experiment_watch_json(
-            '[{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"}]'
+            '{"external":[{"group":"eval-shards","check_command":"exit 1",'
+            '"log_path":"/tmp/a.log","cwd":"/tmp"}],"graph":[]}'
         )
 
 
@@ -585,6 +600,24 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
     assert "experiment_episode_id" in columns
     assert "watchers_experiment_episode" in indexes
     assert stored_episode_id == episode_id
+
+
+def test_graph_condition_column_migrates_before_its_index_is_created(tmp_path) -> None:
+    path = tmp_path / "legacy-graph-watcher.sqlite3"
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX watchers_graph_conditions")
+        connection.execute("ALTER TABLE watchers DROP COLUMN graph_condition_json")
+        connection.execute("ALTER TABLE watchers DROP COLUMN armed_revision")
+
+    reopened = AppStore(path)
+    with reopened.connection() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(watchers)")}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(watchers)")}
+
+    assert "graph_condition_json" in columns
+    assert "armed_revision" in columns
+    assert "watchers_graph_conditions" in indexes
 
 
 def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(tmp_path) -> None:
@@ -1207,12 +1240,31 @@ def test_manual_check_waits_for_a_scheduled_check_of_the_same_watcher(tmp_path) 
     assert calls == 2
 
 
-def test_manual_check_rejects_missing_and_ineligible_watchers(tmp_path) -> None:
+def test_manual_check_rejects_missing_graph_and_ineligible_watchers(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_watchers(
         [
             _record("active"),
             _record("already-notified", status="degraded").model_copy(update={"notified": True}),
+        ]
+    )
+    store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="graph",
+                project_id="project",
+                origin_operation_id="origin-graph",
+                origin_task_kind="node_chat",
+                chat_id="chat",
+                node_id="exp-one",
+                continuation=_continuation(),
+                condition=NodeStatusGraphCondition(
+                    node_id="exp-one",
+                    status_in=["resolved"],
+                ),
+                armed_revision=0,
+                created_at="2026-08-01T00:00:00+00:00",
+            )
         ]
     )
     poller = WatcherPoller(store)
@@ -1221,6 +1273,8 @@ def test_manual_check_rejects_missing_and_ineligible_watchers(tmp_path) -> None:
         poller.check_now("project", "missing")
     with pytest.raises(KeyError):
         poller.check_now("wrong-project", "active")
+    with pytest.raises(ValueError, match="external watcher"):
+        poller.check_now("project", "graph")
     with pytest.raises(ValueError, match="degraded watcher awaiting delivery"):
         poller.check_now("project", "active")
     with pytest.raises(ValueError, match="degraded watcher awaiting delivery"):

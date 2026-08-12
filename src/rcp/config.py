@@ -47,12 +47,17 @@ class StateConfig(BaseModel):
 
 
 AgentSurface = Literal["seed", "refresh", "node_chat", "project_chat", "paper_coach"]
+AgentExecutionProfile = AgentSurface | Literal["orchestrator"]
 
 GRAPH_AGENT_SURFACES: tuple[AgentSurface, ...] = (
     "seed",
     "refresh",
     "node_chat",
     "project_chat",
+)
+GRAPH_AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
+    *GRAPH_AGENT_SURFACES,
+    "orchestrator",
 )
 
 
@@ -77,12 +82,14 @@ class AgentSurfaceConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     default_run_truth_scope: list[str]
+    default_campaign_invocation_ceiling: int = Field(default=10, ge=2)
     skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
     seed: AgentSurfaceConfig | None = None
     refresh: AgentSurfaceConfig | None = None
     node_chat: AgentSurfaceConfig | None = None
     project_chat: AgentSurfaceConfig | None = None
     paper_coach: AgentSurfaceConfig | None = None
+    orchestrator: AgentSurfaceConfig | None = None
 
 
 class SourcesConfig(BaseModel):
@@ -163,9 +170,19 @@ class Manifest(BaseModel):
                     run_on=legacy_execution.run_on,
                 )
                 setattr(self.agent, surface, profile)
+        if self.agent.orchestrator is None:
+            refresh = self.agent.refresh
+            assert refresh is not None
+            self.agent.orchestrator = refresh.model_copy(
+                deep=True,
+                update={"permissions": permissions_for("orchestrate")},
+            )
+        for surface in _AGENT_EXECUTION_PROFILES:
+            profile = getattr(self.agent, surface)
+            assert profile is not None
             if profile.run_on not in machines:
                 raise ValueError(f"agent.{surface}.run_on must name a registered machine")
-            if surface in GRAPH_AGENT_SURFACES and profile.run_on != state_machine:
+            if surface in GRAPH_AGENT_EXECUTION_PROFILES and profile.run_on != state_machine:
                 raise ValueError(
                     f"agent.{surface}.run_on must be the canonical state machine "
                     f"{state_machine!r}; graph-writing agents run beside .research/"
@@ -214,7 +231,7 @@ class Manifest(BaseModel):
             default_reasoning=profile.reasoning,
         )
 
-    def agent_profile(self, surface: AgentSurface) -> AgentSurfaceConfig:
+    def agent_profile(self, surface: AgentExecutionProfile) -> AgentSurfaceConfig:
         profile = getattr(self.agent, surface)
         assert profile is not None
         return profile
@@ -227,9 +244,13 @@ _AGENT_SURFACES: tuple[AgentSurface, ...] = (
     "project_chat",
     "paper_coach",
 )
+_AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
+    *_AGENT_SURFACES,
+    "orchestrator",
+)
 
 
-def permissions_for(target: AgentSurface | AgentCapability) -> AgentPermissions:
+def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPermissions:
     """Return the immutable authority envelope for one launch capability."""
 
     capability: AgentCapability
@@ -243,6 +264,8 @@ def permissions_for(target: AgentSurface | AgentCapability) -> AgentPermissions:
         capability = "discuss"
     elif target == "work_auto":
         capability = "work_auto"
+    elif target in {"orchestrator", "orchestrate"}:
+        capability = "orchestrate"
     elif target == "scratch_patch":
         capability = "scratch_patch"
     elif target == "paper_readonly":
@@ -272,7 +295,7 @@ def permissions_for(target: AgentSurface | AgentCapability) -> AgentPermissions:
             write_project_files=False,
             write_paper=False,
         )
-    if capability == "work_auto":
+    if capability in {"work_auto", "orchestrate"}:
         return AgentPermissions(
             read_graph=True,
             read_research_md=True,
@@ -378,9 +401,10 @@ def _project_scope_content(
 def write_agent_settings(
     manifest: Manifest,
     default_run_truth_scope: list[str],
-    profiles: dict[AgentSurface, AgentSurfaceConfig],
+    profiles: dict[AgentExecutionProfile, AgentSurfaceConfig],
     provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
     skill_defaults: SkillDefaults | None = None,
+    default_campaign_invocation_ceiling: int | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -388,14 +412,24 @@ def write_agent_settings(
         agent = tomlkit.table()
         document.add("agent", agent)
     agent["default_run_truth_scope"] = list(default_run_truth_scope)
+    agent["default_campaign_invocation_ceiling"] = (
+        manifest.agent.default_campaign_invocation_ceiling
+        if default_campaign_invocation_ceiling is None
+        else default_campaign_invocation_ceiling
+    )
     selected_defaults = skill_defaults or manifest.agent.skill_defaults
     defaults_table = tomlkit.table()
     defaults_table.add("workflow_ids", list(selected_defaults.workflow_ids))
     defaults_table.add("skill_ids", list(selected_defaults.skill_ids))
     agent["skill_defaults"] = defaults_table
 
-    for surface in _AGENT_SURFACES:
-        profile = profiles[surface]
+    for surface in _AGENT_EXECUTION_PROFILES:
+        # A settings write is a merge: a client that predates a surface omits it,
+        # and the omitted surface keeps what the manifest already holds rather
+        # than failing the whole save.
+        profile = profiles.get(surface) or getattr(manifest.agent, surface)
+        if profile is None:
+            raise ValueError(f"agent.{surface} has no configuration to write")
         table = tomlkit.table()
         table.add("provider", profile.provider)
         table.add("model", profile.model)

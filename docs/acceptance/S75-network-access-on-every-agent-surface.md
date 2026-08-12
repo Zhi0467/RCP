@@ -1,6 +1,6 @@
 ---
 id: S75-network-access-on-every-agent-surface
-status: blocked-external
+status: implemented
 tier: live
 driver: pytest + browser
 covered_by:
@@ -10,9 +10,16 @@ covered_by:
   - tests/test_launcher.py::test_claude_read_only_command_keeps_plan_permission_mode
   - tests/test_launcher.py::test_claude_discuss_keeps_scratch_writable_without_auto_mode
   - tests/test_api.py::test_paper_coach_uses_agent_task_manager_and_result_shape
+  - tests/test_prompts.py::test_graph_contract_keeps_fanout_and_points_to_payload_files
+  - tests/test_prompts.py::test_paper_and_continuation_contracts_only_point_to_dynamic_content
 requires: an authenticated Claude CLI for the live Claude Node Chat drive
 invariants: [3, 4, 10]
 reported_by: human, 2026-08-07
+last_passed: 2026-08-12 — authenticated Claude 2.1.227 read identifiable public
+  pages from Node Discuss, a second turn in the same native session, Project
+  Chat, Work, Refresh, and Paper Coach; every launch receipt recorded network
+  access with the surface's unchanged capability, the paper stayed byte-exact,
+  and the clean browser tab had no warnings or errors
 ---
 
 # Every user-facing agent task can read the public web
@@ -47,10 +54,15 @@ already-staged inputs.
 4. Exercise the provider launch contract for both Claude and Codex, including a
    resumed native session.
 
-The Codex Node Chat drive passed on 2026-08-07 against the live workshop page,
-with no browser error or server traceback. The Claude drive remains blocked on
-this machine because the installed CLI is not authenticated; the exact Claude
-launch contract is covered hermetically above.
+The Codex Node Chat drive passed on 2026-08-07 against the live workshop page.
+The full Claude drive passed on 2026-08-12 against `example.com` and the public
+catastrophic-interference page. The live drive caught two truthful contract
+gaps before passing: Paper Coach and Seed/Refresh had the provider grant but did
+not say so in their closed staged contracts, so Claude correctly refused. Their
+contracts now grant only read-only native web search and fetch for relevant
+public evidence and still forbid external side effects. One pre-reset Refresh
+attempt hit Claude's stated session limit; the clean post-reset run fetched the
+page and completed normally.
 
 ## Assert
 

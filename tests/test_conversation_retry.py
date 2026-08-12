@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from pathlib import Path
 
@@ -17,10 +16,9 @@ from .helpers import (
     append_fixture_patch,
     refresh_patch,
     seed_patch,
+    wait_for_task_response,
 )
-from .helpers import (
-    create_named_app as create_app,
-)
+from .helpers import create_named_app as create_app
 
 
 class _FailThenSucceedLauncher:
@@ -69,22 +67,6 @@ class _FailThenSucceedLauncher:
         yield AgentEvent(event="done")
 
 
-def _wait_for_task(
-    client: TestClient,
-    project_id: str,
-    operation_id: str,
-) -> dict[str, object]:
-    deadline = time.monotonic() + 4
-    while time.monotonic() < deadline:
-        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
-        assert response.status_code == 200
-        task = response.json()
-        if task["status"] not in {"queued", "running"}:
-            return task
-        time.sleep(0.01)
-    raise AssertionError("background task did not finish")
-
-
 def _retry_task(
     client: TestClient,
     project_id: str,
@@ -95,14 +77,14 @@ def _retry_task(
 ) -> tuple[dict[str, object], dict[str, object]]:
     started = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
     assert started.status_code == 202
-    failed = _wait_for_task(client, project_id, started.json()["operation_id"])
+    failed = wait_for_task_response(client, project_id, started.json()["operation_id"])
     assert failed["status"] == "failed"
     retried_response = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry",
         json=retry_body or {},
     )
     assert retried_response.status_code == 202
-    retried = _wait_for_task(client, project_id, retried_response.json()["operation_id"])
+    retried = wait_for_task_response(client, project_id, retried_response.json()["operation_id"])
     assert retried["status"] == "succeeded"
     return failed, retried
 
@@ -204,13 +186,16 @@ def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest
     objective = "Submit the bounded run once and report its result."
     stale_patch = refresh_patch("rq/stale-retry-deliverable").model_copy(update={"kind": "work"})
     stale_watch = json.dumps(
-        [
-            {
-                "check_command": "exit 1",
-                "log_path": str(tmp_path / "detached.log"),
-                "cwd": str(tmp_path),
-            }
-        ]
+        {
+            "external": [
+                {
+                    "check_command": "exit 1",
+                    "log_path": str(tmp_path / "detached.log"),
+                    "cwd": str(tmp_path),
+                }
+            ],
+            "graph": [],
+        }
     )
     launcher = _FailThenSucceedLauncher(
         failure,
@@ -304,7 +289,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
         },
     )
     assert started.status_code == 202
-    failed = _wait_for_task(client, project_id, started.json()["operation_id"])
+    failed = wait_for_task_response(client, project_id, started.json()["operation_id"])
     assert failed["status"] == "failed"
 
     append_fixture_patch(service, refresh_patch("rq/landed-before-work-retry"))
@@ -312,7 +297,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry"
     )
     assert retried_response.status_code == 202
-    retried = _wait_for_task(client, project_id, retried_response.json()["operation_id"])
+    retried = wait_for_task_response(client, project_id, retried_response.json()["operation_id"])
 
     assert retried["status"] == "succeeded"
     graph_update = retried["result"]["graph_update"]

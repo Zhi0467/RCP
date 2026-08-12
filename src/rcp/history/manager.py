@@ -7,10 +7,11 @@ import shutil
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rcp.config import (
-    AgentSurface,
+    AgentExecutionProfile,
     AgentSurfaceConfig,
     Manifest,
     load_manifest,
@@ -19,14 +20,16 @@ from rcp.config import (
     write_machine_provider_paths,
     write_project_scope,
 )
+from rcp.core.authority import AgentTaskAuthority, require_apply
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
     apply_valid_patch,
+    finalize_patch_bookkeeping,
     materialize_patches,
     prepare_patch_bookkeeping,
 )
-from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity
+from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity, ReplayFailure
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import ValidationReport, validate_patch
 from rcp.history.delta import (
@@ -85,6 +88,40 @@ class ProjectIdentityConflict(ValueError):
     """Canonical project identity is missing, conflicting, or owned elsewhere."""
 
 
+def _patch_failure_created_at(path: Path) -> datetime:
+    """Retain useful failure chronology even when the Patch schema cannot load."""
+
+    with suppress(OSError, TypeError, ValueError):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("created_at"), str):
+            created_at = datetime.fromisoformat(raw["created_at"])
+            return created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+    with suppress(OSError):
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    return datetime.fromtimestamp(0, UTC)
+
+
+def _first_replay_revision(paths: list[Path]) -> int:
+    return int(paths[0].stem) if paths else 0
+
+
+def _first_replay_created_at(
+    paths: list[Path],
+    patches: list[Patch],
+    *,
+    fallback: Path | None = None,
+) -> datetime:
+    if patches:
+        return patches[0].created_at
+    if paths:
+        return _patch_failure_created_at(paths[0])
+    return (
+        _patch_failure_created_at(fallback)
+        if fallback is not None
+        else datetime.fromtimestamp(0, UTC)
+    )
+
+
 class HistoryManager:
     def __init__(
         self,
@@ -92,13 +129,16 @@ class HistoryManager:
         workspace: StateWorkspace | None = None,
         *,
         expected_space_id: str | None = None,
+        project_id: str | None = None,
         require_attribution: bool = False,
-        agent_authorizer_resolver: Callable[[str], AuthorizedHuman | None] | None = None,
+        agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
     ) -> None:
         if expected_space_id is not None:
             parsed = uuid.UUID(expected_space_id)
             if str(parsed) != expected_space_id or parsed.version != 4:
                 raise ValueError("expected_space_id must be a canonical UUIDv4")
+        if project_id is not None and not project_id.strip():
+            raise ValueError("project_id must be non-empty when supplied")
         self.manifest = manifest
         self.workspace = workspace or LocalStateWorkspace(
             manifest.research_dir, str(manifest.research_dir)
@@ -108,8 +148,9 @@ class HistoryManager:
         self._process_lock = self.workspace.snapshot_lock
         self._accepted_revision: int | None = None
         self.expected_space_id = expected_space_id
+        self.project_id = project_id
         self.require_attribution = require_attribution
-        self.agent_authorizer_resolver = agent_authorizer_resolver
+        self.agent_authority_resolver = agent_authority_resolver
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -365,9 +406,10 @@ class HistoryManager:
         scope_changed = False
         if not result.reports[revision].rejected:
             scope_changed = self._synchronize_manifest_scope(result, patch)
-        paths = [target.relative_to(self.root), *self._materialized_paths()]
-        if scope_changed:
-            paths.append(Path("manifest.toml"))
+        paths = [
+            target.relative_to(self.root),
+            *self._materialized_paths(include_manifest=True),
+        ]
         try:
             self.workspace.publish_committed_patch(
                 paths,
@@ -463,6 +505,8 @@ class HistoryManager:
                 )
             except ValueError as exc:
                 report.reject("invalid-project-scope", str(exc), revision)
+        if preflight_state is not None and not report.rejected:
+            patch = finalize_patch_bookkeeping(patch, preflight_state)
         return patch, report, preflight_state
 
     def _stamp_attribution_for_admission(
@@ -500,16 +544,20 @@ class HistoryManager:
         operation_id = patch.source_operation_id
         if not operation_id or not operation_id.strip():
             raise ValueError("agent patches require a non-empty direct source_operation_id")
-        if self.agent_authorizer_resolver is None:
-            raise ValueError("agent attribution requires an agent_authorizer_resolver")
+        if self.project_id is None or self.agent_authority_resolver is None:
+            raise ValueError(
+                "agent attribution requires a canonical project-scoped agent_authority_resolver"
+            )
         try:
-            resolved = self.agent_authorizer_resolver(operation_id)
+            resolved = self.agent_authority_resolver(self.project_id, operation_id)
         except KeyError as exc:
             raise ValueError(f"unknown agent task {operation_id!r}") from exc
-        if resolved is None:
-            raise ValueError(f"agent task {operation_id!r} has no authorizer snapshot")
-        authorizer = self._canonical_authorizer(resolved)
-        canonical = (authorizer, "ordinary", operation_id)
+        if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
+            raise ValueError("agent authority resolver returned another task or project")
+        dispatch = require_apply(resolved, patch)
+        assert resolved.authorized_by is not None
+        authorizer = self._canonical_authorizer(resolved.authorized_by)
+        canonical = (authorizer, dispatch.profile, operation_id)
         supplied = (patch.authorized_by, patch.profile, patch.task_id)
         if any(value is not None for value in supplied) and supplied != canonical:
             raise ValueError(
@@ -518,7 +566,7 @@ class HistoryManager:
         return patch.model_copy(
             update={
                 "authorized_by": authorizer,
-                "profile": "ordinary",
+                "profile": dispatch.profile,
                 "task_id": operation_id,
             }
         )
@@ -536,9 +584,10 @@ class HistoryManager:
     def update_agent_settings(
         self,
         default_run_truth_scope: list[str],
-        profiles: dict[AgentSurface, AgentSurfaceConfig],
+        profiles: dict[AgentExecutionProfile, AgentSurfaceConfig],
         provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
         skill_defaults: SkillDefaults | None = None,
+        default_campaign_invocation_ceiling: int | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -552,6 +601,7 @@ class HistoryManager:
                 profiles,
                 provider_path_updates,
                 skill_defaults,
+                default_campaign_invocation_ceiling,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
@@ -645,6 +695,7 @@ class HistoryManager:
                         patch.revision,
                     )
                     raise PatchRejected(report) from exc
+                patch = finalize_patch_bookkeeping(patch, candidate)
                 patch = patch.model_copy(
                     update={
                         "admission": "accepted",
@@ -685,9 +736,7 @@ class HistoryManager:
                     if self._synchronize_manifest_scope(result, patch):
                         scope_changed = True
                 targets = [(committed / path.name).relative_to(self.root) for path in pending_paths]
-                paths = [*targets, *self._materialized_paths()]
-                if scope_changed:
-                    paths.append(Path("manifest.toml"))
+                paths = [*targets, *self._materialized_paths(include_manifest=True)]
                 try:
                     self.workspace.publish_committed_batch(
                         paths,
@@ -724,10 +773,32 @@ class HistoryManager:
                     pending_patch_paths,
                     accepted_patch_observer=accepted_patch_observer,
                 )
-            if write_outputs:
+            if write_outputs and result.state.replay_status == "complete":
                 self.ensure_layout()
                 self._write_materialized_outputs(result)
             return result
+
+    def accepted_boundary_states(self) -> tuple[MaterializationResult, list[GraphState]]:
+        """Replay canonical history and retain each accepted state in revision order."""
+
+        boundaries: list[GraphState] = []
+
+        def collect(_previous: GraphState, _patch: Patch, state: GraphState) -> None:
+            boundaries.append(state)
+
+        with self._process_lock:
+            # Graph-condition transitions require a proven current canonical
+            # snapshot. Unlike display-oriented reads, stale remote state must
+            # fail closed and be retried rather than evaluated as current.
+            if not self.workspace.refresh_if_stale():
+                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
+            self._reload_manifest()
+            result = self.materialize(
+                write_outputs=False,
+                accepted_patch_observer=collect,
+            )
+            self._remember_accepted_revision(result)
+            return result, boundaries
 
     def _coherent_materialization(self) -> MaterializationResult | None:
         """Return replayed state only when every cached derived output already matches."""
@@ -774,23 +845,66 @@ class HistoryManager:
             [*self._patch_paths(), *pending],
             key=lambda path: int(path.stem),
         )
-        patches = [
-            Patch.model_validate_json(path.read_text(encoding="utf-8")) for path in patch_paths
-        ]
+        patches: list[Patch] = []
+        structural_failure: ReplayFailure | None = None
+        for path in patch_paths:
+            try:
+                patches.append(Patch.model_validate_json(path.read_text(encoding="utf-8")))
+            except OSError as exc:
+                structural_failure = ReplayFailure(
+                    revision=int(path.stem),
+                    created_at=_patch_failure_created_at(path),
+                    code="patch-read-failed",
+                    message=str(exc),
+                )
+                break
+            except ValueError as exc:
+                structural_failure = ReplayFailure(
+                    revision=int(path.stem),
+                    created_at=_patch_failure_created_at(path),
+                    code="patch-schema-invalid",
+                    message=str(exc),
+                )
+                break
         scope_base_path = self.root / "scope-base.json"
+        scope_failure: ReplayFailure | None = None
         if scope_base_path.is_file():
-            initial_truth_scope = json.loads(scope_base_path.read_text(encoding="utf-8"))[
-                "truth_scope"
-            ]
-        elif patches:
-            raise FileNotFoundError(
-                f"Canonical scope provenance {scope_base_path} is absent while patch history "
-                "exists; replay is refused rather than substituting the current manifest scope."
+            try:
+                initial_truth_scope = json.loads(scope_base_path.read_text(encoding="utf-8"))[
+                    "truth_scope"
+                ]
+                if not isinstance(initial_truth_scope, list) or not all(
+                    isinstance(alias, str) for alias in initial_truth_scope
+                ):
+                    raise ValueError("truth_scope must be a list of repository aliases")
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                initial_truth_scope = self.manifest.project.truth_scope
+                scope_failure = ReplayFailure(
+                    revision=_first_replay_revision(patch_paths),
+                    created_at=_first_replay_created_at(
+                        patch_paths,
+                        patches,
+                        fallback=scope_base_path,
+                    ),
+                    code="scope-provenance-invalid",
+                    message=f"Canonical scope provenance {scope_base_path} is invalid: {exc}",
+                )
+        elif patch_paths:
+            initial_truth_scope = self.manifest.project.truth_scope
+            scope_failure = ReplayFailure(
+                revision=_first_replay_revision(patch_paths),
+                created_at=_first_replay_created_at(patch_paths, patches),
+                code="scope-provenance-missing",
+                message=(
+                    f"Canonical scope provenance {scope_base_path} is absent while Patch history "
+                    "exists; replay is refused rather than substituting the current manifest scope."
+                ),
             )
         else:
             initial_truth_scope = self.manifest.project.truth_scope
-        return materialize_patches(
-            patches,
+        replayable_patches = [] if scope_failure is not None else patches
+        result = materialize_patches(
+            replayable_patches,
             initial_truth_scope=list(initial_truth_scope),
             repository_aliases=sorted(self.manifest.repository_map),
             machine_aliases=sorted(self.manifest.machine_map),
@@ -798,6 +912,15 @@ class HistoryManager:
             state_repository=self.manifest.state.repository,
             accepted_patch_observer=accepted_patch_observer,
         )
+        failure = scope_failure or structural_failure
+        if failure is not None and result.state.replay_status == "complete":
+            result.state = result.state.model_copy(
+                update={
+                    "replay_status": "degraded",
+                    "replay_failure": failure,
+                }
+            )
+        return result
 
     def _write_materialized_outputs(self, result: MaterializationResult) -> None:
         self._atomic_json(self.root / "graph.json", result.state.model_dump(mode="json"))
@@ -830,6 +953,7 @@ class HistoryManager:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()
             end = to_revision if to_revision is not None else 10**12
+            materialization = self.materialize(write_outputs=False)
             return [
                 {
                     "revision": patch.revision,
@@ -838,7 +962,7 @@ class HistoryManager:
                     "summary": patch.summary,
                     "change_summary": patch.change_summary,
                 }
-                for patch in self.load_patches()
+                for patch in materialization.patches
                 if from_revision <= patch.revision <= end
             ]
 

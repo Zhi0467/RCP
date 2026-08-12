@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -14,10 +15,12 @@ from rcp.agents import (
     AgentEvent,
     AgentLauncher,
     PromptFactory,
+    parse_agent_patch_json,
     prepare_agent_patch,
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
@@ -34,16 +37,17 @@ from rcp.agents.prompts import (
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS, RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
     _chat_context_delta,
     _chat_read_dirs,
     _chat_stage_name,
-    _clear_stale_patch,
-    _clear_stale_watch,
+    _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
     _logical_chat_turn_operation_id,
@@ -78,9 +82,20 @@ from rcp.runs.experiment_loop import (
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
-    cleanup_patch_validation_mailbox,
-    prepare_patch_validation_mailbox,
     serve_patch_validation_mailbox,
+    stage_patch_validation_mailbox,
+)
+from rcp.runs.result_views import (
+    ResultViewSnapshot,
+    clear_result_view_rollback_snapshot,
+    discover_result_view,
+    persist_result_view_rollback_snapshot,
+    prepare_result_view_slot,
+    read_result_view_rollback_snapshot,
+    require_result_view_changed,
+    restore_result_view,
+    touch_conversation_stage,
+    touch_saved_conversation_stages,
 )
 from rcp.runs.shared import (
     _existing_patch_digest,
@@ -101,7 +116,7 @@ from rcp.runs.shared import (
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
-from rcp.storage import WatcherContinuation
+from rcp.storage import ResultViewRecord, WatcherContinuation
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -109,6 +124,7 @@ from rcp.watchers import (
     arm_watchers,
     parse_experiment_watch_json,
     parse_watch_json,
+    validate_graph_conditions,
     validate_watch_specs,
 )
 
@@ -135,6 +151,843 @@ class _CorrectionPatchRead:
     text: str | None
     problem: Literal["unreadable", "missing", "unchanged"] | None = None
     detail: str | None = None
+
+
+@dataclass
+class _WorkValidatorMailboxLifecycle:
+    staged: StagedCommandMailbox
+    execution: AgentTaskExecution | None
+    stop: asyncio.Event
+    task: asyncio.Task[None]
+    closed: bool = False
+
+    async def close(self, *, primary_error: BaseException | None = None) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        await _close_work_validator_mailbox(
+            self.staged,
+            stop=self.stop,
+            task=self.task,
+            execution=self.execution,
+            primary_error=primary_error,
+        )
+
+
+@dataclass(frozen=True)
+class _PreparedResultView:
+    action: Literal["create", "revise"]
+    view_id: str
+    prompt_path: str
+    origin_operation_id: str | None = None
+    record: ResultViewRecord | None = None
+    before: ResultViewSnapshot | None = None
+
+
+@dataclass(frozen=True)
+class _ResultViewRollbackReceipt:
+    task_operation_id: str
+    task_parent_operation_id: str
+    project_id: str
+    task_kind: str
+    view_id: str
+    experiment_id: str
+    chat_id: str
+    provider: str
+    model: str
+    reasoning: str
+    run_on: str
+    native_session_id: str
+    stage_host: str
+    stage_root: str
+    source_name: str
+    size_bytes: int
+    content_sha256: str
+
+
+_RESULT_VIEW_ROLLBACK_SNAPSHOT_RECEIPT = "result_view_rollback_snapshot"
+
+
+def _result_view_expiry(now: datetime) -> str:
+    return (now + timedelta(days=RUN_STAGE_RETENTION_DAYS)).isoformat()
+
+
+def _result_view_task(execution: AgentTaskExecution | None):
+    if execution is None:
+        raise ValueError("A result view requires a durable RCP Work task.")
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None or task.kind != "node_chat" or not task.project_id:
+        raise ValueError("A result view requires a durable node conversation task.")
+    return task
+
+
+def _preflight_result_view_revision(
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+) -> ResultViewRecord | None:
+    """Require the durable saved session and stage before any stage is opened or checkpointed."""
+
+    result_view = request.result_view
+    if result_view is None or result_view.action != "revise":
+        return None
+    task = _result_view_task(execution)
+    assert execution is not None
+    if not execution.stage_root:
+        raise ValueError(
+            "The result view revision has no inherited conversation stage; it cannot be redrawn "
+            "from a fresh session."
+        )
+    record = execution.store.result_view(result_view.view_id)
+    if record is None:
+        raise ValueError("The result view is missing or expired and cannot be revised.")
+    if record.kept_filename is not None:
+        raise ValueError("A kept result view is immutable and cannot be revised.")
+    expected_binding = {
+        "project": (record.project_id, task.project_id),
+        "Experiment": (record.experiment_id, request.node_id or ""),
+        "conversation": (record.chat_id, request.chat_id or ""),
+        "provider": (record.provider, request.provider or ""),
+        "model": (record.model, request.model or ""),
+        "reasoning": (record.reasoning, request.reasoning or ""),
+        "execution machine": (record.run_on, request.run_on or ""),
+        "native session": (record.native_session_id, request.session_id or ""),
+        "stage host": (record.stage_host, execution.stage_host or ""),
+        "stage root": (record.stage_root, execution.stage_root),
+    }
+    mismatched = [label for label, (saved, current) in expected_binding.items() if saved != current]
+    if mismatched:
+        raise ValueError(
+            "The result view cannot be revised because its saved "
+            + ", ".join(mismatched)
+            + " binding does not match this turn."
+        )
+    return record
+
+
+def _persist_result_view_rollback(
+    execution: AgentTaskExecution | None,
+    prepared: _PreparedResultView | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    """Checkpoint trusted prior bytes and bindings immediately before provider launch."""
+
+    if prepared is None or prepared.action != "revise":
+        return
+    if execution is None or prepared.record is None or prepared.before is None:
+        raise ValueError("The result view revision lost its durable rollback binding.")
+    task = _result_view_task(execution)
+    persist_result_view_rollback_snapshot(
+        local_stage,
+        remote_stage,
+        prepared.view_id,
+        prepared.before,
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        _RESULT_VIEW_ROLLBACK_SNAPSHOT_RECEIPT,
+        {
+            "version": 1,
+            "task_operation_id": task.operation_id,
+            "task_parent_operation_id": task.parent_operation_id or "",
+            "project_id": task.project_id,
+            "task_kind": task.kind,
+            "view_id": prepared.record.view_id,
+            "experiment_id": prepared.record.experiment_id,
+            "chat_id": prepared.record.chat_id,
+            "provider": prepared.record.provider,
+            "model": prepared.record.model,
+            "reasoning": prepared.record.reasoning,
+            "run_on": prepared.record.run_on,
+            "native_session_id": prepared.record.native_session_id,
+            "stage_host": prepared.record.stage_host,
+            "stage_root": prepared.record.stage_root,
+            "source_name": prepared.before.name,
+            "size_bytes": prepared.before.size,
+            "content_sha256": prepared.before.sha256,
+        },
+    )
+
+
+def _result_view_rollback_receipt(
+    execution: AgentTaskExecution,
+    record: ResultViewRecord,
+) -> _ResultViewRollbackReceipt:
+    """Find the nearest exact same-stage snapshot receipt in this task lineage."""
+
+    current = execution.store.agent_task(execution.operation_id)
+    seen: set[str] = set()
+    while current is not None:
+        if current.operation_id in seen:
+            raise ValueError("The result view rollback lineage contains a cycle.")
+        seen.add(current.operation_id)
+        if (
+            current.project_id != record.project_id
+            or current.kind != "node_chat"
+            or (current.stage_host or "") != record.stage_host
+            or current.stage_root != record.stage_root
+        ):
+            raise ValueError("The result view rollback lineage crossed its saved task or stage.")
+        try:
+            current_request = RunRequest.model_validate(current.request)
+        except ValueError as exc:
+            raise ValueError("The result view rollback lineage has an invalid request.") from exc
+        if (
+            current_request.result_view is None
+            or current_request.result_view.action != "revise"
+            or current_request.result_view.view_id != record.view_id
+            or current_request.node_id != record.experiment_id
+            or current_request.chat_id != record.chat_id
+            or current_request.session_id != record.native_session_id
+            or current.native_session_id != record.native_session_id
+        ):
+            raise ValueError("The result view rollback lineage changed its saved binding.")
+        candidates = [
+            receipt
+            for receipt in execution.store.agent_task_receipts(current.operation_id)
+            if receipt.category == _RESULT_VIEW_ROLLBACK_SNAPSHOT_RECEIPT
+        ]
+        if candidates:
+            receipt = _parse_result_view_rollback_receipt(candidates[-1].payload)
+            expected = _ResultViewRollbackReceipt(
+                task_operation_id=current.operation_id,
+                task_parent_operation_id=current.parent_operation_id or "",
+                project_id=record.project_id,
+                task_kind=current.kind,
+                view_id=record.view_id,
+                experiment_id=record.experiment_id,
+                chat_id=record.chat_id,
+                provider=record.provider,
+                model=record.model,
+                reasoning=record.reasoning,
+                run_on=record.run_on,
+                native_session_id=record.native_session_id,
+                stage_host=record.stage_host,
+                stage_root=record.stage_root,
+                source_name=record.source_name,
+                size_bytes=record.size_bytes,
+                content_sha256=record.content_sha256,
+            )
+            if receipt != expected:
+                raise ValueError("The result view rollback receipt does not match its saved view.")
+            return receipt
+        if current.parent_operation_id is None:
+            break
+        parent = execution.store.agent_task(current.parent_operation_id)
+        if parent is None:
+            raise ValueError("The result view rollback lineage lost its parent task.")
+        current = parent
+    raise ValueError("The interrupted result view revision has no durable rollback snapshot.")
+
+
+def _parse_result_view_rollback_receipt(
+    payload: dict[str, object],
+) -> _ResultViewRollbackReceipt:
+    expected_keys = {
+        "version",
+        "task_operation_id",
+        "task_parent_operation_id",
+        "project_id",
+        "task_kind",
+        "view_id",
+        "experiment_id",
+        "chat_id",
+        "provider",
+        "model",
+        "reasoning",
+        "run_on",
+        "native_session_id",
+        "stage_host",
+        "stage_root",
+        "source_name",
+        "size_bytes",
+        "content_sha256",
+    }
+    if set(payload) != expected_keys or payload.get("version") != 1:
+        raise ValueError("The result view rollback receipt is invalid.")
+    string_keys = expected_keys - {"version", "size_bytes"}
+    if any(not isinstance(payload.get(key), str) for key in string_keys):
+        raise ValueError("The result view rollback receipt is invalid.")
+    size = payload.get("size_bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+        raise ValueError("The result view rollback receipt is invalid.")
+    return _ResultViewRollbackReceipt(
+        task_operation_id=str(payload["task_operation_id"]),
+        task_parent_operation_id=str(payload["task_parent_operation_id"]),
+        project_id=str(payload["project_id"]),
+        task_kind=str(payload["task_kind"]),
+        view_id=str(payload["view_id"]),
+        experiment_id=str(payload["experiment_id"]),
+        chat_id=str(payload["chat_id"]),
+        provider=str(payload["provider"]),
+        model=str(payload["model"]),
+        reasoning=str(payload["reasoning"]),
+        run_on=str(payload["run_on"]),
+        native_session_id=str(payload["native_session_id"]),
+        stage_host=str(payload["stage_host"]),
+        stage_root=str(payload["stage_root"]),
+        source_name=str(payload["source_name"]),
+        size_bytes=size,
+        content_sha256=str(payload["content_sha256"]),
+    )
+
+
+def _recover_result_view_rollback(
+    execution: AgentTaskExecution,
+    record: ResultViewRecord,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    public_problem: str,
+) -> ResultViewSnapshot:
+    """Restore a hard-interrupted revision from its exact trusted ancestor receipt."""
+
+    try:
+        receipt = _result_view_rollback_receipt(execution, record)
+        snapshot = read_result_view_rollback_snapshot(
+            local_stage,
+            remote_stage,
+            receipt.view_id,
+            expected_name=receipt.source_name,
+            expected_size=receipt.size_bytes,
+            expected_sha256=receipt.content_sha256,
+        )
+        restored = restore_result_view(
+            local_stage,
+            remote_stage,
+            receipt.view_id,
+            snapshot,
+        )
+        verified = discover_result_view(
+            local_stage,
+            remote_stage,
+            record.view_id,
+            expected_name=record.source_name,
+        )
+        if verified.sha256 != record.content_sha256 or verified.size != record.size_bytes:
+            raise ValueError("the restored public bytes do not match the saved view")
+        if not clear_result_view_rollback_snapshot(
+            local_stage,
+            remote_stage,
+            receipt.view_id,
+            snapshot,
+        ):
+            raise ValueError("the verified rollback snapshot disappeared before cleanup")
+    except Exception as exc:
+        raise ValueError(
+            "The result view no longer matches its saved revision, and its durable rollback "
+            f"could not be recovered ({public_problem}): {exc}"
+        ) from exc
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "result_view_rollback_recovered",
+        {
+            "ancestor_operation_id": receipt.task_operation_id,
+            "view_id": receipt.view_id,
+            "content_sha256": receipt.content_sha256,
+            "restored": restored,
+        },
+    )
+    return verified
+
+
+def _roll_result_view_retention(
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    """Keep one reused Work conversation and its unkept cards on the same rolling clock."""
+
+    if request.trigger != "human" or request.patch_kind != "work":
+        return
+    current_binding = touch_conversation_stage(local_stage, remote_stage)
+    if execution is None or not request.chat_id:
+        return
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None or not task.project_id:
+        return
+    try:
+        now = datetime.fromisoformat(execution.store.now()).astimezone(UTC)
+        views = execution.store.list_result_views(
+            task.project_id,
+            chat_id=request.chat_id,
+            as_of=now,
+        )
+        touch_saved_conversation_stages(
+            ((view.stage_host, view.stage_root) for view in views if view.kept_filename is None),
+            current_binding=current_binding,
+        )
+        execution.store.refresh_result_view_expiry(
+            task.project_id,
+            request.chat_id,
+            expires_at=_result_view_expiry(now),
+            as_of=now,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            execution.store.record_agent_task_event(
+                execution.operation_id,
+                f"Result-view retention could not be refreshed: {exc}",
+                level="warning",
+            )
+
+
+def _result_view_action_was_settled_by_ancestor(
+    request: RunRequest,
+    execution: AgentTaskExecution,
+    record: ResultViewRecord,
+) -> bool:
+    """Recognize only this recovery lineage's exact already-committed view action."""
+
+    if execution.continuation not in {"resume", "retry", "handoff"}:
+        return False
+    result_view = request.result_view
+    if result_view is None:
+        return False
+    current = _result_view_task(execution)
+    ancestor_id = current.parent_operation_id
+    seen = {current.operation_id}
+    while ancestor_id is not None:
+        if ancestor_id in seen:
+            raise ValueError("The result view recovery lineage contains a cycle.")
+        seen.add(ancestor_id)
+        ancestor = execution.store.agent_task(ancestor_id)
+        if ancestor is None:
+            raise ValueError("The result view recovery lineage lost its parent task.")
+        if ancestor.project_id != current.project_id or ancestor.kind != current.kind:
+            raise ValueError("The result view recovery lineage crossed a task boundary.")
+        if ancestor.operation_id == record.latest_operation_id:
+            try:
+                ancestor_request = RunRequest.model_validate(ancestor.request)
+            except ValueError as exc:
+                raise ValueError(
+                    "The result view recovery lineage has an invalid request."
+                ) from exc
+            ancestor_view = ancestor_request.result_view
+            same_view = bool(
+                ancestor_view is not None
+                and ancestor_view.action == result_view.action
+                and (result_view.action == "create" or ancestor_view.view_id == record.view_id)
+            )
+            ancestor_matches = bool(
+                same_view
+                and ancestor.project_id == record.project_id
+                and ancestor.kind == "node_chat"
+                and ancestor_request.trigger == "human"
+                and ancestor_request.patch_kind == "work"
+                and ancestor_request.mode == "work"
+                and ancestor_request.chat_scope == "node"
+                and ancestor_request.node_id == record.experiment_id == request.node_id
+                and ancestor_request.chat_id == record.chat_id == request.chat_id
+                and ancestor_request.provider in {None, record.provider}
+                and ancestor_request.model in {None, "", record.model}
+                and ancestor_request.reasoning in {None, record.reasoning}
+                and ancestor_request.run_on in {None, record.run_on}
+                and ancestor.native_session_id == record.native_session_id
+                and (ancestor.stage_host or "") == record.stage_host
+                and ancestor.stage_root == record.stage_root
+            )
+            if not ancestor_matches:
+                return False
+            if execution.continuation == "handoff":
+                return result_view.action == "create"
+            return bool(
+                record.provider == request.provider
+                and record.model == request.model
+                and record.reasoning == request.reasoning
+                and record.run_on == request.run_on
+                and request.session_id == record.native_session_id
+                and (execution.stage_host or "") == record.stage_host
+                and execution.stage_root == record.stage_root
+            )
+        ancestor_id = ancestor.parent_operation_id
+    return False
+
+
+def _prepare_result_view_create_slot(
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    view_id: str,
+    *,
+    recovering: bool,
+) -> Path | PurePosixPath:
+    """Reuse a recovery slot, creating it only when its exact path is genuinely absent."""
+
+    if not recovering:
+        return prepare_result_view_slot(local_stage, remote_stage, view_id, reuse=False)
+    try:
+        return prepare_result_view_slot(local_stage, remote_stage, view_id, reuse=True)
+    except FileNotFoundError:
+        return prepare_result_view_slot(local_stage, remote_stage, view_id, reuse=False)
+
+
+def _prepare_result_view_turn(
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    *,
+    focused_node: dict[str, object] | None,
+    logical_operation_id: str,
+    revision_record: ResultViewRecord | None,
+) -> _PreparedResultView | None:
+    result_view = request.result_view
+    if result_view is None:
+        return None
+    if (
+        request.trigger != "human"
+        or request.patch_kind != "work"
+        or request.mode != "work"
+        or request.chat_scope != "node"
+        or execution is None
+        or (
+            execution.continuation not in {"fresh", "resume"}
+            and not (
+                execution.continuation == "retry" and result_view.action in {"create", "revise"}
+            )
+            and not (execution.continuation == "handoff" and result_view.action == "create")
+        )
+    ):
+        raise ValueError("A result view is available only on an ordinary human node Work turn.")
+    if (
+        focused_node is None
+        or focused_node.get("type") != "experiment"
+        or focused_node.get("id") != request.node_id
+    ):
+        raise ValueError("A result view must be scoped to an existing Experiment.")
+    if not request.chat_id or not request.node_id:
+        raise ValueError("A result view requires its exact Experiment conversation.")
+
+    task = _result_view_task(execution)
+    if result_view.action == "create":
+        origin_operation_id = logical_operation_id
+        if execution.continuation in {"resume", "retry", "handoff"}:
+            current = execution.store.agent_task(execution.operation_id)
+            seen: set[str] = set()
+            while current is not None and current.parent_operation_id is not None:
+                if current.operation_id in seen:
+                    raise ValueError("The result view create lineage contains a cycle.")
+                seen.add(current.operation_id)
+                parent = execution.store.agent_task(current.parent_operation_id)
+                if (
+                    parent is None
+                    or parent.project_id != current.project_id
+                    or parent.kind != current.kind
+                ):
+                    raise ValueError("The result view create recovery lost its task lineage.")
+                parent_request = RunRequest.model_validate(parent.request)
+                if (
+                    parent_request.result_view is None
+                    or parent_request.result_view.action != "create"
+                    or parent_request.chat_id != request.chat_id
+                    or parent_request.node_id != request.node_id
+                ):
+                    raise ValueError("The result view create recovery crossed a task boundary.")
+                origin_operation_id = parent.operation_id
+                current = parent
+        view_id = hashlib.sha256(f"result-view\0{origin_operation_id}".encode()).hexdigest()[:24]
+        existing = execution.store.result_view_for_diagnostics(view_id)
+        if existing is not None:
+            if _result_view_action_was_settled_by_ancestor(request, execution, existing):
+                return None
+            expected_binding = {
+                "project": (existing.project_id, task.project_id),
+                "Experiment": (existing.experiment_id, request.node_id),
+                "conversation": (existing.chat_id, request.chat_id),
+                "origin": (existing.origin_operation_id, origin_operation_id),
+                "provider": (existing.provider, request.provider or ""),
+                "model": (existing.model, request.model or ""),
+                "reasoning": (existing.reasoning, request.reasoning or ""),
+                "execution machine": (existing.run_on, request.run_on or ""),
+                "native session": (existing.native_session_id, request.session_id or ""),
+                "stage host": (existing.stage_host, execution.stage_host or ""),
+                "stage root": (existing.stage_root, execution.stage_root or ""),
+            }
+            mismatched = [
+                label for label, (saved, current) in expected_binding.items() if saved != current
+            ]
+            if mismatched:
+                raise ValueError(
+                    "The created result view has a mismatched "
+                    + ", ".join(mismatched)
+                    + " binding."
+                )
+            raise ValueError("This result view was already created and cannot be created again.")
+        slot = _prepare_result_view_create_slot(
+            local_stage,
+            remote_stage,
+            view_id,
+            recovering=execution.continuation in {"resume", "retry", "handoff"},
+        )
+        return _PreparedResultView(
+            action="create",
+            view_id=view_id,
+            prompt_path=str(slot),
+            origin_operation_id=origin_operation_id,
+        )
+
+    record = revision_record
+    if record is None or record.view_id != result_view.view_id:
+        raise ValueError("The result view revision lost its durable preflight binding.")
+    if _result_view_action_was_settled_by_ancestor(request, execution, record):
+        return None
+    try:
+        slot = prepare_result_view_slot(local_stage, remote_stage, record.view_id, reuse=True)
+        before = discover_result_view(
+            local_stage,
+            remote_stage,
+            record.view_id,
+            expected_name=record.source_name,
+        )
+        if before.sha256 != record.content_sha256 or before.size != record.size_bytes:
+            raise ValueError("The result view bytes no longer match their saved revision.")
+    except (OSError, StateUnavailable, ValueError) as exc:
+        if execution.continuation not in {"resume", "retry"}:
+            raise
+        before = _recover_result_view_rollback(
+            execution,
+            record,
+            local_stage,
+            remote_stage,
+            str(exc),
+        )
+        slot = prepare_result_view_slot(local_stage, remote_stage, record.view_id, reuse=True)
+    return _PreparedResultView(
+        action="revise",
+        view_id=record.view_id,
+        prompt_path=str(slot / record.source_name),
+        record=record,
+        before=before,
+    )
+
+
+def _record_result_view_rejection(
+    execution: AgentTaskExecution,
+    prepared: _PreparedResultView,
+    problem: str,
+    *,
+    restored: bool | None = None,
+    restore_problem: str | None = None,
+    snapshot_cleared: bool | None = None,
+    snapshot_clear_problem: str | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "action": prepared.action,
+        "view_id": prepared.view_id,
+        "problem": problem[:1600],
+    }
+    if restored is not None:
+        payload["restored"] = restored
+    if restore_problem is not None:
+        payload["restore_problem"] = restore_problem[:800]
+    if snapshot_cleared is not None:
+        payload["snapshot_cleared"] = snapshot_cleared
+    if snapshot_clear_problem is not None:
+        payload["snapshot_clear_problem"] = snapshot_clear_problem[:800]
+    with suppress(Exception):
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "result_view_rejected",
+            payload,
+            tier="diagnostic",
+        )
+    detail = f"Result view was not updated: {problem}"
+    if restore_problem:
+        detail += f" Its previous bytes also could not be restored: {restore_problem}"
+    if snapshot_clear_problem:
+        detail += f" Its rollback snapshot was retained for stage cleanup: {snapshot_clear_problem}"
+    with suppress(Exception):
+        execution.store.record_agent_task_event(
+            execution.operation_id,
+            detail,
+            level="warning",
+        )
+
+
+def _restore_rejected_result_view(
+    execution: AgentTaskExecution,
+    prepared: _PreparedResultView | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    problem: str,
+) -> None:
+    if prepared is None or prepared.action != "revise" or prepared.before is None:
+        return
+    restored: bool | None = None
+    restore_problem: str | None = None
+    snapshot_cleared: bool | None = None
+    snapshot_clear_problem: str | None = None
+    try:
+        restored = restore_result_view(
+            local_stage,
+            remote_stage,
+            prepared.view_id,
+            prepared.before,
+        )
+    except Exception as exc:
+        restore_problem = str(exc)
+    else:
+        try:
+            verified = discover_result_view(
+                local_stage,
+                remote_stage,
+                prepared.view_id,
+                expected_name=prepared.before.name,
+            )
+            if verified.sha256 != prepared.before.sha256 or verified.size != prepared.before.size:
+                raise ValueError("the restored public bytes do not match the saved view")
+        except Exception as exc:
+            restore_problem = str(exc)
+        else:
+            try:
+                snapshot_cleared = clear_result_view_rollback_snapshot(
+                    local_stage,
+                    remote_stage,
+                    prepared.view_id,
+                    prepared.before,
+                )
+                if not snapshot_cleared:
+                    raise ValueError("the rollback snapshot was already absent")
+            except Exception as exc:
+                snapshot_clear_problem = str(exc)
+    _record_result_view_rejection(
+        execution,
+        prepared,
+        problem,
+        restored=restored,
+        restore_problem=restore_problem,
+        snapshot_cleared=snapshot_cleared,
+        snapshot_clear_problem=snapshot_clear_problem,
+    )
+
+
+def _finalize_result_view_turn(
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    prepared: _PreparedResultView | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    *,
+    native_session_id: str | None,
+) -> bool:
+    """Validate and bind a view without coupling its outcome to answer or graph delivery."""
+
+    if prepared is None:
+        return True
+    assert execution is not None
+    try:
+        snapshot = discover_result_view(
+            local_stage,
+            remote_stage,
+            prepared.view_id,
+            expected_name=(prepared.record.source_name if prepared.record is not None else None),
+        )
+        now = datetime.fromisoformat(execution.store.now()).astimezone(UTC)
+        expires_at = _result_view_expiry(now)
+        if prepared.action == "create":
+            if not native_session_id:
+                raise ValueError("the provider returned no native session for later revision")
+            task = _result_view_task(execution)
+            assert request.node_id is not None
+            assert request.chat_id is not None
+            record = execution.store.create_result_view(
+                ResultViewRecord(
+                    view_id=prepared.view_id,
+                    project_id=task.project_id,
+                    experiment_id=request.node_id,
+                    chat_id=request.chat_id,
+                    origin_operation_id=prepared.origin_operation_id or task.operation_id,
+                    latest_operation_id=execution.operation_id,
+                    provider=request.provider or "",
+                    model=request.model or "",
+                    reasoning=request.reasoning or "",
+                    run_on=request.run_on or "",
+                    native_session_id=native_session_id,
+                    stage_host=execution.stage_host or "",
+                    stage_root=execution.stage_root or "",
+                    source_name=snapshot.name,
+                    content_sha256=snapshot.sha256,
+                    size_bytes=snapshot.size,
+                    created_at=now.isoformat(),
+                    updated_at=now.isoformat(),
+                    expires_at=expires_at,
+                )
+            )
+            category = "result_view_created"
+        else:
+            assert prepared.record is not None
+            assert prepared.before is not None
+            if native_session_id != prepared.record.native_session_id:
+                raise ValueError(
+                    "the provider did not resume the result view's exact native session"
+                )
+            require_result_view_changed(prepared.before, snapshot)
+            record = execution.store.revise_result_view(
+                prepared.view_id,
+                expected_content_sha256=prepared.before.sha256,
+                latest_operation_id=execution.operation_id,
+                content_sha256=snapshot.sha256,
+                size_bytes=snapshot.size,
+                updated_at=now.isoformat(),
+                expires_at=expires_at,
+            )
+            category = "result_view_revised"
+    except Exception as exc:
+        if prepared.action == "revise":
+            _restore_rejected_result_view(
+                execution,
+                prepared,
+                local_stage,
+                remote_stage,
+                str(exc),
+            )
+        else:
+            _record_result_view_rejection(execution, prepared, str(exc))
+        return True
+
+    if prepared.action == "revise" and prepared.before is not None:
+        try:
+            cleared = clear_result_view_rollback_snapshot(
+                local_stage,
+                remote_stage,
+                prepared.view_id,
+                prepared.before,
+            )
+            if not cleared:
+                raise ValueError("the rollback snapshot was already absent")
+        except Exception as exc:
+            with suppress(Exception):
+                execution.store.record_agent_task_event(
+                    execution.operation_id,
+                    f"The accepted result view's rollback snapshot was retained: {exc}",
+                    level="warning",
+                )
+
+    payload = {
+        "view_id": record.view_id,
+        "experiment_id": record.experiment_id,
+        "chat_id": record.chat_id,
+        "source_name": record.source_name,
+        "content_sha256": record.content_sha256,
+        "size_bytes": record.size_bytes,
+        "updated_at": record.updated_at,
+        "expires_at": record.expires_at,
+        "native_session_id": record.native_session_id,
+        "stage_host": record.stage_host,
+        "stage_root": record.stage_root,
+    }
+    with suppress(Exception):
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            category,
+            payload,
+        )
+    with suppress(Exception):
+        execution.store.record_agent_task_event(
+            execution.operation_id,
+            "Result view created." if prepared.action == "create" else "Result view revised.",
+        )
+    return True
 
 
 def _read_correction_patch(
@@ -165,8 +1018,6 @@ def _work_patch_source_operation_id(
 ) -> str | None:
     if execution is None:
         return None
-    if patch_kind == "experiment_loop":
-        return root_experiment_loop_operation_id(execution)
     return execution.operation_id
 
 
@@ -181,6 +1032,7 @@ def _prepare_work_chat_prompt(
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
+    result_view: _PreparedResultView | None,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -207,6 +1059,8 @@ def _prepare_work_chat_prompt(
         ),
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
+        result_view_action=result_view.action if result_view is not None else None,
+        result_view_path=result_view.prompt_path if result_view is not None else None,
     )
     return prompt, retained_master_path
 
@@ -271,6 +1125,7 @@ def _experiment_maintenance_binding(
 
 async def _process_experiment_watcher_maintenance(
     *,
+    service: ProjectService,
     launcher: AgentLauncher,
     request: RunRequest,
     execution: AgentTaskExecution | None,
@@ -376,6 +1231,18 @@ async def _process_experiment_watcher_maintenance(
             else:
                 try:
                     handoff = parse_experiment_watch_json(text)
+                    graph_state = (
+                        await asyncio.to_thread(service.history.state)
+                        if handoff.graph_conditions
+                        else None
+                    )
+                    graph_armed_revision = graph_state.revision if graph_state is not None else None
+                    if graph_state is not None:
+                        await asyncio.to_thread(
+                            validate_graph_conditions,
+                            handoff.graph_conditions,
+                            graph_state,
+                        )
                     check_results = (
                         await asyncio.to_thread(
                             validate_watch_specs,
@@ -388,11 +1255,22 @@ async def _process_experiment_watcher_maintenance(
                 except (WatcherInitialCheckError, ValueError) as exc:
                     problem = str(exc)
                     correctable = True
-                except (OSError, StateUnavailable) as exc:
+                except (OSError, ReplayHalted, StateUnavailable) as exc:
                     problem = str(exc)
                     correctable = False
                 else:
                     try:
+                        fresh_graph_state = (
+                            await asyncio.to_thread(service.history.state)
+                            if handoff.graph_conditions
+                            else None
+                        )
+                        if handoff.graph_conditions:
+                            # Mark the settlement before the insert attempt. If
+                            # cancellation lands after SQLite commits but before
+                            # this await resumes, ordered reconciliation must
+                            # still catch canonical movement after validation.
+                            execution.armed_graph_watchers = True
                         armed = await asyncio.to_thread(
                             persist_experiment_watchers_idempotently,
                             execution,
@@ -400,11 +1278,14 @@ async def _process_experiment_watcher_maintenance(
                             check_results,
                             binding,
                             handoff.stops,
+                            graph_conditions=handoff.graph_conditions,
+                            graph_state=fresh_graph_state,
+                            armed_revision=graph_armed_revision,
                             expected_watcher_snapshot_token=(
                                 staged.resource.watcher_snapshot_token
                             ),
                         )
-                    except ValueError as exc:
+                    except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
                         problem = str(exc)
                         correctable = False
                     else:
@@ -575,10 +1456,11 @@ async def stream_work_run(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
+        request = _pinned_to_profile(request, profile)
+        revision_record = _preflight_result_view_revision(request, execution)
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
-    request = _pinned_to_profile(request, profile)
     local_stage: Path | None = None
     execution_machine = service.manifest.machine_map[profile.run_on]
     execution_host = execution_machine.host
@@ -586,6 +1468,9 @@ async def stream_work_run(
     remote_stage: RemoteRunStage | None = None
     artifact_scope_id: str | None = None
     artifact_directory: Path | PurePosixPath | None = None
+    prepared_result_view: _PreparedResultView | None = None
+    patch_inputs = None
+    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
     outcome = _ProviderOutcome(session_id=request.session_id)
     validator_budget = PatchValidationBudget()
     try:
@@ -619,11 +1504,25 @@ async def stream_work_run(
             if execution is not None:
                 execution.checkpoint_stage("", str(local_stage))
             workspace = local_stage
+        _roll_result_view_retention(request, execution, local_stage, remote_stage)
+        token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,
             workspace=workspace,
             stage_name=stage_name,
+            task_id=execution.operation_id if execution is not None else token,
+            turn_id=f"{token}:work",
+        )
+        validator_lifecycle = _start_work_validator_mailbox(
+            service,
+            patch_inputs.validator_staged,
+            execution=execution,
+            budget=validator_budget,
+            run_truth_scope=context.run_truth_scope,
+            patch_kind=request.patch_kind,
+            control_node_id=request.control_node_id,
+            control_decision_bundle=request.control_decision_bundle,
         )
         patch_path = patch_inputs.patch_path
         watch_path = patch_inputs.watch_path
@@ -631,14 +1530,22 @@ async def stream_work_run(
         validator_command = patch_inputs.validator_command
         validator_mailbox_id = patch_inputs.validator_mailbox_id
         if not reusing_checkpoint or waking:
-            _clear_stale_patch(workspace, remote_stage)
-            _clear_stale_watch(workspace, remote_stage)
+            _clear_stale_turn_handoffs(workspace, remote_stage)
         artifact_scope_id = (
             _logical_chat_turn_operation_id(execution.store, execution.operation_id)
             if execution is not None and resuming
             else execution.operation_id
             if execution is not None
             else str(uuid.uuid4())
+        )
+        prepared_result_view = _prepare_result_view_turn(
+            request,
+            execution,
+            local_stage,
+            remote_stage,
+            focused_node=context.node,
+            logical_operation_id=artifact_scope_id,
+            revision_record=revision_record,
         )
         if remote_stage is not None:
             artifact_directory = remote_stage.prepare_artifact_directory(
@@ -661,7 +1568,6 @@ async def stream_work_run(
             execution_machine.alias,
             remote=remote_stage is not None,
         )
-        token = _task_token(execution)
         experiment_resources = (
             await stage_chat_experiment_watcher_resources(
                 request,
@@ -820,6 +1726,14 @@ async def stream_work_run(
                         skill_ids=request.invoked_skill_ids,
                     ),
                     invoked_provider_skills=request.resolved_provider_skills,
+                    result_view_action=(
+                        prepared_result_view.action if prepared_result_view is not None else None
+                    ),
+                    result_view_path=(
+                        prepared_result_view.prompt_path
+                        if prepared_result_view is not None
+                        else None
+                    ),
                 )
             contract_path, prompt = _stage_task_contract(
                 local_stage,
@@ -1035,15 +1949,28 @@ async def stream_work_run(
                     stable_values=stable_prompt_values,
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,
+                    result_view=prepared_result_view,
                 )
                 contract_path = retained_master_path
                 base_contract_path = retained_master_path
 
-            if retrying:
+            result_view_handoff = bool(
+                continuation == "handoff" and prepared_result_view is not None
+            )
+            if retrying or result_view_handoff:
                 assert execution is not None
-                original_contract_path = _parent_task_contract_path(
-                    execution, local_stage, remote_stage
-                )
+                if result_view_handoff:
+                    if current_contract_path is None:
+                        raise ValueError(
+                            "The result view create handoff lost its current Work contract."
+                        )
+                    original_contract_path = current_contract_path
+                    continuation_contract_path = None
+                else:
+                    original_contract_path = _parent_task_contract_path(
+                        execution, local_stage, remote_stage
+                    )
+                    continuation_contract_path = current_contract_path
                 if resumed_retry:
                     base_contract_path = original_contract_path
                 if request.patch_kind == "experiment_loop":
@@ -1072,7 +1999,7 @@ async def stream_work_run(
                 else:
                     retry_contract = PromptFactory.continuation_task_contract(
                         original_contract_path=original_contract_path,
-                        current_contract_path=current_contract_path,
+                        current_contract_path=continuation_contract_path,
                         diagnostics_path=retry_diagnostics_path,
                         patch_path=patch_path,
                         watch_path=watch_path,
@@ -1086,6 +2013,16 @@ async def stream_work_run(
                             skill_ids=request.invoked_skill_ids,
                         ),
                         invoked_provider_skills=request.resolved_provider_skills,
+                        result_view_action=(
+                            prepared_result_view.action
+                            if prepared_result_view is not None
+                            else None
+                        ),
+                        result_view_path=(
+                            prepared_result_view.prompt_path
+                            if prepared_result_view is not None
+                            else None
+                        ),
                     )
                 contract_path, prompt = _stage_task_contract(
                     local_stage,
@@ -1128,115 +2065,169 @@ async def stream_work_run(
                 },
                 tier="diagnostic",
             )
-    except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
-        yield _sse(AgentEvent(event="error", text=str(exc)))
-        return
-    else:
-        _record_agent_launch_receipt(
+        _persist_result_view_rollback(
             execution,
-            request,
-            prompt=prompt,
-            contract_path=contract_path,
-            remote=bool(execution_host),
-            resumed=reusing_checkpoint,
-            continuation=continuation,
-            extra={
-                "surface": surface,
-                "mode": "work",
-                "capability": "work_auto",
-                "network_access": True,
-                "launch_kind": (
-                    "retry"
-                    if retry_attempt
-                    else "resume"
-                    if resuming
-                    else "watcher_wake"
-                    if waking
-                    else "initial"
-                ),
-                "write_directory_count": len(write_dirs),
-                "canonical_state_boundary": "prompt_only",
-            },
+            prepared_result_view,
+            local_stage,
+            remote_stage,
         )
-        try:
-            async with aclosing(
-                _stream_work_agent_events(
-                    service,
-                    launcher,
-                    request,
-                    prompt,
-                    workspace=workspace,
-                    session_id=request.session_id,
-                    read_dirs=read_dirs,
-                    write_dirs=write_dirs,
-                    execution_host=execution_host,
-                    execution=execution,
-                    remote_stage=remote_stage,
-                    capability="work_auto",
-                    outcome=outcome,
-                    binary=provider_binary,
-                    mailbox_id=validator_mailbox_id,
-                    validator_budget=validator_budget,
-                    run_truth_scope=context.run_truth_scope,
-                    patch_kind=request.patch_kind,
-                    control_node_id=request.control_node_id,
-                    control_decision_bundle=request.control_decision_bundle,
-                )
-            ) as stream:
-                async for frame in stream:
-                    yield frame
-        except Exception:
-            outcome.failed = True
-            raise
-
-        answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
-        if not outcome.completed:
-            if outcome.failed or outcome.paused:
-                return
-            outcome.failed = True
-            yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
-            return
-        if not answer:
-            yield _sse(
-                AgentEvent(event="error", text=f"{request.provider} finished without answering.")
+    except BaseException as exc:
+        if validator_lifecycle is not None:
+            await validator_lifecycle.close(primary_error=exc)
+        elif patch_inputs is not None and not patch_inputs.validator_staged.credential.expired:
+            await _close_work_validator_mailbox(
+                patch_inputs.validator_staged,
+                stop=None,
+                task=None,
+                execution=execution,
+                primary_error=exc,
             )
+        if isinstance(exc, (OSError, ReplayHalted, StateUnavailable, ValueError)):
+            yield _sse(AgentEvent(event="error", text=str(exc)))
             return
-        if waking and (
-            wake_episode is None or outcome.session_id != wake_episode.native_session_id
-        ):
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=(
-                        "The automatic Experiment wake did not continue its committed native "
-                        "provider session. The watcher handoff was not accepted."
-                    ),
-                )
-            )
-            return
-
-        if uses_master_protocol:
-            _commit_chat_prompt_state(execution, request, outcome.session_id)
-
-        assert artifact_scope_id is not None
-        assert artifact_directory is not None
+        raise
+    else:
+        assert validator_lifecycle is not None
         try:
-            artifacts = _discover_chat_artifacts(
+            _record_agent_launch_receipt(
                 execution,
-                artifact_scope_id,
-                Path(str(artifact_directory)),
-                remote_stage,
+                request,
+                prompt=prompt,
+                contract_path=contract_path,
+                remote=bool(execution_host),
+                resumed=reusing_checkpoint,
+                continuation=continuation,
+                extra={
+                    "surface": surface,
+                    "mode": "work",
+                    "capability": "work_auto",
+                    "network_access": True,
+                    "launch_kind": (
+                        "retry"
+                        if retry_attempt
+                        else "resume"
+                        if resuming
+                        else "watcher_wake"
+                        if waking
+                        else "initial"
+                    ),
+                    "write_directory_count": len(write_dirs),
+                    "canonical_state_boundary": "prompt_only",
+                },
             )
-        except Exception as exc:
-            with suppress(Exception):
-                _record_artifact_discovery_receipt(
-                    execution,
-                    attached=0,
-                    candidates=0,
-                    ignored={"unexpected_error": 1},
-                    detail=str(exc),
+        except BaseException as exc:
+            await validator_lifecycle.close(primary_error=exc)
+            raise
+        result_view_settled = False
+        result_view_rollback_problem = "the Work turn ended before the revision could be accepted"
+        try:
+            try:
+                async with aclosing(
+                    _stream_work_agent_events(
+                        service,
+                        launcher,
+                        request,
+                        prompt,
+                        workspace=workspace,
+                        session_id=request.session_id,
+                        read_dirs=read_dirs,
+                        write_dirs=write_dirs,
+                        execution_host=execution_host,
+                        execution=execution,
+                        remote_stage=remote_stage,
+                        capability="work_auto",
+                        outcome=outcome,
+                        binary=provider_binary,
+                        validator_staged=patch_inputs.validator_staged,
+                        validator_lifecycle=validator_lifecycle,
+                        validator_budget=validator_budget,
+                        run_truth_scope=context.run_truth_scope,
+                        patch_kind=request.patch_kind,
+                        control_node_id=request.control_node_id,
+                        control_decision_bundle=request.control_decision_bundle,
+                    )
+                ) as stream:
+                    async for frame in stream:
+                        yield frame
+            except Exception:
+                outcome.failed = True
+                result_view_rollback_problem = (
+                    "the provider launch failed before the revision could be accepted"
                 )
-            artifacts = []
+                raise
+
+            answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
+            if not outcome.completed:
+                if outcome.failed or outcome.paused:
+                    result_view_rollback_problem = "the provider did not complete the revision"
+                    return
+                outcome.failed = True
+                result_view_rollback_problem = "the provider produced no result"
+                yield _sse(
+                    AgentEvent(event="error", text=f"{request.provider} produced no result.")
+                )
+                return
+            if not answer:
+                result_view_rollback_problem = "the provider finished without an answer"
+                yield _sse(
+                    AgentEvent(
+                        event="error", text=f"{request.provider} finished without answering."
+                    )
+                )
+                return
+            if waking and (
+                wake_episode is None or outcome.session_id != wake_episode.native_session_id
+            ):
+                yield _sse(
+                    AgentEvent(
+                        event="error",
+                        text=(
+                            "The automatic Experiment wake did not continue its committed native "
+                            "provider session. The watcher handoff was not accepted."
+                        ),
+                    )
+                )
+                return
+
+            if uses_master_protocol:
+                _commit_chat_prompt_state(execution, request, outcome.session_id)
+
+            assert artifact_scope_id is not None
+            assert artifact_directory is not None
+            try:
+                artifacts = _discover_chat_artifacts(
+                    execution,
+                    artifact_scope_id,
+                    Path(str(artifact_directory)),
+                    remote_stage,
+                )
+            except Exception as exc:
+                with suppress(Exception):
+                    _record_artifact_discovery_receipt(
+                        execution,
+                        attached=0,
+                        candidates=0,
+                        ignored={"unexpected_error": 1},
+                        detail=str(exc),
+                    )
+                artifacts = []
+            result_view_settled = _finalize_result_view_turn(
+                request,
+                execution,
+                prepared_result_view,
+                local_stage,
+                remote_stage,
+                native_session_id=outcome.session_id,
+            )
+        finally:
+            if not result_view_settled and execution is not None:
+                _restore_rejected_result_view(
+                    execution,
+                    prepared_result_view,
+                    local_stage,
+                    remote_stage,
+                    result_view_rollback_problem,
+                )
         yield _sse(AgentEvent(event="answer", text=answer))
         for artifact in artifacts:
             yield _sse(AgentEvent(event="artifact", artifact=artifact))
@@ -1353,43 +2344,68 @@ async def stream_work_run(
                     f"task-{token}-work-correction-{correction_rounds}.json",
                     {"kind": "work", "problem": failure.message},
                 )
-                correction_contract = PromptFactory.continuation_task_contract(
-                    original_contract_path=base_contract_path,
-                    mode="work_patch_correction",
-                    patch_path=patch_path,
-                    diagnostics_path=diagnostics_path,
-                    validator_command=validator_command,
+                correction_validator = stage_patch_validation_mailbox(
+                    local_stage=local_stage,
+                    remote_stage=remote_stage,
+                    task_id=execution.operation_id if execution is not None else token,
+                    turn_id=f"{token}:work-patch-correction:{correction_rounds}",
+                    timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
                 )
-                correction_path, correction_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-work-correction-{correction_rounds}.md",
-                    correction_contract,
+                correction_validator_lifecycle = _start_work_validator_mailbox(
+                    service,
+                    correction_validator,
                     execution=execution,
-                    role=f"work_patch_correction_{correction_rounds}",
+                    budget=validator_budget,
+                    run_truth_scope=context.run_truth_scope,
+                    patch_kind=request.patch_kind,
+                    control_node_id=request.control_node_id,
+                    control_decision_bundle=request.control_decision_bundle,
                 )
-                pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
-                _record_agent_launch_receipt(
-                    execution,
-                    request,
-                    prompt=correction_prompt,
-                    contract_path=correction_path,
-                    remote=bool(execution_host),
-                    resumed=True,
-                    continuation="graph_correction",
-                    extra={
-                        "surface": surface,
-                        "mode": "work",
-                        "capability": "work_auto",
-                        "network_access": True,
-                        "launch_kind": "graph_correction",
-                        "correction_round": correction_rounds,
-                        "write_directory_count": len(write_dirs),
-                        "canonical_state_boundary": "prompt_only",
-                    },
-                )
-                correction_outcome = _ProviderOutcome(session_id=native_session_id)
-                correction_error: str | None = None
+                try:
+                    correction_validator_command = correction_validator.client_command(
+                        "validate",
+                        patch_path,
+                    )
+                    correction_contract = PromptFactory.continuation_task_contract(
+                        original_contract_path=base_contract_path,
+                        mode="work_patch_correction",
+                        patch_path=patch_path,
+                        diagnostics_path=diagnostics_path,
+                        validator_command=correction_validator_command,
+                    )
+                    correction_path, correction_prompt = _stage_task_contract(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-work-correction-{correction_rounds}.md",
+                        correction_contract,
+                        execution=execution,
+                        role=f"work_patch_correction_{correction_rounds}",
+                    )
+                    pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
+                    _record_agent_launch_receipt(
+                        execution,
+                        request,
+                        prompt=correction_prompt,
+                        contract_path=correction_path,
+                        remote=bool(execution_host),
+                        resumed=True,
+                        continuation="graph_correction",
+                        extra={
+                            "surface": surface,
+                            "mode": "work",
+                            "capability": "work_auto",
+                            "network_access": True,
+                            "launch_kind": "graph_correction",
+                            "correction_round": correction_rounds,
+                            "write_directory_count": len(write_dirs),
+                            "canonical_state_boundary": "prompt_only",
+                        },
+                    )
+                    correction_outcome = _ProviderOutcome(session_id=native_session_id)
+                    correction_error: str | None = None
+                except BaseException as exc:
+                    await correction_validator_lifecycle.close(primary_error=exc)
+                    raise
                 async with aclosing(
                     _stream_work_agent_events(
                         service,
@@ -1406,7 +2422,8 @@ async def stream_work_run(
                         capability="work_auto",
                         outcome=correction_outcome,
                         binary=provider_binary,
-                        mailbox_id=validator_mailbox_id,
+                        validator_staged=correction_validator,
+                        validator_lifecycle=correction_validator_lifecycle,
                         validator_budget=validator_budget,
                         run_truth_scope=context.run_truth_scope,
                         patch_kind=request.patch_kind,
@@ -1502,8 +2519,8 @@ async def stream_work_run(
             watch_text = None
         if request.patch_kind == "experiment_loop" and watch_text is None and watch_problem is None:
             watch_problem = (
-                "Experiment-loop work must write watch.json: use a non-empty watcher list for "
-                "detached work, or [] only after confirming none remains."
+                "Experiment-loop work must write watch.json as an object with external and graph "
+                "lists; leave both lists empty only after confirming nothing remains to watch."
             )
 
         while watch_text is not None or watch_problem is not None:
@@ -1514,11 +2531,12 @@ async def stream_work_run(
                     origin_task = execution.store.agent_task(execution.operation_id)
                     if origin_task is None:
                         raise ValueError("The originating Work operation is no longer available.")
-                    experiment_handoff = (
-                        parse_experiment_watch_json(watch_text)
-                        if request.patch_kind == "experiment_loop"
-                        else None
-                    )
+                    experiment_handoff = None
+                    ordinary_handoff = None
+                    if request.patch_kind == "experiment_loop":
+                        experiment_handoff = parse_experiment_watch_json(watch_text)
+                    else:
+                        ordinary_handoff = parse_watch_json(watch_text)
                     if request.patch_kind == "experiment_loop" and experiment_handoff.is_empty:
                         exit_patch_text = _read_chat_patch(workspace, remote_stage)
                         if not request.control_node_id or not patch_explicitly_exits(
@@ -1531,13 +2549,19 @@ async def stream_work_run(
                             )
                             raise ValueError(
                                 completion_problem
-                                or "An empty Experiment-loop watch.json requires patch.json to "
-                                "explicitly record success, a Proposal, or a same-Patch Blocker."
+                                or "An Experiment-loop watch.json with both lists empty requires "
+                                "patch.json to explicitly record success, a Proposal, or a "
+                                "same-Patch Blocker."
                             )
                     specs = (
                         experiment_handoff.observers
                         if experiment_handoff is not None
-                        else parse_watch_json(watch_text)
+                        else ordinary_handoff.external
+                    )
+                    graph_conditions = (
+                        experiment_handoff.graph_conditions
+                        if experiment_handoff is not None
+                        else ordinary_handoff.graph
                     )
                     stop_requests = (
                         experiment_handoff.stops if experiment_handoff is not None else []
@@ -1583,6 +2607,15 @@ async def stream_work_run(
                             stop_requests,
                         )
                     if request.patch_kind == "experiment_loop":
+                        graph_armed_revision = None
+                        if graph_conditions:
+                            graph_state = await asyncio.to_thread(service.history.state)
+                            await asyncio.to_thread(
+                                validate_graph_conditions,
+                                graph_conditions,
+                                graph_state,
+                            )
+                            graph_armed_revision = graph_state.revision
                         check_results = (
                             await asyncio.to_thread(
                                 validate_watch_specs,
@@ -1592,18 +2625,30 @@ async def stream_work_run(
                             if specs
                             else []
                         )
-                        pending_loop_handoff = (specs, check_results, binding, stop_requests)
+                        pending_loop_handoff = (
+                            specs,
+                            check_results,
+                            graph_conditions,
+                            graph_armed_revision,
+                            binding,
+                            stop_requests,
+                        )
                         armed = []
                     else:
-                        armed = (
-                            await asyncio.to_thread(
-                                arm_watchers,
-                                execution.store,
-                                specs,
-                                binding,
-                            )
-                            if specs
-                            else []
+                        graph_state = (
+                            await asyncio.to_thread(service.history.state)
+                            if graph_conditions
+                            else None
+                        )
+                        if graph_conditions:
+                            execution.armed_graph_watchers = True
+                        armed = await asyncio.to_thread(
+                            arm_watchers,
+                            execution.store,
+                            specs,
+                            binding,
+                            graph_conditions=graph_conditions,
+                            state=graph_state,
                         )
                 except WatcherInitialCheckError as exc:
                     watch_problem = str(exc)
@@ -1611,13 +2656,14 @@ async def stream_work_run(
                 except ValueError as exc:
                     watch_problem = str(exc)
                     watch_correctable = True
-                except (OSError, StateUnavailable) as exc:
+                except (OSError, ReplayHalted, StateUnavailable) as exc:
                     watch_problem = str(exc)
                     watch_correctable = False
                 else:
                     loop_watch_empty = (
                         request.patch_kind == "experiment_loop"
                         and not specs
+                        and not graph_conditions
                         and (
                             not stop_requests
                             or not execution.store.experiment_handoff_has_live_watcher_after_stops(
@@ -1691,92 +2737,127 @@ async def stream_work_run(
                 f"task-{token}-watch-correction-{watch_correction_rounds}.json",
                 {"problem": watch_problem},
             )
-            correction_contract = (
-                experiment_loop_watcher_correction_contract(
-                    original_contract_path=base_contract_path,
-                    diagnostics_path=diagnostics_path,
-                    watch_path=watch_path,
-                    patch_path=patch_path,
-                    output_schema_path=schema_path,
-                    validator_command=validator_command,
-                )
-                if request.patch_kind == "experiment_loop"
-                else PromptFactory.continuation_task_contract(
-                    original_contract_path=base_contract_path,
-                    mode="watch_correction",
-                    diagnostics_path=diagnostics_path,
-                    watch_path=watch_path,
-                )
-            )
-            correction_path, correction_prompt = _stage_task_contract(
-                local_stage,
-                remote_stage,
-                f"task-{token}-watch-correction-{watch_correction_rounds}.md",
-                correction_contract,
-                execution=execution,
-                role=f"watch_correction_{watch_correction_rounds}",
-            )
-            _record_agent_launch_receipt(
-                execution,
-                request,
-                prompt=correction_prompt,
-                contract_path=correction_path,
-                remote=bool(execution_host),
-                resumed=True,
-                continuation="watch_correction",
-                extra={
-                    "surface": surface,
-                    "mode": "work",
-                    "capability": "work_auto",
-                    "network_access": True,
-                    "launch_kind": "watch_correction",
-                    "correction_round": watch_correction_rounds,
-                    "write_directory_count": len(write_dirs),
-                    "canonical_state_boundary": "prompt_only",
-                },
-            )
-            correction_outcome = _ProviderOutcome(session_id=native_session_id)
-            correction_error: str | None = None
-            correction_stream = (
-                _stream_work_agent_events(
-                    service,
-                    launcher,
-                    request,
-                    correction_prompt,
-                    workspace=workspace,
-                    session_id=native_session_id,
-                    read_dirs=read_dirs,
-                    write_dirs=write_dirs,
-                    execution_host=execution_host,
-                    execution=execution,
+            watch_validator: StagedCommandMailbox | None = None
+            watch_validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
+            watch_validator_command = validator_command
+            if request.patch_kind == "experiment_loop":
+                watch_validator = stage_patch_validation_mailbox(
+                    local_stage=local_stage,
                     remote_stage=remote_stage,
-                    capability="work_auto",
-                    outcome=correction_outcome,
-                    binary=provider_binary,
-                    mailbox_id=validator_mailbox_id,
-                    validator_budget=validator_budget,
+                    task_id=execution.operation_id,
+                    turn_id=f"{token}:watch-correction:{watch_correction_rounds}",
+                    timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+                )
+                watch_validator_lifecycle = _start_work_validator_mailbox(
+                    service,
+                    watch_validator,
+                    execution=execution,
+                    budget=validator_budget,
                     run_truth_scope=context.run_truth_scope,
                     patch_kind=request.patch_kind,
                     control_node_id=request.control_node_id,
                     control_decision_bundle=request.control_decision_bundle,
                 )
-                if request.patch_kind == "experiment_loop"
-                else _stream_agent_events(
-                    launcher,
-                    request,
-                    correction_prompt,
-                    workspace=workspace,
-                    session_id=native_session_id,
-                    read_dirs=read_dirs,
-                    write_dirs=write_dirs,
-                    execution_host=execution_host,
-                    execution=execution,
-                    remote_stage=remote_stage,
-                    capability="work_auto",
-                    outcome=correction_outcome,
-                    binary=provider_binary,
+            try:
+                if watch_validator is not None:
+                    watch_validator_command = watch_validator.client_command(
+                        "validate",
+                        patch_path,
+                    )
+                correction_contract = (
+                    experiment_loop_watcher_correction_contract(
+                        original_contract_path=base_contract_path,
+                        diagnostics_path=diagnostics_path,
+                        watch_path=watch_path,
+                        patch_path=patch_path,
+                        output_schema_path=schema_path,
+                        validator_command=watch_validator_command,
+                    )
+                    if request.patch_kind == "experiment_loop"
+                    else PromptFactory.continuation_task_contract(
+                        original_contract_path=base_contract_path,
+                        mode="watch_correction",
+                        diagnostics_path=diagnostics_path,
+                        watch_path=watch_path,
+                    )
                 )
-            )
+                correction_path, correction_prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-watch-correction-{watch_correction_rounds}.md",
+                    correction_contract,
+                    execution=execution,
+                    role=f"watch_correction_{watch_correction_rounds}",
+                )
+                _record_agent_launch_receipt(
+                    execution,
+                    request,
+                    prompt=correction_prompt,
+                    contract_path=correction_path,
+                    remote=bool(execution_host),
+                    resumed=True,
+                    continuation="watch_correction",
+                    extra={
+                        "surface": surface,
+                        "mode": "work",
+                        "capability": "work_auto",
+                        "network_access": True,
+                        "launch_kind": "watch_correction",
+                        "correction_round": watch_correction_rounds,
+                        "write_directory_count": len(write_dirs),
+                        "canonical_state_boundary": "prompt_only",
+                    },
+                )
+                correction_outcome = _ProviderOutcome(session_id=native_session_id)
+                correction_error: str | None = None
+                if request.patch_kind == "experiment_loop":
+                    assert watch_validator is not None
+                    assert watch_validator_lifecycle is not None
+                correction_stream = (
+                    _stream_work_agent_events(
+                        service,
+                        launcher,
+                        request,
+                        correction_prompt,
+                        workspace=workspace,
+                        session_id=native_session_id,
+                        read_dirs=read_dirs,
+                        write_dirs=write_dirs,
+                        execution_host=execution_host,
+                        execution=execution,
+                        remote_stage=remote_stage,
+                        capability="work_auto",
+                        outcome=correction_outcome,
+                        binary=provider_binary,
+                        validator_staged=watch_validator,
+                        validator_lifecycle=watch_validator_lifecycle,
+                        validator_budget=validator_budget,
+                        run_truth_scope=context.run_truth_scope,
+                        patch_kind=request.patch_kind,
+                        control_node_id=request.control_node_id,
+                        control_decision_bundle=request.control_decision_bundle,
+                    )
+                    if request.patch_kind == "experiment_loop"
+                    else _stream_agent_events(
+                        launcher,
+                        request,
+                        correction_prompt,
+                        workspace=workspace,
+                        session_id=native_session_id,
+                        read_dirs=read_dirs,
+                        write_dirs=write_dirs,
+                        execution_host=execution_host,
+                        execution=execution,
+                        remote_stage=remote_stage,
+                        capability="work_auto",
+                        outcome=correction_outcome,
+                        binary=provider_binary,
+                    )
+                )
+            except BaseException as exc:
+                if watch_validator_lifecycle is not None:
+                    await watch_validator_lifecycle.close(primary_error=exc)
+                raise
             async with aclosing(correction_stream) as stream:
                 async for frame in stream:
                     event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
@@ -1805,8 +2886,9 @@ async def stream_work_run(
                 watch_text = None
                 continue
             # Correction validates the resulting Patch/watch handoff, not an
-            # output delta. An empty watcher list may already be correct while
-            # the agent repairs only patch.json to record a terminal outcome.
+            # output delta. A handoff with both lists empty may already be
+            # correct while the agent repairs only patch.json to record a
+            # terminal outcome.
             watch_text = corrected
             watch_problem = None
 
@@ -1816,6 +2898,7 @@ async def stream_work_run(
                 native_session_id,
                 maintenance_paused,
             ) = await _process_experiment_watcher_maintenance(
+                service=service,
                 launcher=launcher,
                 request=request,
                 execution=execution,
@@ -1863,8 +2946,8 @@ async def stream_work_run(
                             or not patch_explicitly_exits(final_patch_text, request.control_node_id)
                         ):
                             final_failure = _WorkPatchFailure(
-                                "An empty watch.json requires this Patch to retain an explicit "
-                                "success, Proposal, or same-Patch Blocker.",
+                                "A watch.json with both lists empty requires this Patch to retain "
+                                "an explicit success, Proposal, or same-Patch Blocker.",
                                 correctable=True,
                             )
                             final_result = None
@@ -1945,42 +3028,67 @@ async def stream_work_run(
                         f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.json",
                         {"kind": "experiment_loop", "problem": final_failure.message},
                     )
-                    correction_contract = experiment_loop_patch_correction_contract(
-                        original_contract_path=base_contract_path,
-                        diagnostics_path=diagnostics_path,
-                        patch_path=patch_path,
-                        watch_path=watch_path,
-                        validator_command=validator_command,
+                    loop_validator = stage_patch_validation_mailbox(
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        task_id=execution.operation_id,
+                        turn_id=(f"{token}:loop-patch-correction:{loop_patch_correction_rounds}"),
+                        timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
                     )
-                    correction_path, correction_prompt = _stage_task_contract(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.md",
-                        correction_contract,
+                    loop_validator_lifecycle = _start_work_validator_mailbox(
+                        service,
+                        loop_validator,
                         execution=execution,
-                        role=f"experiment_loop_patch_correction_{loop_patch_correction_rounds}",
+                        budget=validator_budget,
+                        run_truth_scope=context.run_truth_scope,
+                        patch_kind=request.patch_kind,
+                        control_node_id=request.control_node_id,
+                        control_decision_bundle=request.control_decision_bundle,
                     )
-                    pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
-                    _record_agent_launch_receipt(
-                        execution,
-                        request,
-                        prompt=correction_prompt,
-                        contract_path=correction_path,
-                        remote=bool(execution_host),
-                        resumed=True,
-                        continuation="graph_correction",
-                        extra={
-                            "surface": surface,
-                            "mode": "work",
-                            "capability": "work_auto",
-                            "network_access": True,
-                            "launch_kind": "graph_correction",
-                            "correction_round": loop_patch_correction_rounds,
-                            "write_directory_count": len(write_dirs),
-                            "canonical_state_boundary": "prompt_only",
-                        },
-                    )
-                    correction_outcome = _ProviderOutcome(session_id=native_session_id)
+                    try:
+                        loop_validator_command = loop_validator.client_command(
+                            "validate",
+                            patch_path,
+                        )
+                        correction_contract = experiment_loop_patch_correction_contract(
+                            original_contract_path=base_contract_path,
+                            diagnostics_path=diagnostics_path,
+                            patch_path=patch_path,
+                            watch_path=watch_path,
+                            validator_command=loop_validator_command,
+                        )
+                        correction_path, correction_prompt = _stage_task_contract(
+                            local_stage,
+                            remote_stage,
+                            f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.md",
+                            correction_contract,
+                            execution=execution,
+                            role=f"experiment_loop_patch_correction_{loop_patch_correction_rounds}",
+                        )
+                        pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
+                        _record_agent_launch_receipt(
+                            execution,
+                            request,
+                            prompt=correction_prompt,
+                            contract_path=correction_path,
+                            remote=bool(execution_host),
+                            resumed=True,
+                            continuation="graph_correction",
+                            extra={
+                                "surface": surface,
+                                "mode": "work",
+                                "capability": "work_auto",
+                                "network_access": True,
+                                "launch_kind": "graph_correction",
+                                "correction_round": loop_patch_correction_rounds,
+                                "write_directory_count": len(write_dirs),
+                                "canonical_state_boundary": "prompt_only",
+                            },
+                        )
+                        correction_outcome = _ProviderOutcome(session_id=native_session_id)
+                    except BaseException as exc:
+                        await loop_validator_lifecycle.close(primary_error=exc)
+                        raise
                     async with aclosing(
                         _stream_work_agent_events(
                             service,
@@ -1997,7 +3105,8 @@ async def stream_work_run(
                             capability="work_auto",
                             outcome=correction_outcome,
                             binary=provider_binary,
-                            mailbox_id=validator_mailbox_id,
+                            validator_staged=loop_validator,
+                            validator_lifecycle=loop_validator_lifecycle,
                             validator_budget=validator_budget,
                             run_truth_scope=context.run_truth_scope,
                             patch_kind=request.patch_kind,
@@ -2042,8 +3151,20 @@ async def stream_work_run(
 
             if pending_loop_handoff is not None:
                 assert execution is not None
-                specs, check_results, binding, stop_requests = pending_loop_handoff
+                (
+                    specs,
+                    check_results,
+                    graph_conditions,
+                    graph_armed_revision,
+                    binding,
+                    stop_requests,
+                ) = pending_loop_handoff
                 try:
+                    graph_state = (
+                        await asyncio.to_thread(service.history.state) if graph_conditions else None
+                    )
+                    if graph_conditions:
+                        execution.armed_graph_watchers = True
                     armed = await asyncio.to_thread(
                         persist_experiment_watchers_idempotently,
                         execution,
@@ -2051,8 +3172,11 @@ async def stream_work_run(
                         check_results,
                         binding,
                         stop_requests,
+                        graph_conditions=graph_conditions,
+                        graph_state=graph_state,
+                        armed_revision=graph_armed_revision,
                     )
-                except ValueError as exc:
+                except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
                     yield _sse(
                         AgentEvent(
                             event="error",
@@ -2178,6 +3302,9 @@ async def _stream_work_graph_repair(
     """Repair only a retained Work patch; never repeat the operational turn."""
 
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
+    patch_inputs = None
+    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
+    validator_budget = PatchValidationBudget()
     try:
         profile = service.resolve_agent_profile(
             surface,
@@ -2210,11 +3337,24 @@ async def _stream_work_graph_repair(
             expected_stage = _swept_stage_root(data_dir) / stage_name
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
             workspace = local_stage
+        token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,
             workspace=workspace,
             stage_name=stage_name,
+            task_id=execution.operation_id,
+            turn_id=f"{token}:work-graph-repair",
+        )
+        validator_lifecycle = _start_work_validator_mailbox(
+            service,
+            patch_inputs.validator_staged,
+            execution=execution,
+            budget=validator_budget,
+            run_truth_scope=context.run_truth_scope,
+            patch_kind=request.patch_kind,
+            control_node_id=request.control_node_id,
+            control_decision_bundle=request.control_decision_bundle,
         )
         patch_path = patch_inputs.patch_path
         read_dirs = _chat_read_dirs(
@@ -2231,8 +3371,6 @@ async def _stream_work_graph_repair(
         )
         previous = _rejected_graph_update_for_repair(execution)
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
-        token = _task_token(execution)
-        validator_mailbox_id = patch_inputs.validator_mailbox_id
         validator_command = patch_inputs.validator_command
         diagnostics_path = _stage_json_task_input(
             local_stage,
@@ -2260,28 +3398,45 @@ async def _stream_work_graph_repair(
             role="work_patch_repair",
         )
         pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
-    except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
-        yield _sse(AgentEvent(event="error", text=str(exc)))
-        return
+    except BaseException as exc:
+        if validator_lifecycle is not None:
+            await validator_lifecycle.close(primary_error=exc)
+        elif patch_inputs is not None and not patch_inputs.validator_staged.credential.expired:
+            await _close_work_validator_mailbox(
+                patch_inputs.validator_staged,
+                stop=None,
+                task=None,
+                execution=execution,
+                primary_error=exc,
+            )
+        if isinstance(exc, (OSError, ReplayHalted, StateUnavailable, ValueError)):
+            yield _sse(AgentEvent(event="error", text=str(exc)))
+            return
+        raise
 
-    _record_agent_launch_receipt(
-        execution,
-        request,
-        prompt=prompt,
-        contract_path=contract_path,
-        remote=bool(execution_host),
-        resumed=True,
-        continuation="graph_repair",
-        extra={
-            "surface": surface,
-            "mode": "work",
-            "capability": "work_auto",
-            "network_access": True,
-            "launch_kind": "graph_repair",
-            "write_directory_count": len(write_dirs),
-            "canonical_state_boundary": "prompt_only",
-        },
-    )
+    assert validator_lifecycle is not None
+    try:
+        _record_agent_launch_receipt(
+            execution,
+            request,
+            prompt=prompt,
+            contract_path=contract_path,
+            remote=bool(execution_host),
+            resumed=True,
+            continuation="graph_repair",
+            extra={
+                "surface": surface,
+                "mode": "work",
+                "capability": "work_auto",
+                "network_access": True,
+                "launch_kind": "graph_repair",
+                "write_directory_count": len(write_dirs),
+                "canonical_state_boundary": "prompt_only",
+            },
+        )
+    except BaseException as exc:
+        await validator_lifecycle.close(primary_error=exc)
+        raise
     outcome = _ProviderOutcome(session_id=request.session_id)
     async with aclosing(
         _stream_work_agent_events(
@@ -2299,8 +3454,9 @@ async def _stream_work_graph_repair(
             capability="work_auto",
             outcome=outcome,
             binary=provider_binary,
-            mailbox_id=validator_mailbox_id,
-            validator_budget=PatchValidationBudget(),
+            validator_staged=patch_inputs.validator_staged,
+            validator_lifecycle=validator_lifecycle,
+            validator_budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
             patch_kind=request.patch_kind,
             control_node_id=request.control_node_id,
@@ -2434,6 +3590,129 @@ async def _stream_work_graph_repair(
     yield _sse(AgentEvent(event="done"))
 
 
+def _start_work_validator_mailbox(
+    service: ProjectService,
+    staged: StagedCommandMailbox,
+    *,
+    execution: AgentTaskExecution | None,
+    budget: PatchValidationBudget,
+    run_truth_scope: list[str],
+    patch_kind: Literal["work", "experiment_loop"],
+    control_node_id: str | None,
+    control_decision_bundle: list[ExperimentDecisionPin],
+) -> _WorkValidatorMailboxLifecycle:
+    stop = asyncio.Event()
+    try:
+        task = asyncio.create_task(
+            serve_patch_validation_mailbox(
+                staged=staged,
+                execution=execution,
+                validate=lambda text: _validate_work_patch_live(
+                    service,
+                    text,
+                    run_truth_scope=run_truth_scope,
+                    patch_kind=patch_kind,
+                    control_node_id=control_node_id,
+                    control_decision_bundle=control_decision_bundle,
+                    source_operation_id=_work_patch_source_operation_id(execution, patch_kind),
+                ),
+                stop=stop,
+                budget=budget,
+            )
+        )
+    except BaseException:
+        with suppress(BaseException):
+            staged.cleanup()
+        raise
+    return _WorkValidatorMailboxLifecycle(
+        staged=staged,
+        execution=execution,
+        stop=stop,
+        task=task,
+    )
+
+
+async def _wait_for_work_validator_task(
+    task: asyncio.Task[None],
+) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+    """Wait without allowing caller cancellation to abandon an owned mailbox task."""
+
+    caller_cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if caller_cancelled is None:
+                caller_cancelled = exc
+        except BaseException:
+            break
+    try:
+        task.result()
+    except BaseException as exc:
+        return exc, caller_cancelled
+    return None, caller_cancelled
+
+
+async def _close_work_validator_mailbox(
+    staged: StagedCommandMailbox,
+    *,
+    stop: asyncio.Event | None,
+    task: asyncio.Task[None] | None,
+    execution: AgentTaskExecution | None,
+    primary_error: BaseException | None = None,
+) -> None:
+    if stop is not None:
+        stop.set()
+
+    serve_error: BaseException | None = None
+    caller_cancelled: asyncio.CancelledError | None = None
+    if task is not None:
+        serve_error, caller_cancelled = await _wait_for_work_validator_task(task)
+
+    cleanup_task = asyncio.create_task(asyncio.to_thread(staged.cleanup))
+    cleanup_error, cleanup_cancelled = await _wait_for_work_validator_task(cleanup_task)
+    if caller_cancelled is None:
+        caller_cancelled = cleanup_cancelled
+
+    def warning(message: str) -> None:
+        if execution is None:
+            return
+        with suppress(Exception):
+            execution.store.record_agent_task_event(
+                execution.operation_id,
+                message,
+                level="warning",
+            )
+
+    expected_errors = (OSError, StateUnavailable, ValueError)
+    if primary_error is not None:
+        if serve_error is not None and not isinstance(serve_error, asyncio.CancelledError):
+            warning(f"Patch validator became unavailable: {serve_error}")
+        if cleanup_error is not None and not isinstance(cleanup_error, asyncio.CancelledError):
+            warning(f"Patch validator cleanup failed: {cleanup_error}")
+        return
+
+    if caller_cancelled is not None:
+        if serve_error is not None and not isinstance(serve_error, asyncio.CancelledError):
+            warning(f"Patch validator became unavailable: {serve_error}")
+        if cleanup_error is not None and not isinstance(cleanup_error, asyncio.CancelledError):
+            warning(f"Patch validator cleanup failed: {cleanup_error}")
+        raise caller_cancelled
+
+    if serve_error is not None:
+        if isinstance(serve_error, expected_errors):
+            warning(f"Patch validator became unavailable: {serve_error}")
+        else:
+            if cleanup_error is not None:
+                warning(f"Patch validator cleanup failed: {cleanup_error}")
+            raise serve_error
+    if cleanup_error is not None:
+        if isinstance(cleanup_error, expected_errors):
+            warning(f"Patch validator cleanup failed: {cleanup_error}")
+        else:
+            raise cleanup_error
+
+
 async def _stream_work_agent_events(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -2450,39 +3729,25 @@ async def _stream_work_agent_events(
     capability: Literal["work_auto"],
     outcome: _ProviderOutcome,
     binary: str | None,
-    mailbox_id: str,
+    validator_staged: StagedCommandMailbox,
+    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None,
     validator_budget: PatchValidationBudget,
     run_truth_scope: list[str],
     patch_kind: Literal["work", "experiment_loop"],
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> AsyncIterator[str]:
-    await asyncio.to_thread(
-        prepare_patch_validation_mailbox,
-        mailbox_id=mailbox_id,
-        workspace=workspace,
-        remote_stage=remote_stage,
+    lifecycle = validator_lifecycle or _start_work_validator_mailbox(
+        service,
+        validator_staged,
+        execution=execution,
+        budget=validator_budget,
+        run_truth_scope=run_truth_scope,
+        patch_kind=patch_kind,
+        control_node_id=control_node_id,
+        control_decision_bundle=control_decision_bundle,
     )
-    stop = asyncio.Event()
-    mailbox = asyncio.create_task(
-        serve_patch_validation_mailbox(
-            mailbox_id=mailbox_id,
-            workspace=workspace,
-            remote_stage=remote_stage,
-            execution=execution,
-            validate=lambda text: _validate_work_patch_live(
-                service,
-                text,
-                run_truth_scope=run_truth_scope,
-                patch_kind=patch_kind,
-                control_node_id=control_node_id,
-                control_decision_bundle=control_decision_bundle,
-                source_operation_id=_work_patch_source_operation_id(execution, patch_kind),
-            ),
-            stop=stop,
-            budget=validator_budget,
-        )
-    )
+    primary_error: BaseException | None = None
     try:
         async with aclosing(
             _stream_agent_events(
@@ -2503,18 +3768,11 @@ async def _stream_work_agent_events(
         ) as stream:
             async for frame in stream:
                 yield frame
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        stop.set()
-        try:
-            await mailbox
-        finally:
-            await asyncio.to_thread(
-                cleanup_patch_validation_mailbox,
-                mailbox_id=mailbox_id,
-                workspace=workspace,
-                remote_stage=remote_stage,
-                execution=execution,
-            )
+        await lifecycle.close(primary_error=primary_error)
 
 
 def _prepare_work_patch_candidate(
@@ -2526,14 +3784,19 @@ def _prepare_work_patch_candidate(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin] | None,
     source_operation_id: str | None = None,
+    profile: AgentProfile = "ordinary",
 ) -> _PreparedWorkPatch:
-    draft, _ = service.parse_patch_output([patch_text])
-    validate_agent_patch_shape(draft)
+    if profile == "ordinary":
+        draft, _ = service.parse_patch_output([patch_text])
+    else:
+        draft = parse_agent_patch_json(patch_text, profile=profile)
+    validate_agent_patch_shape(draft, profile=profile)
     patch = prepare_agent_patch(
         draft,
         kind=patch_kind,
         run_truth_scope=run_truth_scope,
         source_operation_id=source_operation_id,
+        profile=profile,
     )
     if patch_kind == "experiment_loop":
         patch = patch.model_copy(
@@ -2562,6 +3825,7 @@ def _validate_work_patch_live(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin] | None,
     source_operation_id: str | None = None,
+    profile: AgentProfile = "ordinary",
 ) -> PatchValidationResult:
     try:
         candidate = _prepare_work_patch_candidate(
@@ -2572,6 +3836,7 @@ def _validate_work_patch_live(
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=source_operation_id,
+            profile=profile,
         )
         prepared, report, state = service.history.validate_candidate(candidate.patch)
     except (ReplayHalted, StateUnavailable, OSError) as exc:
@@ -2650,6 +3915,7 @@ def _apply_work_patch(
     patch_kind: Literal["work", "experiment_loop"] = "work",
     control_node_id: str | None = None,
     control_decision_bundle: list[ExperimentDecisionPin] | None = None,
+    profile: AgentProfile = "ordinary",
 ) -> tuple[GraphUpdateResult | None, _WorkPatchFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
@@ -2674,6 +3940,7 @@ def _apply_work_patch(
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=source_operation_id,
+            profile=profile,
         )
         patch = candidate.patch
         change_summary = candidate.change_summary

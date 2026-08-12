@@ -41,6 +41,25 @@ class AgentArtifactDescriptor(BaseModel):
     media_type: ArtifactMediaType
 
 
+class ResultViewDescriptor(BaseModel):
+    """Public metadata for one stable, conversation-scoped result view."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    chat_id: str = Field(min_length=1)
+    experiment_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=255)
+    media_type: Literal["text/html"]
+    state: Literal["temporary", "kept"]
+    created_at: str = Field(min_length=1)
+    updated_at: str = Field(min_length=1)
+    expires_at: str = Field(min_length=1)
+    kept_filename: str | None = None
+    kept_at: str | None = None
+    can_revise: bool
+
+
 def artifact_id(scope_id: str, name: str) -> str:
     """Return an opaque, task-scope-bound identifier without exposing a path."""
     return hashlib.sha256(f"{scope_id}\0{name}".encode()).hexdigest()[:24]
@@ -222,7 +241,7 @@ class _ArtifactHTMLSanitizer(HTMLParser):
         self.parts.append(f"<?{data}>")
 
 
-def html_preview_document(data: bytes) -> tuple[str, str]:
+def html_preview_document(data: bytes, *, result_view_gestures: bool = False) -> tuple[str, str]:
     """Build an RCP-owned wrapper and its CSP for an opaque sandboxed document."""
     source = data.decode("utf-8")
     sanitizer = _ArtifactHTMLSanitizer()
@@ -270,6 +289,30 @@ window.addEventListener('message',(event)=>{{
   }} catch {{}}
 }});
 </script>"""
+    if result_view_gestures:
+        wrapper_script += """<script>(()=>{
+const artifact=document.getElementById('artifact');
+const expectedKeys=['description','gesture','type','version'];
+const utf8=new TextEncoder();
+window.addEventListener('message',(event)=>{
+  const value=event.data;
+  if(event.source!==artifact.contentWindow || !value || typeof value!=='object') return;
+  const keys=Object.keys(value).sort();
+  if(keys.length!==expectedKeys.length ||
+     keys.some((key,index)=>key!==expectedKeys[index])) return;
+  if(value.type!=='rcp-result-view-gesture' || value.version!==1 ||
+     (value.gesture!=='box' && value.gesture!=='underscore') ||
+     typeof value.description!=='string' || !value.description.trim() ||
+     utf8.encode(value.description).byteLength>2048) return;
+  if(window.parent===window) return;
+  window.parent.postMessage({
+    type:'rcp-result-view-gesture',
+    version:1,
+    gesture:value.gesture,
+    description:value.description
+  },'*');
+});
+})();</script>"""
     document = (
         '<!doctype html><meta charset="utf-8">'
         "<title>Artifact preview</title>"

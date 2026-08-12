@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import shlex
 import shutil
@@ -19,6 +20,7 @@ from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.limits import STATE_LOCK_POLL_INTERVAL_SECONDS
 from rcp.paper import PaperService
+from rcp.setup import ProjectSetupRequest, render_manifest
 from rcp.storage import AppStore
 from rcp.transport import (
     BatchPublishFailed,
@@ -27,6 +29,7 @@ from rcp.transport import (
     SSHStateWorkspace,
     StateUnavailable,
     StateWorkspace,
+    prepare_state_workspace,
     repository_access,
 )
 from rcp.transport.state import (
@@ -102,6 +105,7 @@ def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_p
     assert workspace.committed_patches == ["patches/000001.json"]
     assert "graph.json" in published
     assert "research.md" in published
+    assert "manifest.toml" in published
     assert "paper/introduction.md" not in published
     assert created.sync_state == "unsynced"
     assert workspace.transactions == 2
@@ -341,6 +345,115 @@ def test_local_graph_run_wait_can_be_cancelled(tmp_path) -> None:
         cancellation.set()
         with pytest.raises(RunLockCancelled, match="cancelled while waiting"):
             future.result(timeout=5)
+
+
+def test_local_archive_moves_complete_research_to_unique_timestamped_sibling(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / ".research"
+    patch = root / "patches" / "000001.json"
+    patch.parent.mkdir(parents=True)
+    patch.write_text('{"revision": 1}\n', encoding="utf-8")
+    (root / "graph.json").write_text("{}\n", encoding="utf-8")
+    timestamp = "20260812T123456123456Z"
+    collision = tmp_path / f".research.archive-{timestamp}"
+    collision.mkdir()
+    (collision / "keep.txt").write_text("older archive\n", encoding="utf-8")
+    workspace = LocalStateWorkspace(root, str(root))
+    monkeypatch.setattr("rcp.transport.state._archive_timestamp", lambda: timestamp)
+
+    archive_location = workspace.archive_research()
+
+    archive = tmp_path / f".research.archive-{timestamp}-2"
+    assert archive_location == str(archive)
+    assert root.exists() is False
+    assert (archive / "patches" / "000001.json").read_text(encoding="utf-8") == (
+        '{"revision": 1}\n'
+    )
+    assert (archive / "graph.json").read_text(encoding="utf-8") == "{}\n"
+    assert (collision / "keep.txt").read_text(encoding="utf-8") == "older archive\n"
+
+
+def test_local_archive_waits_for_in_flight_append_writer(tmp_path) -> None:
+    root = tmp_path / ".research"
+    patch = root / "patches" / "000001.json"
+    patch.parent.mkdir(parents=True)
+    patch.write_text("original patch\n", encoding="utf-8")
+    lock_path = root / ".append.lock"
+    workspace = LocalStateWorkspace(root, str(root))
+    archive_started = threading.Event()
+
+    def archive() -> str:
+        archive_started.set()
+        return workspace.archive_research()
+
+    with lock_path.open("a+", encoding="utf-8") as writer_lock:
+        fcntl.flock(writer_lock.fileno(), fcntl.LOCK_EX)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(archive)
+            assert archive_started.wait(timeout=5)
+            with pytest.raises(TimeoutError):
+                future.result(timeout=0.1)
+            assert patch.read_text(encoding="utf-8") == "original patch\n"
+            fcntl.flock(writer_lock.fileno(), fcntl.LOCK_UN)
+            archive_location = future.result(timeout=5)
+
+    archive_path = Path(archive_location)
+    assert root.exists() is False
+    assert (archive_path / "patches" / "000001.json").read_text(encoding="utf-8") == (
+        "original patch\n"
+    )
+
+
+def test_local_archive_rechecks_reviewed_history_under_append_lock(tmp_path) -> None:
+    root = tmp_path / ".research"
+    patch = root / "patches" / "000001.json"
+    patch.parent.mkdir(parents=True)
+    (root / "manifest.toml").write_text("name = 'reviewed'\n", encoding="utf-8")
+    patch.write_text("reviewed patch\n", encoding="utf-8")
+    workspace = LocalStateWorkspace(root, str(root))
+    reviewed = workspace.retained_history_fingerprint()
+    archive_started = threading.Event()
+
+    def archive() -> str:
+        archive_started.set()
+        return workspace.archive_research(expected_history_fingerprint=reviewed)
+
+    with (root / ".append.lock").open("a+", encoding="utf-8") as writer_lock:
+        fcntl.flock(writer_lock.fileno(), fcntl.LOCK_EX)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(archive)
+            assert archive_started.wait(timeout=5)
+            with pytest.raises(TimeoutError):
+                future.result(timeout=0.1)
+            patch.write_text("changed patch\n", encoding="utf-8")
+            fcntl.flock(writer_lock.fileno(), fcntl.LOCK_UN)
+            with pytest.raises(StateUnavailable, match="changed since you reviewed it"):
+                future.result(timeout=5)
+
+    assert patch.read_text(encoding="utf-8") == "changed patch\n"
+    assert list(tmp_path.glob(".research.archive-*")) == []
+
+
+def test_local_archive_rename_failure_leaves_complete_original_intact(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / ".research"
+    patch = root / "patches" / "000001.json"
+    patch.parent.mkdir(parents=True)
+    patch.write_text("original patch\n", encoding="utf-8")
+    workspace = LocalStateWorkspace(root, str(root))
+
+    def fail_rename(_source, _destination) -> None:
+        raise PermissionError("rename denied")
+
+    monkeypatch.setattr("rcp.transport.state.os.rename", fail_rename)
+
+    with pytest.raises(StateUnavailable, match="rename denied"):
+        workspace.archive_research()
+
+    assert patch.read_text(encoding="utf-8") == "original patch\n"
+    assert list(tmp_path.glob(".research.archive-*")) == []
 
 
 def _enter_run_lock(workspace, **kwargs) -> None:
@@ -693,6 +806,180 @@ def test_remote_advisory_lock_command_quotes_the_exact_path() -> None:
     remote_arguments = shlex.split(arguments[-1])
     assert remote_arguments[0:2] == ["python3", "-c"]
     assert remote_arguments[-1] == lock_path
+
+
+def test_remote_archive_renames_canonical_tree_then_clears_only_stale_mirror(
+    tmp_path, monkeypatch
+) -> None:
+    remote_repository = tmp_path / "remote" / "project"
+    remote_root = remote_repository / ".research"
+    remote_patch = remote_root / "patches" / "000001.json"
+    remote_patch.parent.mkdir(parents=True)
+    remote_patch.write_text("remote patch\n", encoding="utf-8")
+    timestamp = "20260812T123456123456Z"
+    collision = remote_repository / f".research.archive-{timestamp}"
+    collision.mkdir()
+    (collision / "keep.txt").write_text("older archive\n", encoding="utf-8")
+
+    cache_parent = tmp_path / "cache"
+    mirror = cache_parent / ".research"
+    stale_patch = mirror / "patches" / "000001.json"
+    stale_patch.parent.mkdir(parents=True)
+    stale_patch.write_text("stale mirror patch\n", encoding="utf-8")
+    unrelated_cache = cache_parent / "keep.txt"
+    unrelated_cache.write_text("unrelated cache\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(mirror, "research.example", str(remote_repository))
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        yield RunLockLease(str(path))
+
+    def run_remote_command_locally(arguments, **_kwargs):
+        return subprocess.run(
+            [sys.executable, *arguments[1:]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    monkeypatch.setattr("rcp.transport.state._archive_timestamp", lambda: timestamp)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(workspace, "_ssh", run_remote_command_locally)
+
+    archive_location = workspace.archive_research()
+
+    remote_archive = remote_repository / f".research.archive-{timestamp}-2"
+    assert archive_location == f"research.example:{remote_archive}"
+    assert remote_root.exists() is False
+    assert (remote_archive / "patches" / "000001.json").read_text(encoding="utf-8") == (
+        "remote patch\n"
+    )
+    assert (collision / "keep.txt").read_text(encoding="utf-8") == "older archive\n"
+    assert mirror.exists() is False
+    assert unrelated_cache.read_text(encoding="utf-8") == "unrelated cache\n"
+
+
+def test_remote_archive_failure_preserves_canonical_tree_and_local_mirror(
+    tmp_path, monkeypatch
+) -> None:
+    remote_repository = tmp_path / "remote" / "project"
+    remote_patch = remote_repository / ".research" / "patches" / "000001.json"
+    remote_patch.parent.mkdir(parents=True)
+    remote_patch.write_text("remote patch\n", encoding="utf-8")
+    mirror = tmp_path / "cache" / ".research"
+    stale_patch = mirror / "patches" / "000001.json"
+    stale_patch.parent.mkdir(parents=True)
+    stale_patch.write_text("stale mirror patch\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(mirror, "research.example", str(remote_repository))
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        yield RunLockLease(str(path))
+
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 1, "", "rename denied"),
+    )
+
+    with pytest.raises(StateUnavailable, match="original directory remains intact"):
+        workspace.archive_research()
+
+    assert remote_patch.read_text(encoding="utf-8") == "remote patch\n"
+    assert stale_patch.read_text(encoding="utf-8") == "stale mirror patch\n"
+
+
+def test_remote_archive_rechecks_reviewed_history_while_refresh_lock_is_held(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    remote_repository = tmp_path / "remote" / "project"
+    remote_root = remote_repository / ".research"
+    remote_patch = remote_root / "patches" / "000001.json"
+    remote_patch.parent.mkdir(parents=True)
+    (remote_root / "manifest.toml").write_text("name = 'remote'\n", encoding="utf-8")
+    remote_patch.write_text("reviewed patch\n", encoding="utf-8")
+    mirror = tmp_path / "cache" / ".research"
+    shutil.copytree(remote_root, mirror)
+    workspace = SSHStateWorkspace(mirror, "research.example", str(remote_repository))
+    reviewed = workspace.retained_history_fingerprint()
+    remote_patch.write_text("changed patch\n", encoding="utf-8")
+    lock_held = False
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        nonlocal lock_held
+        lock_held = True
+        try:
+            yield RunLockLease(str(path), owned=lambda: lock_held)
+        finally:
+            lock_held = False
+
+    def run_remote_command_locally(arguments, **_kwargs):
+        assert lock_held is True
+        return subprocess.run(
+            [sys.executable, *arguments[1:]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(workspace, "_ssh", run_remote_command_locally)
+
+    with pytest.raises(StateUnavailable, match="changed since you reviewed it"):
+        workspace.archive_research(expected_history_fingerprint=reviewed)
+
+    assert remote_patch.read_text(encoding="utf-8") == "changed patch\n"
+    assert (mirror / "patches" / "000001.json").read_text(encoding="utf-8") == ("reviewed patch\n")
+    assert list(remote_repository.glob(".research.archive-*")) == []
+
+
+def test_confirmed_absent_remote_discards_stale_mirror_before_fresh_initialization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    request = ProjectSetupRequest.model_validate(
+        {
+            "name": "same-name",
+            "repositories": [
+                {
+                    "alias": "remote-repo",
+                    "location": "ssh",
+                    "host": "gpu.example",
+                    "path": "/srv/paper",
+                    "default_read": True,
+                }
+            ],
+            "state_repository": "remote-repo",
+            "execution": {"location": "ssh", "host": "gpu.example"},
+        }
+    )
+    bootstrap_path = tmp_path / "bootstrap.toml"
+    bootstrap_path.write_text(render_manifest(request), encoding="utf-8")
+    bootstrap = load_manifest(bootstrap_path)
+    mirror = tmp_path / "state-cache" / ".research"
+    mirror.mkdir(parents=True)
+    stale_manifest = mirror / "manifest.toml"
+    stale_manifest.write_text(render_manifest(request), encoding="utf-8")
+    stale_patch = mirror / "patches" / "000001.json"
+    stale_patch.parent.mkdir()
+    stale_patch.write_text("archived history must not return\n", encoding="utf-8")
+    workspace = SSHStateWorkspace(mirror, "gpu.example", "/srv/paper")
+    monkeypatch.setattr(workspace, "refresh", lambda: False)
+    monkeypatch.setattr(
+        "rcp.transport.state.state_workspace_for_probe",
+        lambda _bootstrap, _data_dir: workspace,
+    )
+
+    fresh, returned_workspace = prepare_state_workspace(bootstrap, tmp_path / "data")
+
+    assert returned_workspace is workspace
+    assert fresh.path == mirror / "manifest.toml"
+    assert fresh.name == "same-name"
+    assert not stale_patch.exists()
+    assert stale_manifest.read_text(encoding="utf-8") == bootstrap_path.read_text(encoding="utf-8")
 
 
 def test_remote_run_lock_forwards_wait_and_cancellation_hooks(tmp_path, monkeypatch) -> None:

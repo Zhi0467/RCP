@@ -15,7 +15,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
 from rcp.runs.graph import stream_graph_run
 from rcp.runs.patch_validator import VALIDATOR_CLIENT_SOURCE
-from rcp.service import RunRequest
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
 from tests.helpers import agent_patch_json, seed_patch
 from tests.helpers import create_named_app as create_app
@@ -31,6 +31,9 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
     owner = store.local_owner
     assert owner is not None and owner.display_name is not None
     operation_id = "seed-live-validator"
+    request = RunRequest(run_truth_scope=["repo-a"])
+    dispatch_authority = resolve_dispatch_authority("seed", request)
+    assert dispatch_authority is not None
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -38,7 +41,7 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             project_id=app.state.default_project_id,
             kind="seed",
             status="running",
-            request={"run_truth_scope": ["repo-a"]},
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="running",
@@ -47,6 +50,7 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
                 user_id=owner.user_id,
                 display_name=owner.display_name,
             ),
+            dispatch_authority=dispatch_authority,
         )
     )
     execution = AgentTaskExecution(
@@ -93,7 +97,7 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             service,
             launcher,
             "seed",
-            RunRequest(run_truth_scope=["repo-a"]),
+            request,
             tmp_path / "data",
             execution=execution,
         )

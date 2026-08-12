@@ -188,12 +188,51 @@ def test_standalone_review_generates_research_md(manifest) -> None:
 
 
 @pytest.mark.parametrize("standing", ["asserted", "contested"])
-def test_agent_removes_asserted_or_contested_node_and_incident_edges(
+def test_agent_removes_asserted_or_contested_ordinary_node_and_incident_edges(
     manifest, standing: str
 ) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    node_id = "hyp/replanning-restores-plasticity"
+    node_id = "blk/missing-capacity"
+    experiment_id = "exp/capacity-check"
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Recorded an ordinary blocker and its dependent experiment.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": node_id,
+                            "type": "blocker",
+                            "title": "Missing capacity",
+                            "description": "The experiment is waiting for capacity.",
+                        },
+                        {
+                            "id": experiment_id,
+                            "type": "experiment",
+                            "title": "Capacity check",
+                            "objective": "Measure the available capacity.",
+                        },
+                    ],
+                },
+                {
+                    "op": "create_edges",
+                    "edges": [
+                        {
+                            "source": experiment_id,
+                            "target": node_id,
+                            "relation": "blocked_by",
+                        }
+                    ],
+                },
+            ],
+        )
+    )
     if standing == "contested":
         history.append(
             Patch(
@@ -208,7 +247,7 @@ def test_agent_removes_asserted_or_contested_node_and_incident_edges(
 
     state = history.state()
     assert node_id not in state.nodes
-    assert "rq/learning-after-shift" in state.nodes
+    assert experiment_id in state.nodes
     assert all(edge.source != node_id and edge.target != node_id for edge in state.edges.values())
 
 
@@ -603,7 +642,7 @@ def test_agent_cannot_apply_gated_hypothesis_transition(manifest) -> None:
                 ],
             )
         )
-    assert any(message.code == "gated-transition" for message in caught.value.report.messages)
+    assert any(message.code == "graph-action-refused" for message in caught.value.report.messages)
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 
@@ -779,7 +818,7 @@ def test_agent_cannot_supersede_or_merge_a_hypothesis_directly(manifest, operati
             )
         )
 
-    assert any(message.code == "gated-transition" for message in caught.value.report.messages)
+    assert any(message.code == "graph-action-refused" for message in caught.value.report.messages)
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 3
 
 
@@ -787,25 +826,13 @@ def test_agent_cannot_supersede_or_merge_a_hypothesis_directly(manifest, operati
 def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operation) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the research question.",
-            ops=[
-                {
-                    "op": "set_standing",
-                    "node_id": "rq/learning-after-shift",
-                    "standing": "accepted",
-                }
-            ],
-        )
-    )
+    duplicate_id = "blk/missing-capacity"
+    canonical_id = "blk/canonical-capacity"
     history.append(
         Patch(
             kind="refresh",
             author="agent",
-            summary="Recorded a canonical research question.",
+            summary="Recorded two capacity blockers.",
             run_truth_scope=["repo-a"],
             repositories_read=["repo-a"],
             ops=[
@@ -813,12 +840,32 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
                     "op": "create_nodes",
                     "nodes": [
                         {
-                            "id": "rq/canonical-learning-question",
-                            "type": "research_question",
-                            "title": "Canonical learning question",
-                            "question": "How does adaptation survive a task shift?",
-                        }
+                            "id": duplicate_id,
+                            "type": "blocker",
+                            "title": "Missing capacity",
+                            "description": "The run needs more capacity.",
+                        },
+                        {
+                            "id": canonical_id,
+                            "type": "blocker",
+                            "title": "Canonical capacity blocker",
+                            "description": "The run is waiting for its assigned capacity.",
+                        },
                     ],
+                }
+            ],
+        )
+    )
+    history.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Accepted the capacity blocker.",
+            ops=[
+                {
+                    "op": "set_standing",
+                    "node_id": duplicate_id,
+                    "standing": "accepted",
                 }
             ],
         )
@@ -828,8 +875,8 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
             "op": operation,
             "nodes": [
                 {
-                    "id": "rq/learning-after-shift",
-                    "superseded_by": "rq/canonical-learning-question",
+                    "id": duplicate_id,
+                    "superseded_by": canonical_id,
                 }
             ],
         }
@@ -838,8 +885,8 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
             "op": operation,
             "merges": [
                 {
-                    "duplicate": "rq/learning-after-shift",
-                    "canonical": "rq/canonical-learning-question",
+                    "duplicate": duplicate_id,
+                    "canonical": canonical_id,
                 }
             ],
         }
@@ -848,14 +895,14 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
         Patch(
             kind="refresh",
             author="agent",
-            summary="Reconciled duplicate research questions.",
+            summary="Reconciled duplicate capacity blockers.",
             run_truth_scope=["repo-a"],
             repositories_read=["repo-a"],
             ops=[op],
         )
     )
 
-    node = history.state().nodes["rq/learning-after-shift"]
+    node = history.state().nodes[duplicate_id]
     assert node.status == "superseded"
     assert node.standing == "asserted"
 
@@ -982,6 +1029,32 @@ def test_tampered_accepted_patch_halts_before_it_and_blocks_later_writes(manifes
             ]
         )
     assert not (manifest.research_dir / "patches" / "000004.json").exists()
+
+
+def test_structural_failure_after_invalid_patch_reports_the_earliest_boundary(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    history.append(refresh_patch("rq/semantic-failure"))
+    history.append(refresh_patch("rq/schema-failure"))
+
+    semantic_path = manifest.research_dir / "patches" / "000002.json"
+    semantic = json.loads(semantic_path.read_text(encoding="utf-8"))
+    semantic["ops"][0]["nodes"][0]["type"] = "not-a-node-type"
+    semantic_path.write_text(json.dumps(semantic), encoding="utf-8")
+    structural_path = manifest.research_dir / "patches" / "000003.json"
+    structural = json.loads(structural_path.read_text(encoding="utf-8"))
+    structural["kind"] = "retired-patch-kind"
+    structural_path.write_text(json.dumps(structural), encoding="utf-8")
+
+    state = history.state()
+
+    assert state.replay_status == "degraded"
+    assert state.revision == 1
+    assert state.replay_failure is not None
+    assert state.replay_failure.revision == 2
+    assert state.replay_failure.code == "invalid-node"
+    assert "rq/semantic-failure" not in state.nodes
+    assert "rq/schema-failure" not in state.nodes
 
 
 def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
@@ -1124,7 +1197,7 @@ def test_project_identity_claim_is_visible_idempotent_and_semantically_empty(
 
 
 @pytest.mark.parametrize("write_outputs", [False, True])
-def test_replay_refuses_missing_scope_provenance_once_history_exists(
+def test_replay_degrades_without_repairing_missing_scope_provenance(
     manifest,
     write_outputs,
 ) -> None:
@@ -1133,8 +1206,14 @@ def test_replay_refuses_missing_scope_provenance_once_history_exists(
     scope_base = manifest.research_dir / "scope-base.json"
     scope_base.unlink()
 
-    with pytest.raises(FileNotFoundError, match="scope provenance.*absent.*history exists"):
-        HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=write_outputs)
+    result = HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=write_outputs)
+
+    assert result.state.replay_status == "degraded"
+    assert result.state.revision == 0
+    assert result.state.replay_failure is not None
+    assert result.state.replay_failure.revision == 1
+    assert result.state.replay_failure.code == "scope-provenance-missing"
+    assert "absent while Patch history exists" in result.state.replay_failure.message
     assert not scope_base.exists()
 
 

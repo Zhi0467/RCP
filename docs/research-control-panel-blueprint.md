@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.43
+**Version:** 0.54
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,54 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.54** — added the campaign id to the Patch envelope as the one additive
+  campaign-lineage field, stamped from the producing task and inert to every
+  authority decision, while keeping parent-task and worker lineage operational;
+  and made RCP store and serve a result view's verified bytes itself, leaving
+  the staged file as the agent's working copy.
+- **0.53** — gave the Auto-research parent in Runs one campaign health and
+  recommendation shared by its compact row and detail, kept task and worker
+  states as supporting history, and gated optional controls by validity.
+- **0.52** — moved the personal display-name and durable-user-id surface from
+  project Settings to one compact project-index identity panel; made the exact
+  id visible and copyable without making it editable; and reserved visibly
+  disabled team enrollment and invitation controls without simulating the
+  still-unimplemented authentication or membership contracts.
+- **0.51** — gave Runs one Experiment-loop health and recommendation shared by
+  its compact row and detail, removed peer task and semantic states, and hid
+  controls invalid for that structured state.
+- **0.50** — made campaign completion an explicit idempotent orchestrator command;
+  fixed the default campaign budget at ten invocations; made wrap-up wait for
+  admitted children and resume the sole orchestrator's exact session with the
+  required report skill and output; and kept campaign recovery and controls at
+  the campaign level rather than inventing worker verdicts or worker controls.
+- **0.49** — bound a fresh-start archive confirmation to the exact retained
+  manifest and Patch history shown in the wizard, checked under the same lock
+  that performs the whole-directory rename.
+- **0.48** — made rebuildable source and session-slice caches project-owned;
+  kept ordinary project clearing local to that project; and separated an
+  explicitly warned, confirmation-gated app-wide clear for every project cache.
+- **0.47** — made Add project detect and read-only replay retained RCP research
+  before acting, expose compatibility and the last coherent state, and require
+  an explicit choice between opening it and atomically archiving the complete
+  `.research/` directory before starting fresh.
+- **0.46** — protected every change to an existing ResearchQuestion or
+  Hypothesis behind one of six declared Proposal intents; kept Evidence causes
+  exclusive to status changes; made removal judgment cover an exact incident-
+  relation snapshot; and made one human Sync resolve overlapping judgments
+  against the state produced by its earlier judgments.
+- **0.45** — bounded the scheduler non-goal instead of keeping it absolute: RCP
+  now schedules research work, but only inside a human-authorized auto-research
+  campaign carrying a human-set invocation budget it cannot widen. Added the
+  campaign itself — one project-owned orchestrator profile, project scope, the
+  protected-type rule and the budget as its only brakes, workers seated on
+  Experiments and Blockers, star-topology mail, a staged command client, and one
+  durable report on every ending.
+- **0.44** — let an agent wait on a canonical graph fact instead of a shell
+  command, through a closed two-condition vocabulary evaluated at revision
+  boundaries; and let an ordinary Work turn draw a result view the human reads
+  inside Runs, revises by acting on the picture, and may Keep as a repository
+  file that carries no graph authority.
 - **0.43** — distinguished first and later Experiment episode starts by episode
   history, preserved pinned historical invocation budgets beside the current
   next-episode limit, and made concise graph nodes point to useful durable
@@ -151,9 +199,15 @@ RCP is a local research control panel that turns agent-assisted research into:
 
 The graph is both a research record and a control input. Epistemic structure
 records what is believed and why. Action structure records what decisions and
-blockers govern experiments. RCP may dispatch work from that structure, but it
-does not become a scheduler, silently accept scientific conclusions, or treat
-mutable operational observations as canonical truth.
+blockers govern experiments. RCP dispatches work from that structure, and it
+never silently accepts scientific conclusions or treats mutable operational
+observations as canonical truth.
+
+RCP does schedule research work, and only under one bound: inside an
+auto-research campaign a human authorized, against an invocation budget that
+human set. The campaign may create and revise research framing within that
+scope. It may never widen its own authorization. Outside a live campaign RCP
+still schedules nothing on its own.
 
 The expensive-to-reverse commitments are the graph ontology, the Patch log's
 meaning, the human authority boundary, and the separation between canonical and
@@ -214,6 +268,35 @@ Repository membership and run focus are different:
 - repository paths are always paired with their execution machine or host; and
 - Work's selected repository scope is context, not an operating-system
   permission boundary.
+
+Add project treats an existing `.research/manifest.toml` as retained RCP
+research, regardless of the project name typed into the wizard. Its read-only
+preflight replays that canonical log without publishing, repairing, claiming a
+home, or changing the catalog. Before setup may continue, a modal names the
+existing project, canonical location, retained revision count, and whether the
+current RCP version can replay it completely. A failure names the exact revision
+and structural diagnostic.
+
+Compatible retained state may be opened without overwriting its manifest.
+Incompatible retained state may expose its last coherent materialization for
+read-only inspection, but that inspection claims no writable home and repairs
+nothing. Starting fresh never overwrites history: RCP atomically renames the
+complete `.research/` directory to a unique timestamped sibling before creating
+a new one. Its confirmation is bound to the exact retained manifest and Patch
+history the modal inspected; RCP verifies that fingerprint while holding the
+same local append lock or remote advisory lock that performs the rename. If the
+history changed, the wizard requires a new review. If that archive cannot be
+proven complete, initialization does not begin; if later initialization fails,
+the archive remains recoverable and no project is registered. The same
+transaction boundary applies locally and over SSH.
+
+Rebuildable remote-source copies and derived session slices are owned and metered
+per project. The ordinary Settings action clears only the open project's cache
+and is blocked only by active readers in that project. Clearing every project's
+rebuildable caches is a separate app-wide danger action: it names its scope,
+requires an explicit warning confirmation, and is blocked while any project has
+an active reader. Neither path touches provider originals, canonical state,
+repositories, tasks, chats, drafts, or views.
 
 Routes never write canonical state directly. All canonical reads and writes go
 through the state workspace, its ownership locks, validation, and publication
@@ -369,15 +452,28 @@ they reset accepted or contested standing to asserted. A resolved or superseded
 Blocker remains outside human attention; reopening it makes the asserted Blocker
 await a fresh judgment.
 
-### Minimal agent Proposals
+### Protected-belief Proposals
 
-An agent Proposal has one semantic shape: one Hypothesis changes status with
-exactly one valid Evidence-to-Hypothesis epistemic edge as its cause.
+An existing ResearchQuestion or Hypothesis is a human-held belief boundary. An
+agent may create either type directly, and may edit and connect one it created
+earlier in the same outer Patch. Once the node already exists, an agent changes
+its content, lifecycle, or protected epistemic structure only through one
+pending Proposal.
 
-The Proposal contains one `update_nodes` operation for one target. Ordinary
-content edits, edges, Evidence, Blockers, merges, supersessions, and removals are
-not Proposal-only merely because accepted material is nearby. An ordinary agent
-edit to accepted node content returns that node to asserted review.
+Every new agent Proposal declares exactly one intent from this closed set:
+`content_change`, `removal`, `supersede`, `merge`,
+`protected_relation_change`, or `status_change`. The intent and operation shape
+must agree and may not bundle a second judgment. Supersede and merge join two
+distinct ResearchQuestions or two distinct Hypotheses; they cannot cross belief
+types or use an ordinary node to manufacture a protected meta relation.
+
+Only `status_change` carries a machine-checkable cause. It updates exactly one
+Hypothesis's `status` and names one valid Evidence-to-Hypothesis epistemic edge
+as `evidence_edge`. A ResearchQuestion lifecycle change uses `content_change`,
+like its other human-held fields, and carries no evidence cause. Content and
+structural intents carry their rationale in the four-field Proposal card and
+carry no invented cause. Attaching Evidence to an existing Hypothesis remains a
+direct assertion; the later status judgment is the gated change.
 
 Agents do not propose Decision outcomes: they queue the Decision itself as
 `ready` or `revisit` and the human uses its ballot. Historical Decision
@@ -391,6 +487,17 @@ duplicated.
 Withdrawal replays no semantic operation. RCP records creation and resolution
 provenance, including the originating task when available.
 
+RCP snapshots every Proposal dependency when it is raised: referenced nodes,
+referenced edges, and project configuration. A removal Proposal additionally
+snapshots the exact set of edges incident to its target, including an empty set.
+If a snapshotted edge disappears or is recreated, or if any new incident edge
+appears before judgment, the Proposal is stale. Approval then records a
+withdrawal and applies no removal, so the human never deletes a relation they
+did not see as part of the question. One multi-judgment Sync evaluates each
+choice against the state produced by earlier choices in that same atomic batch;
+an earlier approval may therefore withdraw an overlapping later Proposal while
+independent approvals and rejections still commit.
+
 A loop may queue a pinned governing Decision as `ready` or `revisit`, and may
 propose a transition only for a Hypothesis tested by its Experiment. The
 Hypothesis transition is grounded by an Evidence edge asserted in the same
@@ -402,6 +509,12 @@ Patch. The human accepts the belief change, not the edge; edges have no standing
 history. Every target must exist, must not have accepted standing, and, for an
 Experiment, must have no active bounded loop. One invalid target rejects the
 whole operation.
+
+The one accepted-standing exception is a human approval of a pending `removal`
+Proposal for an existing ResearchQuestion or Hypothesis. That approval removes
+the node and exactly the incident relations snapshotted when the Proposal was
+raised. Any dependency or incident-edge-set change makes the Proposal stale and
+withdraws it without semantic operations.
 
 The human UI will not combine clearing accepted standing and removal in one
 gesture; the standing change must first become canonical through Sync. Removal
@@ -430,8 +543,16 @@ An automatic watcher wake inherits one exact human-authorizer snapshot from its
 originating task set. If a legacy or missing task leaves that authority
 unprovable, or the set names different people, RCP stops the ready watcher unit
 with a durable visible diagnostic; it never guesses a person or retries forever.
-Campaign, orchestrator, parent-task, and worker lineage is a later additive
-contract rather than part of base attribution.
+A Patch produced inside an auto-research campaign additionally records that
+campaign's id, including one produced by a seated worker whose profile remains
+`ordinary` — ordinary semantic authority exercised inside that campaign. RCP
+stamps the id from the producing task's own operational row, so admission never
+reads the campaign record and a removed campaign cannot fail a Patch; an
+`orchestrator` Patch with no campaign id is refused, because unattributed
+elevated work must not land quietly. The id is inert: no validation, admission,
+or permission decision reads it. A human approval Patch carries none, since
+approving an agent's Proposal is the human's own act. Parent-task and worker
+lineage stay operational records rather than envelope fields.
 
 Patch publication is atomic. Human Sync publishes one visible batch directory.
 Agent graph runs write exactly one semantic `patch.json` in RCP-owned scratch;
@@ -675,6 +796,79 @@ RCP discovers only bounded direct regular HTML or raster-image children. Bytes
 stay in temporary scratch and are served or proxied on demand. Artifact failure,
 expiry, SSH unavailability, or Download failure never changes the reply, task
 status, or graph outcome. HTML runs in an opaque sandbox with no RCP authority.
+
+### Result views
+
+An ordinary Work turn may draw the human a **result view**: a page rendering the
+run's own outputs, read inside the run detail in Runs. It adds no navigation
+destination. Drawing is an ordinary Work turn carrying a specific instruction,
+not a staged package and not a new agent surface.
+
+The agent authors the page, so RCP owns no encoding and no chart vocabulary. A
+view is disposable by default and expires with the artifact machinery above.
+
+A view is revised by **acting on the picture** rather than describing it: box a
+region, underscore items. A gesture resolves to a visible editable draft in the
+composer and never dispatches a turn by itself, so every turn remains one the
+human read and sent. Because the agent authored the page, only the page can say
+what a gesture selected; its report is the one outbound channel from an
+agent-drawn page into RCP — one-way, fixed small shape, size-capped, and treated
+as untrusted text. RCP exposes nothing inward in return, and the sandbox is
+otherwise unchanged. A page that reports nothing stays usable through an
+ordinary typed revision.
+
+Revision edits the existing file rather than redrawing it, which is the property
+that makes the loop cheap. The file lives in the conversation's reusable scratch
+stage at one stable path; it is never copied or linked through a turn artifact
+directory and the conversation cwd never changes. The agent reaches it by
+resuming its own session. A session that cannot be resumed is reported plainly;
+RCP never silently starts a fresh session that redraws the page from nothing.
+
+That staged file is the agent's working copy, not the served one. RCP validates
+it after a turn and stores the verified bytes beside the digest and size it
+records, then serves every view — kept or not — from that stored copy. A failed
+or interrupted revision therefore cannot damage a readable view, a remote view
+renders without reading its stage over SSH, and expiry discards the stored bytes
+with the record so a disposable view stays disposable.
+
+RCP's contribution is not rendering. It is that the data binding and the
+research context are already in hand: a generic tool makes the researcher
+re-explain where the data is and what the fields mean on every visit, while RCP
+already knows what those forty runs were and which hypothesis each tested. That
+saved re-explanation is the whole latency argument for drawing here at all.
+
+The scope line runs through **shapes, not subfields**. Where the research object
+is discrete and configural, RCP draws it; where it is a continuous field or a
+giant array, RCP links to the tool that already owns it, because an entrenched
+viewer is a decade of specialized rendering that an agent-drawn page loses to on
+its home ground.
+
+| Shape | Used for | Draw here? |
+|---|---|---|
+| Series — ordered axis, overlaid traces | loss curves, convergence, throughput | yes |
+| Item grid / side by side | sample outputs, failure cases, comparisons | yes |
+| Table — rows are entities, columns attributes | run tables, eval results, dataset stats | yes |
+| Distribution — histogram, violin, ECDF | label balance, seed variance | yes |
+| Matrix — 2D grid of values | attention, confusion, correlation, ablation pivot | yes |
+| Projection — brushable point cloud | embeddings, Pareto fronts | yes |
+| Diff — two structured objects | config, code, prompt, output | yes |
+| Node-link graph | computation graphs, architectures | no — Netron |
+| Field / mesh over a spatial domain | PDE solutions, simulation output | no — ParaView, VisIt |
+| Timeline / trace — spans over time | profiling, distributed timing | no — Perfetto |
+
+Series and item grids are the confirmed starting pair. This table bounds what
+may be added later; it authorizes no field viewer, no trace viewer, and no
+per-domain connector. Result views are also not a dashboard: utilization,
+throughput monitoring, and scalar browsing answer *is my machinery working*
+rather than *what did I learn*, have incumbents, and stay out.
+
+**Keep** copies one view into a `views/` directory at the state repository root,
+through the ordinary workspace lock and explicit publish, never a direct write
+and never under `.research/`. The agent chooses a descriptive base name and RCP
+owns the final filename, qualifying it with the project and a `yy-mm-dd` suffix
+and disambiguating rather than overwriting. A kept view appends no Patch, spends
+no revision, creates no Proposal, and changes no attention count: it travels
+beside the research record, not inside it.
 
 A repository-file Markdown link in an answer never becomes navigation inside
 the main RCP webview. RCP resolves an absolute execution-host path against the
@@ -969,17 +1163,50 @@ write the exact same resource while independently writing its own `watch.json`
 in one turn. The file path is the targeting. No handoff contains a node,
 episode, provider, session, host, or wake-kind field.
 
+A watcher observes either external state or canonical graph state. The two are
+separate record types sharing one delivery binding, because `check_command`,
+`log_path`, and `cwd` are meaningless for a graph condition. A watcher file
+therefore carries two named lists, `external` and `graph`. Existing all-or-none
+validation applies to the file as a whole — one invalid item in either list arms
+none — and **both** lists empty is the exit declaration that requires success, a
+Proposal, or a Blocker in the same Patch.
+
+The graph vocabulary is closed at two conditions: a named node reaching one of a
+named set of statuses, and a Proposal on a named node being resolved. Standing
+changes, edge predicates, new-node arrivals, and arbitrary queries are
+deliberately excluded; a third condition is added only when something concretely
+needs one.
+
+Graph conditions are evaluated at revision boundaries — after a patch applies,
+after a human Sync, and once at startup so a condition satisfied while RCP was
+down still fires — never through the shell poller. A condition fires on
+canonical state only, never on a staged but unsynced draft. If replay has halted
+or materialization is degraded, a condition does not fire: that is *not yet*,
+never completion. Each graph watcher durably records the canonical revision at
+which it was armed. A node-status condition already true at that revision is
+ready immediately; a Proposal-resolution condition is prospective and counts
+only a resolution committed after that revision. An older resolved Proposal
+does not satisfy a newly armed wait on a newer pending Proposal for the same
+node. RCP reconciles accepted boundaries in ascending canonical revision order,
+regardless of task-settlement order, and applies no satisfying prefix when the
+final replay is degraded. A condition on a node removed after arming is
+terminally retired. Every graph wake spends one invocation unit, including when
+the human's own Sync satisfied it, because "every wake spends" is what makes
+budget exhaustion a termination guarantee. External and graph completions
+arriving together coalesce into one wake.
+
 An Experiment watcher list may mix strict observer items, an optional non-blank
 `group` label on an observer, and explicit `{stop_watcher_id, reason}` items. A
-stop item names one staged watcher from the permitted project, Experiment, and
-current compatible episode; it has a non-blank reason and no command or path.
-Duplicate, unknown, already-notified, out-of-scope, or incompatible stop ids
-reject the complete handoff atomically. An accepted stop permanently retires
-that observer from polling and delivery, retaining its agent provenance, reason,
-and time. It is the agent's statement that it has already settled the external
-work with its existing Work tools, never RCP's claim to have cancelled that
-work. A graceful **Stop loop** that retires those same observers first does not
-invalidate the running turn's stop items: their retirement is already
+stop item names one staged **external observer** from the permitted project,
+Experiment, and current compatible episode; it can never retire a graph
+condition, and it has a non-blank reason and no command or path. Duplicate,
+unknown, already-notified, out-of-scope, incompatible, or graph-condition stop
+ids reject the complete handoff atomically. An accepted stop permanently
+retires that observer from polling and delivery, retaining its agent provenance,
+reason, and time. It is the agent's statement that it has already settled the
+external work with its existing Work tools, never RCP's claim to have cancelled
+that work. A graceful **Stop loop** that retires those same observers first does
+not invalidate the running turn's stop items: their retirement is already
 satisfied, each record keeps the loop's own disposition, and the
 already-authorized turn finishes normally instead of correcting a race it
 cannot win.
@@ -1120,8 +1347,232 @@ terminally retired rather than poisoning later delivery passes. These
 dispositions are shown as timeline events, not scientific conclusions.
 
 Live-output delivery, durable output offsets, debounce/batching for output,
-repository leases, stale-record policy, direct graph manipulation, and graph-wide
-scheduling remain open in [`open-questions.md`](open-questions.md).
+repository leases, stale-record policy, and direct graph manipulation remain open
+in [`open-questions.md`](open-questions.md). Graph-wide scheduling is no longer
+among them; it is bounded by the campaign below.
+
+## Auto-research campaigns
+
+A campaign is one bounded task in which a project-owned **orchestrator** profile
+pushes the research forward without a human approving each step. Exactly one
+profile carries this authority and exactly one campaign runs per project at a
+time. There is no family of elevated agents; the moment a second profile has
+almost the same authority, the line stops being explainable.
+
+The human starts it from the project header, beside **Ask**, because the action
+is project-wide and belongs where project-wide actions live. They set the budget
+and may type a starting instruction. That instruction is optional, is ordinary
+prose, and grants no authority — it exists so the orchestrator's first paid
+invocation goes on research rather than on choosing where to begin.
+
+### Campaign scope and its brakes
+
+A campaign is scoped to the **project**, not to whatever the human was reading
+when they started it. It may create Evidence, run Experiments, and open Blockers
+anywhere in the project graph.
+
+Two things brake it, and nothing else does: the **budget**, and the
+**protected-type rule** in the authority section above. A worker the orchestrator
+seats gets no scope of its own either — where it may be seated is bounded, what
+it may then touch is not. It is an ordinary Work agent, and its repositories
+arrive through the existing run-scope pointers. A worker seated on one Experiment
+can reach another Experiment's nodes; that is the accepted price of not building
+a second fence beside the budget, and a second fence must not be added quietly
+later.
+
+### Authority
+
+The orchestrator may create new ResearchQuestions and Hypotheses directly, and it
+has full direct control of Evidence, Decisions, Experiments, and Blockers —
+including choosing a governed Decision, which lets it satisfy an Experiment's
+readiness gate itself inside the campaign the human authorized.
+
+Once a ResearchQuestion or Hypothesis exists, the orchestrator changes it only
+through a Proposal, and **every agent-produced Proposal waits for a human**.
+Neither the orchestrator nor a child approves one. Task or campaign lineage never
+confers approval authority: the orchestrator writes the instructions for the
+child whose Proposal it would otherwise judge, so any such rule would be one step
+long.
+
+Pending epistemic review never stops independent campaign work. The orchestrator
+raises the Proposal and continues elsewhere.
+
+### Seating
+
+The orchestrator seats workers on **Experiments and Blockers only**. Both have a
+mechanically checkable exit — an Experiment has its bounded loop lifecycle, a
+Blocker is finished when resolved or superseded. A Decision or a ResearchQuestion
+has no such exit, so a worker seated there would run until the budget died.
+
+Seating scope is not authority scope. The orchestrator does Decision work itself
+rather than delegating it.
+
+### Budget and termination
+
+One number for the whole campaign, set when the human presses the button and
+defaulting to **10 invocations** from Settings. It is typed in invocations and
+carries exactly the existing `invocation_ceiling` semantics; the usage ledger
+shows observed cost beside it, so the enforced number stays exact while the
+legible number stays honest. It is never per-worker — per-worker ceilings would
+force the human into the capacity planning they are delegating.
+
+Everything spends from that one pot: the orchestrator's own turns, every worker
+turn, and every wake, whether watcher, graph condition, or message. No exceptions
+is what makes orchestrator/worker ping-pong terminate by exhaustion rather than
+by good behavior.
+
+One unit is **reserved for the wrap-up report**, because a report is required on
+every ending and exhaustion is an ending. Without the reservation, running out of
+budget would be the one outcome that cannot explain itself.
+
+At exhaustion, current turns finish, nothing new starts, the campaign sits in
+**Needs action**, and the human may reauthorize. **Stop** generalizes the
+Experiment **Stop loop** exactly — intent persisted first, current turns finishing
+normally, valid patches still applying, existing and newly emitted watchers
+retained as `stopped`, no new claim winning. There is no second budget, second
+stop, or second wake path.
+
+Normal completion is explicit. The orchestrator invokes one idempotent staged
+`finish` command; RCP never mistakes an actor sleeping on mail or a watcher, or a
+temporarily quiet campaign, for completion.
+
+Provider, network, rate-limit, and resumable native-session failures of the sole
+orchestrator remain recoverable through the ordinary bounded backoff,
+Resume/Retry, and exact-session paths. Only an unrecoverable orchestrator failure
+ends the campaign. A worker failure remains visible work for the orchestrator to
+inspect and manage; it is never promoted into a campaign verdict. A terminal
+orchestrator failure fences new admissions, retires campaign watchers with the
+same durable Stop semantics, retains pending mail for the retrospective, and
+then produces the required partial report.
+
+### Runs projection
+
+Human recovery and termination controls live on the campaign parent, never on an
+individual worker row. Runs derives exactly one campaign health and one
+recommendation from durable campaign and orchestrator state rather than parsing
+diagnostic prose. The compact campaign row and expanded detail share that same
+projection. Raw `campaign.status`, control-task status or phase, and worker
+status are not peer campaign states; task and worker statuses and diagnostics
+remain visible as supporting history.
+
+The projection is fixed by structured state:
+
+| Durable condition | Campaign health | Recommendation |
+|---|---|---|
+| Queued or starting | Starting | Wait for auto-research to start |
+| Healthy active work | Active | Let auto-research continue |
+| Automatic recovery pending | Recovering | Wait for automatic recovery |
+| Exact Resume or Retry available | Needs action | Use the valid Resume or Retry recovery |
+| Stop settling | Stopping gracefully | Wait for current work to finish |
+| Budget exhausted | Needs action | Reauthorize auto-research |
+| Healthy wrap-up | Writing report | Wait for the concluding report |
+| Terminal with a report | Completed, Stopped, or Failed | Open the concluding report |
+
+The detail's health block carries the recommendation and there is no separate
+**Recommended next step** strip. Pause and Stop are optional parent controls,
+not healthy-campaign recommendations, and each appears only when the current
+state declares it valid. Exact Resume or Retry appears only for actionable
+recovery; automatic recovery offers no duplicate manual Retry. Reauthorization
+appears at exhaustion, and the report control appears only when the terminal
+report exists. No recommendation names an unavailable action.
+
+### Mail
+
+`messages.json` is a third handoff file beside `patch.json` and `watch.json`,
+with the same fail-closed clearing and the same all-or-none validation.
+
+Only the orchestrator addresses a worker; workers reply to the orchestrator. The
+human messages the orchestrator and never a worker directly, because talking to a
+worker behind its manager's back desynchronizes the orchestrator's model of its
+own campaign with no way for it to notice. Delivery reuses the wake machinery
+under its own continuation cause and never the shell poller.
+
+Messages carry no graph authority — they are Markdown prose, and `patch.json`
+remains the only graph channel. Messages are also hearsay: a message may report
+intent and observation, but graph facts are read from the graph, or a worker acts
+on state that was never committed.
+
+There is no blocking primitive. Every agent is either running a turn or asleep
+with durable state; waiting is declarative, and coordination is
+continuation-passing between sleeping agents.
+
+### The staged command client
+
+The orchestrator's effects are **commands**, not more handoff files, because a
+dispatcher needs referential composition: run `spawn`, read the worker id, use it
+in the next call. A file handoff would force it to predeclare every effect blind
+and defer all of them to turn end.
+
+This generalizes the existing staged live-Patch validator client rather than
+adding a second channel. Deliverables stay files — `patch.json` must survive
+interruption and be re-read by the recovery ladder, and a loop's `watch.json` is
+validated all-or-none where an empty declaration is meaningful.
+
+Three properties make the client safe:
+
+1. **A per-turn credential** bound to the campaign, task, and turn, expiring with
+   the turn. Without it the client is an authority hole rather than an authority
+   surface.
+2. **A caller-supplied idempotency key on every mutating command.** The hazard is
+   RCP replaying the orchestrator's own turn after a crash, not the agent
+   retrying. With no record for a key, the effect happens and the key is
+   recorded; with a record, the existing result is returned and nothing is
+   created or restarted. Deduplication, never recovery — folding "restart it if
+   it looks dead" into `spawn` would hide a side effect behind a call the agent
+   believes is a no-op. The key comes from the caller because RCP cannot generate
+   a stable one across a retry in a fresh process, and the agent can, from its
+   own intent.
+3. **Every invocation recorded in the task event stream, start and exit
+   separately.** File handoffs are auditable for free because the scratch folder
+   is retained; commands are not. Recording start separately is what makes an
+   interrupted call *unknown* rather than assumed, and an unknown call is
+   resolved by looking at whether the worker exists, never by guessing from the
+   log.
+
+Requirements 2 and 3 are one mechanism: the event stream that makes commands
+auditable is the record that answers whether a key already ran.
+
+### The campaign report
+
+Every ending produces one durable HTML report — normal completion, budget
+exhaustion, human Stop, and failure alike. It is captured at wrap-up and kept. A
+regenerable report would change as the graph moved afterwards, and a record that
+changes is not a record; a report only on clean completion would stay silent for
+the two endings a person most needs explained.
+
+A report for an unclean ending must read as partial, not as a tidy summary of
+work that did not happen.
+
+RCP supplies a versioned campaign-report skill and requires the orchestrator to
+use it, so the skill is an RCP-owned orchestration dependency rather than an
+optional Settings selection. The skill is deliberately **minimal**: it names what
+the report must make legible — the campaign's reasoning and decisions, what
+failed, what progressed, and what still awaits a human — and leaves the form to
+the agent, which is expected to include visualizations and artifacts. It does not
+prescribe a section list. A report that no one wants to read is the failure mode
+here, and an over-specified template is how that happens.
+
+The report is not a Patch, carries no graph authority, and does not determine
+whether a campaign succeeded. Completed Experiments, Evidence, decided Decisions,
+and resolved Blockers do not enter the graph Inbox merely because auto-research
+touched them; the report is the retrospective surface instead.
+
+A missing or invalid report is a **correction**, not a campaign verdict. It is
+handed back to the same session with the exact diagnostic, under the bounded
+in-session correction ladder the Patch path already uses, and a correction round
+never repeats completed operational work. It renders through the existing
+sandboxed HTML boundary; a campaign document is not a reason to invent an
+unrestricted one.
+
+Wrap-up is the concluding turn of the campaign. The ending fence admits no new
+work, then RCP waits for every already-admitted child turn to settle so the
+retrospective cannot omit late work. The one reserved invocation resumes the
+sole orchestrator's exact native session and actor-owned stage, stages the
+required versioned `campaign-report` official skill, and requires exactly one
+`campaign-report.html` in that stage. RCP captures and exposes the report only
+after those child turns have settled and the HTML validates. A correction reuses
+that same report allocation, session, stage, skill, and output path; it never
+spends another unit or repeats campaign operations.
 
 ## Background tasks, concurrency, and provider readiness
 
@@ -1168,6 +1619,18 @@ graceful takeover after recoverable work is paused.
 
 ## Reader-facing application surfaces
 
+- The project index header ends with one compact identity control. Before the
+  personal owner chooses a name it says **Sign in**, meaning name the existing
+  durable local identity rather than create a password account. Afterwards it
+  opens one anchored identity panel showing the mutable display name and exact,
+  selectable, copyable, but non-editable space-scoped `user_id`; renaming uses
+  the same identity prompt that guards an unnamed person's first attributed
+  write. Project Settings contains no second identity editor. The panel visibly
+  reserves **Join team space**, **Accept invitation**, and **Invite member**, but
+  those controls remain disabled and explicitly not connected until the whole
+  team authentication and membership contract is implemented. The seam never
+  collects or stores a credential, generates an invitation, starts a session,
+  or changes membership.
 - The project shell places one compact project-tab dock immediately to the right
   of its back/index control. The dock has one capped span: inactive tabs shrink
   proportionally as it fills, the active tab retains a wider share, and labels
@@ -1187,7 +1650,8 @@ graceful takeover after recoverable work is paused.
   tab. Open tabs survive hiding and reopening the same desktop window but reset
   on page reload or full app quit/relaunch. A docked inactive project is not kept
   mounted or polled merely because its tab is open.
-- The **project index** keeps project cards first, followed by one distinct
+- The **project index** has no introductory title; it keeps project cards first,
+  followed by one distinct
   cross-project **Experiments** board. The board includes only Experiment nodes
   with loop history and projects each node's current or latest episode into one
   compact horizontal row. It reports current state using the same health truth
@@ -1198,35 +1662,63 @@ graceful takeover after recoverable work is paused.
   no loop-control authority and no unread or since-last-visit bookkeeping.
 - **Overview** shows current project state and the latest plain-language revision
   summary.
-- **Inbox** contains pending Hypothesis-status Proposals, Decisions whose status
-  is `ready` or `revisit`, and open Blockers whose standing remains asserted.
-  A Decision is a row that opens its existing node inspector and ballot; a
-  Proposal, which is not a node, keeps its inline judgment controls. Accepted
-  and contested open Blockers remain operational graph state but no longer
-  await human judgment. Historical Ambiguities never render or count.
+- **Inbox** contains pending protected-belief Proposals across all six intents,
+  Decisions whose status is `ready` or `revisit`, and open Blockers whose
+  standing remains asserted. A content Proposal compares current and proposed
+  wording; a removal names the node and its snapshotted incident relations;
+  supersede and merge name both belief nodes; protected-relation and status
+  changes show their exact transition. A Decision is a row that opens its
+  existing node inspector and ballot; a Proposal, which is not a node, keeps its
+  inline judgment controls. Accepted and contested open Blockers remain
+  operational graph state but no longer await human judgment. Historical
+  Ambiguities never render or count.
 - **Research** presents question-centered graph paths and a bounded DAG view.
   Its Research-flow layout gives each `has_subquestion` depth a successive
   horizontal column, then places Hypothesis/Decision, Experiment/Blocker, and
   Evidence in their semantic-stage columns after the deepest visible question.
   Other relations affect vertical ordering but never question depth.
 - **Runs** is the operational control surface for Seed/Refresh research
-  ingestion, bounded Experiments, and asserted open graph Blockers—not generic
-  chat or coaching tasks. It carries no page title and is ordered by what matters
-  now: **Running**, **Needs action**, then **Completed**, with the first matching
-  state winning. Accepted and contested Blockers leave **Needs action** after
-  Sync without being operationally resolved.
+  ingestion, bounded Experiments, Auto-research campaigns, and asserted open
+  graph Blockers—not generic chat or coaching tasks. It carries no page title
+  and is ordered by what matters now: **Running**, **Needs action**, then
+  **Completed**, with the first matching state winning. Accepted and contested
+  Blockers leave **Needs action** after Sync without being operationally
+  resolved.
+  An Auto-research campaign appears as one parent row with task and worker state
+  retained beneath it as supporting history. Its compact parent row and expanded
+  detail share the one campaign health and recommendation defined above; raw
+  `campaign.status`, task status or phase, and worker status never compete as peer
+  parent states. Healthy active work recommends **Let auto-research continue**;
+  automatic recovery and wrap-up recommend waiting; actionable exact recovery
+  recommends **Resume** or **Retry**, whichever is valid; exhaustion recommends
+  reauthorization; and a terminal campaign with its report recommends opening
+  that report. The health block carries the recommendation with no separate
+  **Recommended next step** strip. Pause and Stop remain optional controls shown
+  only when valid, never recommendations for healthy work, and no recommendation
+  names an unavailable action.
   An Experiment-loop task is the deliberate exception to the chat exclusion
   because its Patch kind and control node make it research execution. Activating
   an Experiment's **Start episode** or **Start new episode** action navigates here
   and opens its run detail rather than a floating node-chat window. That detail
-  reports loop health, current activity, each episode's pinned invocation budget,
-  the current node's separate **Next episode limit**, watcher health and
-  provenance, and each immutable watcher group as its
-  own operational unit with per-status summary, member status, and degraded-error
-  detail. It reports resolved execution with native-session continuity and the
-  Experiment's meaning. Failed or paused loop turns expose direct **Retry
-  provider** and **Switch provider** recovery alongside the independent
-  loop-level **Stop loop** action. The detail does not include an **Open agent
+  and its compact Experiment row share exactly one primary loop health and one
+  recommendation derived from structured task, control, stop, and watcher state.
+  Neither surface presents task status or phase, or semantic
+  `Experiment.status`, as a competing peer state; the compact row uses the same
+  recommendation instead of the latest task status. The detail's health block
+  carries that recommendation, with no separate **Recommended next step** strip.
+  It retains last activity, each episode's pinned invocation budget, the current
+  node's separate **Next episode limit**, the research summary and next action,
+  watcher health and provenance, immutable watcher-group detail, resolved
+  execution and native-session continuity, and retained history and diagnostics.
+  It shows neither task **Phase** nor a visible **Experiment state** label.
+  An unavailable **Stop loop** action is absent rather than disabled;
+  readiness-gated controls may remain visible with their reasons. A ready episode
+  whose latest task succeeded, with no live or pending watcher, recommends **Start new
+  episode** even when retained execution history has a legacy-attribution session
+  diagnostic. An unrecoverable actionable task continuation may instead
+  recommend **Stop loop**, then restart only while Stop is actually available.
+  Failed or paused loop turns expose direct **Retry provider** and **Switch
+  provider** recovery when valid. The detail does not include an **Open agent
   task** button; full task history and diagnostics remain available from History.
 - **Chats** groups node and project conversations with immutable turn labels,
   inline task progress under the triggering message, and no global task banner.

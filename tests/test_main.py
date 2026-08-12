@@ -171,7 +171,7 @@ def test_replace_existing_server_requests_shutdown_then_runs_under_lock(
     _replace_existing_server(args, tmp_path)
 
     assert calls[0] == (4321, signal.SIGTERM)
-    assert calls[1] == (tmp_path, 15.0)
+    assert calls[1] == (tmp_path, 45.0)
     assert calls[2] == ("serve", tmp_path)
 
 

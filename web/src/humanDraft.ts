@@ -1,4 +1,10 @@
-import type { GraphNode, GraphState, OntologyState, Standing } from "./types";
+import {
+  proposalSemantics,
+  type GraphNode,
+  type GraphState,
+  type OntologyState,
+  type Standing,
+} from "./types";
 
 export type DraftNodeValue =
   | string
@@ -41,6 +47,16 @@ export interface HumanSyncRequest {
   proposals: Array<{ proposal_id: string; decision: ProposalDecision; reason?: string }>;
   ontology: OntologyState | null;
   custom_nodes: GraphNode[];
+}
+
+export interface HumanDraftReconciliation {
+  draft: HumanDraft;
+  discardedProposalIds: string[];
+}
+
+export interface ProposalApprovalConflict {
+  proposalIds: string[];
+  resourceKeys: string[];
 }
 
 export function emptyHumanDraft(baseRevision: number): HumanDraft {
@@ -113,6 +129,27 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
   return {
     ...normalized,
     proposals: proposalDecisionsWithoutDirectChoices(normalized, graph),
+  };
+}
+
+export function reconcileHumanDraft(
+  draft: HumanDraft,
+  graph: GraphState,
+): HumanDraftReconciliation {
+  const normalized = normalizeHumanDraft(draft, graph);
+  const discardedProposalIds = Object.keys(normalized.proposals)
+    .filter((proposalId) => graph.proposals[proposalId]?.status !== "pending")
+    .sort();
+  if (discardedProposalIds.length === 0) return { draft: normalized, discardedProposalIds };
+  const discarded = new Set(discardedProposalIds);
+  return {
+    draft: {
+      ...normalized,
+      proposals: Object.fromEntries(
+        Object.entries(normalized.proposals).filter(([proposalId]) => !discarded.has(proposalId)),
+      ),
+    },
+    discardedProposalIds,
   };
 }
 
@@ -231,12 +268,10 @@ export function proposalTargetsNode(
   proposal: GraphState["proposals"][string],
   nodeId: string,
 ): boolean {
-  return proposal.ops.some(
-    (op) =>
-      op.op === "update_nodes" &&
-      Array.isArray(op.nodes) &&
-      op.nodes.some((update) => isRecord(update) && update.id === nodeId),
-  );
+  return proposal.ops.some((raw) => {
+    if (!isRecord(raw) || raw.op !== "update_nodes" || !Array.isArray(raw.nodes)) return false;
+    return raw.nodes.some((update) => isRecord(update) && update.id === nodeId);
+  });
 }
 
 export function stageAttemptRelease(
@@ -294,10 +329,40 @@ export function stageProposalDecision(
   proposalId: string,
   decision: ProposalDecision | null,
 ): HumanDraft {
+  if (decision === "approved" && proposalApprovalConflict(draft, graph, proposalId)) return draft;
   const next = cloneDraft(draft);
   if (decision) next.proposals[proposalId] = { decision };
   else delete next.proposals[proposalId];
   return normalizeHumanDraft(next, graph);
+}
+
+export function proposalApprovalConflict(
+  draft: HumanDraft | null,
+  graph: GraphState,
+  proposalId: string,
+): ProposalApprovalConflict | null {
+  if (!draft) return null;
+  const proposal = graph.proposals[proposalId];
+  if (!proposal || proposal.status !== "pending") return null;
+  const targetResources = new Set(proposalSemantics(proposal).resourceKeys);
+  if (targetResources.size === 0) return null;
+
+  const proposalIds: string[] = [];
+  const resourceKeys = new Set<string>();
+  for (const [stagedProposalId, judgment] of Object.entries(draft.proposals)) {
+    if (stagedProposalId === proposalId || judgment.decision !== "approved") continue;
+    const stagedProposal = graph.proposals[stagedProposalId];
+    if (!stagedProposal || stagedProposal.status !== "pending") continue;
+    const overlap = proposalSemantics(stagedProposal).resourceKeys.filter((resourceKey) =>
+      targetResources.has(resourceKey),
+    );
+    if (overlap.length === 0) continue;
+    proposalIds.push(stagedProposalId);
+    overlap.forEach((resourceKey) => resourceKeys.add(resourceKey));
+  }
+  return proposalIds.length > 0
+    ? { proposalIds: proposalIds.sort(), resourceKeys: [...resourceKeys].sort() }
+    : null;
 }
 
 export function stageOntology(

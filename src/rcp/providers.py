@@ -29,6 +29,7 @@ whoever maintains them.
 AgentCapability = Literal[
     "discuss",
     "work_auto",
+    "orchestrate",
     "scratch_patch",
     "paper_readonly",
 ]
@@ -314,7 +315,7 @@ class CodexProfile(ProviderProfile):
         # Live retrieval is a provider tool, independent of whether command
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
-        if capability == "work_auto":
+        if capability in {"work_auto", "orchestrate"}:
             command.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             command.extend(["--config", 'approval_policy="never"'])
@@ -498,6 +499,7 @@ class ClaudeProfile(ProviderProfile):
         permission_mode = {
             "discuss": "acceptEdits",
             "work_auto": "bypassPermissions",
+            "orchestrate": "bypassPermissions",
             "scratch_patch": "acceptEdits",
             "paper_readonly": "plan",
         }[capability]
@@ -510,7 +512,7 @@ class ClaudeProfile(ProviderProfile):
             "--permission-mode",
             permission_mode,
         ]
-        if capability != "work_auto":
+        if capability not in {"work_auto", "orchestrate"}:
             command.extend(["--allowedTools", "WebSearch", "WebFetch"])
         if session_id:
             command.extend(["--resume", session_id])

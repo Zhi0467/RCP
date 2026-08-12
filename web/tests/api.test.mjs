@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ApiError,
   api,
+  clearAllProjectCaches,
   clearProjectCaches,
   loadProjectReadiness,
   pinApiInstance,
@@ -45,6 +46,29 @@ test("clearProjectCaches issues one DELETE and returns replacement metrics", asy
   try {
     assert.deepEqual(await clearProjectCaches("/api/projects/demo"), metrics);
     assert.equal(request.path, "/api/projects/demo/caches");
+    assert.equal(request.init.method, "DELETE");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("clearAllProjectCaches returns authoritative zero metrics for the open project", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  const clearedMetrics = {
+    remote_sources: { ...metrics.remote_sources, bytes: 0, count: 0 },
+    session_slices: { ...metrics.session_slices, bytes: 0, count: 0 },
+  };
+  globalThis.fetch = async (path, init) => {
+    request = { path, init };
+    return new Response(JSON.stringify(clearedMetrics), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    assert.deepEqual(await clearAllProjectCaches("project/with spaces"), clearedMetrics);
+    assert.equal(request.path, "/api/caches?project_id=project%2Fwith%20spaces");
     assert.equal(request.init.method, "DELETE");
   } finally {
     globalThis.fetch = originalFetch;

@@ -10,17 +10,32 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifacts import AgentArtifactDescriptor, ResultViewDescriptor
+from rcp.core.authority import (
+    AgentDispatchAuthority,
+    AgentDispatchScope,
+    AgentTaskAuthority,
+    require_dispatch,
+)
 from rcp.core.models import (
     DISPLAY_NAME_MAX_LENGTH,
     AuthorizedHuman,
     normalize_display_name,
 )
 from rcp.limits import (
+    AGENT_COMMAND_EVENT_MAX_BYTES,
     AGENT_TASK_ESTIMATE_HISTORY_LIMIT,
     AGENT_TASK_ESTIMATE_SAMPLE_LIMIT,
     AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT,
@@ -32,7 +47,9 @@ from rcp.limits import (
     AGENT_TASK_RECEIPT_MAX_BYTES,
     AGENT_TASK_RECEIPT_RETENTION_COUNTS,
     AGENT_TASK_RESULT_MAX_BYTES,
+    CAMPAIGN_MAIL_MAX_MESSAGES,
     CHAT_ARTIFACT_MAX_COUNT,
+    CHAT_ARTIFACT_MAX_FILE_BYTES,
     PATCH_OUTPUT_RETENTION_DAYS,
     RUN_TRACE_RETENTION_DAYS,
     WATCHER_ERROR_BACKOFF_SECONDS,
@@ -140,6 +157,7 @@ AgentTaskKind = Literal[
     "node_chat",
     "project_chat",
     "paper_coach",
+    "campaign",
 ]
 AgentTaskStatus = Literal[
     "queued",
@@ -151,6 +169,11 @@ AgentTaskStatus = Literal[
     "interrupted",
 ]
 AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
+
+# A task is still moving through these; every other status is terminal. "pausing"
+# belongs here because the pause has been requested but not yet observed, so a
+# caller that treats it as settled reads a state the task is about to leave.
+ACTIVE_AGENT_TASK_STATUSES: frozenset[AgentTaskStatus] = frozenset({"queued", "running", "pausing"})
 
 _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
 _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC = (
@@ -166,6 +189,13 @@ class AgentTaskEventRecord(BaseModel):
     created_at: str
     level: Literal["info", "warning", "error"]
     message: str
+    event_kind: Literal["message", "command"] = "message"
+    command_id: str | None = None
+    campaign_id: str | None = None
+    command_verb: str | None = None
+    command_phase: Literal["start", "exit"] | None = None
+    idempotency_key: str | None = None
+    payload: dict[str, object] | None = None
 
 
 class AgentTaskReceiptRecord(BaseModel):
@@ -221,6 +251,7 @@ class AgentTaskRecord(BaseModel):
     result: dict[str, object] | None = None
     attempt: int = 1
     parent_operation_id: str | None = None
+    campaign_id: str | None = None
     native_session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
@@ -229,11 +260,236 @@ class AgentTaskRecord(BaseModel):
     phase: str = "queued"
     last_activity_at: str | None = None
     authorized_by: AuthorizedHuman | None = None
+    dispatch_authority: AgentDispatchAuthority | None = None
     elapsed_seconds: float = 0.0
     progress: float = 0.0
     can_pause: bool = False
     can_resume: bool = False
     can_retry: bool = False
+
+
+class ResultViewRecord(BaseModel):
+    """Private binding and lifecycle metadata for one conversation result view."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    project_id: str = Field(min_length=1)
+    experiment_id: str = Field(min_length=1)
+    chat_id: str = Field(min_length=1)
+    origin_operation_id: str = Field(min_length=1)
+    latest_operation_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str
+    reasoning: str
+    run_on: str = Field(min_length=1)
+    native_session_id: str = Field(min_length=1)
+    stage_host: str
+    stage_root: str = Field(min_length=1)
+    source_name: str = Field(min_length=1, max_length=255)
+    content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    size_bytes: int = Field(gt=0, le=CHAT_ARTIFACT_MAX_FILE_BYTES)
+    created_at: str = Field(min_length=1)
+    updated_at: str = Field(min_length=1)
+    expires_at: str = Field(min_length=1)
+    kept_filename: str | None = Field(default=None, min_length=1, max_length=255)
+    kept_at: str | None = Field(default=None, min_length=1)
+
+    @field_validator("source_name")
+    @classmethod
+    def source_name_is_plain_html(cls, value: str) -> str:
+        return _plain_html_name(value, label="result view source name")
+
+    @field_validator("kept_filename")
+    @classmethod
+    def kept_filename_is_plain_html(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _plain_html_name(value, label="kept result view filename")
+
+    @field_validator("created_at", "updated_at", "expires_at", "kept_at")
+    @classmethod
+    def timestamps_are_parseable(cls, value: str | None) -> str | None:
+        if value is not None:
+            _required_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def lifecycle_is_coherent(self) -> ResultViewRecord:
+        if (self.kept_filename is None) != (self.kept_at is None):
+            raise ValueError("a kept result view requires both its filename and kept_at")
+        created_at = _required_timestamp(self.created_at)
+        updated_at = _required_timestamp(self.updated_at)
+        expires_at = _required_timestamp(self.expires_at)
+        if updated_at < created_at:
+            raise ValueError("result view updated_at precedes created_at")
+        if expires_at < created_at:
+            raise ValueError("result view expires_at precedes created_at")
+        if self.kept_at is not None and _required_timestamp(self.kept_at) < created_at:
+            raise ValueError("result view kept_at precedes created_at")
+        return self
+
+
+CampaignStatus = Literal[
+    "queued",
+    "running",
+    "stopping",
+    "wrapping_up",
+    "needs_action",
+    "succeeded",
+    "stopped",
+    "failed",
+]
+CampaignEnding = Literal["completed", "exhausted", "stopped", "failed"]
+CampaignInvocationRole = Literal["orchestrator", "worker", "report"]
+CampaignMessageRole = Literal["human", "orchestrator", "worker"]
+CampaignRecoveryPurpose = Literal["task", "report_admission"]
+CampaignRecoveryStatus = Literal["pending", "admitted", "exhausted", "blocked"]
+CampaignRecoveryMode = Literal["exact", "clean", "report_admission", "blocked"]
+
+
+class CampaignRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: str
+    project_id: str
+    root_operation_id: str | None = None
+    status: CampaignStatus
+    starting_instruction: str | None = Field(default=None, max_length=16_000)
+    invocation_ceiling: int = Field(ge=1)
+    invocations_used: int = Field(default=0, ge=0)
+    authorized_by: AuthorizedHuman
+    stop_requested_at: str | None = None
+    ending: CampaignEnding | None = None
+    error: str | None = None
+    created_at: str
+    updated_at: str
+    ended_at: str | None = None
+
+    @model_validator(mode="after")
+    def budget_is_coherent(self) -> CampaignRecord:
+        if self.invocations_used > self.invocation_ceiling:
+            raise ValueError("campaign invocations used exceed the authorized ceiling")
+        return self
+
+    @property
+    def invocations_remaining(self) -> int:
+        return max(0, self.invocation_ceiling - self.invocations_used)
+
+    @property
+    def research_invocations_remaining(self) -> int:
+        return max(0, self.invocation_ceiling - self.invocations_used - 1)
+
+
+class CampaignBudgetMeter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    invocation_ceiling: int = Field(ge=1)
+    invocations_used: int = Field(ge=0)
+    invocations_remaining: int = Field(ge=0)
+    report_units_reserved: Literal[1] = 1
+    observed_input_tokens: int = Field(default=0, ge=0)
+    observed_generated_tokens: int = Field(default=0, ge=0)
+
+
+class CampaignRecoveryRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recovery_id: str
+    campaign_id: str
+    operation_id: str | None = None
+    purpose: CampaignRecoveryPurpose
+    failure_kind: str
+    retry_mode: CampaignRecoveryMode
+    attempts: int = Field(default=0, ge=0)
+    max_attempts: int = Field(ge=1)
+    status: CampaignRecoveryStatus
+    next_attempt_at: str | None = None
+    diagnostic: str
+    admitted_operation_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class CampaignReportRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str
+    campaign_id: str
+    operation_id: str
+    ending: CampaignEnding
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    html: str
+    created_at: str
+
+    @field_validator("html")
+    @classmethod
+    def html_is_a_bounded_utf8_artifact(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("campaign report HTML contains NUL bytes")
+        if len(value.encode("utf-8")) > CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("campaign report HTML exceeds the artifact size limit")
+        return value
+
+
+class CampaignMessageRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    campaign_id: str
+    sender_role: CampaignMessageRole
+    sender_task_id: str | None = None
+    authorized_by: AuthorizedHuman | None = None
+    recipient_task_id: str
+    control_node_id: str | None = None
+    body: str = Field(min_length=1, max_length=16_000)
+    created_at: str
+    delivered_at: str | None = None
+    delivery_operation_id: str | None = None
+
+    @field_validator("body")
+    @classmethod
+    def message_body_is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("campaign message body must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def only_human_messages_carry_human_identity(self) -> CampaignMessageRecord:
+        if self.sender_role != "human" and self.authorized_by is not None:
+            raise ValueError("an agent campaign message cannot claim a human sender snapshot")
+        return self
+
+
+class CampaignActorBinding(BaseModel):
+    """Canonical actor identity plus the newest task carrying its native session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: str
+    actor_operation_id: str
+    role: CampaignInvocationRole
+    control_node_id: str | None = None
+    current_operation_id: str
+    native_session_id: str | None = None
+    stage_host: str | None = None
+    stage_root: str | None = None
+
+
+class AgentCommandInvocationRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str
+    campaign_id: str | None = None
+    operation_id: str
+    verb: str
+    idempotency_key: str | None = None
+    started_at: str
+    start_payload: dict[str, object]
+    exited_at: str | None = None
+    status: Literal["ok", "invalid", "unavailable"] | None = None
+    exit_payload: dict[str, object] | None = None
 
 
 class ExperimentEpisodeRecord(BaseModel):
@@ -378,6 +634,29 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
+class CampaignBudgetExhausted(ValueError):
+    """A campaign kept its final authorized unit for the required report."""
+
+
+class CampaignNotRunning(ValueError):
+    """A campaign cannot admit new ordinary work in its current state."""
+
+
+class CampaignActorBusy(ValueError):
+    """One campaign actor already has an unresolved leaf using its native session."""
+
+    def __init__(self, actor_operation_id: str, operation_id: str) -> None:
+        self.actor_operation_id = actor_operation_id
+        self.operation_id = operation_id
+        super().__init__(
+            f"Campaign actor {actor_operation_id} already has unresolved task {operation_id}."
+        )
+
+
+class ResultViewConflict(ValueError):
+    """A result-view revision was based on bytes that are no longer current."""
+
+
 class WatcherStopRequest(BaseModel):
     """An Experiment agent's narrow request to retire one staged observer."""
 
@@ -420,39 +699,141 @@ class WatcherContinuation(BaseModel):
     resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
 
 
-class WatcherRecord(BaseModel):
-    """Durable operational watcher, separate from graph and provider attempts."""
+class NodeStatusGraphCondition(BaseModel):
+    """Wake when one canonical node reaches any named status."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    node_id: str = Field(min_length=1)
+    status_in: list[str] = Field(min_length=1)
+
+    @field_validator("node_id")
+    @classmethod
+    def node_id_is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("graph condition node_id must not be blank")
+        return stripped
+
+    @field_validator("status_in")
+    @classmethod
+    def statuses_are_unique_and_not_blank(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("graph condition statuses must not be blank")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("graph condition statuses must be unique")
+        return sorted(normalized)
+
+
+class ProposalResolvedGraphCondition(BaseModel):
+    """Wake when a Proposal related to one canonical node is resolved."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    node_id: str = Field(min_length=1)
+    proposal_resolved: Literal[True]
+
+    @field_validator("proposal_resolved", mode="before")
+    @classmethod
+    def proposal_resolved_is_literal_true(cls, value: object) -> object:
+        if type(value) is not bool or value is not True:
+            raise ValueError("proposal_resolved must be the JSON literal true")
+        return value
+
+    @field_validator("node_id")
+    @classmethod
+    def node_id_is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("graph condition node_id must not be blank")
+        return stripped
+
+
+GraphCondition = Annotated[
+    NodeStatusGraphCondition | ProposalResolvedGraphCondition,
+    Field(union_mode="left_to_right"),
+]
+
+
+class WatcherDeliveryRecord(BaseModel):
+    """Durable delivery state shared by external and graph watchers."""
 
     model_config = ConfigDict(extra="forbid")
 
     watcher_id: str
     project_id: str
     origin_operation_id: str
-    origin_task_kind: Literal["node_chat", "project_chat"]
+    origin_task_kind: Literal["node_chat", "project_chat", "campaign"]
     chat_id: str
     node_id: str | None = None
     experiment_episode_id: str | None = None
     execution_host: str = ""
-    check_command: str
-    log_path: str
-    cwd: str
     continuation: WatcherContinuation
     status: WatcherStatus = "active"
     created_at: str
-    last_checked_at: str | None = None
-    last_exit_code: int | None = None
-    last_error: str | None = None
     completed_at: str | None = None
-    next_check_at: str | None = None
-    consecutive_error_count: int = Field(default=0, ge=0)
-    group_id: str | None = None
-    group_label: str | None = None
     notified: bool = False
     notification_operation_id: str | None = None
     stopped_by: Literal["human", "loop", "agent"] | None = None
     stop_reason: str | None = None
     stopped_at: str | None = None
     stop_operation_id: str | None = None
+
+
+class WatcherRecord(WatcherDeliveryRecord):
+    """Durable external observer checked from a fresh login shell."""
+
+    check_command: str
+    log_path: str
+    cwd: str
+    last_checked_at: str | None = None
+    last_exit_code: int | None = None
+    last_error: str | None = None
+    next_check_at: str | None = None
+    consecutive_error_count: int = Field(default=0, ge=0)
+    group_id: str | None = None
+    group_label: str | None = None
+
+
+class GraphWatcherRecord(WatcherDeliveryRecord):
+    """Durable canonical-graph condition with no shell-check fields."""
+
+    condition: GraphCondition
+    armed_revision: int | None = Field(default=None, ge=0)
+    last_evaluated_at: str | None = None
+    status: Literal["active", "completed", "stopped"] = "active"
+
+    @property
+    def last_checked_at(self) -> str | None:
+        return self.last_evaluated_at
+
+    @property
+    def last_exit_code(self) -> None:
+        return None
+
+    @property
+    def last_error(self) -> None:
+        return None
+
+    @property
+    def next_check_at(self) -> None:
+        return None
+
+    @property
+    def consecutive_error_count(self) -> int:
+        return 0
+
+    @property
+    def group_id(self) -> None:
+        return None
+
+    @property
+    def group_label(self) -> None:
+        return None
+
+
+StoredWatcherRecord = WatcherRecord | GraphWatcherRecord
 
 
 class ExperimentWatcherResourceRecord(BaseModel):
@@ -541,7 +922,9 @@ _PROJECT_ID_TABLES = (
     "paper_drafts",
     "writing_sessions",
     "chat_session_contexts",
+    "result_views",
     "graph_runs",
+    "campaigns",
     "agent_usage",
     "watchers",
     "experiment_episodes",
@@ -775,6 +1158,36 @@ class AppStore:
                     ON chat_session_contexts(project_id);
                 CREATE INDEX IF NOT EXISTS chat_session_contexts_native_session
                     ON chat_session_contexts(native_session_id);
+                CREATE TABLE IF NOT EXISTS result_views (
+                    view_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    experiment_id TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    origin_operation_id TEXT NOT NULL,
+                    latest_operation_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reasoning TEXT NOT NULL,
+                    run_on TEXT NOT NULL,
+                    native_session_id TEXT NOT NULL,
+                    stage_host TEXT NOT NULL,
+                    stage_root TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    kept_filename TEXT,
+                    kept_at TEXT,
+                    CHECK((kept_filename IS NULL) = (kept_at IS NULL))
+                );
+                CREATE INDEX IF NOT EXISTS result_views_project_experiment
+                    ON result_views(project_id, experiment_id, updated_at DESC, view_id);
+                CREATE INDEX IF NOT EXISTS result_views_project_chat
+                    ON result_views(project_id, chat_id, updated_at DESC, view_id);
+                CREATE INDEX IF NOT EXISTS result_views_expiry
+                    ON result_views(expires_at, kept_filename);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT PRIMARY KEY,
                     home_space_id TEXT,
@@ -818,6 +1231,7 @@ class AppStore:
                 CREATE TABLE IF NOT EXISTS graph_runs (
                     operation_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
+                    campaign_id TEXT,
                     kind TEXT NOT NULL,
                     status TEXT NOT NULL,
                     request_json TEXT NOT NULL,
@@ -838,12 +1252,103 @@ class AppStore:
                     estimate_samples INTEGER NOT NULL DEFAULT 0,
                     phase TEXT NOT NULL DEFAULT 'queued',
                     last_activity_at TEXT,
+                    campaign_worker_handoffs_cleared_at TEXT,
+                    dispatch_authority_json TEXT,
                     authorized_space_id TEXT,
                     authorized_user_id TEXT,
                     authorized_display_name TEXT
                 );
                 CREATE INDEX IF NOT EXISTS graph_runs_project
                     ON graph_runs(project_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    campaign_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    root_operation_id TEXT,
+                    status TEXT NOT NULL,
+                    starting_instruction TEXT,
+                    invocation_ceiling INTEGER NOT NULL CHECK(invocation_ceiling >= 1),
+                    invocations_used INTEGER NOT NULL DEFAULT 0
+                        CHECK(invocations_used >= 0 AND invocations_used <= invocation_ceiling),
+                    authorized_space_id TEXT NOT NULL,
+                    authorized_user_id TEXT NOT NULL,
+                    authorized_display_name TEXT NOT NULL,
+                    stop_requested_at TEXT,
+                    ending TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    ended_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS campaigns_project
+                    ON campaigns(project_id, created_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS campaigns_one_live_project
+                    ON campaigns(project_id)
+                    WHERE status IN (
+                        'queued', 'running', 'stopping', 'wrapping_up', 'needs_action'
+                    );
+                CREATE TABLE IF NOT EXISTS campaign_invocations (
+                    campaign_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL UNIQUE,
+                    role TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(campaign_id, operation_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS campaign_invocations_campaign
+                    ON campaign_invocations(campaign_id, created_at, operation_id);
+                CREATE TABLE IF NOT EXISTS campaign_reports (
+                    report_id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL UNIQUE,
+                    ending TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    html TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS campaign_reports_campaign
+                    ON campaign_reports(campaign_id, created_at, report_id);
+                CREATE TABLE IF NOT EXISTS campaign_messages (
+                    message_id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    sender_role TEXT NOT NULL,
+                    sender_task_id TEXT,
+                    authorized_space_id TEXT,
+                    authorized_user_id TEXT,
+                    authorized_display_name TEXT,
+                    recipient_task_id TEXT NOT NULL,
+                    control_node_id TEXT,
+                    body TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    delivery_operation_id TEXT,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id)
+                );
+                CREATE INDEX IF NOT EXISTS campaign_messages_campaign
+                    ON campaign_messages(campaign_id, created_at, message_id);
+                CREATE TABLE IF NOT EXISTS campaign_recoveries (
+                    recovery_id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    operation_id TEXT,
+                    purpose TEXT NOT NULL,
+                    failure_kind TEXT NOT NULL,
+                    retry_mode TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+                    max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
+                    status TEXT NOT NULL,
+                    next_attempt_at TEXT,
+                    diagnostic TEXT NOT NULL,
+                    admitted_operation_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(admitted_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS campaign_recoveries_due
+                    ON campaign_recoveries(status, next_attempt_at, created_at);
                 CREATE TABLE IF NOT EXISTS agent_usage (
                     usage_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -877,6 +1382,13 @@ class AppStore:
                     created_at TEXT NOT NULL,
                     level TEXT NOT NULL,
                     message TEXT NOT NULL,
+                    event_kind TEXT NOT NULL DEFAULT 'message',
+                    command_id TEXT,
+                    campaign_id TEXT,
+                    command_verb TEXT,
+                    command_phase TEXT,
+                    idempotency_key TEXT,
+                    payload_json TEXT,
                     FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
                 );
                 CREATE INDEX IF NOT EXISTS graph_run_events_operation
@@ -919,6 +1431,8 @@ class AppStore:
                     check_command TEXT NOT NULL,
                     log_path TEXT NOT NULL,
                     cwd TEXT NOT NULL,
+                    graph_condition_json TEXT,
+                    armed_revision INTEGER,
                     continuation_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -986,10 +1500,38 @@ class AppStore:
             )
             self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
             self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
+            self._ensure_column(
+                connection,
+                "graph_runs",
+                "campaign_worker_handoffs_cleared_at",
+                "TEXT",
+            )
             self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
+            self._ensure_column(connection, "graph_runs", "dispatch_authority_json", "TEXT")
             self._ensure_column(connection, "graph_runs", "authorized_space_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "authorized_user_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "authorized_display_name", "TEXT")
+            self._ensure_column(connection, "graph_runs", "campaign_id", "TEXT")
+            self._ensure_column(connection, "campaign_messages", "authorized_space_id", "TEXT")
+            self._ensure_column(connection, "campaign_messages", "authorized_user_id", "TEXT")
+            self._ensure_column(
+                connection,
+                "campaign_messages",
+                "authorized_display_name",
+                "TEXT",
+            )
+            self._ensure_column(
+                connection,
+                "graph_run_events",
+                "event_kind",
+                "TEXT NOT NULL DEFAULT 'message'",
+            )
+            self._ensure_column(connection, "graph_run_events", "command_id", "TEXT")
+            self._ensure_column(connection, "graph_run_events", "campaign_id", "TEXT")
+            self._ensure_column(connection, "graph_run_events", "command_verb", "TEXT")
+            self._ensure_column(connection, "graph_run_events", "command_phase", "TEXT")
+            self._ensure_column(connection, "graph_run_events", "idempotency_key", "TEXT")
+            self._ensure_column(connection, "graph_run_events", "payload_json", "TEXT")
             self._ensure_column(connection, "watchers", "next_check_at", "TEXT")
             self._ensure_column(
                 connection,
@@ -1004,6 +1546,32 @@ class AppStore:
             self._ensure_column(connection, "watchers", "stop_reason", "TEXT")
             self._ensure_column(connection, "watchers", "stopped_at", "TEXT")
             self._ensure_column(connection, "watchers", "stop_operation_id", "TEXT")
+            self._ensure_column(connection, "watchers", "graph_condition_json", "TEXT")
+            self._ensure_column(connection, "watchers", "armed_revision", "INTEGER")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS graph_runs_campaign "
+                "ON graph_runs(campaign_id, created_at, operation_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS graph_run_events_command "
+                "ON graph_run_events(command_id, command_phase, event_id)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS graph_run_events_command_start_id "
+                "ON graph_run_events(command_id) "
+                "WHERE event_kind = 'command' AND command_phase = 'start'"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS graph_run_events_command_exit_id "
+                "ON graph_run_events(command_id) "
+                "WHERE event_kind = 'command' AND command_phase = 'exit'"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS graph_run_events_campaign_key_start "
+                "ON graph_run_events(campaign_id, idempotency_key) "
+                "WHERE event_kind = 'command' AND command_phase = 'start' "
+                "AND campaign_id IS NOT NULL AND idempotency_key IS NOT NULL"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS watchers_due "
                 "ON watchers(status, next_check_at, created_at)"
@@ -1029,6 +1597,10 @@ class AppStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS watchers_experiment_episode "
                 "ON watchers(project_id, node_id, experiment_episode_id, status)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS watchers_graph_conditions "
+                "ON watchers(project_id, status, notified, graph_condition_json)"
             )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
@@ -1578,6 +2150,9 @@ class AppStore:
                     "chat_session_contexts": connection.execute(
                         "DELETE FROM chat_session_contexts WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "result_views": connection.execute(
+                        "DELETE FROM result_views WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -1585,6 +2160,29 @@ class AppStore:
                         "DELETE FROM experiment_episodes WHERE project_id = ?", (project_id,)
                     ).rowcount,
                 }
+                campaign_ids = connection.execute(
+                    "SELECT campaign_id FROM campaigns WHERE project_id = ?",
+                    (project_id,),
+                ).fetchall()
+                if campaign_ids:
+                    for table in (
+                        "campaign_recoveries",
+                        "campaign_messages",
+                        "campaign_reports",
+                        "campaign_invocations",
+                    ):
+                        counts[table] = connection.execute(
+                            f"""
+                            DELETE FROM {table}
+                            WHERE campaign_id IN (
+                                SELECT campaign_id FROM campaigns WHERE project_id = ?
+                            )
+                            """,
+                            (project_id,),
+                        ).rowcount
+                counts["campaigns"] = connection.execute(
+                    "DELETE FROM campaigns WHERE project_id = ?", (project_id,)
+                ).rowcount
                 connection.execute("DELETE FROM agent_usage WHERE project_id = ?", (project_id,))
                 for table in (
                     "graph_run_outputs",
@@ -1687,9 +2285,59 @@ class AppStore:
         return stored
 
     def migrate_legacy_project_data(self, legacy_id: str, project_id: str) -> None:
-        if legacy_id == project_id:
-            return
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            target = connection.execute(
+                "SELECT home_space_id FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            target_alias = connection.execute(
+                "SELECT canonical_project_id FROM project_aliases WHERE alias_id = ?",
+                (project_id,),
+            ).fetchone()
+            space = connection.execute(
+                "SELECT space_id FROM space_identity WHERE singleton = 1"
+            ).fetchone()
+            try:
+                _canonical_uuid4(project_id, label="canonical project identity")
+            except RuntimeError:
+                canonical_target = False
+            else:
+                canonical_target = True
+            if (
+                target is None
+                or target_alias is not None
+                or space is None
+                or target["home_space_id"] != space["space_id"]
+                or not canonical_target
+            ):
+                raise ValueError(
+                    f"Legacy project data migration target {project_id!r} is not an exact "
+                    "canonical project registration."
+                )
+            if legacy_id == project_id:
+                return
+
+            legacy_project = connection.execute(
+                "SELECT 1 FROM projects WHERE project_id = ?",
+                (legacy_id,),
+            ).fetchone()
+            if legacy_project is not None:
+                raise ValueError(
+                    f"Legacy project data migration source {legacy_id!r} is already a "
+                    "registered canonical project."
+                )
+            legacy_alias = connection.execute(
+                "SELECT canonical_project_id FROM project_aliases WHERE alias_id = ?",
+                (legacy_id,),
+            ).fetchone()
+            if legacy_alias is not None and legacy_alias["canonical_project_id"] != project_id:
+                raise ValueError(
+                    f"Legacy project data migration source alias {legacy_id!r} belongs to "
+                    f"canonical project {legacy_alias['canonical_project_id']!r}, not "
+                    f"{project_id!r}."
+                )
+
             connection.execute(
                 """
                 INSERT OR IGNORE INTO paper_drafts (
@@ -1710,7 +2358,15 @@ class AppStore:
                 (project_id, legacy_id),
             )
             connection.execute(
+                "UPDATE result_views SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
                 "UPDATE graph_runs SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE campaigns SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
             connection.execute(
@@ -1722,7 +2378,2847 @@ class AppStore:
                 (project_id, legacy_id),
             )
 
+    def create_result_view(self, record: ResultViewRecord) -> ResultViewRecord:
+        """Insert one private result-view binding without storing its bytes."""
+        record = ResultViewRecord.model_validate(record)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    INSERT INTO result_views (
+                        view_id, project_id, experiment_id, chat_id,
+                        origin_operation_id, latest_operation_id,
+                        provider, model, reasoning, run_on,
+                        native_session_id, stage_host, stage_root, source_name,
+                        content_sha256, size_bytes, created_at, updated_at, expires_at,
+                        kept_filename, kept_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.view_id,
+                        record.project_id,
+                        record.experiment_id,
+                        record.chat_id,
+                        record.origin_operation_id,
+                        record.latest_operation_id,
+                        record.provider,
+                        record.model,
+                        record.reasoning,
+                        record.run_on,
+                        record.native_session_id,
+                        record.stage_host,
+                        record.stage_root,
+                        record.source_name,
+                        record.content_sha256,
+                        record.size_bytes,
+                        record.created_at,
+                        record.updated_at,
+                        record.expires_at,
+                        record.kept_filename,
+                        record.kept_at,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Result view {record.view_id!r} already exists.") from exc
+        return record
+
+    def result_view(
+        self,
+        view_id: str,
+        *,
+        include_expired: bool = False,
+        as_of: datetime | None = None,
+    ) -> ResultViewRecord | None:
+        """Return one visible result view, unless diagnostics explicitly include expiry."""
+        record = self.result_view_for_diagnostics(view_id)
+        if record is None or include_expired or _result_view_is_visible(record, as_of=as_of):
+            return record
+        return None
+
+    def result_view_for_diagnostics(self, view_id: str) -> ResultViewRecord | None:
+        """Return private metadata even after a temporary view expires."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM result_views WHERE view_id = ?",
+                (view_id,),
+            ).fetchone()
+        return self._result_view_record(row) if row is not None else None
+
+    def list_result_views(
+        self,
+        project_id: str,
+        *,
+        experiment_id: str | None = None,
+        chat_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> list[ResultViewRecord]:
+        """List visible views while retaining kept records past scratch expiry."""
+        clauses = ["project_id = ?"]
+        values: list[str] = [project_id]
+        if experiment_id is not None:
+            clauses.append("experiment_id = ?")
+            values.append(experiment_id)
+        if chat_id is not None:
+            clauses.append("chat_id = ?")
+            values.append(chat_id)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM result_views
+                WHERE {" AND ".join(clauses)}
+                ORDER BY updated_at DESC, view_id
+                """,
+                values,
+            ).fetchall()
+        records = [self._result_view_record(row) for row in rows]
+        return [record for record in records if _result_view_is_visible(record, as_of=as_of)]
+
+    def result_view_descriptor(
+        self,
+        record: ResultViewRecord,
+        *,
+        as_of: datetime | None = None,
+    ) -> ResultViewDescriptor:
+        """Project private storage metadata onto the path-free public contract."""
+        record = ResultViewRecord.model_validate(record)
+        is_temporary = record.kept_filename is None
+        return ResultViewDescriptor(
+            view_id=record.view_id,
+            chat_id=record.chat_id,
+            experiment_id=record.experiment_id,
+            name=record.source_name,
+            media_type="text/html",
+            state="temporary" if is_temporary else "kept",
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            expires_at=record.expires_at,
+            kept_filename=record.kept_filename,
+            kept_at=record.kept_at,
+            can_revise=is_temporary and _result_view_is_visible(record, as_of=as_of),
+        )
+
+    def list_result_view_descriptors(
+        self,
+        project_id: str,
+        *,
+        experiment_id: str | None = None,
+        chat_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> list[ResultViewDescriptor]:
+        return [
+            self.result_view_descriptor(record, as_of=as_of)
+            for record in self.list_result_views(
+                project_id,
+                experiment_id=experiment_id,
+                chat_id=chat_id,
+                as_of=as_of,
+            )
+        ]
+
+    def revise_result_view(
+        self,
+        view_id: str,
+        *,
+        expected_content_sha256: str,
+        latest_operation_id: str,
+        content_sha256: str,
+        size_bytes: int,
+        updated_at: str,
+        expires_at: str,
+    ) -> ResultViewRecord:
+        """CAS one revision onto the same stable view identity."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM result_views WHERE view_id = ?",
+                (view_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(view_id)
+            current = self._result_view_record(row)
+            if current.kept_filename is not None:
+                raise ResultViewConflict("a kept result view cannot be revised")
+            if current.content_sha256 != expected_content_sha256:
+                raise ResultViewConflict("result view changed before this revision was recorded")
+            revised = ResultViewRecord.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    "latest_operation_id": latest_operation_id,
+                    "content_sha256": content_sha256,
+                    "size_bytes": size_bytes,
+                    "updated_at": updated_at,
+                    "expires_at": expires_at,
+                }
+            )
+            updated = connection.execute(
+                """
+                UPDATE result_views
+                SET latest_operation_id = ?, content_sha256 = ?, size_bytes = ?,
+                    updated_at = ?, expires_at = ?
+                WHERE view_id = ? AND content_sha256 = ? AND kept_filename IS NULL
+                """,
+                (
+                    revised.latest_operation_id,
+                    revised.content_sha256,
+                    revised.size_bytes,
+                    revised.updated_at,
+                    revised.expires_at,
+                    view_id,
+                    expected_content_sha256,
+                ),
+            ).rowcount
+            if updated != 1:
+                raise ResultViewConflict("result view changed before this revision was recorded")
+        return revised
+
+    def refresh_result_view_expiry(
+        self,
+        project_id: str,
+        chat_id: str,
+        *,
+        expires_at: str,
+        as_of: datetime | None = None,
+    ) -> int:
+        """Extend active unkept view retention without reviving expired views."""
+        requested_expiry = _required_timestamp(expires_at)
+        current = as_of or datetime.now(UTC)
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("result view refresh time must include a timezone")
+        current = current.astimezone(UTC)
+        refreshed = 0
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT view_id, expires_at FROM result_views
+                WHERE project_id = ? AND chat_id = ? AND kept_filename IS NULL
+                """,
+                (project_id, chat_id),
+            ).fetchall()
+            for row in rows:
+                current_expiry = _required_timestamp(row["expires_at"])
+                if current_expiry <= current or requested_expiry <= current_expiry:
+                    continue
+                refreshed += connection.execute(
+                    """
+                    UPDATE result_views SET expires_at = ?
+                    WHERE view_id = ? AND expires_at = ? AND kept_filename IS NULL
+                    """,
+                    (expires_at, row["view_id"], row["expires_at"]),
+                ).rowcount
+        return refreshed
+
+    def mark_result_view_kept(
+        self,
+        view_id: str,
+        *,
+        expected_content_sha256: str,
+        kept_filename: str,
+        kept_at: str,
+    ) -> ResultViewRecord:
+        """Remember Keep once, bound to the exact bytes that were copied."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM result_views WHERE view_id = ?",
+                (view_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(view_id)
+            current = self._result_view_record(row)
+            if current.kept_filename is not None:
+                if current.content_sha256 != expected_content_sha256:
+                    raise ResultViewConflict("result view changed before Keep was recorded")
+                return current
+            if current.content_sha256 != expected_content_sha256:
+                raise ResultViewConflict("result view changed before Keep was recorded")
+            kept = ResultViewRecord.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    "kept_filename": kept_filename,
+                    "kept_at": kept_at,
+                }
+            )
+            updated = connection.execute(
+                """
+                UPDATE result_views
+                SET kept_filename = ?, kept_at = ?
+                WHERE view_id = ? AND kept_filename IS NULL AND content_sha256 = ?
+                """,
+                (kept.kept_filename, kept.kept_at, view_id, expected_content_sha256),
+            ).rowcount
+            if updated != 1:
+                raise ResultViewConflict("result view changed before Keep was recorded")
+        return kept
+
+    def create_campaign_with_root_task(
+        self,
+        campaign: CampaignRecord,
+        task: AgentTaskRecord,
+    ) -> tuple[CampaignRecord, AgentTaskRecord]:
+        """Create the sole live project campaign and spend its first research unit atomically."""
+
+        if campaign.status not in {"queued", "running"}:
+            raise ValueError("a new campaign must start queued or running")
+        if campaign.invocations_used != 0:
+            raise ValueError("a new campaign budget must be unused")
+        if campaign.invocation_ceiling < 2:
+            raise ValueError("a campaign needs one research invocation and one report invocation")
+        if task.campaign_id != campaign.campaign_id:
+            raise ValueError("the campaign root task must carry its campaign id")
+        if task.project_id != campaign.project_id or task.kind != "campaign":
+            raise ValueError("the campaign root task must belong to the campaign project")
+        if task.parent_operation_id is not None:
+            raise ValueError("the campaign root task cannot have a parent task")
+        if campaign.root_operation_id not in {None, task.operation_id}:
+            raise ValueError("the campaign root operation does not match its task")
+
+        campaign = campaign.model_copy(
+            update={"root_operation_id": task.operation_id, "status": "running"}
+        )
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._insert_campaign(connection, campaign)
+                self._insert_campaign_task(connection, campaign, task, "orchestrator")
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Only one live auto-research campaign may run per project.") from exc
+        stored_campaign = self.campaign(campaign.campaign_id)
+        stored_task = self.agent_task(task.operation_id)
+        assert stored_campaign is not None and stored_task is not None
+        return stored_campaign, stored_task
+
+    def create_campaign_agent_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        role: CampaignInvocationRole,
+    ) -> AgentTaskRecord:
+        """Admit one provider turn from the shared pot and create its task in one commit."""
+
+        if record.campaign_id is None:
+            raise ValueError("a campaign task must carry its campaign id")
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?",
+                    (record.campaign_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(record.campaign_id)
+                campaign = self._campaign_record(row)
+                self._insert_campaign_task(connection, campaign, record, role)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not create the campaign agent task.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def create_campaign_recovery_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        """Create one same-allocation recovery without spending another invocation."""
+
+        if record.campaign_id is None or record.parent_operation_id is None:
+            raise ValueError("a campaign recovery must name its campaign and exact parent")
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                campaign_row = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?",
+                    (record.campaign_id,),
+                ).fetchone()
+                if campaign_row is None:
+                    raise KeyError(record.campaign_id)
+                campaign = self._campaign_record(campaign_row)
+                if campaign.status not in {"running", "stopping", "wrapping_up"}:
+                    raise CampaignNotRunning(
+                        "the campaign cannot recover an allocation after its ending is durable"
+                    )
+                parent = connection.execute(
+                    """
+                    SELECT run.*, invocation.role AS campaign_role
+                    FROM graph_runs AS run
+                    JOIN campaign_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE run.operation_id = ? AND run.campaign_id = ?
+                    """,
+                    (record.parent_operation_id, record.campaign_id),
+                ).fetchone()
+                if parent is None:
+                    raise ValueError("campaign recovery parent is outside its exact lineage")
+                if parent["status"] not in {"paused", "interrupted", "failed"}:
+                    raise ValueError(
+                        "only a paused, interrupted, or failed campaign task can recover"
+                    )
+                if record.project_id != parent["project_id"] or record.kind != parent["kind"]:
+                    raise ValueError("campaign recovery must preserve its task scope")
+                if record.attempt != int(parent["attempt"]) + 1:
+                    raise ValueError("campaign recovery must advance its attempt lineage")
+                if record.authorized_by != campaign.authorized_by:
+                    raise ValueError("campaign tasks retain the root human authorizer snapshot")
+                role = TypeAdapter(CampaignInvocationRole).validate_python(parent["campaign_role"])
+                if (
+                    role == "worker"
+                    and parent["status"] != "paused"
+                    and (
+                        campaign.status != "running"
+                        or campaign.ending is not None
+                        or campaign.stop_requested_at is not None
+                    )
+                ):
+                    raise CampaignNotRunning(
+                        "the campaign is no longer accepting terminal worker recovery"
+                    )
+                if (
+                    campaign.status == "wrapping_up"
+                    and campaign.ending == "failed"
+                    and role != "report"
+                    and not (role == "worker" and parent["status"] == "paused")
+                ):
+                    raise CampaignNotRunning(
+                        "the campaign terminal failure fence blocks operational recovery"
+                    )
+                clean_orchestrator_retry = (
+                    role == "orchestrator"
+                    and record.native_session_id is None
+                    and record.request.get("session_id") is None
+                )
+                if clean_orchestrator_retry:
+                    parent_request = json.loads(parent["request_json"])
+                    parent_actor = (
+                        parent_request.get("actor_operation_id") or parent["operation_id"]
+                    )
+                    if parent_actor != campaign.root_operation_id:
+                        raise ValueError(
+                            "only the sole orchestrator may restart a clean native session"
+                        )
+                    if (record.stage_host or "") != (
+                        parent["stage_host"] or ""
+                    ) or record.stage_root != parent["stage_root"]:
+                        raise ValueError(
+                            "a clean orchestrator retry must preserve its actor-owned stage"
+                        )
+                elif (
+                    not parent["native_session_id"]
+                    or not parent["stage_root"]
+                    or record.native_session_id != parent["native_session_id"]
+                    or (record.stage_host or "") != (parent["stage_host"] or "")
+                    or record.stage_root != parent["stage_root"]
+                    or record.request.get("session_id") != parent["native_session_id"]
+                ):
+                    raise ValueError(
+                        "campaign recovery must preserve its exact saved native session and stage"
+                    )
+                child = connection.execute(
+                    """
+                    SELECT child.operation_id
+                    FROM graph_runs AS parent
+                    JOIN graph_runs AS child
+                      ON child.parent_operation_id = parent.operation_id
+                    WHERE parent.operation_id = ?
+                      AND child.campaign_id = parent.campaign_id
+                      AND child.attempt = parent.attempt + 1
+                      AND COALESCE(
+                          json_extract(child.request_json, '$.actor_operation_id'),
+                          child.operation_id
+                      ) = COALESCE(
+                          json_extract(parent.request_json, '$.actor_operation_id'),
+                          parent.operation_id
+                      )
+                    LIMIT 1
+                    """,
+                    (record.parent_operation_id,),
+                ).fetchone()
+                if child is not None:
+                    raise ValueError("campaign task already has a recovery child")
+                abandoned = connection.execute(
+                    """
+                    SELECT 1 FROM graph_run_receipts
+                    WHERE operation_id = ? AND category = 'campaign_recovery_abandoned'
+                    LIMIT 1
+                    """,
+                    (record.parent_operation_id,),
+                ).fetchone()
+                if abandoned is not None:
+                    raise ValueError("campaign Stop already abandoned recovery of this task")
+                if (
+                    campaign.status == "wrapping_up"
+                    and campaign.ending is not None
+                    and role != "report"
+                    and self._current_campaign_report_task_row(
+                        connection,
+                        campaign.campaign_id,
+                        campaign.ending,
+                    )
+                    is not None
+                ):
+                    raise CampaignNotRunning(
+                        "the campaign report already began; operational recovery is closed"
+                    )
+                self._bind_campaign_actor(
+                    connection,
+                    campaign,
+                    record,
+                    role,
+                    same_allocation_recovery=True,
+                )
+                self._insert_agent_task(connection, record)
+                connection.execute(
+                    """
+                    INSERT INTO campaign_invocations(campaign_id, operation_id, role, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (campaign.campaign_id, record.operation_id, role, record.created_at),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not create the campaign recovery task.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def create_campaign_message_wake_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        role: Literal["orchestrator", "worker"],
+        recipient_task_id: str,
+        message_ids: list[str],
+    ) -> AgentTaskRecord | None:
+        """Spend one unit and claim one coalesced mail delivery in the same commit."""
+
+        if record.campaign_id is None:
+            raise ValueError("a campaign mail wake must carry its campaign id")
+        if not recipient_task_id or not message_ids or len(message_ids) != len(set(message_ids)):
+            raise ValueError("a campaign mail wake needs one recipient and unique messages")
+        if len(message_ids) > CAMPAIGN_MAIL_MAX_MESSAGES:
+            raise ValueError(
+                f"a campaign mail wake may claim at most {CAMPAIGN_MAIL_MAX_MESSAGES} messages"
+            )
+        placeholders = ",".join("?" for _ in message_ids)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?",
+                    (record.campaign_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(record.campaign_id)
+                campaign = self._campaign_record(row)
+                messages = connection.execute(
+                    f"""
+                    SELECT message_id, campaign_id, recipient_task_id,
+                           delivered_at, delivery_operation_id
+                    FROM campaign_messages
+                    WHERE message_id IN ({placeholders})
+                    """,
+                    message_ids,
+                ).fetchall()
+                if {item["message_id"] for item in messages} != set(message_ids):
+                    raise ValueError("campaign mail delivery names a missing message")
+                if any(
+                    item["campaign_id"] != record.campaign_id
+                    or item["recipient_task_id"] != recipient_task_id
+                    for item in messages
+                ):
+                    raise ValueError("campaign mail delivery crosses a campaign or recipient")
+                if any(
+                    item["delivered_at"] is not None or item["delivery_operation_id"] is not None
+                    for item in messages
+                ):
+                    return None
+                pending_prefix = connection.execute(
+                    """
+                    SELECT message_id
+                    FROM campaign_messages
+                    WHERE campaign_id = ? AND recipient_task_id = ?
+                      AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                    ORDER BY created_at ASC, message_id ASC
+                    LIMIT ?
+                    """,
+                    (record.campaign_id, recipient_task_id, len(message_ids)),
+                ).fetchall()
+                if [item["message_id"] for item in pending_prefix] != message_ids:
+                    return None
+                self._insert_campaign_task(connection, campaign, record, role)
+                connection.execute(
+                    f"""
+                    UPDATE campaign_messages
+                    SET delivered_at = ?, delivery_operation_id = ?
+                    WHERE message_id IN ({placeholders})
+                    """,
+                    (record.created_at, record.operation_id, *message_ids),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not create the campaign mail wake task.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    @staticmethod
+    def _insert_campaign(connection: sqlite3.Connection, record: CampaignRecord) -> None:
+        connection.execute(
+            """
+            INSERT INTO campaigns (
+                campaign_id, project_id, root_operation_id, status, starting_instruction,
+                invocation_ceiling, invocations_used, authorized_space_id,
+                authorized_user_id, authorized_display_name, stop_requested_at,
+                ending, error, created_at, updated_at, ended_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.campaign_id,
+                record.project_id,
+                record.root_operation_id,
+                record.status,
+                record.starting_instruction,
+                record.invocation_ceiling,
+                record.invocations_used,
+                record.authorized_by.space_id,
+                record.authorized_by.user_id,
+                record.authorized_by.display_name,
+                record.stop_requested_at,
+                record.ending,
+                record.error,
+                record.created_at,
+                record.updated_at,
+                record.ended_at,
+            ),
+        )
+
+    def _insert_campaign_task(
+        self,
+        connection: sqlite3.Connection,
+        campaign: CampaignRecord,
+        record: AgentTaskRecord,
+        role: CampaignInvocationRole,
+    ) -> None:
+        if record.campaign_id != campaign.campaign_id or record.project_id != campaign.project_id:
+            raise ValueError("campaign task lineage does not match the campaign")
+        if record.authorized_by != campaign.authorized_by:
+            raise ValueError("campaign tasks retain the root human authorizer snapshot")
+        if role == "report":
+            if campaign.status != "wrapping_up" or campaign.ending is None:
+                raise CampaignNotRunning("a report turn requires a campaign ending in progress")
+            if campaign.invocations_used >= campaign.invocation_ceiling:
+                raise CampaignBudgetExhausted("the reserved report invocation is unavailable")
+            existing_report = self._current_campaign_report_task_row(
+                connection,
+                campaign.campaign_id,
+                campaign.ending,
+            )
+            if existing_report is not None:
+                raise ValueError("the campaign report invocation is already allocated")
+        else:
+            if campaign.status != "running" or campaign.stop_requested_at is not None:
+                raise CampaignNotRunning("the campaign is not admitting new work")
+            if campaign.invocations_used >= campaign.invocation_ceiling - 1:
+                raise CampaignBudgetExhausted(
+                    "the campaign budget is exhausted; one invocation remains reserved for its report"
+                )
+        if record.parent_operation_id is not None:
+            parent = connection.execute(
+                "SELECT project_id, campaign_id FROM graph_runs WHERE operation_id = ?",
+                (record.parent_operation_id,),
+            ).fetchone()
+            if (
+                parent is None
+                or parent["project_id"] != campaign.project_id
+                or parent["campaign_id"] != campaign.campaign_id
+            ):
+                raise ValueError("a campaign child task must keep its campaign lineage")
+        self._bind_campaign_actor(connection, campaign, record, role)
+        if self._has_active_chat_overlap(connection, record):
+            raise ValueError("Another task is already active in this conversation.")
+        self._insert_agent_task(connection, record)
+        connection.execute(
+            """
+            INSERT INTO campaign_invocations(campaign_id, operation_id, role, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (campaign.campaign_id, record.operation_id, role, record.created_at),
+        )
+        cursor = connection.execute(
+            """
+            UPDATE campaigns
+            SET invocations_used = invocations_used + 1, updated_at = ?
+            WHERE campaign_id = ? AND invocations_used = ?
+            """,
+            (record.created_at, campaign.campaign_id, campaign.invocations_used),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("the campaign budget changed during task admission")
+
+    def _bind_campaign_actor(
+        self,
+        connection: sqlite3.Connection,
+        campaign: CampaignRecord,
+        record: AgentTaskRecord,
+        role: CampaignInvocationRole,
+        *,
+        same_allocation_recovery: bool = False,
+    ) -> str:
+        """Validate and persist the immutable actor identity carried by a task request."""
+
+        request = dict(record.request)
+        if request.get("role") != role:
+            raise ValueError("campaign task request role does not match its canonical role")
+        requested_actor = request.get("actor_operation_id")
+        if requested_actor is not None and (
+            not isinstance(requested_actor, str) or not requested_actor.strip()
+        ):
+            raise ValueError("campaign actor operation id must be a nonblank string")
+        if isinstance(requested_actor, str):
+            requested_actor = requested_actor.strip()
+
+        is_root = (
+            record.operation_id == campaign.root_operation_id and record.parent_operation_id is None
+        )
+        if is_root:
+            if role != "orchestrator":
+                raise ValueError("the campaign root actor must be the orchestrator")
+            if requested_actor not in {None, record.operation_id}:
+                raise ValueError("the campaign root actor is its root operation")
+            actor_operation_id = record.operation_id
+            canonical_control_node_id = None
+        else:
+            if record.parent_operation_id is None:
+                raise ValueError("a non-root campaign task must preserve parent lineage")
+            parent = connection.execute(
+                """
+                SELECT run.*, invocation.role AS campaign_role
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ? AND run.campaign_id = ?
+                """,
+                (record.parent_operation_id, campaign.campaign_id),
+            ).fetchone()
+            if parent is None:
+                raise ValueError("a campaign continuation has no canonical parent actor")
+            parent_request = json.loads(parent["request_json"])
+            parent_role = TypeAdapter(CampaignInvocationRole).validate_python(
+                parent["campaign_role"]
+            )
+            parent_actor = parent_request.get("actor_operation_id")
+            if not isinstance(parent_actor, str) or not parent_actor:
+                # This fallback is migration-only. New rows always persist the
+                # actor explicitly, but a pre-campaign-hardening root remains its
+                # own canonical actor.
+                parent_actor = str(parent["operation_id"])
+
+            if role == "report":
+                if requested_actor != campaign.root_operation_id:
+                    raise ValueError(
+                        "a campaign report must retain the sole orchestrator actor identity"
+                    )
+                if parent_role not in {"orchestrator", "report"}:
+                    raise ValueError(
+                        "a campaign report must continue the sole orchestrator's lineage"
+                    )
+                if parent_actor != campaign.root_operation_id:
+                    raise ValueError(
+                        "a campaign report parent must belong to the sole orchestrator actor"
+                    )
+                actor_operation_id = campaign.root_operation_id
+                canonical_control_node_id = None
+                latest = self._campaign_actor_latest_row(
+                    connection,
+                    campaign.campaign_id,
+                    actor_operation_id,
+                )
+                if latest is None:
+                    raise ValueError("a campaign report has no saved orchestrator actor binding")
+                if (
+                    record.native_session_id != latest["native_session_id"]
+                    or (record.stage_host or "") != (latest["stage_host"] or "")
+                    or record.stage_root != latest["stage_root"]
+                ):
+                    raise ValueError(
+                        "a campaign report must preserve the orchestrator session and stage"
+                    )
+                request["actor_operation_id"] = actor_operation_id
+                record.request = request
+                return actor_operation_id
+            elif requested_actor is None:
+                if role == "orchestrator":
+                    actor_operation_id = campaign.root_operation_id
+                elif parent_role == role:
+                    actor_operation_id = parent_actor
+                else:
+                    actor_operation_id = record.operation_id
+            else:
+                actor_operation_id = requested_actor
+            if actor_operation_id is None:
+                raise ValueError("campaign actor identity is unavailable")
+
+            if actor_operation_id == record.operation_id:
+                if request.get("wake_cause") is not None:
+                    raise ValueError("a campaign wake must preserve an existing actor")
+                if role == "orchestrator":
+                    raise ValueError("a campaign may have only one orchestrator actor")
+                if parent_role != "orchestrator":
+                    raise ValueError("a new campaign actor must be seated by the orchestrator")
+                canonical_control_node_id = request.get("control_node_id")
+            else:
+                actor = connection.execute(
+                    """
+                    SELECT run.*, invocation.role AS campaign_role
+                    FROM graph_runs AS run
+                    JOIN campaign_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE run.operation_id = ? AND run.campaign_id = ?
+                    """,
+                    (actor_operation_id, campaign.campaign_id),
+                ).fetchone()
+                if actor is None:
+                    raise ValueError("campaign continuation names an unknown actor")
+                canonical_role = TypeAdapter(CampaignInvocationRole).validate_python(
+                    actor["campaign_role"]
+                )
+                if (
+                    canonical_role != role
+                    or parent_role != role
+                    or parent_actor != actor_operation_id
+                ):
+                    raise ValueError("campaign continuation cannot relabel or cross actor lineage")
+                actor_request = json.loads(actor["request_json"])
+                actor_identity = actor_request.get("actor_operation_id")
+                if actor_identity not in {None, actor_operation_id}:
+                    raise ValueError("campaign actor identity conflicts with its origin task")
+                canonical_control_node_id = actor_request.get("control_node_id")
+                if request.get("control_node_id") != canonical_control_node_id:
+                    raise ValueError("campaign continuation cannot change its control seat")
+
+                latest = self._campaign_actor_latest_row(
+                    connection,
+                    campaign.campaign_id,
+                    actor_operation_id,
+                )
+                clean_orchestrator_retry = (
+                    latest is not None
+                    and same_allocation_recovery
+                    and role == "orchestrator"
+                    and record.native_session_id is None
+                    and request.get("session_id") is None
+                    and (record.stage_host or "") == (latest["stage_host"] or "")
+                    and record.stage_root == latest["stage_root"]
+                )
+                if (
+                    latest is not None
+                    and (
+                        latest["native_session_id"] is not None or latest["stage_root"] is not None
+                    )
+                    and not clean_orchestrator_retry
+                    and (
+                        record.native_session_id != latest["native_session_id"]
+                        or (record.stage_host or "") != (latest["stage_host"] or "")
+                        or record.stage_root != latest["stage_root"]
+                    )
+                ):
+                    raise ValueError(
+                        "campaign continuation must preserve its actor session and stage"
+                    )
+
+        if role == "orchestrator":
+            if actor_operation_id != campaign.root_operation_id:
+                raise ValueError("campaign continuation cannot replace the orchestrator actor")
+            if request.get("control_node_id") is not None:
+                raise ValueError("the campaign orchestrator has no worker control seat")
+        elif role == "worker":
+            if not isinstance(canonical_control_node_id, str) or not canonical_control_node_id:
+                raise ValueError("a campaign worker must retain its control seat")
+        elif request.get("control_node_id") is not None:
+            raise ValueError("a campaign report has no worker control seat")
+
+        request["actor_operation_id"] = actor_operation_id
+        record.request = request
+        unresolved = connection.execute(
+            """
+            SELECT run.operation_id
+            FROM graph_runs AS run
+            WHERE run.campaign_id = ?
+              AND (
+                  json_extract(run.request_json, '$.actor_operation_id') = ?
+                  OR (
+                      run.operation_id = ?
+                      AND json_extract(run.request_json, '$.actor_operation_id') IS NULL
+                  )
+              )
+              AND (
+                  run.status IN ('queued', 'running', 'pausing')
+                  OR (
+                      run.status IN ('paused', 'interrupted', 'failed')
+                      AND (? = 0 OR run.operation_id != ?)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM graph_run_receipts AS receipt
+                          WHERE receipt.operation_id = run.operation_id
+                            AND receipt.category = 'campaign_recovery_abandoned'
+                      )
+                  )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_runs AS child
+                  WHERE child.parent_operation_id = run.operation_id
+                    AND child.campaign_id = run.campaign_id
+                    AND child.attempt = run.attempt + 1
+                    AND COALESCE(
+                        json_extract(child.request_json, '$.actor_operation_id'),
+                        child.operation_id
+                    ) = COALESCE(
+                        json_extract(run.request_json, '$.actor_operation_id'),
+                        run.operation_id
+                    )
+              )
+            ORDER BY run.rowid DESC
+            LIMIT 1
+            """,
+            (
+                campaign.campaign_id,
+                actor_operation_id,
+                actor_operation_id,
+                int(same_allocation_recovery),
+                record.parent_operation_id or "",
+            ),
+        ).fetchone()
+        if unresolved is not None:
+            raise CampaignActorBusy(actor_operation_id, str(unresolved["operation_id"]))
+        return actor_operation_id
+
+    @staticmethod
+    def _campaign_actor_latest_row(
+        connection: sqlite3.Connection,
+        campaign_id: str,
+        actor_operation_id: str,
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT * FROM graph_runs
+            WHERE campaign_id = ?
+              AND (
+                  json_extract(request_json, '$.actor_operation_id') = ?
+                  OR (
+                      operation_id = ?
+                      AND json_extract(request_json, '$.actor_operation_id') IS NULL
+                  )
+              )
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (campaign_id, actor_operation_id, actor_operation_id),
+        ).fetchone()
+
+    @staticmethod
+    def _current_campaign_report_task_row(
+        connection: sqlite3.Connection,
+        campaign_id: str,
+        ending: CampaignEnding,
+    ) -> sqlite3.Row | None:
+        """Return the newest report attempt created after the last durable report."""
+
+        return connection.execute(
+            """
+            SELECT run.*
+            FROM graph_runs AS run
+            JOIN campaign_invocations AS invocation
+              ON invocation.operation_id = run.operation_id
+            WHERE run.campaign_id = ? AND invocation.role = 'report'
+              AND json_extract(run.request_json, '$.ending') = ?
+              AND run.rowid > COALESCE((
+                  SELECT MAX(completed_run.rowid)
+                  FROM campaign_reports AS report
+                  JOIN graph_runs AS completed_run
+                    ON completed_run.operation_id = report.operation_id
+                  WHERE report.campaign_id = ?
+              ), 0)
+            ORDER BY run.rowid DESC
+            LIMIT 1
+            """,
+            (campaign_id, ending, campaign_id),
+        ).fetchone()
+
+    @staticmethod
+    def _campaign_non_report_turns_settled(
+        connection: sqlite3.Connection,
+        campaign_id: str,
+    ) -> bool:
+        rows = connection.execute(
+            """
+            SELECT run.operation_id, run.status, invocation.role,
+                   campaign.status AS campaign_status,
+                   campaign.ending AS campaign_ending,
+                   EXISTS (
+                       SELECT 1 FROM graph_runs AS child
+                       WHERE child.parent_operation_id = run.operation_id
+                         AND child.campaign_id = run.campaign_id
+                         AND child.attempt = run.attempt + 1
+                         AND COALESCE(
+                             json_extract(child.request_json, '$.actor_operation_id'),
+                             child.operation_id
+                         ) = COALESCE(
+                             json_extract(run.request_json, '$.actor_operation_id'),
+                             run.operation_id
+                         )
+                   ) AS has_recovery_child,
+                   EXISTS (
+                       SELECT 1 FROM graph_run_receipts AS receipt
+                       WHERE receipt.operation_id = run.operation_id
+                         AND receipt.category = 'campaign_recovery_abandoned'
+                   ) AS recovery_abandoned,
+                   EXISTS (
+                       SELECT 1 FROM graph_run_receipts AS receipt
+                       WHERE receipt.operation_id = run.operation_id
+                         AND receipt.category = 'campaign_orchestrator_failure'
+                         AND json_extract(receipt.payload_json, '$.classification') =
+                             'structural_unrecoverable'
+                         AND json_extract(receipt.payload_json, '$.recoverable') = 0
+                   ) AS structural_terminal_failure,
+                   (
+                       SELECT recovery.status
+                       FROM campaign_recoveries AS recovery
+                       WHERE recovery.campaign_id = run.campaign_id
+                         AND recovery.purpose = 'task'
+                         AND (
+                             recovery.operation_id = run.operation_id
+                             OR recovery.admitted_operation_id = run.operation_id
+                         )
+                       ORDER BY recovery.updated_at DESC, recovery.recovery_id DESC
+                       LIMIT 1
+                   ) AS recovery_status
+            FROM graph_runs AS run
+            JOIN campaign_invocations AS invocation
+              ON invocation.operation_id = run.operation_id
+            JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+            WHERE run.campaign_id = ?
+              AND (
+                  invocation.role != 'report'
+                  OR run.rowid > COALESCE((
+                      SELECT MAX(completed_run.rowid)
+                      FROM campaign_reports AS report
+                      JOIN graph_runs AS completed_run
+                        ON completed_run.operation_id = report.operation_id
+                      WHERE report.campaign_id = run.campaign_id
+                  ), 0)
+              )
+            """,
+            (campaign_id,),
+        ).fetchall()
+        for row in rows:
+            if row["has_recovery_child"] or row["recovery_abandoned"]:
+                continue
+            status = str(row["status"])
+            if status in {"queued", "running", "pausing", "paused"}:
+                return False
+            if status not in {"failed", "interrupted"} or row["role"] == "worker":
+                continue
+            if (
+                row["role"] == "orchestrator"
+                and row["campaign_status"] == "wrapping_up"
+                and row["campaign_ending"] == "failed"
+                and row["structural_terminal_failure"]
+            ):
+                continue
+            if row["recovery_status"] in {"blocked", "exhausted"}:
+                continue
+            # A recoverable orchestrator/report leaf with no durable terminal
+            # recovery decision is a crash window, not settled work. In
+            # particular, an admitted child that failed before its next recovery
+            # record was scheduled must still hold the report fence closed.
+            return False
+        return True
+
+    def campaign(self, campaign_id: str) -> CampaignRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+            ).fetchone()
+        return self._campaign_record(row) if row else None
+
+    def active_campaign(self, project_id: str) -> CampaignRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM campaigns
+                WHERE project_id = ?
+                  AND status IN ('queued', 'running', 'stopping', 'wrapping_up', 'needs_action')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+        return self._campaign_record(row) if row else None
+
+    def campaigns(self, project_id: str, *, limit: int = 50) -> list[CampaignRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM campaigns
+                WHERE project_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (project_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [self._campaign_record(row) for row in rows]
+
+    def campaigns_awaiting_report(self) -> list[CampaignRecord]:
+        """Return fenced endings for restart-safe report reconciliation."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM campaigns
+                WHERE status = 'wrapping_up' AND ending IS NOT NULL
+                ORDER BY updated_at ASC, campaign_id ASC
+                """
+            ).fetchall()
+        return [self._campaign_record(row) for row in rows]
+
+    def schedule_campaign_task_recovery(
+        self,
+        operation_id: str,
+        *,
+        failure_kind: str,
+        retry_mode: CampaignRecoveryMode,
+        diagnostic: str,
+        max_attempts: int = 3,
+    ) -> CampaignRecoveryRecord:
+        """Persist one bounded same-allocation recovery decision idempotently."""
+
+        if max_attempts < 1:
+            raise ValueError("campaign recovery max attempts must be positive")
+        detail = " ".join(diagnostic.split())[:2000] or "Campaign task recovery is required."
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT campaign_id, attempt, parent_operation_id, request_json "
+                "FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if row is None or row["campaign_id"] is None:
+                raise ValueError("campaign recovery requires a campaign task")
+            allocation_operation_id = operation_id
+            actor_operation_id = json.loads(row["request_json"]).get("actor_operation_id")
+            ancestor = row
+            while int(ancestor["attempt"]) > 1 and ancestor["parent_operation_id"]:
+                parent = connection.execute(
+                    "SELECT operation_id, campaign_id, attempt, parent_operation_id, request_json "
+                    "FROM graph_runs WHERE operation_id = ?",
+                    (ancestor["parent_operation_id"],),
+                ).fetchone()
+                if parent is None or parent["campaign_id"] != row["campaign_id"]:
+                    break
+                parent_actor = json.loads(parent["request_json"]).get("actor_operation_id")
+                if parent_actor != actor_operation_id:
+                    break
+                allocation_operation_id = str(parent["operation_id"])
+                ancestor = parent
+            recovery_id = f"task:{allocation_operation_id}"
+            existing = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?",
+                (recovery_id,),
+            ).fetchone()
+            if existing is None:
+                attempts = 0
+                status: CampaignRecoveryStatus = "blocked" if retry_mode == "blocked" else "pending"
+                next_attempt_at = (
+                    self._campaign_recovery_next_attempt_at(now, attempts)
+                    if status == "pending"
+                    else None
+                )
+                connection.execute(
+                    """
+                    INSERT INTO campaign_recoveries (
+                        recovery_id, campaign_id, operation_id, purpose, failure_kind,
+                        retry_mode, attempts, max_attempts, status, next_attempt_at,
+                        diagnostic, admitted_operation_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'task', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        recovery_id,
+                        row["campaign_id"],
+                        operation_id,
+                        failure_kind,
+                        retry_mode,
+                        attempts,
+                        max_attempts,
+                        status,
+                        next_attempt_at,
+                        detail,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                attempts = int(existing["attempts"])
+                new_failed_attempt = existing["operation_id"] != operation_id
+                already_counted = existing["admitted_operation_id"] == operation_id
+                if new_failed_attempt and not already_counted:
+                    # The spawned child settled before its admission receipt was stored.
+                    attempts = min(attempts + 1, max_attempts)
+                if existing["status"] in {"blocked", "exhausted"}:
+                    status = existing["status"]
+                elif existing["status"] == "admitted" and not new_failed_attempt:
+                    status = "admitted"
+                elif retry_mode == "blocked":
+                    status = "blocked"
+                elif attempts >= max_attempts:
+                    status = "exhausted"
+                else:
+                    status = "pending"
+                next_attempt_at = (
+                    self._campaign_recovery_next_attempt_at(now, attempts)
+                    if status == "pending"
+                    else None
+                )
+                connection.execute(
+                    """
+                    UPDATE campaign_recoveries
+                    SET operation_id = ?, failure_kind = ?, retry_mode = ?, attempts = ?,
+                        max_attempts = ?, status = ?, next_attempt_at = ?, diagnostic = ?,
+                        admitted_operation_id = CASE
+                            WHEN ? = 'pending' THEN NULL
+                            ELSE admitted_operation_id
+                        END,
+                        updated_at = ?
+                    WHERE recovery_id = ?
+                    """,
+                    (
+                        operation_id,
+                        failure_kind,
+                        retry_mode,
+                        attempts,
+                        max_attempts,
+                        status,
+                        next_attempt_at,
+                        detail,
+                        status,
+                        now,
+                        recovery_id,
+                    ),
+                )
+            stored = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?",
+                (recovery_id,),
+            ).fetchone()
+        assert stored is not None
+        return self._campaign_recovery_record(stored)
+
+    def schedule_campaign_report_reconciliation(
+        self,
+        campaign_id: str,
+        *,
+        ending: CampaignEnding,
+        diagnostic: str,
+        max_attempts: int = 8,
+    ) -> CampaignRecoveryRecord:
+        """Persist the mandatory report's unbounded, restart-safe admission retry."""
+
+        detail = " ".join(diagnostic.split())[:2000] or "Campaign report admission failed."
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            campaign = connection.execute(
+                "SELECT status, ending FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if campaign is None:
+                raise KeyError(campaign_id)
+            if campaign["status"] != "wrapping_up" or campaign["ending"] != ending:
+                raise ValueError("campaign report retry does not match its active ending")
+            recovery_id = self._campaign_report_recovery_id(connection, campaign_id, ending)
+            connection.execute(
+                """
+                INSERT INTO campaign_recoveries (
+                    recovery_id, campaign_id, operation_id, purpose, failure_kind,
+                    retry_mode, attempts, max_attempts, status, next_attempt_at,
+                    diagnostic, admitted_operation_id, created_at, updated_at
+                ) VALUES (?, ?, NULL, 'report_admission', 'report_admission',
+                          'report_admission', 0, ?, 'pending', ?, ?, NULL, ?, ?)
+                ON CONFLICT(recovery_id) DO UPDATE SET
+                    diagnostic = excluded.diagnostic,
+                    status = CASE
+                        WHEN campaign_recoveries.purpose = 'report_admission'
+                         AND campaign_recoveries.status = 'exhausted'
+                        THEN 'pending'
+                        ELSE campaign_recoveries.status
+                    END,
+                    next_attempt_at = CASE
+                        WHEN campaign_recoveries.purpose = 'report_admission'
+                         AND campaign_recoveries.status = 'exhausted'
+                        THEN excluded.next_attempt_at
+                        WHEN campaign_recoveries.status = 'pending'
+                        THEN COALESCE(campaign_recoveries.next_attempt_at, excluded.next_attempt_at)
+                        ELSE campaign_recoveries.next_attempt_at
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recovery_id,
+                    campaign_id,
+                    max_attempts,
+                    (
+                        self._parse_time(now) + timedelta(seconds=WATCHER_ERROR_BACKOFF_SECONDS[0])
+                    ).isoformat(),
+                    detail,
+                    now,
+                    now,
+                ),
+            )
+            stored = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?",
+                (recovery_id,),
+            ).fetchone()
+        assert stored is not None
+        return self._campaign_recovery_record(stored)
+
+    @staticmethod
+    def _campaign_report_recovery_id(
+        connection: sqlite3.Connection,
+        campaign_id: str,
+        ending: CampaignEnding,
+    ) -> str:
+        """Key one admission recovery to its immutable report generation."""
+
+        completed_reports = int(
+            connection.execute(
+                "SELECT COUNT(*) AS count FROM campaign_reports WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()["count"]
+        )
+        return f"report:{campaign_id}:{completed_reports + 1}:{ending}"
+
+    def due_campaign_recoveries(self, *, as_of: str | None = None) -> list[CampaignRecoveryRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT recovery.*
+                FROM campaign_recoveries AS recovery
+                JOIN campaigns AS campaign ON campaign.campaign_id = recovery.campaign_id
+                WHERE recovery.status = 'pending' AND recovery.next_attempt_at <= ?
+                  AND campaign.status IN ('running', 'stopping', 'wrapping_up')
+                ORDER BY recovery.next_attempt_at, recovery.created_at, recovery.recovery_id
+                """,
+                (as_of or self.now(),),
+            ).fetchall()
+        return [self._campaign_recovery_record(row) for row in rows]
+
+    def campaign_recovery(self, recovery_id: str) -> CampaignRecoveryRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?", (recovery_id,)
+            ).fetchone()
+        return self._campaign_recovery_record(row) if row is not None else None
+
+    def campaign_control_recovery(
+        self,
+        campaign_id: str,
+        operation_id: str | None,
+        *,
+        ending: CampaignEnding | None = None,
+    ) -> CampaignRecoveryRecord | None:
+        """Return only the durable recovery state governing campaign-parent controls."""
+
+        with self.connection() as connection:
+            if operation_id is None and ending is not None:
+                recovery_id = self._campaign_report_recovery_id(
+                    connection,
+                    campaign_id,
+                    ending,
+                )
+                row = connection.execute(
+                    """
+                    SELECT * FROM campaign_recoveries
+                    WHERE recovery_id = ? AND campaign_id = ?
+                      AND purpose = 'report_admission'
+                    """,
+                    (recovery_id, campaign_id),
+                ).fetchone()
+            elif operation_id is not None:
+                row = connection.execute(
+                    """
+                    SELECT * FROM campaign_recoveries
+                    WHERE campaign_id = ? AND purpose = 'task'
+                      AND (operation_id = ? OR admitted_operation_id = ?)
+                    ORDER BY updated_at DESC, recovery_id DESC
+                    LIMIT 1
+                    """,
+                    (campaign_id, operation_id, operation_id),
+                ).fetchone()
+            else:
+                row = None
+        return self._campaign_recovery_record(row) if row is not None else None
+
+    def campaign_task_recovery_child(self, operation_id: str) -> AgentTaskRecord | None:
+        """Return the exact same-actor attempt+1 child, if one is already admitted."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT child.*
+                FROM graph_runs AS parent
+                JOIN graph_runs AS child
+                  ON child.parent_operation_id = parent.operation_id
+                WHERE parent.operation_id = ?
+                  AND child.campaign_id = parent.campaign_id
+                  AND child.attempt = parent.attempt + 1
+                  AND COALESCE(
+                      json_extract(child.request_json, '$.actor_operation_id'),
+                      child.operation_id
+                  ) = COALESCE(
+                      json_extract(parent.request_json, '$.actor_operation_id'),
+                      parent.operation_id
+                  )
+                LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+        return self._agent_task_record(row) if row is not None else None
+
+    def complete_campaign_recovery(
+        self,
+        recovery_id: str,
+        *,
+        admitted_operation_id: str | None = None,
+        expected_operation_id: str | None = None,
+    ) -> CampaignRecoveryRecord:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                """
+                UPDATE campaign_recoveries
+                SET attempts = attempts + 1, status = 'admitted', next_attempt_at = NULL,
+                    admitted_operation_id = COALESCE(?, admitted_operation_id), updated_at = ?
+                WHERE recovery_id = ? AND status = 'pending'
+                  AND (purpose = 'report_admission' OR attempts < max_attempts)
+                  AND (? IS NULL OR operation_id = ?)
+                """,
+                (
+                    admitted_operation_id,
+                    now,
+                    recovery_id,
+                    expected_operation_id,
+                    expected_operation_id,
+                ),
+            ).rowcount
+            row = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?", (recovery_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(recovery_id)
+            if (
+                updated != 1
+                and row["status"] != "admitted"
+                and row["operation_id"] == expected_operation_id
+            ):
+                raise ValueError("campaign recovery is no longer pending")
+        return self._campaign_recovery_record(row)
+
+    def defer_campaign_recovery(
+        self,
+        recovery_id: str,
+        *,
+        diagnostic: str,
+    ) -> CampaignRecoveryRecord:
+        now = self.now()
+        detail = " ".join(diagnostic.split())[:2000] or "Campaign recovery attempt failed."
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?", (recovery_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(recovery_id)
+            if row["status"] != "pending":
+                return self._campaign_recovery_record(row)
+            attempts = int(row["attempts"]) + 1
+            exhausted = row["purpose"] != "report_admission" and attempts >= int(
+                row["max_attempts"]
+            )
+            next_attempt_at = None
+            if not exhausted:
+                next_attempt_at = self._campaign_recovery_next_attempt_at(now, attempts)
+            connection.execute(
+                """
+                UPDATE campaign_recoveries
+                SET attempts = ?, status = ?, next_attempt_at = ?, diagnostic = ?, updated_at = ?
+                WHERE recovery_id = ? AND status = 'pending'
+                """,
+                (
+                    attempts,
+                    "exhausted" if exhausted else "pending",
+                    next_attempt_at,
+                    detail,
+                    now,
+                    recovery_id,
+                ),
+            )
+            stored = connection.execute(
+                "SELECT * FROM campaign_recoveries WHERE recovery_id = ?", (recovery_id,)
+            ).fetchone()
+        assert stored is not None
+        return self._campaign_recovery_record(stored)
+
+    def _campaign_recovery_next_attempt_at(self, now: str, attempts: int) -> str:
+        parsed = self._parse_time(now)
+        assert parsed is not None
+        delay = WATCHER_ERROR_BACKOFF_SECONDS[min(attempts, len(WATCHER_ERROR_BACKOFF_SECONDS) - 1)]
+        return (parsed + timedelta(seconds=delay)).isoformat()
+
+    def campaign_tasks(self, campaign_id: str) -> list[AgentTaskRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'campaign_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs
+                WHERE campaign_id = ?
+                ORDER BY created_at ASC, operation_id ASC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def campaign_recovery_candidates(self) -> list[AgentTaskRecord]:
+        """Return current failed/interrupted campaign actor leaves lacking a recovery decision."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT run.*
+                FROM graph_runs AS run
+                JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.status IN ('failed', 'interrupted')
+                  AND invocation.role IN ('orchestrator', 'report')
+                  AND campaign.status IN ('running', 'stopping', 'wrapping_up')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_runs AS child
+                      WHERE child.parent_operation_id = run.operation_id
+                        AND child.campaign_id = run.campaign_id
+                        AND child.attempt = run.attempt + 1
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM campaign_recoveries AS recovery
+                      WHERE recovery.operation_id = run.operation_id
+                  )
+                ORDER BY run.created_at, run.operation_id
+                """
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def campaign_report_task_history(
+        self,
+        campaign_id: str,
+        *,
+        limit: int,
+    ) -> tuple[int, dict[str, int], dict[str, int], list[AgentTaskRecord]]:
+        """Count every campaign turn while loading only the root and newest rows."""
+
+        if limit < 1:
+            raise ValueError("campaign report task history limit must be positive")
+        with self.connection() as connection:
+            status_rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM graph_runs
+                WHERE campaign_id = ?
+                GROUP BY status
+                ORDER BY status
+                """,
+                (campaign_id,),
+            ).fetchall()
+            role_rows = connection.execute(
+                """
+                SELECT COALESCE(invocation.role, 'unknown') AS role, COUNT(*) AS count
+                FROM graph_runs AS run
+                LEFT JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.campaign_id = ?
+                GROUP BY COALESCE(invocation.role, 'unknown')
+                ORDER BY role
+                """,
+                (campaign_id,),
+            ).fetchall()
+            campaign = connection.execute(
+                "SELECT root_operation_id FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if campaign is None:
+                raise KeyError(campaign_id)
+            root_operation_id = campaign["root_operation_id"]
+            root = (
+                connection.execute(
+                    """
+                    SELECT run.*,
+                           EXISTS (
+                               SELECT 1 FROM graph_run_receipts AS receipt
+                               WHERE receipt.operation_id = run.operation_id
+                                 AND receipt.category IN (
+                                     'experiment_recovery_abandoned',
+                                     'campaign_recovery_abandoned'
+                                 )
+                           ) AS recovery_abandoned
+                    FROM graph_runs AS run
+                    WHERE run.operation_id = ? AND run.campaign_id = ?
+                    """,
+                    (root_operation_id, campaign_id),
+                ).fetchone()
+                if root_operation_id is not None
+                else None
+            )
+            newest = connection.execute(
+                """
+                SELECT run.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = run.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'campaign_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs AS run
+                WHERE run.campaign_id = ? AND run.operation_id != COALESCE(?, '')
+                ORDER BY run.created_at DESC, run.operation_id DESC
+                LIMIT ?
+                """,
+                (campaign_id, root_operation_id, max(0, limit - (1 if root else 0))),
+            ).fetchall()
+        status_counts = {str(row["status"]): int(row["count"]) for row in status_rows}
+        role_counts = {str(row["role"]): int(row["count"]) for row in role_rows}
+        total = sum(status_counts.values())
+        selected = ([root] if root is not None else []) + list(reversed(newest))
+        return total, status_counts, role_counts, [self._agent_task_record(row) for row in selected]
+
+    def campaign_report_event_history(
+        self,
+        campaign_id: str,
+        *,
+        limit: int,
+    ) -> tuple[int, list[AgentTaskEventRecord]]:
+        """Return an exact event count and the newest bounded campaign event suffix."""
+
+        if limit < 1:
+            raise ValueError("campaign report event history limit must be positive")
+        with self.connection() as connection:
+            total = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM graph_run_events AS event
+                    JOIN graph_runs AS run ON run.operation_id = event.operation_id
+                    WHERE run.campaign_id = ?
+                    """,
+                    (campaign_id,),
+                ).fetchone()["count"]
+            )
+            rows = connection.execute(
+                """
+                SELECT event.*
+                FROM graph_run_events AS event
+                JOIN graph_runs AS run ON run.operation_id = event.operation_id
+                WHERE run.campaign_id = ?
+                ORDER BY event.event_id DESC
+                LIMIT ?
+                """,
+                (campaign_id, limit),
+            ).fetchall()
+        return total, [self._agent_task_event_record(row) for row in reversed(rows)]
+
+    def campaign_invocation_role(self, operation_id: str) -> CampaignInvocationRole | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT role FROM campaign_invocations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return TypeAdapter(CampaignInvocationRole).validate_python(row["role"])
+
+    def campaign_actor_binding(self, operation_id: str) -> CampaignActorBinding:
+        """Resolve one task to its immutable actor and newest same-actor continuation."""
+
+        with self.connection() as connection:
+            task = connection.execute(
+                """
+                SELECT run.*, invocation.role AS campaign_role,
+                       campaign.root_operation_id AS campaign_root_operation_id
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+                WHERE run.operation_id = ? AND run.campaign_id IS NOT NULL
+                """,
+                (operation_id,),
+            ).fetchone()
+            if task is None:
+                raise KeyError(operation_id)
+            request = json.loads(task["request_json"])
+            actor_operation_id = request.get("actor_operation_id")
+            if not isinstance(actor_operation_id, str) or not actor_operation_id:
+                actor_operation_id = str(task["operation_id"])
+            actor = connection.execute(
+                """
+                SELECT run.request_json, invocation.role AS campaign_role
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ? AND run.campaign_id = ?
+                """,
+                (actor_operation_id, task["campaign_id"]),
+            ).fetchone()
+            if actor is None:
+                raise ValueError("campaign task has no canonical actor origin")
+            task_role = TypeAdapter(CampaignInvocationRole).validate_python(task["campaign_role"])
+            role = TypeAdapter(CampaignInvocationRole).validate_python(actor["campaign_role"])
+            if task_role == "report":
+                if (
+                    actor_operation_id != task["campaign_root_operation_id"]
+                    or role != "orchestrator"
+                ):
+                    raise ValueError("campaign report must bind to its sole orchestrator actor")
+            elif role != task_role:
+                raise ValueError("campaign task role conflicts with its canonical actor")
+            actor_request = json.loads(actor["request_json"])
+            latest = connection.execute(
+                """
+                SELECT run.*
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.campaign_id = ? AND invocation.role = ?
+                  AND (
+                      json_extract(run.request_json, '$.actor_operation_id') = ?
+                      OR (
+                          run.operation_id = ?
+                          AND json_extract(run.request_json, '$.actor_operation_id') IS NULL
+                      )
+                  )
+                ORDER BY run.rowid DESC
+                LIMIT 1
+                """,
+                (str(task["campaign_id"]), role, actor_operation_id, actor_operation_id),
+            ).fetchone()
+            assert latest is not None
+        return CampaignActorBinding(
+            campaign_id=str(task["campaign_id"]),
+            actor_operation_id=actor_operation_id,
+            role=role,
+            control_node_id=actor_request.get("control_node_id"),
+            current_operation_id=str(latest["operation_id"]),
+            native_session_id=latest["native_session_id"],
+            stage_host=latest["stage_host"],
+            stage_root=latest["stage_root"],
+        )
+
+    def agent_task_profile(self, operation_id: str) -> Literal["ordinary", "orchestrator"]:
+        """Resolve the one semantic profile canonically bound to a task."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT run.operation_id, invocation.role
+                FROM graph_runs AS run
+                LEFT JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        return "orchestrator" if row["role"] == "orchestrator" else "ordinary"
+
+    def campaign_handoffs_cleared(self, operation_id: str) -> bool:
+        """Return the durable clear fence for one paid campaign actor allocation."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT run.campaign_id, run.kind, run.attempt,
+                       run.campaign_worker_handoffs_cleared_at, invocation.role
+                FROM graph_runs AS run
+                LEFT JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        self._require_campaign_handoff_allocation(row)
+        return row["campaign_worker_handoffs_cleared_at"] is not None
+
+    def mark_campaign_handoffs_cleared(self, operation_id: str) -> None:
+        """Fence one paid actor allocation after all prior handoffs were cleared."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT run.campaign_id, run.kind, run.attempt, invocation.role
+                FROM graph_runs AS run
+                LEFT JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            self._require_campaign_handoff_allocation(row)
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET campaign_worker_handoffs_cleared_at = COALESCE(
+                        campaign_worker_handoffs_cleared_at, ?
+                    )
+                WHERE operation_id = ?
+                """,
+                (now, operation_id),
+            )
+
+    def campaign_worker_handoffs_cleared(self, operation_id: str) -> bool:
+        """Compatibility name for the generalized campaign-allocation fence."""
+
+        return self.campaign_handoffs_cleared(operation_id)
+
+    def mark_campaign_worker_handoffs_cleared(self, operation_id: str) -> None:
+        """Compatibility name for the generalized campaign-allocation fence."""
+
+        self.mark_campaign_handoffs_cleared(operation_id)
+
+    @staticmethod
+    def _require_campaign_handoff_allocation(row: sqlite3.Row) -> None:
+        role = row["role"]
+        if (
+            row["campaign_id"] is None
+            or row["kind"] != "campaign"
+            or role not in {"orchestrator", "worker"}
+            or int(row["attempt"]) != 1
+        ):
+            raise ValueError(
+                "handoff clearing requires a paid orchestrator or worker campaign allocation"
+            )
+
+    def campaign_budget_meter(self, campaign_id: str) -> CampaignBudgetMeter:
+        with self.connection() as connection:
+            campaign = connection.execute(
+                "SELECT invocation_ceiling, invocations_used FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if campaign is None:
+                raise KeyError(campaign_id)
+            usage_rows = connection.execute(
+                """
+                SELECT usage.*
+                FROM agent_usage AS usage
+                JOIN graph_runs AS run ON run.operation_id = usage.operation_id
+                WHERE run.campaign_id = ?
+                ORDER BY usage.created_at ASC, usage.usage_id ASC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        usage_records = [self._agent_usage_record(row) for row in usage_rows]
+        input_processed, generated, _, _ = self._agent_usage_metrics(usage_records)
+        ceiling = int(campaign["invocation_ceiling"])
+        used = int(campaign["invocations_used"])
+        return CampaignBudgetMeter(
+            invocation_ceiling=ceiling,
+            invocations_used=used,
+            invocations_remaining=max(0, ceiling - used),
+            observed_input_tokens=input_processed.total_tokens,
+            observed_generated_tokens=generated.total_tokens,
+        )
+
+    def fence_campaign_exhaustion_if_depleted(self, campaign_id: str) -> CampaignRecord:
+        """Atomically fence a depleted research pot while preserving its report unit."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            campaign = self._campaign_record(row)
+            if (
+                campaign.status == "running"
+                and campaign.stop_requested_at is None
+                and campaign.ending is None
+                and campaign.invocations_used >= campaign.invocation_ceiling - 1
+                and self._campaign_non_report_turns_settled(connection, campaign_id)
+            ):
+                updated = connection.execute(
+                    """
+                    UPDATE campaigns
+                    SET status = 'wrapping_up', ending = 'exhausted', updated_at = ?
+                    WHERE campaign_id = ? AND status = 'running'
+                      AND stop_requested_at IS NULL
+                      AND ending IS NULL
+                      AND invocations_used >= invocation_ceiling - 1
+                    """,
+                    (now, campaign_id),
+                ).rowcount
+                if updated == 1:
+                    self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+            stored = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+        assert stored is not None
+        return self._campaign_record(stored)
+
+    def request_campaign_stop(self, campaign_id: str) -> CampaignRecord:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            campaign = self._campaign_record(row)
+            if campaign.stop_requested_at is not None:
+                if campaign.status == "stopping":
+                    self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+                    self._settle_campaign_stop(connection, campaign_id)
+                stored_row = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+                ).fetchone()
+                assert stored_row is not None
+                return self._campaign_record(stored_row)
+            if campaign.status not in {"queued", "running"}:
+                raise CampaignNotRunning(
+                    "the campaign ending is already durable; Stop was not recorded"
+                )
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET stop_requested_at = COALESCE(stop_requested_at, ?),
+                    status = 'stopping', updated_at = ?
+                WHERE campaign_id = ? AND status IN ('queued', 'running')
+                """,
+                (now, now, campaign_id),
+            )
+            self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+            self._settle_campaign_stop(connection, campaign_id)
+        stored = self.campaign(campaign_id)
+        assert stored is not None
+        return stored
+
+    def settle_campaign_stop(self, campaign_id: str) -> CampaignRecord:
+        """Reconcile one durable Stop after its current/recoverable leaves settle."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT 1 FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            self._settle_campaign_stop(connection, campaign_id)
+        stored = self.campaign(campaign_id)
+        assert stored is not None
+        return stored
+
+    def settle_ready_campaign_stops(self) -> int:
+        """Startup/background sweep for every persisted campaign Stop intent."""
+
+        settled = 0
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT campaign_id FROM campaigns
+                WHERE stop_requested_at IS NOT NULL AND status = 'stopping'
+                ORDER BY created_at, campaign_id
+                """
+            ).fetchall()
+            for row in rows:
+                if self._settle_campaign_stop(connection, str(row["campaign_id"])):
+                    settled += 1
+        return settled
+
+    def abandon_campaign_recovery(
+        self,
+        operation_id: str,
+        *,
+        diagnostic: str,
+    ) -> AgentTaskRecord:
+        """Durably abandon only unusable recovery of one stopped campaign leaf."""
+
+        detail = " ".join(diagnostic.split())[:2000]
+        if not detail:
+            raise ValueError("campaign recovery abandonment requires an exact diagnostic")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT run.* FROM graph_runs AS run
+                JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+                WHERE run.operation_id = ? AND campaign.stop_requested_at IS NOT NULL
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("campaign recovery abandonment requires a stopped campaign task")
+            if row["status"] not in {"paused", "interrupted", "failed"}:
+                raise ValueError("only a recoverable terminal campaign leaf may be abandoned")
+            child = connection.execute(
+                """
+                SELECT 1
+                FROM graph_runs AS parent
+                JOIN graph_runs AS child
+                  ON child.parent_operation_id = parent.operation_id
+                WHERE parent.operation_id = ?
+                  AND child.campaign_id = parent.campaign_id
+                  AND child.attempt = parent.attempt + 1
+                  AND COALESCE(
+                      json_extract(child.request_json, '$.actor_operation_id'),
+                      child.operation_id
+                  ) = COALESCE(
+                      json_extract(parent.request_json, '$.actor_operation_id'),
+                      parent.operation_id
+                  )
+                LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+            if child is not None:
+                raise ValueError("campaign recovery abandonment requires the current leaf")
+            existing = connection.execute(
+                """
+                SELECT 1 FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'campaign_recovery_abandoned'
+                LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+            if existing is None:
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "campaign_recovery_abandoned",
+                    self._bounded_receipt_payload(
+                        {"campaign_id": row["campaign_id"], "reason": detail}
+                    ),
+                    tier="summary",
+                    created_at=now,
+                )
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    "Campaign Stop abandoned recovery of this terminal task because its saved "
+                    "session cannot be continued. The task and its history remain inspectable.",
+                    level="warning",
+                    created_at=now,
+                )
+            self._settle_campaign_stop(connection, str(row["campaign_id"]))
+        stored = self.agent_task(operation_id)
+        assert stored is not None
+        return stored
+
+    def _settle_campaign_stop(
+        self,
+        connection: sqlite3.Connection,
+        campaign_id: str,
+    ) -> bool:
+        campaign_row = connection.execute(
+            "SELECT * FROM campaigns WHERE campaign_id = ?",
+            (campaign_id,),
+        ).fetchone()
+        if campaign_row is None or campaign_row["stop_requested_at"] is None:
+            return False
+        if campaign_row["status"] != "stopping":
+            return False
+        now = self.now()
+        self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+        unresolved = connection.execute(
+            """
+            SELECT run.operation_id
+            FROM graph_runs AS run
+            JOIN campaign_invocations AS invocation
+              ON invocation.operation_id = run.operation_id
+            WHERE run.campaign_id = ?
+              AND (
+                  run.status IN ('queued', 'running', 'pausing', 'paused')
+                  OR (
+                      run.status IN ('failed', 'interrupted')
+                      AND invocation.role IN ('orchestrator', 'report')
+                  )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_runs AS child
+                  WHERE child.parent_operation_id = run.operation_id
+                    AND child.campaign_id = run.campaign_id
+                    AND child.attempt = run.attempt + 1
+                    AND COALESCE(
+                        json_extract(child.request_json, '$.actor_operation_id'),
+                        child.operation_id
+                    ) = COALESCE(
+                        json_extract(run.request_json, '$.actor_operation_id'),
+                        run.operation_id
+                    )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_run_receipts AS receipt
+                  WHERE receipt.operation_id = run.operation_id
+                    AND receipt.category = 'campaign_recovery_abandoned'
+              )
+            LIMIT 1
+            """,
+            (campaign_id,),
+        ).fetchone()
+        if unresolved is not None:
+            return False
+        connection.execute(
+            """
+            UPDATE watchers
+            SET status = 'stopped', notified = 1, next_check_at = NULL,
+                stopped_by = COALESCE(stopped_by, 'loop'),
+                stopped_at = COALESCE(stopped_at, ?)
+            WHERE (
+                origin_operation_id IN (
+                    SELECT operation_id FROM graph_runs WHERE campaign_id = ?
+                )
+                OR notification_operation_id IN (
+                    SELECT operation_id FROM graph_runs WHERE campaign_id = ?
+                )
+            )
+            """,
+            (now, campaign_id, campaign_id),
+        )
+        connection.execute(
+            """
+            UPDATE campaigns
+            SET status = 'wrapping_up', ending = 'stopped', updated_at = ?
+            WHERE campaign_id = ? AND status = 'stopping'
+            """,
+            (now, campaign_id),
+        )
+        return True
+
+    @staticmethod
+    def _stop_unclaimed_campaign_watchers(
+        connection: sqlite3.Connection,
+        campaign_id: str,
+        stopped_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE watchers
+            SET status = 'stopped', notified = 1, next_check_at = NULL,
+                stopped_by = COALESCE(stopped_by, 'loop'),
+                stopped_at = COALESCE(stopped_at, ?)
+            WHERE origin_operation_id IN (
+                SELECT operation_id FROM graph_runs WHERE campaign_id = ?
+            )
+              AND status IN ('active', 'degraded', 'completed')
+              AND notified = 0 AND notification_operation_id IS NULL
+            """,
+            (stopped_at, campaign_id),
+        )
+
+    def begin_campaign_wrapup(
+        self,
+        campaign_id: str,
+        ending: CampaignEnding,
+        *,
+        error: str | None = None,
+    ) -> CampaignRecord:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            current = self._campaign_record(row)
+            if current.status == "wrapping_up":
+                if current.ending != ending:
+                    raise ValueError("campaign wrap-up already has a different ending")
+                return current
+            if current.status in {"succeeded", "stopped", "failed", "needs_action"}:
+                if current.ending != ending:
+                    raise ValueError("campaign already ended differently")
+                return current
+            if current.stop_requested_at is not None and ending != "stopped":
+                raise ValueError("a stopped campaign must wrap up as stopped")
+            self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET status = 'wrapping_up', ending = ?, error = ?, updated_at = ?
+                WHERE campaign_id = ?
+                """,
+                (ending, error, now, campaign_id),
+            )
+        stored = self.campaign(campaign_id)
+        assert stored is not None
+        return stored
+
+    def finish_campaign_from_orchestrator(
+        self,
+        campaign_id: str,
+        operation_id: str,
+    ) -> CampaignRecord:
+        """Atomically accept Finish only from the live campaign orchestrator."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT campaign.*, invocation.role AS caller_role,
+                       run.request_json AS caller_request_json
+                FROM campaigns AS campaign
+                JOIN graph_runs AS run
+                  ON run.campaign_id = campaign.campaign_id
+                JOIN campaign_invocations AS invocation
+                  ON invocation.campaign_id = campaign.campaign_id
+                 AND invocation.operation_id = run.operation_id
+                WHERE campaign.campaign_id = ? AND run.operation_id = ?
+                """,
+                (campaign_id, operation_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("campaign Finish caller is outside its campaign")
+            request = json.loads(row["caller_request_json"])
+            caller_actor = request.get("actor_operation_id") or operation_id
+            if (
+                row["caller_role"] != "orchestrator"
+                or request.get("role") != "orchestrator"
+                or caller_actor != row["root_operation_id"]
+            ):
+                raise ValueError("campaign Finish requires the sole orchestrator actor")
+            if (
+                row["status"] != "running"
+                or row["ending"] is not None
+                or row["stop_requested_at"] is not None
+            ):
+                raise CampaignNotRunning("the campaign is no longer accepting Finish")
+            updated = connection.execute(
+                """
+                UPDATE campaigns
+                SET status = 'wrapping_up', ending = 'completed', error = NULL, updated_at = ?
+                WHERE campaign_id = ? AND status = 'running'
+                  AND ending IS NULL AND stop_requested_at IS NULL
+                """,
+                (now, campaign_id),
+            ).rowcount
+            if updated != 1:
+                raise CampaignNotRunning("the campaign is no longer accepting Finish")
+            self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+            stored = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?",
+                (campaign_id,),
+            ).fetchone()
+        assert stored is not None
+        return self._campaign_record(stored)
+
+    def fence_campaign_terminal_failure(
+        self,
+        operation_id: str,
+        *,
+        diagnostic: str,
+    ) -> CampaignRecord | None:
+        """Atomically fence one explicitly typed, exactly reportable orchestrator failure."""
+
+        detail = " ".join(diagnostic.split())[:2000] or "Campaign orchestrator failed."
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT run.*, invocation.role AS campaign_role,
+                       campaign.root_operation_id AS root_operation_id,
+                       campaign.status AS campaign_status,
+                       campaign.stop_requested_at AS campaign_stop_requested_at,
+                       campaign.ending AS campaign_ending,
+                       run.campaign_id AS exact_campaign_id,
+                       run.native_session_id AS exact_native_session_id,
+                       run.stage_host AS exact_stage_host,
+                       run.stage_root AS exact_stage_root,
+                       run.request_json AS exact_request_json
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+                WHERE run.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None or row["campaign_role"] != "orchestrator":
+                raise ValueError("terminal campaign failure requires its orchestrator task")
+            campaign_id = str(row["exact_campaign_id"])
+            request = json.loads(row["exact_request_json"])
+            actor_operation_id = request.get("actor_operation_id") or operation_id
+            if actor_operation_id != row["root_operation_id"]:
+                raise ValueError("terminal campaign failure must belong to the sole orchestrator")
+            if row["campaign_status"] == "wrapping_up" and row["campaign_ending"] == "failed":
+                campaign_row = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+                ).fetchone()
+                assert campaign_row is not None
+                return self._campaign_record(campaign_row)
+            if row["campaign_status"] != "running" or row["campaign_stop_requested_at"] is not None:
+                return None
+            latest = self._campaign_actor_latest_row(
+                connection,
+                campaign_id,
+                str(row["root_operation_id"]),
+            )
+            if (
+                latest is None
+                or latest["operation_id"] != operation_id
+                or not row["exact_native_session_id"]
+                or not row["exact_stage_root"]
+                or latest["native_session_id"] != row["exact_native_session_id"]
+                or (latest["stage_host"] or "") != (row["exact_stage_host"] or "")
+                or latest["stage_root"] != row["exact_stage_root"]
+            ):
+                return None
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET status = 'wrapping_up', ending = 'failed', error = ?, updated_at = ?
+                WHERE campaign_id = ? AND status = 'running' AND stop_requested_at IS NULL
+                """,
+                (detail, now, campaign_id),
+            )
+            self._stop_unclaimed_campaign_watchers(connection, campaign_id, now)
+            connection.execute(
+                """
+                UPDATE watchers
+                SET status = 'stopped', notified = 1, next_check_at = NULL,
+                    stopped_by = COALESCE(stopped_by, 'loop'),
+                    stopped_at = COALESCE(stopped_at, ?)
+                WHERE (
+                    origin_operation_id IN (
+                        SELECT operation_id FROM graph_runs WHERE campaign_id = ?
+                    )
+                    OR notification_operation_id IN (
+                        SELECT operation_id FROM graph_runs WHERE campaign_id = ?
+                    )
+                )
+                """,
+                (now, campaign_id, campaign_id),
+            )
+            campaign_row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+            ).fetchone()
+        assert campaign_row is not None
+        return self._campaign_record(campaign_row)
+
+    def allocate_campaign_report_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        ending: CampaignEnding,
+        error: str | None = None,
+    ) -> tuple[CampaignRecord, AgentTaskRecord]:
+        """Begin an ending and spend its one reserved report unit atomically.
+
+        A repeated or racing claimant receives the report task already allocated
+        for the current ending. A durable report closes that allocation cycle, so
+        reauthorization may later allocate a new ending report.
+        """
+
+        if record.campaign_id is None:
+            raise ValueError("a campaign report task must carry its campaign id")
+        if record.request.get("role") != "report" or record.request.get("ending") != ending:
+            raise ValueError("campaign report request does not match its ending")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?",
+                (record.campaign_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(record.campaign_id)
+            campaign = self._campaign_record(row)
+            if (
+                record.project_id != campaign.project_id
+                or record.kind != "campaign"
+                or record.authorized_by != campaign.authorized_by
+            ):
+                raise ValueError("campaign report task does not match its campaign lineage")
+            if campaign.stop_requested_at is not None and ending != "stopped":
+                raise ValueError("a stopped campaign must wrap up as stopped")
+            if campaign.status == "wrapping_up":
+                if campaign.ending != ending:
+                    raise ValueError("campaign wrap-up already has a different ending")
+                existing = self._current_campaign_report_task_row(
+                    connection,
+                    campaign.campaign_id,
+                    ending,
+                )
+                if existing is not None:
+                    return campaign, self._agent_task_record(existing)
+            elif campaign.status in {"succeeded", "stopped", "failed", "needs_action"}:
+                raise CampaignNotRunning("the campaign ending is already durable")
+            else:
+                now = record.created_at
+                connection.execute(
+                    """
+                    UPDATE campaigns
+                    SET status = 'wrapping_up', ending = ?, error = ?, updated_at = ?
+                    WHERE campaign_id = ?
+                    """,
+                    (ending, error, now, campaign.campaign_id),
+                )
+                campaign = campaign.model_copy(
+                    update={
+                        "status": "wrapping_up",
+                        "ending": ending,
+                        "error": error,
+                        "updated_at": now,
+                    }
+                )
+            if not self._campaign_non_report_turns_settled(
+                connection,
+                campaign.campaign_id,
+            ):
+                raise CampaignNotRunning(
+                    "the campaign report is waiting for already-admitted turns to settle"
+                )
+            self._insert_campaign_task(connection, campaign, record, "report")
+            stored_row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?",
+                (record.operation_id,),
+            ).fetchone()
+            updated_campaign_row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?",
+                (campaign.campaign_id,),
+            ).fetchone()
+            assert stored_row is not None and updated_campaign_row is not None
+            return self._campaign_record(updated_campaign_row), self._agent_task_record(stored_row)
+
+    def finish_campaign_wrapup(
+        self,
+        report: CampaignReportRecord,
+    ) -> tuple[CampaignRecord, CampaignReportRecord]:
+        """Atomically capture and finalize one immutable campaign report."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM campaign_reports WHERE operation_id = ?",
+                (report.operation_id,),
+            ).fetchone()
+            if existing is not None:
+                stored_report = self._campaign_report_record(existing)
+                if (
+                    stored_report.campaign_id != report.campaign_id
+                    or stored_report.ending != report.ending
+                    or stored_report.sha256 != report.sha256
+                    or stored_report.html != report.html
+                ):
+                    raise ValueError("the campaign report invocation already produced other bytes")
+                stored_campaign = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?",
+                    (report.campaign_id,),
+                ).fetchone()
+                if stored_campaign is None:
+                    raise KeyError(report.campaign_id)
+                return self._campaign_record(stored_campaign), stored_report
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?", (report.campaign_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(report.campaign_id)
+            campaign = self._campaign_record(row)
+            if campaign.status != "wrapping_up" or campaign.ending != report.ending:
+                raise ValueError("campaign report does not match the active wrap-up")
+            allocation = connection.execute(
+                """
+                SELECT role FROM campaign_invocations
+                WHERE campaign_id = ? AND operation_id = ?
+                """,
+                (report.campaign_id, report.operation_id),
+            ).fetchone()
+            if allocation is None or allocation["role"] != "report":
+                raise ValueError("campaign report was not produced by its reserved invocation")
+            connection.execute(
+                """
+                INSERT INTO campaign_reports (
+                    report_id, campaign_id, operation_id, ending, sha256, html, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report.report_id,
+                    report.campaign_id,
+                    report.operation_id,
+                    report.ending,
+                    report.sha256,
+                    report.html,
+                    report.created_at,
+                ),
+            )
+            final_status: CampaignStatus = {
+                "completed": "succeeded",
+                "exhausted": "needs_action",
+                "stopped": "stopped",
+                "failed": "failed",
+            }[report.ending]
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET status = ?, updated_at = ?, ended_at = ?
+                WHERE campaign_id = ?
+                """,
+                (final_status, now, now, report.campaign_id),
+            )
+            stored_campaign = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?",
+                (report.campaign_id,),
+            ).fetchone()
+            stored_report = connection.execute(
+                "SELECT * FROM campaign_reports WHERE operation_id = ?",
+                (report.operation_id,),
+            ).fetchone()
+            assert stored_campaign is not None and stored_report is not None
+            return (
+                self._campaign_record(stored_campaign),
+                self._campaign_report_record(stored_report),
+            )
+
+    def reauthorize_campaign(self, campaign_id: str, additional_invocations: int) -> CampaignRecord:
+        """Extend an exhausted campaign without admitting its continuation yet."""
+
+        result = self._reauthorize_campaign(campaign_id, additional_invocations)
+        assert isinstance(result, CampaignRecord)
+        return result
+
+    def reauthorize_campaign_with_task(
+        self,
+        campaign_id: str,
+        additional_invocations: int,
+        record: AgentTaskRecord,
+    ) -> tuple[CampaignRecord, AgentTaskRecord]:
+        """Extend an exhausted campaign and spend its first new unit atomically."""
+
+        if record.campaign_id != campaign_id or record.kind != "campaign":
+            raise ValueError("campaign reauthorization task has invalid campaign lineage")
+        if record.parent_operation_id is None:
+            raise ValueError("campaign reauthorization must continue its orchestrator actor")
+        result = self._reauthorize_campaign(
+            campaign_id,
+            additional_invocations,
+            task=record,
+        )
+        assert isinstance(result, tuple)
+        return result
+
+    def _reauthorize_campaign(
+        self,
+        campaign_id: str,
+        additional_invocations: int,
+        *,
+        task: AgentTaskRecord | None = None,
+    ) -> CampaignRecord | tuple[CampaignRecord, AgentTaskRecord]:
+        if isinstance(additional_invocations, bool) or additional_invocations < 2:
+            raise ValueError("reauthorization needs research capacity plus one reserved report")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM campaigns WHERE campaign_id = ?", (campaign_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(campaign_id)
+            campaign = self._campaign_record(row)
+            if campaign.status != "needs_action" or campaign.ending != "exhausted":
+                raise ValueError("only an exhausted campaign can be reauthorized")
+            connection.execute(
+                """
+                UPDATE campaigns
+                SET invocation_ceiling = invocation_ceiling + ?, status = 'running',
+                    ending = NULL, error = NULL, ended_at = NULL, updated_at = ?
+                WHERE campaign_id = ?
+                """,
+                (additional_invocations, now, campaign_id),
+            )
+            if task is not None:
+                updated_row = connection.execute(
+                    "SELECT * FROM campaigns WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()
+                assert updated_row is not None
+                updated_campaign = self._campaign_record(updated_row)
+                role = TypeAdapter(CampaignInvocationRole).validate_python(task.request.get("role"))
+                if role != "orchestrator":
+                    raise ValueError("campaign reauthorization must continue the orchestrator")
+                self._insert_campaign_task(connection, updated_campaign, task, role)
+        stored_campaign = self.campaign(campaign_id)
+        assert stored_campaign is not None
+        if task is None:
+            return stored_campaign
+        stored_task = self.agent_task(task.operation_id)
+        assert stored_task is not None
+        return stored_campaign, stored_task
+
+    def campaign_reports(self, campaign_id: str) -> list[CampaignReportRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM campaign_reports
+                WHERE campaign_id = ?
+                ORDER BY created_at ASC, report_id ASC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        return [self._campaign_report_record(row) for row in rows]
+
+    def campaign_report_prior_history(
+        self,
+        campaign_id: str,
+        *,
+        limit: int,
+    ) -> tuple[int, list[CampaignReportRecord]]:
+        """Return an exact prior-report count and the newest bounded report suffix."""
+
+        if limit < 1:
+            raise ValueError("campaign prior-report history limit must be positive")
+        with self.connection() as connection:
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM campaign_reports WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()["count"]
+            )
+            rows = connection.execute(
+                """
+                SELECT * FROM campaign_reports
+                WHERE campaign_id = ?
+                ORDER BY created_at DESC, report_id DESC
+                LIMIT ?
+                """,
+                (campaign_id, limit),
+            ).fetchall()
+        return total, [self._campaign_report_record(row) for row in reversed(rows)]
+
+    def campaign_report(self, report_id: str) -> CampaignReportRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM campaign_reports WHERE report_id = ?", (report_id,)
+            ).fetchone()
+        return self._campaign_report_record(row) if row else None
+
+    def record_campaign_message(self, record: CampaignMessageRecord) -> CampaignMessageRecord:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            campaign = connection.execute(
+                """
+                SELECT root_operation_id, status, ending, stop_requested_at
+                FROM campaigns WHERE campaign_id = ?
+                """,
+                (record.campaign_id,),
+            ).fetchone()
+            if campaign is None:
+                raise KeyError(record.campaign_id)
+            recipient = connection.execute(
+                "SELECT campaign_id FROM graph_runs WHERE operation_id = ?",
+                (record.recipient_task_id,),
+            ).fetchone()
+            if recipient is None or recipient["campaign_id"] != record.campaign_id:
+                raise ValueError("campaign mail recipient is outside the campaign")
+            if record.sender_role == "human":
+                if campaign["status"] != "running" or campaign["ending"] is not None:
+                    raise CampaignNotRunning("the campaign is not accepting new human mail")
+                if record.sender_task_id is not None:
+                    raise ValueError("a human campaign message cannot claim a task sender")
+                if record.authorized_by is None:
+                    raise ValueError("a human campaign message requires its sender snapshot")
+                if record.recipient_task_id != campaign["root_operation_id"]:
+                    raise ValueError("a human may message only the campaign orchestrator")
+            else:
+                if record.sender_task_id is None:
+                    raise ValueError("an agent campaign message must name its sender task")
+                if record.authorized_by is not None:
+                    raise ValueError(
+                        "an agent campaign message cannot claim a human sender snapshot"
+                    )
+                sender = connection.execute(
+                    """
+                    SELECT role FROM campaign_invocations
+                    WHERE campaign_id = ? AND operation_id = ?
+                    """,
+                    (record.campaign_id, record.sender_task_id),
+                ).fetchone()
+                if sender is None:
+                    raise ValueError("campaign mail sender is outside the campaign")
+                expected = "orchestrator" if record.sender_role == "orchestrator" else "worker"
+                if sender["role"] != expected:
+                    raise ValueError("campaign mail sender role does not match its task")
+                if (
+                    record.sender_role == "worker"
+                    and record.recipient_task_id != campaign["root_operation_id"]
+                ):
+                    raise ValueError("a worker may reply only to the campaign orchestrator")
+                if record.sender_role == "orchestrator":
+                    if (
+                        campaign["status"] != "running"
+                        or campaign["ending"] is not None
+                        or campaign["stop_requested_at"] is not None
+                    ):
+                        raise CampaignNotRunning(
+                            "the campaign is no longer accepting orchestrator mail"
+                        )
+                    target = connection.execute(
+                        """
+                        SELECT role FROM campaign_invocations
+                        WHERE campaign_id = ? AND operation_id = ?
+                        """,
+                        (record.campaign_id, record.recipient_task_id),
+                    ).fetchone()
+                    if target is None or target["role"] != "worker":
+                        raise ValueError("the orchestrator may address only one of its workers")
+            connection.execute(
+                """
+                INSERT INTO campaign_messages (
+                    message_id, campaign_id, sender_role, sender_task_id,
+                    authorized_space_id, authorized_user_id, authorized_display_name,
+                    recipient_task_id, control_node_id, body, created_at,
+                    delivered_at, delivery_operation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.message_id,
+                    record.campaign_id,
+                    record.sender_role,
+                    record.sender_task_id,
+                    record.authorized_by.space_id if record.authorized_by is not None else None,
+                    record.authorized_by.user_id if record.authorized_by is not None else None,
+                    record.authorized_by.display_name if record.authorized_by is not None else None,
+                    record.recipient_task_id,
+                    record.control_node_id,
+                    record.body,
+                    record.created_at,
+                    record.delivered_at,
+                    record.delivery_operation_id,
+                ),
+            )
+        stored = self.campaign_message(record.message_id)
+        assert stored is not None
+        return stored
+
+    def campaign_message(self, message_id: str) -> CampaignMessageRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM campaign_messages WHERE message_id = ?", (message_id,)
+            ).fetchone()
+        return self._campaign_message_record(row) if row else None
+
+    def campaign_messages(self, campaign_id: str) -> list[CampaignMessageRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM campaign_messages
+                WHERE campaign_id = ?
+                ORDER BY created_at ASC, message_id ASC
+                """,
+                (campaign_id,),
+            ).fetchall()
+        return [self._campaign_message_record(row) for row in rows]
+
+    def campaign_report_message_history(
+        self,
+        campaign_id: str,
+        *,
+        limit: int,
+    ) -> tuple[int, list[CampaignMessageRecord]]:
+        """Return an exact message count and the newest bounded message suffix."""
+
+        if limit < 1:
+            raise ValueError("campaign report message history limit must be positive")
+        with self.connection() as connection:
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS count FROM campaign_messages WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()["count"]
+            )
+            rows = connection.execute(
+                """
+                SELECT * FROM campaign_messages
+                WHERE campaign_id = ?
+                ORDER BY created_at DESC, message_id DESC
+                LIMIT ?
+                """,
+                (campaign_id, limit),
+            ).fetchall()
+        return total, [self._campaign_message_record(row) for row in reversed(rows)]
+
+    def pending_campaign_messages(
+        self,
+        campaign_id: str,
+        recipient_task_id: str,
+    ) -> list[CampaignMessageRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM campaign_messages
+                WHERE campaign_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
+                ORDER BY created_at ASC, message_id ASC
+                """,
+                (campaign_id, recipient_task_id),
+            ).fetchall()
+        return [self._campaign_message_record(row) for row in rows]
+
+    def mark_campaign_messages_delivered(
+        self,
+        message_ids: list[str],
+        *,
+        operation_id: str,
+    ) -> None:
+        if not message_ids:
+            return
+        now = self.now()
+        placeholders = ",".join("?" for _ in message_ids)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"""
+                SELECT message_id FROM campaign_messages
+                WHERE message_id IN ({placeholders}) AND delivered_at IS NULL
+                """,
+                tuple(message_ids),
+            ).fetchall()
+            if {row["message_id"] for row in rows} != set(message_ids):
+                raise ValueError("campaign message delivery is stale or already claimed")
+            connection.execute(
+                f"""
+                UPDATE campaign_messages
+                SET delivered_at = ?, delivery_operation_id = ?
+                WHERE message_id IN ({placeholders})
+                """,
+                (now, operation_id, *message_ids),
+            )
+
     def create_agent_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        if record.campaign_id is not None:
+            raise ValueError("campaign tasks must spend from their campaign pot atomically")
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1740,23 +5236,25 @@ class AppStore:
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> None:
+        self._validate_dispatch_authority_insert(connection, record)
         self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
         connection.execute(
             """
             INSERT INTO graph_runs (
-                operation_id, project_id, kind, status, request_json,
+                operation_id, project_id, campaign_id, kind, status, request_json,
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
                 parent_operation_id, native_session_id, stage_host,
                 stage_root, estimate_seconds, estimate_samples, phase,
-                last_activity_at, authorized_space_id, authorized_user_id,
-                authorized_display_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_activity_at, dispatch_authority_json, authorized_space_id,
+                authorized_user_id, authorized_display_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
                 record.project_id,
+                record.campaign_id,
                 record.kind,
                 record.status,
                 json.dumps(record.request, separators=(",", ":")),
@@ -1777,11 +5275,207 @@ class AppStore:
                 record.estimate_samples,
                 record.phase,
                 record.last_activity_at,
+                (
+                    record.dispatch_authority.model_dump_json()
+                    if record.dispatch_authority is not None
+                    else None
+                ),
                 record.authorized_by.space_id if record.authorized_by is not None else None,
                 record.authorized_by.user_id if record.authorized_by is not None else None,
                 record.authorized_by.display_name if record.authorized_by is not None else None,
             ),
         )
+
+    @staticmethod
+    def _validate_dispatch_authority_insert(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> None:
+        """Keep a recovery or continuation on its parent's admitted authority."""
+
+        if record.kind == "campaign":
+            if record.campaign_id is None:
+                raise ValueError("A campaign task requires its exact campaign identity.")
+            request = record.request
+            role = TypeAdapter(CampaignInvocationRole).validate_python(request.get("role"))
+            raw_actor = request.get("actor_operation_id")
+            if not isinstance(raw_actor, str) or not raw_actor.strip():
+                raise ValueError("A campaign task requires its canonical actor identity.")
+            actor_operation_id = raw_actor.strip()
+            is_root = record.parent_operation_id is None
+
+            if role == "report":
+                if is_root:
+                    raise ValueError("A campaign report cannot be the campaign root actor.")
+                if record.dispatch_authority is not None:
+                    raise ValueError("A campaign report cannot carry graph dispatch authority.")
+            else:
+                expected = AgentDispatchAuthority(
+                    profile="orchestrator" if role == "orchestrator" else "ordinary",
+                    task_contract="orchestrate" if role == "orchestrator" else "work_auto",
+                    scope=AgentDispatchScope(
+                        run_truth_scope=sorted(set(request.get("run_truth_scope") or ())),
+                        campaign_id=record.campaign_id,
+                        patch_kind="work",
+                    ),
+                )
+                require_dispatch(expected)
+                if record.dispatch_authority != expected:
+                    raise ValueError(
+                        "A campaign task must carry its exact server-owned dispatch authority."
+                    )
+
+            if is_root:
+                if role != "orchestrator" or actor_operation_id != record.operation_id:
+                    raise ValueError(
+                        "A campaign root must be its sole canonical orchestrator actor."
+                    )
+                return
+
+            parent = connection.execute(
+                """
+                SELECT run.*, invocation.role AS campaign_role
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ? AND run.campaign_id = ?
+                """,
+                (record.parent_operation_id, record.campaign_id),
+            ).fetchone()
+            if (
+                parent is None
+                or parent["project_id"] != record.project_id
+                or parent["kind"] != record.kind
+            ):
+                raise ValueError(
+                    "An agent task continuation must preserve its parent's project and task kind."
+                )
+
+            if role == "report":
+                parent_request = json.loads(parent["request_json"])
+                parent_actor = parent_request.get("actor_operation_id") or parent["operation_id"]
+                parent_role = TypeAdapter(CampaignInvocationRole).validate_python(
+                    parent["campaign_role"]
+                )
+                origin = connection.execute(
+                    """
+                    SELECT invocation.role
+                    FROM graph_runs AS run
+                    JOIN campaign_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE run.operation_id = ? AND run.campaign_id = ?
+                    """,
+                    (actor_operation_id, record.campaign_id),
+                ).fetchone()
+                if (
+                    actor_operation_id == record.operation_id
+                    or parent_actor != actor_operation_id
+                    or parent_role not in {"orchestrator", "report"}
+                    or origin is None
+                    or origin["role"] != "orchestrator"
+                ):
+                    raise ValueError(
+                        "A campaign report must retain the sole orchestrator actor lineage."
+                    )
+                return
+
+            if actor_operation_id == record.operation_id:
+                parent_role = TypeAdapter(CampaignInvocationRole).validate_python(
+                    parent["campaign_role"]
+                )
+                if role != "worker" or parent_role != "orchestrator":
+                    raise ValueError(
+                        "Only the campaign orchestrator may admit a new ordinary worker actor."
+                    )
+                parent_json = parent["dispatch_authority_json"]
+                if parent_json is None:
+                    raise ValueError(
+                        "A new campaign worker requires its orchestrator's durable authority."
+                    )
+                parent_authority = AgentDispatchAuthority.model_validate_json(parent_json)
+                assert record.dispatch_authority is not None
+                if (
+                    parent_authority.profile != "orchestrator"
+                    or parent_authority.task_contract != "orchestrate"
+                    or record.dispatch_authority.scope.campaign_id
+                    != parent_authority.scope.campaign_id
+                    or record.dispatch_authority.scope.run_truth_scope
+                    != parent_authority.scope.run_truth_scope
+                ):
+                    raise ValueError(
+                        "A campaign worker must inherit its orchestrator's project-wide scope."
+                    )
+                return
+
+            origin = connection.execute(
+                """
+                SELECT run.dispatch_authority_json, invocation.role AS campaign_role
+                FROM graph_runs AS run
+                JOIN campaign_invocations AS invocation
+                  ON invocation.operation_id = run.operation_id
+                WHERE run.operation_id = ? AND run.campaign_id = ?
+                """,
+                (actor_operation_id, record.campaign_id),
+            ).fetchone()
+            if origin is None:
+                raise ValueError("A campaign continuation requires its canonical actor origin.")
+            origin_role = TypeAdapter(CampaignInvocationRole).validate_python(
+                origin["campaign_role"]
+            )
+            if origin_role != role:
+                raise ValueError("A campaign continuation cannot change its canonical actor role.")
+            origin_json = origin["dispatch_authority_json"]
+            if origin_json is not None:
+                origin_authority = AgentDispatchAuthority.model_validate_json(origin_json)
+                if record.dispatch_authority != origin_authority:
+                    raise ValueError(
+                        "A campaign continuation must preserve its actor-origin dispatch authority."
+                    )
+                return
+
+            # Migration-only: a same-allocation Resume/Retry of an actor recorded before
+            # dispatch authority existed may bind today's closed contract. Paid continuations,
+            # wakes, and reauthorization may not use this exception.
+            parent_request = json.loads(parent["request_json"])
+            parent_actor = parent_request.get("actor_operation_id") or parent["operation_id"]
+            if not (
+                record.attempt == int(parent["attempt"]) + 1
+                and parent_actor == actor_operation_id
+                and parent["dispatch_authority_json"] is None
+            ):
+                raise ValueError(
+                    "A campaign continuation cannot invent authority for an unbound actor."
+                )
+            return
+
+        if record.parent_operation_id is None:
+            return
+        parent = connection.execute(
+            """
+            SELECT project_id, kind, dispatch_authority_json
+            FROM graph_runs WHERE operation_id = ?
+            """,
+            (record.parent_operation_id,),
+        ).fetchone()
+        if parent is None:
+            raise ValueError("An agent task continuation requires its existing parent task.")
+        if parent["project_id"] != record.project_id or parent["kind"] != record.kind:
+            raise ValueError(
+                "An agent task continuation must preserve its parent's project and task kind."
+            )
+        if parent["dispatch_authority_json"] is None:
+            # A task recorded before dispatch authority existed carries none. An
+            # authorization that never happened cannot be invented retroactively,
+            # and refusing here would strand every pre-upgrade Resume and Retry.
+            # The child still resolves and gates its own binding at dispatch.
+            return
+        parent_authority = AgentDispatchAuthority.model_validate_json(
+            parent["dispatch_authority_json"]
+        )
+        if record.dispatch_authority != parent_authority:
+            raise ValueError(
+                "An agent task continuation must preserve its parent's dispatch authority."
+            )
 
     @staticmethod
     def _bind_chat_stage(
@@ -2195,16 +5889,17 @@ class AppStore:
         ).fetchone()
         return active is not None
 
-    def create_watchers(self, records: list[WatcherRecord]) -> list[WatcherRecord]:
+    def create_watchers(self, records: list[StoredWatcherRecord]) -> list[StoredWatcherRecord]:
         """Insert one validated watch list atomically."""
 
         records = [self._prepare_watcher_for_insert(record) for record in records]
         self._validate_watch_list(records)
         watcher_ids = [record.watcher_id for record in records]
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             for record in records:
                 self._insert_watcher(connection, record)
-        stored: list[WatcherRecord] = []
+        stored: list[StoredWatcherRecord] = []
         for watcher_id in watcher_ids:
             record = self.watcher(watcher_id)
             assert record is not None
@@ -2213,12 +5908,12 @@ class AppStore:
 
     def persist_experiment_watchers_idempotently(
         self,
-        records: list[WatcherRecord],
+        records: list[StoredWatcherRecord],
         *,
         stops: list[WatcherStopRequest] | None = None,
         binding: WatcherBinding | None = None,
         expected_watcher_snapshot_token: str | None = None,
-    ) -> list[WatcherRecord]:
+    ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff atomically with the episode's graceful stop.
 
         Deterministic watcher ids make Retry and crash recovery safe. The same
@@ -2686,6 +6381,11 @@ class AppStore:
                 raise ValueError(
                     f"Watcher stop names an unknown staged watcher: {stop.stop_watcher_id}"
                 )
+            if isinstance(record, GraphWatcherRecord):
+                raise ValueError(
+                    "Experiment agent watcher stops may retire only external observers: "
+                    f"{stop.stop_watcher_id}"
+                )
             if record.status == "stopped":
                 if (
                     record.stopped_by == "agent"
@@ -2746,12 +6446,14 @@ class AppStore:
         )
 
     @staticmethod
-    def _prepare_watcher_for_insert(record: WatcherRecord) -> WatcherRecord:
+    def _prepare_watcher_for_insert(record: StoredWatcherRecord) -> StoredWatcherRecord:
         continuation = record.continuation
         if continuation.patch_kind == "experiment_loop":
             episode_id = record.experiment_episode_id or continuation.control_episode_id
             if episode_id != record.experiment_episode_id:
                 record = record.model_copy(update={"experiment_episode_id": episode_id})
+        if isinstance(record, GraphWatcherRecord):
+            return record
         if record.status not in {"active", "degraded"} or record.next_check_at is not None:
             return record
         error_count = record.consecutive_error_count
@@ -2770,7 +6472,7 @@ class AppStore:
         )
 
     @staticmethod
-    def _validate_watch_list(records: list[WatcherRecord]) -> None:
+    def _validate_watch_list(records: list[StoredWatcherRecord]) -> None:
         if not records:
             raise ValueError("a watch list must contain at least one watcher")
         watcher_ids = [record.watcher_id for record in records]
@@ -2792,7 +6494,19 @@ class AppStore:
         if len(bindings) != 1:
             raise ValueError("one watch list must share one RCP-bound continuation context")
         continuation = records[0].continuation
+        if any(
+            isinstance(record, GraphWatcherRecord) and record.status == "degraded"
+            for record in records
+        ):
+            raise ValueError("a graph condition cannot have a degraded shell-check state")
+        if any(
+            isinstance(record, GraphWatcherRecord) and record.armed_revision is None
+            for record in records
+        ):
+            raise ValueError("a new graph condition requires its canonical arming revision")
         grouped = [record for record in records if record.group_id is not None]
+        if any(isinstance(record, GraphWatcherRecord) for record in grouped):
+            raise ValueError("graph conditions cannot join an external watcher group")
         if any((record.group_id is None) != (record.group_label is None) for record in records):
             raise ValueError("watcher group identity and label must be stored together")
         if grouped and continuation.patch_kind != "experiment_loop":
@@ -2828,10 +6542,12 @@ class AppStore:
 
     @staticmethod
     def _validate_idempotent_watcher(
-        existing: WatcherRecord,
-        desired: WatcherRecord,
+        existing: StoredWatcherRecord,
+        desired: StoredWatcherRecord,
     ) -> None:
-        immutable_fields = (
+        if type(existing) is not type(desired):
+            raise ValueError("Experiment-loop watcher identity conflicts with stored state.")
+        immutable_fields = [
             "project_id",
             "origin_operation_id",
             "origin_task_kind",
@@ -2839,30 +6555,73 @@ class AppStore:
             "node_id",
             "experiment_episode_id",
             "execution_host",
-            "check_command",
-            "log_path",
-            "cwd",
             "continuation",
             "group_id",
             "group_label",
-        )
+        ]
+        if isinstance(existing, WatcherRecord):
+            immutable_fields.extend(("check_command", "log_path", "cwd"))
+        else:
+            immutable_fields.append("condition")
         if any(getattr(existing, field) != getattr(desired, field) for field in immutable_fields):
             raise ValueError("Experiment-loop watcher identity conflicts with stored state.")
 
     @staticmethod
-    def _insert_watcher(connection: sqlite3.Connection, record: WatcherRecord) -> None:
+    def _insert_watcher(connection: sqlite3.Connection, record: StoredWatcherRecord) -> None:
+        stopped_campaign = connection.execute(
+            """
+            SELECT COALESCE(
+                       campaign.stop_requested_at,
+                       campaign.ended_at,
+                       campaign.updated_at
+                   ) AS stop_requested_at
+            FROM graph_runs AS run
+            JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+            WHERE run.operation_id = ?
+              AND (
+                  campaign.stop_requested_at IS NOT NULL
+                  OR campaign.ending IS NOT NULL
+              )
+            """,
+            (record.origin_operation_id,),
+        ).fetchone()
+        if stopped_campaign is not None and record.status != "stopped":
+            record = record.model_copy(
+                update={
+                    "status": "stopped",
+                    "notified": True,
+                    "next_check_at": None,
+                    "stopped_by": "loop",
+                    "stopped_at": stopped_campaign["stop_requested_at"],
+                }
+            )
+        if isinstance(record, GraphWatcherRecord):
+            # Legacy watcher tables keep these external-only columns NOT NULL.
+            # The separate GraphWatcherRecord never exposes the compatibility
+            # placeholders; graph_condition_json selects its stored type.
+            check_command = ""
+            log_path = ""
+            cwd = ""
+            graph_condition_json = record.condition.model_dump_json()
+            armed_revision = record.armed_revision
+        else:
+            check_command = record.check_command
+            log_path = record.log_path
+            cwd = record.cwd
+            graph_condition_json = None
+            armed_revision = None
         connection.execute(
             """
             INSERT INTO watchers (
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
                 chat_id, node_id, experiment_episode_id, execution_host,
-                check_command, log_path, cwd,
+                check_command, log_path, cwd, graph_condition_json, armed_revision,
                 continuation_json, status, created_at, last_checked_at,
                 last_exit_code, last_error, completed_at, next_check_at,
                 consecutive_error_count, group_id, group_label, notified,
                 notification_operation_id, stopped_by, stop_reason, stopped_at,
                 stop_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -2873,9 +6632,11 @@ class AppStore:
                 record.node_id,
                 record.experiment_episode_id,
                 record.execution_host,
-                record.check_command,
-                record.log_path,
-                record.cwd,
+                check_command,
+                log_path,
+                cwd,
+                graph_condition_json,
+                armed_revision,
                 record.continuation.model_dump_json(),
                 record.status,
                 record.created_at,
@@ -2896,7 +6657,7 @@ class AppStore:
             ),
         )
 
-    def watcher(self, watcher_id: str) -> WatcherRecord | None:
+    def watcher(self, watcher_id: str) -> StoredWatcherRecord | None:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
@@ -2908,7 +6669,7 @@ class AppStore:
         project_id: str,
         *,
         chat_id: str | None = None,
-    ) -> list[WatcherRecord]:
+    ) -> list[StoredWatcherRecord]:
         query = "SELECT * FROM watchers WHERE project_id = ?"
         parameters: list[object] = [project_id]
         if chat_id is not None:
@@ -2918,6 +6679,118 @@ class AppStore:
         with self.connection() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return [self._watcher_record(row) for row in rows]
+
+    def active_graph_watchers(self, project_id: str) -> list[GraphWatcherRecord]:
+        """Return graph conditions awaiting a canonical revision boundary."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE project_id = ? AND graph_condition_json IS NOT NULL
+                  AND status = 'active' AND notified = 0
+                ORDER BY created_at, watcher_id
+                """,
+                (project_id,),
+            ).fetchall()
+        records = [self._watcher_record(row) for row in rows]
+        if any(not isinstance(record, GraphWatcherRecord) for record in records):
+            raise RuntimeError("External watcher row appeared in the graph-condition index.")
+        return records  # type: ignore[return-value]
+
+    def graph_watcher_project_ids(self) -> list[str]:
+        """Return projects needing startup graph evaluation or delivery retry."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT project_id FROM watchers
+                WHERE graph_condition_json IS NOT NULL
+                  AND status IN ('active', 'completed') AND notified = 0
+                ORDER BY project_id
+                """
+            ).fetchall()
+        return [str(row["project_id"]) for row in rows]
+
+    def record_graph_watcher_result(
+        self,
+        watcher_id: str,
+        *,
+        result: Literal["active", "completed", "removed"],
+        evaluated_at: str | None = None,
+    ) -> GraphWatcherRecord:
+        """Persist one canonical graph evaluation without entering the shell poller."""
+
+        timestamp = evaluated_at or self.now()
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(watcher_id)
+            current = self._watcher_record(row)
+            if not isinstance(current, GraphWatcherRecord):
+                raise ValueError("an external watcher cannot receive a graph evaluation")
+            if current.status != "active" or current.notified:
+                return current
+            if result == "active":
+                connection.execute(
+                    """
+                    UPDATE watchers SET last_checked_at = ?
+                    WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                      AND status = 'active' AND notified = 0
+                    """,
+                    (timestamp, watcher_id),
+                )
+            elif result == "completed":
+                connection.execute(
+                    """
+                    UPDATE watchers
+                    SET status = 'completed', last_checked_at = ?, completed_at = ?,
+                        next_check_at = NULL
+                    WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                      AND status = 'active' AND notified = 0
+                    """,
+                    (timestamp, timestamp, watcher_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE watchers
+                    SET status = 'stopped', notified = 1, last_checked_at = ?,
+                        next_check_at = NULL, stopped_by = 'loop',
+                        stop_reason = 'Graph condition target was removed.', stopped_at = ?
+                    WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                      AND status = 'active' AND notified = 0
+                    """,
+                    (timestamp, timestamp, watcher_id),
+                )
+        stored = self.watcher(watcher_id)
+        assert isinstance(stored, GraphWatcherRecord)
+        return stored
+
+    def initialize_graph_watcher_baseline(
+        self,
+        watcher_id: str,
+        *,
+        armed_revision: int,
+        evaluated_at: str | None = None,
+    ) -> GraphWatcherRecord:
+        """Fail closed while giving one pre-baseline graph row a durable boundary."""
+
+        timestamp = evaluated_at or self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                UPDATE watchers SET armed_revision = ?, last_checked_at = ?
+                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                  AND armed_revision IS NULL AND status = 'active' AND notified = 0
+                """,
+                (armed_revision, timestamp, watcher_id),
+            )
+        stored = self.watcher(watcher_id)
+        assert isinstance(stored, GraphWatcherRecord)
+        return stored
 
     def pollable_watchers(self, *, as_of: str | None = None) -> list[WatcherRecord]:
         """Return only active/degraded observers whose durable due time arrived."""
@@ -2929,12 +6802,15 @@ class AppStore:
                 SELECT * FROM watchers
                 WHERE status IN ('active', 'degraded')
                   AND notified = 0
+                  AND graph_condition_json IS NULL
                   AND (next_check_at IS NULL OR next_check_at <= ?)
                 ORDER BY created_at, watcher_id
                 """,
                 (now,),
             ).fetchall()
             records = [self._watcher_record(row) for row in rows]
+            if any(not isinstance(record, WatcherRecord) for record in records):
+                raise RuntimeError("Graph conditions cannot enter the external watcher poller.")
             stopping_contexts: dict[
                 tuple[str, str],
                 tuple[dict[str, object], ExperimentEpisodeRecord] | None,
@@ -2949,7 +6825,7 @@ class AppStore:
                 )
             ]
 
-    def stop_watchers(self, project_id: str, watcher_ids: list[str]) -> list[WatcherRecord]:
+    def stop_watchers(self, project_id: str, watcher_ids: list[str]) -> list[StoredWatcherRecord]:
         """Release watchers the human has given up on.
 
         A stopped watcher leaves the polling set and can never wake a turn. RCP
@@ -3005,7 +6881,7 @@ class AppStore:
                 """,
                 (self.now(), project_id, *ids),
             )
-        stopped: list[WatcherRecord] = []
+        stopped: list[StoredWatcherRecord] = []
         for watcher_id in ids:
             record = self.watcher(watcher_id)
             assert record is not None
@@ -3672,7 +7548,7 @@ class AppStore:
                 continue
             tasks_by_control.setdefault(control_node_id, []).append((row, request))
 
-        watchers_by_control: dict[str, list[WatcherRecord]] = {}
+        watchers_by_control: dict[str, list[StoredWatcherRecord]] = {}
         for row in watcher_rows:
             record = self._watcher_record(row)
             control_node_id = record.continuation.control_node_id
@@ -3705,7 +7581,7 @@ class AppStore:
     def _derive_experiment_loop_runtime(
         cls,
         task_entries: list[tuple[sqlite3.Row, dict[str, object]]],
-        watchers: list[WatcherRecord],
+        watchers: list[StoredWatcherRecord],
         receipt_categories: dict[str, set[str]],
         episodes: dict[str, ExperimentEpisodeRecord],
     ) -> ExperimentLoopRuntime:
@@ -3862,7 +7738,7 @@ class AppStore:
 
     @staticmethod
     def _experiment_watcher_matches_current(
-        record: WatcherRecord,
+        record: StoredWatcherRecord,
         root_request: dict[str, object],
         episode: ExperimentEpisodeRecord | None,
     ) -> bool:
@@ -3914,7 +7790,7 @@ class AppStore:
     def _watcher_suppressed_by_current_stop(
         cls,
         connection: sqlite3.Connection,
-        record: WatcherRecord,
+        record: StoredWatcherRecord,
         cache: dict[
             tuple[str, str],
             tuple[dict[str, object], ExperimentEpisodeRecord] | None,
@@ -4028,6 +7904,8 @@ class AppStore:
             if row is None:
                 raise KeyError(watcher_id)
             current = self._watcher_record(row)
+            if not isinstance(current, WatcherRecord):
+                raise ValueError("a graph condition cannot receive a shell check result")
             if current.status not in {"active", "degraded"} or current.notified:
                 return current
             consecutive_error_count = (
@@ -4068,15 +7946,15 @@ class AppStore:
                     ).fetchone()
                 )
         stored = self.watcher(watcher_id)
-        assert stored is not None
+        assert isinstance(stored, WatcherRecord)
         return stored
 
-    def completed_watcher_groups(self) -> list[list[WatcherRecord]]:
+    def completed_watcher_groups(self) -> list[list[StoredWatcherRecord]]:
         """Return compatible ready delivery units without splitting Experiment groups."""
 
         with self.connection() as connection:
             units = self._ready_watcher_delivery_units(connection)
-        groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
+        groups: dict[tuple[object, ...], list[StoredWatcherRecord]] = {}
         for unit in units:
             first = unit[0]
             key = (
@@ -4103,7 +7981,7 @@ class AppStore:
     def _ready_watcher_delivery_units(
         self,
         connection: sqlite3.Connection,
-    ) -> list[list[WatcherRecord]]:
+    ) -> list[list[StoredWatcherRecord]]:
         """Build indivisible ready groups plus ordinary completed observer units."""
 
         ungrouped_rows = connection.execute(
@@ -4136,8 +8014,8 @@ class AppStore:
         stopping_contexts: dict[
             tuple[str, str], tuple[dict[str, object], ExperimentEpisodeRecord] | None
         ] = {}
-        units: list[list[WatcherRecord]] = []
-        grouped: dict[str, list[WatcherRecord]] = {}
+        units: list[list[StoredWatcherRecord]] = []
+        grouped: dict[str, list[StoredWatcherRecord]] = {}
         for record in ungrouped:
             if self._watcher_suppressed_by_current_stop(connection, record, stopping_contexts):
                 continue
@@ -4155,7 +8033,9 @@ class AppStore:
         return units
 
     @staticmethod
-    def _ready_group_members(members: list[WatcherRecord]) -> list[WatcherRecord] | None:
+    def _ready_group_members(
+        members: list[StoredWatcherRecord],
+    ) -> list[StoredWatcherRecord] | None:
         """Return deliverable members only when a durable group is collectively ready."""
 
         if not members or any(item.group_id is None for item in members):
@@ -4185,7 +8065,7 @@ class AppStore:
         self,
         project_id: str,
         control_node_id: str,
-    ) -> list[WatcherRecord] | None:
+    ) -> list[StoredWatcherRecord] | None:
         """Return the oldest frozen group a human may reauthorize.
 
         Unlike automatic delivery, human reauthorization preserves the full
@@ -4194,7 +8074,7 @@ class AppStore:
 
         with self.connection() as connection:
             units = self._ready_watcher_delivery_units(connection)
-        groups: dict[tuple[object, ...], list[WatcherRecord]] = {}
+        groups: dict[tuple[object, ...], list[StoredWatcherRecord]] = {}
         for unit in units:
             first = unit[0]
             if (
@@ -4280,7 +8160,27 @@ class AppStore:
                     return None
                 if self._has_active_chat_overlap(connection, record):
                     return None
-                self._insert_agent_task(connection, record)
+                if record.kind == "campaign":
+                    campaign_id = record.request.get("campaign_id")
+                    if not isinstance(campaign_id, str) or campaign_id != record.campaign_id:
+                        raise ValueError("campaign watcher wake has invalid campaign lineage")
+                    campaign_row = connection.execute(
+                        "SELECT * FROM campaigns WHERE campaign_id = ?",
+                        (campaign_id,),
+                    ).fetchone()
+                    if campaign_row is None:
+                        raise KeyError(campaign_id)
+                    role = TypeAdapter(CampaignInvocationRole).validate_python(
+                        record.request.get("role")
+                    )
+                    self._insert_campaign_task(
+                        connection,
+                        self._campaign_record(campaign_row),
+                        record,
+                        role,
+                    )
+                else:
+                    self._insert_agent_task(connection, record)
                 cursor = connection.execute(
                     f"""
                     UPDATE watchers
@@ -4292,6 +8192,8 @@ class AppStore:
                 )
                 if cursor.rowcount != len(ids):
                     raise RuntimeError("watcher notification changed during its transaction")
+        except CampaignActorBusy:
+            return None
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not queue the watcher notification task.") from exc
         stored = self.agent_task(record.operation_id)
@@ -4427,7 +8329,7 @@ class AppStore:
     def _validate_watcher_notification_members(
         self,
         connection: sqlite3.Connection,
-        watchers: list[WatcherRecord],
+        watchers: list[StoredWatcherRecord],
     ) -> None:
         """Require a delivery claim to contain every ready member of each group."""
 
@@ -4506,13 +8408,53 @@ class AppStore:
     def _validate_watcher_notification_scope(
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
-        watchers: list[WatcherRecord],
+        watchers: list[StoredWatcherRecord],
     ) -> None:
         first = watchers[0]
         continuation = first.continuation
         request = record.request
         trigger = request.get("trigger")
-        if continuation.patch_kind == "experiment_loop":
+        campaign_wake = first.origin_task_kind == "campaign"
+        if campaign_wake:
+            if record.kind != "campaign" or record.campaign_id is None:
+                raise ValueError("campaign watchers must wake a campaign task")
+            actor_bindings: set[tuple[object, ...]] = set()
+            for watcher in watchers:
+                origin = connection.execute(
+                    """
+                    SELECT run.campaign_id, run.request_json, invocation.role
+                    FROM graph_runs AS run
+                    JOIN campaign_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE run.operation_id = ?
+                    """,
+                    (watcher.origin_operation_id,),
+                ).fetchone()
+                if origin is None or origin["campaign_id"] != record.campaign_id:
+                    raise ValueError("campaign watcher origin is outside the campaign")
+                origin_request = json.loads(origin["request_json"])
+                actor_bindings.add(
+                    (
+                        origin["campaign_id"],
+                        origin_request.get("actor_operation_id") or watcher.origin_operation_id,
+                        origin["role"],
+                        origin_request.get("control_node_id"),
+                    )
+                )
+            if len(actor_bindings) != 1:
+                raise ValueError("one campaign watcher wake cannot merge different actors")
+            expected_campaign, expected_actor, expected_role, expected_seat = next(
+                iter(actor_bindings)
+            )
+            actual = (
+                request.get("campaign_id"),
+                request.get("actor_operation_id"),
+                request.get("role"),
+                request.get("control_node_id"),
+            )
+            if actual != (expected_campaign, expected_actor, expected_role, expected_seat):
+                raise ValueError("campaign watcher wake changed its canonical actor binding")
+        elif continuation.patch_kind == "experiment_loop":
             if (
                 record.kind != "node_chat"
                 or request.get("node_id") != continuation.control_node_id
@@ -4555,6 +8497,12 @@ class AppStore:
         )
         if request_policy != continuation_policy:
             raise ValueError("watcher notification changed its immutable delivery policy")
+        if campaign_wake:
+            graph_wake = all(isinstance(item, GraphWatcherRecord) for item in watchers)
+            expected_cause = "graph_condition" if graph_wake else "watcher"
+            if request.get("wake_cause") != expected_cause:
+                raise ValueError("campaign watcher wake changed its continuation cause")
+            return
         if continuation.patch_kind != "experiment_loop":
             if trigger != "watcher":
                 raise ValueError("a generic watcher notification must use the watcher trigger")
@@ -4626,7 +8574,10 @@ class AppStore:
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
                            WHERE receipt.operation_id = graph_runs.operation_id
-                             AND receipt.category = 'experiment_recovery_abandoned'
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'campaign_recovery_abandoned'
+                             )
                        ) AS recovery_abandoned
                 FROM graph_runs WHERE operation_id = ?
                 """,
@@ -4647,6 +8598,37 @@ class AppStore:
         if row is None:
             raise KeyError(operation_id)
         return self._authorized_human_snapshot(row)
+
+    def agent_task_authority(
+        self,
+        project_id: str,
+        operation_id: str,
+    ) -> AgentTaskAuthority:
+        """Resolve one direct task only inside the project applying its Patch."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT operation_id, project_id, dispatch_authority_json,
+                       authorized_space_id, authorized_user_id, authorized_display_name
+                FROM graph_runs
+                WHERE project_id = ? AND operation_id = ?
+                """,
+                (project_id, operation_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        dispatch_json = row["dispatch_authority_json"]
+        return AgentTaskAuthority(
+            operation_id=str(row["operation_id"]),
+            project_id=str(row["project_id"]),
+            authorized_by=self._authorized_human_snapshot(row),
+            dispatch_authority=(
+                AgentDispatchAuthority.model_validate_json(dispatch_json)
+                if dispatch_json is not None
+                else None
+            ),
+        )
 
     def claim_agent_task_graph_repair(self, operation_id: str) -> AgentTaskRecord:
         """Atomically consume one rejected Work result's manual repair eligibility."""
@@ -4756,7 +8738,10 @@ class AppStore:
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
                            WHERE receipt.operation_id = graph_runs.operation_id
-                             AND receipt.category = 'experiment_recovery_abandoned'
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'campaign_recovery_abandoned'
+                             )
                        ) AS recovery_abandoned
                 FROM graph_runs
                 WHERE project_id = ?
@@ -5082,6 +9067,22 @@ class AppStore:
 
     def agent_usage_snapshot(self, project_id: str) -> AgentUsageSnapshot:
         records = self.agent_usage(project_id)
+        input_processed, generated, counted_records, excluded_records = self._agent_usage_metrics(
+            records
+        )
+        return AgentUsageSnapshot(
+            project_id=project_id,
+            input_processed=input_processed,
+            generated=generated,
+            counted_records=counted_records,
+            excluded_records=excluded_records,
+            records=records,
+        )
+
+    def _agent_usage_metrics(
+        self,
+        records: list[AgentUsageRecord],
+    ) -> tuple[AgentUsageMetric, AgentUsageMetric, int, int]:
         counted = [record for record in records if record.counted]
         # Input reports describe the full context of one request. For a resumed
         # native session, later reports supersede earlier context sizes; generated
@@ -5089,8 +9090,11 @@ class AppStore:
         latest_input_by_session: dict[tuple[str, str], AgentUsageRecord] = {}
         input_cells: dict[tuple[AgentTaskKind, str], AgentUsageCell] = {}
         generated_cells: dict[tuple[AgentTaskKind, str], AgentUsageCell] = {}
+        tasks: dict[str, AgentTaskRecord | None] = {}
         for record in counted:
-            task = self.agent_task(record.operation_id)
+            if record.operation_id not in tasks:
+                tasks[record.operation_id] = self.agent_task(record.operation_id)
+            task = tasks[record.operation_id]
             if task is None:
                 continue
             native_session_id = task.native_session_id or task.request.get("session_id")
@@ -5115,7 +9119,7 @@ class AppStore:
             generated_cell.counted_records += 1
 
         for record in latest_input_by_session.values():
-            task = self.agent_task(record.operation_id)
+            task = tasks[record.operation_id]
             if task is None:
                 continue
             key = (task.kind, record.provider)
@@ -5130,9 +9134,8 @@ class AppStore:
         input_total = sum(cell.processed_input_tokens for cell in input_cells.values())
         generated_total = sum(cell.generated_tokens for cell in generated_cells.values())
         cached_total = sum(cell.cached_input_tokens for cell in input_cells.values())
-        return AgentUsageSnapshot(
-            project_id=project_id,
-            input_processed=AgentUsageMetric(
+        return (
+            AgentUsageMetric(
                 total_tokens=input_total,
                 cached_tokens=cached_total,
                 cache_share=cached_total / input_total if input_total else 0.0,
@@ -5142,7 +9145,7 @@ class AppStore:
                     key=lambda cell: (cell.task_kind, cell.provider),
                 ),
             ),
-            generated=AgentUsageMetric(
+            AgentUsageMetric(
                 total_tokens=generated_total,
                 block_tokens=generated_total / 20 if generated_total else 0.0,
                 cells=sorted(
@@ -5150,9 +9153,8 @@ class AppStore:
                     key=lambda cell: (cell.task_kind, cell.provider),
                 ),
             ),
-            counted_records=len(counted),
-            excluded_records=len(records) - len(counted),
-            records=records,
+            len(counted),
+            len(records) - len(counted),
         )
 
     def has_resumable_paused_chat_task(
@@ -5208,6 +9210,20 @@ class AppStore:
             ).fetchone()
         return row is not None
 
+    def has_active_agent_task(self, project_id: str) -> bool:
+        with self.connection() as connection:
+            canonical_project_id = self._resolve_project_id_from_connection(connection, project_id)
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ?
+                  AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (canonical_project_id,),
+            ).fetchone()
+        return row is not None
+
     def agent_task_events(
         self, operation_id: str, *, limit: int = AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT
     ) -> list[AgentTaskEventRecord]:
@@ -5221,7 +9237,186 @@ class AppStore:
                 """,
                 (operation_id, max(1, min(limit, AGENT_TASK_EVENT_LIST_MAX_LIMIT))),
             ).fetchall()
-        return [AgentTaskEventRecord.model_validate(dict(row)) for row in rows]
+        return [self._agent_task_event_record(row) for row in rows]
+
+    def start_agent_command(
+        self,
+        *,
+        operation_id: str,
+        command_id: str,
+        campaign_id: str | None,
+        verb: str,
+        idempotency_key: str | None,
+        payload: dict[str, object],
+    ) -> AgentCommandInvocationRecord:
+        """Record command start, or return the campaign key's existing invocation."""
+
+        if not command_id or not verb:
+            raise ValueError("command identity and verb must not be blank")
+        if idempotency_key is not None and campaign_id is None:
+            raise ValueError("a mutating command key requires a campaign binding")
+        now = self.now()
+        payload_json = self._bounded_command_payload(payload)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                task = connection.execute(
+                    "SELECT campaign_id FROM graph_runs WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+                if task is None:
+                    raise KeyError(operation_id)
+                if task["campaign_id"] != campaign_id:
+                    raise ValueError("command campaign binding does not match its task")
+                if idempotency_key is not None:
+                    existing = self._agent_command_by_key_from_connection(
+                        connection,
+                        campaign_id=campaign_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    if existing is not None:
+                        if existing.verb != verb:
+                            raise ValueError("idempotency key was already used for another verb")
+                        return existing
+                self._insert_agent_command_event(
+                    connection,
+                    operation_id=operation_id,
+                    command_id=command_id,
+                    campaign_id=campaign_id,
+                    verb=verb,
+                    phase="start",
+                    idempotency_key=idempotency_key,
+                    payload_json=payload_json,
+                    message=f"Agent command {verb} started.",
+                    level="info",
+                    created_at=now,
+                )
+        except sqlite3.IntegrityError:
+            if campaign_id is None or idempotency_key is None:
+                raise
+            existing = self.agent_command_by_key(campaign_id, idempotency_key)
+            if existing is None:
+                raise
+            if existing.verb != verb:
+                raise ValueError("idempotency key was already used for another verb") from None
+            return existing
+        stored = self.agent_command(command_id)
+        assert stored is not None
+        return stored
+
+    def finish_agent_command(
+        self,
+        command_id: str,
+        *,
+        status: Literal["ok", "invalid", "unavailable"],
+        payload: dict[str, object],
+        message: str,
+    ) -> AgentCommandInvocationRecord:
+        """Record command exit separately; repeated identical completion is harmless."""
+
+        now = self.now()
+        if "status" in payload:
+            raise ValueError("command exit payload may not override its status")
+        exit_payload: dict[str, object] = {"status": status, **payload}
+        payload_json = self._bounded_command_payload(exit_payload)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._agent_command_from_connection(connection, command_id)
+            if current is None:
+                raise KeyError(command_id)
+            if current.exited_at is not None:
+                if current.status != status or current.exit_payload != exit_payload:
+                    raise ValueError("command exit already recorded with a different result")
+                return current
+            self._insert_agent_command_event(
+                connection,
+                operation_id=current.operation_id,
+                command_id=command_id,
+                campaign_id=current.campaign_id,
+                verb=current.verb,
+                phase="exit",
+                idempotency_key=current.idempotency_key,
+                payload_json=payload_json,
+                message=message,
+                level="info" if status == "ok" else "warning",
+                created_at=now,
+            )
+        stored = self.agent_command(command_id)
+        assert stored is not None
+        return stored
+
+    def agent_command(self, command_id: str) -> AgentCommandInvocationRecord | None:
+        with self.connection() as connection:
+            return self._agent_command_from_connection(connection, command_id)
+
+    def agent_command_by_key(
+        self,
+        campaign_id: str,
+        idempotency_key: str,
+    ) -> AgentCommandInvocationRecord | None:
+        with self.connection() as connection:
+            return self._agent_command_by_key_from_connection(
+                connection,
+                campaign_id=campaign_id,
+                idempotency_key=idempotency_key,
+            )
+
+    @staticmethod
+    def _agent_command_by_key_from_connection(
+        connection: sqlite3.Connection,
+        *,
+        campaign_id: str,
+        idempotency_key: str,
+    ) -> AgentCommandInvocationRecord | None:
+        row = connection.execute(
+            """
+            SELECT command_id FROM graph_run_events
+            WHERE event_kind = 'command' AND command_phase = 'start'
+              AND campaign_id = ? AND idempotency_key = ?
+            ORDER BY event_id ASC
+            LIMIT 1
+            """,
+            (campaign_id, idempotency_key),
+        ).fetchone()
+        if row is None:
+            return None
+        return AppStore._agent_command_from_connection(connection, row["command_id"])
+
+    @staticmethod
+    def _agent_command_from_connection(
+        connection: sqlite3.Connection,
+        command_id: str,
+    ) -> AgentCommandInvocationRecord | None:
+        rows = connection.execute(
+            """
+            SELECT * FROM graph_run_events
+            WHERE event_kind = 'command' AND command_id = ?
+            ORDER BY event_id ASC
+            """,
+            (command_id,),
+        ).fetchall()
+        if not rows:
+            return None
+        starts = [row for row in rows if row["command_phase"] == "start"]
+        exits = [row for row in rows if row["command_phase"] == "exit"]
+        if len(starts) != 1 or len(exits) > 1:
+            raise RuntimeError("agent command ledger is inconsistent")
+        start = starts[0]
+        exit_row = exits[0] if exits else None
+        exit_payload = json.loads(exit_row["payload_json"]) if exit_row else None
+        status = exit_payload.get("status") if isinstance(exit_payload, dict) else None
+        return AgentCommandInvocationRecord(
+            command_id=command_id,
+            campaign_id=start["campaign_id"],
+            operation_id=start["operation_id"],
+            verb=start["command_verb"],
+            idempotency_key=start["idempotency_key"],
+            started_at=start["created_at"],
+            start_payload=json.loads(start["payload_json"]),
+            exited_at=exit_row["created_at"] if exit_row else None,
+            status=status,
+            exit_payload=exit_payload,
+        )
 
     def record_agent_task_event(
         self,
@@ -5261,14 +9456,54 @@ class AppStore:
         connection.execute(
             """
             DELETE FROM graph_run_events
-            WHERE operation_id = ? AND event_id NOT IN (
+            WHERE operation_id = ? AND event_kind = 'message' AND event_id NOT IN (
                 SELECT event_id FROM graph_run_events
-                WHERE operation_id = ?
+                WHERE operation_id = ? AND event_kind = 'message'
                 ORDER BY event_id DESC
                 LIMIT ?
             )
             """,
             (operation_id, operation_id, AGENT_TASK_EVENT_RETENTION_COUNT),
+        )
+
+    @staticmethod
+    def _insert_agent_command_event(
+        connection: sqlite3.Connection,
+        *,
+        operation_id: str,
+        command_id: str,
+        campaign_id: str | None,
+        verb: str,
+        phase: Literal["start", "exit"],
+        idempotency_key: str | None,
+        payload_json: str,
+        message: str,
+        level: Literal["info", "warning", "error"],
+        created_at: str,
+    ) -> None:
+        detail = " ".join(message.split())[:2000]
+        if not detail:
+            raise ValueError("command event message must not be blank")
+        connection.execute(
+            """
+            INSERT INTO graph_run_events (
+                operation_id, created_at, level, message, event_kind,
+                command_id, campaign_id, command_verb, command_phase,
+                idempotency_key, payload_json
+            ) VALUES (?, ?, ?, ?, 'command', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                operation_id,
+                created_at,
+                level,
+                detail,
+                command_id,
+                campaign_id,
+                verb,
+                phase,
+                idempotency_key,
+                payload_json,
+            ),
         )
 
     def agent_task_receipts(
@@ -5459,6 +9694,22 @@ class AppStore:
             },
             separators=(",", ":"),
         )
+
+    @staticmethod
+    def _bounded_command_payload(payload: dict[str, object]) -> str:
+        try:
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("agent command event payload is not valid JSON") from exc
+        if len(encoded.encode("utf-8")) > AGENT_COMMAND_EVENT_MAX_BYTES:
+            raise ValueError("agent command event payload exceeds the configured size limit")
+        return encoded
 
     @staticmethod
     def _bounded_result_json(result: dict[str, object] | None) -> str | None:
@@ -5659,7 +9910,7 @@ class AppStore:
     ) -> None:
         now = self.now()
         with self.connection() as connection:
-            connection.execute(
+            updated = connection.execute(
                 """
                 UPDATE graph_runs
                 SET native_session_id = COALESCE(?, native_session_id),
@@ -5667,9 +9918,32 @@ class AppStore:
                     stage_root = COALESCE(?, stage_root),
                     updated_at = ?, last_activity_at = ?
                 WHERE operation_id = ?
+                  AND (
+                      ? IS NULL
+                      OR native_session_id IS NULL
+                      OR native_session_id = ?
+                  )
                 """,
-                (native_session_id, stage_host, stage_root, now, now, operation_id),
-            )
+                (
+                    native_session_id,
+                    stage_host,
+                    stage_root,
+                    now,
+                    now,
+                    operation_id,
+                    native_session_id,
+                    native_session_id,
+                ),
+            ).rowcount
+            if updated == 1:
+                return
+            existing = connection.execute(
+                "SELECT native_session_id FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if existing is None:
+                raise KeyError(operation_id)
+            raise ValueError("Agent task native session conflicts with its saved RCP checkpoint.")
 
     def clear_agent_task_stage(self, operation_id: str) -> None:
         now = self.now()
@@ -5707,6 +9981,48 @@ class AppStore:
                 else "Paused for RCP shutdown or reload."
             ),
         )
+        record = self.agent_task(operation_id)
+        assert record is not None
+        return record
+
+    def request_campaign_worker_pause(self, operation_id: str, campaign_id: str) -> AgentTaskRecord:
+        """Atomically request Pause only while the worker's campaign still admits commands."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE graph_runs
+                SET status = 'pausing', updated_at = ?, last_activity_at = ?,
+                    phase = 'pausing', status_message = 'Pausing at the current checkpoint.'
+                WHERE operation_id = ? AND campaign_id = ? AND status IN ('queued', 'running')
+                  AND EXISTS (
+                      SELECT 1 FROM campaign_invocations AS invocation
+                      WHERE invocation.operation_id = graph_runs.operation_id
+                        AND invocation.role = 'worker'
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM campaigns AS campaign
+                      WHERE campaign.campaign_id = graph_runs.campaign_id
+                        AND campaign.status = 'running'
+                        AND campaign.ending IS NULL
+                        AND campaign.stop_requested_at IS NULL
+                  )
+                """,
+                (now, now, operation_id, campaign_id),
+            )
+            if cursor.rowcount == 0:
+                raise CampaignNotRunning(
+                    "the campaign is no longer accepting worker-control commands"
+                )
+            self._insert_agent_task_event(
+                connection,
+                operation_id,
+                "Pause requested by the campaign orchestrator.",
+                level="info",
+                created_at=now,
+            )
         record = self.agent_task(operation_id)
         assert record is not None
         return record
@@ -5901,7 +10217,10 @@ class AppStore:
                 (patch_cutoff,),
             ).rowcount
             events = connection.execute(
-                f"DELETE FROM graph_run_events WHERE created_at < ? AND {inactive}",
+                f"""
+                DELETE FROM graph_run_events
+                WHERE event_kind = 'message' AND created_at < ? AND {inactive}
+                """,
                 (trace_cutoff,),
             ).rowcount
             # Summary receipts carry the resume freshness proof (`operation_created`,
@@ -6002,6 +10321,10 @@ class AppStore:
         return ChatSessionContextRecord.model_validate(dict(row))
 
     @staticmethod
+    def _result_view_record(row: sqlite3.Row) -> ResultViewRecord:
+        return ResultViewRecord.model_validate(dict(row))
+
+    @staticmethod
     def _project_record(row: sqlite3.Row) -> ProjectRecord:
         data = dict(row)
         data["state_remote"] = bool(data["state_remote"])
@@ -6010,13 +10333,28 @@ class AppStore:
         return ProjectRecord.model_validate(data)
 
     @staticmethod
-    def _watcher_record(row: sqlite3.Row) -> WatcherRecord:
+    def _watcher_record(row: sqlite3.Row) -> StoredWatcherRecord:
         data = dict(row)
         data["continuation"] = json.loads(data.pop("continuation_json"))
         if "experiment_episode_id" not in data:
             data["experiment_episode_id"] = data["continuation"].get("control_episode_id")
         data["notified"] = bool(data["notified"])
-        return WatcherRecord.model_validate(data)
+        graph_condition_json = data.pop("graph_condition_json", None)
+        if graph_condition_json is None:
+            data.pop("armed_revision", None)
+            return WatcherRecord.model_validate(data)
+        data.pop("check_command", None)
+        data.pop("log_path", None)
+        data.pop("cwd", None)
+        data["last_evaluated_at"] = data.pop("last_checked_at", None)
+        data.pop("last_exit_code", None)
+        data.pop("last_error", None)
+        data.pop("next_check_at", None)
+        data.pop("consecutive_error_count", None)
+        data.pop("group_id", None)
+        data.pop("group_label", None)
+        data["condition"] = json.loads(graph_condition_json)
+        return GraphWatcherRecord.model_validate(data)
 
     @staticmethod
     def _experiment_episode_record(row: sqlite3.Row) -> ExperimentEpisodeRecord:
@@ -6028,6 +10366,13 @@ class AppStore:
     def _agent_task_record(self, row: sqlite3.Row) -> AgentTaskRecord:
         data = dict(row)
         recovery_abandoned = bool(data.pop("recovery_abandoned", False))
+        data.pop("campaign_worker_handoffs_cleared_at", None)
+        dispatch_json = data.pop("dispatch_authority_json", None)
+        data["dispatch_authority"] = (
+            AgentDispatchAuthority.model_validate_json(dispatch_json)
+            if dispatch_json is not None
+            else None
+        )
         data["authorized_by"] = self._authorized_human_snapshot(data)
         data.pop("authorized_space_id", None)
         data.pop("authorized_user_id", None)
@@ -6051,7 +10396,7 @@ class AppStore:
             progress = 0.85 + 0.14 * (1.0 - math.exp(-(elapsed - estimate) / estimate))
         data["elapsed_seconds"] = round(elapsed, 1)
         data["progress"] = round(min(0.99, max(0.0, progress)), 4) if status != "succeeded" else 1.0
-        active = status in {"queued", "running", "pausing"}
+        active = status in ACTIVE_AGENT_TASK_STATUSES
         stage_ready = not data.get("stage_host") or bool(data.get("stage_root"))
         data["can_pause"] = status in {"queued", "running"}
         data["can_resume"] = (
@@ -6064,6 +10409,39 @@ class AppStore:
             status in {"paused", "interrupted", "failed"} and not active and not recovery_abandoned
         )
         return AgentTaskRecord.model_validate(data)
+
+    @staticmethod
+    def _agent_task_event_record(row: sqlite3.Row) -> AgentTaskEventRecord:
+        data = dict(row)
+        payload_json = data.pop("payload_json", None)
+        data["payload"] = json.loads(payload_json) if payload_json else None
+        return AgentTaskEventRecord.model_validate(data)
+
+    @staticmethod
+    def _campaign_record(row: sqlite3.Row) -> CampaignRecord:
+        data = dict(row)
+        data["authorized_by"] = AppStore._authorized_human_snapshot(data)
+        data.pop("authorized_space_id", None)
+        data.pop("authorized_user_id", None)
+        data.pop("authorized_display_name", None)
+        return CampaignRecord.model_validate(data)
+
+    @staticmethod
+    def _campaign_recovery_record(row: sqlite3.Row) -> CampaignRecoveryRecord:
+        return CampaignRecoveryRecord.model_validate(dict(row))
+
+    @staticmethod
+    def _campaign_report_record(row: sqlite3.Row) -> CampaignReportRecord:
+        return CampaignReportRecord.model_validate(dict(row))
+
+    @staticmethod
+    def _campaign_message_record(row: sqlite3.Row) -> CampaignMessageRecord:
+        data = dict(row)
+        data["authorized_by"] = AppStore._authorized_human_snapshot(data)
+        data.pop("authorized_space_id", None)
+        data.pop("authorized_user_id", None)
+        data.pop("authorized_display_name", None)
+        return CampaignMessageRecord.model_validate(data)
 
     @staticmethod
     def _authorized_human_snapshot(
@@ -6109,3 +10487,34 @@ class AppStore:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _plain_html_name(value: str, *, label: str) -> str:
+    if not value or value in {".", ".."} or "/" in value or "\x00" in value:
+        raise ValueError(f"{label} must be a plain base name")
+    if Path(value).suffix.casefold() != ".html":
+        raise ValueError(f"{label} must end in .html")
+    return value
+
+
+def _required_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("result view timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("result view timestamp must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def _result_view_is_visible(
+    record: ResultViewRecord,
+    *,
+    as_of: datetime | None,
+) -> bool:
+    if record.kept_filename is not None:
+        return True
+    current = as_of or datetime.now(UTC)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("result view visibility time must include a timezone")
+    return _required_timestamp(record.expires_at) > current.astimezone(UTC)

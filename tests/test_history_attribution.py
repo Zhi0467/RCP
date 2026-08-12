@@ -5,17 +5,14 @@ import uuid
 import pytest
 
 from rcp.config import load_manifest
+from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope, AgentTaskAuthority
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.history import HistoryManager
 from tests.helpers import refresh_patch, seed_patch
 
+from .helpers import fabricated_authorizer
 
-def _authorizer(display_name: str = "Alice") -> AuthorizedHuman:
-    return AuthorizedHuman(
-        space_id=str(uuid.uuid4()),
-        user_id=str(uuid.uuid4()),
-        display_name=display_name,
-    )
+PROJECT_ID = "project-one"
 
 
 def _approval(summary: str = "Human approval") -> Patch:
@@ -35,12 +32,37 @@ def _agent_patch(operation_id: str | None = "operation-1") -> Patch:
     return seed_patch().model_copy(update={"source_operation_id": operation_id})
 
 
+def _task_authority(
+    operation_id: str,
+    authorizer: AuthorizedHuman | None,
+    *,
+    patch_kind: str = "seed",
+    project_id: str = PROJECT_ID,
+) -> AgentTaskAuthority:
+    return AgentTaskAuthority(
+        operation_id=operation_id,
+        project_id=project_id,
+        authorized_by=authorizer,
+        dispatch_authority=AgentDispatchAuthority(
+            profile="ordinary",
+            task_contract="scratch_patch",
+            scope=AgentDispatchScope(
+                run_truth_scope=["repo-a"],
+                patch_kind=patch_kind,
+            ),
+        ),
+    )
+
+
 def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
-    authorizer = _authorizer()
+    authorizer = fabricated_authorizer("Alice")
     history = HistoryManager(
         manifest,
+        project_id=PROJECT_ID,
         require_attribution=True,
-        agent_authorizer_resolver=lambda _operation_id: authorizer,
+        agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
+            operation_id, authorizer
+        ),
     )
     history.append(_agent_patch("seed-operation"))
 
@@ -73,11 +95,14 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
 
 
 def test_opt_in_human_from_state_stamps_the_whole_transaction(manifest) -> None:
-    authorizer = _authorizer()
+    authorizer = fabricated_authorizer("Alice")
     history = HistoryManager(
         manifest,
+        project_id=PROJECT_ID,
         require_attribution=True,
-        agent_authorizer_resolver=lambda _operation_id: authorizer,
+        agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
+            operation_id, authorizer
+        ),
     )
     history.append(_agent_patch("seed-operation"))
 
@@ -97,7 +122,7 @@ def test_opt_in_human_from_state_stamps_the_whole_transaction(manifest) -> None:
 
 
 def test_opt_in_human_rejects_missing_explicit_snapshot_without_revision(manifest) -> None:
-    authorizer = _authorizer()
+    authorizer = fabricated_authorizer("Alice")
     history = HistoryManager(manifest, require_attribution=True)
     preattributed = _approval().model_copy(update={"authorized_by": authorizer})
 
@@ -111,13 +136,16 @@ def test_opt_in_human_rejects_missing_explicit_snapshot_without_revision(manifes
 
 
 def test_agent_candidate_and_append_use_resolved_direct_task_snapshot(manifest) -> None:
-    authorizer = _authorizer()
+    authorizer = fabricated_authorizer("Alice")
     operation_id = "operation-1"
     history = HistoryManager(
         manifest,
+        project_id=PROJECT_ID,
         require_attribution=True,
-        agent_authorizer_resolver=lambda requested: (
-            authorizer if requested == operation_id else None
+        agent_authority_resolver=lambda _project_id, requested: (
+            _task_authority(requested, authorizer)
+            if requested == operation_id
+            else _task_authority(requested, None)
         ),
     )
     raw = _agent_patch(operation_id)
@@ -139,12 +167,15 @@ def test_agent_candidate_and_append_use_resolved_direct_task_snapshot(manifest) 
 
 
 def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> None:
-    canonical = _authorizer("Canonical human")
-    rogue = _authorizer("Rogue human")
+    canonical = fabricated_authorizer("Canonical human")
+    rogue = fabricated_authorizer("Rogue human")
     history = HistoryManager(
         manifest,
+        project_id=PROJECT_ID,
         require_attribution=True,
-        agent_authorizer_resolver=lambda _operation_id: canonical,
+        agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
+            operation_id, canonical
+        ),
     )
     patch = _agent_patch().model_copy(
         update={
@@ -165,7 +196,7 @@ def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> N
     ("case", "message"),
     [
         ("missing-source", "source_operation_id"),
-        ("missing-resolver", "agent_authorizer_resolver"),
+        ("missing-resolver", "agent_authority_resolver"),
         ("unknown-task", "unknown agent task"),
         ("legacy-task", "has no authorizer snapshot"),
         ("unnamed-authorizer", "valid authorizer snapshot"),
@@ -181,32 +212,36 @@ def test_agent_attribution_failures_do_not_write_or_spend_revision(
         resolver = None
     elif case == "unknown-task":
 
-        def resolver(_operation_id: str) -> AuthorizedHuman | None:
-            raise KeyError(_operation_id)
+        def resolver(_project_id: str, operation_id: str) -> AgentTaskAuthority:
+            raise KeyError(operation_id)
 
     elif case == "legacy-task":
 
-        def resolver(_operation_id: str) -> AuthorizedHuman | None:
-            return None
+        def resolver(_project_id: str, operation_id: str) -> AgentTaskAuthority:
+            return _task_authority(operation_id, None)
 
     elif case == "unnamed-authorizer":
 
-        def resolver(_operation_id: str) -> AuthorizedHuman | None:
-            return AuthorizedHuman.model_construct(
-                space_id=str(uuid.uuid4()),
-                user_id=str(uuid.uuid4()),
-                display_name=" ",
+        def resolver(_project_id: str, operation_id: str) -> AgentTaskAuthority:
+            return _task_authority(
+                operation_id,
+                AuthorizedHuman.model_construct(
+                    space_id=str(uuid.uuid4()),
+                    user_id=str(uuid.uuid4()),
+                    display_name=" ",
+                ),
             )
 
     else:
 
-        def resolver(_operation_id: str) -> AuthorizedHuman | None:
-            return _authorizer()
+        def resolver(_project_id: str, operation_id: str) -> AgentTaskAuthority:
+            return _task_authority(operation_id, fabricated_authorizer("Alice"))
 
     history = HistoryManager(
         manifest,
+        project_id=PROJECT_ID,
         require_attribution=True,
-        agent_authorizer_resolver=resolver,
+        agent_authority_resolver=resolver,
     )
 
     with pytest.raises(ValueError, match=message):
@@ -257,15 +292,20 @@ def test_attribution_policy_does_not_apply_during_legacy_replay(manifest) -> Non
 
 
 def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> None:
-    current = _authorizer("Before rename")
+    current = fabricated_authorizer("Before rename")
 
-    def resolve(_operation_id: str) -> AuthorizedHuman:
-        return current
+    def resolve(_project_id: str, operation_id: str) -> AgentTaskAuthority:
+        return _task_authority(
+            operation_id,
+            current,
+            patch_kind="refresh" if operation_id == "operation-2" else "seed",
+        )
 
     history = HistoryManager(
         manifest,
+        project_id=PROJECT_ID,
         require_attribution=True,
-        agent_authorizer_resolver=resolve,
+        agent_authority_resolver=resolve,
     )
     history.append(_agent_patch("operation-1"))
     current = current.model_copy(update={"display_name": "After rename"})

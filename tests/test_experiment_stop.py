@@ -12,31 +12,25 @@ from fastapi.testclient import TestClient
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.app import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
-from rcp.core.models import AuthorizedHuman, Patch
+from rcp.core.models import Patch
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
-from rcp.service import RunRequest
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.watchers import WatcherBinding
 
-from .helpers import append_fixture_patch, seed_patch
+from .helpers import append_fixture_patch, authorized_human, seed_patch
 from .helpers import create_named_app as create_app
 
 EXPERIMENT_ID = "exp/bounded-loop"
 NODE_PATH = "exp%2Fbounded-loop"
 
 
-def _authorized_human(store: AppStore) -> AuthorizedHuman:
-    owner = store.local_owner
-    assert owner is not None
-    if owner.display_name is None:
-        owner = store.rename_space_user(owner.user_id, "Test researcher")
-    return AuthorizedHuman(
-        space_id=store.space_id,
-        user_id=owner.user_id,
-        display_name=owner.display_name,
-    )
+def _task_authority(request: RunRequest, *, kind: str = "node_chat"):
+    authority = resolve_dispatch_authority(kind, request)
+    assert authority is not None
+    return authority
 
 
 def _experiment_patch(*, invocation_ceiling: int = 2) -> Patch:
@@ -75,7 +69,7 @@ class _Loop:
         self.control_revision = self.service.history.state().revision
         self.project_id = app.state.default_project_id
         self.store: AppStore = app.state.background_tasks.store
-        self.authorizer = _authorized_human(self.store)
+        self.authorizer = authorized_human(self.store)
         self.client = TestClient(app)
         self.chat_id = str(uuid.uuid4())
         self.episode_id = str(uuid.uuid4())
@@ -106,19 +100,22 @@ class _Loop:
 
     def start_episode(self, *, status: str = "succeeded", operation_id: str = "loop-root") -> str:
         now = self.store.now()
+        request = self.root_request()
+        dispatch_authority = _task_authority(request)
         self.store.create_agent_task(
             AgentTaskRecord(
                 operation_id=operation_id,
                 project_id=self.project_id,
                 kind="node_chat",
                 status=status,
-                request=self.root_request().model_dump(mode="json"),
+                request=request.model_dump(mode="json"),
                 created_at=now,
                 updated_at=now,
                 status_message="Working on the bounded loop.",
                 phase="agent",
                 last_activity_at=now,
                 authorized_by=self.authorizer,
+                dispatch_authority=dispatch_authority,
             )
         )
         return operation_id
@@ -613,21 +610,23 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
         }
     )
     now = loop.store.now()
+    failed_request = loop.root_request(invocation=2).model_copy(
+        update={"trigger": "watcher", "session_id": "native-session-abc"}
+    )
     loop.store.create_agent_task(
         AgentTaskRecord(
             operation_id="failed-wake-for-switch",
             project_id=loop.project_id,
             kind="node_chat",
             status="failed",
-            request=loop.root_request(invocation=2)
-            .model_copy(update={"trigger": "watcher", "session_id": "native-session-abc"})
-            .model_dump(mode="json"),
+            request=failed_request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Provider limit reached.",
             error="Usage limit exceeded",
             native_session_id="native-session-abc",
             stage_root=str(old_stage),
+            dispatch_authority=_task_authority(failed_request),
         )
     )
     loop.store.create_agent_task(
@@ -644,6 +643,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
             parent_operation_id="failed-wake-for-switch",
             native_session_id="new-claude-session",
             stage_root=str(new_stage),
+            dispatch_authority=_task_authority(request),
         )
     )
     execution = AgentTaskExecution(
@@ -1062,6 +1062,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
                     "repairable": False,
                 },
             },
+            dispatch_authority=_task_authority(request, kind="project_chat"),
         )
     )
     repair_request = request.model_copy(update={"message": None, "session_id": "repair-session"})
@@ -1080,6 +1081,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
             parent_operation_id="rejected-work",
             native_session_id="repair-session",
             stage_root=str(stage),
+            dispatch_authority=_task_authority(repair_request, kind="project_chat"),
         )
     )
     store.record_agent_task_receipt(
@@ -1104,7 +1106,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
     app.state.background_tasks.stream = stream
     recovered = getattr(app.state.background_tasks, action)(
         "repair-attempt",
-        authorized_by=_authorized_human(store),
+        authorized_by=authorized_human(store),
     )
 
     assert observed.wait(timeout=2)
@@ -1143,6 +1145,7 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
             error=None if task_status == "paused" else "provider connection dropped",
             native_session_id="native-session-abc",
             stage_root=str(stage),
+            dispatch_authority=_task_authority(wake_request),
         )
     )
     candidate = "{}"
@@ -1220,6 +1223,7 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
             error="You've hit your session limit",
             native_session_id="native-session-abc",
             stage_root=str(stage),
+            dispatch_authority=_task_authority(wake_request),
         )
     )
     candidate = "{}"
@@ -1279,6 +1283,7 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
             error="Quota exceeded",
             native_session_id="native-session-abc",
             stage_root=str(old_stage),
+            dispatch_authority=_task_authority(failed_request),
         )
     )
     candidate = "{}"
@@ -1350,6 +1355,7 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             error="Usage limit exceeded",
             native_session_id="native-session-abc",
             stage_root=str(old_stage),
+            dispatch_authority=_task_authority(failed_wake_request),
         )
     )
     loop.store.record_agent_task_contract(
@@ -1383,6 +1389,7 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             parent_operation_id="failed-wake-before-switch",
             native_session_id="provisional-claude-session",
             stage_root=str(provisional_stage),
+            dispatch_authority=_task_authority(provisional_request),
         )
     )
     loop.store.record_agent_task_receipt(
@@ -1508,24 +1515,33 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     )
     retry_request = loop.root_request().model_copy(update={"session_id": "legacy-session"})
     now = loop.store.now()
-    loop.store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="doomed-retry",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=retry_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="The retained episode context candidate was unavailable.",
-            error="The continued Experiment-loop turn has no retained episode context candidate.",
-            attempt=2,
-            parent_operation_id="loop-root",
-            native_session_id="legacy-session",
-            stage_root=str(stage),
-        )
-    )
     with loop.store.connection() as connection:
+        # This row predates dispatch-authority admission. Current task creation
+        # correctly refuses it; raw SQL keeps restart compatibility covered.
+        connection.execute(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, kind, status, request_json,
+                created_at, updated_at, status_message, error, attempt,
+                parent_operation_id, native_session_id, stage_root
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "doomed-retry",
+                loop.project_id,
+                "node_chat",
+                "failed",
+                json.dumps(retry_request.model_dump(mode="json"), separators=(",", ":")),
+                now,
+                now,
+                "The retained episode context candidate was unavailable.",
+                "The continued Experiment-loop turn has no retained episode context candidate.",
+                2,
+                "loop-root",
+                "legacy-session",
+                str(stage),
+            ),
+        )
         connection.execute(
             """
             INSERT INTO experiment_episodes (
@@ -1606,6 +1622,7 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
             status_message="Waiting for the provider.",
             native_session_id="native-session-abc",
             stage_root=str(stage),
+            dispatch_authority=_task_authority(request),
         )
     )
     candidate = "{}"

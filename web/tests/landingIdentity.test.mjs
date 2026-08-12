@@ -1,0 +1,149 @@
+import assert from "node:assert/strict";
+import { after, beforeEach, test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const { ProjectLanding } = await server.ssrLoadModule("/src/views/ProjectLanding.tsx");
+const { IdentityProvenanceSlip, copyIdentityId } = await server.ssrLoadModule(
+  "/src/components/LandingIdentityMenu.tsx",
+);
+
+after(() => server.close());
+
+beforeEach(() => {
+  globalThis.localStorage = {
+    getItem: () => null,
+    setItem() {},
+    removeItem() {},
+  };
+});
+
+const userId = "123e4567-e89b-42d3-a456-426614174001";
+const identity = {
+  space_id: "123e4567-e89b-42d3-a456-426614174000",
+  space_kind: "personal",
+  user: {
+    user_id: userId,
+    display_name: "Ada Researcher",
+    identity_kind: "local_owner",
+    created_at: "2026-08-12T00:00:00Z",
+    updated_at: "2026-08-12T00:00:00Z",
+  },
+};
+
+function landingProps(identityValue = identity) {
+  return {
+    projects: [],
+    experimentLoops: [],
+    onOpen() {},
+    onOpenExperiment() {},
+    onCreate() {},
+    onDelete() {},
+    openProjectTabs: [],
+    onActivateProjectTab() {},
+    onCloseProjectTab() {},
+    identity: identityValue,
+    identityError: null,
+    onRequestIdentityName() {},
+  };
+}
+
+test("the project index starts with covers and exposes the named identity with its full ID", () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps()));
+
+  assert.doesNotMatch(html, /Choose a project/i);
+  assert.match(html, /Ada Researcher/);
+  assert.match(html, /Personal space/);
+  assert.match(html, new RegExp(userId));
+  assert.match(html, /data-identity-record="provenance-slip"/);
+});
+
+test("an unnamed personal identity presents the landing sign-in action", () => {
+  const unnamed = { ...identity, user: { ...identity.user, display_name: null } };
+  const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps(unnamed)));
+
+  assert.match(html, />Sign in</);
+  assert.doesNotMatch(html, /data-identity-record="provenance-slip"/);
+});
+
+test("the identity slip delegates Edit and Copy without changing identity state", async () => {
+  let edits = 0;
+  let copyClicks = 0;
+  let clipboardValue = null;
+  const tree = IdentityProvenanceSlip({
+    identity,
+    identityError: null,
+    teamNoticeId: "team-status",
+    copyStatus: "idle",
+    onCopy() {
+      copyClicks += 1;
+    },
+    onEdit() {
+      edits += 1;
+    },
+  });
+  const edit = findElement(tree, (element) => element.props["data-identity-action"] === "edit");
+  const copy = findElement(tree, (element) => element.props["data-identity-action"] === "copy-id");
+
+  assert.ok(edit);
+  assert.ok(copy);
+  edit.props.onClick();
+  copy.props.onClick();
+  await copyIdentityId(userId, {
+    async writeText(value) {
+      clipboardValue = value;
+    },
+  });
+
+  assert.equal(edits, 1);
+  assert.equal(copyClicks, 1);
+  assert.equal(clipboardValue, userId);
+  assert.equal(identity.user.user_id, userId);
+});
+
+test("team controls are an explicit disabled seam and collect no connection material", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(IdentityProvenanceSlip, {
+      identity,
+      identityError: null,
+      teamNoticeId: "team-status",
+      copyStatus: "idle",
+      onCopy() {},
+      onEdit() {},
+    }),
+  );
+
+  assert.match(html, /data-team-space-seam="unimplemented"/);
+  assert.match(html, /Team connections are not implemented in this build/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Join team space/s);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Accept invitation/s);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Invite member/s);
+  assert.doesNotMatch(html, /<(form|input|textarea|select)\b/i);
+  assert.doesNotMatch(html, /password|access token|private key/i);
+});
+
+function findElement(node, predicate) {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findElement(child, predicate);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (!node || typeof node !== "object") return null;
+  if (node.props && predicate(node)) return node;
+  const children = node.props?.children;
+  for (const child of Array.isArray(children) ? children : [children]) {
+    const match = findElement(child, predicate);
+    if (match) return match;
+  }
+  return null;
+}

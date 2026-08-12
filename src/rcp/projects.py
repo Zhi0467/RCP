@@ -20,13 +20,15 @@ from pydantic import BaseModel, TypeAdapter
 from rcp.agents import AgentLauncher
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import Manifest, load_manifest
+from rcp.core.materialize import MaterializationResult
 from rcp.core.models import GraphState
-from rcp.history import HistoryManager, ProjectIdentityConflict
+from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
 from rcp.paper import PaperService
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
 from rcp.service import ProjectService, ProjectSettingsRequest
+from rcp.sources import project_cache_roots
 from rcp.storage import AppStore, ProjectRecord, ProjectStageRecord
 from rcp.transport import (
     RemoteRunStage,
@@ -198,6 +200,94 @@ class ProjectCatalog:
             self._finish_alias_file_migrations(identity.project_id)
             return stored
 
+    def register_degraded_read_only(
+        self,
+        locator: str,
+        *,
+        materialization: MaterializationResult,
+    ) -> ProjectRecord:
+        """Catalog the last coherent state without claiming or repairing canonical history."""
+
+        with self._registration_lock:
+            bootstrap = load_manifest(locator)
+            canonical_locator = str(bootstrap.path)
+            existing = self.store.project_by_locator(canonical_locator)
+            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+            history = self._history_for_manifest(manifest, workspace)
+            if materialization.state.replay_status != "degraded":
+                raise ValueError(
+                    "The retained research now replays completely; open it normally instead."
+                )
+            identity = history.project_identity(materialization)
+            if identity is not None and identity.home_space_id != self.store.space_id:
+                raise ProjectIdentityConflict(
+                    f"Project {identity.project_id} belongs to space {identity.home_space_id}; "
+                    f"this space is {self.store.space_id}. Registration is refused."
+                )
+            project_id = identity.project_id if identity is not None else _project_id(manifest)
+            if existing is not None and existing.project_id != project_id:
+                raise ValueError(
+                    "This canonical location is already registered as a different project."
+                )
+            record = self._record_for_identity(
+                manifest,
+                existing,
+                project_id=project_id,
+                home_space_id=None,
+            ).model_copy(
+                update={
+                    "revision": materialization.state.revision,
+                    "reachable": workspace.reachable,
+                    "error": str(ReplayHalted(materialization.state)),
+                }
+            )
+            self.store.upsert_project(record)
+            paper = PaperService(
+                manifest,
+                self.store,
+                workspace,
+                project_id=project_id,
+            )
+            service = ProjectService(
+                manifest,
+                history,
+                paper,
+                self.launcher,
+                data_dir=self.data_dir,
+                provider_skills=self.provider_skills,
+            )
+            snapshot = service.project_snapshot(state=materialization.state)
+            self._stamp_snapshot_identity(snapshot, project_id)
+            self.mark_snapshot_fresh(snapshot)
+            self.write_cached_snapshot(project_id, snapshot)
+            return self.update_summary(project_id, snapshot)
+
+    def require_archive_available(self, canonical_location: str) -> None:
+        """Refuse to archive canonical state still owned by this catalog."""
+
+        record = next(
+            (
+                item
+                for item in self.store.projects()
+                if item.state_location.rstrip("/") == canonical_location.rstrip("/")
+            ),
+            None,
+        )
+        if record is None:
+            return
+        if self.store.has_active_agent_task(record.project_id):
+            raise ValueError(
+                f"Pause the active agent task for {record.name!r} before archiving its "
+                "canonical research."
+            )
+        with self._services_lock:
+            opened = record.project_id in self._services or record.project_id in self._opening
+        qualifier = "open and " if opened else ""
+        raise ValueError(
+            f"Project {record.name!r} is {qualifier}registered in this RCP catalog. "
+            "Remove that registration before archiving its canonical research."
+        )
+
     def _record_for_identity(
         self,
         manifest: Manifest,
@@ -247,13 +337,18 @@ class ProjectCatalog:
         self,
         manifest: Manifest,
         workspace: StateWorkspace,
+        *,
+        project_id: str | None = None,
     ) -> HistoryManager:
         return HistoryManager(
             manifest,
             workspace,
             expected_space_id=self.store.space_id,
+            project_id=project_id,
             require_attribution=True,
-            agent_authorizer_resolver=self.store.agent_task_authorizer,
+            agent_authority_resolver=(
+                self.store.agent_task_authority if project_id is not None else None
+            ),
         )
 
     def _ensure_registered_identity(self, project_id: str) -> str:
@@ -268,6 +363,24 @@ class ProjectCatalog:
                     f"this space is {self.store.space_id}. Canonical writes are refused."
                 )
             return record.project_id
+        bootstrap = load_manifest(record.locator)
+        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+        history = self._history_for_manifest(manifest, workspace, project_id=record.project_id)
+        materialization = history.materialize(write_outputs=False)
+        if materialization.state.replay_status == "degraded":
+            identity = history.project_identity(materialization)
+            if identity is not None:
+                if identity.home_space_id != self.store.space_id:
+                    raise ProjectIdentityConflict(
+                        f"Project {identity.project_id} belongs to space "
+                        f"{identity.home_space_id}; this space is {self.store.space_id}. "
+                        "Registration is refused."
+                    )
+                if identity.project_id != record.project_id:
+                    raise ProjectIdentityConflict(
+                        "The read-only catalog record does not match canonical project identity."
+                    )
+            return record.project_id
         return self.register(record.locator).project_id
 
     def _stamp_snapshot_identity(
@@ -277,7 +390,11 @@ class ProjectCatalog:
     ) -> None:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
-        if record is None or record.home_space_id is None:
+        if record is None:
+            raise KeyError(project_id)
+        graph = snapshot.get("graph")
+        degraded = isinstance(graph, dict) and graph.get("replay_status") == "degraded"
+        if record.home_space_id is None and not degraded:
             raise KeyError(project_id)
         snapshot["id"] = project_id
         snapshot["home_space_id"] = record.home_space_id
@@ -615,13 +732,20 @@ class ProjectCatalog:
                     opening.result()
             with self._snapshot_lock(project_id):
                 stages = self.store.project_deletion_stages(project_id)
+                display_snapshot = self._cached_snapshot_path(project_id)
+                paper_snapshot = self._paper_snapshot_path(project_id)
+                project_cache_root = _validate_project_cache_roots(self.data_dir, project_id)
+                for stage in stages:
+                    self._validate_stage_target(stage)
+                _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
+                _validate_optional_regular_app_file(paper_snapshot, "project paper snapshot")
+
                 for stage in stages:
                     self._remove_stage(stage)
 
-                display_snapshot = self._cached_snapshot_path(project_id)
-                paper_snapshot = self._paper_snapshot_path(project_id)
                 removed_display = _unlink_regular_app_file(display_snapshot)
                 removed_paper = _unlink_regular_app_file(paper_snapshot)
+                _remove_validated_project_cache_root(project_cache_root)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
                 self._cached_snapshot_patch_heads.pop(project_id, None)
@@ -663,6 +787,18 @@ class ProjectCatalog:
         if not target.is_absolute() or target.parent.resolve() != boundary:
             raise ValueError("Saved local run stage is outside the RCP staging boundary")
         _remove_local_stage(target)
+
+    def _validate_stage_target(self, stage: ProjectStageRecord) -> None:
+        if stage.host:
+            RemoteRunStage(stage.host).attach_artifact_source(stage.root)
+            return
+
+        boundary = self.data_dir / "run-stage"
+        if os.path.lexists(boundary) and not stat.S_ISDIR(boundary.lstat().st_mode):
+            raise ValueError("RCP's local staging boundary is unsafe")
+        target = Path(stage.root)
+        if not target.is_absolute() or target.parent.resolve() != boundary.resolve():
+            raise ValueError("Saved local run stage is outside the RCP staging boundary")
 
     def write_cached_snapshot(
         self,
@@ -901,8 +1037,20 @@ class ProjectCatalog:
         snapshot = envelope["snapshot"]
         if not isinstance(snapshot, dict):
             return "invalid", None
+        # Pre-identity display caches did not carry the catalog's home-space field.
+        allow_pre_identity = False
+        if "home_space_id" not in snapshot:
+            record = self.store.project(project_id)
+            if record is None:
+                return "invalid", None
+            snapshot["home_space_id"] = record.home_space_id
+            allow_pre_identity = record.home_space_id is None
         _ensure_snapshot_freshness(snapshot)
-        if not _valid_display_snapshot(project_id, snapshot):
+        if not _valid_display_snapshot(
+            project_id,
+            snapshot,
+            allow_pre_identity=allow_pre_identity,
+        ):
             return "invalid", None
         if schema_version == 1:
             patch_log_head = _display_patch_log_head(snapshot)
@@ -944,20 +1092,29 @@ class ProjectCatalog:
             raise KeyError(project_id)
         bootstrap = load_manifest(record.locator)
         manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
-        history = self._history_for_manifest(manifest, workspace)
-        initialized = history.initialize()
+        history = self._history_for_manifest(manifest, workspace, project_id=project_id)
+        try:
+            initialized = history.initialize()
+        except ReplayHalted:
+            initialized = history.materialize(write_outputs=False)
         identity = history.project_identity(initialized)
-        if identity is None:
+        if identity is None and initialized.state.replay_status != "degraded":
             raise RuntimeError(
                 "Registered project identity disappeared before the project could open."
             )
-        if identity.project_id != project_id:
+        if identity is not None and identity.home_space_id != self.store.space_id:
+            raise ProjectIdentityConflict(
+                f"Project {identity.project_id} belongs to space {identity.home_space_id}; "
+                f"this space is {self.store.space_id}. Registration is refused."
+            )
+        if identity is not None and identity.project_id != project_id:
             raise RuntimeError(
                 f"Registered project id {project_id!r} does not match canonical history "
                 f"{identity.project_id!r}."
             )
         initialized_state = initialized.state
-        self.store.migrate_legacy_project_data(history.manifest.name, project_id)
+        if initialized_state.replay_status != "degraded":
+            self.store.migrate_legacy_project_data(history.manifest.name, project_id)
         paper = PaperService(
             history.manifest,
             self.store,
@@ -1142,6 +1299,81 @@ def _unlink_regular_app_file(target: Path) -> bool:
     return True
 
 
+def _validate_project_cache_roots(data_dir: Path, project_id: str) -> Path | None:
+    source_root, slice_root = project_cache_roots(data_dir, project_id)
+    cache_parent = data_dir / "project-caches"
+    project_root = source_root.parent
+    expected = cache_parent / hashlib.sha256(project_id.encode()).hexdigest()
+    if project_root != expected or slice_root.parent != expected:
+        raise ValueError("Project cache roots do not match the canonical project cache boundary.")
+
+    _validate_optional_directory(cache_parent, "project cache parent")
+    if not os.path.lexists(project_root):
+        return None
+    _validate_optional_directory(project_root, "project cache boundary")
+    allowed_children = {source_root, slice_root}
+    try:
+        unexpected = [child for child in project_root.iterdir() if child not in allowed_children]
+    except OSError as exc:
+        raise ValueError(f"Could not inspect project cache boundary: {project_root}") from exc
+    if unexpected:
+        raise ValueError(f"Refusing to clear unknown project cache entry: {unexpected[0]}")
+    _validate_cache_tree(source_root, "remote-source cache")
+    _validate_cache_tree(slice_root, "session-slice cache")
+    return project_root
+
+
+def _validate_optional_directory(target: Path, label: str) -> None:
+    try:
+        metadata = target.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ValueError(f"Could not inspect {label}: {target}") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"Refusing to clear unsafe {label}: {target}")
+
+
+def _validate_cache_tree(root: Path, label: str) -> None:
+    _validate_optional_directory(root, f"{label} root")
+    if not os.path.lexists(root):
+        return
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = list(directory.iterdir())
+        except OSError as exc:
+            raise ValueError(f"Could not inspect {label}: {directory}") from exc
+        for child in children:
+            try:
+                metadata = child.lstat()
+            except OSError as exc:
+                raise ValueError(f"Could not inspect {label} entry: {child}") from exc
+            if stat.S_ISDIR(metadata.st_mode):
+                pending.append(child)
+            elif not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(f"Refusing to clear unsafe {label} entry: {child}")
+
+
+def _remove_validated_project_cache_root(project_root: Path | None) -> None:
+    if project_root is None:
+        return
+    _make_tree_writable(project_root)
+    shutil.rmtree(project_root)
+
+
+def _validate_optional_regular_app_file(target: Path, label: str) -> None:
+    try:
+        metadata = target.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ValueError(f"Could not inspect {label}: {target}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Refusing to remove non-file {label}: {target}")
+
+
 def _require_regular_app_file(target: Path, label: str) -> None:
     try:
         metadata = target.lstat()
@@ -1151,20 +1383,32 @@ def _require_regular_app_file(target: Path, label: str) -> None:
         raise ValueError(f"Refusing to migrate non-file {label}: {target}")
 
 
-def _valid_display_snapshot(project_id: str, snapshot: dict[str, object]) -> bool:
+def _valid_display_snapshot(
+    project_id: str,
+    snapshot: dict[str, object],
+    *,
+    allow_pre_identity: bool = False,
+) -> bool:
     if not _DISPLAY_SNAPSHOT_FIELDS.issubset(snapshot):
         return False
     if snapshot.get("id") != project_id or not isinstance(snapshot.get("name"), str):
         return False
     home_space_id = snapshot.get("home_space_id")
-    if not isinstance(home_space_id, str):
-        return False
-    try:
-        parsed_home = uuid.UUID(home_space_id)
-    except ValueError:
-        return False
-    if str(parsed_home) != home_space_id or parsed_home.version != 4:
-        return False
+    if home_space_id is None:
+        graph = snapshot.get("graph")
+        if not allow_pre_identity and (
+            not isinstance(graph, dict) or graph.get("replay_status") != "degraded"
+        ):
+            return False
+    else:
+        if not isinstance(home_space_id, str):
+            return False
+        try:
+            parsed_home = uuid.UUID(home_space_id)
+        except ValueError:
+            return False
+        if str(parsed_home) != home_space_id or parsed_home.version != 4:
+            return False
     revision = snapshot.get("revision")
     if type(revision) is not int or revision < 0:
         return False

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import html
 import json
+import shlex
 import subprocess
 import sys
 import threading
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,18 +22,78 @@ from rcp.agents.launcher import (
     ProviderReadiness,
 )
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
-from rcp.providers import AgentCapability, profile_for
+from rcp.providers import AgentCapability, ProviderUsage, profile_for
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
+ACCEPTANCE_CAMPAIGN_FINISH_MARKER = "[RCP acceptance: campaign finish]"
+ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER = "[RCP acceptance: campaign spawn then finish]"
+ACCEPTANCE_CAMPAIGN_SPAWN_THEN_INTERRUPT_MARKER = "[RCP acceptance: campaign spawn then interrupt]"
+ACCEPTANCE_CAMPAIGN_EXHAUST_MARKER = "[RCP acceptance: campaign exhaust]"
+ACCEPTANCE_CAMPAIGN_STOP_MARKER = "[RCP acceptance: campaign stop while active]"
+ACCEPTANCE_CAMPAIGN_FAIL_MARKER = "[RCP acceptance: campaign unrecoverable failure]"
+ACCEPTANCE_CAMPAIGN_INTERRUPT_ACTIVE_FILE = ".rcp-acceptance-campaign-interrupt-active"
+ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE = ".rcp-acceptance-campaign-reauthorized-active"
+ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE = ".rcp-acceptance-campaign-reauthorized-release"
 
 _STATE_FILE = ".rcp-acceptance-agent.json"
 _JOBS_DIRECTORY = "acceptance-agent-jobs"
+_RESULT_VIEW_AUTHORING_MARKER = "RCP result-view authoring contract:"
+_RESULT_VIEW_CREATE_PREFIX = (
+    "- Create exactly one bounded, self-contained, descriptively named HTML file directly inside `"
+)
+_RESULT_VIEW_CREATE_SUFFIX = "`."
+_RESULT_VIEW_REVISE_PREFIX = "- Edit the existing HTML file `"
+_RESULT_VIEW_REVISE_SUFFIX = (
+    "` in place. Keep its exact path and name; atomic replacement at that path is allowed."
+)
+_RESULT_VIEW_NAME = "loss-curves-by-seed.html"
+_RESULT_VIEW_STATE_KEY = "result_view"
+_CAMPAIGN_STATE_KEY = "campaign_actor"
+_CAMPAIGN_FIXTURE_STATE_KEY = "campaign_fixture"
+_CAMPAIGN_WORKER_REPLY_MARKER = "[RCP acceptance: campaign worker reply]"
+_CAMPAIGN_FAILURE_WORKER_MARKER = "[RCP acceptance: hold admitted worker for failure]"
+_CAMPAIGN_STOP_ACTIVE_FILE = ".rcp-acceptance-campaign-active"
+_CAMPAIGN_STOP_RELEASE_FILE = ".rcp-acceptance-campaign-release"
+_CAMPAIGN_FAILURE_ACTIVE_FILE = ".rcp-acceptance-campaign-failure-active"
+_CAMPAIGN_FAILURE_RELEASE_FILE = ".rcp-acceptance-campaign-failure-release"
+_CAMPAIGN_FAILURE_WORKER_ACTIVE_FILE = ".rcp-acceptance-campaign-worker-active"
+_CAMPAIGN_FAILURE_WORKER_RELEASE_FILE = ".rcp-acceptance-campaign-worker-release"
+_CAMPAIGN_CONTRACTS: dict[
+    str,
+    tuple[
+        Literal["orchestrator", "worker", "report"],
+        Literal["fresh", "continuation", "report"],
+    ],
+] = {
+    "# RCP auto-research orchestrator contract": ("orchestrator", "fresh"),
+    "# RCP auto-research orchestrator continuation": ("orchestrator", "continuation"),
+    "# RCP auto-research worker contract": ("worker", "fresh"),
+    "# RCP auto-research worker continuation": ("worker", "continuation"),
+    "# RCP auto-research campaign report contract": ("report", "report"),
+}
 
 
 @dataclass(frozen=True)
 class AcceptanceLaunchRecord:
-    scenario: Literal["experiment_loop", "generic_watchers", "unsupported"]
-    action: Literal["initial", "watch_correction", "wake", "unsupported", "remote_rejected"]
+    scenario: Literal[
+        "experiment_loop",
+        "generic_watchers",
+        "result_view",
+        "campaign",
+        "unsupported",
+    ]
+    action: Literal[
+        "initial",
+        "watch_correction",
+        "wake",
+        "create",
+        "revise",
+        "turn",
+        "report",
+        "report_correction",
+        "unsupported",
+        "remote_rejected",
+    ]
     cwd: str
     session_id: str
     watcher_count: int
@@ -104,7 +169,15 @@ class AcceptanceAgentLauncher(AgentLauncher):
         capability: AgentCapability,
         binary: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        del model, reasoning, read_dirs, write_dirs, remote_pid_file, capability, binary
+        del (
+            model,
+            reasoning,
+            read_dirs,
+            write_dirs,
+            remote_pid_file,
+            capability,
+            binary,
+        )
         resolved_cwd = cwd.resolve()
         stable_session = session_id or str(
             uuid5(NAMESPACE_URL, f"rcp-acceptance-session:{resolved_cwd}")
@@ -131,11 +204,36 @@ class AcceptanceAgentLauncher(AgentLauncher):
             return
 
         state = _read_state(resolved_cwd)
-        contract = _read_launch_contract(prompt)
+        contract = (
+            prompt if _RESULT_VIEW_AUTHORING_MARKER in prompt else _read_launch_contract(prompt)
+        )
         scenario = _scenario(prompt, contract, state)
-        action = _action(contract, state)
+        active_contract = prompt if _RESULT_VIEW_AUTHORING_MARKER in prompt else contract
+        campaign_contract = _campaign_contract(contract)
+        if scenario == "result_view":
+            action = _result_view_action(active_contract)
+        elif scenario == "campaign":
+            action = (
+                "report_correction"
+                if campaign_contract == ("report", "report")
+                and "- exact correction diagnostic: `" in contract
+                else "report"
+                if campaign_contract == ("report", "report")
+                else "turn"
+            )
+        else:
+            action = _action(contract, state)
         watcher_count = 0
 
+        if _holds_reauthorized_exhaustion(state, campaign_contract):
+            # ``session`` is the provider boundary that changes the durable task message
+            # from preparation to "Agent task is running."  Create the held-turn marker
+            # first so that visible message is a reliable browser synchronization point.
+            _prepare_campaign_fixture_active(
+                resolved_cwd,
+                active_name=ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE,
+                label="reauthorized exhaustion",
+            )
         yield AgentEvent(event="session", session_id=stable_session)
         if scenario == "unsupported":
             self._record(
@@ -150,13 +248,36 @@ class AcceptanceAgentLauncher(AgentLauncher):
             yield AgentEvent(
                 event="error",
                 text=(
-                    "The acceptance agent only runs an Experiment-loop invocation or an "
-                    f"ordinary Work turn containing {ACCEPTANCE_GENERIC_WATCHER_MARKER!r}."
+                    "The acceptance agent only runs an Experiment-loop invocation, a result-view "
+                    "authoring Work turn, an auto-research campaign actor turn, or an ordinary "
+                    "Work turn containing "
+                    f"{ACCEPTANCE_GENERIC_WATCHER_MARKER!r}."
                 ),
             )
             return
 
-        if action == "initial":
+        if scenario == "campaign":
+            if campaign_contract is None:
+                raise ValueError("Acceptance campaign contract is not recognized.")
+            campaign_role, campaign_phase = campaign_contract
+            answer = await _accept_campaign_turn(
+                resolved_cwd,
+                state,
+                stable_session,
+                contract=contract,
+                role=campaign_role,
+                phase=campaign_phase,
+                control=control,
+            )
+        elif scenario == "result_view":
+            answer = _author_result_view(
+                resolved_cwd,
+                active_contract,
+                state,
+                stable_session,
+                action,
+            )
+        elif action == "initial":
             focused_experiment_id = _focused_experiment_id(contract)
             _start_fixture_jobs(resolved_cwd)
             state = {
@@ -173,7 +294,10 @@ class AcceptanceAgentLauncher(AgentLauncher):
         elif action == "watch_correction":
             specs = _watch_specs(resolved_cwd)
             watcher_count = len(specs)
-            _write_json(resolved_cwd / "watch.json", specs)
+            _write_json(
+                resolved_cwd / "watch.json",
+                {"external": specs, "graph": []},
+            )
             state["watch_corrected"] = True
             _write_state(resolved_cwd, state)
             answer = "Corrected the watcher handoff without resubmitting either fixture job."
@@ -199,7 +323,10 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     contract,
                     focused_experiment_id,
                 )
-                _write_json(resolved_cwd / "watch.json", [])
+                _write_json(
+                    resolved_cwd / "watch.json",
+                    {"external": [], "graph": []},
+                )
                 _write_json(
                     resolved_cwd / "patch.json",
                     _completion_patch(focused_experiment_id, tested_hypothesis_id),
@@ -220,12 +347,27 @@ class AcceptanceAgentLauncher(AgentLauncher):
             )
         )
         yield AgentEvent(event="answer", text=answer)
+        if scenario == "campaign":
+            yield AgentEvent(
+                event="raw",
+                text='{"type":"acceptance.campaign.completed"}',
+                usage=_campaign_usage(
+                    provider,
+                    resolved_cwd,
+                    stable_session,
+                    contract,
+                ),
+            )
         yield AgentEvent(
             event="provider_exit",
             text=json.dumps(
                 {
                     "return_code": 0,
-                    "event_counts": {"session": 1, "answer": 1},
+                    "event_counts": {
+                        "session": 1,
+                        "answer": 1,
+                        **({"raw": 1} if scenario == "campaign" else {}),
+                    },
                     "explicit_terminal_event": True,
                     "acceptance_agent": True,
                 },
@@ -268,7 +410,19 @@ def _scenario(
     prompt: str,
     contract: str,
     state: dict[str, object],
-) -> Literal["experiment_loop", "generic_watchers", "unsupported"]:
+) -> Literal[
+    "experiment_loop",
+    "generic_watchers",
+    "result_view",
+    "campaign",
+    "unsupported",
+]:
+    # Result-view Work turns can reuse a cwd that carries older acceptance
+    # fixture state. The explicit current contract must win over that receipt.
+    if _RESULT_VIEW_AUTHORING_MARKER in prompt or _RESULT_VIEW_AUTHORING_MARKER in contract:
+        return "result_view"
+    if _campaign_contract(contract) is not None:
+        return "campaign"
     persisted = state.get("scenario")
     if persisted in {"experiment_loop", "generic_watchers"}:
         return persisted
@@ -277,6 +431,751 @@ def _scenario(
     if ACCEPTANCE_GENERIC_WATCHER_MARKER in prompt or ACCEPTANCE_GENERIC_WATCHER_MARKER in contract:
         return "generic_watchers"
     return "unsupported"
+
+
+def _campaign_contract(
+    contract: str,
+) -> (
+    tuple[
+        Literal["orchestrator", "worker", "report"],
+        Literal["fresh", "continuation", "report"],
+    ]
+    | None
+):
+    return _CAMPAIGN_CONTRACTS.get(contract.partition("\n")[0])
+
+
+def _holds_reauthorized_exhaustion(
+    state: dict[str, object],
+    contract: tuple[
+        Literal["orchestrator", "worker", "report"],
+        Literal["fresh", "continuation", "report"],
+    ]
+    | None,
+) -> bool:
+    fixture = state.get(_CAMPAIGN_FIXTURE_STATE_KEY)
+    return bool(
+        contract == ("orchestrator", "continuation")
+        and isinstance(fixture, dict)
+        and fixture.get("directive") == "exhaust"
+        and fixture.get("exhausted_once") is True
+    )
+
+
+async def _accept_campaign_turn(
+    cwd: Path,
+    state: dict[str, object],
+    session_id: str,
+    *,
+    contract: str,
+    role: Literal["orchestrator", "worker", "report"],
+    phase: Literal["fresh", "continuation", "report"],
+    control: AgentProcessControl | None,
+) -> str:
+    receipt = state.get(_CAMPAIGN_STATE_KEY)
+    expected_role = "orchestrator" if role == "report" else role
+    if receipt is None:
+        if phase != "fresh" or role == "report":
+            raise ValueError("Acceptance campaign continuation has no persisted actor session.")
+        receipt = {
+            "cwd": str(cwd),
+            "role": expected_role,
+            "session_id": session_id,
+        }
+    elif not isinstance(receipt, dict):
+        raise ValueError("Acceptance campaign actor state must be a JSON object.")
+    elif receipt.get("cwd") != str(cwd):
+        raise ValueError("Acceptance campaign continuation changed its actor-owned cwd.")
+    elif receipt.get("role") != expected_role:
+        raise ValueError("Acceptance campaign continuation changed its actor role.")
+    elif receipt.get("session_id") != session_id:
+        raise ValueError("Acceptance campaign continuation changed its native session.")
+
+    updated_state = dict(state)
+    updated_state[_CAMPAIGN_STATE_KEY] = receipt
+
+    if role == "report":
+        report_attempts = updated_state.get("campaign_report_attempts", 0)
+        if not isinstance(report_attempts, int) or report_attempts < 0:
+            raise ValueError("Acceptance campaign report state is malformed.")
+        updated_state["campaign_report_attempts"] = report_attempts + 1
+        if "- exact correction diagnostic: `" not in contract:
+            _write_state(cwd, updated_state)
+            return "Left the first acceptance report attempt missing for correction."
+        output_path = _campaign_contract_path(contract, "- campaign HTML report: `")
+        if output_path.parent.resolve() != cwd or output_path.name != "campaign-report.html":
+            raise ValueError("Acceptance campaign report output left its exact actor stage.")
+        _write_text_atomically(output_path, _campaign_report_html(contract))
+        _write_state(cwd, updated_state)
+        return "Wrote the corrected deterministic acceptance campaign report."
+
+    fixture = updated_state.get(_CAMPAIGN_FIXTURE_STATE_KEY)
+    if fixture is not None and not isinstance(fixture, dict):
+        raise ValueError("Acceptance campaign fixture state must be a JSON object.")
+    fixture_state = dict(fixture) if isinstance(fixture, dict) else {}
+
+    if role == "worker":
+        reply_prefix = _campaign_command_prefix(contract, "- Reply command prefix: `")
+        instruction_path = _campaign_optional_path(contract, "- worker instruction: `")
+        worker_fixture = False
+        held_failure_worker = False
+        if instruction_path is not None:
+            try:
+                instruction = instruction_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"Acceptance worker instruction is unreadable: {exc}") from exc
+            worker_fixture = _CAMPAIGN_WORKER_REPLY_MARKER in instruction
+            held_failure_worker = _CAMPAIGN_FAILURE_WORKER_MARKER in instruction
+        if held_failure_worker:
+            _write_state(cwd, updated_state)
+            await _wait_for_campaign_fixture_release(
+                cwd,
+                active_name=_CAMPAIGN_FAILURE_WORKER_ACTIVE_FILE,
+                release_name=_CAMPAIGN_FAILURE_WORKER_RELEASE_FILE,
+                label="terminal-failure worker",
+            )
+            return "Settled the admitted acceptance worker before the failed campaign report."
+        if worker_fixture and reply_prefix is not None:
+            first = await _run_campaign_client(
+                reply_prefix,
+                "Acceptance worker completed its bounded assignment.",
+            )
+            second = await _run_campaign_client(
+                reply_prefix,
+                "Acceptance worker completed its bounded assignment.",
+            )
+            if _command_effect_id(first, "message") != _command_effect_id(second, "message"):
+                raise ValueError("Acceptance worker reply key did not deduplicate.")
+        _write_state(cwd, updated_state)
+        return "Completed the deterministic acceptance campaign worker turn without a graph Patch."
+
+    directive = _campaign_fixture_directive(contract)
+    if directive is None:
+        persisted_directive = fixture_state.get("directive")
+        directive = persisted_directive if isinstance(persisted_directive, str) else None
+    if directive is not None:
+        fixture_state["directive"] = directive
+        if directive == "exhaust":
+            if fixture_state.get("exhausted_once"):
+                updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
+                _write_state(cwd, updated_state)
+                await _wait_for_campaign_fixture_release(
+                    cwd,
+                    active_name=ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE,
+                    release_name=ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE,
+                    label="reauthorized exhaustion",
+                )
+                return "Finished the reauthorized acceptance turn after human Stop."
+            command_prefix = _campaign_command_prefix_for_orchestrator(contract)
+            if command_prefix is None:
+                raise ValueError("Acceptance campaign exhaustion fixture has no command prefix.")
+            seat_node_id = _campaign_seat_node(contract)
+            exhausted = await _run_campaign_client(
+                command_prefix,
+                "spawn",
+                "--key",
+                "acceptance-exhaustion-probe",
+                "--seat-node",
+                seat_node_id,
+                "--instruction",
+                "This worker must not be admitted after the research pot is empty.",
+                allow_invalid=True,
+            )
+            if exhausted.get("status") != "invalid":
+                raise ValueError("Acceptance exhaustion probe did not hit the one-pot fence.")
+            fixture_state["exhausted_once"] = True
+            updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
+            _write_state(cwd, updated_state)
+            return "Completed the sole acceptance research allocation and exhausted the one pot."
+        if directive == "stop":
+            updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
+            _write_state(cwd, updated_state)
+            await _wait_for_campaign_stop_release(cwd)
+            return "Finished the already-authorized acceptance turn after human Stop."
+        command_prefix = _campaign_command_prefix_for_orchestrator(contract)
+        if command_prefix is None:
+            raise ValueError("Acceptance campaign fixture has no staged command prefix.")
+        if directive == "fail":
+            if phase == "fresh" and not fixture_state.get("spawned"):
+                seat_node_id = _campaign_seat_node(contract)
+                result = await _run_deduplicated_campaign_command(
+                    command_prefix,
+                    "spawn",
+                    "--key",
+                    "acceptance-failure-worker",
+                    "--seat-node",
+                    seat_node_id,
+                    "--instruction",
+                    _CAMPAIGN_FAILURE_WORKER_MARKER,
+                )
+                fixture_state.update(spawned=True, spawn_result=result)
+            updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
+            _write_state(cwd, updated_state)
+            await _wait_for_campaign_fixture_release(
+                cwd,
+                active_name=_CAMPAIGN_FAILURE_ACTIVE_FILE,
+                release_name=_CAMPAIGN_FAILURE_RELEASE_FILE,
+                label="terminal-failure orchestrator",
+            )
+            # This import is intentionally local. AcceptanceAgentLauncher is part of the
+            # provider layer, while the typed verdict belongs to campaign orchestration.
+            from rcp.runs.campaign_recovery import CampaignOrchestratorTerminalFailure
+
+            raise CampaignOrchestratorTerminalFailure(
+                "The deterministic acceptance orchestrator reached an unrecoverable "
+                "structural failure after checkpointing its native session and stage."
+            )
+        if directive == "spawn_then_interrupt":
+            persisted_seat_node_id = fixture_state.get("seat_node_id")
+            seat_node_id = (
+                persisted_seat_node_id
+                if isinstance(persisted_seat_node_id, str) and persisted_seat_node_id
+                else _campaign_seat_node(contract)
+            )
+            spawn_arguments = (
+                "spawn",
+                "--key",
+                "acceptance-interrupt-spawn",
+                "--seat-node",
+                seat_node_id,
+                "--instruction",
+                f"{_CAMPAIGN_WORKER_REPLY_MARKER}\n"
+                "Complete this worker allocation exactly once across orchestrator recovery.",
+            )
+            if not fixture_state.get("spawned"):
+                result = await _run_deduplicated_campaign_command(
+                    command_prefix,
+                    *spawn_arguments,
+                )
+                fixture_state.update(
+                    spawned=True,
+                    seat_node_id=seat_node_id,
+                    worker_id=_campaign_outcome_identity(result, "worker_id"),
+                )
+                updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
+                _write_state(cwd, updated_state)
+                await _wait_for_campaign_restart(cwd, control=control)
+            _clear_campaign_fixture_paths(
+                cwd,
+                ACCEPTANCE_CAMPAIGN_INTERRUPT_ACTIVE_FILE,
+            )
+            result = await _run_deduplicated_campaign_command(
+                command_prefix,
+                *spawn_arguments,
+            )
+            if _campaign_outcome_identity(result, "worker_id") != fixture_state.get("worker_id"):
+                raise ValueError("Acceptance interrupted spawn did not return its durable worker.")
+            await _run_deduplicated_campaign_command(
+                command_prefix,
+                "finish",
+                "--key",
+                "acceptance-finish-after-interrupt",
+            )
+            fixture_state["finished"] = True
+        elif directive == "finish":
+            await _run_deduplicated_campaign_command(
+                command_prefix,
+                "finish",
+                "--key",
+                "acceptance-finish",
+            )
+            fixture_state["finished"] = True
+        elif phase == "fresh" and not fixture_state.get("spawned"):
+            seat_node_id = _campaign_seat_node(contract)
+            result = await _run_deduplicated_campaign_command(
+                command_prefix,
+                "spawn",
+                "--key",
+                "acceptance-spawn",
+                "--seat-node",
+                seat_node_id,
+                "--instruction",
+                f"{_CAMPAIGN_WORKER_REPLY_MARKER}\n"
+                "Complete the bounded acceptance assignment and reply to the orchestrator.",
+            )
+            fixture_state.update(spawned=True, spawn_result=result)
+        else:
+            await _run_deduplicated_campaign_command(
+                command_prefix,
+                "finish",
+                "--key",
+                "acceptance-finish-after-worker",
+            )
+            fixture_state["finished"] = True
+        updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
+    _write_state(cwd, updated_state)
+    return f"Completed the deterministic acceptance campaign {role} turn without a graph Patch."
+
+
+def _campaign_fixture_directive(
+    contract: str,
+) -> (
+    Literal[
+        "finish",
+        "spawn_then_finish",
+        "spawn_then_interrupt",
+        "exhaust",
+        "stop",
+        "fail",
+    ]
+    | None
+):
+    instruction_path = _campaign_optional_path(contract, "- starting instruction: `")
+    if instruction_path is None:
+        return None
+    try:
+        instruction = instruction_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Acceptance campaign instruction is unreadable: {exc}") from exc
+    if ACCEPTANCE_CAMPAIGN_SPAWN_THEN_INTERRUPT_MARKER in instruction:
+        return "spawn_then_interrupt"
+    if ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER in instruction:
+        return "spawn_then_finish"
+    if ACCEPTANCE_CAMPAIGN_EXHAUST_MARKER in instruction:
+        return "exhaust"
+    if ACCEPTANCE_CAMPAIGN_STOP_MARKER in instruction:
+        return "stop"
+    if ACCEPTANCE_CAMPAIGN_FAIL_MARKER in instruction:
+        return "fail"
+    if ACCEPTANCE_CAMPAIGN_FINISH_MARKER in instruction:
+        return "finish"
+    return None
+
+
+async def _wait_for_campaign_stop_release(cwd: Path) -> None:
+    await _wait_for_campaign_fixture_release(
+        cwd,
+        active_name=_CAMPAIGN_STOP_ACTIVE_FILE,
+        release_name=_CAMPAIGN_STOP_RELEASE_FILE,
+        label="Stop",
+    )
+
+
+async def _wait_for_campaign_restart(
+    cwd: Path,
+    *,
+    control: AgentProcessControl | None,
+) -> None:
+    """Leave a durable active marker until a real app shutdown abandons this stream."""
+
+    if control is None:
+        raise ValueError("Acceptance interrupted campaign fixture requires process control.")
+    active_path = cwd / ACCEPTANCE_CAMPAIGN_INTERRUPT_ACTIVE_FILE
+    _write_text_atomically(active_path, "acceptance campaign awaits an RCP restart\n")
+    deadline = asyncio.get_running_loop().time() + 20
+    while asyncio.get_running_loop().time() < deadline:
+        if control.pause_requested.is_set():
+            # App shutdown has already moved the durable task to ``pausing``. Exiting the
+            # provider thread without a terminal event leaves that row for the next app
+            # instance's ordinary restart sweep to classify as ``interrupted``.
+            raise SystemExit("acceptance campaign provider stream ended with the RCP process")
+        await asyncio.sleep(0.01)
+    raise ValueError("Acceptance interrupted campaign fixture did not observe an RCP restart.")
+
+
+def _clear_campaign_fixture_paths(cwd: Path, *names: str) -> None:
+    for name in names:
+        with suppress(FileNotFoundError):
+            (cwd / name).unlink()
+
+
+async def _wait_for_campaign_fixture_release(
+    cwd: Path,
+    *,
+    active_name: str,
+    release_name: str,
+    label: str,
+) -> None:
+    active_path = cwd / active_name
+    release_path = cwd / release_name
+    _prepare_campaign_fixture_active(cwd, active_name=active_name, label=label)
+    try:
+        deadline = asyncio.get_running_loop().time() + 120
+        while asyncio.get_running_loop().time() < deadline:
+            if release_path.is_file():
+                return
+            await asyncio.sleep(0.01)
+        raise ValueError(
+            f"Acceptance campaign {label} fixture was not released before its deadline."
+        )
+    finally:
+        for path in (active_path, release_path):
+            with suppress(FileNotFoundError):
+                path.unlink()
+
+
+def _prepare_campaign_fixture_active(cwd: Path, *, active_name: str, label: str) -> None:
+    _write_text_atomically(
+        cwd / active_name,
+        f"acceptance campaign {label} turn is active\n",
+    )
+
+
+def _campaign_command_prefix_for_orchestrator(contract: str) -> str | None:
+    return _campaign_command_prefix(
+        contract,
+        "- Command prefix for this turn: `",
+    ) or _campaign_command_prefix(contract, "- Command prefix: `")
+
+
+def _campaign_command_prefix(contract: str, prefix: str) -> str | None:
+    lines = [line for line in contract.splitlines() if line.startswith(prefix)]
+    if not lines:
+        return None
+    if len(lines) != 1 or not lines[0].endswith("`"):
+        raise ValueError("Acceptance campaign contract has a malformed command prefix.")
+    value = lines[0][len(prefix) : -1]
+    if not value or "`" in value:
+        raise ValueError("Acceptance campaign contract has a malformed command prefix.")
+    return value
+
+
+async def _run_deduplicated_campaign_command(
+    command_prefix: str,
+    *arguments: str,
+) -> dict[str, object]:
+    first = await _run_campaign_client(command_prefix, *arguments)
+    second = await _run_campaign_client(command_prefix, *arguments)
+    first_outcome = _command_outcome(first)
+    verb = arguments[0] if arguments else ""
+    if _command_effect_id(first, verb) != _command_effect_id(second, verb):
+        raise ValueError("Acceptance campaign command key did not return its durable result.")
+    return first_outcome
+
+
+def _command_outcome(response: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in response.items() if key != "request_id"}
+
+
+def _campaign_outcome_identity(outcome: dict[str, object], key: str) -> object:
+    result = outcome.get("result")
+    if not isinstance(result, dict) or result.get(key) is None:
+        raise ValueError("Acceptance campaign command outcome has no durable effect identity.")
+    return result[key]
+
+
+def _command_effect_id(response: dict[str, object], verb: str) -> object:
+    if response.get("status") != "ok":
+        raise ValueError("Acceptance campaign staged command did not return an ok outcome.")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("Acceptance campaign staged command has no result object.")
+    key = {"spawn": "worker_id", "message": "message_id", "finish": "campaign_id"}.get(verb)
+    if key is None or result.get(key) is None:
+        raise ValueError("Acceptance campaign staged command has no durable effect identity.")
+    return result[key]
+
+
+async def _run_campaign_client(
+    command_prefix: str,
+    *arguments: str,
+    allow_invalid: bool = False,
+) -> dict[str, object]:
+    try:
+        argv = [*shlex.split(command_prefix), *arguments]
+    except ValueError as exc:
+        raise ValueError(f"Acceptance campaign command prefix is invalid: {exc}") from exc
+    if not argv:
+        raise ValueError("Acceptance campaign command prefix is empty.")
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    output = stdout.decode("utf-8", errors="replace")
+    diagnostic = stderr.decode("utf-8", errors="replace")
+    if process.returncode != 0 and not (allow_invalid and process.returncode == 1):
+        raise ValueError(
+            "Acceptance campaign staged command failed "
+            f"with exit {process.returncode}: {(diagnostic or output).strip()}"
+        )
+    try:
+        result = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Acceptance campaign staged command returned invalid JSON.") from exc
+    if not isinstance(result, dict):
+        raise ValueError("Acceptance campaign staged command returned a non-object result.")
+    return result
+
+
+def _campaign_seat_node(contract: str) -> str:
+    graph_path = _campaign_contract_path(contract, "- graph: `")
+    try:
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Acceptance campaign graph is unreadable: {exc}") from exc
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    if not isinstance(nodes, dict):
+        raise ValueError("Acceptance campaign graph has no node map.")
+    candidates = sorted(
+        node_id
+        for node_id, node in nodes.items()
+        if isinstance(node_id, str)
+        and isinstance(node, dict)
+        and node.get("type") in {"experiment", "blocker"}
+    )
+    if not candidates:
+        raise ValueError("Acceptance campaign fixture needs an existing Experiment or Blocker.")
+    return candidates[0]
+
+
+def _campaign_optional_path(contract: str, prefix: str) -> Path | None:
+    lines = [line for line in contract.splitlines() if line.startswith(prefix)]
+    if not lines:
+        return None
+    if len(lines) != 1 or not lines[0].endswith("`"):
+        raise ValueError("Acceptance campaign contract has a malformed path.")
+    value = lines[0][len(prefix) : -1]
+    if not value or "`" in value:
+        raise ValueError("Acceptance campaign contract has a malformed path.")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("Acceptance campaign contract path must be absolute.")
+    return path
+
+
+def _campaign_contract_path(contract: str, prefix: str) -> Path:
+    path = _campaign_optional_path(contract, prefix)
+    if path is None:
+        raise ValueError("Acceptance campaign contract is missing a required path.")
+    return path
+
+
+def _campaign_report_html(contract: str) -> str:
+    ending = _campaign_report_ending(contract)
+    outcome = {
+        "completed": (
+            "The orchestrator seated one bounded worker, received its result, and concluded "
+            "the campaign."
+        ),
+        "exhausted": (
+            "The sole research allocation settled normally, then the shared invocation pot "
+            "reached its reserved-report fence."
+        ),
+        "stopped": (
+            "Human Stop was persisted while the orchestrator turn was active; that already-"
+            "authorized turn then settled normally before this report."
+        ),
+        "failed": (
+            "The orchestrator reached an explicitly typed unrecoverable structural failure; "
+            "this is a partial report produced only after its admitted worker settled."
+        ),
+    }.get(ending, f"The campaign ended as {ending} after its admitted work settled.")
+    retained_mail = ""
+    if ending == "failed":
+        retained_mail = _campaign_report_retained_mail(contract)
+    return f"""<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Acceptance campaign report</title>
+<article>
+  <h1>Acceptance campaign conclusion</h1>
+  <p>{outcome}</p>
+{retained_mail}
+  <p>The first report attempt was deliberately incomplete; this corrected document reused the
+  exact orchestrator session and stage without repeating operational work.</p>
+  <p>Human review remains authoritative for any protected belief change.</p>
+</article>
+</html>
+"""
+
+
+def _campaign_report_retained_mail(contract: str) -> str:
+    history_path = _campaign_contract_path(
+        contract,
+        "- bounded campaign task, command, mail, and prior-report history: `",
+    )
+    try:
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Acceptance campaign history is unreadable: {exc}") from exc
+    messages = history.get("messages") if isinstance(history, dict) else None
+    bodies = (
+        [
+            message.get("body")
+            for message in messages
+            if isinstance(message, dict) and isinstance(message.get("body"), str)
+        ]
+        if isinstance(messages, list)
+        else []
+    )
+    if not bodies:
+        return "  <p>No retained campaign mail was present.</p>"
+    rendered = " ".join(html.escape(body) for body in bodies)
+    return f"  <p>Retained campaign mail: {rendered}</p>"
+
+
+def _campaign_report_ending(contract: str) -> str:
+    marker = " campaign ending `"
+    for line in contract.splitlines():
+        if marker in line and line.endswith("`."):
+            ending = line.rsplit(marker, 1)[1][:-2]
+            if ending:
+                return ending
+    return "completed"
+
+
+def _campaign_usage(
+    provider: str,
+    cwd: Path,
+    session_id: str,
+    contract: str,
+) -> ProviderUsage:
+    digest = hashlib.sha256(f"{provider}\0{cwd}\0{session_id}\0{contract}".encode()).hexdigest()
+    return ProviderUsage(
+        provider_profile=f"acceptance.{provider}.campaign.v1",
+        provider_event_type="acceptance.campaign.completed",
+        dedupe_key=digest,
+        processed_input_tokens=256,
+        generated_tokens=32,
+        reported_input_tokens=256,
+        reported_output_tokens=32,
+        reported_total_tokens=288,
+        provider_fields={"acceptance_agent": True, "scenario": "campaign"},
+    )
+
+
+def _result_view_action(contract: str) -> Literal["create", "revise"]:
+    section = _result_view_section(contract)
+    action_lines = [
+        line
+        for line in section.splitlines()
+        if line.startswith((_RESULT_VIEW_CREATE_PREFIX, _RESULT_VIEW_REVISE_PREFIX))
+    ]
+    if len(action_lines) != 1:
+        raise ValueError("Acceptance result-view contract must name exactly one authoring action.")
+    return "create" if action_lines[0].startswith(_RESULT_VIEW_CREATE_PREFIX) else "revise"
+
+
+def _result_view_section(contract: str) -> str:
+    sections = [
+        section
+        for section in contract.split("\n\n")
+        if section.startswith(f"{_RESULT_VIEW_AUTHORING_MARKER}\n")
+    ]
+    if len(sections) != 1:
+        raise ValueError("Acceptance result-view contract must contain one authoring section.")
+    return sections[0]
+
+
+def _author_result_view(
+    cwd: Path,
+    contract: str,
+    state: dict[str, object],
+    session_id: str,
+    action: Literal["create", "revise"],
+) -> str:
+    if action == "create":
+        slot = _result_view_slot(cwd, contract)
+        try:
+            entries = list(slot.iterdir())
+        except OSError as exc:
+            raise ValueError(f"Acceptance result-view slot is unreadable: {exc}") from exc
+        if entries:
+            raise ValueError("Acceptance result-view create slot must be empty.")
+        target = slot / _RESULT_VIEW_NAME
+        _write_text_atomically(target, _result_view_html(revision=1))
+        updated_state = dict(state)
+        updated_state[_RESULT_VIEW_STATE_KEY] = {
+            "cwd": str(cwd),
+            "path": str(target),
+            "revision": 1,
+            "session_id": session_id,
+        }
+        _write_state(cwd, updated_state)
+        return "Created the deterministic acceptance loss-curves result view."
+
+    target = _existing_result_view_path(cwd, contract)
+    receipt = state.get(_RESULT_VIEW_STATE_KEY)
+    if not isinstance(receipt, dict):
+        raise ValueError("Acceptance result-view revision has no persisted create receipt.")
+    if receipt.get("cwd") != str(cwd):
+        raise ValueError("Acceptance result-view revision changed the conversation cwd.")
+    if receipt.get("session_id") != session_id:
+        raise ValueError("Acceptance result-view revision changed the native session.")
+    if receipt.get("path") != str(target):
+        raise ValueError("Acceptance result-view revision changed the stable file path.")
+    if receipt.get("revision") != 1:
+        raise ValueError("Acceptance result-view fixture supports exactly one revision.")
+    try:
+        entries = list(target.parent.iterdir())
+    except OSError as exc:
+        raise ValueError(f"Acceptance result-view slot is unreadable: {exc}") from exc
+    if len(entries) != 1 or entries[0].resolve() != target:
+        raise ValueError("Acceptance result-view revision requires exactly the created view file.")
+
+    _write_text_atomically(target, _result_view_html(revision=2))
+    updated_state = dict(state)
+    updated_state[_RESULT_VIEW_STATE_KEY] = {
+        "cwd": str(cwd),
+        "path": str(target),
+        "revision": 2,
+        "session_id": session_id,
+    }
+    _write_state(cwd, updated_state)
+    return "Revised the existing acceptance loss-curves result view in place."
+
+
+def _result_view_slot(cwd: Path, contract: str) -> Path:
+    raw_path = _result_view_contract_path(
+        contract,
+        prefix=_RESULT_VIEW_CREATE_PREFIX,
+        suffix=_RESULT_VIEW_CREATE_SUFFIX,
+    )
+    slot = _resolve_existing_result_view_path(raw_path, label="create slot")
+    relative = _result_view_relative_path(cwd, slot)
+    if len(relative.parts) != 2 or relative.parts[0] != "views" or not slot.is_dir():
+        raise ValueError("Acceptance result-view create slot is not the stable stage slot.")
+    return slot
+
+
+def _existing_result_view_path(cwd: Path, contract: str) -> Path:
+    raw_path = _result_view_contract_path(
+        contract,
+        prefix=_RESULT_VIEW_REVISE_PREFIX,
+        suffix=_RESULT_VIEW_REVISE_SUFFIX,
+    )
+    if raw_path.is_symlink():
+        raise ValueError("Acceptance result-view revision target cannot be a symlink.")
+    target = _resolve_existing_result_view_path(raw_path, label="revision target")
+    relative = _result_view_relative_path(cwd, target)
+    if (
+        len(relative.parts) != 3
+        or relative.parts[0] != "views"
+        or target.name != _RESULT_VIEW_NAME
+        or not target.is_file()
+    ):
+        raise ValueError("Acceptance result-view revision target is not the stable HTML file.")
+    return target
+
+
+def _result_view_contract_path(contract: str, *, prefix: str, suffix: str) -> Path:
+    matches = [
+        line[len(prefix) : -len(suffix)]
+        for line in _result_view_section(contract).splitlines()
+        if line.startswith(prefix) and line.endswith(suffix)
+    ]
+    if len(matches) != 1 or not matches[0] or "`" in matches[0]:
+        raise ValueError("Acceptance result-view contract has no exact stable path.")
+    path = Path(matches[0])
+    if not path.is_absolute():
+        raise ValueError("Acceptance result-view contract path must be absolute.")
+    return path
+
+
+def _resolve_existing_result_view_path(path: Path, *, label: str) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"Acceptance result-view {label} is unavailable: {exc}") from exc
+
+
+def _result_view_relative_path(cwd: Path, path: Path) -> Path:
+    try:
+        return path.relative_to(cwd)
+    except ValueError as exc:
+        raise ValueError("Acceptance result-view path left the conversation cwd.") from exc
 
 
 def _action(
@@ -508,6 +1407,7 @@ def _completion_patch(
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "status_change",
                                 "nodes": [
                                     {
                                         "id": tested_hypothesis_id,
@@ -531,6 +1431,160 @@ def _completion_patch(
             "Proposed marking the tested fixture Hypothesis as supported.",
         ],
     }
+
+
+def _result_view_html(*, revision: Literal[1, 2]) -> str:
+    revision_label = (
+        "Revision 1 — initial curves" if revision == 1 else "Revision 2 — late spike annotated"
+    )
+    annotation = (
+        ""
+        if revision == 1
+        else """
+          <circle cx="653" cy="91" r="10" class="annotation-dot" />
+          <text x="518" y="72" class="annotation-label">reviewed late spike</text>"""
+    )
+    template = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acceptance loss curves by seed</title>
+  <style>
+    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: #f4f1ea; color: #18251f; }
+    main { max-width: 860px; margin: 0 auto; padding: 28px; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+    h1 { margin: 0; font-family: Georgia, serif; font-size: 30px; font-weight: 600; }
+    .revision { color: #315f4c; font-size: 14px; font-weight: 700; }
+    .plot-card { margin-top: 18px; padding: 16px; background: #fffdf8; border: 1px solid #d4cec1;
+      border-radius: 14px; box-shadow: 0 12px 30px rgb(40 48 43 / 9%); }
+    svg { display: block; width: 100%; height: auto; user-select: none; }
+    .grid { stroke: #e8e2d7; stroke-width: 1; }
+    .axis { stroke: #69756f; stroke-width: 1.5; }
+    .axis-label { fill: #5c6862; font-size: 13px; }
+    .seed-one { fill: none; stroke: #26745b; stroke-width: 4; }
+    .seed-two { fill: none; stroke: #d0693d; stroke-width: 4; }
+    .selection { fill: rgb(63 113 181 / 15%); stroke: #315f9a; stroke-width: 2;
+      stroke-dasharray: 7 5; }
+    .annotation-dot { fill: #fffdf8; stroke: #a53d2d; stroke-width: 4; }
+    .annotation-label { fill: #873326; font-size: 14px; font-weight: 700; }
+    #gesture-surface { cursor: crosshair; touch-action: none; }
+    .legend { display: flex; gap: 20px; margin: 12px 0 0; font-size: 14px; }
+    .legend span::before { display: inline-block; width: 22px; height: 4px; margin: 0 7px 3px 0;
+      border-radius: 2px; content: ""; }
+    .legend .one::before { background: #26745b; }
+    .legend .two::before { background: #d0693d; }
+    .instruction { margin: 16px 0 0; color: #45534c; font-size: 15px; }
+    #selection-summary { min-height: 24px; margin: 8px 0 0; color: #315f9a; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Loss curves by seed</h1>
+        <div class="instruction">Drag a box over the plot to point at a region.</div>
+      </div>
+      <div class="revision" data-revision="__REVISION__">__REVISION_LABEL__</div>
+    </header>
+    <section class="plot-card" aria-label="Overlaid loss curves">
+      <svg id="curve-plot" viewBox="0 0 760 380" role="img"
+           aria-label="Training loss by step for seed two and seed three">
+        <line x1="64" y1="42" x2="64" y2="322" class="axis" />
+        <line x1="64" y1="322" x2="724" y2="322" class="axis" />
+        <line x1="64" y1="112" x2="724" y2="112" class="grid" />
+        <line x1="64" y1="182" x2="724" y2="182" class="grid" />
+        <line x1="64" y1="252" x2="724" y2="252" class="grid" />
+        <text x="64" y="348" class="axis-label">0</text>
+        <text x="361" y="348" class="axis-label">5k steps</text>
+        <text x="686" y="348" class="axis-label">10k</text>
+        <text x="15" y="188" class="axis-label" transform="rotate(-90 15 188)">loss</text>
+        <polyline class="seed-one"
+          points="64,72 130,126 196,166 262,205 328,236 394,258 460,276 526,288 592,297 658,303 724,307" />
+        <polyline class="seed-two"
+          points="64,82 130,133 196,176 262,214 328,244 394,265 460,282 526,294 592,302 625,300 653,91 682,299 724,306" />
+        __REVISION_ANNOTATION__
+        <rect id="selection" class="selection" x="0" y="0" width="0" height="0" hidden />
+        <rect id="gesture-surface" x="64" y="42" width="660" height="280" fill="transparent" />
+      </svg>
+      <div class="legend"><span class="one">seed 2</span><span class="two">seed 3</span></div>
+      <p id="selection-summary" aria-live="polite"></p>
+    </section>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const plot = document.getElementById('curve-plot');
+      const surface = document.getElementById('gesture-surface');
+      const selection = document.getElementById('selection');
+      const summary = document.getElementById('selection-summary');
+      let start = null;
+      const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+      const pointFor = (event) => {
+        const bounds = plot.getBoundingClientRect();
+        return {
+          x: clamp((event.clientX - bounds.left) * 760 / bounds.width, 64, 724),
+          y: clamp((event.clientY - bounds.top) * 380 / bounds.height, 42, 322)
+        };
+      };
+      const drawSelection = (first, last) => {
+        selection.hidden = false;
+        selection.setAttribute('x', String(Math.min(first.x, last.x)));
+        selection.setAttribute('y', String(Math.min(first.y, last.y)));
+        selection.setAttribute('width', String(Math.abs(first.x - last.x)));
+        selection.setAttribute('height', String(Math.abs(first.y - last.y)));
+      };
+      surface.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        start = pointFor(event);
+        drawSelection(start, start);
+      });
+      surface.addEventListener('pointermove', (event) => {
+        if (start === null) return;
+        drawSelection(start, pointFor(event));
+      });
+      surface.addEventListener('pointerup', (event) => {
+        if (start === null) return;
+        const end = pointFor(event);
+        drawSelection(start, end);
+        const width = Math.abs(start.x - end.x);
+        const height = Math.abs(start.y - end.y);
+        start = null;
+        if (width < 12 || height < 12) {
+          selection.hidden = true;
+          return;
+        }
+        summary.textContent = 'Boxed late spike across steps 8,000–9,000 for seed 3.';
+        window.parent.postMessage({type:'rcp-result-view-gesture',version:1,gesture:'box',description:'late spike across steps 8,000–9,000 for seed 3'}, '*');
+      });
+      surface.addEventListener('pointercancel', () => {
+        start = null;
+        selection.hidden = true;
+      });
+    })();
+  </script>
+</body>
+</html>
+"""
+    return (
+        template.replace("__REVISION__", str(revision))
+        .replace("__REVISION_LABEL__", revision_label)
+        .replace("__REVISION_ANNOTATION__", annotation)
+    )
+
+
+def _write_text_atomically(path: Path, value: str) -> None:
+    temporary = path.with_name(f".{path.name}.acceptance.tmp")
+    created = False
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            created = True
+            handle.write(value)
+        temporary.replace(path)
+    finally:
+        if created and temporary.exists():
+            temporary.unlink()
 
 
 def _write_state(cwd: Path, value: dict[str, object]) -> None:

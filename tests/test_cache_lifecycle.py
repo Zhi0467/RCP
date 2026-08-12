@@ -7,6 +7,9 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from rcp.history import HistoryManager
+from rcp.paper import PaperService
+from rcp.service import ProjectService
 from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -14,8 +17,12 @@ from rcp.sources import (
     ConversationIndexer,
     ConversationSession,
     RebuildableCache,
+    discover_project_cache_roots,
+    legacy_shared_cache_roots,
+    project_cache_roots,
 )
 from rcp.sources.indexer import _REMOTE_SLICE_SCRIPT
+from rcp.storage import AppStore
 
 
 class FakeClock:
@@ -27,6 +34,71 @@ class FakeClock:
 
     def advance(self, **kwargs: float) -> None:
         self.now += timedelta(**kwargs)
+
+
+def test_project_cache_roots_are_stable_isolated_and_safely_discoverable(tmp_path) -> None:
+    first = project_cache_roots(tmp_path, "project-a")
+    second = project_cache_roots(tmp_path, "project-b")
+
+    assert first == project_cache_roots(tmp_path, "project-a")
+    assert first != second
+    assert first[0].name == "source-cache"
+    assert first[1].name == "session-slices"
+    assert len(first[0].parent.name) == 64
+
+    first[0].mkdir(parents=True)
+    second[1].mkdir(parents=True)
+    unsafe = tmp_path / "project-caches" / "not-a-project-cache"
+    unsafe.mkdir()
+
+    assert set(discover_project_cache_roots(tmp_path)) == {first, second}
+    assert legacy_shared_cache_roots(tmp_path) == (
+        tmp_path / "source-cache",
+        tmp_path / "session-slices",
+    )
+
+
+def test_clear_does_not_follow_a_symlinked_cache_root(tmp_path) -> None:
+    outside = tmp_path / "original-provider-data"
+    outside.mkdir()
+    original = outside / "session.jsonl"
+    original.write_text("original", encoding="utf-8")
+    linked_root = tmp_path / "source-cache"
+    linked_root.symlink_to(outside, target_is_directory=True)
+
+    metrics = RebuildableCache(
+        linked_root,
+        REMOTE_SOURCE_CACHE_LIMITS,
+        layout="files",
+    ).clear()
+
+    assert metrics.count == 0
+    assert original.read_text(encoding="utf-8") == "original"
+
+
+def test_direct_service_without_canonical_project_id_never_writes_legacy_shared_cache(
+    manifest, tmp_path
+) -> None:
+    data_dir = tmp_path / "data"
+    history = HistoryManager(manifest)
+    service = ProjectService(
+        manifest,
+        history,
+        PaperService(
+            manifest,
+            AppStore(tmp_path / "rcp.sqlite3"),
+            history.workspace,
+            project_id="direct-test",
+        ),
+        data_dir=data_dir,
+    )
+
+    assert service.indexer.cache_root is None
+    assert service.indexer.session_artifact_root() == manifest.research_dir.parent / (
+        ".rcp-session-slices"
+    )
+    assert not (data_dir / "source-cache").exists()
+    assert not (data_dir / "session-slices").exists()
 
 
 def test_process_wide_pin_protects_an_active_entry_from_another_cache_instance(

@@ -172,12 +172,14 @@ def test_agent_output_schema_omits_nested_rcp_bookkeeping() -> None:
     assert "AgentAmbiguity" not in definitions
     assert "CreateAmbiguitiesOperation" not in definitions
     assert "ResolveAmbiguitiesOperation" not in definitions
-    assert "updated_rev" not in definitions["AgentGlossaryTerm"]["properties"]
+    assert "AgentGlossaryTerm" not in definitions
+    assert "UpsertGlossaryOperation" not in definitions
     for definition in ("AgentSourceRef", "AgentExperimentAttempt", "AgentGatedCard"):
         assert definitions[definition]["additionalProperties"] is False
     assert {
         "base_rev",
         "related_node_ids",
+        "related_edge_ids",
         "related_config_keys",
         "status",
         "raised_rev",
@@ -212,6 +214,17 @@ def test_agent_schema_has_no_ambiguity_operations(operation: dict[str, object]) 
     rendered = json.dumps(agent_output_schema())
     assert '"create_ambiguities"' not in rendered
     assert '"resolve_ambiguities"' not in rendered
+
+
+def test_agent_schema_does_not_advertise_unpermitted_glossary_writes() -> None:
+    operation = {
+        "op": "upsert_glossary",
+        "terms": [{"term": "RCP", "plain_definition": "Research Control Panel"}],
+    }
+
+    with pytest.raises(ValidationError):
+        AgentPatch.model_validate({"summary": "Tried a glossary write.", "ops": [operation]})
+    assert '"upsert_glossary"' not in json.dumps(agent_output_schema())
 
 
 def test_agent_schema_allows_a_new_ready_decision() -> None:
@@ -258,6 +271,7 @@ def test_agent_schema_rejects_a_decision_proposal() -> None:
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "status_change",
                                 "nodes": [
                                     {
                                         "id": "dec/evaluation-budget",
@@ -302,6 +316,7 @@ def test_agent_schema_requires_an_evidence_cause_on_a_hypothesis_proposal() -> N
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "status_change",
                                 "nodes": [
                                     {
                                         "id": "hyp/claim",
@@ -317,6 +332,130 @@ def test_agent_schema_requires_an_evidence_cause_on_a_hypothesis_proposal() -> N
     }
 
     with pytest.raises(ValidationError, match="cause"):
+        AgentPatch.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [{"id": "rq/claim", "changes": {"question": "A clearer question?"}}],
+        },
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [{"id": "rq/claim", "changes": {"status": "answered"}}],
+        },
+        {
+            "op": "remove_nodes",
+            "intent": "removal",
+            "node_ids": ["hyp/claim"],
+        },
+        {
+            "op": "supersede_nodes",
+            "intent": "supersede",
+            "nodes": [{"id": "hyp/claim", "superseded_by": "hyp/replacement"}],
+        },
+        {
+            "op": "merge_nodes",
+            "intent": "merge",
+            "merges": [{"duplicate": "hyp/claim", "canonical": "hyp/replacement"}],
+        },
+        {
+            "op": "create_edges",
+            "intent": "protected_relation_change",
+            "edges": [
+                {
+                    "source": "rq/claim",
+                    "target": "hyp/claim",
+                    "relation": "has_hypothesis",
+                }
+            ],
+        },
+        {
+            "op": "update_nodes",
+            "intent": "status_change",
+            "nodes": [
+                {
+                    "id": "hyp/claim",
+                    "changes": {"status": "active"},
+                    "cause": {"kind": "evidence_edge", "ref_id": "edge/support"},
+                }
+            ],
+        },
+    ],
+)
+def test_agent_schema_accepts_each_declared_proposal_intent(operation) -> None:
+    patch = AgentPatch.model_validate(
+        {
+            "summary": "Raised one protected change for human judgment.",
+            "ops": [
+                {
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": "prop/review-belief",
+                            "title": "Review the belief change",
+                            "card": {"decision_needed": "Approve or reject this change."},
+                            "ops": [operation],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    prepared = prepare_agent_patch(patch, kind="work", run_truth_scope=["repo-a"])
+
+    assert prepared.ops[0]["proposals"][0]["ops"][0]["intent"] == operation["intent"]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "update_nodes",
+            "nodes": [{"id": "rq/claim", "changes": {"question": "Missing intent?"}}],
+        },
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [
+                {
+                    "id": "rq/claim",
+                    "changes": {"question": "No machine cause is needed."},
+                    "cause": {"kind": "evidence_edge", "ref_id": "edge/support"},
+                }
+            ],
+        },
+        {
+            "op": "remove_nodes",
+            "intent": "removal",
+            "node_ids": ["hyp/one", "hyp/two"],
+        },
+    ],
+)
+def test_agent_schema_rejects_undeclared_or_bundled_proposal_intent(operation) -> None:
+    raw = {
+        "summary": "Tried an invalid protected change shape.",
+        "ops": [
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": "prop/invalid-belief-change",
+                        "title": "Invalid belief change",
+                        "card": {"decision_needed": "Do not admit this shape."},
+                        "ops": [operation],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError):
         AgentPatch.model_validate(raw)
 
 
@@ -721,6 +860,7 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
                             "ops": [
                                 {
                                     "op": "update_nodes",
+                                    "intent": "status_change",
                                     "nodes": [
                                         {
                                             "id": "hyp/replanning-restores-plasticity",
@@ -758,6 +898,7 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
     assert patch.change_summary == ["Raised a belief transition for review."]
     assert proposal["base_rev"] == 0
     assert proposal["related_node_ids"] == []
+    assert proposal["related_edge_ids"] == []
     assert proposal["related_config_keys"] == []
     assert proposal["status"] == "pending"
     assert proposal["created_by"] == "agent"

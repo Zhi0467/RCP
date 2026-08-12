@@ -18,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   Settings2,
+  Telescope,
   X,
 } from "lucide-react";
 import {
@@ -50,10 +51,18 @@ import {
 import {
   api,
   ApiError,
+  keepResultView,
+  loadCampaignMessages,
+  loadCampaigns as fetchCampaigns,
   loadProjectReadiness,
+  loadResultViews,
   pinApiInstance,
+  reauthorizeCampaign,
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
+  sendCampaignMessage,
+  startCampaign,
+  stopCampaign,
 } from "./api";
 import {
   loadChatSummaryPage,
@@ -90,9 +99,12 @@ import {
   projectHashAfterViewChange,
 } from "./experimentBoard";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
+import { campaignReportPreviewUrl, isLiveCampaign, openCampaignReportPreview } from "./campaigns";
 import type { DagViewport } from "./hooks/dagZoom";
+import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
+import { CampaignRuns } from "./components/CampaignRuns";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
@@ -110,6 +122,7 @@ import {
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
+  reconcileHumanDraft,
   retainBehindDraftAfterSync,
   serializeHumanDraft,
   stageDecisionChoice,
@@ -123,6 +136,7 @@ import {
   unstageNodeRemoval,
   toHumanSyncRequest,
   type HumanDraft,
+  type HumanSyncRequest,
 } from "./humanDraft";
 import type {
   AgentRunConfig,
@@ -131,6 +145,9 @@ import type {
   AgentTaskRequest,
   AgentUsageSnapshot,
   AppView,
+  Campaign,
+  CampaignMessage,
+  CampaignReportSummary,
   ChatSummary,
   ChatTranscript,
   ExperimentControlState,
@@ -142,12 +159,13 @@ import type {
   PaperSnapshot,
   ProjectCard,
   ProjectSnapshot,
+  ResultViewDescriptor,
   RevisionSummary,
   TrustView,
   ValidationMessage,
   WatcherRecord,
 } from "./types";
-import { DISPLAY_NAME_MAX_LENGTH } from "./types";
+import { decodeGraphState, decodeProjectSnapshot, DISPLAY_NAME_MAX_LENGTH } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
@@ -176,6 +194,7 @@ const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
 const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
 export const OPEN_PROJECT_HEARTBEAT_INTERVAL_MS = 3_000;
 export const ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS = 1_000;
+export const LIVE_CAMPAIGN_POLL_INTERVAL_MS = 1_500;
 
 export function shouldPollProviderSkillReadiness(
   inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
@@ -351,6 +370,81 @@ export async function loadExperimentWatcherPoll(
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 export const PROJECT_TAB_CACHE_LIMIT = 8;
+const RESULT_VIEW_TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
+
+export function resultViewSelectionKey(
+  projectId: string | null,
+  experimentId: string | null,
+  chatId: string | null,
+): string | null {
+  return projectId && experimentId && chatId
+    ? JSON.stringify([projectId, experimentId, chatId])
+    : null;
+}
+
+export function resultViewSelectionIsCurrent(
+  expectedKey: string | null,
+  expectedGeneration: number,
+  currentKey: string | null,
+  currentGeneration: number,
+): boolean {
+  return (
+    expectedKey !== null && expectedKey === currentKey && expectedGeneration === currentGeneration
+  );
+}
+
+export function resultViewLoadIsCurrent(
+  expectedKey: string | null,
+  expectedSelectionGeneration: number,
+  expectedLoadGeneration: number,
+  currentKey: string | null,
+  currentSelectionGeneration: number,
+  currentLoadGeneration: number,
+): boolean {
+  return (
+    resultViewSelectionIsCurrent(
+      expectedKey,
+      expectedSelectionGeneration,
+      currentKey,
+      currentSelectionGeneration,
+    ) && expectedLoadGeneration === currentLoadGeneration
+  );
+}
+
+export function visibleChatTranscriptIds(
+  view: AppView,
+  selectedChatId: string | null,
+  floatingChatId: string | null,
+  experimentChatId: string | null,
+): string[] {
+  return [
+    ...new Set([
+      ...(view === "chats" && selectedChatId ? [selectedChatId] : []),
+      ...(view === "execution" && experimentChatId ? [experimentChatId] : []),
+      ...(floatingChatId ? [floatingChatId] : []),
+    ]),
+  ];
+}
+
+export function visibleUnreadChatId(
+  view: AppView,
+  selectedChatId: string | null,
+  experimentChatId: string | null,
+): string | null {
+  if (view === "chats") return selectedChatId;
+  if (view === "execution") return experimentChatId;
+  return null;
+}
+
+export function shouldLoadVisibleChatTranscript(
+  chatId: string,
+  summaries: readonly Pick<ChatSummary, "chat_id">[],
+  selectedExperimentChatId: string | null,
+): boolean {
+  return (
+    chatId === selectedExperimentChatId || summaries.some((summary) => summary.chat_id === chatId)
+  );
+}
 
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
 
@@ -378,6 +472,7 @@ interface CachedProjectTabState {
   dagRelationFocusId: string | null;
   retryTask: AgentTask | null;
   humanDraft: HumanDraft | null;
+  draftReconciliationDiscardedProposalIds?: string[];
   tasks: AgentTask[];
   latestRevisionSummary: RevisionSummary | null;
   historyRevisionSummaries: RevisionSummary[];
@@ -445,17 +540,56 @@ export function reconcileInactiveProjectTabState(
   state: CachedProjectTabState,
   snapshot: ProjectSnapshot,
 ): CachedProjectTabState {
+  const decodedSnapshot = decodeProjectSnapshot(snapshot);
   if (
-    !cachedSnapshotCanReplace(state.project.id, state.project.graph.revision, snapshot) ||
-    snapshot.id !== state.project.id
+    !cachedSnapshotCanReplace(state.project.id, state.project.graph.revision, decodedSnapshot) ||
+    decodedSnapshot.id !== state.project.id
   )
     return state;
-  const rebased = state.humanDraft ? normalizeHumanDraft(state.humanDraft, snapshot.graph) : null;
+  if (decodedSnapshot.snapshot_freshness !== "fresh") return state;
+  const reconciliation = state.humanDraft
+    ? reconcileHumanDraft(state.humanDraft, decodedSnapshot.graph)
+    : null;
+  const rebased = reconciliation?.draft ?? null;
+  const retainedDraft = rebased && humanDraftChangeCount(rebased) > 0 ? rebased : null;
+  const presented = applyHumanDraft(decodedSnapshot.graph, retainedDraft);
   return {
     ...state,
-    project: snapshot,
-    humanDraft: rebased && humanDraftChangeCount(rebased) > 0 ? rebased : null,
+    project: decodedSnapshot,
+    selectedNodeId:
+      state.selectedNodeId && presented.nodes[state.selectedNodeId] ? state.selectedNodeId : null,
+    companionNodeId:
+      state.companionNodeId && presented.nodes[state.companionNodeId]
+        ? state.companionNodeId
+        : null,
+    floatingChat:
+      state.floatingChat && presented.nodes[state.floatingChat.nodeId] ? state.floatingChat : null,
+    humanDraft: retainedDraft,
+    draftReconciliationDiscardedProposalIds: [
+      ...new Set([
+        ...(state.draftReconciliationDiscardedProposalIds ?? []),
+        ...(reconciliation?.discardedProposalIds ?? []),
+      ]),
+    ],
   };
+}
+
+export function proposalChoicesClearedNotice(proposalIds: string[]): string {
+  return `Externally resolved proposal choices were cleared: ${proposalIds.join(", ")}.`;
+}
+
+export function humanSyncSuccessNotice(
+  revision: number,
+  submittedProposals: HumanSyncRequest["proposals"],
+  nextGraph: GraphState,
+): string {
+  const withdrawnProposalIds = submittedProposals
+    .filter((judgment) => nextGraph.proposals[judgment.proposal_id]?.status === "withdrawn")
+    .map((judgment) => judgment.proposal_id)
+    .sort();
+  return withdrawnProposalIds.length > 0
+    ? `Synced revision ${revision}. Stale proposals were withdrawn and their proposed changes were not applied: ${withdrawnProposalIds.join(", ")}.`
+    : `Synced revision ${revision}.`;
 }
 
 export function persistProjectHumanDraft(
@@ -478,6 +612,39 @@ interface ProjectCachePollingClock {
 interface ProjectCachePollingVisibility {
   isHidden(): boolean;
   listen(callback: () => void): () => void;
+}
+
+interface LiveCampaignPollingClock {
+  setTimeout(callback: () => void, delay: number): number;
+  clearTimeout(timeoutId: number): void;
+}
+
+export function startLiveCampaignPolling(
+  clock: LiveCampaignPollingClock,
+  refresh: () => Promise<void>,
+  onError: (error: unknown) => void,
+  onSuccess: () => void,
+): () => void {
+  let stopped = false;
+  let timeoutId = 0;
+  const schedule = () => {
+    timeoutId = clock.setTimeout(() => void poll(), LIVE_CAMPAIGN_POLL_INTERVAL_MS);
+  };
+  const poll = async () => {
+    try {
+      await refresh();
+      if (!stopped) onSuccess();
+    } catch (error) {
+      if (!stopped) onError(error);
+    } finally {
+      if (!stopped) schedule();
+    }
+  };
+  schedule();
+  return () => {
+    stopped = true;
+    clock.clearTimeout(timeoutId);
+  };
 }
 
 export function startProjectCachePolling(
@@ -593,6 +760,30 @@ export default function App() {
   const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
   const [textScale, setTextScale] = useState(readTextScale);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [campaignDialogOpen, setCampaignDialogOpen] = useState(false);
+  const [campaignStartError, setCampaignStartError] = useState<string | null>(null);
+  const [campaignAction, setCampaignAction] = useState<string | null>(null);
+  const [campaignRefreshError, setCampaignRefreshError] = useState<string | null>(null);
+  const [campaignState, setCampaignState] = useState<{
+    projectId: string | null;
+    campaigns: Campaign[];
+    messages: Record<string, CampaignMessage[]>;
+  }>({ projectId: null, campaigns: [], messages: {} });
+  const [resultViewState, setResultViewState] = useState<{
+    projectId: string | null;
+    experimentId: string | null;
+    chatId: string | null;
+    views: ResultViewDescriptor[];
+    authoritative: boolean;
+    error: string | null;
+  }>({
+    projectId: null,
+    experimentId: null,
+    chatId: null,
+    views: [],
+    authoritative: false,
+    error: null,
+  });
   const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
@@ -638,6 +829,11 @@ export default function App() {
   const selectedChatIdRef = useRef<string | null>(null);
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
+  const resultViewLoadGeneration = useRef(0);
+  const resultViewSelectionRef = useRef<{ key: string | null; generation: number }>({
+    key: null,
+    generation: 0,
+  });
   const readinessRequestedProjectIds = useRef(new Set<string>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -654,6 +850,9 @@ export default function App() {
   renderedRevisionRef.current = graph.revision;
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  const campaigns = campaignState.projectId === projectId ? campaignState.campaigns : [];
+  const campaignMessages = campaignState.projectId === projectId ? campaignState.messages : {};
+  const liveCampaign = campaigns.find(isLiveCampaign) ?? null;
   const activeDagViewportRef = projectId
     ? projectViewportRef(dagViewportRefsRef.current, projectId)
     : null;
@@ -760,7 +959,14 @@ export default function App() {
     (id: string, state: CachedProjectTabState, requestedView?: AppView) => {
       const nextGraph = state.project.graph;
       const presented = applyHumanDraft(nextGraph, state.humanDraft);
-      cacheProjectTabState(projectTabStatesRef.current, id, state);
+      const discardedProposalIds = state.draftReconciliationDiscardedProposalIds ?? [];
+      cacheProjectTabState(
+        projectTabStatesRef.current,
+        id,
+        discardedProposalIds.length > 0
+          ? { ...state, draftReconciliationDiscardedProposalIds: [] }
+          : state,
+      );
       renderedRevisionRef.current = nextGraph.revision;
       authoritativeProjectId.current = id;
       setProject(state.project);
@@ -778,8 +984,13 @@ export default function App() {
       setSelectedExperimentRunId(state.selectedExperimentRunId);
       setFocusExperimentRunId(state.focusExperimentRunId);
       setExperimentStopId(null);
+      setWatcherCheckId(null);
       setDockedNodeIds(state.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
-      setFloatingChat(state.floatingChat ? { ...state.floatingChat } : null);
+      setFloatingChat(
+        state.floatingChat && presented.nodes[state.floatingChat.nodeId]
+          ? { ...state.floatingChat }
+          : null,
+      );
       setDraftConversations([...state.draftConversations]);
       selectChat(state.selectedChatId);
       setUnreadChatTaskIds(new Set(state.unreadChatTaskIds));
@@ -817,41 +1028,66 @@ export default function App() {
       setView(requestedView ?? state.viewState.view);
       setProjectReconciliation("authoritative");
       setLoading(false);
+      if (discardedProposalIds.length > 0) {
+        setNotice({ kind: "info", text: proposalChoicesClearedNotice(discardedProposalIds) });
+      }
     },
     [selectChat],
   );
 
   const applyProjectSnapshot = useCallback(
     (nextProject: ProjectSnapshot, preserveReadiness: boolean) => {
-      const nextGraph = nextProject.graph;
+      const decodedProject = decodeProjectSnapshot(nextProject);
+      const nextGraph = decodedProject.graph;
+      const authoritative = decodedProject.snapshot_freshness === "fresh";
       if (
-        !cachedSnapshotCanReplace(activeProjectId.current, renderedRevisionRef.current, nextProject)
+        !cachedSnapshotCanReplace(
+          activeProjectId.current,
+          renderedRevisionRef.current,
+          decodedProject,
+        )
       )
         return;
       renderedRevisionRef.current = nextGraph.revision;
       setProject((current) =>
-        preserveReadiness ? preserveProjectReadiness(nextProject, current) : nextProject,
+        preserveReadiness ? preserveProjectReadiness(decodedProject, current) : decodedProject,
       );
       setGraph(nextGraph);
-      setPaper(nextProject.paper);
+      setPaper(decodedProject.paper);
       setHumanDraft((current) => {
         if (!current) return null;
-        const rebased = normalizeHumanDraft(current, nextGraph);
+        const reconciliation = authoritative
+          ? reconcileHumanDraft(current, nextGraph)
+          : { draft: normalizeHumanDraft(current, nextGraph), discardedProposalIds: [] };
+        const rebased = reconciliation.draft;
         const retained = humanDraftChangeCount(rebased) > 0 ? rebased : null;
         try {
-          persistProjectHumanDraft(localStorage, nextProject.id, retained);
+          persistProjectHumanDraft(localStorage, decodedProject.id, retained);
         } catch {
           // The in-memory draft remains usable if browser storage is unavailable.
         }
+        if (reconciliation.discardedProposalIds.length > 0) {
+          setNotice({
+            kind: "info",
+            text: proposalChoicesClearedNotice(reconciliation.discardedProposalIds),
+          });
+        }
         return retained;
       });
-      setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
-      setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? current) : null));
+      setSelectedNode((current) =>
+        current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
+      );
+      setCompanionNode((current) =>
+        current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
+      );
+      setFloatingChat((current) =>
+        current && (nextGraph.nodes[current.nodeId] || !authoritative) ? current : null,
+      );
       setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
       setRunScope((current) =>
         current.length
-          ? current.filter((item) => nextProject.project_truth_scope.includes(item))
-          : nextProject.default_run_truth_scope,
+          ? current.filter((item) => decodedProject.project_truth_scope.includes(item))
+          : decodedProject.default_run_truth_scope,
       );
     },
     [],
@@ -1032,6 +1268,81 @@ export default function App() {
     authoritativeReloadInFlight.current = { projectId: activeId, request };
     return request;
   }, []);
+
+  const refreshCampaigns = useCallback(async () => {
+    if (!projectId || !apiBase) return;
+    const requestedProjectId = projectId;
+    const nextCampaigns = await fetchCampaigns(apiBase);
+    if (activeProjectId.current !== requestedProjectId) return;
+    setCampaignState((current) => ({
+      projectId: requestedProjectId,
+      campaigns: nextCampaigns,
+      messages: current.projectId === requestedProjectId ? current.messages : {},
+    }));
+  }, [apiBase, projectId]);
+
+  const refreshCampaignMessages = useCallback(
+    async (campaignId: string) => {
+      if (!projectId || !apiBase) return;
+      const requestedProjectId = projectId;
+      const nextMessages = await loadCampaignMessages(apiBase, campaignId);
+      if (activeProjectId.current !== requestedProjectId) return;
+      setCampaignState((current) =>
+        current.projectId === requestedProjectId
+          ? {
+              ...current,
+              messages: { ...current.messages, [campaignId]: nextMessages },
+            }
+          : current,
+      );
+    },
+    [apiBase, projectId],
+  );
+
+  useEffect(() => {
+    if (!projectId || !apiBase) {
+      setCampaignRefreshError(null);
+      setCampaignState({ projectId: null, campaigns: [], messages: {} });
+      return;
+    }
+    const requestedProjectId = projectId;
+    setCampaignRefreshError(null);
+    setCampaignState((current) =>
+      current.projectId === requestedProjectId
+        ? current
+        : { projectId: requestedProjectId, campaigns: [], messages: {} },
+    );
+    void refreshCampaigns()
+      .then(() => {
+        if (activeProjectId.current === requestedProjectId) setCampaignRefreshError(null);
+      })
+      .catch((error) => {
+        if (activeProjectId.current !== requestedProjectId) return;
+        setCampaignRefreshError(
+          `Auto-research could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }, [apiBase, projectId, refreshCampaigns]);
+
+  useEffect(() => {
+    const campaignId = liveCampaign?.campaign_id;
+    if (!campaignId) return;
+    return startLiveCampaignPolling(
+      {
+        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+        clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
+      },
+      async () => {
+        await Promise.all([refreshCampaigns(), refreshCampaignMessages(campaignId)]);
+      },
+      (error) => {
+        setCampaignRefreshError(
+          `Auto-research could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+      () => setCampaignRefreshError(null),
+    );
+  }, [liveCampaign?.campaign_id, refreshCampaignMessages, refreshCampaigns]);
 
   const heartbeatProjectCache = useCallback(
     (requestedProjectId: string): Promise<void> =>
@@ -1476,6 +1787,7 @@ export default function App() {
       setSelectedExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
       setFocusExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
       setExperimentStopId(null);
+      setWatcherCheckId(null);
       setDockedNodeIds([]);
       setFloatingChat(null);
       setDraftConversations([]);
@@ -1791,14 +2103,136 @@ export default function App() {
       ),
     [draftConversations, nodeTitles, project?.name, tasks, visibleChatSummaries],
   );
+  const selectedExperimentChatId =
+    view === "execution" && selectedExperimentRunId
+      ? (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
+      : null;
+  const selectedResultViewKey = resultViewSelectionKey(
+    projectId,
+    selectedExperimentRunId,
+    selectedExperimentChatId,
+  );
+  if (resultViewSelectionRef.current.key !== selectedResultViewKey) {
+    resultViewSelectionRef.current = {
+      key: selectedResultViewKey,
+      generation: resultViewSelectionRef.current.generation + 1,
+    };
+  }
+  const selectedExperimentTerminalVersion = selectedExperimentChatId
+    ? tasks
+        .filter(
+          (task) =>
+            task.request.chat_id === selectedExperimentChatId &&
+            Boolean(task.request.result_view) &&
+            RESULT_VIEW_TERMINAL_STATUSES.has(task.status),
+        )
+        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+        .sort()
+        .join("|")
+    : "";
+  const refreshResultViews = useCallback(async () => {
+    const requestedProjectId = projectId;
+    const experimentId = selectedExperimentRunId;
+    const chatId = selectedExperimentChatId;
+    const selectionKey = resultViewSelectionKey(requestedProjectId, experimentId, chatId);
+    const selectionGeneration = resultViewSelectionRef.current.generation;
+    const loadGeneration = ++resultViewLoadGeneration.current;
+    if (!requestedProjectId || !apiBase || !experimentId || !chatId || !selectionKey) {
+      setResultViewState({
+        projectId: null,
+        experimentId: null,
+        chatId: null,
+        views: [],
+        authoritative: false,
+        error: null,
+      });
+      return;
+    }
+    setResultViewState((current) =>
+      current.projectId === requestedProjectId &&
+      current.experimentId === experimentId &&
+      current.chatId === chatId
+        ? { ...current, error: null }
+        : {
+            projectId: requestedProjectId,
+            experimentId,
+            chatId,
+            views: [],
+            authoritative: false,
+            error: null,
+          },
+    );
+    try {
+      const descriptors = await loadResultViews(apiBase, experimentId, chatId);
+      if (
+        activeProjectId.current !== requestedProjectId ||
+        !resultViewLoadIsCurrent(
+          selectionKey,
+          selectionGeneration,
+          loadGeneration,
+          resultViewSelectionRef.current.key,
+          resultViewSelectionRef.current.generation,
+          resultViewLoadGeneration.current,
+        )
+      )
+        return;
+      setResultViewState((current) =>
+        current.projectId === requestedProjectId &&
+        current.experimentId === experimentId &&
+        current.chatId === chatId
+          ? {
+              ...current,
+              views: descriptors.filter(
+                (descriptor) =>
+                  descriptor.experiment_id === experimentId && descriptor.chat_id === chatId,
+              ),
+              authoritative: true,
+              error: null,
+            }
+          : current,
+      );
+    } catch (error) {
+      if (
+        activeProjectId.current !== requestedProjectId ||
+        !resultViewLoadIsCurrent(
+          selectionKey,
+          selectionGeneration,
+          loadGeneration,
+          resultViewSelectionRef.current.key,
+          resultViewSelectionRef.current.generation,
+          resultViewLoadGeneration.current,
+        )
+      )
+        return;
+      setResultViewState((current) =>
+        current.projectId === requestedProjectId &&
+        current.experimentId === experimentId &&
+        current.chatId === chatId
+          ? {
+              ...current,
+              error: `Result views could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+            }
+          : current,
+      );
+    }
+  }, [apiBase, projectId, selectedExperimentChatId, selectedExperimentRunId]);
+  useEffect(() => {
+    void refreshResultViews();
+  }, [refreshResultViews, selectedExperimentTerminalVersion]);
+  useEffect(() => {
+    if (selectedExperimentChatId && floatingChat?.chatId === selectedExperimentChatId) {
+      setFloatingChat(null);
+    }
+  }, [floatingChat?.chatId, selectedExperimentChatId]);
   const visibleChatIds = useMemo(
-    () => [
-      ...new Set([
-        ...(view === "chats" && selectedChatId ? [selectedChatId] : []),
-        ...(floatingChat ? [floatingChat.chatId] : []),
-      ]),
-    ],
-    [floatingChat, selectedChatId, view],
+    () =>
+      visibleChatTranscriptIds(
+        view,
+        selectedChatId,
+        floatingChat?.chatId ?? null,
+        selectedExperimentChatId,
+      ),
+    [floatingChat?.chatId, selectedChatId, selectedExperimentChatId, view],
   );
   const visibleChatVersions = visibleChatIds
     .map(
@@ -1806,6 +2240,54 @@ export default function App() {
         `${chatId}:${visibleChatSummaries.find((summary) => summary.chat_id === chatId)?.updated_at ?? ""}`,
     )
     .join("|");
+  const selectedResultViews =
+    resultViewState.projectId === projectId &&
+    resultViewState.experimentId === selectedExperimentRunId &&
+    resultViewState.chatId === selectedExperimentChatId &&
+    resultViewState.authoritative
+      ? resultViewState.views
+      : undefined;
+  const selectedResultViewsError =
+    resultViewState.projectId === projectId &&
+    resultViewState.experimentId === selectedExperimentRunId &&
+    resultViewState.chatId === selectedExperimentChatId
+      ? resultViewState.error
+      : null;
+  const keepSelectedResultView = async (viewId: string) => {
+    const requestedProjectId = projectId;
+    const experimentId = selectedExperimentRunId;
+    const chatId = selectedExperimentChatId;
+    const selectionKey = resultViewSelectionKey(requestedProjectId, experimentId, chatId);
+    const selectionGeneration = resultViewSelectionRef.current.generation;
+    const requestedApiBase = apiBase;
+    if (!requestedProjectId || !requestedApiBase || !experimentId || !chatId || !selectionKey) {
+      throw new Error("This run conversation is no longer selected.");
+    }
+    const kept = await keepResultView(requestedApiBase, viewId);
+    if (kept.view_id !== viewId || kept.experiment_id !== experimentId || kept.chat_id !== chatId) {
+      throw new Error("Keep returned a result view outside the selected run conversation.");
+    }
+    if (
+      !resultViewSelectionIsCurrent(
+        selectionKey,
+        selectionGeneration,
+        resultViewSelectionRef.current.key,
+        resultViewSelectionRef.current.generation,
+      )
+    )
+      return;
+    resultViewLoadGeneration.current += 1;
+    setResultViewState((current) =>
+      current.projectId === requestedProjectId &&
+      current.experimentId === experimentId &&
+      current.chatId === chatId
+        ? {
+            ...current,
+            views: current.views.map((view) => (view.view_id === kept.view_id ? kept : view)),
+          }
+        : current,
+    );
+  };
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
   const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
@@ -1853,7 +2335,10 @@ export default function App() {
   }, [loading, project?.id, view]);
 
   useEffect(() => {
-    if (mutationsDisabled) setRunDialogOpen(false);
+    if (mutationsDisabled) {
+      setRunDialogOpen(false);
+      setCampaignDialogOpen(false);
+    }
   }, [mutationsDisabled]);
 
   useEffect(() => {
@@ -1864,7 +2349,7 @@ export default function App() {
 
   useEffect(() => {
     const nextStatuses = new Map(chatTaskStatuses.current);
-    const visibleChatId = view === "chats" ? selectedChatId : null;
+    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
     const newlyTerminal = newlyUnreadChatTaskIds(tasks, chatTaskStatuses.current, visibleChatId);
     const completedChatTasks = newlyUnreadChatTaskIds(tasks, chatTaskStatuses.current, null);
     for (const task of tasks) {
@@ -1885,13 +2370,25 @@ export default function App() {
         });
       }
     }
-  }, [apiBase, projectId, refreshChatSummaries, selectedChatId, tasks, view]);
+  }, [
+    apiBase,
+    projectId,
+    refreshChatSummaries,
+    selectedChatId,
+    selectedExperimentChatId,
+    tasks,
+    view,
+  ]);
 
   useEffect(() => {
     if (!apiBase || visibleChatIds.length === 0) return;
     let cancelled = false;
     visibleChatIds.forEach((chatId) => {
-      if (!visibleChatSummaries.some((summary) => summary.chat_id === chatId)) return;
+      if (
+        !shouldLoadVisibleChatTranscript(chatId, visibleChatSummaries, selectedExperimentChatId)
+      ) {
+        return;
+      }
       void loadChatTranscript(apiBase, chatId, api)
         .then((transcript) => {
           if (cancelled) return;
@@ -1909,19 +2406,19 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase, visibleChatVersions]);
+  }, [apiBase, selectedExperimentChatId, visibleChatVersions]);
 
   useEffect(() => {
-    if (view !== "chats") return;
-    if (!selectedChatId) return;
+    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
+    if (!visibleChatId) return;
     setUnreadChatTaskIds((current) => {
-      const conversation = conversations.find((item) => item.chatId === selectedChatId);
-      if (!conversation) return current;
       const next = new Set(current);
-      conversation.tasks.forEach((task) => next.delete(task.operation_id));
+      tasks.forEach((task) => {
+        if (task.request.chat_id === visibleChatId) next.delete(task.operation_id);
+      });
       return next.size === current.size ? current : next;
     });
-  }, [conversations, selectedChatId, view]);
+  }, [selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
     if (!projectId || !activeTask) return;
@@ -2183,13 +2680,16 @@ export default function App() {
       return;
     const normalized = normalizeHumanDraft(humanDraft, graph);
     if (humanDraftCommittableCount(normalized, graph) === 0) return;
+    const request = toHumanSyncRequest(normalized, graph);
     setSyncingDraft(true);
     setNotice(null);
     try {
-      const nextGraph = await api<GraphState>(`${apiBase}/sync`, {
-        method: "POST",
-        body: JSON.stringify(toHumanSyncRequest(normalized, graph)),
-      });
+      const nextGraph = decodeGraphState(
+        await api<GraphState>(`${apiBase}/sync`, {
+          method: "POST",
+          body: JSON.stringify(request),
+        }),
+      );
       const retained = retainBehindDraftAfterSync(normalized, graph, nextGraph);
       setHumanDraft(retained);
       try {
@@ -2201,8 +2701,12 @@ export default function App() {
       setProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
       setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
       setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
+      setFloatingChat((current) => (current && nextGraph.nodes[current.nodeId] ? current : null));
       await reload();
-      setNotice({ kind: "info", text: `Synced revision ${nextGraph.revision}.` });
+      setNotice({
+        kind: "info",
+        text: humanSyncSuccessNotice(nextGraph.revision, request.proposals, nextGraph),
+      });
     } catch (error) {
       const failure = humanSyncFailure(error);
       setNotice({ kind: "error", text: failure.text });
@@ -2387,6 +2891,136 @@ export default function App() {
     }
   };
 
+  const replaceCampaign = (nextCampaign: Campaign) => {
+    setCampaignState((current) => {
+      if (activeProjectId.current !== nextCampaign.project_id) return current;
+      const currentCampaigns =
+        current.projectId === nextCampaign.project_id ? current.campaigns : [];
+      return {
+        projectId: nextCampaign.project_id,
+        messages: current.projectId === nextCampaign.project_id ? current.messages : {},
+        campaigns: [
+          nextCampaign,
+          ...currentCampaigns.filter(
+            (campaign) => campaign.campaign_id !== nextCampaign.campaign_id,
+          ),
+        ].sort(
+          (left, right) =>
+            Date.parse(right.created_at) - Date.parse(left.created_at) ||
+            right.campaign_id.localeCompare(left.campaign_id),
+        ),
+      };
+    });
+  };
+
+  const authorizeAutoResearch = async (
+    invocationCeiling: number,
+    startingInstruction: string | null,
+  ) => {
+    if (!project || !apiBase || mutationsDisabled || campaignAction || taskStarting) return;
+    if (liveCampaign) {
+      setCampaignStartError("An auto-research campaign is already live for this project.");
+      return;
+    }
+    if (taskStartLock.current) {
+      setCampaignStartError("Another task start is already being submitted.");
+      return;
+    }
+    taskStartLock.current = true;
+    setTaskStarting(true);
+    setCampaignAction("start");
+    setCampaignStartError(null);
+    try {
+      const started = await startCampaign(apiBase, {
+        invocation_ceiling: invocationCeiling,
+        starting_instruction: startingInstruction,
+      });
+      replaceCampaign(started);
+      setCampaignDialogOpen(false);
+      changeView("execution");
+      try {
+        await reload();
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: `Auto-research started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    } catch (error) {
+      setCampaignStartError(error instanceof Error ? error.message : String(error));
+    } finally {
+      taskStartLock.current = false;
+      setTaskStarting(false);
+      setCampaignAction(null);
+    }
+  };
+
+  const requestCampaignStop = async (campaignId: string) => {
+    if (!apiBase || campaignAction) return;
+    setCampaignAction(`stop:${campaignId}`);
+    try {
+      replaceCampaign(await stopCampaign(apiBase, campaignId));
+      await refreshCampaigns();
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally {
+      setCampaignAction(null);
+    }
+  };
+
+  const requestCampaignReauthorization = async (
+    campaignId: string,
+    additionalInvocations: number,
+  ) => {
+    if (!apiBase || campaignAction) return;
+    setCampaignAction(`reauthorize:${campaignId}`);
+    try {
+      replaceCampaign(await reauthorizeCampaign(apiBase, campaignId, additionalInvocations));
+      await reload();
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally {
+      setCampaignAction(null);
+    }
+  };
+
+  const messageCampaignOrchestrator = async (campaignId: string, body: string) => {
+    if (!apiBase || campaignAction) return;
+    setCampaignAction(`message:${campaignId}`);
+    try {
+      const saved = await sendCampaignMessage(apiBase, campaignId, body);
+      setCampaignState((current) =>
+        current.projectId === projectId
+          ? {
+              ...current,
+              messages: {
+                ...current.messages,
+                [campaignId]: [
+                  ...(current.messages[campaignId] ?? []).filter(
+                    (item) => item.message_id !== saved.message_id,
+                  ),
+                  saved,
+                ],
+              },
+            }
+          : current,
+      );
+      await refreshCampaignMessages(campaignId);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally {
+      setCampaignAction(null);
+    }
+  };
+
+  const openCampaignReport = (campaign: Campaign, report: CampaignReportSummary) =>
+    openCampaignReportPreview(
+      campaignReportPreviewUrl(campaign.project_id, campaign.campaign_id, report.report_id),
+    );
+
   const operateTask = async (
     task: AgentTask,
     action: "pause" | "resume" | "retry",
@@ -2431,6 +3065,14 @@ export default function App() {
     } finally {
       setTaskActionId(null);
     }
+  };
+
+  const operateCampaignOrchestratorTask = async (
+    task: AgentTask,
+    action: "pause" | "resume" | "retry",
+  ) => {
+    await operateTask(task, action, false);
+    await refreshCampaigns();
   };
 
   const repairGraphUpdate = async (operationId: string): Promise<void> => {
@@ -2857,6 +3499,9 @@ export default function App() {
           openProjectTabs={openProjectTabs}
           onActivateProjectTab={activateProjectTab}
           onCloseProjectTab={closeDockedProject}
+          identity={actorIdentity}
+          identityError={actorIdentityError}
+          onRequestIdentityName={requestActorName}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
@@ -2900,6 +3545,51 @@ export default function App() {
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = replayFailureLabel(graph);
+  const selectedExperimentNode = selectedExperimentRunId
+    ? (presentedGraph.nodes[selectedExperimentRunId] ?? null)
+    : null;
+  const selectedExperimentControl = selectedExperimentRunId
+    ? (project.experiment_control[selectedExperimentRunId] ?? null)
+    : null;
+  const selectedExperimentConversation =
+    selectedExperimentChatId && selectedExperimentNode?.type === "experiment" ? (
+      <Suspense
+        fallback={
+          <div className="project-view-loading" aria-label="Loading run conversation">
+            <LoaderCircle className="spin" />
+          </div>
+        }
+      >
+        <NodeChat
+          key={selectedExperimentChatId}
+          project={project}
+          node={selectedExperimentNode}
+          nodes={presentedGraph.nodes}
+          glossaryIndex={glossaryIndex}
+          runScope={selectedExperimentControl?.operational?.session?.run_truth_scope ?? runScope}
+          tasks={tasks}
+          watchers={watchers}
+          historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
+          chatId={selectedExperimentChatId}
+          presentation="workspace"
+          fixedConversation
+          graphChangesDisabled={mutationsDisabled}
+          resultViews={selectedResultViews}
+          resultViewsError={selectedResultViewsError}
+          onKeepResultView={keepSelectedResultView}
+          onStartTask={startAgentTask}
+          onResumeTask={(task) => void operateTask(task, "resume")}
+          onRetryTask={requestRetry}
+          onInspectTask={setTaskInspectorId}
+          onOpenInbox={() => changeView("attention")}
+          onRepairGraphUpdate={repairGraphUpdate}
+          onOpenNode={openNodeById}
+          onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+          onNewSession={() => undefined}
+          onClose={() => undefined}
+        />
+      </Suspense>
+    ) : undefined;
 
   return (
     <div className="app-shell overview-shell">
@@ -2990,6 +3680,24 @@ export default function App() {
                 }}
               >
                 <MessageCircle size={14} /> Ask
+              </button>
+              <button
+                className="button secondary auto-research-control"
+                disabled={
+                  mutationsDisabled ||
+                  projectReconciliation !== "authoritative" ||
+                  !project.canonical_state.reachable ||
+                  taskStarting ||
+                  Boolean(liveCampaign)
+                }
+                aria-label="Auto-research"
+                title={liveCampaign ? "An auto-research campaign is already live." : undefined}
+                onClick={() => {
+                  setCampaignStartError(null);
+                  setCampaignDialogOpen(true);
+                }}
+              >
+                <Telescope size={14} /> <span className="auto-research-label">Auto-research</span>
               </button>
             </div>
             <div
@@ -3125,6 +3833,12 @@ export default function App() {
 
       <div className="project-notices">
         {updateSurface}
+        {campaignRefreshError && (
+          <div className="coverage-banner replay-degraded" role="alert">
+            <AlertTriangle size={15} />
+            <span>{campaignRefreshError}</span>
+          </div>
+        )}
         {!project.canonical_state.reachable && (
           <div className="coverage-banner state-offline">
             <AlertTriangle size={15} />
@@ -3224,6 +3938,7 @@ export default function App() {
                 <AttentionOverview graph={graph} onSelectNode={openNode} />
                 <ProposalJudgmentSection
                   proposals={pendingProposals}
+                  graph={graph}
                   glossaryIndex={glossaryIndex}
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}
@@ -3264,37 +3979,54 @@ export default function App() {
             />
           )}
           {view === "execution" && (
-            <ExecutionView
-              graph={presentedGraph}
-              attentionBlockerIds={attentionBlockerIds}
-              tasks={tasks}
-              watchers={watchers}
-              experimentControl={project.experiment_control}
-              dismissedTaskIds={dismissedTaskIds}
-              selectedExperimentId={selectedExperimentRunId}
-              focusExperimentId={focusExperimentRunId}
-              runBusy={taskStarting}
-              stopBusyId={experimentStopId}
-              watcherCheckBusyId={watcherCheckId}
-              taskActionId={taskActionId}
-              providerLabels={Object.fromEntries(
-                Object.entries(project.providers).map(([id, provider]) => [
-                  id,
-                  provider.label || id,
-                ]),
-              )}
-              mutationsDisabled={mutationsDisabled}
-              onInspectTask={setTaskInspectorId}
-              onDismissTask={dismissTaskNotification}
-              onSelectNode={openNode}
-              onSelectExperiment={setSelectedExperimentRunId}
-              onDetailFocused={() => setFocusExperimentRunId(null)}
-              onRunExperiment={(node) => void runExperiment(node)}
-              onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
-              onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
-              onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
-              onSwitchExperimentProvider={setRetryTask}
-            />
+            <div className="combined-runs-view">
+              <CampaignRuns
+                campaigns={campaigns}
+                tasks={tasks}
+                messagesByCampaign={campaignMessages}
+                busyAction={campaignAction}
+                taskActionId={taskActionId}
+                onInspectTask={setTaskInspectorId}
+                onLoadMessages={refreshCampaignMessages}
+                onStop={requestCampaignStop}
+                onReauthorize={requestCampaignReauthorization}
+                onSendMessage={messageCampaignOrchestrator}
+                onOpenReport={openCampaignReport}
+                onOperateTask={operateCampaignOrchestratorTask}
+              />
+              <ExecutionView
+                graph={presentedGraph}
+                attentionBlockerIds={attentionBlockerIds}
+                tasks={tasks.filter((task) => !task.campaign_id)}
+                watchers={watchers}
+                experimentControl={project.experiment_control}
+                dismissedTaskIds={dismissedTaskIds}
+                selectedExperimentId={selectedExperimentRunId}
+                focusExperimentId={focusExperimentRunId}
+                runBusy={taskStarting}
+                stopBusyId={experimentStopId}
+                watcherCheckBusyId={watcherCheckId}
+                taskActionId={taskActionId}
+                selectedExperimentConversation={selectedExperimentConversation}
+                providerLabels={Object.fromEntries(
+                  Object.entries(project.providers).map(([id, provider]) => [
+                    id,
+                    provider.label || id,
+                  ]),
+                )}
+                mutationsDisabled={mutationsDisabled}
+                onInspectTask={setTaskInspectorId}
+                onDismissTask={dismissTaskNotification}
+                onSelectNode={openNode}
+                onSelectExperiment={setSelectedExperimentRunId}
+                onDetailFocused={() => setFocusExperimentRunId(null)}
+                onRunExperiment={(node) => void runExperiment(node)}
+                onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
+                onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
+                onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
+                onSwitchExperimentProvider={setRetryTask}
+              />
+            </div>
           )}
           {view === "paper" && (
             <PaperWorkspace
@@ -3318,9 +4050,6 @@ export default function App() {
               showDisplaySettings={desktop}
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
-              identity={actorIdentity}
-              identityError={actorIdentityError}
-              onIdentitySaved={setActorIdentity}
               onRefreshReadiness={refreshReadiness}
               onCacheMetricsChange={(cacheMetrics) => {
                 setProject((current) =>
@@ -3328,10 +4057,11 @@ export default function App() {
                 );
               }}
               onSaved={(saved, preserveReadiness = true) => {
+                const decoded = decodeProjectSnapshot(saved);
                 setProject((current) =>
-                  preserveReadiness ? preserveProjectReadiness(saved, current) : saved,
+                  preserveReadiness ? preserveProjectReadiness(decoded, current) : decoded,
                 );
-                setRunScope(saved.default_run_truth_scope);
+                setRunScope(decoded.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
@@ -3449,7 +4179,7 @@ export default function App() {
           />
         );
       })}
-      {floatingChat && (
+      {floatingChat && floatingChat.chatId !== selectedExperimentChatId && (
         <DraggableWindow className="node-chat-window" kind="chat" resizable>
           <Suspense
             fallback={
@@ -3505,6 +4235,16 @@ export default function App() {
         busy={taskStarting}
         onClose={() => setRunDialogOpen(false)}
         onRun={(config, scope, message) => void runAgent(config, scope, message)}
+      />
+      <AutoResearchDialog
+        open={campaignDialogOpen}
+        busy={campaignAction === "start"}
+        error={campaignStartError}
+        initialInvocationCeiling={project.default_campaign_invocation_ceiling}
+        onClose={() => setCampaignDialogOpen(false)}
+        onAuthorize={(invocationCeiling, startingInstruction) =>
+          void authorizeAutoResearch(invocationCeiling, startingInstruction)
+        }
       />
       {retryTask && retryConfig && (
         <RunDialog

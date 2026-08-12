@@ -1,16 +1,25 @@
 ---
 id: S76-graph-condition-wake
-status: pending — not human-confirmed
+status: implemented
 tier: hermetic
 driver: pytest
-covered_by: none
+covered_by:
+  - tests/test_graph_condition_watchers.py
+  - tests/test_watchers.py::test_graph_condition_column_migrates_before_its_index_is_created
+  - tests/test_experiment_loop_agent_io.py::test_staged_graph_watcher_state_uses_condition_fields_without_shell_telemetry
+  - tests/test_prompts.py
+  - web/tests/runProjection.test.mjs
+  - web/tests/experimentRunDetail.test.mjs
 invariants: [8, 10g]
+last_passed: 2026-08-12 — focused S76 backend, API, and web checks; full baselines passed before concurrent authority work
 ---
 
 # An agent can wait on the graph
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
+**Confirmed by the human 2026-08-12**, including the closed two-condition
+vocabulary: waiting on a new node attaching, and waiting on a standing change,
+were both offered and both declined. Add a third condition only when something
+concretely needs it. The design is settled in
 [the wake handoff](../handoffs/handoff-2026-08-07-graph-condition-wake.md).
 
 An agent that arms a graph condition sleeps until that fact becomes canonical,
@@ -34,6 +43,10 @@ both an external watcher and a graph condition.
    the wake still happens.
 5. Halt replay on a bad revision, then satisfy a condition, and confirm no wake.
 6. Complete an external watcher and a graph condition together.
+7. Arm after an older Proposal was resolved while a newer Proposal is pending;
+   confirm only the newer Proposal's later resolution wakes the loop.
+8. Settle callbacks for two accepted revisions in reverse order; confirm the
+   watcher still observes their canonical order.
 
 ## Assert
 
@@ -46,6 +59,9 @@ both an external watcher and a graph condition.
 - `external_and_graph_completions_coalesce_into_one_wake`
 - `watch_json_carries_two_named_lists_validated_all_or_none`
 - `both_lists_empty_requires_a_success_proposal_or_blocker_in_the_same_patch`
+- `initially_satisfied_node_status_condition_is_immediately_ready`
+- `proposal_resolution_must_happen_after_arming`
+- `accepted_boundaries_are_applied_in_canonical_order`
 
 ## Boundary
 
@@ -54,7 +70,10 @@ addressing, no cross-agent delivery, and no orchestrator.
 
 Only two conditions exist: a node reaching a status, and a Proposal being
 resolved. A graph condition fires on canonical state only — never on a staged
-but unsynced draft.
+but unsynced draft. Each wait is based at its durable arming revision. A node
+status already true there is ready immediately; an earlier Proposal resolution
+does not satisfy a newly armed wait. Accepted revisions are reconciled in
+canonical order even when task callbacks settle out of order.
 
 `watch-graph` on the staged agent client is orchestrator-only and is out of
 scope here; Experiment loops arm by file.

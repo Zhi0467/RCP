@@ -1,18 +1,25 @@
 ---
 id: S77-auto-research-stops-at-belief
-status: pending — not human-confirmed
+status: implemented
 tier: hermetic
 driver: pytest
-covered_by: none
+covered_by:
+  - tests/test_s77_auto_research.py
+  - tests/test_campaign_authority.py
+  - tests/test_campaign_commands.py
+  - tests/test_campaign_stream.py
 invariants: [3, 4, 10b]
 ---
 
 # Auto-research creates freely and proposes changes to existing epistemic nodes
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
+Confirmed 2026-08-12. The design is settled in
 [the orchestrator handoff](../handoffs/handoff-2026-08-07-orchestrator.md) and
 [Identity, permissions, and agent profiles](../design/identity-permissions-and-agent-profiles.md#a-proposal-is-an-escalation-to-a-human).
+
+It depends on [S115](S115-beliefs-change-only-through-you.md), which builds the
+protected-type rule and the widened Proposal vocabulary this scenario exercises
+from the orchestrator's side. Do not implement it first.
 
 The orchestrator may structure and conduct the research, including creating new
 questions and hypotheses and directly controlling every other graph node type.
@@ -35,7 +42,7 @@ ready Experiment, and an open Blocker. A project-owned orchestrator using the
 elevated profile from the
 [permission design](../design/identity-permissions-and-agent-profiles.md#project-orchestrator-profile).
 
-## Drive — proposal
+## Drive
 
 1. Start a campaign and let the orchestrator create a new ResearchQuestion and
    Hypothesis, create Evidence and relations, and choose the governed Decision.
@@ -77,6 +84,15 @@ elevated profile from the
 Seating scope and authority scope are different. The orchestrator may not seat a
 worker on a Decision, but it may choose that Decision itself. A refusal in step 6
 must not be read as a restriction on its direct Decision authority in step 1.
+
+**A seated worker gets no scope of its own** (confirmed 2026-08-12). Where it may
+be seated is bounded; what it may then touch is not bounded separately. It is an
+ordinary Work agent held by the protected-type rule and the shared budget, with
+repositories arriving through the run-scope pointers that already exist. A worker
+seated on one Experiment can reach another Experiment's nodes, and only its
+instructions discourage that — the accepted cost of refusing a second fence
+beside the budget. This scenario must not assert a mechanical seat boundary,
+because there is deliberately none to assert.
 
 Likewise, the boundary is new versus existing for ResearchQuestions and
 Hypotheses. Creation is direct. Every later modification is Proposal-only, and

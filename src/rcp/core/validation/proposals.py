@@ -7,12 +7,29 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from rcp.core.authority import (
-    DECIDE_DECISION,
+    CONTENT_CHANGE_INTENT,
     EVIDENCE_EDGE_CAUSE_KIND,
     HYPOTHESIS_PROPOSAL_FIELDS,
+    MERGE_INTENT,
+    PROPOSAL_INTENTS,
+    PROTECTED_EPISTEMIC_RELATIONS,
+    PROTECTED_RELATION_CHANGE_INTENT,
+    REMOVAL_INTENT,
+    STATUS_CHANGE_INTENT,
+    SUPERSEDE_INTENT,
+    created_edge_ids,
+    created_node_ids,
 )
-from rcp.core.models import Decision, GraphState, Hypothesis, Patch, Proposal
+from rcp.core.models import (
+    Decision,
+    GraphState,
+    Hypothesis,
+    Patch,
+    Proposal,
+    ResearchQuestion,
+)
 from rcp.core.validation.constants import IDENTIFIER_RE
+from rcp.core.validation.nodes import oldest_source_ref
 from rcp.core.validation.report import ValidationReport
 
 
@@ -96,24 +113,50 @@ def proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
     ):
         return True
 
-    edge_ids, decision_ids = _belief_cause_dependencies(proposal)
-    cause_revision = proposal.raised_rev or proposal.base_rev
+    referenced_edge_ids, decision_ids = _proposal_reference_dependencies(proposal)
+    edge_ids = set(proposal.related_edge_ids) | referenced_edge_ids
+    reference_revision = proposal.raised_rev or proposal.base_rev
     if any(
-        edge_id not in state.edges or state.edges[edge_id].created_rev > cause_revision
+        edge_id not in state.edges or state.edges[edge_id].created_rev > reference_revision
         for edge_id in edge_ids
     ):
         return True
+    if any(edge_id in state.edges for edge_id in _proposal_created_edge_ids(proposal)):
+        return True
+    removal_targets = _proposal_removal_targets(proposal)
+    if removal_targets:
+        current_incident_edge_ids = {
+            edge.id
+            for edge in state.edges.values()
+            if edge.source in removal_targets or edge.target in removal_targets
+        }
+        if current_incident_edge_ids != set(proposal.related_edge_ids):
+            return True
     return any(
         not isinstance(state.nodes.get(decision_id), Decision)
-        or state.nodes[decision_id].updated_rev > cause_revision
+        or state.nodes[decision_id].updated_rev > reference_revision
         for decision_id in decision_ids
     )
 
 
-def _belief_cause_dependencies(proposal: Proposal) -> tuple[set[str], set[str]]:
+def _proposal_removal_targets(proposal: Proposal) -> set[str]:
+    return {
+        node_id
+        for operation in proposal.ops
+        if operation.get("op") == "remove_nodes" and operation.get("intent") == REMOVAL_INTENT
+        for node_id in operation.get("node_ids", [])
+        if isinstance(node_id, str)
+    }
+
+
+def _proposal_reference_dependencies(proposal: Proposal) -> tuple[set[str], set[str]]:
     edge_ids: set[str] = set()
     decision_ids: set[str] = set()
     for op in proposal.ops:
+        if op.get("op") == "remove_edges":
+            edge_ids.update(
+                edge_id for edge_id in op.get("edge_ids", []) if isinstance(edge_id, str)
+            )
         if op.get("op") != "update_nodes":
             continue
         for update in op.get("nodes", []):
@@ -127,6 +170,44 @@ def _belief_cause_dependencies(proposal: Proposal) -> tuple[set[str], set[str]]:
             elif cause.get("kind") == "decision":
                 decision_ids.add(cause["ref_id"])
     return edge_ids, decision_ids
+
+
+def _proposal_created_edge_ids(proposal: Proposal) -> set[str]:
+    """Return edge IDs whose absence is part of the judged semantic effect."""
+
+    edge_ids: set[str] = set()
+    for operation in proposal.ops:
+        name = operation.get("op")
+        if name == "create_edges" and operation.get("intent") == PROTECTED_RELATION_CHANGE_INTENT:
+            for raw in operation.get("edges", []):
+                if not isinstance(raw, dict):
+                    continue
+                edge_id = raw.get("id")
+                if not isinstance(edge_id, str):
+                    source = raw.get("source")
+                    relation = raw.get("relation")
+                    target = raw.get("target")
+                    if all(isinstance(value, str) for value in (source, relation, target)):
+                        edge_id = f"{source}::{relation}::{target}"
+                if isinstance(edge_id, str):
+                    edge_ids.add(edge_id)
+        elif name == "supersede_nodes" and operation.get("intent") == SUPERSEDE_INTENT:
+            edge_ids.update(
+                f"{item['id']}::supersedes::{item['superseded_by']}"
+                for item in operation.get("nodes", [])
+                if isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+                and isinstance(item.get("superseded_by"), str)
+            )
+        elif name == "merge_nodes" and operation.get("intent") == MERGE_INTENT:
+            edge_ids.update(
+                f"{item['duplicate']}::duplicate_of::{item['canonical']}"
+                for item in operation.get("merges", [])
+                if isinstance(item, dict)
+                and isinstance(item.get("duplicate"), str)
+                and isinstance(item.get("canonical"), str)
+            )
+    return edge_ids
 
 
 def validate_proposal(
@@ -184,12 +265,15 @@ def validate_proposal(
                 f"Proposal {proposal.id} uses unexplained identifiers: {', '.join(unresolved)}.",
                 revision,
             )
-    if validation_mode == "admission":
+    if validation_mode == "admission" and (
+        context_patch is None or context_patch.author == "agent"
+    ):
         _validate_agent_proposal_boundary(
             proposal,
             state,
             report,
             revision,
+            context_patch=context_patch,
         )
     _validate_proposal_ops(
         proposal,
@@ -211,55 +295,263 @@ def _validate_agent_proposal_boundary(
     state: GraphState,
     report: ValidationReport,
     revision: int | None,
+    *,
+    context_patch: Patch | None,
 ) -> None:
     def refuse(message: str) -> None:
         report.reject("invalid-agent-proposal-shape", message, revision)
 
-    if len(proposal.ops) != 1 or proposal.ops[0].get("op") != "update_nodes":
-        refuse(f"Proposal {proposal.id} must contain exactly one Hypothesis status update.")
+    if len(proposal.ops) != 1 or not isinstance(proposal.ops[0], dict):
+        refuse(f"Proposal {proposal.id} must declare exactly one protected-change intent.")
         return
-    updates = proposal.ops[0].get("nodes")
-    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
-        refuse(f"Proposal {proposal.id} must update exactly one node in the staged graph.")
+    operation = proposal.ops[0]
+    intent = operation.get("intent")
+    if intent not in PROPOSAL_INTENTS:
+        refuse(
+            f"Proposal {proposal.id} must declare one of these intents: "
+            f"{', '.join(sorted(PROPOSAL_INTENTS))}."
+        )
         return
-    update = updates[0]
-    node_id = update.get("id")
-    node = state.nodes.get(node_id)
-    changes = update.get("changes")
+    validators = {
+        CONTENT_CHANGE_INTENT: _validate_content_change_intent,
+        REMOVAL_INTENT: _validate_removal_intent,
+        SUPERSEDE_INTENT: _validate_supersede_intent,
+        MERGE_INTENT: _validate_merge_intent,
+        PROTECTED_RELATION_CHANGE_INTENT: _validate_protected_relation_change_intent,
+        STATUS_CHANGE_INTENT: _validate_status_change_intent,
+    }
+    error = validators[intent](state, context_patch, operation)
+    if error is not None:
+        refuse(f"Proposal {proposal.id} declares {intent!r}, but {error}")
+
+
+def _validate_content_change_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: dict[str, Any],
+) -> str | None:
+    update, error = _one_update(operation)
+    if error is not None:
+        return error
+    assert update is not None
+    if set(update) != {"id", "changes"}:
+        return "a content change requires exactly id and changes, with no cause."
+    node = _existing_protected_node(state, context_patch, update.get("id"))
     if node is None:
-        refuse(
-            f"Proposal {proposal.id} must target a node already in the graph or created by an "
-            "earlier operation in this Patch."
-        )
-        return
+        return "a content change must target one existing ResearchQuestion or Hypothesis."
+    changes = update.get("changes")
     if not isinstance(changes, dict) or not changes:
-        refuse(f"Proposal {proposal.id} must contain an actual authority transition.")
-        return
+        return "a content change must contain at least one changed field."
+    if "status" in changes and isinstance(node, Hypothesis):
+        return "Hypothesis status belongs in a status_change intent."
+    if all(getattr(node, field, object()) == value for field, value in changes.items()):
+        return "a content change must actually change the target node."
+    return None
+
+
+def _validate_status_change_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: dict[str, Any],
+) -> str | None:
+    update, error = _one_update(operation)
+    if error is not None:
+        return error
+    assert update is not None
+    node = state.nodes.get(update.get("id"))
     if isinstance(node, Decision):
-        refuse(
-            f"Proposal {proposal.id} targets Decision {node.id!r}; new Decision Proposals are "
-            f"not admitted, and Decision outcomes require the {DECIDE_DECISION} action."
+        return (
+            f"Decision {node.id!r} cannot be proposed by an agent; its outcome requires the "
+            "decide_decision action."
         )
-        return
-    if isinstance(node, Hypothesis):
-        if set(changes) != HYPOTHESIS_PROPOSAL_FIELDS or changes["status"] == node.status:
-            refuse(f"Hypothesis Proposal {proposal.id} must change exactly the hypothesis status.")
-            return
-        cause = update.get("cause")
-        if (
-            not isinstance(cause, dict)
-            or cause.get("kind") != EVIDENCE_EDGE_CAUSE_KIND
-            or not isinstance(cause.get("ref_id"), str)
+    if not isinstance(node, Hypothesis):
+        return "a status change must target one Hypothesis in the staged graph."
+    if set(update) != {"id", "changes", "cause"}:
+        return "a status change requires exactly id, changes, and cause."
+    changes = update.get("changes")
+    if not isinstance(changes, dict) or set(changes) != HYPOTHESIS_PROPOSAL_FIELDS:
+        return "a status change may change only Hypothesis status."
+    if changes["status"] == node.status:
+        return "a status change must actually change the Hypothesis status."
+    cause = update.get("cause")
+    if (
+        not isinstance(cause, dict)
+        or set(cause) != {"kind", "ref_id"}
+        or cause.get("kind") != EVIDENCE_EDGE_CAUSE_KIND
+        or not isinstance(cause.get("ref_id"), str)
+        or not cause["ref_id"]
+    ):
+        return "a status change requires an evidence_edge cause naming an epistemic edge."
+    return None
+
+
+def _validate_removal_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: dict[str, Any],
+) -> str | None:
+    if set(operation) != {"op", "intent", "node_ids"} or operation.get("op") != "remove_nodes":
+        return "removal requires exactly one remove_nodes operation."
+    node_ids = operation.get("node_ids")
+    if not isinstance(node_ids, list) or len(node_ids) != 1:
+        return "removal must name exactly one node."
+    if _existing_protected_node(state, context_patch, node_ids[0]) is None:
+        return "removal must target one existing ResearchQuestion or Hypothesis."
+    return None
+
+
+def _validate_supersede_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: dict[str, Any],
+) -> str | None:
+    if set(operation) != {"op", "intent", "nodes"} or operation.get("op") != "supersede_nodes":
+        return "supersede requires exactly one supersede_nodes operation."
+    items = operation.get("nodes")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        return "supersede must name exactly one predecessor and successor."
+    item = items[0]
+    if set(item) not in ({"id", "superseded_by"}, {"id", "superseded_by", "explanation"}):
+        return "supersede accepts only id, superseded_by, and optional explanation."
+    node_id = item.get("id")
+    successor_id = item.get("superseded_by")
+    predecessor = _existing_protected_node(state, context_patch, node_id)
+    if predecessor is None:
+        return "supersede must retire one existing ResearchQuestion or Hypothesis."
+    if not isinstance(successor_id, str) or not successor_id or successor_id == node_id:
+        return "supersede must name a distinct successor node."
+    successor_type = _protected_node_type(state, context_patch, successor_id)
+    if successor_type is None:
+        return "supersede must name a ResearchQuestion or Hypothesis successor."
+    if successor_type != predecessor.type:
+        return "supersede predecessor and successor must be the same protected belief type."
+    return None
+
+
+def _validate_merge_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: dict[str, Any],
+) -> str | None:
+    if set(operation) != {"op", "intent", "merges"} or operation.get("op") != "merge_nodes":
+        return "merge requires exactly one merge_nodes operation."
+    items = operation.get("merges")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        return "merge must name exactly one duplicate and canonical node."
+    item = items[0]
+    if set(item) not in ({"duplicate", "canonical"}, {"duplicate", "canonical", "explanation"}):
+        return "merge accepts only duplicate, canonical, and optional explanation."
+    duplicate_id = item.get("duplicate")
+    canonical_id = item.get("canonical")
+    duplicate = _existing_protected_node(state, context_patch, duplicate_id)
+    if duplicate is None:
+        return "merge must fold one existing ResearchQuestion or Hypothesis."
+    if not isinstance(canonical_id, str) or not canonical_id or canonical_id == duplicate_id:
+        return "merge must name a distinct canonical node."
+    canonical_type = _protected_node_type(state, context_patch, canonical_id)
+    if canonical_type is None:
+        return "merge must name a ResearchQuestion or Hypothesis canonical node."
+    if canonical_type != duplicate.type:
+        return "merge duplicate and canonical must be the same protected belief type."
+    return None
+
+
+def _validate_protected_relation_change_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: dict[str, Any],
+) -> str | None:
+    name = operation.get("op")
+    if name == "create_edges":
+        if set(operation) != {"op", "intent", "edges"}:
+            return "a protected relation creation accepts only op, intent, and edges."
+        edges = operation.get("edges")
+        if not isinstance(edges, list) or len(edges) != 1 or not isinstance(edges[0], dict):
+            return "a protected relation change must create exactly one edge."
+        edge = edges[0]
+        endpoints = (edge.get("source"), edge.get("target"))
+        if edge.get("relation") not in PROTECTED_EPISTEMIC_RELATIONS:
+            return "a protected relation change must use a protected relation."
+        if edge.get("relation") in {"supersedes", "duplicate_of"}:
+            return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
+        if context_patch is not None and any(
+            node_id in created_node_ids(context_patch) for node_id in endpoints
         ):
-            refuse(
-                f"Hypothesis Proposal {proposal.id} requires an evidence_edge cause naming a "
-                "valid Evidence-to-Hypothesis epistemic edge."
-            )
-        return
-    refuse(
-        f"Proposal {proposal.id} targets {node_id!r}; agents may propose only Hypothesis status "
-        "transitions."
-    )
+            return "connecting a node created in the outer Patch is direct, not a Proposal."
+        if not any(
+            _existing_protected_node(state, context_patch, node_id) for node_id in endpoints
+        ):
+            return "a protected relation change must touch an existing belief node."
+        return None
+    if name == "remove_edges":
+        if set(operation) != {"op", "intent", "edge_ids"}:
+            return "a protected relation removal accepts only op, intent, and edge_ids."
+        edge_ids = operation.get("edge_ids")
+        if not isinstance(edge_ids, list) or len(edge_ids) != 1:
+            return "a protected relation change must remove exactly one edge."
+        edge_id = edge_ids[0]
+        edge = state.edges.get(edge_id) if isinstance(edge_id, str) else None
+        if edge is None or (
+            context_patch is not None and edge_id in created_edge_ids(context_patch)
+        ):
+            return "a protected relation removal must target one existing edge."
+        if edge.relation not in PROTECTED_EPISTEMIC_RELATIONS:
+            return "a protected relation change must use a protected relation."
+        if not any(
+            _existing_protected_node(state, context_patch, node_id)
+            for node_id in (edge.source, edge.target)
+        ):
+            return "a protected relation change must touch an existing belief node."
+        return None
+    return "a protected relation change requires one create_edges or remove_edges operation."
+
+
+def _one_update(operation: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    if set(operation) != {"op", "intent", "nodes"} or operation.get("op") != "update_nodes":
+        return None, "the declared intent requires exactly one update_nodes operation."
+    updates = operation.get("nodes")
+    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
+        return None, "the declared intent must update exactly one node."
+    return updates[0], None
+
+
+def _existing_protected_node(
+    state: GraphState,
+    context_patch: Patch | None,
+    node_id: Any,
+) -> ResearchQuestion | Hypothesis | None:
+    if not isinstance(node_id, str):
+        return None
+    node = state.nodes.get(node_id)
+    if (
+        context_patch is not None
+        and node_id in created_node_ids(context_patch)
+        and node is not None
+        and node.created_rev == context_patch.revision
+    ):
+        return None
+    return node if isinstance(node, (ResearchQuestion, Hypothesis)) else None
+
+
+def _protected_node_type(
+    state: GraphState,
+    context_patch: Patch | None,
+    node_id: Any,
+) -> str | None:
+    node = state.nodes.get(node_id) if isinstance(node_id, str) else None
+    if isinstance(node, (ResearchQuestion, Hypothesis)):
+        return node.type
+    if context_patch is None:
+        return None
+    for operation in context_patch.ops:
+        if operation.get("op") != "create_nodes":
+            continue
+        for raw in operation.get("nodes", []):
+            if not isinstance(raw, dict) or raw.get("id") != node_id:
+                continue
+            node_type = raw.get("type")
+            return node_type if node_type in {"research_question", "hypothesis"} else None
+    return None
 
 
 def _validate_proposal_ops(
@@ -299,6 +591,20 @@ def _validate_proposal_ops(
             revision,
         )
         return
+
+    if validation_mode == "admission" and context_patch is not None:
+        for operation in proposal.ops:
+            if (
+                operation.get("op") != "update_nodes"
+                or operation.get("intent") != CONTENT_CHANGE_INTENT
+            ):
+                continue
+            for update in operation.get("nodes", []):
+                changes = update.get("changes", {}) if isinstance(update, dict) else {}
+                if isinstance(changes, dict) and changes.get("source_refs"):
+                    oldest_source_ref(
+                        {"source_refs": changes["source_refs"]}, context_patch, report
+                    )
 
     synthetic_state = state.model_copy(
         update={

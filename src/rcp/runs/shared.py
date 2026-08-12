@@ -633,6 +633,8 @@ def _record_patch_applied_receipt(
 ) -> None:
     if execution is None:
         return
+    execution.applied_revision = state.revision
+    execution.applied_graph_state = state
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "patch_applied",

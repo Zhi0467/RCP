@@ -269,36 +269,186 @@ addresses and recovery state.
 
 ## Action vocabulary
 
-Permission must use a closed list of semantic actions rather than scattered
-field checks or arbitrary per-field access rules. The starting groups are:
+**Shape confirmed 2026-08-12.** Three rulings settle how the list is built; do
+not relitigate them.
 
-- protected existing-node actions: update or remove an existing
-  ResearchQuestion or Hypothesis, including ordinary content, status, standing,
-  and meaning-bearing relations;
-- epistemic creation and evidence actions: create ResearchQuestions and
-  Hypotheses, and create, update, judge, or remove Evidence and other permitted
-  epistemic relations;
-- action-layer actions: Decision choice and queue state, Experiment control,
-  and Blocker state, including type-specific standing and removal;
-- structural actions: create, update, and remove nodes and edges with
-  type-aware limits;
-- project actions: truth-scope membership, Proposal decisions, Settings, and
-  project administration; and
-- orchestration actions: dispatch, address or message, pause, resume, stop,
-  watches, and campaign reauthorization.
+| | Ruling | Why |
+|---|---|---|
+| How fine-grained? | **One action per patch operation, plus a named exception wherever a single field or target type changes who may act.** | It is already the shape of the only such rule that exists — `decide_decision` split from `queue_decision`. Coarse groups would force one name to cover both adding Evidence and deleting a node. Splitting by operation *and* node type would produce a list too long to read, and long lists are where mistakes hide. |
+| Fixed or editable? | **Both profiles are constants in code.** Changing what an agent may do is a code change with a scenario attached. | Permission must not become configuration. A wrong toggle in Settings would quietly widen what agents may do to the graph, and no scenario would catch it. |
+| One list or two? | **Two.** Graph actions and orchestration commands are separate vocabularies with separate checks. | They are different mechanisms — a file the agent writes versus a command it runs — with different failure modes and different audit records. One list would blur that for the sake of a single lookup. |
 
-Named exceptions remain appropriate where one field changes authority. For
-example, `decide_decision` covers choosing an option or marking a Decision
-decided, while `queue_decision` covers moving it among open, ready, and revisit.
-The ordinary profile permits only the queue action. The project orchestrator
-profile permits both because a human authorized that bounded campaign to act on
-the action layer.
+### List one — graph actions
 
-Standing is likewise target-aware. The orchestrator may judge Decision,
-Experiment, Blocker, and Evidence records directly. Changing standing on an
-existing ResearchQuestion or Hypothesis requires a Proposal. Permission
-therefore cannot be expressed as a single profile-wide `may_set_standing`
-boolean.
+Keyed to the operations materialization already applies
+([materialize.py](../../src/rcp/core/materialize.py)). The base action carries
+the operation's name; an indented action is a named exception carved out of the
+one above it, and takes precedence over it.
+
+| Action | What it covers | ordinary | orchestrator | human |
+|---|---|---|---|---|
+| `create_node` | Create any node, subject to the type-aware initial states already in the agent contract: a new Hypothesis starts `proposed`, a new Decision starts `open` or `ready`. | yes | yes | yes |
+| `update_node` | Ordinary content edit on any node outside the exceptions below. | yes | yes | yes |
+| → `update_protected_epistemic` | Any change to an **existing** ResearchQuestion or Hypothesis — content, status, or standing. | Proposal only | Proposal only | yes |
+| → `decide_decision` | Write `selected_option`, or set a Decision `decided`. | no | yes | yes |
+| → `queue_decision` | Move a Decision among `open`, `ready`, `revisit`. | yes | yes | yes |
+| `remove_node` | Remove an asserted or contested node and its incident edges. | yes | yes | yes |
+| → `remove_protected_epistemic` | Remove an existing ResearchQuestion or Hypothesis. | Proposal only | Proposal only | yes |
+| `supersede_node` | Replace a node with a successor. | yes | yes | yes |
+| → `supersede_protected_epistemic` | Retire an existing ResearchQuestion or Hypothesis in favor of a successor. | Proposal only | Proposal only | yes |
+| `merge_node` | Fold one node into another. | yes | yes | yes |
+| → `merge_protected_epistemic` | Fold an existing ResearchQuestion or Hypothesis into another node. | Proposal only | Proposal only | yes |
+| `create_edge` | Add any legal relation. | yes | yes | yes |
+| `remove_edge` | Remove any legal relation. | yes | yes | yes |
+| → `restructure_protected_epistemic` | Attach, detach, or re-parent an **existing** ResearchQuestion or Hypothesis through `has_subquestion` or `has_hypothesis`, or retire or fold one through `supersedes` or `duplicate_of`. | Proposal only | Proposal only | yes |
+| `set_standing` | Judge a Decision, Experiment, Blocker, or Evidence. | no | yes | yes |
+| `create_proposal` | Raise a change for human judgment. | yes, belief only | yes | n/a |
+| `resolve_proposal` | Approve or reject a pending Proposal. | **no** | **no** | yes |
+| `withdraw_proposal` | Retract an obsolete or duplicated pending Proposal. | yes | yes | yes |
+| `set_coverage` | Ingestion bookkeeping. | Seed/Refresh only | no | no |
+| `set_project_truth_scope` | Change which repositories are project truth. | no | no | yes |
+| `set_ontology` | Extend or deprecate type vocabulary. | no | no | yes |
+| `upsert_glossary` | Author a glossary term. | no | no | no — see [Q4](../open-questions.md) |
+
+`create_ambiguity` and `resolve_ambiguity` remain in the operation set for wire
+compatibility and replay of historical patches. No profile permits either.
+
+Two properties of this table are load-bearing. `resolve_proposal` is the row
+that makes "no agent approves a Proposal" mechanical rather than a prompt
+contract. And `set_standing` is target-aware by construction: judging an
+existing ResearchQuestion or Hypothesis is not this action at all, it is
+`update_protected_epistemic`, so there can be no profile-wide
+`may_set_standing` boolean.
+
+### List two — orchestration commands
+
+These are staged-client commands and RCP admission points, not patch
+operations. They produce task events, never graph history.
+
+| Action | What it covers | ordinary | orchestrator | human |
+|---|---|---|---|---|
+| `dispatch` | Start any task at all. Checked before a provider launches. | n/a | within campaign scope and budget | yes |
+| `spawn` | Seat a worker on an Experiment or Blocker. | no | yes | n/a |
+| `pause` / `resume` / `stop` | Control a task it owns. | no | yes | yes |
+| `message` | Address a worker it spawned; workers reply to it. | reply only | yes | orchestrator only |
+| `watch_graph` | Arm a graph condition by command. | no — loops use `watch.json` | yes | n/a |
+| `reauthorize_campaign` | Extend an exhausted budget. | no | no | yes |
+
+`validate` and `status` are queries on the staged client, carry no authority,
+and are available wherever the client is staged.
+
+### Deriving the action, not guessing it
+
+Invariant 3 already forbids inferring which action produced a patch from its
+operation shape. That rule scales to this table unchanged: RCP derives the
+action from the operation plus its target's type where that is unambiguous, and
+requires the producer to name the action where it is not. A direct Decision
+choice and an ordinary node edit are both one `update_nodes` on one node, which
+is why `human_action` exists on the Patch today. Every new exception in this
+table must be checkable the same way, or it needs its own declared name.
+
+### The protected-type rule
+
+**Confirmed 2026-08-12.** One line governs every exception above: an operation
+is free unless it touches an existing **ResearchQuestion** or **Hypothesis**
+record. Those two types are the project's beliefs, and only a human moves a
+belief.
+
+`supersede_node` and `merge_node` therefore get their own exceptions rather than
+folding into `update_protected_epistemic`. Both are ways to change a hypothesis
+without ever calling it an edit, and leaving them open would put an unlocked
+door beside a locked one.
+
+### Campaign scope is the project
+
+**Confirmed 2026-08-12.** An auto-research campaign is scoped to the project,
+not to the question the human started it from. It may create Evidence, run
+Experiments, and open Blockers anywhere in the project graph, including under a
+different ResearchQuestion than the one it began with.
+
+The brake is the budget and the protected-type rule, not a fence around one
+subtree. This is what makes the budget the enforced safety mechanism rather
+than bookkeeping — there is no second boundary quietly doing that job.
+
+### Which arrows are protected
+
+**Confirmed 2026-08-12.** Only the ones that restructure or retire. Attaching
+Evidence to a Hypothesis through `supports`, `weakens`, `refutes`,
+`inconclusive`, or `contradicts`, and pointing an Experiment at one through
+`tests`, all stay direct.
+
+The reasoning is that attaching evidence does not move a belief. The
+Hypothesis's `status` does, and that is already Proposal-only for both agent
+profiles, so the protection is in place one layer down. Routing evidence
+attachment through the Inbox as well would fill it on every Seed and Refresh,
+and would deadlock the existing belief Proposal, whose required cause is a valid
+Evidence to Hypothesis edge it could no longer draw.
+
+**Connecting a node created in the same Patch is not restructuring.** The
+orchestrator may create a new ResearchQuestion or Hypothesis directly, and that
+permission would be void if the edge attaching it needed approval. This follows
+the same new-versus-existing line as every other exception: the rule protects
+records that already exist.
+
+### Who the rule binds, and what it costs
+
+**Confirmed 2026-08-12.** Every agent, from the day it lands — including an
+ordinary Work turn the human started and is watching. Not only campaign workers.
+
+Two reasons. One authority regime is explainable and two are not; and the brake
+gets exercised against real use before anything ever runs unattended, rather than
+having its first real test be the situation it exists to protect.
+
+The cost is concrete and was paid in S115. Before that change,
+`_validate_agent_proposal_boundary` in
+[proposals.py](../../src/rcp/core/validation/proposals.py) refused every agent
+Proposal except a single Hypothesis `status` change carrying an `evidence_edge`
+cause. An agent asked to reword an existing ResearchQuestion therefore had no
+legal move at all: the direct edit was forbidden and the Proposal was refused.
+S115 widened the Proposal vocabulary because that widening was the rule's only
+legal exit, not a detail beside it.
+
+Two rulings follow, both confirmed 2026-08-12:
+
+- **A content Proposal carries no machine-checkable cause.** `evidence_edge`
+  stays required for status changes only, because a status claim is what evidence
+  exists to support. Rewording a question is not a claim about the world, and
+  demanding an edge for it would force the agent to invent one. The `GatedCard`
+  already carries the reasoning in prose.
+- **A Proposal carries one intent, not one operation.** Supersede and merge touch
+  two nodes, so the old one-operation-one-node limit would leave an agent unable
+  to report a genuine duplicate hypothesis. Intent is declared and validated
+  against a closed set of shapes — content change, removal, supersede, merge,
+  protected relation change, status change — and never inferred from how the
+  operations happen to look. An unchecked relaxation is a bundle smuggled
+  through, which is exactly the risk this ruling accepted.
+
+[S115](../acceptance/S115-beliefs-change-only-through-you.md) is the promise;
+[S100](../acceptance/S100-permission-is-checked-twice.md) owns the two gates.
+
+### A seated worker gets no scope of its own
+
+**Confirmed 2026-08-12, and this deletes the target grammar rather than writing
+it.** A worker the orchestrator seats on an Experiment or Blocker is an ordinary
+Work agent. What binds it is what already binds every agent: the protected-type
+rule, and the shared campaign budget. Its repositories arrive through the
+run-scope pointers that already exist.
+
+This is the campaign-scope ruling applied one level down. The reasoning is the
+same and so is the refusal: the brakes are the budget and the protected-type
+rule, and there is no second fence quietly doing that job.
+
+The cost is real and accepted. A worker seated on one Experiment can touch
+another Experiment's nodes, and only its instructions discourage that. Both
+alternatives were worse — mechanical seat enforcement is the second fence the
+scope ruling exists to prevent, and a scope the orchestrator declares at spawn is
+a fence drawn by the thing being fenced, which means nothing by the tenth turn.
+
+### Not settled by this pass
+- **How independence is driven once membership exists.** S100 demonstrates the
+  two gates through graph movement, because the textbook case — permission
+  changing mid-run — needs a permission that can change, which today means team
+  membership. The revocation drive is added to S100 when that lands.
 
 ## Provenance
 
@@ -316,7 +466,7 @@ finds on a disk:
 ```text
 producer:      human | agent | system
 authorized_by: { space_id, user_id, display_name } | null
-profile:       ordinary | null
+profile:       ordinary | orchestrator | null
 task_id:       string | null
 ```
 
@@ -327,9 +477,16 @@ available to an agent or ordinary request and never widens materialized
 The confirmed base contract in S99 populates `authorized_by` for every new
 human or ordinary-agent Patch, `profile="ordinary"` for an ordinary-agent
 Patch, and `task_id` with the direct producing task. Human Patches have no
-profile or task id. Campaign and orchestrator fields do not enter the envelope
-until S77, S78, and S113 settle that later lifecycle; current Experiment-loop
-tasks are ordinary.
+profile or task id. Current Experiment-loop tasks are ordinary.
+
+`profile="orchestrator"` joined that contract on 2026-08-12, once S77 and S78
+were confirmed. It is one added value on a field S99 already made canonical, set
+by RCP and never by the agent, and it is the least that lets a campaign turn
+avoid signing its work `"ordinary"`. The *campaign, parent, and worker* fields
+still do not enter the envelope and wait on
+[S113](../acceptance/S113-campaign-attribution.md) — that lineage lives in
+operational storage, which is what keeps those choices reversible under
+invariant 1.
 
 **Task receipts carry how it was computed**: execution profile, machine,
 provider, model, session id, budget spend, task contract, and resolved scope.
@@ -373,7 +530,8 @@ design must not make replay depend on current users or credentials.
 The confirmed boundaries above are ready to be turned into smaller design and
 acceptance passes. Those passes still need to specify:
 
-- the exact closed action list and target/scope grammar;
+- the target and scope grammar, and the three open items left by the
+  [action vocabulary](#action-vocabulary) pass;
 - the exact Proposal operation shapes for every permitted modification of an
   existing ResearchQuestion or Hypothesis;
 - whether ordinary and orchestrator profiles are fixed, editable, or versioned;

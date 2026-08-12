@@ -176,6 +176,14 @@ def test_chat_master_context_contains_both_exclusive_mode_contracts() -> None:
     assert master.count("Instruction and trust boundary:") == 1
     assert "This task cannot produce a Patch" in master
     assert "Live graph validator:" in master
+    work = " ".join(master.split("## Work contract", 1)[1].split())
+    assert "exactly `external` and `graph` lists" in work
+    assert '"status_in":["resolved"]' in work
+    assert '"proposal_resolved":true' in work
+    assert "only after canonical revisions and at startup" in work
+    assert "never through a shell command or from an unsynced draft" in work
+    assert "node status already true when armed is ready immediately" in work.casefold()
+    assert "proposal resolution counts only when committed after arming" in work.casefold()
 
 
 def test_chat_master_separates_self_wake_from_experiment_watcher_maintenance() -> None:
@@ -218,6 +226,14 @@ def test_chat_master_separates_self_wake_from_experiment_watcher_maintenance() -
         in compact
     )
     assert "spends no bounded-loop invocation" in compact
+    assert "exactly `external` and `graph` lists" in compact
+    assert '"status_in":["resolved"]' in compact
+    assert '"proposal_resolved":true' in compact
+    assert "canonical revision boundaries, never by shell polling" in compact
+    assert "compatible external observer" in compact
+    assert "never a graph condition" in compact
+    assert "node status already true when armed is ready immediately" in compact.casefold()
+    assert "proposal resolution counts only when committed after arming" in compact.casefold()
 
 
 def test_chat_master_treats_same_host_experiment_watcher_maintenance_as_local() -> None:
@@ -489,6 +505,8 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
     assert "/stage/inputs/human-request.txt" in contract
     assert "/stage/inputs/retry-diagnostics.json" in contract
     assert "/stage/workspace/patch.json" in contract
+    assert "native web search and fetch to read relevant public sources" in contract
+    assert "never authorizes posting, messaging, forms, or side effects" in contract
     _assert_live_validator_contract(contract, validator_command)
     assert len(contract.splitlines()) < 220
     _assert_semantic_probes(
@@ -509,8 +527,8 @@ def test_graph_contract_keeps_fanout_and_points_to_payload_files() -> None:
     _assert_fixed_ontology_guidance(contract)
     _assert_local_causal_check(contract)
     assert "card.decision_needed" in contract
-    assert "exact Hypothesis status" in contract
-    assert "`evidence_edge` cause" in contract
+    assert "declares exactly one of the six protected-change" in contract
+    assert "Only\n  `status_change` carries an `evidence_edge` cause" in contract
     assert "never only" in contract
 
 
@@ -793,15 +811,23 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "reopen it to an honest nonterminal status" in compact
     assert "A clarification that introduces no work need not reopen it" in compact
     assert (
-        "Do not leave it `completed` or write `[]` merely because it was previously terminal"
-        in compact
+        "Do not leave it `completed` or leave both lists empty merely because it was previously "
+        "terminal" in compact
     )
     assert "use only the watcher handoff exits above" in compact
     assert "do not alter design fields" in compact
     assert "remaining_invocations` is zero" in contract
     assert "pause automatic delivery until a human presses Run" in compact
     assert "no watcher api to" in contract.casefold()
-    assert "arms the list atomically" in compact
+    assert "validates both lists, and arms them atomically" in compact
+    assert "exactly two keys: `external` and `graph`" in compact
+    assert '"status_in": ["resolved"]' in compact
+    assert '{"node_id":"hyp/foo","proposal_resolved":true}' in compact
+    assert "Graph conditions are canonical and event-driven" in compact
+    assert "at startup, never through the shell poller" in compact
+    assert "A staged but unsynced draft cannot satisfy one" in compact
+    assert "A node status already true when armed is ready immediately" in compact
+    assert "Proposal resolution committed after it is armed" in compact
     assert "continues this Experiment's bounded loop and never a separate conversation" in compact
     assert "exits 1 while the named work remains" in compact
     assert "connect same-Patch Evidence to an existing Decision with `informs`" in compact
@@ -939,6 +965,8 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         in compact_paper
     )
     assert "Never draft replacement sentences" in paper
+    assert "native web search and fetch tools to read public sources" in paper
+    assert "does not authorize posting, messaging, form submission" in paper
     assert "Their content is authoritative" not in paper
     assert "human-authored draft, not canonical graph truth" in paper
     assert "/stage/inputs/correction.json" in correction

@@ -25,7 +25,8 @@ import {
 } from "../providers";
 import { stateRepositoryAfterRemoval } from "../projectSetup";
 import type {
-  AgentSurface,
+  AgentExecutionProfile,
+  ExistingResearchAction,
   ProviderReadiness,
   ProjectCard,
   ProjectSetupRequest,
@@ -53,12 +54,13 @@ const steps = [
 
 let repositorySequence = 1;
 
-const agentSurfaces: Array<{ id: AgentSurface; label: string }> = [
+const agentExecutionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "seed", label: "Seed" },
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
+  { id: "orchestrator", label: "Orchestrator" },
 ];
 
 // The provider is filled from the registry once it answers; the backend lists
@@ -91,8 +93,11 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     node_chat: defaultAgentProfile(),
     project_chat: defaultAgentProfile(),
     paper_coach: defaultAgentProfile("gpt-5.6-luna"),
+    orchestrator: defaultAgentProfile(),
   });
+  const [defaultCampaignInvocationCeiling, setDefaultCampaignInvocationCeiling] = useState(10);
   const [preview, setPreview] = useState<SetupPreview | null>(null);
+  const [existingResearchOpen, setExistingResearchOpen] = useState(false);
   // Agent defaults are chosen before any manifest exists, so there is no
   // per-machine readiness to read yet; ask the registry what this machine has.
   const [providers, setProviders] = useState<ProviderReadiness[]>([]);
@@ -147,9 +152,10 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
       host: repo.location === "ssh" ? repo.host.trim() : "",
     })),
     state_repository: stateRepository,
+    default_campaign_invocation_ceiling: defaultCampaignInvocationCeiling,
     execution: canonicalExecution,
     agents: Object.fromEntries(
-      agentSurfaces.map(({ id }) => [
+      agentExecutionProfiles.map(({ id }) => [
         id,
         {
           ...agents[id],
@@ -202,7 +208,13 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     }
     if (!aliases.includes(stateRepository)) return "Choose a canonical state repository.";
     if (targetStep < 2) return null;
-    const invalidAgent = agentSurfaces.find(
+    if (
+      !Number.isSafeInteger(defaultCampaignInvocationCeiling) ||
+      defaultCampaignInvocationCeiling < 2
+    ) {
+      return "Set the default auto-research budget to at least 2 invocations.";
+    }
+    const invalidAgent = agentExecutionProfiles.find(
       ({ id }) =>
         id === "paper_coach" &&
         agents[id].location === "ssh" &&
@@ -214,7 +226,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     return null;
   };
 
-  const updateAgent = (surface: AgentSurface, patch: Partial<SetupAgentProfile>) => {
+  const updateAgent = (surface: AgentExecutionProfile, patch: Partial<SetupAgentProfile>) => {
     setAgents((current) => {
       const next = { ...current[surface], ...patch };
       if (patch.location === "local") next.host = "";
@@ -244,6 +256,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
       });
       setPreview(result);
       setStep(3);
+      setExistingResearchOpen(Boolean(result.existing_research));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -251,19 +264,35 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     }
   };
 
-  const create = async () => {
-    if (!preview?.can_create || !confirmed || busy) return;
+  const create = async (existingResearchAction?: ExistingResearchAction) => {
+    if (!preview || busy) return;
+    if (preview.existing_research) {
+      if (!existingResearchAction || !preview.available_actions.includes(existingResearchAction)) {
+        return;
+      }
+    } else if (!preview.can_create || !confirmed) {
+      return;
+    }
     setBusy("create");
     setError(null);
     try {
       const created = await api<ProjectCard>("/api/project-setup/create", {
         method: "POST",
-        body: JSON.stringify({ ...payload(), confirmed: true }),
+        body: JSON.stringify({
+          ...payload(),
+          confirmed: true,
+          ...setupExistingResearchSelection(preview, existingResearchAction),
+        }),
       });
       onCreated(created.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       setConfirmed(false);
+      if (existingResearchAction === "archive_and_create") {
+        setExistingResearchOpen(false);
+        setPreview(null);
+        setStep(2);
+      }
     } finally {
       setBusy(null);
     }
@@ -300,6 +329,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     }
     setStep((current) => current - 1);
     setPreview(null);
+    setExistingResearchOpen(false);
     setConfirmed(false);
     setError(null);
   };
@@ -410,8 +440,25 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           {step === 2 && (
             <div className="setup-section">
               <SectionHeading eyebrow="Agent roles" title="Choose the agent behind each surface." />
+              <label className="agent-campaign-default">
+                <span>
+                  Default auto-research budget
+                  <small>Invocations per newly authorized campaign</small>
+                </span>
+                <input
+                  type="number"
+                  min={2}
+                  step={1}
+                  inputMode="numeric"
+                  value={defaultCampaignInvocationCeiling}
+                  onChange={(event) => {
+                    setDefaultCampaignInvocationCeiling(Number(event.target.value));
+                    setError(null);
+                  }}
+                />
+              </label>
               <div className="agent-role-stack">
-                {agentSurfaces.map(({ id, label }) => {
+                {agentExecutionProfiles.map(({ id, label }) => {
                   const profile = agents[id];
                   const models = modelsFor(providers, profile.provider);
                   const execution = id === "paper_coach" ? profile : canonicalExecution;
@@ -422,7 +469,11 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                       <header>
                         <strong>{label}</strong>
                         <span className="role-permission">
-                          {id === "paper_coach" ? "read-only coach" : "graph patch only"}
+                          {id === "paper_coach"
+                            ? "read-only coach"
+                            : id === "orchestrator"
+                              ? "auto-research"
+                              : "graph patch only"}
                         </span>
                       </header>
                       <div className="agent-role-fields">
@@ -512,7 +563,9 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                         <LockKeyhole size={13} />{" "}
                         {id === "paper_coach"
                           ? "Introduction and project inputs are read-only · no writes"
-                          : "Project and run-scope inputs are read-only · graph patch output only"}
+                          : id === "orchestrator"
+                            ? "Project-wide research · protected beliefs stay human-controlled"
+                            : "Project and run-scope inputs are read-only · graph patch output only"}
                       </div>
                     </article>
                   );
@@ -535,8 +588,8 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                 <div className="existing-manifest">
                   <FileCode2 size={19} />
                   <span>
-                    Existing manifest: <strong>{preview.existing_project_name}</strong> · setup
-                    entries will not overwrite it
+                    Existing manifest: <strong>{preview.existing_project_name}</strong> · choose
+                    whether to open it or archive it intact
                   </span>
                 </div>
               )}
@@ -561,19 +614,29 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                 </summary>
                 <pre>{preview.manifest_preview}</pre>
               </details>
-              <label
-                className={
-                  preview.can_create ? "final-confirmation" : "final-confirmation disabled"
-                }
-              >
-                <input
-                  type="checkbox"
-                  checked={confirmed}
-                  disabled={!preview.can_create}
-                  onChange={(event) => setConfirmed(event.target.checked)}
-                />
-                <span>{setupFinalConfirmation(preview)}</span>
-              </label>
+              {preview.existing_research ? (
+                <button
+                  className="existing-research-review"
+                  type="button"
+                  onClick={() => setExistingResearchOpen(true)}
+                >
+                  <ShieldCheck size={16} /> Review existing research choices
+                </button>
+              ) : (
+                <label
+                  className={
+                    preview.can_create ? "final-confirmation" : "final-confirmation disabled"
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    disabled={!preview.can_create}
+                    onChange={(event) => setConfirmed(event.target.checked)}
+                  />
+                  <span>{setupFinalConfirmation(preview)}</span>
+                </label>
+              )}
             </div>
           )}
 
@@ -606,24 +669,30 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                 {!busy && step < 2 && <ArrowRight size={15} />}
               </button>
             )}
-            {step === 3 && preview && (
-              <button
-                className="button primary"
-                disabled={!preview.can_create || !confirmed || busy !== null}
-                onClick={() => void create()}
-              >
-                {busy === "create" ? (
-                  <LoaderCircle className="spin" size={15} />
-                ) : (
-                  <Check size={15} />
-                )}
-                {busy === "create"
-                  ? "Opening project"
-                  : preview.action === "connect"
-                    ? "Connect and open"
-                    : "Create and open"}
-              </button>
-            )}
+            {step === 3 &&
+              preview &&
+              (preview.existing_research ? (
+                <button
+                  className="button primary"
+                  disabled={busy !== null}
+                  onClick={() => setExistingResearchOpen(true)}
+                >
+                  <ShieldCheck size={15} /> Choose how to continue
+                </button>
+              ) : (
+                <button
+                  className="button primary"
+                  disabled={!preview.can_create || !confirmed || busy !== null}
+                  onClick={() => void create()}
+                >
+                  {busy === "create" ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : (
+                    <Check size={15} />
+                  )}
+                  {busy === "create" ? "Opening project" : "Create and open"}
+                </button>
+              ))}
           </footer>
         </section>
 
@@ -652,7 +721,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           <LedgerItem
             number="D"
             label="Agent roles"
-            value={agentSurfaces
+            value={agentExecutionProfiles
               .map(({ id, label }) => {
                 const execution = id === "paper_coach" ? agents[id] : canonicalExecution;
                 return `${label}: ${agents[id].provider} @ ${execution.location === "ssh" ? execution.host || "remote" : "local"}`;
@@ -661,6 +730,157 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           />
         </aside>
       </main>
+
+      {existingResearchOpen && preview?.existing_research && (
+        <ExistingResearchDialog
+          preview={preview}
+          busy={busy === "create"}
+          error={error}
+          onCancel={() => {
+            if (!busy) setExistingResearchOpen(false);
+          }}
+          onChoose={(action) => void create(action)}
+        />
+      )}
+    </div>
+  );
+}
+
+export function setupExistingResearchSelection(
+  preview: SetupPreview,
+  action?: ExistingResearchAction,
+): Pick<ProjectSetupRequest, "existing_research_action" | "existing_research_token"> {
+  return {
+    existing_research_action: action ?? null,
+    existing_research_token:
+      action === "archive_and_create" ? (preview.existing_research?.archive_token ?? null) : null,
+  };
+}
+
+function ExistingResearchDialog({
+  preview,
+  busy,
+  error,
+  onCancel,
+  onChoose,
+}: {
+  preview: SetupPreview;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onChoose: (action: ExistingResearchAction) => void;
+}) {
+  const existing = preview.existing_research;
+  if (!existing) return null;
+  const degraded = existing.replay_status === "degraded";
+  const failure = existing.replay_failure;
+  const openAction: ExistingResearchAction = degraded ? "open_degraded_read_only" : "open_existing";
+  const canOpen = preview.available_actions.includes(openAction);
+  const canArchive = preview.available_actions.includes("archive_and_create");
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+    >
+      <section
+        className={`existing-research-dialog ${degraded ? "degraded" : "compatible"}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="existing-research-title"
+        aria-describedby="existing-research-warning"
+      >
+        <header>
+          {degraded ? (
+            <TriangleAlert size={20} aria-hidden="true" />
+          ) : (
+            <ShieldCheck size={20} aria-hidden="true" />
+          )}
+          <div>
+            <span className="eyebrow">Canonical state detected</span>
+            <h2 id="existing-research-title">Existing RCP research found</h2>
+          </div>
+        </header>
+
+        <div className="existing-research-body">
+          <div className="existing-research-status">
+            <strong>{degraded ? "Replay stopped" : "Replay compatible"}</strong>
+            <span>
+              {degraded
+                ? `Revision ${failure?.revision ?? "unknown"} cannot be replayed. RCP can safely show revision ${existing.coherent_revision} read-only.`
+                : `All ${existing.retained_revision_count} retained revisions replay successfully.`}
+            </span>
+          </div>
+          <dl className="existing-research-ledger">
+            <div>
+              <dt>Research</dt>
+              <dd>{existing.project_name}</dd>
+            </div>
+            <div>
+              <dt>Canonical location</dt>
+              <dd>{existing.canonical_location}</dd>
+            </div>
+            <div>
+              <dt>Retained revisions</dt>
+              <dd>{existing.retained_revision_count}</dd>
+            </div>
+            <div>
+              <dt>Last coherent revision</dt>
+              <dd>{existing.coherent_revision}</dd>
+            </div>
+          </dl>
+          {degraded && failure && (
+            <div className="existing-research-failure" role="status">
+              <code>{failure.code}</code>
+              <span>{failure.message}</span>
+            </div>
+          )}
+          <p id="existing-research-warning">
+            Starting fresh will move the complete <code>.research</code> directory to a timestamped
+            archive beside the repository, then create new canonical state from this setup. Nothing
+            in the retained patch history will be edited or overwritten.
+          </p>
+        </div>
+
+        {error && (
+          <div className="project-delete-error" role="alert">
+            {error}
+          </div>
+        )}
+        <footer>
+          <button
+            className="button secondary"
+            type="button"
+            autoFocus
+            disabled={busy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className="button secondary"
+            type="button"
+            disabled={busy || !canOpen}
+            onClick={() => onChoose(openAction)}
+          >
+            {busy
+              ? "Opening…"
+              : degraded
+                ? "Open last coherent state (read-only)"
+                : "Open existing research"}
+          </button>
+          <button
+            className="button danger"
+            type="button"
+            disabled={busy || !canArchive}
+            onClick={() => onChoose("archive_and_create")}
+          >
+            {busy ? "Working…" : "Archive existing research and start fresh"}
+          </button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -668,7 +888,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
 export function setupFinalConfirmation(preview: SetupPreview): string {
   const action =
     preview.action === "connect"
-      ? "Connect this project; this active space becomes the project's sole writable home"
+      ? "Open this project's retained canonical state without replacing its manifest"
       : "Create the project manifest";
   const location = preview.remote_write
     ? `RCP may write canonical project state over SSH at ${preview.canonical_location}`

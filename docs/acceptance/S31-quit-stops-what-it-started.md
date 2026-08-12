@@ -1,16 +1,17 @@
 ---
 id: S31-quit-stops-what-it-started
-status: pending
+status: implemented
 tier: hermetic
 driver: desktop
 covered_by:
   - web/src-tauri/src/backend.rs
   - web/src-tauri/src/lib.rs
-  - desktop 2026-08-08 — reused-backend Quit path
+  - desktop 2026-08-12 — isolated owned, reused, takeover, and forced-timeout drive
 invariants: [8, 9]
-last_checked: 2026-08-08 — quitting the desktop shell removed its sole process
-  while the reused CLI backend stayed healthy at the same PID; owned-sidecar,
-  takeover, and forced-timeout paths remain outstanding
+last_passed: 2026-08-12 — an owned long-running Work task paused and remained
+  resumable with its exact native session and stage; reused and takeover backends
+  survived Quit at the same instance; a SIGTERM-ignoring owned backend was forced
+  only after 45 seconds with the not-paused warning; rcp open remained healthy
 ---
 
 # Quit stops what it started, and nothing else

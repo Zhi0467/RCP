@@ -1,7 +1,10 @@
 import type {
   AgentTask,
   AgentTaskStatus,
+  ExternalWatcherRecord,
   ExperimentControlState,
+  GraphCondition,
+  GraphWatcherRecord,
   GraphNode,
   WatcherRecord,
 } from "./types";
@@ -69,7 +72,7 @@ export interface ExperimentWatcherCounts {
 export interface ExperimentWatcherGroup {
   groupId: string;
   label: string;
-  watchers: WatcherRecord[];
+  watchers: ExternalWatcherRecord[];
   counts: ExperimentWatcherCounts;
 }
 
@@ -78,6 +81,24 @@ export type ExperimentWatcherItem =
 
 export function watcherIsActive(watcher: WatcherRecord): boolean {
   return watcher.status === "active" || watcher.status === "degraded";
+}
+
+export function isExternalWatcherRecord(watcher: WatcherRecord): watcher is ExternalWatcherRecord {
+  return "check_command" in watcher;
+}
+
+export function isGraphWatcherRecord(watcher: WatcherRecord): watcher is GraphWatcherRecord {
+  return "condition" in watcher;
+}
+
+export function graphConditionLabel(condition: GraphCondition): string {
+  return "status_in" in condition
+    ? `${condition.node_id} reaches ${condition.status_in.join(" or ")}`
+    : `Proposal on ${condition.node_id} is resolved`;
+}
+
+export function watcherLastObservedAt(watcher: WatcherRecord): string | null {
+  return isGraphWatcherRecord(watcher) ? watcher.last_evaluated_at : watcher.last_checked_at;
 }
 
 /**
@@ -244,7 +265,6 @@ export function deriveExperimentLoopHealth(
 /** Human guidance derived only from canonical task, control, and watcher state. */
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const task = run.currentTask;
-  const operational = run.control?.operational;
   if (task && runningStatuses.has(task.status)) {
     return { step: "wait", label: "Wait for the agent" };
   }
@@ -260,7 +280,12 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
   if (task?.can_retry) {
     return { step: "retry", label: "Retry this episode, or switch provider" };
   }
-  if (operational?.session.diagnostic && run.control?.episode_id) {
+  if (
+    task &&
+    actionableStatuses.has(task.status) &&
+    run.control?.episode_id &&
+    !run.control.operational?.stop_requested
+  ) {
     return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
   }
   if (run.health === "paused_at_limit") {
@@ -281,11 +306,14 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
   if ((run.control?.reasons.length ?? 0) > 0) {
     return { step: "resolve_requirements", label: "Resolve the run requirements" };
   }
+  if (run.control?.ready) {
+    return {
+      step: "start_episode",
+      label: run.control.episode_id ? "Start a new episode" : "Start an episode",
+    };
+  }
   if (!run.control?.episode_id) {
     return { step: "start_episode", label: "Start an episode" };
-  }
-  if (task && actionableStatuses.has(task.status)) {
-    return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
   }
   return { step: "review", label: "Review the loop state" };
 }
@@ -332,7 +360,7 @@ export function experimentWatcherDisplayItems(watchers: WatcherRecord[]): Experi
   const groups = new Map<string, ExperimentWatcherGroup>();
   const items: ExperimentWatcherItem[] = [];
   for (const watcher of watchers) {
-    if (!watcher.group_id) {
+    if (!isExternalWatcherRecord(watcher) || !watcher.group_id) {
       items.push({ kind: "watcher", watcher });
       continue;
     }
@@ -353,7 +381,7 @@ export function experimentWatcherDisplayItems(watchers: WatcherRecord[]): Experi
   return items;
 }
 
-function watcherGroupCountKey(watcher: WatcherRecord): keyof ExperimentWatcherCounts {
+function watcherGroupCountKey(watcher: ExternalWatcherRecord): keyof ExperimentWatcherCounts {
   switch (watcher.status) {
     case "completed":
       return "finished";
@@ -483,7 +511,7 @@ function experimentEntry(experiment: ExperimentRun): RunEntry {
     experiment.control?.operational?.current_last_activity_at,
     ...experiment.watchers.flatMap((watcher) => [
       watcher.completed_at,
-      watcher.last_checked_at,
+      watcherLastObservedAt(watcher),
       watcher.created_at,
     ]),
   ]);

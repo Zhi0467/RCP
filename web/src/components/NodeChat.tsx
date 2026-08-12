@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { removeChatAttachment, uploadChatAttachment } from "../api";
+import { removeChatAttachment, resultViewPreviewUrl, uploadChatAttachment } from "../api";
 import {
   artifactUrl,
   chatTasksMissingFromHistory,
@@ -44,7 +44,13 @@ import { MarkdownAnswer } from "../chatMarkdown";
 import { replaceTextSpan } from "../chatInput";
 import type { GlossaryIndex } from "../glossary";
 import { skillInvocationFields } from "../skillPicker";
-import { visibleChatWatchers, watcherIsIndividuallyStoppable } from "../runProjection";
+import {
+  graphConditionLabel,
+  isExternalWatcherRecord,
+  visibleChatWatchers,
+  watcherIsIndividuallyStoppable,
+  watcherLastObservedAt,
+} from "../runProjection";
 import {
   downloadDesktopArtifact,
   type DictationResultEvent,
@@ -66,6 +72,8 @@ import type {
   GraphNode,
   GraphUpdateResult,
   ProjectSnapshot,
+  ResultViewDescriptor,
+  ResultViewRequest,
   StartAgentTask,
   WatcherRecord,
 } from "../types";
@@ -89,8 +97,12 @@ interface Props {
   historyMessages?: ChatMessage[];
   chatId: string;
   presentation?: "floating" | "workspace";
+  fixedConversation?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
+  resultViews?: ResultViewDescriptor[];
+  resultViewsError?: string | null;
+  onKeepResultView?: (viewId: string) => Promise<void>;
   onStartTask: StartAgentTask;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
@@ -127,6 +139,134 @@ interface DictationSpan {
   end: number;
 }
 
+export interface ResultViewGesture {
+  type: "rcp-result-view-gesture";
+  version: 1;
+  gesture: "box" | "underscore";
+  description: string;
+}
+
+export type ResultViewTarget = { action: "none" } | ResultViewRequest;
+
+const RESULT_VIEW_ID_PATTERN = /^[0-9a-f]{24}$/;
+
+export function resultViewTargetStorageKey(projectId: string, chatId: string): string {
+  return `rcp:result-view-target:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
+}
+
+export function parseResultViewTarget(value: string | null): ResultViewTarget {
+  if (!value) return { action: "none" };
+  try {
+    const candidate: unknown = JSON.parse(value);
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return { action: "none" };
+    }
+    const record = candidate as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    if (record.action === "create" && keys.length === 1 && keys[0] === "action") {
+      return { action: "create" };
+    }
+    if (
+      record.action === "revise" &&
+      keys.length === 2 &&
+      keys[0] === "action" &&
+      keys[1] === "view_id" &&
+      typeof record.view_id === "string" &&
+      RESULT_VIEW_ID_PATTERN.test(record.view_id)
+    ) {
+      return { action: "revise", view_id: record.view_id };
+    }
+  } catch {
+    // A malformed browser value has no authority over a new turn.
+  }
+  return { action: "none" };
+}
+
+export function serializeResultViewTarget(target: ResultViewTarget): string | null {
+  if (target.action === "create") return JSON.stringify({ action: "create" });
+  if (target.action === "revise" && RESULT_VIEW_ID_PATTERN.test(target.view_id)) {
+    return JSON.stringify({ action: "revise", view_id: target.view_id });
+  }
+  return null;
+}
+
+export function resultViewGestureFromFrame(
+  event: Pick<MessageEvent, "data" | "source">,
+  frameWindow: Window | null,
+): ResultViewGesture | null {
+  if (!frameWindow || event.source !== frameWindow) return null;
+  const value: unknown = event.data;
+  if (!value || typeof value !== "object") return null;
+  const expectedKeys = ["description", "gesture", "type", "version"];
+  const keys = Object.keys(value).sort();
+  if (
+    keys.length !== expectedKeys.length ||
+    keys.some((key, index) => key !== expectedKeys[index])
+  ) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.type !== "rcp-result-view-gesture" ||
+    candidate.version !== 1 ||
+    (candidate.gesture !== "box" && candidate.gesture !== "underscore") ||
+    typeof candidate.description !== "string" ||
+    !candidate.description.trim() ||
+    new TextEncoder().encode(candidate.description).byteLength > 2048
+  ) {
+    return null;
+  }
+  return {
+    type: "rcp-result-view-gesture",
+    version: 1,
+    gesture: candidate.gesture,
+    description: candidate.description,
+  };
+}
+
+export function resultViewGestureDraft(
+  current: string,
+  viewName: string,
+  gesture: ResultViewGesture,
+): string {
+  const label = gesture.gesture === "box" ? "Boxed selection" : "Underscored selection";
+  const addition = `${label} in ${viewName}: ${gesture.description}`;
+  return current.trimEnd() ? `${current.trimEnd()}\n\n${addition}` : addition;
+}
+
+export function resultViewRequestForTarget(
+  mode: ConversationMode,
+  target: ResultViewTarget,
+  views: readonly ResultViewDescriptor[] | undefined,
+): ResultViewRequest | undefined {
+  if (mode !== "work" || target.action === "none") return undefined;
+  if (target.action === "create") return { action: "create" };
+  return views?.some((view) => view.view_id === target.view_id && view.can_revise)
+    ? { action: "revise", view_id: target.view_id }
+    : undefined;
+}
+
+export function resultViewTargetValidationError(
+  mode: ConversationMode,
+  target: ResultViewTarget,
+  views: readonly ResultViewDescriptor[] | undefined,
+): string | null {
+  if (target.action === "none") return null;
+  if (mode !== "work") return "Choose Work to create or revise a result view.";
+  if (target.action === "create") return null;
+  if (!RESULT_VIEW_ID_PATTERN.test(target.view_id)) {
+    return "The selected result view is invalid. Choose another view or No view.";
+  }
+  if (views === undefined) return "Result views are still loading.";
+  const view = views.find((candidate) => candidate.view_id === target.view_id);
+  if (!view)
+    return "The selected result view is no longer available. Choose another view or No view.";
+  if (!view.can_revise) {
+    return "The selected result view can no longer be revised. Choose another view or No view.";
+  }
+  return null;
+}
+
 export function NodeChat({
   project,
   node,
@@ -139,8 +279,12 @@ export function NodeChat({
   historyMessages = [],
   chatId,
   presentation = "floating",
+  fixedConversation = false,
   reviewPending = false,
   graphChangesDisabled = false,
+  resultViews,
+  resultViewsError = null,
+  onKeepResultView,
   onStartTask,
   onInspectTask,
   onOpenInbox,
@@ -193,6 +337,7 @@ export function NodeChat({
   const [scope, setScope] = useState(runScope);
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
+  const resultViewTargetKey = resultViewTargetStorageKey(project.id, chatId);
   const derivedMode = useMemo(
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
@@ -202,6 +347,8 @@ export function NodeChat({
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
   });
+  const modeRef = useRef(modeState.value);
+  const resultViewTargetKeyRef = useRef(resultViewTargetKey);
   const [submitting, setSubmitting] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
@@ -235,6 +382,19 @@ export function NodeChat({
     () => new Map(),
   );
   const [watchersOpen, setWatchersOpen] = useState(false);
+  const [resultViewTarget, setResultViewTarget] = useState<ResultViewTarget>(() =>
+    modeState.value === "work"
+      ? parseResultViewTarget(readStorage(resultViewTargetKey))
+      : { action: "none" },
+  );
+  const [keepingResultViewId, setKeepingResultViewId] = useState<string | null>(null);
+  const [resultViewKeepErrors, setResultViewKeepErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [resultViewFrameErrors, setResultViewFrameErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const resultViewFramesRef = useRef(new Map<string, HTMLIFrameElement>());
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
     catalog: skillCatalog,
@@ -277,6 +437,7 @@ export function NodeChat({
       ?.native_session_id ??
     null;
   const mode = modeState.value;
+  modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
@@ -286,6 +447,53 @@ export function NodeChat({
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
   const dictating = dictationState !== "idle" && dictationState !== "error";
+  const resultViewTargetValue =
+    resultViewTarget.action === "revise"
+      ? `revise:${resultViewTarget.view_id}`
+      : resultViewTarget.action;
+  const resultViewTargetError = resultViewTargetValidationError(
+    mode,
+    resultViewTarget,
+    resultViews,
+  );
+  const resultViewTargetDescriptor =
+    resultViewTarget.action === "revise"
+      ? resultViews?.find((view) => view.view_id === resultViewTarget.view_id)
+      : undefined;
+  const resultViewTargetNeedsPlaceholder =
+    resultViewTarget.action === "revise" &&
+    !resultViews?.some((view) => view.view_id === resultViewTarget.view_id && view.can_revise);
+
+  const persistResultViewTarget = useCallback(
+    (next: ResultViewTarget) => {
+      setResultViewTarget(next);
+      const serialized = serializeResultViewTarget(next);
+      if (serialized) writeStorage(resultViewTargetKey, serialized);
+      else removeStorage(resultViewTargetKey);
+    },
+    [resultViewTargetKey],
+  );
+
+  useEffect(() => {
+    if (resultViewTargetKeyRef.current === resultViewTargetKey) return;
+    resultViewTargetKeyRef.current = resultViewTargetKey;
+    setResultViewTarget(
+      modeRef.current === "work"
+        ? parseResultViewTarget(readStorage(resultViewTargetKey))
+        : { action: "none" },
+    );
+    setSubmitError(null);
+  }, [resultViewTargetKey]);
+
+  useEffect(() => {
+    if (mode !== "discuss") return;
+    if (resultViewTarget.action !== "none") {
+      persistResultViewTarget({ action: "none" });
+      setSubmitError(null);
+    } else {
+      removeStorage(resultViewTargetKey);
+    }
+  }, [mode, persistResultViewTarget, resultViewTarget.action, resultViewTargetKey]);
 
   useEffect(() => {
     setModeState((current) =>
@@ -375,19 +583,20 @@ export function NodeChat({
 
   const selectMode = useCallback(
     (next: ConversationMode) => {
+      modeRef.current = next;
       writeStorage(modeKey, next);
       setModeState({ value: next, pinned: true });
+      if (next === "discuss") {
+        persistResultViewTarget({ action: "none" });
+        setSubmitError(null);
+      }
     },
-    [modeKey],
+    [modeKey, persistResultViewTarget],
   );
 
   const toggleMode = useCallback(() => {
-    setModeState((current) => {
-      const next = toggleConversationMode(current.value);
-      writeStorage(modeKey, next);
-      return { value: next, pinned: true };
-    });
-  }, [modeKey]);
+    selectMode(toggleConversationMode(modeRef.current));
+  }, [selectMode]);
 
   useEffect(() => {
     if (presentation !== "workspace") return;
@@ -409,6 +618,118 @@ export function NodeChat({
     setMessage(next);
     skills.readMessage(next);
     setSubmitError(null);
+  };
+
+  useEffect(() => {
+    if (!resultViews) return;
+    setResultViewKeepErrors(
+      (current) =>
+        new Map(
+          [...current].filter(([viewId]) => resultViews.some((view) => view.view_id === viewId)),
+        ),
+    );
+    const currentFrameKeys = new Set(
+      resultViews.map((view) => `${view.view_id}:${view.updated_at}`),
+    );
+    setResultViewFrameErrors(
+      (current) => new Map([...current].filter(([frameKey]) => currentFrameKeys.has(frameKey))),
+    );
+  }, [resultViews]);
+
+  useEffect(() => {
+    if (!resultViews?.length) return;
+    let cancelled = false;
+    resultViews.forEach((view) => {
+      const frameKey = `${view.view_id}:${view.updated_at}`;
+      void fetch(resultViewPreviewUrl(project.id, view), { method: "HEAD" })
+        .then((response) => {
+          if (cancelled) return;
+          setResultViewFrameErrors((current) =>
+            response.ok
+              ? withoutMapKey(current, frameKey)
+              : withMapValue(
+                  current,
+                  frameKey,
+                  `Preview could not be loaded (${response.status}).`,
+                ),
+          );
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setResultViewFrameErrors((current) =>
+            withMapValue(
+              current,
+              frameKey,
+              `Preview could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+        });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, resultViews]);
+
+  useEffect(() => {
+    if (!resultViews?.length) return;
+    const receiveGesture = (event: MessageEvent) => {
+      for (const view of resultViews) {
+        if (!view.can_revise) continue;
+        const gesture = resultViewGestureFromFrame(
+          event,
+          resultViewFramesRef.current.get(view.view_id)?.contentWindow ?? null,
+        );
+        if (!gesture) continue;
+        const next = resultViewGestureDraft(message, view.name, gesture);
+        selectMode("work");
+        persistResultViewTarget({ action: "revise", view_id: view.view_id });
+        setMessage(next);
+        skills.readMessage(next);
+        setSubmitError(null);
+        window.requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(next.length, next.length);
+        });
+        return;
+      }
+    };
+    window.addEventListener("message", receiveGesture);
+    return () => window.removeEventListener("message", receiveGesture);
+  }, [message, persistResultViewTarget, resultViews, selectMode]);
+
+  const chooseResultViewTarget = (value: string) => {
+    if (value === "create") {
+      selectMode("work");
+      persistResultViewTarget({ action: "create" });
+      setSubmitError(null);
+      return;
+    }
+    if (value.startsWith("revise:")) {
+      const viewId = value.slice("revise:".length);
+      if (resultViews?.some((view) => view.view_id === viewId && view.can_revise)) {
+        selectMode("work");
+        persistResultViewTarget({ action: "revise", view_id: viewId });
+        setSubmitError(null);
+        return;
+      }
+    }
+    persistResultViewTarget({ action: "none" });
+    setSubmitError(null);
+  };
+
+  const keepResultViewCard = async (viewId: string) => {
+    if (!onKeepResultView || keepingResultViewId) return;
+    setKeepingResultViewId(viewId);
+    setResultViewKeepErrors((current) => withoutMapKey(current, viewId));
+    try {
+      await onKeepResultView(viewId);
+    } catch (error) {
+      setResultViewKeepErrors((current) =>
+        withMapValue(current, viewId, error instanceof Error ? error.message : String(error)),
+      );
+    } finally {
+      setKeepingResultViewId(null);
+    }
   };
 
   const stopDictation = (invalidate = false) => {
@@ -581,6 +902,7 @@ export function NodeChat({
 
   const send = async () => {
     const text = message.trim();
+    const resultViewRequest = resultViewRequestForTarget(mode, resultViewTarget, resultViews);
     if (
       !text ||
       attachmentsUnready ||
@@ -591,6 +913,10 @@ export function NodeChat({
       reviewPending
     )
       return;
+    if (resultViewTarget.action !== "none" && (!resultViewRequest || resultViewTargetError)) {
+      setSubmitError(resultViewTargetError ?? "The selected result view cannot be used.");
+      return;
+    }
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const clientId = `pending-${crypto.randomUUID()}`;
@@ -614,6 +940,7 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
+        ...(resultViewRequest ? { result_view: resultViewRequest } : {}),
         ...(readyAttachments.length && attachmentSetId
           ? {
               attachment_set_id: attachmentSetId,
@@ -627,6 +954,7 @@ export function NodeChat({
       setAttachments([]);
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
+      if (resultViewRequest) persistResultViewTarget({ action: "none" });
       selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
@@ -829,9 +1157,11 @@ export function NodeChat({
             <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
           )}
         </div>
-        <button className="chat-new-session" type="button" onClick={onNewSession}>
-          <MessageCirclePlus size={13} /> New session
-        </button>
+        {!fixedConversation && (
+          <button className="chat-new-session" type="button" onClick={onNewSession}>
+            <MessageCirclePlus size={13} /> New session
+          </button>
+        )}
         {presentation === "workspace" && watcherToggle}
         <div className="chat-scope-control">
           <RepositoryScope
@@ -845,26 +1175,34 @@ export function NodeChat({
       </div>
       {liveWatchers.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Active watchers">
-          {liveWatchers.map((watcher) => (
-            <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
-              <strong>{fileName(watcher.log_path)}</strong>
-              <time dateTime={watcher.last_checked_at ?? undefined}>
-                {watcher.last_checked_at
-                  ? `Checked ${new Date(watcher.last_checked_at).toLocaleString()}`
-                  : "Not checked yet"}
-              </time>
-              {watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-              {onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() => onStopWatcher(watcher.watcher_id)}
-                >
-                  Stop watching
-                </button>
-              )}
-            </div>
-          ))}
+          {liveWatchers.map((watcher) => {
+            const external = isExternalWatcherRecord(watcher);
+            const observedAt = watcherLastObservedAt(watcher);
+            return (
+              <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
+                <strong>
+                  {external ? fileName(watcher.log_path) : graphConditionLabel(watcher.condition)}
+                </strong>
+                <time dateTime={observedAt ?? undefined}>
+                  {observedAt
+                    ? `${external ? "Checked" : "Evaluated"} ${new Date(observedAt).toLocaleString()}`
+                    : external
+                      ? "Not checked yet"
+                      : "Not evaluated yet"}
+                </time>
+                {external && watcher.last_error && <span role="alert">{watcher.last_error}</span>}
+                {onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
+                  <button
+                    className="button compact"
+                    type="button"
+                    onClick={() => onStopWatcher(watcher.watcher_id)}
+                  >
+                    Stop watching
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </section>
       )}
       <div
@@ -1034,6 +1372,63 @@ export function NodeChat({
           );
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
+        {((resultViews?.length ?? 0) > 0 || resultViewsError) && (
+          <section className="result-view-cards" aria-label="Result views">
+            {resultViewsError && (
+              <div className="result-view-error" role="alert">
+                {resultViewsError}
+              </div>
+            )}
+            {(resultViews ?? []).map((view) => {
+              const frameKey = `${view.view_id}:${view.updated_at}`;
+              const keepError = resultViewKeepErrors.get(view.view_id);
+              const frameError = resultViewFrameErrors.get(frameKey);
+              return (
+                <article className={`result-view-card ${view.state}`} key={view.view_id}>
+                  <header>
+                    <strong>{view.name}</strong>
+                    <span className={`result-view-state ${view.state}`}>{view.state}</span>
+                    {view.state === "temporary" && (
+                      <button
+                        className="button compact result-view-keep"
+                        type="button"
+                        disabled={!onKeepResultView || Boolean(keepingResultViewId)}
+                        aria-busy={keepingResultViewId === view.view_id}
+                        onClick={() => void keepResultViewCard(view.view_id)}
+                      >
+                        {keepingResultViewId === view.view_id ? "Keeping" : "Keep"}
+                      </button>
+                    )}
+                  </header>
+                  <iframe
+                    ref={(frame) => {
+                      if (frame) resultViewFramesRef.current.set(view.view_id, frame);
+                      else resultViewFramesRef.current.delete(view.view_id);
+                    }}
+                    src={resultViewPreviewUrl(project.id, view)}
+                    sandbox="allow-scripts"
+                    title={`${view.name} result view`}
+                    onError={() =>
+                      setResultViewFrameErrors((current) =>
+                        withMapValue(current, frameKey, "Preview could not be loaded."),
+                      )
+                    }
+                  />
+                  {frameError && (
+                    <strong className="result-view-error" role="alert">
+                      {frameError}
+                    </strong>
+                  )}
+                  {keepError && (
+                    <strong className="result-view-error" role="alert">
+                      {keepError}
+                    </strong>
+                  )}
+                </article>
+              );
+            })}
+          </section>
+        )}
       </div>
       <div
         className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
@@ -1058,6 +1453,42 @@ export function NodeChat({
         }}
       >
         <SkillPicker {...skills.props} />
+        {(resultViews !== undefined || resultViewTarget.action !== "none") && (
+          <div className="result-view-target">
+            <label>
+              <span>View</span>
+              <select
+                aria-label="Result view target"
+                value={resultViewTargetValue}
+                onChange={(event) => chooseResultViewTarget(event.currentTarget.value)}
+              >
+                <option value="none">No view</option>
+                <option value="create">New view</option>
+                {resultViewTargetNeedsPlaceholder && resultViewTarget.action === "revise" && (
+                  <option value={`revise:${resultViewTarget.view_id}`} disabled>
+                    {resultViews === undefined
+                      ? "Selected view (loading)"
+                      : resultViewTargetDescriptor
+                        ? `${resultViewTargetDescriptor.name} (not revisable)`
+                        : "Selected view (unavailable)"}
+                  </option>
+                )}
+                {(resultViews ?? [])
+                  .filter((view) => view.can_revise)
+                  .map((view) => (
+                    <option value={`revise:${view.view_id}`} key={view.view_id}>
+                      {view.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            {resultViewTargetError && (
+              <span className="result-view-error" role="alert">
+                {resultViewTargetError}
+              </span>
+            )}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="chat-attachment-chips" aria-label="Files for this turn">
             {attachments.map((item) => (

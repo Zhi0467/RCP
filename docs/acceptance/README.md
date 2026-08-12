@@ -182,7 +182,7 @@ it but a browser or a machine we do not have.
 | [S28](S28-one-backend-two-entrances.md) | One backend, two entrances | implemented | pytest + api | covered + driven 2026-07-31 |
 | [S29](S29-refuse-instead-of-taking.md) | Nothing takes a backend that is doing work without saying what it interrupts | implemented | pytest | covered |
 | [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | implemented | **desktop** | live desktop + browser drive |
-| [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | **desktop** | reused path passed; owned/timeout paths pending |
+| [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | implemented | **desktop** | owned, reused, takeover, and reported forced-timeout paths passed |
 | [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and downloads land, isolated more strongly than in a browser | pending | **desktop** | artifact card fixed; native preview/download drive pending |
 | [S33](S33-a-seed-corrects-itself.md) | A seed that goes wrong corrects itself | implemented | pytest + **browser** | covered + driven 2026-07-31 |
 | [S34](S34-packaged-app-needs-no-toolchain.md) | A dev shell that loads the checkout, and a release app that needs nothing | implemented | **desktop** | partial drive 2026-07-31 |
@@ -198,7 +198,7 @@ it but a browser or a machine we do not have.
 | [S47](S47-agent-usage-ledger.md) | See counted provider usage in Settings | implemented | pytest + **browser** | 3 checks + driven 2026-08-02 |
 | [S48](S48-screen-story-token-scale.md) | Measure project usage in favorite screen stories | implemented | **browser** | 5 checks + driven 2026-08-02 |
 | [S49](S49-chat-node-reference-links.md) | Open an existing node from a chat answer | implemented | **browser** | covered + driven 2026-08-02 |
-| [S50](S50-minimal-agent-proposal-boundary.md) | Ordinary agents propose only evidence-grounded belief changes | implemented | pytest | covered |
+| [S50](S50-minimal-agent-proposal-boundary.md) | Hypothesis status Proposals stay evidence-grounded | implemented | pytest | covered |
 | [S51](S51-live-agent-patch-validation.md) | Every patch-producing task checks the exact semantic patch RCP will apply | implemented | pytest | covered |
 | [S52](S52-explicit-rejection-and-node-removal.md) | Judge explicitly and remove current graph nodes without rewriting history | implemented | **browser** | covered + driven 2026-08-03 |
 | [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and run surfaces tell one truthful story | implemented | **browser** | covered + driven 2026-08-08 |
@@ -220,10 +220,10 @@ it but a browser or a machine we do not have.
 | [S72](S72-runs-operational-hierarchy.md) | Runs leads with live operational state | implemented | **browser** | tests + browser 2026-08-06 |
 | [S73](S73-experiment-loop-native-wake-continuity.md) | Watcher wakes continue one bounded episode session | implemented | pytest | tests + browser 2026-08-06 |
 | [S74](S74-boundary-inputs-fail-closed.md) | Uncommon boundary inputs fail closed without damaging the project | implemented | pytest + browser | tests + browser 2026-08-06 |
-| [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | blocked-external | pytest + **browser** | provider commands + Codex browser 2026-08-07 |
-| [S76](S76-graph-condition-wake.md) | Wake a conversation when a canonical graph condition becomes true | pending — **not human-confirmed** | pytest | none |
-| [S77](S77-auto-research-stops-at-belief.md) | Let auto-research create freely and propose changes to existing epistemic nodes | pending — **not human-confirmed** | pytest | none |
-| [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | pending — **not human-confirmed** | **browser** | none |
+| [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | implemented | pytest + **browser** | tests + Codex 2026-08-07 + Claude 2026-08-12 |
+| [S76](S76-graph-condition-wake.md) | Wake a conversation when a canonical graph condition becomes true | implemented | pytest | tests + web 2026-08-12 |
+| [S77](S77-auto-research-stops-at-belief.md) | Let auto-research create freely and propose changes to existing epistemic nodes | implemented | pytest | covered |
+| [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | pending | **browser** | none |
 | [S79](S79-cold-desktop-launch-renders.md) | A cold desktop launch never rests on a blank window | implemented | **desktop** | driven 2026-08-07 |
 | [S80](S80-question-hierarchy-flow-columns.md) | Read question hierarchy from the Research flow columns | implemented | **browser** | layout tests + driven 2026-08-07 |
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without reloading the UI | implemented | api + **browser** | tests + driven 2026-08-07 |
@@ -244,7 +244,7 @@ it but a browser or a machine we do not have.
 | [S97](S97-a-project-carries-its-identity.md) | A project says who it is and where it belongs | implemented | pytest + **browser** | tests + browser 2026-08-11 |
 | [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project over to the lab, once | pending — **not human-confirmed** | pytest + **browser** | none |
 | [S99](S99-attribution-travels-with-history.md) | History says who authorized a change | implemented | pytest + **browser** | tests + browser 2026-08-11 |
-| [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts, and nothing unauthorized lands | pending — **not human-confirmed** | pytest | none |
+| [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts, and nothing unauthorized lands | implemented | pytest | dispatch authority + live Apply movement |
 | [S101](S101-project-membership-and-invitations.md) | Being in the lab is not being on the project | pending — **not human-confirmed** | pytest + **browser** | none |
 | [S102](S102-team-runs-execute-as-the-space-account.md) | Team work runs where the space can reach it, as the space | pending — **not human-confirmed** | pytest + api + ssh | none |
 | [S103](S103-server-operations-are-console-operations.md) | Dangerous operations need the machine, not a login | pending — **not human-confirmed** | pytest + api | none |
@@ -256,8 +256,13 @@ it but a browser or a machine we do not have.
 | [S109](S109-tabs-stay-current-without-freezing.md) | A project tab stays current without ever waiting on the remote | implemented | pytest + **browser** | tests + browser + live SSH 2026-08-11 |
 | [S110](S110-paper-draft-survives-a-canonical-change.md) | A paper draft survives a canonical change without choosing a side | implemented | pytest + **browser** | paper/storage + Incoming UI checks |
 | [S111](S111-durable-space-identity.md) | A space keeps one identity across process and path changes | implemented | pytest + api | tests + api 2026-08-11 |
-| [S112](S112-basic-human-identity.md) | A person has one durable identity inside a space | implemented | pytest + api + **browser** | tests + api + browser 2026-08-11 |
-| [S113](S113-campaign-attribution.md) | Campaign work retains its authorization lineage | pending — **not human-confirmed** | pytest + **browser** | none |
+| [S112](S112-basic-human-identity.md) | A person has one durable identity inside a space | implemented | pytest + api + **browser** | tests + api + landing browser 2026-08-12 |
+| [S113](S113-campaign-attribution.md) | Campaign work retains its authorization lineage | pending | pytest + **browser** | none |
+| [S114](S114-see-your-results-without-leaving.md) | See your results without leaving RCP | pending | pytest + **browser** + ssh | none |
+| [S115](S115-beliefs-change-only-through-you.md) | An agent may rewrite anything except what you believe | implemented | pytest + **browser** | focused tests + Inbox drive 2026-08-12 |
+| [S116](S116-choose-existing-or-fresh-research.md) | Choose existing research or start fresh before setup changes anything | implemented | pytest + **browser** + ssh | setup, transport, history, browser + live SSH 2026-08-12 |
+| [S117](S117-project-owned-caches.md) | Clear one project's cache without clearing another project's cache | implemented | pytest + **browser** | cache lifecycle, deletion, API, web, browser 2026-08-12 |
+| [S118](S118-identity-and-membership-start-at-the-index.md) | Put personal identity and an explicit team seam on the project index | implemented | pytest + **browser** | tests + browser 2026-08-12 |
 
 S95–S105 are the original team-space set. They come from the confirmed design in
 [`../design/`](../design/README.md). S97, S99, and the narrower S111–S112

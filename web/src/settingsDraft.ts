@@ -1,13 +1,27 @@
-import type { AgentRunConfig, AgentSurface, Machine, ProviderId, SkillDefaults } from "./types";
+import type {
+  AgentExecutionProfile,
+  AgentRunConfig,
+  Machine,
+  ProviderId,
+  SkillDefaults,
+} from "./types";
 
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 
 export interface SettingsDraft {
   version: 1;
   scope: string[];
-  profiles: Record<AgentSurface, AgentRunConfig>;
+  profiles: Partial<Record<AgentExecutionProfile, AgentRunConfig>>;
+  campaignInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
   skillDefaults?: SkillDefaults;
+}
+
+export function mergeAgentProfiles(
+  saved: Record<AgentExecutionProfile, AgentRunConfig>,
+  staged: SettingsDraft["profiles"],
+): Record<AgentExecutionProfile, AgentRunConfig> {
+  return { ...saved, ...staged };
 }
 
 export function settingsDraftStorageKey(projectId: string): string {
@@ -26,6 +40,12 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
       return null;
     if (!isRecord(parsed.profiles)) return null;
+    if (
+      parsed.campaignInvocationCeiling !== undefined &&
+      (!Number.isSafeInteger(parsed.campaignInvocationCeiling) ||
+        (parsed.campaignInvocationCeiling as number) < 2)
+    )
+      return null;
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;

@@ -77,9 +77,11 @@ canonical blueprint. Building the first must not silently alter the second.
   the v1 advisory active-loop marker enough? Human authority must remain explicit
   either way.
 
-Graph-level scheduling across the research frontier is still separately deferred.
-It is not part of this question merely because both features use the word
-"control."
+Graph-level scheduling across the research frontier is **no longer deferred**. It
+is decided as the bounded auto-research campaign in the blueprint's
+[Auto-research campaigns](research-control-panel-blueprint.md#auto-research-campaigns)
+section, and it remains outside this question — the two features share only the
+word "control."
 
 ---
 
@@ -108,164 +110,62 @@ question is decided.
 
 ---
 
-## Q6 — Should RCP host research-data views as a surface of its own?
+## Q6 — May a result view emit a research action?
 
-**Status:** open. Raised 2026-08-06. No decision. Two candidate designs already
-ruled out — see below, and do not re-derive them.
+**Status:** open, and much narrower than when raised. The parent question —
+whether RCP shows the researcher their own data, and in what shape — was decided
+2026-08-12 and now lives in the blueprint under
+[Result views](research-control-panel-blueprint.md#result-views), driven by
+[S114](acceptance/S114-see-your-results-without-leaving.md).
 **Related:** [Q7](#q7--which-domains-can-rcp-serve-and-where-must-it-link-instead-of-host)
-decides *for whom* this would be worth building; this entry decides *what* it is.
+decides *for whom* this is worth building.
 
-### The question
+### What was decided, so it is not re-derived
 
-Every projection RCP currently offers is text-shaped: Research is prose paths,
-DAG is nodes and edges, Paper is Markdown, Runs is operational rows, Inbox is
-proposals. The one place data can be seen is the preview artifact, and invariant
-10e deliberately makes those temporary, non-canonical, and expiring. RCP has
-therefore already decided — by omission — that a view of one's own data is not
-part of project truth.
+RCP hosts result views, but **not as a surface of its own**. They are ordinary
+Work turns drawing pages the human reads inside Runs, disposable by default,
+revised by acting on the picture, and optionally kept as a repository file that
+carries no graph authority. Where it lives, durable versus disposable, and who
+draws are all settled there.
 
-The question is whether that decision is right, and if not, what the replacement
-is: what a view is, where it lives, and what it is allowed to produce.
+Two candidate designs were ruled out on the way and should not be revived:
+a **pre-declared decision request plus session capture** (it assumes the human
+knows which decision they are making before opening the tool, and makes ten
+small edits into ten round trips), and **file observation as the main line**
+(better plumbing, but it supplies provenance after the fact for a complaint
+about not being able to see *during*). The second remains a candidate mechanism
+for the external tail only.
 
-### What prompted it
+### What is still open
 
-A widely-circulated critique of scientific agents (Claude Science, Open Science,
-Biomni), posted 2026-08-06 by someone who is both a developer and a benchtop
-researcher. Its argument, compressed:
+Whether a view may ever **emit a research action** — select six runs, call them
+evidence, and have that become a graph change with provenance recording that a
+human chose them.
 
-- These products are built AI-centered; research is data-centered.
-- They are shaped like an IDE — chat in the middle, plots and code on the side.
-  To see anything you must write code, intermediate states of an analysis are not
-  visible without extra work, and saving figures to disk to open one by one is
-  worse than the specialized software the researcher already has.
-- The operations that actually matter — hand-picking features, deleting a few
-  wrong segmentation masks — still require leaving for a domain tool.
-- *"If I only use these agents for literature review, why not just use Claude
-  Code?"*
-- The stated ideal: the agent belongs backstage; visualization and interaction
-  belong at the center; static matplotlib is not enough — the agent should write
-  the researcher an interactive interface.
+S114 deliberately contains no such control. A view there is read-only: it
+changes no graph state, appends no Patch, and creates no Proposal. That was the
+right first cut, and it leaves the question intact rather than answering it by
+omission.
 
-### What the complaint actually is
+What blocks a decision: selecting runs and calling them evidence is a human
+authority action, so it is legal under invariant 3 — but whether it asserts
+directly or creates a Proposal has to follow from invariant 10b's narrow gating
+rule, and that has not been checked against it. There is also no evidence yet
+that the gesture is wanted: the loop S114 builds is *look, ask, look again*, and
+nobody has used it long enough to know whether recording a conclusion from
+inside a view is a real need or a tidy-sounding one.
 
-Not "the plots are ugly," and not provenance. It is **loop latency**: see the
-data → form a hunch → try a transform → see the result → adjust. The tighter that
-loop, the more turns a researcher takes, and the better the research goes. Agents
-currently lengthen it, because their output is code that must be run and whose
-result must be opened somewhere else.
-
-Domain software is fast inside that loop and useless outside it; a general agent
-is the reverse. The two halves live in different places, and that separation is
-the cost.
-
-### Two designs considered and ruled out
-
-Recorded because both are attractive on first contact and both fail for reasons
-that are not obvious until stated.
-
-**1. Pre-declared decision request plus session capture.** RCP names the decision
-it wants (`select_subset`, `edit_labels`, geometry, ranking, confirm), an agent
-writes a launcher script that opens the domain tool with the right layers and
-captures the result on exit, and the payload comes back as a patch. The payloads
-really are tiny — a mask edit reduces to a list of label ids, and the pixels
-never move.
-
-It still fails, and not on process lifecycle. It assumes the human knows what
-decision they are making before they open the tool, and that they make it once.
-Real use is unbounded: open it, poke, revert, leave for two days, come back and
-finish. Ten small edits become ten round trips through RCP. There is no "the
-decision" available to declare up front, and no session worth keeping alive.
-
-**2. File observation as the main line.** RCP watches artifacts the project
-declares, and an agent-written pure differ turns two file states into a decision
-record. This is strictly better plumbing than (1) — no process, no session, no
-sleep-survival problem, and it collapses the scriptable/proprietary tool
-distinction entirely, since only "the tool saves a file" matters.
-
-But it answers RCP's bookkeeping problem, not the researcher's. It supplies
-provenance after the fact for a complaint about not being able to see during.
-Keep it as a candidate mechanism for the external tail; it is not the thesis.
-
-### The unit, if RCP builds one
-
-A view is **data binding + primitive + encoding + the decisions it can emit**.
-The agent authors the encoding; RCP owns the other three.
-
-Primitives, and where the host/link line falls:
-
-| Primitive | Used for | Host? |
-|---|---|---|
-| Table (rows = entities, cols = attributes) | run tables, dataset stats, per-example predictions, eval results | yes |
-| Series (ordered axis × value, overlaid traces) | loss curves, convergence, throughput | yes |
-| Distribution (histogram, violin, ECDF) | label balance, length distributions, seed variance | yes |
-| Matrix (2D grid of values) | attention, confusion, correlation, ablation pivot, spectra | yes |
-| Projection (brushable point cloud) | embeddings, parameter-vs-metric, Pareto fronts | yes |
-| Item grid / side-by-side | sample outputs, failure cases, prompt-completion comparison | yes |
-| Diff (two structured objects) | config, code, prompt, output | yes |
-| Node-link graph | computation graphs, architectures | Netron exists |
-| Field / mesh (values over a spatial domain) | PDE solutions, simulation output | no — ParaView, VisIt |
-| Timeline / trace (spans over time) | profiling, distributed timing, agent trajectories | no — Perfetto |
-
-**The line runs through primitives, not through subfields.** Even inside CSE
-there are entrenched viewers, and they cluster on exactly two shapes: values over
-a continuous spatial domain, and long spans over time.
-
-### What RCP would actually be contributing
-
-Not rendering. **The data binding and the research context are already in hand.**
-Every generic tool makes the researcher re-explain where the data is and what the
-fields mean on each visit; RCP already knows what those forty runs were, which
-hypothesis each tested, and which one the human called anomalous last Tuesday.
-
-That saved re-explanation *is* the loop latency, and it is the only honest answer
-to "why not just use Claude Code."
-
-### What blocks a decision
-
-1. **Unmeasured core assumption.** The whole design rests on an agent authoring a
-   usable view in seconds and then *amending it in place* rather than
-   regenerating it. Nothing in the repo does this today and no measurement exists.
-   If this is slow, none of the rest matters.
-2. **Durable or disposable — the criterion reversed itself.** The first sketch
-   wanted a durable, replayable view spec stored in a patch. Loop latency argues
-   the opposite: intermediate views should be cheap and thrown away, which is
-   precisely the "saving figures one by one" the critique names. A split
-   (disposable by default, explicit promotion for the ablation table that goes in
-   the paper) is plausible but undecided, and promotion collides with invariant
-   10e.
-3. **Where it lives.** A new primary destination contradicts the recorded
-   preference that the visible projections are Research and Runs. Attaching views
-   to nodes and runs instead preserves that, but reproduces the scattering the
-   critique is about — data with no stage. Unresolved.
-4. **What the action bar emits.** Selecting six runs and calling them evidence is
-   a human authority action, so it is legal under invariant 3. Whether it asserts
-   directly or creates a Proposal follows from invariant 10b's narrow gating rule
-   and has not been checked against it.
-
-### Do not do in the meantime
-
-- Do not build a launcher-and-capture path, and do not add a per-domain
-  connector; both are ruled out above.
-- Do not promote preview artifacts into canonical state to "make views durable."
-  That is a change to invariant 10e and is question (2), not an implementation
-  detail.
-- Do not add a generic dashboard. Profiling, GPU utilization, scalar browsing and
-  sweep panels answer *is my machinery working*, not *what did I learn*; they have
-  incumbents and are out of scope whichever way this goes.
-
-### Cheapest probe, when this is taken up
-
-Table, Series, and Diff only, bound to runs, with one action: select rows →
-evidence, provenance recording that a human chose them. Three primitives share
-one data binding and are enough to measure question (1), which gates everything
-else.
+Do not build an action bar into a view before S114 has been used on real work.
 
 ---
 
 ## Q7 — Which domains can RCP serve, and where must it link instead of host?
 
 **Status:** open. Raised 2026-08-06. No decision.
-**Related:** [Q6](#q6--should-rcp-host-research-data-views-as-a-surface-of-its-own).
+**Related:** the shape boundary this predicate leans on is now decided and lives
+in the blueprint under
+[Result views](research-control-panel-blueprint.md#result-views);
+[Q6](#q6--may-a-result-view-emit-a-research-action) is what remains open there.
 
 ### The question
 
@@ -295,7 +195,8 @@ available, because the alternative is a hand-written script and a saved PNG.
 | A view is | a project | a small program |
 | Agent-authored interface | loses to napari | best available option |
 
-The critique in Q6 ends by asking for an AI-written interactive interface. In the
+The critique that prompted this work ends by asking for an AI-written
+interactive interface. In the
 author's own field that is not achievable, which is why it stays a complaint. In
 CSE it is achievable. **That is what choosing CSE actually buys** — not a market
 segment, but the one domain where the prescription works.
@@ -344,8 +245,8 @@ videos fall on the array side.
    either kind. If it does not, "adjacent" is doing more work than it can bear.
 3. **Does the predicate hold at the seams?** A CSE project that produces a PDE
    solution field, or an interpretability project that wants a trace view, sits on
-   both sides at once. Q6 answers this per primitive; whether that is sufficient
-   in a real mixed project is untested.
+   both sides at once. The blueprint's shape table answers this per shape;
+   whether that is sufficient in a real mixed project is untested.
 
 ### Do not do in the meantime
 
@@ -354,8 +255,9 @@ videos fall on the array side.
 - Do not claim support for a domain in user-facing documentation without running
   it through the predicate first.
 - Do not treat the do-not-enter list as permanent contempt for those fields. It
-  says RCP loses to their viewers, not that their work is out of reach — the
-  external-tail mechanism in Q6 is where they would be served, if ever.
+  says RCP loses to their viewers, not that their work is out of reach — file
+  observation of what an external tool saves is where they would be served, if
+  ever. That mechanism was recorded and set aside, not adopted.
 
 ---
 

@@ -499,19 +499,23 @@ finally:
             raise ValueError(result.stderr.strip() or f"missing remote input {safe_label}")
         return result.stdout
 
-    def read_workspace_text(self, name: str) -> str:
+    def read_workspace_text(self, name: str, *, max_bytes: int | None = None) -> str:
         """Read one direct regular workspace file without following symlinks.
 
         A missing file is normal mailbox state and raises ``FileNotFoundError``.
         An unavailable stage or SSH connection raises ``StateUnavailable`` so a
         caller cannot mistake transport failure for a request that has not arrived.
+        When ``max_bytes`` is set, the remote process checks the opened file and
+        transfers at most one byte beyond that limit before failing.
         """
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         name = _plain_workspace_file_name(name)
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError("remote workspace byte limit must not be negative")
         script = """
 import os,stat,sys
-root,name=sys.argv[1:3]
+root,name,limit=sys.argv[1],sys.argv[2],int(sys.argv[3])
 directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
 fds=[]
 try:
@@ -534,15 +538,30 @@ try:
         raise SystemExit(45)
     except OSError as exc:
         print(str(exc),file=sys.stderr); raise SystemExit(46)
-    if not stat.S_ISREG(os.fstat(file_fd).st_mode): raise SystemExit(46)
-    while True:
-        chunk=os.read(file_fd,1024*1024)
+    opened=os.fstat(file_fd)
+    if not stat.S_ISREG(opened.st_mode): raise SystemExit(46)
+    if limit>=0 and opened.st_size>limit: raise SystemExit(47)
+    remaining=None if limit<0 else limit+1
+    while remaining is None or remaining:
+        amount=1024*1024 if remaining is None else min(1024*1024,remaining)
+        chunk=os.read(file_fd,amount)
         if not chunk: break
         sys.stdout.buffer.write(chunk)
+        if remaining is not None: remaining-=len(chunk)
+    if remaining==0: raise SystemExit(47)
 finally:
     for item in reversed(fds): os.close(item)
 """
-        result = self._ssh_bytes(["python3", "-c", script, str(self.root), name])
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                script,
+                str(self.root),
+                name,
+                str(-1 if max_bytes is None else max_bytes),
+            ]
+        )
         if result.returncode == 44:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise StateUnavailable(
@@ -552,6 +571,8 @@ finally:
             raise FileNotFoundError(f"remote workspace file is absent: {name}")
         if result.returncode == 46:
             raise ValueError(f"remote workspace entry is not a readable regular file: {name}")
+        if result.returncode == 47:
+            raise ValueError(f"mailbox file exceeds {max_bytes} bytes: {name}")
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise StateUnavailable(detail or f"could not read remote workspace file {name}")
@@ -641,6 +662,44 @@ try:
     except OSError as exc:
         print(str(exc),file=sys.stderr); raise SystemExit(44)
     print(json.dumps(sorted(names)))
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh(["python3", "-c", script, str(self.root)])
+        if result.returncode:
+            raise StateUnavailable(
+                result.stderr.strip() or f"could not list remote run workspace {self.workspace}"
+            )
+        try:
+            names = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise StateUnavailable("remote run workspace listing returned invalid data") from exc
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise StateUnavailable("remote run workspace listing returned invalid names")
+        return sorted(names)
+
+    def list_workspace_entries(self) -> list[str]:
+        """Return every direct entry name without following the workspace or its children.
+
+        Mailbox preparation needs to see a stale symlink, directory, or special
+        entry rather than mistake it for an empty workspace. Removal can then
+        either clear the exact safe entry or fail closed.
+        """
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        script = """
+import json,os,sys
+root=sys.argv[1]
+flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',flags,dir_fd=root_fd); fds.append(workspace_fd)
+        names=sorted(os.listdir(workspace_fd))
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    print(json.dumps(names))
 finally:
     for item in reversed(fds): os.close(item)
 """
@@ -789,6 +848,565 @@ finally:
             raise StateUnavailable(detail or "could not read remote artifact")
         return result.stdout
 
+    def touch(self) -> None:
+        """Refresh this conversation stage's rolling retention timestamp."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        script = """
+import os,sys
+root=sys.argv[1]
+flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fd=None
+try:
+    fd=os.open(root,flags)
+    os.utime(fd,None)
+except OSError as exc:
+    print(str(exc),file=sys.stderr); raise SystemExit(44)
+finally:
+    if fd is not None: os.close(fd)
+"""
+        result = self._ssh(["python3", "-c", script, str(self.root)])
+        if result.returncode:
+            raise StateUnavailable(
+                result.stderr.strip() or f"could not touch remote run stage {self.root}"
+            )
+
+    def prepare_result_view_slot(
+        self,
+        view_id: str,
+        *,
+        reuse: bool,
+    ) -> PurePosixPath:
+        """Create or reopen one stable result-view slot in this conversation stage."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        target = self.workspace / "views" / view_id
+        script = """
+import os,sys
+root,view_id,reuse=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
+flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',flags,dir_fd=root_fd); fds.append(workspace_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        try:
+            views_fd=os.open('views',flags,dir_fd=workspace_fd)
+        except FileNotFoundError:
+            os.mkdir('views',0o700,dir_fd=workspace_fd)
+            views_fd=os.open('views',flags,dir_fd=workspace_fd)
+        fds.append(views_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    if reuse:
+        try:
+            slot_fd=os.open(view_id,flags,dir_fd=views_fd); fds.append(slot_fd)
+        except FileNotFoundError:
+            raise SystemExit(45)
+        except OSError as exc:
+            print(str(exc),file=sys.stderr); raise SystemExit(46)
+    else:
+        try:
+            os.mkdir(view_id,0o700,dir_fd=views_fd)
+            slot_fd=os.open(view_id,flags,dir_fd=views_fd); fds.append(slot_fd)
+        except FileExistsError:
+            raise SystemExit(47)
+        except OSError as exc:
+            print(str(exc),file=sys.stderr); raise SystemExit(46)
+    os.utime(root_fd,None)
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh(
+            ["python3", "-c", script, str(self.root), view_id, "1" if reuse else "0"]
+        )
+        if result.returncode == 44:
+            raise StateUnavailable(
+                result.stderr.strip() or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 45:
+            raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
+        if result.returncode == 46:
+            raise ValueError(f"remote result view slot is unsafe: {view_id}")
+        if result.returncode == 47:
+            raise FileExistsError(f"remote result view slot already exists: {view_id}")
+        if result.returncode:
+            raise StateUnavailable(
+                result.stderr.strip() or f"could not prepare remote result view slot {view_id}"
+            )
+        return target
+
+    def list_result_view_files(self, view_id: str) -> list[tuple[str, int]]:
+        """Inspect at most two entries, enough to prove the one-file contract."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        script = """
+import json,os,stat,sys
+root,view_id=sys.argv[1:3]
+flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',flags,dir_fd=root_fd); fds.append(workspace_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        views_fd=os.open('views',flags,dir_fd=workspace_fd); fds.append(views_fd)
+        slot_fd=os.open(view_id,flags,dir_fd=views_fd); fds.append(slot_fd)
+    except FileNotFoundError:
+        raise SystemExit(45)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    result=[]
+    try:
+        with os.scandir(slot_fd) as entries:
+            for entry in entries:
+                name=entry.name
+                info=os.stat(name,dir_fd=slot_fd,follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode): raise SystemExit(46)
+                result.append([name,info.st_size])
+                if len(result)==2: break
+    except FileNotFoundError:
+        raise SystemExit(46)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    print(json.dumps(sorted(result)))
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh(["python3", "-c", script, str(self.root), view_id])
+        if result.returncode == 44:
+            raise StateUnavailable(
+                result.stderr.strip() or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 45:
+            raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
+        if result.returncode == 46:
+            raise ValueError(f"remote result view slot contains an unsafe entry: {view_id}")
+        if result.returncode:
+            raise StateUnavailable(
+                result.stderr.strip() or f"could not list remote result view slot {view_id}"
+            )
+        try:
+            values = json.loads(result.stdout)
+            files = [(str(name), int(size)) for name, size in values]
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StateUnavailable("remote result view listing was invalid") from exc
+        if any(PurePosixPath(name).name != name or name in {"", ".", ".."} for name, _ in files):
+            raise StateUnavailable("remote result view listing returned invalid names")
+        return sorted(files)
+
+    def read_result_view_bytes(self, view_id: str, name: str, *, max_bytes: int) -> bytes:
+        """Read one bounded direct regular result-view file without following links."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        name = _plain_workspace_file_name(name)
+        if max_bytes < 0:
+            raise ValueError("result view byte limit must be non-negative")
+        script = """
+import os,stat,sys
+root,view_id,name,limit=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        views_fd=os.open('views',directory_flags,dir_fd=workspace_fd); fds.append(views_fd)
+        slot_fd=os.open(view_id,directory_flags,dir_fd=views_fd); fds.append(slot_fd)
+    except FileNotFoundError:
+        raise SystemExit(45)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    try:
+        file_flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)
+        file_fd=os.open(name,file_flags,dir_fd=slot_fd); fds.append(file_fd)
+    except FileNotFoundError:
+        raise SystemExit(45)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    info=os.fstat(file_fd)
+    if not stat.S_ISREG(info.st_mode): raise SystemExit(46)
+    if info.st_size>limit: raise SystemExit(47)
+    remaining=limit+1
+    while remaining:
+        chunk=os.read(file_fd,min(1024*1024,remaining))
+        if not chunk: break
+        sys.stdout.buffer.write(chunk); remaining-=len(chunk)
+    if remaining==0: raise SystemExit(47)
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(
+            ["python3", "-c", script, str(self.root), view_id, name, str(max_bytes)]
+        )
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        if result.returncode == 44:
+            raise StateUnavailable(
+                detail or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 45:
+            raise FileNotFoundError(f"remote result view file is absent: {view_id}/{name}")
+        if result.returncode == 46:
+            raise ValueError(f"remote result view file is unsafe: {view_id}/{name}")
+        if result.returncode == 47:
+            raise ValueError(f"remote result view file exceeds its byte limit: {view_id}/{name}")
+        if result.returncode:
+            raise StateUnavailable(detail or f"could not read remote result view {view_id}/{name}")
+        return result.stdout
+
+    def restore_result_view_bytes(
+        self,
+        view_id: str,
+        name: str,
+        data: bytes,
+        *,
+        max_bytes: int,
+    ) -> bool:
+        """Atomically restore one slot, quarantining agent output for the stage sweep.
+
+        Displaced or interrupted slots remain hidden beneath the conversation
+        stage. Its existing retention sweep removes the whole stage later; this
+        rollback path never recursively traverses agent-controlled output.
+        """
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        name = _plain_workspace_file_name(name)
+        if max_bytes < 0 or len(data) > max_bytes:
+            raise ValueError("result view restore exceeds its byte limit")
+        script = """
+import os,stat,sys,uuid
+root,view_id,name,limit=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+file_flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0)
+fds=[]; views_fd=None; temporary=''; quarantine=''
+def read_bounded(fd):
+    value=bytearray()
+    while len(value)<=limit:
+        chunk=os.read(fd,min(1024*1024,limit+1-len(value)))
+        if not chunk: break
+        value.extend(chunk)
+    if len(value)>limit: raise SystemExit(47)
+    return bytes(value)
+def slot_matches(parent):
+    try: slot=os.open(view_id,directory_flags,dir_fd=parent)
+    except OSError: return False
+    try:
+        files=[]
+        try:
+            with os.scandir(slot) as entries:
+                for entry in entries:
+                    info=os.stat(entry.name,dir_fd=slot,follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode): return False
+                    files.append((entry.name,info))
+                    if len(files)==2: break
+        except OSError: return False
+        if len(files)!=1 or files[0][0]!=name: return False
+        try:
+            info=files[0][1]
+            if not stat.S_ISREG(info.st_mode) or info.st_size!=len(incoming): return False
+            current=os.open(name,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0),dir_fd=slot)
+        except OSError: return False
+        try: return stat.S_ISREG(os.fstat(current).st_mode) and read_bounded(current)==incoming
+        finally: os.close(current)
+    finally: os.close(slot)
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        try: views_fd=os.open('views',directory_flags,dir_fd=workspace_fd)
+        except FileNotFoundError:
+            os.mkdir('views',0o700,dir_fd=workspace_fd)
+            views_fd=os.open('views',directory_flags,dir_fd=workspace_fd)
+        fds.append(views_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    incoming=sys.stdin.buffer.read(limit+1)
+    if len(incoming)>limit: raise SystemExit(47)
+    if slot_matches(views_fd): print('unchanged'); raise SystemExit(0)
+    temporary='.rcp-result-view-slot-'+uuid.uuid4().hex
+    os.mkdir(temporary,0o700,dir_fd=views_fd)
+    temporary_fd=os.open(temporary,directory_flags,dir_fd=views_fd)
+    try:
+        output=os.open(name,file_flags,0o600,dir_fd=temporary_fd)
+        try:
+            view=memoryview(incoming)
+            while view: view=view[os.write(output,view):]
+            os.fsync(output)
+        finally: os.close(output)
+        os.fsync(temporary_fd)
+    finally: os.close(temporary_fd)
+    try: os.stat(view_id,dir_fd=views_fd,follow_symlinks=False); previous=True
+    except FileNotFoundError: previous=False
+    if previous:
+        quarantine='.rcp-result-view-old-'+uuid.uuid4().hex
+        os.rename(view_id,quarantine,src_dir_fd=views_fd,dst_dir_fd=views_fd)
+    try:
+        os.rename(temporary,view_id,src_dir_fd=views_fd,dst_dir_fd=views_fd); temporary=''
+    except BaseException:
+        if quarantine:
+            os.rename(quarantine,view_id,src_dir_fd=views_fd,dst_dir_fd=views_fd); quarantine=''
+        raise
+    os.fsync(views_fd)
+    print('restored')
+finally:
+    # Hidden temporary/quarantine slots stay inside this conversation stage for
+    # its whole-stage retention sweep. Never traverse agent output during rollback.
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(
+            ["python3", "-c", script, str(self.root), view_id, name, str(max_bytes)],
+            input_data=data,
+        )
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        if result.returncode == 44:
+            raise StateUnavailable(
+                detail or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 45:
+            raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
+        if result.returncode == 46:
+            raise ValueError(f"remote result view restore target is unsafe: {view_id}/{name}")
+        if result.returncode == 47:
+            raise ValueError("result view restore exceeds its byte limit")
+        if result.returncode:
+            raise StateUnavailable(
+                detail or f"could not restore remote result view {view_id}/{name}"
+            )
+        return result.stdout.strip() == b"restored"
+
+    def write_result_view_rollback_snapshot(
+        self,
+        view_id: str,
+        data: bytes,
+        *,
+        max_bytes: int,
+    ) -> None:
+        """Atomically replace one bounded hidden rollback snapshot before launch."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        if max_bytes < 0 or len(data) > max_bytes:
+            raise ValueError("result view rollback snapshot exceeds its byte limit")
+        script = """
+import os,stat,sys,uuid
+root,view_id,limit=sys.argv[1],sys.argv[2],int(sys.argv[3])
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+file_flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0)
+fds=[]; temporary=''
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+        views_fd=os.open('views',directory_flags,dir_fd=workspace_fd); fds.append(views_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        try: snapshots_fd=os.open('.rcp-result-view-snapshots',directory_flags,dir_fd=views_fd)
+        except FileNotFoundError:
+            os.mkdir('.rcp-result-view-snapshots',0o700,dir_fd=views_fd)
+            snapshots_fd=os.open('.rcp-result-view-snapshots',directory_flags,dir_fd=views_fd)
+            os.fsync(views_fd)
+        fds.append(snapshots_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    incoming=sys.stdin.buffer.read(limit+1)
+    if len(incoming)>limit: raise SystemExit(47)
+    try: existing=os.stat(view_id,dir_fd=snapshots_fd,follow_symlinks=False)
+    except FileNotFoundError: pass
+    else:
+        if not stat.S_ISREG(existing.st_mode): raise SystemExit(46)
+    temporary='.rcp-result-view-snapshot-'+uuid.uuid4().hex
+    output=os.open(temporary,file_flags,0o600,dir_fd=snapshots_fd)
+    try:
+        value=memoryview(incoming)
+        while value: value=value[os.write(output,value):]
+        os.fsync(output)
+    finally: os.close(output)
+    os.replace(temporary,view_id,src_dir_fd=snapshots_fd,dst_dir_fd=snapshots_fd)
+    temporary=''
+    os.fsync(snapshots_fd)
+finally:
+    # Interrupted temporaries remain hidden under this stage for its retention sweep.
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(
+            ["python3", "-c", script, str(self.root), view_id, str(max_bytes)],
+            input_data=data,
+        )
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        if result.returncode == 44:
+            raise StateUnavailable(
+                detail or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 46:
+            raise ValueError(f"remote result view rollback snapshot is unsafe: {view_id}")
+        if result.returncode == 47:
+            raise ValueError("result view rollback snapshot exceeds its byte limit")
+        if result.returncode:
+            raise StateUnavailable(
+                detail or f"could not persist remote result view rollback snapshot {view_id}"
+            )
+
+    def read_result_view_rollback_snapshot(self, view_id: str, *, max_bytes: int) -> bytes:
+        """Read one bounded hidden rollback snapshot without following any link."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        if max_bytes < 0:
+            raise ValueError("result view rollback snapshot byte limit must be non-negative")
+        script = """
+import os,stat,sys
+root,view_id,limit=sys.argv[1],sys.argv[2],int(sys.argv[3])
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+        views_fd=os.open('views',directory_flags,dir_fd=workspace_fd); fds.append(views_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        snapshots_fd=os.open('.rcp-result-view-snapshots',directory_flags,dir_fd=views_fd)
+        fds.append(snapshots_fd)
+        file_flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)
+        snapshot_fd=os.open(view_id,file_flags,dir_fd=snapshots_fd); fds.append(snapshot_fd)
+    except FileNotFoundError: raise SystemExit(45)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    info=os.fstat(snapshot_fd)
+    if not stat.S_ISREG(info.st_mode): raise SystemExit(46)
+    if info.st_size>limit: raise SystemExit(47)
+    remaining=limit+1
+    while remaining:
+        chunk=os.read(snapshot_fd,min(1024*1024,remaining))
+        if not chunk: break
+        sys.stdout.buffer.write(chunk); remaining-=len(chunk)
+    if remaining==0: raise SystemExit(47)
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(["python3", "-c", script, str(self.root), view_id, str(max_bytes)])
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        if result.returncode == 44:
+            raise StateUnavailable(
+                detail or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 45:
+            raise FileNotFoundError("remote result view rollback snapshot is absent")
+        if result.returncode == 46:
+            raise ValueError(f"remote result view rollback snapshot is unsafe: {view_id}")
+        if result.returncode == 47:
+            raise ValueError("result view rollback snapshot exceeds its byte limit")
+        if result.returncode:
+            raise StateUnavailable(
+                detail or f"could not read remote result view rollback snapshot {view_id}"
+            )
+        return result.stdout
+
+    def clear_result_view_rollback_snapshot(
+        self,
+        view_id: str,
+        *,
+        expected_size: int,
+        expected_sha256: str,
+        max_bytes: int,
+    ) -> bool:
+        """Unlink only an unchanged direct regular snapshot; never traverse output."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        view_id = _result_view_id(view_id)
+        if (
+            expected_size < 0
+            or max_bytes < 0
+            or expected_size > max_bytes
+            or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        ):
+            raise ValueError("result view rollback snapshot clear precondition is invalid")
+        script = """
+import hashlib,os,stat,sys
+root,view_id,expected_size,expected_sha256,limit=(
+    sys.argv[1],sys.argv[2],int(sys.argv[3]),sys.argv[4],int(sys.argv[5])
+)
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]
+try:
+    try:
+        root_fd=os.open(root,directory_flags); fds.append(root_fd)
+        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+        views_fd=os.open('views',directory_flags,dir_fd=workspace_fd); fds.append(views_fd)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(44)
+    try:
+        snapshots_fd=os.open('.rcp-result-view-snapshots',directory_flags,dir_fd=views_fd)
+        fds.append(snapshots_fd)
+        file_flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)
+        snapshot_fd=os.open(view_id,file_flags,dir_fd=snapshots_fd); fds.append(snapshot_fd)
+    except FileNotFoundError: print('absent'); raise SystemExit(0)
+    except OSError as exc:
+        print(str(exc),file=sys.stderr); raise SystemExit(46)
+    opened=os.fstat(snapshot_fd)
+    if not stat.S_ISREG(opened.st_mode) or opened.st_size!=expected_size: raise SystemExit(48)
+    digest=hashlib.sha256(); remaining=limit+1
+    while remaining:
+        chunk=os.read(snapshot_fd,min(1024*1024,remaining))
+        if not chunk: break
+        digest.update(chunk); remaining-=len(chunk)
+    if remaining==0: raise SystemExit(47)
+    if digest.hexdigest()!=expected_sha256: raise SystemExit(48)
+    current=os.stat(view_id,dir_fd=snapshots_fd,follow_symlinks=False)
+    if (not stat.S_ISREG(current.st_mode) or current.st_dev!=opened.st_dev or
+        current.st_ino!=opened.st_ino): raise SystemExit(48)
+    os.unlink(view_id,dir_fd=snapshots_fd)
+    os.fsync(snapshots_fd)
+    print('cleared')
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                script,
+                str(self.root),
+                view_id,
+                str(expected_size),
+                expected_sha256,
+                str(max_bytes),
+            ]
+        )
+        if result.returncode == 44:
+            raise StateUnavailable(
+                result.stderr.strip() or f"remote run workspace {self.workspace} is unavailable"
+            )
+        if result.returncode == 46:
+            raise ValueError(f"remote result view rollback snapshot is unsafe: {view_id}")
+        if result.returncode == 47:
+            raise ValueError("result view rollback snapshot exceeds its byte limit")
+        if result.returncode == 48:
+            raise ValueError("result view rollback snapshot changed before it could be cleared")
+        if result.returncode:
+            raise StateUnavailable(
+                result.stderr.strip()
+                or f"could not clear remote result view rollback snapshot {view_id}"
+            )
+        return result.stdout.strip() == "cleared"
+
     def _ssh(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
@@ -871,6 +1489,12 @@ def _safe_workspace_file_name(name: str) -> str:
     if len(name) > 255 or re.fullmatch(r"[A-Za-z0-9._-]+", name) is None:
         raise ValueError("workspace file name contains unsupported characters")
     return name
+
+
+def _result_view_id(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{24}", value) is None:
+        raise ValueError("result view id must be exactly 24 lowercase hexadecimal characters")
+    return value
 
 
 def _safe_root(value: str) -> bool:

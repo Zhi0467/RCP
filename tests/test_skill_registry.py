@@ -30,6 +30,17 @@ def test_official_registry_exposes_workflows_and_skills_with_declared_dependenci
     assert {item["kind"] for item in registry.catalog()} == {"skill", "workflow"}
 
 
+def test_every_official_skill_is_enabled_by_default() -> None:
+    registry = official_registry()
+    defaults = SkillDefaults()
+
+    assert defaults.workflow_ids == []
+    assert defaults.skill_ids == [
+        package.id for package in registry.packages if package.kind == "skill"
+    ]
+    assert SkillDefaults(skill_ids=[]).skill_ids == []
+
+
 def test_experiment_causality_resolves_and_stages_as_an_official_skill(tmp_path: Path) -> None:
     selection = official_registry().resolve(skill_ids=["experiment-causality"])
 

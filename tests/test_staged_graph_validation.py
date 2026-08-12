@@ -1,9 +1,22 @@
 from __future__ import annotations
 
-from rcp.core.authority import DECIDE_DECISION, QUEUE_DECISION, permits
+import pytest
+
+from rcp.core.authority import (
+    CREATE_EDGE,
+    DECIDE_DECISION,
+    MERGE_NODE,
+    QUEUE_DECISION,
+    RESTRUCTURE_PROTECTED_EPISTEMIC,
+    SUPERSEDE_NODE,
+    UPDATE_NODE,
+    operation_actions,
+    permits,
+)
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Decision, GraphState, Patch
 from rcp.core.validation import validate_patch
+from tests.helpers import seed_patch
 
 
 def _agent_patch(*operations: dict[str, object]) -> Patch:
@@ -46,6 +59,325 @@ def test_create_node_then_update_it_validates_in_written_order() -> None:
     )
 
     assert not report.rejected
+
+
+def test_same_patch_belief_creation_edit_and_connection_stay_direct() -> None:
+    patch = _agent_patch(
+        {
+            "op": "create_nodes",
+            "nodes": [
+                _research_question("rq/staged-question"),
+                {
+                    "id": "hyp/staged-hypothesis",
+                    "type": "hypothesis",
+                    "title": "Staged hypothesis",
+                    "statement": "The staged mechanism explains the result.",
+                },
+            ],
+        },
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "rq/staged-question",
+                    "changes": {"motivation": "The same Patch supplied the missing motivation."},
+                }
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "source": "rq/staged-question",
+                    "target": "hyp/staged-hypothesis",
+                    "relation": "has_hypothesis",
+                }
+            ],
+        },
+    )
+    state = GraphState(project_truth_scope=["repo-a"])
+
+    report = validate_patch(state, patch, ["repo-a"])
+
+    assert not report.rejected
+    assert operation_actions(state, patch, patch.ops[1]) == frozenset({UPDATE_NODE})
+    assert operation_actions(state, patch, patch.ops[2]) == frozenset({CREATE_EDGE})
+
+
+def test_existing_protected_relation_derives_the_protected_action() -> None:
+    state = apply_valid_patch(
+        GraphState(project_truth_scope=["repo-a"]),
+        seed_patch().model_copy(update={"revision": 1}),
+    )
+    operation = {
+        "op": "remove_edges",
+        "edge_ids": ["rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"],
+    }
+    patch = _agent_patch(operation)
+
+    assert operation_actions(state, patch, operation) == frozenset(
+        {RESTRUCTURE_PROTECTED_EPISTEMIC}
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "ordinary_action"),
+    [
+        (
+            {
+                "op": "supersede_nodes",
+                "nodes": [
+                    {
+                        "id": "dec/ordinary",
+                        "superseded_by": "hyp/replanning-restores-plasticity",
+                    }
+                ],
+            },
+            SUPERSEDE_NODE,
+        ),
+        (
+            {
+                "op": "merge_nodes",
+                "merges": [
+                    {
+                        "duplicate": "dec/ordinary",
+                        "canonical": "hyp/replanning-restores-plasticity",
+                    }
+                ],
+            },
+            MERGE_NODE,
+        ),
+    ],
+)
+def test_generated_meta_relation_cannot_bypass_protected_endpoint_authority(
+    operation,
+    ordinary_action,
+) -> None:
+    state = apply_valid_patch(
+        GraphState(project_truth_scope=["repo-a"]),
+        seed_patch().model_copy(update={"revision": 1}),
+    )
+    addition = _agent_patch(
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "dec/ordinary",
+                    "type": "decision",
+                    "title": "Ordinary decision",
+                    "question": "Which ordinary option?",
+                    "options": ["first", "second"],
+                }
+            ],
+        }
+    ).model_copy(update={"revision": 2})
+    state = apply_valid_patch(state, addition)
+    patch = _agent_patch(operation)
+
+    assert operation_actions(state, patch, operation) == frozenset(
+        {ordinary_action, RESTRUCTURE_PROTECTED_EPISTEMIC}
+    )
+    report = validate_patch(state, patch, ["repo-a"])
+    assert report.rejected
+    assert any(
+        message.code == "graph-action-refused"
+        and RESTRUCTURE_PROTECTED_EPISTEMIC in message.message
+        for message in report.messages
+    )
+    assert any(message.code == "generated-relation-type-mismatch" for message in report.messages)
+
+
+def test_create_edge_cannot_overwrite_an_existing_protected_relation_id() -> None:
+    state = apply_valid_patch(
+        GraphState(project_truth_scope=["repo-a"]),
+        seed_patch().model_copy(update={"revision": 1}),
+    )
+    protected_edge_id = (
+        "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
+    )
+    patch = _agent_patch(
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "ev/collision",
+                    "type": "evidence",
+                    "title": "Collision evidence",
+                    "observation": "An explicit edge id must not replace graph structure.",
+                    "origin": "internal_run",
+                }
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "id": protected_edge_id,
+                    "source": "ev/collision",
+                    "target": "hyp/replanning-restores-plasticity",
+                    "relation": "supports",
+                }
+            ],
+        },
+    ).model_copy(update={"revision": 2})
+
+    admission = validate_patch(state, patch, ["repo-a"])
+    replay = validate_patch(state, patch, ["repo-a"], mode="replay")
+
+    assert operation_actions(state, patch, patch.ops[1]) == frozenset({CREATE_EDGE})
+    assert any(message.code == "duplicate-edge-id" for message in admission.messages)
+    assert not replay.rejected
+
+
+def test_existing_protected_node_cannot_be_removed_then_recreated_with_same_id() -> None:
+    state = apply_valid_patch(
+        GraphState(project_truth_scope=["repo-a"]),
+        seed_patch().model_copy(update={"revision": 1}),
+    )
+    node_id = "rq/learning-after-shift"
+    patch = _agent_patch(
+        {"op": "remove_nodes", "node_ids": [node_id]},
+        {"op": "create_nodes", "nodes": [_research_question(node_id)]},
+    ).model_copy(update={"revision": 2})
+
+    admission = validate_patch(state, patch, ["repo-a"])
+    replay = validate_patch(state, patch, ["repo-a"], mode="replay")
+
+    assert any(
+        message.code == "graph-action-refused" and "remove_protected_epistemic" in message.message
+        for message in admission.messages
+    )
+    assert any(message.code == "initial-node-id-replacement" for message in admission.messages)
+    assert not replay.rejected, [message.message for message in replay.messages]
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_action"),
+    [
+        (
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "rq/learning-after-shift",
+                        "changes": {"question": "Can an ID replacement exempt this edit?"},
+                    }
+                ],
+            },
+            "update_protected_epistemic",
+        ),
+        (
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "id": "edge/replacement-exemption",
+                        "source": "rq/learning-after-shift",
+                        "target": "hyp/replanning-restores-plasticity",
+                        "relation": "has_hypothesis",
+                    }
+                ],
+            },
+            "restructure_protected_epistemic",
+        ),
+    ],
+)
+def test_later_same_id_creation_cannot_exempt_an_earlier_protected_action(
+    operation: dict[str, object], expected_action: str
+) -> None:
+    state = apply_valid_patch(
+        GraphState(project_truth_scope=["repo-a"]),
+        seed_patch().model_copy(update={"revision": 1}),
+    )
+    node_id = "rq/learning-after-shift"
+    patch = _agent_patch(
+        operation,
+        {"op": "create_nodes", "nodes": [_research_question(node_id)]},
+    ).model_copy(update={"revision": 2})
+
+    report = validate_patch(state, patch, ["repo-a"])
+
+    assert expected_action in operation_actions(state, patch, operation)
+    assert any(
+        message.code == "graph-action-refused" and expected_action in message.message
+        for message in report.messages
+    )
+    assert any(message.code == "initial-node-id-replacement" for message in report.messages)
+
+
+def test_decision_action_is_declared_by_human_action_not_guessed_from_update_shape() -> None:
+    state = GraphState(project_truth_scope=["repo-a"])
+    create = _agent_patch(
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "dec/staged-rule",
+                    "type": "decision",
+                    "title": "Staged rule",
+                    "question": "Which rule?",
+                    "options": ["a", "b"],
+                }
+            ],
+        }
+    ).model_copy(update={"revision": 1})
+    state = apply_valid_patch(state, create)
+    operation = {
+        "op": "update_nodes",
+        "nodes": [
+            {
+                "id": "dec/staged-rule",
+                "changes": {"selected_option": "a", "status": "decided"},
+            }
+        ],
+    }
+    ordinary_edit = _agent_patch(operation)
+    declared_choice = Patch(
+        kind="approval",
+        author="human",
+        human_action="decision_choice",
+        summary="Declared a direct Decision choice.",
+        ops=[operation],
+    )
+
+    assert operation_actions(state, ordinary_edit, operation) == frozenset({UPDATE_NODE})
+    assert operation_actions(state, declared_choice, operation) == frozenset({DECIDE_DECISION})
+
+
+def test_proposal_intent_cannot_leak_onto_an_ordinary_operation() -> None:
+    report = _validate(
+        {"op": "create_nodes", "nodes": [_research_question("rq/staged-question")]},
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [
+                {
+                    "id": "rq/staged-question",
+                    "changes": {"question": "A leaked intent cannot authorize this edit."},
+                }
+            ],
+        },
+    )
+
+    assert report.rejected
+    assert any(message.code == "unexpected-proposal-intent" for message in report.messages)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"op": "update_nodes", "nodes": None},
+        {"op": "create_edges", "edges": [{"source": [], "target": {}, "relation": []}]},
+        {"op": "remove_nodes", "node_ids": None},
+        {"op": "supersede_nodes", "nodes": None},
+    ],
+)
+def test_malformed_operations_are_reported_instead_of_escaping_authority_derivation(
+    operation,
+) -> None:
+    report = _validate(operation)
+
+    assert report.rejected
 
 
 def test_ambiguity_operations_are_replay_only_and_preserve_written_order() -> None:
@@ -135,6 +467,7 @@ def test_new_proposal_cannot_target_decision_created_earlier_in_the_same_patch()
                     "ops": [
                         {
                             "op": "update_nodes",
+                            "intent": "status_change",
                             "nodes": [
                                 {
                                     "id": "dec/staged-rule",
@@ -155,6 +488,81 @@ def test_new_proposal_cannot_target_decision_created_earlier_in_the_same_patch()
 
     assert report.rejected
     assert any("decide_decision" in message.message for message in report.messages)
+
+
+def test_later_edit_stales_status_proposal_for_hypothesis_created_in_same_patch() -> None:
+    report = _validate(
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/staged-status-target",
+                    "type": "hypothesis",
+                    "title": "Staged status target",
+                    "statement": "The same outer Patch created this belief.",
+                },
+                {
+                    "id": "ev/staged-status-cause",
+                    "type": "evidence",
+                    "title": "Staged status cause",
+                    "observation": "The evidence was staged in the same outer Patch.",
+                    "origin": "analytic",
+                },
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "id": "edge/staged-status-cause",
+                    "source": "ev/staged-status-cause",
+                    "target": "hyp/staged-status-target",
+                    "relation": "supports",
+                }
+            ],
+        },
+        {
+            "op": "create_proposals",
+            "proposals": [
+                {
+                    "id": "prop/staged-status-target",
+                    "title": "Change the staged belief status",
+                    "card": {"decision_needed": "Approve this status change."},
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "intent": "status_change",
+                            "nodes": [
+                                {
+                                    "id": "hyp/staged-status-target",
+                                    "changes": {"status": "active"},
+                                    "cause": {
+                                        "kind": "evidence_edge",
+                                        "ref_id": "edge/staged-status-cause",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                    "base_rev": 0,
+                }
+            ],
+        },
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/staged-status-target",
+                    "changes": {
+                        "statement": "A later same-Patch edit replaced the judged statement."
+                    },
+                }
+            ],
+        },
+    )
+
+    assert report.rejected
+    assert any(message.code == "stale-created-proposal" for message in report.messages)
 
 
 def test_agent_created_decision_may_be_open_or_ready_but_not_revisit_or_decided() -> None:

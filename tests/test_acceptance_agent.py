@@ -4,16 +4,28 @@ import asyncio
 import json
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from fastapi.testclient import TestClient
 
 import rcp.__main__ as main_module
 from rcp.agents.acceptance import (
+    ACCEPTANCE_CAMPAIGN_FAIL_MARKER,
+    ACCEPTANCE_CAMPAIGN_FINISH_MARKER,
+    ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER,
     ACCEPTANCE_GENERIC_WATCHER_MARKER,
     AcceptanceAgentLauncher,
 )
+from rcp.agents.command_mailbox import (
+    cleanup_command_mailbox,
+    serve_command_mailbox,
+    stage_command_mailbox,
+)
+from rcp.agents.command_protocol import CommandResponse
+from rcp.agents.prompts import PromptFactory
 from rcp.agents.schema import parse_agent_patch_json
+from rcp.runs.campaign_recovery import CampaignOrchestratorTerminalFailure
 from tests.helpers import create_named_app as create_app
 
 
@@ -43,6 +55,35 @@ Required current inputs:
 - Current graph, including the Experiment's attempts: `{graph_path}`
 - Focused Experiment id: `exp/acceptance-control`
 """
+
+
+def _campaign_contract(
+    role: Literal["orchestrator", "worker"],
+    *,
+    continuation: bool = False,
+) -> str:
+    suffix = " continuation" if continuation else " contract"
+    return f"# RCP auto-research {role}{suffix}\n\nAcceptance fixture campaign turn.\n"
+
+
+def _result_view_contract(
+    tmp_path: Path,
+    *,
+    action: Literal["create", "revise"],
+    path: Path,
+    master_context_path: Path | None = None,
+) -> str:
+    return PromptFactory.work_turn_prompt(
+        artifact_path=str(tmp_path / "turns" / action / "artifacts"),
+        human_message=(
+            "Show the loss curves by seed."
+            if action == "create"
+            else "Boxed selection in loss-curves-by-seed.html: late spike. Why?"
+        ),
+        master_context_path=str(master_context_path) if master_context_path else None,
+        result_view_action=action,
+        result_view_path=str(path),
+    )
 
 
 def test_acceptance_app_mode_is_explicit_and_visible(tmp_path) -> None:
@@ -169,6 +210,479 @@ def test_acceptance_launcher_refuses_remote_execution(tmp_path) -> None:
     assert launcher.launch_records[0].action == "remote_rejected"
 
 
+@pytest.mark.parametrize("role", ["orchestrator", "worker"])
+def test_acceptance_campaign_actor_contracts_keep_one_session_and_report_usage(
+    tmp_path: Path,
+    role: Literal["orchestrator", "worker"],
+) -> None:
+    stage = tmp_path / role
+    stage.mkdir()
+    fresh_launcher = AcceptanceAgentLauncher()
+
+    fresh = asyncio.run(
+        _events(
+            fresh_launcher,
+            _prompt(stage, _campaign_contract(role)),
+            stage,
+        )
+    )
+    session_id = fresh[0].session_id
+    assert session_id is not None
+
+    continuation_launcher = AcceptanceAgentLauncher()
+    continuation = asyncio.run(
+        _events(
+            continuation_launcher,
+            _prompt(stage, _campaign_contract(role, continuation=True)),
+            stage,
+            session_id=session_id,
+        )
+    )
+
+    for events in (fresh, continuation):
+        assert [event.event for event in events] == [
+            "session",
+            "answer",
+            "raw",
+            "provider_exit",
+            "done",
+        ]
+        assert all(event.event != "error" for event in events)
+        assert events[0].session_id == session_id
+        assert f"campaign {role} turn" in events[1].text
+        assert events[2].usage is not None
+        assert events[2].usage.processed_input_tokens == 256
+        assert events[2].usage.generated_tokens == 32
+
+    assert fresh_launcher.launch_records[0].scenario == "campaign"
+    assert fresh_launcher.launch_records[0].action == "turn"
+    assert continuation_launcher.launch_records[0].scenario == "campaign"
+    assert continuation_launcher.launch_records[0].action == "turn"
+    assert {
+        fresh_launcher.launch_records[0].cwd,
+        continuation_launcher.launch_records[0].cwd,
+    } == {str(stage.resolve())}
+    assert {
+        fresh_launcher.launch_records[0].session_id,
+        continuation_launcher.launch_records[0].session_id,
+    } == {session_id}
+    state = json.loads((stage / ".rcp-acceptance-agent.json").read_text(encoding="utf-8"))
+    assert state["campaign_actor"] == {
+        "cwd": str(stage.resolve()),
+        "role": role,
+        "session_id": session_id,
+    }
+    assert not (stage / "patch.json").exists()
+    assert not (stage / "watch.json").exists()
+    assert not (stage / "messages.json").exists()
+
+    with pytest.raises(ValueError, match="changed its native session"):
+        asyncio.run(
+            _events(
+                continuation_launcher,
+                _prompt(stage, _campaign_contract(role, continuation=True)),
+                stage,
+                session_id="different-acceptance-session",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected_verb"),
+    [
+        (ACCEPTANCE_CAMPAIGN_FINISH_MARKER, "finish"),
+        (ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER, "spawn"),
+    ],
+)
+def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates_key(
+    tmp_path: Path,
+    marker: str,
+    expected_verb: str,
+) -> None:
+    stage = tmp_path / "campaign-stage"
+    stage.mkdir()
+    instruction = stage / "instruction.md"
+    instruction.write_text(marker, encoding="utf-8")
+    graph = stage / "graph.json"
+    graph.write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "exp/acceptance": {
+                        "id": "exp/acceptance",
+                        "type": "experiment",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    staged = stage_command_mailbox(
+        local_stage=stage,
+        remote_stage=None,
+        campaign_id="campaign-acceptance",
+        task_id="task-acceptance",
+        turn_id="turn-acceptance",
+        timeout_seconds=2,
+    )
+    requests = []
+
+    async def run() -> list:
+        stop = asyncio.Event()
+
+        def handle(request, _identity):
+            requests.append(request)
+            result = (
+                {
+                    "worker_id": "worker-acceptance",
+                    "status": "queued",
+                    "disposition": "created",
+                }
+                if request.verb == "spawn"
+                else {"campaign_id": "campaign-acceptance", "ending": "completed"}
+            )
+            return CommandResponse(request_id=request.request_id, status="ok", result=result)
+
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handle,
+                stop=stop,
+                poll_seconds=0.01,
+            )
+        )
+        try:
+            contract = f"""# RCP auto-research orchestrator contract
+
+- starting instruction: `{instruction}`
+- graph: `{graph}`
+- Command prefix for this turn: `{staged.client_command()}`
+"""
+            return await _events(
+                AcceptanceAgentLauncher(),
+                _prompt(stage, contract),
+                stage,
+            )
+        finally:
+            stop.set()
+            await server
+            cleanup_command_mailbox(mailbox=staged.mailbox, credential=staged.credential)
+
+    events = asyncio.run(run())
+
+    assert events[-1].event == "done"
+    assert [request.verb for request in requests] == [expected_verb, expected_verb]
+    assert len({request.idempotency_key for request in requests}) == 1
+    state = json.loads((stage / ".rcp-acceptance-agent.json").read_text(encoding="utf-8"))
+    assert state["campaign_fixture"]["directive"] == (
+        "finish" if expected_verb == "finish" else "spawn_then_finish"
+    )
+
+
+def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_session(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "campaign-stage"
+    stage.mkdir()
+    instruction = stage / "instruction.md"
+    instruction.write_text(ACCEPTANCE_CAMPAIGN_FAIL_MARKER, encoding="utf-8")
+    graph = stage / "graph.json"
+    graph.write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "exp/acceptance": {
+                        "id": "exp/acceptance",
+                        "type": "experiment",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (stage / ".rcp-acceptance-campaign-failure-release").write_text(
+        "release after session\n",
+        encoding="utf-8",
+    )
+    staged = stage_command_mailbox(
+        local_stage=stage,
+        remote_stage=None,
+        campaign_id="campaign-acceptance",
+        task_id="task-acceptance",
+        turn_id="turn-acceptance",
+        timeout_seconds=2,
+    )
+    requests = []
+
+    async def run():
+        stop = asyncio.Event()
+
+        def handle(request, _identity):
+            requests.append(request)
+            return CommandResponse(
+                request_id=request.request_id,
+                status="ok",
+                result={
+                    "worker_id": "worker-acceptance",
+                    "status": "queued",
+                    "disposition": "created",
+                },
+            )
+
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handle,
+                stop=stop,
+                poll_seconds=0.01,
+            )
+        )
+        events = []
+        try:
+            contract = f"""# RCP auto-research orchestrator contract
+
+- starting instruction: `{instruction}`
+- graph: `{graph}`
+- Command prefix for this turn: `{staged.client_command()}`
+"""
+            with pytest.raises(
+                CampaignOrchestratorTerminalFailure,
+                match="unrecoverable structural failure",
+            ):
+                async for event in AcceptanceAgentLauncher().stream(
+                    "codex",
+                    _prompt(stage, contract),
+                    cwd=stage,
+                    capability="orchestrate",
+                ):
+                    events.append(event)
+            return events
+        finally:
+            stop.set()
+            await server
+            cleanup_command_mailbox(mailbox=staged.mailbox, credential=staged.credential)
+
+    events = asyncio.run(run())
+
+    assert [event.event for event in events] == ["session"]
+    assert events[0].session_id is not None
+    assert [request.verb for request in requests] == ["spawn", "spawn"]
+    assert len({request.idempotency_key for request in requests}) == 1
+    state = json.loads((stage / ".rcp-acceptance-agent.json").read_text(encoding="utf-8"))
+    assert state["campaign_actor"]["session_id"] == events[0].session_id
+    assert state["campaign_fixture"]["directive"] == "fail"
+    assert not (stage / ".rcp-acceptance-campaign-failure-active").exists()
+    assert not (stage / ".rcp-acceptance-campaign-failure-release").exists()
+
+
+def test_acceptance_campaign_report_requires_one_same_session_correction(tmp_path: Path) -> None:
+    stage = tmp_path / "report-stage"
+    stage.mkdir()
+    launcher = AcceptanceAgentLauncher()
+    actor_events = asyncio.run(
+        _events(
+            launcher,
+            _prompt(stage, _campaign_contract("orchestrator")),
+            stage,
+        )
+    )
+    session_id = actor_events[0].session_id
+    assert session_id is not None
+    report_path = stage / "campaign-report.html"
+    report_contract = f"""# RCP auto-research campaign report contract
+
+- campaign HTML report: `{report_path}`
+"""
+    missing = asyncio.run(
+        _events(
+            launcher,
+            _prompt(stage, report_contract),
+            stage,
+            session_id=session_id,
+        )
+    )
+    assert missing[1].text == "Left the first acceptance report attempt missing for correction."
+    assert not report_path.exists()
+
+    diagnostic = stage / "report-diagnostic.md"
+    diagnostic.write_text("Campaign report is missing.", encoding="utf-8")
+    corrected = asyncio.run(
+        _events(
+            launcher,
+            _prompt(
+                stage,
+                report_contract + f"- exact correction diagnostic: `{diagnostic}`\n",
+            ),
+            stage,
+            session_id=session_id,
+        )
+    )
+
+    assert corrected[0].session_id == session_id
+    assert corrected[1].text == "Wrote the corrected deterministic acceptance campaign report."
+    assert "Acceptance campaign conclusion" in report_path.read_text(encoding="utf-8")
+    assert [record.action for record in launcher.launch_records[-2:]] == [
+        "report",
+        "report_correction",
+    ]
+
+
+def test_acceptance_result_view_create_and_revise_keep_one_stage_session_and_path(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "conversation-stage"
+    slot = stage / "views" / ("a" * 24)
+    slot.mkdir(parents=True)
+    state_path = stage / ".rcp-acceptance-agent.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "scenario": "experiment_loop",
+                "focused_experiment_id": "exp/acceptance-control",
+                "jobs_started": True,
+                "watch_corrected": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    launcher = AcceptanceAgentLauncher()
+    master_context_path = stage / "inputs" / "chat-master.md"
+    master_context_path.parent.mkdir()
+    master_context_path.write_text(
+        _experiment_contract(stage / "graph.json"),
+        encoding="utf-8",
+    )
+
+    created_events = asyncio.run(
+        _events(
+            launcher,
+            _result_view_contract(
+                stage,
+                action="create",
+                path=slot,
+                master_context_path=master_context_path,
+            ),
+            stage,
+        )
+    )
+
+    target = slot / "loss-curves-by-seed.html"
+    created_html = target.read_text(encoding="utf-8")
+    fixed_gesture = (
+        "window.parent.postMessage({type:'rcp-result-view-gesture',version:1,"
+        "gesture:'box',description:'late spike across steps 8,000–9,000 for seed 3'}, '*');"
+    )
+    assert [event.event for event in created_events] == [
+        "session",
+        "answer",
+        "provider_exit",
+        "done",
+    ]
+    assert launcher.launch_records[0].scenario == "result_view"
+    assert launcher.launch_records[0].action == "create"
+    assert "Loss curves by seed" in created_html
+    assert "Revision 1 — initial curves" in created_html
+    assert all(
+        f"addEventListener('{event}'" in created_html
+        for event in ("pointerdown", "pointermove", "pointerup")
+    )
+    assert created_html.count("postMessage") == 1
+    assert fixed_gesture in created_html
+    assert all(token not in created_html for token in ("fetch(", "XMLHttpRequest", "<form"))
+    assert list(slot.iterdir()) == [target]
+    assert list((stage / "views").iterdir()) == [slot]
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["scenario"] == "experiment_loop"
+    assert persisted["focused_experiment_id"] == "exp/acceptance-control"
+    assert persisted["result_view"] == {
+        "cwd": str(stage.resolve()),
+        "path": str(target.resolve()),
+        "revision": 1,
+        "session_id": created_events[0].session_id,
+    }
+
+    revise_contract = _result_view_contract(stage, action="revise", path=target)
+    with pytest.raises(ValueError, match="changed the native session"):
+        asyncio.run(
+            _events(
+                launcher,
+                _prompt(stage, revise_contract),
+                stage,
+                session_id="different-acceptance-session",
+            )
+        )
+    assert target.read_text(encoding="utf-8") == created_html
+
+    revised_events = asyncio.run(
+        _events(
+            launcher,
+            revise_contract,
+            stage,
+            session_id=created_events[0].session_id,
+        )
+    )
+
+    revised_html = target.read_text(encoding="utf-8")
+    assert [event.event for event in revised_events] == [
+        "session",
+        "answer",
+        "provider_exit",
+        "done",
+    ]
+    assert [record.action for record in launcher.launch_records] == ["create", "revise"]
+    assert {record.cwd for record in launcher.launch_records} == {str(stage.resolve())}
+    assert {record.session_id for record in launcher.launch_records} == {
+        created_events[0].session_id
+    }
+    assert "Revision 2 — late spike annotated" in revised_html
+    assert "reviewed late spike" in revised_html
+    assert revised_html != created_html
+    assert revised_html.count("postMessage") == 1
+    assert fixed_gesture in revised_html
+    assert list(slot.iterdir()) == [target]
+    assert list((stage / "views").iterdir()) == [slot]
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["scenario"] == "experiment_loop"
+    assert persisted["result_view"]["path"] == str(target.resolve())
+    assert persisted["result_view"]["revision"] == 2
+
+
+def test_acceptance_result_view_revision_requires_an_existing_path_in_the_same_stage(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "conversation-stage"
+    stage.mkdir()
+    outside = tmp_path / "outside" / "loss-curves-by-seed.html"
+    outside.parent.mkdir()
+    outside.write_text("<html>outside</html>", encoding="utf-8")
+    launcher = AcceptanceAgentLauncher()
+
+    with pytest.raises(ValueError, match="left the conversation cwd"):
+        asyncio.run(
+            _events(
+                launcher,
+                _prompt(
+                    stage,
+                    _result_view_contract(stage, action="revise", path=outside),
+                ),
+                stage,
+            )
+        )
+
+    missing = stage / "views" / ("b" * 24) / "loss-curves-by-seed.html"
+    with pytest.raises(ValueError, match="revision target is unavailable"):
+        asyncio.run(
+            _events(
+                launcher,
+                _prompt(
+                    stage,
+                    _result_view_contract(stage, action="revise", path=missing),
+                ),
+                stage,
+            )
+        )
+
+
 def test_acceptance_experiment_corrects_watchers_then_completes_with_authority_item(
     tmp_path,
 ) -> None:
@@ -217,7 +731,8 @@ def test_acceptance_experiment_corrects_watchers_then_completes_with_authority_i
         "provider_exit",
         "done",
     ]
-    assert len(specs) == 2
+    assert len(specs["external"]) == 2
+    assert specs["graph"] == []
     assert launcher.launch_records[-1].action == "watch_correction"
     assert launcher.launch_records[-1].watcher_count == 2
     assert len(list(jobs.glob("*.status"))) == 2
@@ -232,7 +747,10 @@ Read the fresh state before acting:
     wake = asyncio.run(_events(launcher, _prompt(tmp_path, compact_wake), tmp_path))
 
     assert [event.event for event in wake] == ["session", "answer", "provider_exit", "done"]
-    assert json.loads((tmp_path / "watch.json").read_text(encoding="utf-8")) == []
+    assert json.loads((tmp_path / "watch.json").read_text(encoding="utf-8")) == {
+        "external": [],
+        "graph": [],
+    }
     patch = parse_agent_patch_json((tmp_path / "patch.json").read_text(encoding="utf-8"))
     payload = patch.model_dump(mode="json")
     assert payload["ops"][0]["nodes"] == [
@@ -312,7 +830,8 @@ def test_acceptance_generic_marker_arms_two_watchers_without_a_patch(tmp_path) -
     )
 
     specs = json.loads((tmp_path / "watch.json").read_text(encoding="utf-8"))
-    assert len(specs) == 2
+    assert len(specs["external"]) == 2
+    assert specs["graph"] == []
     assert [record.action for record in launcher.launch_records] == [
         "initial",
         "watch_correction",

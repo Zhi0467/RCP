@@ -6,7 +6,10 @@ import {
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
   experimentRecommendation,
+  graphConditionLabel,
+  isExternalWatcherRecord,
   watcherIsActive,
+  watcherLastObservedAt,
 } from "../runProjection";
 import type { WatcherRecord } from "../types";
 
@@ -35,6 +38,7 @@ const healthTones: Record<ExperimentLoopHealth, string> = {
 };
 
 const liveTaskStatuses = new Set(["queued", "running", "pausing"]);
+const actionableTaskStatuses = new Set(["failed", "paused", "interrupted"]);
 
 export function experimentHealthLabel(health: ExperimentLoopHealth): string {
   return healthLabels[health];
@@ -71,6 +75,7 @@ interface Props {
   recoveryBusy: boolean;
   watcherCheckBusyId: string | null;
   providerLabel?: string;
+  conversation?: ReactNode;
   onRun: () => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
@@ -86,6 +91,7 @@ export function ExperimentRunDetail({
   recoveryBusy,
   watcherCheckBusyId,
   providerLabel,
+  conversation,
   onRun,
   onStopLoop,
   onRecover,
@@ -108,7 +114,7 @@ export function ExperimentRunDetail({
   const stoppedWatcherItems = run.watcherItems.filter(watcherItemIsStopped);
   const currentWatcherItems = run.watcherItems.filter((item) => !watcherItemIsStopped(item));
   const stoppedWatcherCount = stoppedWatcherItems.reduce(watcherItemCount, 0);
-  const currentWatcherCount = run.watchers.filter(watcherIsActive).length;
+  const currentWatcherCount = currentWatcherItems.reduce(watcherItemCount, 0);
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
@@ -117,7 +123,10 @@ export function ExperimentRunDetail({
     providerLabel ||
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
-  const canStop = live || Boolean(recoveryAction);
+  const canStop = live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status));
+  const showStop = Boolean(
+    control?.episode_id && (stopBusy || stopUnsettled || (!stopRequested && canStop)),
+  );
   const recommendation = experimentRecommendation(run);
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
@@ -132,7 +141,7 @@ export function ExperimentRunDetail({
           aria-atomic="true"
         >
           <strong>{healthLabels[health]}</strong>
-          <p>{nowLine(run)}</p>
+          <p>{recommendation.label}</p>
         </div>
         <div className="experiment-run-actions" aria-label="Experiment loop actions">
           {recoveryAction && (
@@ -162,25 +171,14 @@ export function ExperimentRunDetail({
               Switch provider…
             </button>
           )}
-          {control?.episode_id && (
+          {showStop && (
             <button
               type="button"
               className="button compact experiment-stop-loop"
-              disabled={
-                runDisabled ||
-                stopBusy ||
-                recoveryBusy ||
-                stopUnsettled ||
-                stopRequested ||
-                !canStop
-              }
+              disabled={runDisabled || stopBusy || recoveryBusy || stopUnsettled || stopRequested}
               onClick={onStopLoop}
             >
-              {stopBusy || stopUnsettled
-                ? "Stopping"
-                : stopRequested
-                  ? "Loop stopped"
-                  : "Stop loop"}
+              {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
             </button>
           )}
           <button
@@ -194,11 +192,6 @@ export function ExperimentRunDetail({
             {runBusy ? "Starting" : control?.episode_id ? "Start new episode" : "Start episode"}
           </button>
         </div>
-      </div>
-
-      <div className={`experiment-run-recommendation ${recommendation.step}`}>
-        <span className="eyebrow">Recommended next step</span>
-        <strong>{recommendation.label}</strong>
       </div>
 
       <p className="experiment-run-meta">
@@ -215,12 +208,6 @@ export function ExperimentRunDetail({
           <span>
             <span className="eyebrow">Next episode limit</span>
             {node.invocation_ceiling}
-          </span>
-        )}
-        {(currentTask?.phase || operational?.current_phase) && (
-          <span>
-            <span className="eyebrow">Phase</span>
-            {currentTask?.phase || operational?.current_phase}
           </span>
         )}
         {lastActivity !== "—" && (
@@ -245,9 +232,7 @@ export function ExperimentRunDetail({
 
       <section className="experiment-run-block">
         <div className="experiment-run-block-heading">
-          <h4>
-            Experiment state: <span>{formatSemanticState(node.status)}</span>
-          </h4>
+          <h4>Research summary</h4>
         </div>
         <p className="experiment-run-prose">
           {String(node.current_summary || node.objective || "No summary recorded")}
@@ -385,6 +370,15 @@ export function ExperimentRunDetail({
             ))}
           </ul>
         </Fold>
+      )}
+
+      {conversation && (
+        <section className="experiment-run-conversation" aria-label="Run conversation">
+          <div className="experiment-run-block-heading">
+            <h4>Conversation</h4>
+          </div>
+          {conversation}
+        </section>
       )}
     </div>
   );
@@ -554,14 +548,17 @@ function WatcherDetail({
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
 }) {
-  const canCheckNow = watcher.status === "degraded" && !watcher.notified;
+  const external = isExternalWatcherRecord(watcher);
+  const canCheckNow = external && watcher.status === "degraded" && !watcher.notified;
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
       <details>
         <summary className="experiment-run-watcher-heading">
           <span className={`status-pill ${watcher.status}`}>{watcher.status}</span>
-          <strong className="mono experiment-run-breakable">{watcher.watcher_id}</strong>
+          <strong className="mono experiment-run-breakable">
+            {external ? watcher.watcher_id : graphConditionLabel(watcher.condition)}
+          </strong>
           <span>{watcherDeliveryLabel(watcher)}</span>
         </summary>
         <Facts
@@ -573,17 +570,30 @@ function WatcherDetail({
               mono: true,
               breakable: true,
             },
+            {
+              label: "Watcher ID",
+              value: external ? null : watcher.watcher_id,
+              mono: true,
+              breakable: true,
+            },
             { label: "Provenance", value: watcherProvenance(watcher) },
-            { label: "Last check", value: formatMoment(watcher.last_checked_at) },
+            {
+              label: external ? "Last check" : "Last evaluation",
+              value: formatMoment(watcherLastObservedAt(watcher)),
+            },
             {
               label: "Next check",
-              value: watcher.next_check_at ? formatMoment(watcher.next_check_at) : "Not scheduled",
+              value: external
+                ? watcher.next_check_at
+                  ? formatMoment(watcher.next_check_at)
+                  : "Not scheduled"
+                : null,
             },
             {
               label: "Consecutive failures",
-              value: watcher.consecutive_error_count,
+              value: external ? watcher.consecutive_error_count : null,
             },
-            { label: "Exit code", value: watcher.last_exit_code },
+            { label: "Exit code", value: external ? watcher.last_exit_code : null },
             { label: "Completed", value: formatMoment(watcher.completed_at) },
             { label: "Machine", value: watcher.execution_host || "Local" },
             {
@@ -598,7 +608,7 @@ function WatcherDetail({
             },
             {
               label: "Current error",
-              value: watcher.last_error,
+              value: external ? watcher.last_error : null,
               className: "experiment-run-watcher-current-error",
             },
           ]}
@@ -616,20 +626,29 @@ function WatcherDetail({
             </button>
           </div>
         )}
-        <div className="experiment-run-watcher-command">
-          <span className="eyebrow">Check command</span>
-          <code>{watcher.check_command}</code>
-        </div>
-        <div className="experiment-run-watcher-paths">
-          <span>
-            <span className="eyebrow">Log</span>
-            <code>{watcher.log_path}</code>
-          </span>
-          <span>
-            <span className="eyebrow">Working directory</span>
-            <code>{watcher.cwd}</code>
-          </span>
-        </div>
+        {external ? (
+          <>
+            <div className="experiment-run-watcher-command">
+              <span className="eyebrow">Check command</span>
+              <code>{watcher.check_command}</code>
+            </div>
+            <div className="experiment-run-watcher-paths">
+              <span>
+                <span className="eyebrow">Log</span>
+                <code>{watcher.log_path}</code>
+              </span>
+              <span>
+                <span className="eyebrow">Working directory</span>
+                <code>{watcher.cwd}</code>
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="experiment-run-watcher-command">
+            <span className="eyebrow">Graph condition</span>
+            <code>{graphConditionLabel(watcher.condition)}</code>
+          </div>
+        )}
         {watcher.stop_reason && (
           <p className="experiment-run-watcher-stop-reason">
             <strong>{watcher.stopped_by === "agent" ? "Agent reason" : "Stop reason"}</strong>
@@ -641,48 +660,8 @@ function WatcherDetail({
   );
 }
 
-function nowLine(run: ExperimentRun): string {
-  const operational = run.control?.operational ?? null;
-  const taskMessage = run.currentTask?.status_message || operational?.current_status_message || "";
-  const liveWatchers = run.currentWatchers.filter(watcherIsActive).length;
-  switch (run.health) {
-    case "starting":
-    case "agent_active":
-      return taskMessage || "Agent turn in flight";
-    case "stopping":
-      return taskMessage || "Stop requested — the current turn finishes first";
-    case "human_stopped":
-      return "Stopped — no watcher can wake this episode";
-    case "paused_at_limit":
-      return "Waiting for you to authorize another invocation";
-    case "degraded":
-      return "A watcher check is failing";
-    case "waiting_on_watchers":
-      return liveWatchers > 0
-        ? `Waiting on ${liveWatchers} detached ${liveWatchers === 1 ? "watcher" : "watchers"}`
-        : "Waiting on detached watchers";
-    case "completed":
-      return `Experiment ${String(run.node.status ?? "completed")}`;
-    default:
-      if (experimentRecoveryAction(run.currentTask)) {
-        const diagnostic = operational?.session.diagnostic;
-        return (
-          (diagnostic && /\b(?:retry|resume|switch provider)\b/i.test(diagnostic)
-            ? diagnostic
-            : null) || "Retry this provider or switch provider to continue this episode"
-        );
-      }
-      return (
-        operational?.session.diagnostic ||
-        taskMessage ||
-        run.currentTask?.error ||
-        "No invocation is running"
-      );
-  }
-}
-
 function experimentRecoveryAction(task: ExperimentRun["currentTask"]): "resume" | "retry" | null {
-  if (!task || !["failed", "paused", "interrupted"].includes(task.status)) return null;
+  if (!task || !actionableTaskStatuses.has(task.status)) return null;
   if (task.can_resume && (task.status === "paused" || task.status === "interrupted")) {
     return "resume";
   }
@@ -719,11 +698,6 @@ function watcherStopDisposition(watcher: WatcherRecord): string {
 
 function capitalize(value: string): string {
   return `${value[0].toUpperCase()}${value.slice(1)}`;
-}
-
-function formatSemanticState(value: unknown): string {
-  const text = String(value || "unknown").replaceAll("_", " ");
-  return `${text[0].toUpperCase()}${text.slice(1)}`;
 }
 
 function taskInvocation(task: ExperimentRun["currentTask"]): number | null {

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -60,6 +62,44 @@ _Layout = Literal["files", "directories"]
 _LOCKS_GUARD = threading.Lock()
 _ROOT_LOCKS: dict[Path, threading.Lock] = {}
 _ROOT_PINS: dict[Path, dict[Path, int]] = {}
+_PROJECT_CACHE_DIRECTORY = "project-caches"
+_SOURCE_CACHE_DIRECTORY = "source-cache"
+_SESSION_SLICE_DIRECTORY = "session-slices"
+_PROJECT_CACHE_KEY = re.compile(r"[0-9a-f]{64}")
+
+
+def project_cache_roots(data_dir: Path, project_id: str) -> tuple[Path, Path]:
+    """Return safe rebuildable-cache roots owned by one canonical project id."""
+
+    if not project_id.strip():
+        raise ValueError("project_id must be non-empty")
+    key = hashlib.sha256(project_id.encode()).hexdigest()
+    root = data_dir / _PROJECT_CACHE_DIRECTORY / key
+    return root / _SOURCE_CACHE_DIRECTORY, root / _SESSION_SLICE_DIRECTORY
+
+
+def discover_project_cache_roots(data_dir: Path) -> list[tuple[Path, Path]]:
+    """Find only cache directories created by :func:`project_cache_roots`."""
+
+    parent = data_dir / _PROJECT_CACHE_DIRECTORY
+    if not parent.is_dir() or parent.is_symlink():
+        return []
+    roots: list[tuple[Path, Path]] = []
+    for child in sorted(parent.iterdir(), key=lambda path: path.name):
+        if (
+            child.is_symlink()
+            or not child.is_dir()
+            or _PROJECT_CACHE_KEY.fullmatch(child.name) is None
+        ):
+            continue
+        roots.append((child / _SOURCE_CACHE_DIRECTORY, child / _SESSION_SLICE_DIRECTORY))
+    return roots
+
+
+def legacy_shared_cache_roots(data_dir: Path) -> tuple[Path, Path]:
+    """Return the exact rebuildable roots used by the former shared layout."""
+
+    return data_dir / _SOURCE_CACHE_DIRECTORY, data_dir / _SESSION_SLICE_DIRECTORY
 
 
 class RebuildableCache:
@@ -204,7 +244,7 @@ class RebuildableCache:
         return _is_within(path, self.root)
 
     def _entries(self) -> set[Path]:
-        if not self.root.is_dir():
+        if self.root.is_symlink() or not self.root.is_dir():
             return set()
         if self.layout == "directories":
             return {
@@ -222,6 +262,8 @@ class RebuildableCache:
         }
 
     def _accesses(self, entries: set[Path]) -> dict[str, float]:
+        if self.root.is_symlink():
+            return {}
         raw: object = {}
         with suppress(OSError, json.JSONDecodeError):
             raw = json.loads((self.root / _ACCESS_FILE).read_text(encoding="utf-8"))
@@ -237,6 +279,8 @@ class RebuildableCache:
         }
 
     def _write_accesses(self, accesses: dict[str, float], entries: set[Path]) -> None:
+        if self.root.is_symlink():
+            return
         if not entries and not self.root.exists():
             return
         self.root.mkdir(parents=True, exist_ok=True)
@@ -307,7 +351,7 @@ class RebuildableCache:
             entry.unlink(missing_ok=True)
 
     def _prune_empty_directories(self) -> None:
-        if self.layout != "files" or not self.root.is_dir():
+        if self.layout != "files" or self.root.is_symlink() or not self.root.is_dir():
             return
         directories = sorted(
             (path for path in self.root.rglob("*") if path.is_dir() and not path.is_symlink()),

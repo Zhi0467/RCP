@@ -288,6 +288,7 @@ def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
     proposal_ops: list[dict[str, object]] = [
         {
             "op": "update_nodes",
+            "intent": "status_change",
             "nodes": [
                 {
                     "id": "hyp/main",
@@ -410,13 +411,16 @@ def test_existing_decision_belief_cause_is_replay_only() -> None:
             {"op": "update_nodes", "nodes": [{"id": "hyp/main", "changes": {"status": "active"}}]},
             "missing-belief-cause",
         ),
-        ({"op": "supersede_nodes", "nodes": [{"id": "hyp/main"}]}, "gated-transition"),
+        (
+            {"op": "supersede_nodes", "nodes": [{"id": "hyp/main"}]},
+            "graph-action-refused",
+        ),
         (
             {
                 "op": "merge_nodes",
                 "merges": [{"duplicate": "hyp/main", "canonical": "hyp/other"}],
             },
-            "gated-transition",
+            "graph-action-refused",
         ),
     ],
 )
@@ -757,9 +761,16 @@ def test_remove_nodes_keeps_a_dependent_proposal_pending_and_makes_it_stale() ->
         ]
     )
     operation = {"op": "remove_nodes", "node_ids": ["hyp/main"]}
-    patch = _patch(4, [operation])
+    patch = _patch(
+        4,
+        [operation],
+        kind="approval",
+        author="human",
+        run_truth_scope=[],
+        repositories_read=[],
+    )
 
-    assert proposal_dependencies(state, [operation]) == (["hyp/main"], [])
+    assert proposal_dependencies(state, [operation]) == (["hyp/main"], [], [])
     assert not validate_patch(state, patch, ["repo"]).rejected
 
     updated = apply_valid_operation(state, patch, operation)
@@ -823,3 +834,89 @@ def test_meta_relations_keep_their_layer_regardless_of_endpoints() -> None:
     # endpoints sit, so it is preserved.
     other = dict(_RQ) | {"id": "rq/older"}
     assert _layer_of(other, _RQ, "supersedes") == "meta"
+
+
+def _dependency_state() -> GraphState:
+    """A hypothesis and a decision joined by an edge, so removals pull the edge in."""
+    return GraphState(
+        revision=3,
+        nodes={
+            "hyp/main": _hypothesis(),
+            "dec/scope": Decision.model_validate(
+                {
+                    "id": "dec/scope",
+                    "type": "decision",
+                    "title": "Scope decision",
+                    "question": "Which task families are in scope?",
+                }
+            ),
+        },
+        edges={
+            "edge/informs": Edge(
+                id="edge/informs",
+                source="dec/scope",
+                target="hyp/main",
+                relation="informs",
+                layer="seam",
+            )
+        },
+    )
+
+
+def test_proposal_dependencies_walks_every_operation_not_just_the_first() -> None:
+    # create_nodes declares no dependencies, so the walk must skip it and keep
+    # going. Stopping there instead would silently drop the removal that follows,
+    # and the Proposal would claim to depend on nothing at all.
+    state = _dependency_state()
+    ops = [
+        {"op": "create_nodes", "nodes": [{"id": "hyp/new", "type": "hypothesis"}]},
+        {"op": "remove_nodes", "node_ids": ["hyp/main"]},
+    ]
+
+    assert proposal_dependencies(state, ops) == (["hyp/main"], ["edge/informs"], [])
+
+
+def test_proposal_dependencies_records_the_decision_a_status_change_cites() -> None:
+    # A status change caused by a Decision depends on that Decision node; one
+    # caused by an evidence edge depends on the edge instead.
+    state = _dependency_state()
+    by_decision = {
+        "op": "update_nodes",
+        "nodes": [
+            {
+                "id": "hyp/main",
+                "changes": {"status": "active"},
+                "cause": {"kind": "decision", "ref_id": "dec/scope"},
+            }
+        ],
+    }
+    by_edge = {
+        "op": "update_nodes",
+        "nodes": [
+            {
+                "id": "hyp/main",
+                "changes": {"status": "active"},
+                "cause": {"kind": "evidence_edge", "ref_id": "edge/informs"},
+            }
+        ],
+    }
+
+    assert proposal_dependencies(state, [by_decision]) == (["dec/scope", "hyp/main"], [], [])
+    assert proposal_dependencies(state, [by_edge]) == (["hyp/main"], ["edge/informs"], [])
+
+
+def test_proposal_dependencies_ignores_operations_it_has_no_rule_for() -> None:
+    # An unknown operation name must be skipped rather than crash the walk, and a
+    # known one that declares no dependencies must contribute nothing.
+    state = _dependency_state()
+    removal = {"op": "remove_edges", "edge_ids": ["edge/informs"]}
+    ops = [
+        {"op": "invent_nodes", "nodes": []},
+        {"op": "upsert_glossary", "terms": []},
+        removal,
+    ]
+
+    # Removing an edge depends on both of its endpoints, and prefixing the walk
+    # with a rule-free and an unknown operation must not change that answer.
+    assert proposal_dependencies(state, ops) == proposal_dependencies(state, [removal])
+    assert proposal_dependencies(state, ops) == (["dec/scope", "hyp/main"], ["edge/informs"], [])

@@ -8,12 +8,14 @@ import queue
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -21,6 +23,8 @@ from pydantic import BaseModel
 
 from rcp.config import Manifest, load_manifest
 from rcp.limits import (
+    CHAT_ARTIFACT_MAX_FILE_BYTES,
+    REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS,
@@ -36,10 +40,21 @@ _LOCK_ACQUIRED = "acquired"
 _LOCK_CONTENDED = "contended"
 _LOCK_LEGACY_DIRECTORY = "legacy-directory"
 _LOCK_UNSAFE_ENTRY = "unsafe-entry"
+_KEPT_VIEW_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,238})\.html")
+_REMOTE_VIEW_MISSING = 44
+_REMOTE_VIEW_TOO_LARGE = 45
+_REMOTE_VIEW_UNSAFE = 46
+_ARCHIVE_TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}T[0-9]{12}Z")
+_RETAINED_HISTORY_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
+_RETAINED_HISTORY_CHANGED_MESSAGE = (
+    "Retained research changed since you reviewed it. Run the read-only preflight again "
+    "before archiving."
+)
 _REMOTE_ADVISORY_LOCK_SCRIPT = """\
 import fcntl
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -105,6 +120,117 @@ def apply_staged(command):
             commit_status = "present" if commit_target.is_file() else "absent"
         return {"ok": False, "commit_status": commit_status, "error": str(exc)[:1000]}
 
+
+def kept_view_candidate(base_name, index):
+    if index == 1:
+        return base_name
+    return f"{base_name[:-5]}-{index}.html"
+
+
+def keep_staged_view(command):
+    root = Path(command["root"])
+    stage = Path(command["stage"])
+    base_name = command["base_name"]
+    if (
+        Path(lock_path).name != ".refresh.lock"
+        or root != Path(lock_path).parent
+        or not root.is_absolute()
+        or root.name != ".research"
+        or stage.parent != root / ".publish"
+        or not re.fullmatch(r"view-[0-9]+-[0-9]+", stage.name)
+        or not isinstance(base_name, str)
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html", base_name)
+    ):
+        raise ValueError("invalid result-view root, stage, or base name")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("safe result-view file operations are unavailable")
+    if not stat.S_ISDIR(os.lstat(root).st_mode):
+        raise ValueError("canonical root is not a regular directory")
+    if not stat.S_ISDIR(os.lstat(stage.parent).st_mode):
+        raise ValueError("result-view staging parent is not a regular directory")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    stage_fd = os.open(stage, directory_flags)
+    try:
+        if os.listdir(stage_fd) != ["content.html"]:
+            raise ValueError("result-view stage does not contain exactly content.html")
+        source_fd = os.open("content.html", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
+        try:
+            source_info = os.fstat(source_fd)
+            if not stat.S_ISREG(source_info.st_mode):
+                raise ValueError("staged result view is not a regular file")
+            if source_info.st_size > 16 * 1024 * 1024:
+                raise ValueError("staged result view exceeds the per-file limit")
+
+            repository_fd = os.open(root.parent, directory_flags)
+            try:
+                try:
+                    os.mkdir("views", 0o755, dir_fd=repository_fd)
+                except FileExistsError:
+                    pass
+                try:
+                    views_fd = os.open("views", directory_flags, dir_fd=repository_fd)
+                except OSError as exc:
+                    raise ValueError("repository views path is not a regular directory") from exc
+                try:
+                    for index in range(1, 10000):
+                        candidate = kept_view_candidate(base_name, index)
+                        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                        try:
+                            target_fd = os.open(candidate, flags, 0o644, dir_fd=views_fd)
+                        except FileExistsError:
+                            continue
+                        try:
+                            bytes_left = 16 * 1024 * 1024
+                            while True:
+                                chunk = os.read(source_fd, min(1024 * 1024, bytes_left + 1))
+                                if not chunk:
+                                    break
+                                if len(chunk) > bytes_left:
+                                    raise ValueError(
+                                        "staged result view exceeds the per-file limit"
+                                    )
+                                bytes_left -= len(chunk)
+                                remaining = memoryview(chunk)
+                                while remaining:
+                                    written = os.write(target_fd, remaining)
+                                    if written <= 0:
+                                        raise OSError("short result-view write")
+                                    remaining = remaining[written:]
+                            os.fsync(target_fd)
+                        except BaseException:
+                            os.close(target_fd)
+                            target_fd = -1
+                            try:
+                                os.unlink(candidate, dir_fd=views_fd)
+                                os.fsync(views_fd)
+                            except OSError:
+                                pass
+                            raise
+                        finally:
+                            if target_fd >= 0:
+                                os.close(target_fd)
+                        os.fsync(views_fd)
+                        os.fsync(repository_fd)
+                        return {"ok": True, "name": candidate}
+                    raise FileExistsError("too many repository result-view name collisions")
+                finally:
+                    os.close(views_fd)
+            finally:
+                os.close(repository_fd)
+        finally:
+            os.close(source_fd)
+    finally:
+        try:
+            os.unlink("content.html", dir_fd=stage_fd)
+        except OSError:
+            pass
+        os.close(stage_fd)
+        try:
+            os.rmdir(stage)
+        except OSError:
+            pass
+
 lock_path = sys.argv[1]
 try:
     mode = os.lstat(lock_path).st_mode
@@ -150,13 +276,193 @@ with os.fdopen(descriptor, "a+") as handle:
     for line in sys.stdin:
         try:
             command = json.loads(line)
-            if command.get("op") != "apply":
+            if command.get("op") == "apply":
+                response = apply_staged(command)
+            elif command.get("op") == "keep-view":
+                response = keep_staged_view(command)
+            else:
                 raise ValueError("unsupported lock-holder command")
-            response = apply_staged(command)
         except Exception as exc:
             response = {"ok": False, "commit_status": None, "error": str(exc)[:1000]}
         print(json.dumps(response, separators=(",", ":")), flush=True)
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+"""
+
+_REMOTE_ARCHIVE_RESEARCH_SCRIPT = """\
+import hashlib
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+timestamp = sys.argv[2]
+expected_fingerprint = sys.argv[3]
+if (
+    not root.is_absolute()
+    or str(root) == "/"
+    or root.name != ".research"
+    or not re.fullmatch(r"[0-9]{8}T[0-9]{12}Z", timestamp)
+    or (expected_fingerprint != "-" and not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint))
+):
+    print("invalid canonical research directory or archive timestamp", file=sys.stderr)
+    raise SystemExit(2)
+try:
+    mode = os.lstat(root).st_mode
+except OSError as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)
+if not stat.S_ISDIR(mode):
+    print("canonical research path is not a regular directory", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def require_regular_file(path):
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError as exc:
+        raise ValueError(str(exc)) from exc
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"retained history input is not a regular file: {path}")
+
+
+def retained_history_paths():
+    manifest = root / "manifest.toml"
+    require_regular_file(manifest)
+    paths = [manifest]
+    scope_base = root / "scope-base.json"
+    if os.path.lexists(scope_base):
+        require_regular_file(scope_base)
+        paths.append(scope_base)
+    patches = root / "patches"
+    if os.path.lexists(patches):
+        if not stat.S_ISDIR(os.lstat(patches).st_mode):
+            raise ValueError(f"retained patch path is not a regular directory: {patches}")
+        for child in patches.iterdir():
+            if re.fullmatch(r"[0-9]{6}[.]json", child.name):
+                require_regular_file(child)
+                paths.append(child)
+            elif child.name.startswith("batch-"):
+                if not stat.S_ISDIR(os.lstat(child).st_mode):
+                    raise ValueError(f"retained patch batch is not a regular directory: {child}")
+                for patch in child.iterdir():
+                    if re.fullmatch(r"[0-9]{6}[.]json", patch.name):
+                        require_regular_file(patch)
+                        paths.append(patch)
+    return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
+
+
+def retained_history_fingerprint():
+    digest = hashlib.sha256(b"rcp-retained-history-v1\\0")
+    for path in retained_history_paths():
+        relative = path.relative_to(root).as_posix().encode()
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+if expected_fingerprint != "-":
+    try:
+        actual_fingerprint = retained_history_fingerprint()
+    except (OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)
+    if actual_fingerprint != expected_fingerprint:
+        print("retained research changed since preflight", file=sys.stderr)
+        raise SystemExit(3)
+
+base_name = f"{root.name}.archive-{timestamp}"
+for index in range(1, 10000):
+    name = base_name if index == 1 else f"{base_name}-{index}"
+    archive = root.with_name(name)
+    if os.path.lexists(archive):
+        continue
+    try:
+        os.rename(root, archive)
+    except FileExistsError:
+        continue
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)
+    print(archive)
+    raise SystemExit(0)
+print("too many canonical research archive name collisions", file=sys.stderr)
+raise SystemExit(1)
+"""
+
+_REMOTE_READ_KEPT_VIEW_SCRIPT = """\
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+MISSING = 44
+TOO_LARGE = 45
+UNSAFE = 46
+
+repository = Path(sys.argv[1])
+name = sys.argv[2]
+max_bytes = int(sys.argv[3])
+if (
+    not repository.is_absolute()
+    or str(repository) == "/"
+    or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html", name)
+    or max_bytes < 1
+    or max_bytes > 16 * 1024 * 1024
+    or not hasattr(os, "O_DIRECTORY")
+    or not hasattr(os, "O_NOFOLLOW")
+):
+    raise SystemExit(UNSAFE)
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+try:
+    repository_fd = os.open(repository, directory_flags)
+except FileNotFoundError:
+    raise SystemExit(MISSING)
+except OSError:
+    raise SystemExit(UNSAFE)
+try:
+    try:
+        views_fd = os.open("views", directory_flags, dir_fd=repository_fd)
+    except FileNotFoundError:
+        raise SystemExit(MISSING)
+    except OSError:
+        raise SystemExit(UNSAFE)
+    try:
+        try:
+            file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=views_fd)
+        except FileNotFoundError:
+            raise SystemExit(MISSING)
+        except OSError:
+            raise SystemExit(UNSAFE)
+        try:
+            info = os.fstat(file_fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise SystemExit(UNSAFE)
+            if info.st_size > max_bytes:
+                raise SystemExit(TOO_LARGE)
+            remaining = max_bytes + 1
+            chunks = []
+            while remaining > 0:
+                chunk = os.read(file_fd, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) > max_bytes:
+                raise SystemExit(TOO_LARGE)
+            sys.stdout.buffer.write(data)
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(views_fd)
+finally:
+    os.close(repository_fd)
 """
 
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
@@ -174,6 +480,204 @@ def _snapshot_lock(root: Path) -> threading.RLock:
     key = os.path.normcase(str(root.resolve()))
     with _SNAPSHOT_LOCKS_GUARD:
         return _SNAPSHOT_LOCKS.setdefault(key, threading.RLock())
+
+
+def _result_view_slug(value: str, fallback: str, *, max_length: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+    slug = slug[:max_length].rstrip("-")
+    return slug or fallback
+
+
+def _result_view_base_name(source_name: str, project_name: str, today: date | None) -> str:
+    source_base = re.split(r"[/\\]", source_name)[-1]
+    source_stem = re.sub(r"(?i)\.html?$", "", source_base)
+    source_slug = _result_view_slug(source_stem, "result", max_length=96)
+    project_slug = _result_view_slug(project_name, "project", max_length=80)
+    current_date = today or date.today()
+    name = f"{source_slug}-{project_slug}-{current_date.strftime('%y-%m-%d')}.html"
+    if _KEPT_VIEW_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("could not derive a safe repository result-view name")
+    return name
+
+
+def _validated_kept_view_name(name: str) -> str:
+    if _KEPT_VIEW_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("kept result-view name must be a safe HTML base name")
+    return name
+
+
+def _validated_view_bytes(data: bytes) -> bytes:
+    if not isinstance(data, bytes):
+        raise TypeError("result-view data must be bytes")
+    if len(data) > CHAT_ARTIFACT_MAX_FILE_BYTES:
+        raise ValueError("result view exceeds the per-file limit")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("result view is not UTF-8 HTML") from exc
+    if "\x00" in text:
+        raise ValueError("result view contains NUL bytes")
+    return data
+
+
+def _validated_view_read_limit(max_bytes: int) -> int:
+    if not 1 <= max_bytes <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+        raise ValueError("result-view read limit is outside the supported range")
+    return max_bytes
+
+
+def _repository_directory_fd(repository: Path) -> int:
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise StateUnavailable("Safe repository result-view file operations are unavailable.")
+    try:
+        return os.open(repository, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise StateUnavailable(f"Repository root is unavailable: {exc}") from exc
+
+
+def _open_views_directory(repository_fd: int, *, create: bool) -> int:
+    if create:
+        try:
+            os.mkdir("views", 0o755, dir_fd=repository_fd)
+            os.fsync(repository_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not create the repository views directory: {exc}"
+            ) from exc
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        return os.open("views", flags, dir_fd=repository_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise ValueError("repository views path is not a regular directory") from exc
+
+
+def _collision_view_name(base_name: str, index: int) -> str:
+    if index == 1:
+        return base_name
+    return f"{base_name[:-5]}-{index}.html"
+
+
+def _is_collision_view_name(name: str, base_name: str) -> bool:
+    if name == base_name:
+        return True
+    prefix = re.escape(base_name[:-5])
+    return re.fullmatch(rf"{prefix}-(?:[2-9]|[1-9][0-9]+)\.html", name) is not None
+
+
+def _archive_timestamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _archive_research_directory(root: Path, timestamp: str) -> Path:
+    if root.name != ".research" or _ARCHIVE_TIMESTAMP_PATTERN.fullmatch(timestamp) is None:
+        raise ValueError("invalid canonical research directory or archive timestamp")
+    try:
+        mode = root.lstat().st_mode
+    except OSError as exc:
+        raise StateUnavailable(f"Could not archive canonical research at {root}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise StateUnavailable(
+            f"Could not archive canonical research at {root}: path is not a regular directory."
+        )
+
+    base_name = f"{root.name}.archive-{timestamp}"
+    for index in range(1, 10000):
+        name = base_name if index == 1 else f"{base_name}-{index}"
+        archive = root.with_name(name)
+        if os.path.lexists(archive):
+            continue
+        try:
+            os.rename(root, archive)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not archive canonical research at {root}: {exc}"
+            ) from exc
+        return archive
+    raise StateUnavailable(f"Could not choose a unique archive name beside {root}.")
+
+
+def _retained_history_paths(root: Path) -> list[Path]:
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError as exc:
+        raise StateUnavailable(f"Could not inspect retained research at {root}: {exc}") from exc
+    if not stat.S_ISDIR(root_mode):
+        raise StateUnavailable(f"Retained research path is not a regular directory: {root}")
+
+    def require_regular(path: Path, label: str) -> None:
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise StateUnavailable(f"Could not inspect {label} at {path}: {exc}") from exc
+        if not stat.S_ISREG(mode):
+            raise StateUnavailable(f"{label.capitalize()} is not a regular file: {path}")
+
+    manifest = root / "manifest.toml"
+    require_regular(manifest, "retained manifest")
+    paths = [manifest]
+    scope_base = root / "scope-base.json"
+    if os.path.lexists(scope_base):
+        require_regular(scope_base, "retained scope provenance")
+        paths.append(scope_base)
+
+    patches = root / "patches"
+    if os.path.lexists(patches):
+        try:
+            patches_mode = patches.lstat().st_mode
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not inspect retained patches at {patches}: {exc}"
+            ) from exc
+        if not stat.S_ISDIR(patches_mode):
+            raise StateUnavailable(f"Retained patch path is not a regular directory: {patches}")
+        for child in patches.iterdir():
+            if re.fullmatch(r"[0-9]{6}\.json", child.name):
+                require_regular(child, "retained patch")
+                paths.append(child)
+            elif child.name.startswith("batch-"):
+                try:
+                    batch_mode = child.lstat().st_mode
+                except OSError as exc:
+                    raise StateUnavailable(
+                        f"Could not inspect retained patch batch at {child}: {exc}"
+                    ) from exc
+                if not stat.S_ISDIR(batch_mode):
+                    raise StateUnavailable(
+                        f"Retained patch batch is not a regular directory: {child}"
+                    )
+                for patch in child.iterdir():
+                    if re.fullmatch(r"[0-9]{6}\.json", patch.name):
+                        require_regular(patch, "retained patch")
+                        paths.append(patch)
+    return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
+
+
+def _retained_history_fingerprint(root: Path) -> str:
+    digest = hashlib.sha256(b"rcp-retained-history-v1\0")
+    for path in _retained_history_paths(root):
+        relative = path.relative_to(root).as_posix().encode()
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise StateUnavailable(f"Could not read retained history at {path}: {exc}") from exc
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _require_expected_history_fingerprint(root: Path, expected: str) -> None:
+    if _RETAINED_HISTORY_FINGERPRINT_PATTERN.fullmatch(expected) is None:
+        raise ValueError("expected retained-history fingerprint is invalid")
+    if _retained_history_fingerprint(root) != expected:
+        raise StateUnavailable(_RETAINED_HISTORY_CHANGED_MESSAGE)
 
 
 class StateUnavailable(RuntimeError):
@@ -290,6 +794,35 @@ class StateWorkspace:
         with self.snapshot_lock:
             return self._refresh_snapshot()
 
+    def retained_history_fingerprint(self) -> str:
+        """Fingerprint exactly the canonical inputs used to replay retained history."""
+
+        with self.snapshot_lock:
+            return _retained_history_fingerprint(self.root)
+
+    def archive_research(self, *, expected_history_fingerprint: str | None = None) -> str:
+        """Atomically move the complete canonical ``.research`` directory aside."""
+
+        with self.snapshot_lock:
+            lock_path = self.root / ".append.lock"
+            try:
+                handle = lock_path.open("a+", encoding="utf-8")
+            except OSError as exc:
+                raise StateUnavailable(
+                    f"Could not lock canonical research for archival at {self.root}: {exc}"
+                ) from exc
+            with handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    if expected_history_fingerprint is not None:
+                        _require_expected_history_fingerprint(
+                            self.root,
+                            expected_history_fingerprint,
+                        )
+                    return str(_archive_research_directory(self.root, _archive_timestamp()))
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def _refresh_snapshot(self) -> bool:
         self.reachable = True
         return True
@@ -316,6 +849,108 @@ class StateWorkspace:
     def transaction(self) -> Iterator[None]:
         with self.snapshot_lock:
             yield
+
+    def keep_result_view(
+        self,
+        *,
+        source_name: str,
+        project_name: str,
+        data: bytes,
+        today: date | None = None,
+    ) -> str:
+        """Create one immutable HTML result view beside, never inside, ``.research``."""
+
+        base_name = _result_view_base_name(source_name, project_name, today)
+        content = _validated_view_bytes(data)
+        with self.transaction():
+            repository_fd = _repository_directory_fd(self.root.parent)
+            try:
+                views_fd = _open_views_directory(repository_fd, create=True)
+                try:
+                    for index in range(1, 10000):
+                        candidate = _collision_view_name(base_name, index)
+                        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                        try:
+                            descriptor = os.open(candidate, flags, 0o644, dir_fd=views_fd)
+                        except FileExistsError:
+                            continue
+                        try:
+                            remaining = memoryview(content)
+                            while remaining:
+                                written = os.write(descriptor, remaining)
+                                if written <= 0:
+                                    raise OSError("short result-view write")
+                                remaining = remaining[written:]
+                            os.fsync(descriptor)
+                        except BaseException:
+                            os.close(descriptor)
+                            descriptor = -1
+                            try:
+                                os.unlink(candidate, dir_fd=views_fd)
+                                os.fsync(views_fd)
+                            except OSError:
+                                pass
+                            raise
+                        finally:
+                            if descriptor >= 0:
+                                os.close(descriptor)
+                        os.fsync(views_fd)
+                        return candidate
+                    raise StateUnavailable("Too many repository result-view name collisions.")
+                finally:
+                    os.close(views_fd)
+            finally:
+                os.close(repository_fd)
+
+    def read_kept_result_view(
+        self,
+        name: str,
+        *,
+        max_bytes: int = CHAT_ARTIFACT_MAX_FILE_BYTES,
+    ) -> bytes:
+        """Read one immutable repository result view without following links."""
+
+        safe_name = _validated_kept_view_name(name)
+        limit = _validated_view_read_limit(max_bytes)
+        with self.snapshot_lock:
+            repository_fd = _repository_directory_fd(self.root.parent)
+            try:
+                views_fd = _open_views_directory(repository_fd, create=False)
+                try:
+                    try:
+                        descriptor = os.open(
+                            safe_name,
+                            os.O_RDONLY | os.O_NOFOLLOW,
+                            dir_fd=views_fd,
+                        )
+                    except FileNotFoundError:
+                        raise
+                    except OSError as exc:
+                        raise ValueError("kept result view is not a readable regular file") from exc
+                    try:
+                        metadata = os.fstat(descriptor)
+                        if not stat.S_ISREG(metadata.st_mode):
+                            raise ValueError("kept result view is not a regular file")
+                        if metadata.st_size > limit:
+                            raise ValueError("kept result view exceeds the read limit")
+                        chunks: list[bytes] = []
+                        remaining = limit + 1
+                        while remaining > 0:
+                            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            remaining -= len(chunk)
+                        content = b"".join(chunks)
+                        if len(content) > limit:
+                            raise ValueError("kept result view exceeds the read limit")
+                        return content
+                    finally:
+                        os.close(descriptor)
+                finally:
+                    os.close(views_fd)
+            finally:
+                os.close(repository_fd)
 
     @contextmanager
     def run_lock(
@@ -724,6 +1359,71 @@ class SSHStateWorkspace(StateWorkspace):
             lease.assert_owned()
             return refreshed
 
+    def archive_research(self, *, expected_history_fingerprint: str | None = None) -> str:
+        """Archive remote canonical state, then discard only its stale local mirror."""
+
+        timestamp = _archive_timestamp()
+        with self.snapshot_lock, self._remote_advisory_lock(self.lock_dir) as lease:
+            lease.assert_owned()
+            result = self._ssh(
+                [
+                    "python3",
+                    "-c",
+                    _REMOTE_ARCHIVE_RESEARCH_SCRIPT,
+                    str(self.remote_root),
+                    timestamp,
+                    expected_history_fingerprint or "-",
+                ]
+            )
+            lease.assert_owned()
+            if result.returncode != 0:
+                detail = result.stderr.strip() or "remote archive rename failed"
+                if result.returncode == 3:
+                    self._mark_reachable()
+                    raise StateUnavailable(_RETAINED_HISTORY_CHANGED_MESSAGE)
+                if result.returncode in {1, 2}:
+                    self._mark_reachable()
+                    raise StateUnavailable(
+                        f"Could not archive canonical research at {self.location}; "
+                        f"the original directory remains intact: {detail}"
+                    )
+                self._mark_unreachable(detail)
+                raise StateUnavailable(
+                    f"Could not confirm whether canonical research at {self.location} was "
+                    f"archived: {detail}"
+                )
+
+            remote_archive = PurePosixPath(result.stdout.strip())
+            base_name = f"{self.remote_root.name}.archive-{timestamp}"
+            suffix = remote_archive.name.removeprefix(base_name)
+            valid_suffix = not suffix or (
+                re.fullmatch(r"-(?:[2-9]|[1-9][0-9]+)", suffix) is not None
+            )
+            if (
+                not remote_archive.is_absolute()
+                or remote_archive.parent != self.remote_root.parent
+                or not remote_archive.name.startswith(base_name)
+                or not valid_suffix
+            ):
+                message = "Remote archive rename returned an invalid archive location."
+                self._mark_unreachable(message)
+                raise StateUnavailable(message)
+
+            try:
+                shutil.rmtree(self.root)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self._mark_reachable()
+                raise StateUnavailable(
+                    f"Canonical research was archived at {self.host}:{remote_archive}, but its "
+                    "stale local mirror could not be cleared; fresh initialization must not "
+                    f"continue: {exc}"
+                ) from exc
+            self.last_synced_at = None
+            self._mark_reachable()
+            return f"{self.host}:{remote_archive}"
+
     def _remote_manifest_exists(self) -> bool:
         self.root.mkdir(parents=True, exist_ok=True)
         manifest_exists = self._ssh(["test", "-f", str(self.remote_root / "manifest.toml")])
@@ -877,6 +1577,111 @@ class SSHStateWorkspace(StateWorkspace):
     def publish(self, relative_paths: list[Path | str]) -> None:
         with self.snapshot_lock, self._publication_lock() as lease:
             self._publish(relative_paths, lease)
+
+    def keep_result_view(
+        self,
+        *,
+        source_name: str,
+        project_name: str,
+        data: bytes,
+        today: date | None = None,
+    ) -> str:
+        base_name = _result_view_base_name(source_name, project_name, today)
+        content = _validated_view_bytes(data)
+        stage = self.remote_root / ".publish" / f"view-{os.getpid()}-{time.time_ns()}"
+        with self.snapshot_lock, self._publication_lock() as lease:
+            prepared = self._ssh(["mkdir", "-p", str(stage)])
+            if prepared.returncode:
+                self._mark_unreachable(prepared.stderr)
+                raise StateUnavailable(self.error or "canonical state is unreachable")
+            with tempfile.TemporaryDirectory(prefix="rcp-kept-view-") as temporary:
+                source = Path(temporary) / "content.html"
+                source.write_bytes(content)
+                destination = f"{self.host}:{shlex.quote(str(stage))}/"
+                try:
+                    result = subprocess.run(
+                        ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    self._mark_unreachable(str(exc))
+                    raise StateUnavailable(
+                        self.error or "repository result-view staging failed"
+                    ) from exc
+            if result.returncode:
+                self._mark_unreachable(result.stderr)
+                raise StateUnavailable(self.error or "repository result-view staging failed")
+            try:
+                response = lease._run_owned_command(
+                    {
+                        "op": "keep-view",
+                        "root": str(self.remote_root),
+                        "stage": str(stage),
+                        "base_name": base_name,
+                    }
+                )
+            except RunLockOwnershipLost as exc:
+                message = (
+                    "Canonical-state ownership was lost while keeping the result view; "
+                    "no existing repository view was overwritten."
+                )
+                self._mark_unreachable(message)
+                raise RunLockOwnershipLost(message) from exc
+            if not response["ok"]:
+                self._mark_reachable()
+                message = str(response.get("error") or "repository result-view keep failed")
+                raise StateUnavailable(message)
+            chosen = response.get("name")
+            if (
+                not isinstance(chosen, str)
+                or _KEPT_VIEW_NAME_PATTERN.fullmatch(chosen) is None
+                or not _is_collision_view_name(chosen, base_name)
+            ):
+                self._mark_unreachable("Remote result-view keep returned an invalid file name.")
+                raise StateUnavailable(self.error or "repository result-view keep failed")
+            self._mark_reachable(synced=True)
+            return chosen
+
+    def read_kept_result_view(
+        self,
+        name: str,
+        *,
+        max_bytes: int = CHAT_ARTIFACT_MAX_FILE_BYTES,
+    ) -> bytes:
+        safe_name = _validated_kept_view_name(name)
+        limit = _validated_view_read_limit(max_bytes)
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                _REMOTE_READ_KEPT_VIEW_SCRIPT,
+                str(self.remote_repository),
+                safe_name,
+                str(limit),
+            ],
+            timeout=REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            if len(result.stdout) > limit:
+                self._mark_reachable()
+                raise ValueError("kept result view exceeds the read limit")
+            self._mark_reachable()
+            return result.stdout
+        if result.returncode == _REMOTE_VIEW_MISSING:
+            self._mark_reachable()
+            raise FileNotFoundError(safe_name)
+        if result.returncode == _REMOTE_VIEW_TOO_LARGE:
+            self._mark_reachable()
+            raise ValueError("kept result view exceeds the read limit")
+        if result.returncode == _REMOTE_VIEW_UNSAFE:
+            self._mark_reachable()
+            raise ValueError("kept result view is not a readable regular file")
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        self._mark_unreachable(detail or "canonical state is unreachable")
+        raise StateUnavailable(self.error or "canonical state is unreachable")
 
     def _publish(self, relative_paths: list[Path | str], lease: RunLockLease) -> None:
         sources: list[str] = []
@@ -1109,6 +1914,23 @@ class SSHStateWorkspace(StateWorkspace):
         except (OSError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess([], 255, "", str(exc))
 
+    def _ssh_bytes(
+        self,
+        arguments: list[str],
+        *,
+        timeout: float = 30,
+    ) -> subprocess.CompletedProcess[bytes]:
+        command = " ".join(shlex.quote(argument) for argument in arguments)
+        try:
+            return subprocess.run(
+                ssh_arguments(self.host, command),
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess([], 255, b"", str(exc).encode())
+
     def _mark_reachable(self, *, synced: bool = False) -> None:
         self.reachable = True
         self.error = None
@@ -1156,10 +1978,13 @@ def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manife
     assert isinstance(workspace, SSHStateWorkspace)
     cache_root = workspace.root
     try:
-        workspace.refresh()
+        remote_exists = workspace.refresh()
     except StateUnavailable:
         if not (cache_root / "manifest.toml").is_file():
             raise
+    else:
+        if not remote_exists:
+            _discard_absent_remote_snapshot(cache_root)
     cache_manifest = cache_root / "manifest.toml"
     if not cache_manifest.is_file():
         cache_manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -1167,6 +1992,27 @@ def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manife
     manifest = load_manifest(cache_manifest)
     _validate_remote_identity(bootstrap, manifest, machine.host, state_repository.path)
     return manifest, workspace
+
+
+def _discard_absent_remote_snapshot(cache_root: Path) -> None:
+    """Never let a confirmed-absent remote project inherit an old local mirror."""
+
+    try:
+        mode = cache_root.lstat().st_mode
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise StateUnavailable(f"Could not inspect stale canonical-state mirror: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise StateUnavailable(
+            f"Stale canonical-state mirror is not a regular directory: {cache_root}"
+        )
+    try:
+        shutil.rmtree(cache_root)
+    except OSError as exc:
+        raise StateUnavailable(
+            f"Could not clear stale canonical-state mirror before fresh initialization: {exc}"
+        ) from exc
 
 
 def state_workspace_for_probe(bootstrap: Manifest, data_dir: Path) -> StateWorkspace:

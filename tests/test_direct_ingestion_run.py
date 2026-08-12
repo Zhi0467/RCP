@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -27,10 +26,9 @@ from .helpers import (
     append_fixture_patch,
     refresh_patch,
     seed_patch,
+    wait_for_task_response,
 )
-from .helpers import (
-    create_named_app as create_app,
-)
+from .helpers import create_named_app as create_app
 
 
 class _FailingLauncher:
@@ -52,22 +50,6 @@ class _SuccessfulIngestLauncher:
         (workspace / "patch.json").write_text(self.patch_text, encoding="utf-8")
         yield AgentEvent(event="answer", text=self.answer)
         yield AgentEvent(event="done")
-
-
-def _wait_for_task(
-    client: TestClient,
-    project_id: str,
-    operation_id: str,
-) -> dict[str, object]:
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
-        assert response.status_code == 200
-        task = response.json()
-        if task["status"] not in {"queued", "running"}:
-            return task
-        time.sleep(0.01)
-    raise AssertionError("background ingest task did not finish")
 
 
 @pytest.mark.parametrize("kind", ["seed", "refresh"])
@@ -107,7 +89,7 @@ def test_successful_ingest_answer_is_persisted_and_readable(
             json={"run_truth_scope": ["repo-a"]},
         )
         assert started.status_code == 202
-        completed = _wait_for_task(client, project_id, started.json()["operation_id"])
+        completed = wait_for_task_response(client, project_id, started.json()["operation_id"])
 
     assert completed["status"] == "succeeded"
     assert completed["result"] == {"messages": [answer]}
@@ -146,7 +128,7 @@ def test_failed_ingest_keeps_its_independent_answer(manifest, tmp_path) -> None:
             json={"run_truth_scope": ["repo-a"]},
         )
         assert started.status_code == 202
-        failed = _wait_for_task(client, project_id, started.json()["operation_id"])
+        failed = wait_for_task_response(client, project_id, started.json()["operation_id"])
 
     assert failed["status"] == "failed"
     assert failed["result"] == {"messages": [answer]}

@@ -73,6 +73,26 @@ def _write_legacy_display(path: Path, project_id: str) -> None:
     path.write_text(json.dumps(envelope), encoding="utf-8")
 
 
+def test_pre_identity_display_cache_remains_readable_before_legacy_adoption(
+    manifest,
+    tmp_path,
+) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    project_id = "legacy-project"
+    _legacy_record(manifest, store, project_id)
+    cache_path = catalog._cached_snapshot_path(project_id)
+    _write_legacy_display(cache_path, project_id)
+
+    status, cached = catalog.cached_snapshot_status(project_id)
+
+    assert status == "valid"
+    assert cached is not None
+    assert cached["home_space_id"] is None
+    assert "home_space_id" not in json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
+
+
 def test_registered_legacy_project_auto_adopts_actual_id_once_and_rekeys_caches(
     manifest,
     tmp_path,
@@ -326,3 +346,57 @@ def test_cache_destination_conflict_prevents_database_migration_and_overwrite(
     assert destination.read_text(encoding="utf-8") == "canonical-cache-must-remain"
     assert store.project_by_locator(str(manifest.path)).project_id == old_project_id
     assert store.project_aliases() == {}
+
+
+@pytest.mark.parametrize(
+    ("collision", "diagnostic"),
+    [
+        ("canonical", "registered canonical project"),
+        ("foreign_alias", "belongs to canonical project"),
+    ],
+)
+def test_open_refuses_manifest_name_owned_by_another_project(
+    manifest,
+    tmp_path,
+    collision,
+    diagnostic,
+) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    foreign_project_id = str(uuid.uuid4())
+    legacy_name = foreign_project_id if collision == "canonical" else "foreign-project-alias"
+    manifest_text = manifest.path.read_text(encoding="utf-8")
+    assert 'name = "test-paper"' in manifest_text
+    manifest.path.write_text(
+        manifest_text.replace('name = "test-paper"', f'name = "{legacy_name}"'),
+        encoding="utf-8",
+    )
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    target = catalog.register(str(manifest.path), identity_action="adopted")
+    store.upsert_project(
+        ProjectRecord(
+            project_id=foreign_project_id,
+            home_space_id=store.space_id,
+            locator=str(tmp_path / "foreign" / "research.yaml"),
+            name="Foreign project",
+            state_location=str(tmp_path / "foreign" / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    if collision == "foreign_alias":
+        with store.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO project_aliases(alias_id, canonical_project_id)
+                VALUES (?, ?)
+                """,
+                (legacy_name, foreign_project_id),
+            )
+
+    with pytest.raises(ValueError, match=diagnostic):
+        catalog.open(target.project_id)
+
+    assert catalog.loaded_service(target.project_id) is None
+    assert store.project(target.project_id) == target
+    assert store.project(foreign_project_id) is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import sys
@@ -9,6 +10,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal, cast
 from urllib.parse import quote
@@ -21,9 +23,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
+from rcp.agents.command_protocol import SpawnArguments
+from rcp.api.campaigns import (
+    CampaignMessageBody,
+    CampaignResponse,
+    ReauthorizeCampaignBody,
+    StartCampaignBody,
+    campaign_for_project,
+    serialize_campaign,
+    serialize_campaigns,
+)
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
+    ResultViewDescriptor,
     descriptor_for,
     html_preview_document,
     read_local_regular_file,
@@ -57,6 +70,7 @@ from rcp.limits import (
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
+    WATCHER_POLL_INTERVAL_SECONDS,
 )
 from rcp.paper import PaperSnapshot
 from rcp.projects import ProjectCatalog
@@ -67,13 +81,39 @@ from rcp.repository_preview import (
     load_repository_source_for_path,
     repository_source_document,
 )
+from rcp.runs.campaign import (
+    CampaignCommandContext,
+    CampaignCommandDispatcher,
+    CampaignCommandEffectResult,
+    CampaignRunRequest,
+    CampaignStartRequest,
+)
+from rcp.runs.campaign_delivery import (
+    deliver_campaign_watcher_group,
+    deliver_pending_campaign_mail,
+    reconcile_pending_campaign_mail,
+    record_campaign_message,
+)
+from rcp.runs.campaign_effects import campaign_command_effects
+from rcp.runs.campaign_recovery import (
+    reconcile_campaign_task_settlement,
+    reconcile_due_campaign_recoveries,
+    reconcile_orphaned_campaign_failures,
+    schedule_report_reconciliation,
+)
+from rcp.runs.campaign_stream import (
+    stream_campaign_orchestrator_run,
+    stream_campaign_report_run,
+    stream_campaign_worker_run,
+)
 from rcp.runs.chat import _logical_chat_turn_operation_id
 from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.experiment_loop import experiment_watcher_delivery_request, preflight_episode_wake
 from rcp.runs.graph import stream_graph_run
+from rcp.runs.result_views import read_local_result_view_bytes
 from rcp.runs.shared import _sweep_stale_stages
-from rcp.runs.work import stream_work_run
+from rcp.runs.work import _validate_work_patch_live, stream_work_run
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     ChatSummaryPage,
@@ -91,18 +131,32 @@ from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
     RebuildableCache,
+    discover_project_cache_roots,
+    legacy_shared_cache_roots,
 )
 from rcp.storage import (
     AgentTaskKind,
     AgentUsageSnapshot,
     AppStore,
+    CampaignMessageRecord,
+    CampaignNotRunning,
+    CampaignRecord,
     ExperimentLoopRuntime,
+    GraphWatcherRecord,
+    ResultViewConflict,
+    ResultViewRecord,
     SpaceUserRecord,
+    StoredWatcherRecord,
     WatcherClaimConflict,
-    WatcherRecord,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
-from rcp.watchers import WatcherPoller
+from rcp.watchers import (
+    WatcherPoller,
+    WatcherRetryGeneration,
+    WatcherRetryWorker,
+    evaluate_graph_watchers,
+    ready_graph_watcher_groups,
+)
 from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
@@ -197,12 +251,75 @@ def create_app(
     )
     experiment_operation_locks: dict[str, threading.RLock] = {}
     experiment_operation_locks_guard = threading.Lock()
+    result_view_keep_locks: dict[str, threading.Lock] = {}
+    result_view_keep_locks_guard = threading.Lock()
+    graph_watcher_reconciliation_locks: dict[str, threading.Lock] = {}
+    graph_watcher_reconciliation_locks_guard = threading.Lock()
+    graph_watcher_retry_failures: dict[str, int] = {}
+    graph_watcher_retry_passes: dict[str, int] = {}
+    graph_watcher_retry_guard = threading.Lock()
     project_reconciliation_tasks: dict[str, asyncio.Task[None]] = {}
     project_probe_started_at: dict[str, float] = {}
 
     def experiment_operation_lock(project_id: str) -> threading.RLock:
         with experiment_operation_locks_guard:
             return experiment_operation_locks.setdefault(project_id, threading.RLock())
+
+    def result_view_keep_lock(view_id: str) -> threading.Lock:
+        with result_view_keep_locks_guard:
+            return result_view_keep_locks.setdefault(view_id, threading.Lock())
+
+    def graph_watcher_reconciliation_lock(project_id: str) -> threading.Lock:
+        with graph_watcher_reconciliation_locks_guard:
+            return graph_watcher_reconciliation_locks.setdefault(project_id, threading.Lock())
+
+    def schedule_graph_watcher_reconciliation(project_id: str) -> None:
+        """Retry transient reconciliation failures with capped poll-pass backoff."""
+
+        max_passes = max(1, 60 // WATCHER_POLL_INTERVAL_SECONDS)
+        with graph_watcher_retry_guard:
+            failures = graph_watcher_retry_failures.get(project_id, 0) + 1
+            graph_watcher_retry_failures[project_id] = failures
+            graph_watcher_retry_passes[project_id] = min(
+                2 ** min(failures - 1, 6),
+                max_passes,
+            )
+
+    def clear_graph_watcher_reconciliation_retry(project_id: str) -> None:
+        with graph_watcher_retry_guard:
+            graph_watcher_retry_failures.pop(project_id, None)
+            graph_watcher_retry_passes.pop(project_id, None)
+
+    def due_graph_watcher_reconciliations() -> list[str]:
+        due: list[str] = []
+        with graph_watcher_retry_guard:
+            for project_id, passes in list(graph_watcher_retry_passes.items()):
+                if passes <= 1:
+                    # Keep due work durable in process until its reconciliation
+                    # explicitly succeeds or reaches a non-retryable outcome. A
+                    # retry generation can be invalidated after this selection.
+                    graph_watcher_retry_passes[project_id] = 0
+                    due.append(project_id)
+                else:
+                    graph_watcher_retry_passes[project_id] = passes - 1
+        return sorted(due)
+
+    def retry_generation_is_current(
+        generation: WatcherRetryGeneration | None,
+    ) -> bool:
+        return generation is None or generation.is_current()
+
+    def run_for_retry_generation(
+        generation: WatcherRetryGeneration | None,
+        callback: Callable[[], None],
+    ) -> bool:
+        if generation is None:
+            callback()
+            return True
+        return generation.run_if_current(callback)
+
+    class _GraphWatcherReplayDegraded(RuntimeError):
+        pass
 
     def acting_user(request: Request) -> SpaceUserRecord:
         if space_kind == "personal":
@@ -298,6 +415,87 @@ def create_app(
                 async for frame in stream:
                     yield frame
             return
+        if kind == "campaign":
+            if not isinstance(request, CampaignRunRequest):
+                raise TypeError("A campaign task requires a campaign run request.")
+            if request.role == "report":
+                async with aclosing(
+                    stream_campaign_report_run(
+                        service,
+                        launcher,
+                        request,
+                        app_data,
+                        execution,
+                    )
+                ) as stream:
+                    async for frame in stream:
+                        yield frame
+                return
+            if request.run_on is None:
+                raise ValueError("A campaign turn has no pinned execution machine.")
+            execution_machine = service.manifest.machine_map.get(request.run_on)
+            if execution_machine is None:
+                raise ValueError(f"unknown execution machine: {request.run_on}")
+
+            def validate_campaign_patch(context, arguments) -> CampaignCommandEffectResult:
+                validated = _validate_work_patch_live(
+                    service,
+                    arguments.patch,
+                    run_truth_scope=list(context.request.run_truth_scope or ()),
+                    patch_kind="work",
+                    control_node_id=None,
+                    control_decision_bundle=None,
+                    source_operation_id=context.task.operation_id,
+                    profile=(
+                        "orchestrator" if context.request.role == "orchestrator" else "ordinary"
+                    ),
+                )
+                result = validated.model_dump(mode="json")
+                if validated.status == "valid":
+                    return CampaignCommandEffectResult(result=result)
+                diagnostic = (
+                    validated.messages[0]
+                    if validated.messages
+                    else f"Campaign Patch validation is {validated.status}."
+                )
+                return CampaignCommandEffectResult(
+                    status=validated.status,
+                    message=diagnostic,
+                    result=result,
+                )
+
+            effects = campaign_command_effects(
+                store=store,
+                background=background_tasks,
+                validate=validate_campaign_patch,
+                worker_request_factory=_campaign_worker_request,
+                graph_state=service.history.state,
+                execution_host=execution_machine.host,
+                on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
+                    ready_project_id,
+                    None,
+                    source="campaign graph condition",
+                ),
+            )
+            dispatcher = CampaignCommandDispatcher(store, effects)
+            stream_campaign = (
+                stream_campaign_orchestrator_run
+                if request.role == "orchestrator"
+                else stream_campaign_worker_run
+            )
+            async with aclosing(
+                stream_campaign(
+                    service,
+                    launcher,
+                    request,
+                    app_data,
+                    execution,
+                    command_dispatcher=dispatcher,
+                )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            return
         assert isinstance(request, RunRequest)
         if kind in {"node_chat", "project_chat"}:
             if request.mode == "work":
@@ -344,9 +542,16 @@ def create_app(
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
-        graph_capable = isinstance(request, RunRequest) and (
-            kind in {"seed", "refresh"}
-            or (kind in {"node_chat", "project_chat"} and request.mode == "work")
+        graph_capable = (
+            isinstance(request, RunRequest)
+            and (
+                kind in {"seed", "refresh"}
+                or (kind in {"node_chat", "project_chat"} and request.mode == "work")
+            )
+        ) or (
+            kind == "campaign"
+            and isinstance(request, CampaignRunRequest)
+            and request.role in {"orchestrator", "worker"}
         )
         if not graph_capable:
             return
@@ -396,17 +601,199 @@ def create_app(
                     receipt_exc,
                 )
 
+    def evaluate_graph_conditions_after_task(
+        project_id: str,
+        kind: AgentTaskKind,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        graph_capable = (
+            isinstance(request, RunRequest)
+            and (
+                kind in {"seed", "refresh"}
+                or (kind in {"node_chat", "project_chat"} and request.mode == "work")
+            )
+        ) or (
+            kind == "campaign"
+            and isinstance(request, CampaignRunRequest)
+            and request.role in {"orchestrator", "worker"}
+        )
+        if not graph_capable:
+            deliver_ready_graph_wake_groups(project_id, source="task settlement")
+            return
+        if execution.applied_revision is None and not execution.armed_graph_watchers:
+            deliver_ready_graph_wake_groups(project_id, source="task settlement")
+            return
+        evaluate_graph_wake_boundary(
+            project_id,
+            execution.applied_graph_state,
+            source="agent patch" if execution.applied_revision is not None else "watcher arming",
+        )
+
     background_tasks = BackgroundAgentTasks(
         store,
         background_task_stream,
         on_stream_closed=refresh_cached_project_after_stream,
+        on_task_settled=evaluate_graph_conditions_after_task,
     )
 
-    def deliver_watcher_group(group: list[WatcherRecord]) -> None:
+    def campaign_report_request(campaign: CampaignRecord) -> CampaignRunRequest:
+        if campaign.ending is None:
+            raise ValueError("A campaign report request requires a durable ending.")
+        return CampaignRunRequest(
+            campaign_id=campaign.campaign_id,
+            role="report",
+            ending=campaign.ending,
+            instruction=(
+                "Produce the campaign's concluding report from the staged official "
+                "campaign-report skill."
+            ),
+        )
+
+    def reconcile_campaign_report(
+        campaign: CampaignRecord,
+        *,
+        source: str,
+        operation_id: str | None = None,
+    ) -> bool:
+        try:
+            report_task = background_tasks.reconcile_campaign_report(
+                campaign.campaign_id,
+                request_factory=campaign_report_request,
+            )
+            if report_task is not None:
+                return True
+            current = store.campaign(campaign.campaign_id)
+            if current is None or current.status != "wrapping_up":
+                return True
+            return any(
+                store.campaign_invocation_role(task.operation_id) == "report"
+                and CampaignRunRequest.model_validate(task.request).ending == current.ending
+                for task in store.campaign_tasks(campaign.campaign_id)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not reconcile campaign report for %s after %s: %s",
+                campaign.campaign_id,
+                source,
+                exc,
+            )
+            if operation_id is not None:
+                with suppress(Exception):
+                    store.record_agent_task_receipt(
+                        operation_id,
+                        "campaign_report_reconciliation_failed",
+                        {
+                            "campaign_id": campaign.campaign_id,
+                            "source": source,
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                        tier="diagnostic",
+                    )
+            with suppress(Exception):
+                schedule_report_reconciliation(
+                    background_tasks,
+                    campaign,
+                    diagnostic=str(exc),
+                )
+            return False
+
+    def reconcile_campaign_reports_at_startup() -> None:
+        for campaign in store.campaigns_awaiting_report():
+            reconcile_campaign_report(campaign, source="startup")
+
+    def fence_depleted_campaigns_at_startup() -> None:
+        """Fence the one live campaign per project after crash recovery is reconstructed."""
+
+        for project in store.projects():
+            campaign = store.active_campaign(project.project_id)
+            if campaign is None:
+                continue
+            store.fence_campaign_exhaustion_if_depleted(campaign.campaign_id)
+
+    def reconcile_campaign_report_after_exhaustion(campaign: CampaignRecord) -> None:
+        reconcile_campaign_report(
+            campaign,
+            source="budget exhaustion",
+            operation_id=campaign.root_operation_id,
+        )
+
+    def deliver_mail_after_campaign_task(
+        campaign: CampaignRecord,
+        campaign_request: CampaignRunRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        campaign = reconcile_campaign_task_settlement(
+            background_tasks,
+            campaign,
+            campaign_request,
+            execution,
+        )
+        if campaign_request.role != "report":
+            campaign = store.fence_campaign_exhaustion_if_depleted(campaign.campaign_id)
+        settled_task = store.agent_task(execution.operation_id)
+        if (
+            settled_task is not None
+            and settled_task.status in {"failed", "interrupted"}
+            and campaign_request.role in {"orchestrator", "report"}
+        ):
+            recovery = store.campaign_control_recovery(
+                campaign.campaign_id,
+                settled_task.operation_id,
+            )
+            if recovery is not None and recovery.status in {"pending", "admitted"}:
+                return
+        try:
+            reconcile_pending_campaign_mail(
+                background_tasks,
+                campaign_id=campaign.campaign_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not deliver pending campaign mail after task %s: %s",
+                execution.operation_id,
+                exc,
+            )
+            with suppress(Exception):
+                store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "campaign_mail_delivery_retry_failed",
+                    {"exception_type": type(exc).__name__, "detail": str(exc)},
+                    tier="diagnostic",
+                )
+        reconcile_campaign_report(
+            campaign,
+            source=f"task {execution.operation_id} settlement",
+            operation_id=execution.operation_id,
+        )
+
+    def reconcile_campaign_recovery_pass() -> None:
+        reconcile_due_campaign_recoveries(
+            background_tasks,
+            reconcile_report=lambda campaign: reconcile_campaign_report(
+                campaign,
+                source="durable recovery retry",
+                operation_id=campaign.root_operation_id,
+            ),
+        )
+
+    background_tasks.on_campaign_task_settled = deliver_mail_after_campaign_task
+    background_tasks.on_campaign_admission_exhausted = reconcile_campaign_report_after_exhaustion
+
+    def deliver_watcher_group(
+        group: list[StoredWatcherRecord],
+        *,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
         if not group:
+            return
+        if not retry_generation_is_current(retry_generation):
             return
         watcher_ids = [item.watcher_id for item in group]
         authorized_by, terminal_diagnostic = store.resolve_watcher_delivery_authorizer(watcher_ids)
+        if not retry_generation_is_current(retry_generation):
+            return
         if authorized_by is None:
             if terminal_diagnostic is not None:
                 logger.warning(
@@ -418,12 +805,34 @@ def create_app(
         first = group[0]
         continuation = first.continuation
         service = _project_service(catalog, first.project_id)
+        if first.origin_task_kind == "campaign":
+            started: list[str] = []
+
+            def claim_campaign_wake() -> None:
+                operation_id = deliver_campaign_watcher_group(background_tasks, group)
+                if operation_id is not None:
+                    started.append(operation_id)
+
+            if retry_generation is not None:
+                if not retry_generation.run_if_current(claim_campaign_wake):
+                    return
+            else:
+                claim_campaign_wake()
+            if started:
+                logger.info(
+                    "Campaign watcher group %s queued task %s.",
+                    watcher_ids,
+                    started[0],
+                )
+            return
         if continuation.patch_kind == "experiment_loop":
             control_node_id = continuation.control_node_id
             if control_node_id is None:
                 raise ValueError("An Experiment watcher is missing its control node.")
             with experiment_operation_lock(first.project_id):
                 state = service.history.state()
+                if not retry_generation_is_current(retry_generation):
+                    return
                 if not isinstance(state.nodes.get(control_node_id), Experiment):
                     store.stop_watchers(first.project_id, watcher_ids)
                     return
@@ -473,6 +882,8 @@ def create_app(
                 # budget spend, so an unusable binding never costs an invocation
                 # and never quietly becomes a fresh session.
                 preflight = preflight_episode_wake(runtime, episode, group)
+                if not retry_generation_is_current(retry_generation):
+                    return
                 if preflight.readiness == "unavailable":
                     if runtime.episode_id is not None:
                         store.record_experiment_episode_diagnostic(
@@ -538,6 +949,7 @@ def create_app(
                         "session_id": preflight.session_id,
                     }
                 )
+
                 background_tasks.start_watcher_notification(
                     first.project_id,
                     "node_chat",
@@ -546,6 +958,9 @@ def create_app(
                     authorized_by=authorized_by,
                     episode_stage_host=preflight.stage_host,
                     episode_stage_root=preflight.stage_root,
+                    admission_fence=(
+                        retry_generation.run_if_current if retry_generation is not None else None
+                    ),
                 )
             return
 
@@ -557,9 +972,203 @@ def create_app(
                 request,
                 watcher_ids,
                 authorized_by=authorized_by,
+                admission_fence=(
+                    retry_generation.run_if_current if retry_generation is not None else None
+                ),
             )
 
-    watcher_poller = WatcherPoller(store, on_completed=deliver_watcher_group)
+    def evaluate_graph_wake_boundary(
+        project_id: str,
+        _trigger_state: GraphState | None,
+        *,
+        source: str,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        """Reconcile canonical graph conditions without changing the trigger's verdict."""
+
+        if not retry_generation_is_current(retry_generation):
+            return
+        try:
+            with graph_watcher_reconciliation_lock(project_id):
+                active_records = store.active_graph_watchers(project_id)
+                if active_records:
+                    service = _project_service(catalog, project_id)
+                    replay, boundaries = service.history.accepted_boundary_states()
+                    if not retry_generation_is_current(retry_generation):
+                        return
+                    if replay.state.replay_status != "complete":
+                        raise _GraphWatcherReplayDegraded(
+                            "canonical graph replay is degraded at revision "
+                            f"{replay.state.revision}"
+                        )
+
+                    # Captured task/sync state is only an arrival signal. Every
+                    # production entry point replays accepted boundaries in canonical
+                    # order so reversed task settlement cannot invert terminal watcher
+                    # outcomes. Legacy rows are based at the coherent head and never
+                    # retroactively evaluated against earlier history.
+                    evaluated_at = store.now()
+                    for record in active_records:
+                        if record.armed_revision is None:
+                            initialized = run_for_retry_generation(
+                                retry_generation,
+                                lambda record=record: store.initialize_graph_watcher_baseline(
+                                    record.watcher_id,
+                                    armed_revision=replay.state.revision,
+                                    evaluated_at=evaluated_at,
+                                ),
+                            )
+                            if not initialized:
+                                return
+                    for boundary in boundaries:
+                        evaluated = run_for_retry_generation(
+                            retry_generation,
+                            lambda boundary=boundary: evaluate_graph_watchers(
+                                store,
+                                project_id,
+                                boundary,
+                            ),
+                        )
+                        if not evaluated:
+                            return
+        except _GraphWatcherReplayDegraded as exc:
+            if not run_for_retry_generation(
+                retry_generation,
+                lambda: clear_graph_watcher_reconciliation_retry(project_id),
+            ):
+                return
+            logger.warning(
+                "Could not reconcile graph conditions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            deliver_ready_graph_wake_groups(
+                project_id,
+                source=f"{source} degraded graph replay",
+                retry_generation=retry_generation,
+            )
+            return
+        except (OSError, StateUnavailable) as exc:
+            if not run_for_retry_generation(
+                retry_generation,
+                lambda: schedule_graph_watcher_reconciliation(project_id),
+            ):
+                return
+            logger.warning(
+                "Could not reconcile graph conditions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            deliver_ready_graph_wake_groups(
+                project_id,
+                source=f"{source} graph evaluation failure",
+                retry_generation=retry_generation,
+            )
+            return
+        except Exception as exc:
+            if not run_for_retry_generation(
+                retry_generation,
+                lambda: clear_graph_watcher_reconciliation_retry(project_id),
+            ):
+                return
+            logger.warning(
+                "Could not reconcile graph conditions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            deliver_ready_graph_wake_groups(
+                project_id,
+                source=f"{source} graph evaluation failure",
+                retry_generation=retry_generation,
+            )
+            return
+        if not run_for_retry_generation(
+            retry_generation,
+            lambda: clear_graph_watcher_reconciliation_retry(project_id),
+        ):
+            return
+        deliver_ready_graph_wake_groups(
+            project_id,
+            source=source,
+            retry_generation=retry_generation,
+        )
+
+    def deliver_ready_graph_wake_groups(
+        project_id: str,
+        *,
+        source: str,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        """Retry ready graph delivery without evaluating an active condition."""
+
+        if not retry_generation_is_current(retry_generation):
+            return
+        try:
+            groups = ready_graph_watcher_groups(store, project_id)
+        except Exception as exc:
+            logger.warning(
+                "Could not read ready graph-condition completions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            return
+        for group in groups:
+            if not retry_generation_is_current(retry_generation):
+                return
+            try:
+                deliver_watcher_group(
+                    group,
+                    retry_generation=retry_generation,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not retry graph-condition completion %s for project %s: %s",
+                    [item.watcher_id for item in group],
+                    project_id,
+                    exc,
+                )
+
+    def sweep_graph_conditions_at_startup() -> None:
+        for project_id in store.graph_watcher_project_ids():
+            evaluate_graph_wake_boundary(project_id, None, source="startup sweep")
+
+    def retry_graph_wakes_after_poll(generation: WatcherRetryGeneration) -> None:
+        due = due_graph_watcher_reconciliations()
+        for project_id in due:
+            if not generation.is_current():
+                return
+            evaluate_graph_wake_boundary(
+                project_id,
+                None,
+                source="reconciliation retry",
+                retry_generation=generation,
+            )
+        reconciled = set(due)
+        for project_id in store.graph_watcher_project_ids():
+            if not generation.is_current():
+                return
+            if project_id not in reconciled:
+                deliver_ready_graph_wake_groups(
+                    project_id,
+                    source="watcher poll",
+                    retry_generation=generation,
+                )
+
+    graph_watcher_retry_worker = WatcherRetryWorker(retry_graph_wakes_after_poll)
+
+    def after_watcher_poll() -> None:
+        graph_watcher_retry_worker.signal()
+        reconcile_campaign_recovery_pass()
+
+    watcher_poller = WatcherPoller(
+        store,
+        on_completed=deliver_watcher_group,
+        on_poll_completed=after_watcher_poll,
+    )
 
     async def warm_provider_capabilities() -> None:
         try:
@@ -622,24 +1231,40 @@ def create_app(
     async def lifespan(_: FastAPI):
         startup_maintenance: list[asyncio.Task[None]] = []
         try:
+            background_tasks.accept_watcher_notifications()
             store.prune_operational_storage()
+            await asyncio.to_thread(reconcile_orphaned_campaign_failures, background_tasks)
+            await asyncio.to_thread(fence_depleted_campaigns_at_startup)
+            try:
+                await asyncio.to_thread(reconcile_pending_campaign_mail, background_tasks)
+            except Exception as exc:
+                logger.warning("Could not reconcile pending campaign mail at startup: %s", exc)
+            await asyncio.to_thread(reconcile_campaign_reports_at_startup)
+            await asyncio.to_thread(reconcile_campaign_recovery_pass)
             _sweep_stale_stages(app_data / "run-stage", now=time.time())
             attachment_store.sweep()
-            RebuildableCache(
-                app_data / "source-cache",
-                REMOTE_SOURCE_CACHE_LIMITS,
-                layout="files",
-            ).sweep()
-            RebuildableCache(
-                app_data / "session-slices",
-                SESSION_SLICE_CACHE_LIMITS,
-                layout="directories",
-            ).sweep()
+            cache_roots = [
+                *discover_project_cache_roots(app_data),
+                legacy_shared_cache_roots(app_data),
+            ]
+            for source_root, slice_root in cache_roots:
+                RebuildableCache(
+                    source_root,
+                    REMOTE_SOURCE_CACHE_LIMITS,
+                    layout="files",
+                ).sweep()
+                RebuildableCache(
+                    slice_root,
+                    SESSION_SLICE_CACHE_LIMITS,
+                    layout="directories",
+                ).sweep()
             # Scheduling happens before the app becomes available, but the task
             # itself cannot run until control returns to the server after yield.
             startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
             if default_state_host:
                 startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
+            await asyncio.to_thread(sweep_graph_conditions_at_startup)
+            graph_watcher_retry_worker.start()
             watcher_poller.start()
             yield
         finally:
@@ -654,6 +1279,7 @@ def create_app(
                 with suppress(asyncio.CancelledError):
                     await task
             watcher_poller.stop()
+            graph_watcher_retry_worker.stop()
             background_tasks.shutdown()
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
@@ -672,6 +1298,7 @@ def create_app(
     app.state.background_tasks = background_tasks
     app.state.project_reconciliation_tasks = project_reconciliation_tasks
     app.state.watcher_poller = watcher_poller
+    app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
     app.state.instance_metadata = identity
     app.state.space_id = space_id
     app.state.space_kind = space_kind
@@ -1147,16 +1774,19 @@ def create_app(
         try:
             if body.removed_node_ids:
                 with experiment_operation_lock(project_id):
-                    return service.sync_graph(
+                    state = service.sync_graph(
                         body,
                         active_control_node_ids=store.active_experiment_control_ids(project_id),
                         authorized_by=authorized_by,
-                    ).model_dump(mode="json")
-            return service.sync_graph(
-                body,
-                active_control_node_ids=store.active_experiment_control_ids(project_id),
-                authorized_by=authorized_by,
-            ).model_dump(mode="json")
+                    )
+            else:
+                state = service.sync_graph(
+                    body,
+                    active_control_node_ids=store.active_experiment_control_ids(project_id),
+                    authorized_by=authorized_by,
+                )
+            evaluate_graph_wake_boundary(project_id, state, source="human Sync")
+            return state.model_dump(mode="json")
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail=f"Missing graph object: {exc.args[0]}"
@@ -1169,12 +1799,51 @@ def create_app(
     @app.delete("/api/projects/{project_id}/caches")
     def clear_rebuildable_caches(project_id: str):
         service = _project_service(catalog, project_id)
+        if store.has_active_agent_task(project_id):
+            raise HTTPException(
+                status_code=409,
+                detail="This project's cache cannot be cleared while its agent task is active.",
+            )
+        return service.clear_rebuildable_caches()
+
+    @app.delete("/api/caches")
+    def clear_all_rebuildable_caches(project_id: str) -> dict[str, object]:
         if store.has_any_active_agent_task():
             raise HTTPException(
                 status_code=409,
-                detail="Rebuildable caches cannot be cleared while an agent task is active.",
+                detail="All project caches cannot be cleared while any agent task is active.",
             )
-        return service.clear_rebuildable_caches()
+        current_service = _project_service(catalog, project_id)
+
+        project_roots = discover_project_cache_roots(app_data)
+        for source_root, slice_root in project_roots:
+            RebuildableCache(
+                source_root,
+                REMOTE_SOURCE_CACHE_LIMITS,
+                layout="files",
+            ).clear()
+            RebuildableCache(
+                slice_root,
+                SESSION_SLICE_CACHE_LIMITS,
+                layout="directories",
+            ).clear()
+        for record in store.projects():
+            service = catalog.loaded_service(record.project_id)
+            if service is not None:
+                service.invalidate_source_index()
+
+        legacy_source_root, legacy_slice_root = legacy_shared_cache_roots(app_data)
+        RebuildableCache(
+            legacy_source_root,
+            REMOTE_SOURCE_CACHE_LIMITS,
+            layout="files",
+        ).clear()
+        RebuildableCache(
+            legacy_slice_root,
+            SESSION_SLICE_CACHE_LIMITS,
+            layout="directories",
+        ).clear()
+        return current_service.indexer.cache_metrics().model_dump(mode="json")
 
     @app.post(
         "/api/projects/{project_id}/chats/{chat_id}/attachments",
@@ -1233,14 +1902,35 @@ def create_app(
         body: dict[str, object],
         http_request: Request,
     ) -> dict[str, object]:
-        authorized_by = (
-            require_patch_capable_identity(http_request)
-            if _task_is_patch_capable(kind, body)
-            else None
-        )
+        if kind == "campaign":
+            raise HTTPException(
+                status_code=405,
+                detail="Use the project campaign endpoint to start auto-research.",
+            )
+        authorized_by = require_patch_capable_identity(http_request)
         service = _project_service(catalog, project_id)
+        admission_lock: threading.Lock | None = None
+        result_view_stage_host: str | None = None
+        result_view_stage_root: str | None = None
         try:
             request = _validated_task_request(service, kind, body)
+            if isinstance(request, RunRequest):
+                if request.result_view is not None and request.result_view.action == "revise":
+                    admission_lock = result_view_keep_lock(request.result_view.view_id)
+                    admission_lock.acquire()
+                request = _admit_result_view_request(
+                    store,
+                    service,
+                    project_id,
+                    kind,
+                    request,
+                )
+                if request.result_view is not None and request.result_view.action == "revise":
+                    view = store.result_view(request.result_view.view_id)
+                    if view is None:
+                        raise ValueError("The result view is unavailable or expired.")
+                    result_view_stage_host = view.stage_host or None
+                    result_view_stage_root = view.stage_root
             if kind in {"node_chat", "project_chat"}:
                 assert isinstance(request, RunRequest)
                 assert request.chat_id is not None
@@ -1290,6 +1980,8 @@ def create_app(
                     request,
                     operation_id=operation_id,
                     authorized_by=authorized_by,
+                    stage_host=result_view_stage_host,
+                    stage_root=result_view_stage_root,
                 )
             except BaseException:
                 if claimed_set is not None and store.agent_task(operation_id) is None:
@@ -1298,6 +1990,9 @@ def create_app(
         except ValueError as exc:
             status = 409 if "already running" in str(exc) else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
+        finally:
+            if admission_lock is not None:
+                admission_lock.release()
         return record.model_dump(mode="json")
 
     @app.post("/api/projects/{project_id}/experiments/{node_id:path}/run", status_code=202)
@@ -1319,6 +2014,8 @@ def create_app(
                 if not control.ready:
                     raise HTTPException(status_code=409, detail=" ".join(control.reasons))
                 supplied = RunRequest.model_validate(body)
+                if supplied.result_view is not None:
+                    raise ValueError("Result views require an ordinary node Work turn.")
                 if not supplied.chat_id:
                     raise ValueError("Run requires a chat_id")
                 uuid.UUID(supplied.chat_id)
@@ -1516,6 +2213,286 @@ def create_app(
             raise HTTPException(status_code=404, detail="Chat not found")
         return transcript
 
+    @app.get(
+        "/api/projects/{project_id}/campaigns",
+        response_model=list[CampaignResponse],
+    )
+    def campaigns(project_id: str) -> list[CampaignResponse]:
+        _require_registered_project(catalog, project_id)
+        return serialize_campaigns(store, project_id)
+
+    @app.post(
+        "/api/projects/{project_id}/campaigns",
+        response_model=CampaignResponse,
+        status_code=202,
+    )
+    def start_campaign(
+        project_id: str,
+        body: StartCampaignBody,
+        request: Request,
+    ) -> CampaignResponse:
+        authorized_by = require_patch_capable_identity(request)
+        service = _project_service(catalog, project_id)
+        try:
+            start_request = _resolved_campaign_start_request(service, body)
+            service.history.require_writable()
+            campaign, _ = background_tasks.start_campaign(
+                project_id,
+                start_request,
+                authorized_by=authorized_by,
+            )
+            return serialize_campaign(store, project_id, campaign)
+        except ValueError as exc:
+            status = 409 if store.active_campaign(project_id) is not None else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    @app.post(
+        "/api/projects/{project_id}/campaigns/{campaign_id}/stop",
+        response_model=CampaignResponse,
+    )
+    def stop_campaign(
+        project_id: str,
+        campaign_id: str,
+        request: Request,
+    ) -> CampaignResponse:
+        require_patch_capable_identity(request)
+        campaign = _campaign_for_http(store, catalog, project_id, campaign_id)
+        try:
+            stopped = background_tasks.stop_campaign(campaign.campaign_id)
+        except CampaignNotRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        reconcile_campaign_report(
+            stopped,
+            source="Stop request",
+            operation_id=stopped.root_operation_id,
+        )
+        current = store.campaign(stopped.campaign_id)
+        if current is None:
+            raise RuntimeError("The stopped campaign could not be reloaded.")
+        return serialize_campaign(store, project_id, current)
+
+    @app.post(
+        "/api/projects/{project_id}/campaigns/{campaign_id}/reauthorize",
+        response_model=CampaignResponse,
+    )
+    def reauthorize_campaign(
+        project_id: str,
+        campaign_id: str,
+        body: ReauthorizeCampaignBody,
+        request: Request,
+    ) -> CampaignResponse:
+        require_patch_capable_identity(request)
+        campaign = _campaign_for_http(store, catalog, project_id, campaign_id)
+        service = _project_service(catalog, project_id)
+        try:
+            reauthorized, _ = background_tasks.reauthorize_campaign(
+                campaign.campaign_id,
+                body.additional_invocations,
+                request_preflight=lambda saved: _preflight_campaign_reauthorization(
+                    service,
+                    saved,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            reconcile_pending_campaign_mail(
+                background_tasks,
+                campaign_id=campaign.campaign_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not reconcile pending campaign mail after reauthorizing %s: %s",
+                campaign.campaign_id,
+                exc,
+            )
+        current = store.campaign(reauthorized.campaign_id)
+        if current is None:
+            raise RuntimeError("The reauthorized campaign could not be reloaded.")
+        return serialize_campaign(store, project_id, current)
+
+    @app.get(
+        "/api/projects/{project_id}/campaigns/{campaign_id}/messages",
+        response_model=list[CampaignMessageRecord],
+    )
+    def campaign_messages(
+        project_id: str,
+        campaign_id: str,
+    ) -> list[CampaignMessageRecord]:
+        campaign = _campaign_for_http(store, catalog, project_id, campaign_id)
+        return store.campaign_messages(campaign.campaign_id)
+
+    @app.post(
+        "/api/projects/{project_id}/campaigns/{campaign_id}/messages",
+        response_model=CampaignMessageRecord,
+        status_code=201,
+    )
+    def send_campaign_message(
+        project_id: str,
+        campaign_id: str,
+        body: CampaignMessageBody,
+        request: Request,
+    ) -> CampaignMessageRecord:
+        authorized_by = require_patch_capable_identity(request)
+        campaign = _campaign_for_http(store, catalog, project_id, campaign_id)
+        if campaign.status in {"succeeded", "stopped", "failed"}:
+            raise HTTPException(status_code=409, detail="Campaign has already ended")
+        if campaign.status != "running" or campaign.ending is not None:
+            raise HTTPException(status_code=409, detail="Campaign is not accepting new mail")
+        if campaign.root_operation_id is None:
+            raise HTTPException(status_code=409, detail="Campaign orchestrator is unavailable")
+        try:
+            saved = record_campaign_message(
+                store,
+                campaign_id=campaign.campaign_id,
+                sender_role="human",
+                sender_task_id=None,
+                authorized_by=authorized_by,
+                recipient_task_id=campaign.root_operation_id,
+                body=body.body,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            deliver_pending_campaign_mail(
+                background_tasks,
+                campaign_id=campaign.campaign_id,
+                recipient_task_id=campaign.root_operation_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not deliver durable campaign message %s immediately: %s",
+                saved.message_id,
+                exc,
+            )
+        current = store.campaign_message(saved.message_id)
+        if current is None:
+            raise RuntimeError("The durable campaign message could not be reloaded.")
+        return current
+
+    @app.get("/api/projects/{project_id}/campaigns/{campaign_id}/reports/{report_id}/preview")
+    @app.head("/api/projects/{project_id}/campaigns/{campaign_id}/reports/{report_id}/preview")
+    def preview_campaign_report(
+        project_id: str,
+        campaign_id: str,
+        report_id: str,
+        request: Request,
+    ) -> Response:
+        campaign = _campaign_for_http(store, catalog, project_id, campaign_id)
+        report = store.campaign_report(report_id)
+        if report is None or report.campaign_id != campaign.campaign_id:
+            raise HTTPException(status_code=404, detail="Campaign report not found")
+        try:
+            document, csp = html_preview_document(
+                report.html.encode("utf-8"),
+            )
+        except (UnicodeError, ValueError) as exc:
+            raise HTTPException(status_code=410, detail="Campaign report unavailable") from exc
+        encoded = document.encode("utf-8")
+        return Response(
+            b"" if request.method == "HEAD" else encoded,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Length": str(len(encoded)),
+                "Content-Security-Policy": csp,
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get(
+        "/api/projects/{project_id}/result-views",
+        response_model=list[ResultViewDescriptor],
+    )
+    def result_views(
+        project_id: str,
+        experiment_id: str | None = None,
+        chat_id: str | None = None,
+    ) -> list[ResultViewDescriptor]:
+        _require_registered_project(catalog, project_id)
+        return store.list_result_view_descriptors(
+            project_id,
+            experiment_id=experiment_id,
+            chat_id=chat_id,
+        )
+
+    @app.get("/api/projects/{project_id}/result-views/{view_id}/preview")
+    @app.head("/api/projects/{project_id}/result-views/{view_id}/preview")
+    async def preview_result_view(
+        project_id: str,
+        view_id: str,
+        request: Request,
+    ) -> Response:
+        _require_registered_project(catalog, project_id)
+        _, data = await asyncio.to_thread(
+            _load_visible_result_view_bytes,
+            store,
+            catalog,
+            project_id,
+            view_id,
+        )
+        try:
+            document, csp = html_preview_document(data, result_view_gestures=True)
+        except (UnicodeError, ValueError) as exc:
+            raise HTTPException(status_code=410, detail="Result view unavailable") from exc
+        encoded = document.encode("utf-8")
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Length": str(len(encoded)),
+            "Content-Security-Policy": csp,
+            "X-Content-Type-Options": "nosniff",
+        }
+        return Response(
+            b"" if request.method == "HEAD" else encoded,
+            media_type="text/html",
+            headers=headers,
+        )
+
+    @app.post(
+        "/api/projects/{project_id}/result-views/{view_id}/keep",
+        response_model=ResultViewDescriptor,
+    )
+    def keep_result_view(project_id: str, view_id: str) -> ResultViewDescriptor:
+        _require_registered_project(catalog, project_id)
+        with result_view_keep_lock(view_id):
+            record = _visible_result_view_record(store, project_id, view_id)
+            if record.kept_filename is not None:
+                return store.result_view_descriptor(record)
+            if _has_active_result_view_revision(store, record):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Wait for the active result view revision before keeping it.",
+                )
+            data = _read_result_view_bytes_for_http(catalog, record)
+            service = _project_service(catalog, project_id)
+            project_name = catalog.card(project_id)["name"]
+            if not isinstance(project_name, str):
+                raise HTTPException(status_code=503, detail="Result view Keep unavailable")
+            try:
+                kept_filename = service.history.workspace.keep_result_view(
+                    source_name=record.source_name,
+                    project_name=project_name,
+                    data=data,
+                )
+            except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Result view Keep unavailable",
+                ) from exc
+            try:
+                kept = store.mark_result_view_kept(
+                    view_id,
+                    expected_content_sha256=record.content_sha256,
+                    kept_filename=kept_filename,
+                    kept_at=store.now(),
+                )
+            except ResultViewConflict as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The result view changed before Keep completed.",
+                ) from exc
+            return store.result_view_descriptor(kept)
+
     @app.get("/api/projects/{project_id}/tasks/{operation_id}")
     def agent_task(project_id: str, operation_id: str) -> dict[str, object]:
         _require_registered_project(catalog, project_id)
@@ -1628,11 +2605,30 @@ def create_app(
             raise HTTPException(status_code=404, detail="Agent task not found")
         authorized_by = (
             require_patch_capable_identity(request)
-            if _task_is_patch_capable(previous.kind, previous.request)
+            if previous.kind != "campaign"
+            or _task_is_patch_capable(previous.kind, previous.request)
             else None
         )
         service = _project_service(catalog, project_id)
+        result_view_resume_lock: threading.Lock | None = None
         try:
+            if previous.kind not in {"paper_coach", "campaign"}:
+                stored_request = RunRequest.model_validate(previous.request)
+                if (
+                    stored_request.result_view is not None
+                    and stored_request.result_view.action == "revise"
+                ):
+                    result_view_resume_lock = result_view_keep_lock(
+                        stored_request.result_view.view_id
+                    )
+                    result_view_resume_lock.acquire()
+                    _admit_result_view_request(
+                        store,
+                        service,
+                        project_id,
+                        previous.kind,
+                        stored_request,
+                    )
             with experiment_admission(project_id, service, previous.request):
                 skills = _validate_stored_task_request(service, previous.kind, previous.request)
                 return background_tasks.resume(
@@ -1642,6 +2638,9 @@ def create_app(
                 ).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        finally:
+            if result_view_resume_lock is not None:
+                result_view_resume_lock.release()
 
     @app.post(
         "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update",
@@ -1684,21 +2683,44 @@ def create_app(
             raise HTTPException(status_code=404, detail="Agent task not found")
         authorized_by = (
             require_patch_capable_identity(request)
-            if _task_is_patch_capable(previous.kind, previous.request)
+            if previous.kind != "campaign"
+            or _task_is_patch_capable(previous.kind, previous.request)
             else None
         )
         service = _project_service(catalog, project_id)
+        result_view_retry_lock: threading.Lock | None = None
         try:
             overrides = body.model_dump(exclude_none=True) if body is not None else {}
             if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
                 raise ValueError(
                     "Experiment-loop recovery cannot change its pinned execution machine."
                 )
-            request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
-            candidate = request_type.model_validate(
-                {**previous.request, **overrides, "session_id": None}
-            )
-            with experiment_admission(project_id, service, candidate):
+            if previous.kind == "campaign":
+                candidate = CampaignRunRequest.model_validate({**previous.request, **overrides})
+            else:
+                request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
+                candidate = request_type.model_validate(
+                    {**previous.request, **overrides, "session_id": None}
+                )
+            if (
+                isinstance(candidate, RunRequest)
+                and candidate.result_view is not None
+                and candidate.result_view.action == "revise"
+            ):
+                result_view_retry_lock = result_view_keep_lock(candidate.result_view.view_id)
+                result_view_retry_lock.acquire()
+                _admit_result_view_request(
+                    store,
+                    service,
+                    project_id,
+                    previous.kind,
+                    candidate,
+                )
+            with experiment_admission(
+                project_id,
+                service,
+                candidate.model_dump(mode="json"),
+            ):
                 skills = _validate_stored_task_request(
                     service,
                     previous.kind,
@@ -1712,6 +2734,9 @@ def create_app(
                 ).model_dump(mode="json")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        finally:
+            if result_view_retry_lock is not None:
+                result_view_retry_lock.release()
 
     @app.get("/api/skills/{kind}/{package_id}")
     def read_skill_package(kind: str, package_id: str) -> dict[str, object]:
@@ -1752,6 +2777,105 @@ def create_app(
         app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
 
     return app
+
+
+def _visible_result_view_record(
+    store: AppStore,
+    project_id: str,
+    view_id: str,
+) -> ResultViewRecord:
+    as_of = datetime.now(UTC)
+    record = store.result_view_for_diagnostics(view_id)
+    if record is None or record.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Result view not found")
+    if record.kept_filename is None and store.result_view(view_id, as_of=as_of) is None:
+        raise HTTPException(status_code=410, detail="Result view expired")
+    return record
+
+
+def _has_active_result_view_revision(store: AppStore, record: ResultViewRecord) -> bool:
+    with store.connection() as connection:
+        row = connection.execute(
+            """
+            SELECT 1 FROM graph_runs AS revision
+            WHERE revision.project_id = ? AND revision.kind = 'node_chat'
+              AND json_extract(revision.request_json, '$.chat_id') = ?
+              AND json_extract(revision.request_json, '$.result_view.action') = 'revise'
+              AND json_extract(revision.request_json, '$.result_view.view_id') = ?
+              AND (
+                revision.status IN ('queued', 'running', 'pausing')
+                OR (
+                  revision.status IN ('paused', 'interrupted')
+                  AND revision.native_session_id IS NOT NULL
+                  AND revision.stage_root IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM graph_runs AS child
+                    WHERE child.parent_operation_id = revision.operation_id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM graph_run_receipts AS receipt
+                    WHERE receipt.operation_id = revision.operation_id
+                      AND receipt.category = 'experiment_recovery_abandoned'
+                  )
+                )
+              )
+            LIMIT 1
+            """,
+            (record.project_id, record.chat_id, record.view_id),
+        ).fetchone()
+    return row is not None
+
+
+def _load_visible_result_view_bytes(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    project_id: str,
+    view_id: str,
+) -> tuple[ResultViewRecord, bytes]:
+    record = _visible_result_view_record(store, project_id, view_id)
+    return record, _read_result_view_bytes_for_http(catalog, record)
+
+
+def _read_result_view_bytes_for_http(
+    catalog: ProjectCatalog,
+    record: ResultViewRecord,
+) -> bytes:
+    try:
+        if record.kept_filename is not None:
+            service = _project_service(catalog, record.project_id)
+            data = service.history.workspace.read_kept_result_view(
+                record.kept_filename,
+                max_bytes=record.size_bytes,
+            )
+        elif record.stage_host:
+            stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
+            data = stage.read_result_view_bytes(
+                record.view_id,
+                record.source_name,
+                max_bytes=record.size_bytes,
+            )
+        else:
+            data = read_local_result_view_bytes(
+                Path(record.stage_root),
+                record.view_id,
+                record.source_name,
+                max_bytes=record.size_bytes,
+            )
+        if len(data) != record.size_bytes:
+            raise ValueError("result view size changed")
+        if hashlib.sha256(data).hexdigest() != record.content_sha256:
+            raise ValueError("result view digest changed")
+        if validate_artifact_bytes(record.source_name, data) != "text/html":
+            raise ValueError("result view media type changed")
+        return data
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise
+        raise HTTPException(status_code=503, detail="Result view storage unavailable") from exc
+    except (FileNotFoundError, OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail="Result view storage unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail="Result view unavailable") from exc
 
 
 def _load_agent_artifact(
@@ -1814,13 +2938,20 @@ def _load_agent_artifact(
     return descriptor, data
 
 
-def _generic_watcher_delivery_request(group: list[WatcherRecord]) -> RunRequest:
+def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRequest:
     first = group[0]
     continuation = first.continuation
     if continuation.patch_kind != "work":
         raise ValueError("A generic watcher cannot carry Experiment-loop authority.")
     watcher_ids = [item.watcher_id for item in group]
-    details = "\n".join(f"- watcher `{item.watcher_id}`: `{item.log_path}`" for item in group)
+    details = "\n".join(
+        (
+            f"- graph condition `{item.watcher_id}`: `{item.condition.model_dump_json()}`"
+            if isinstance(item, GraphWatcherRecord)
+            else f"- external watcher `{item.watcher_id}`: `{item.log_path}`"
+        )
+        for item in group
+    )
     return RunRequest(
         provider=continuation.provider,
         model=continuation.model,
@@ -1830,8 +2961,8 @@ def _generic_watcher_delivery_request(group: list[WatcherRecord]) -> RunRequest:
         chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
         node_id=first.node_id,
         message=(
-            "RCP watcher update: the following external work is no longer present in its "
-            f"system. Inspect the named logs and continue the Work turn.\n{details}"
+            "RCP watcher update: the following external or canonical graph conditions are "
+            f"ready. Inspect their current authoritative state and continue the Work turn.\n{details}"
         ),
         chat_id=first.chat_id,
         session_id=None,
@@ -1975,6 +3106,9 @@ def _task_is_patch_capable(
 ) -> bool:
     if kind in {"seed", "refresh"}:
         return True
+    if kind == "campaign":
+        role = request.role if isinstance(request, CampaignRunRequest) else request.get("role")
+        return role != "report"
     if kind not in {"node_chat", "project_chat"}:
         return False
     if isinstance(request, RunRequest):
@@ -1982,11 +3116,146 @@ def _task_is_patch_capable(
     return request.get("mode") == "work"
 
 
+def _campaign_for_http(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    project_id: str,
+    campaign_id: str,
+) -> CampaignRecord:
+    _require_registered_project(catalog, project_id)
+    try:
+        return campaign_for_project(store, project_id, campaign_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Campaign not found") from exc
+
+
+def _resolved_campaign_start_request(
+    service: ProjectService,
+    body: StartCampaignBody,
+) -> CampaignStartRequest:
+    profile = service.resolve_agent_profile("orchestrator")
+    request = CampaignStartRequest(
+        invocation_ceiling=body.invocation_ceiling,
+        starting_instruction=body.starting_instruction,
+        provider=profile.provider,
+        model=profile.model,
+        reasoning=profile.reasoning,
+        run_on=profile.run_on,
+        run_truth_scope=list(service.manifest.agent.default_run_truth_scope),
+    )
+    resolved = service.resolve_skill_request(cast(RunRequest, request))
+    if not isinstance(resolved, CampaignStartRequest):
+        raise TypeError("Campaign skill resolution changed the start request type.")
+    return resolved
+
+
+def _campaign_worker_request(
+    context: CampaignCommandContext,
+    arguments: SpawnArguments,
+) -> CampaignRunRequest:
+    """Seat a fresh worker without re-reading mutable project Settings."""
+
+    return CampaignRunRequest.model_validate(
+        {
+            **context.request.model_dump(mode="json"),
+            "role": "worker",
+            "actor_operation_id": None,
+            "session_id": None,
+            "instruction": arguments.instruction,
+            "control_node_id": arguments.seat_node_id,
+            "wake_cause": None,
+            "watcher_ids": [],
+            "ending": None,
+        }
+    )
+
+
+def _resolved_campaign_request(
+    service: ProjectService,
+    request: CampaignRunRequest,
+) -> CampaignRunRequest:
+    if (
+        request.provider is None
+        or request.model is None
+        or request.reasoning is None
+        or request.run_on is None
+        or request.run_truth_scope is None
+    ):
+        raise ValueError(
+            "Campaign recovery requires its exact pinned orchestrator execution profile."
+        )
+    profile_for(request.provider)
+    if request.run_on not in service.manifest.machine_map:
+        raise ValueError(f"unknown execution machine: {request.run_on}")
+    skill_resolved = service.resolve_skill_request(cast(RunRequest, request))
+    if not isinstance(skill_resolved, CampaignRunRequest):
+        raise TypeError("Campaign skill resolution changed the task request type.")
+    return skill_resolved
+
+
+def _preflight_campaign_reauthorization(
+    service: ProjectService,
+    request: CampaignRunRequest,
+) -> CampaignRunRequest:
+    resolved = _resolved_campaign_request(service, request)
+    service.history.require_writable()
+    return resolved
+
+
 def _require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
     try:
         catalog.card(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
+
+
+def _admit_result_view_request(
+    store: AppStore,
+    service: ProjectService,
+    project_id: str,
+    kind: AgentTaskKind,
+    request: RunRequest,
+) -> RunRequest:
+    intent = request.result_view
+    if intent is None:
+        return request
+    if (
+        kind != "node_chat"
+        or request.chat_scope != "node"
+        or request.mode != "work"
+        or request.trigger != "human"
+        or request.patch_kind != "work"
+        or request.control_node_id is not None
+        or request.watcher_ids
+    ):
+        raise ValueError("Result views require an ordinary node Work turn.")
+    if request.node_id is None or not isinstance(
+        service.history.state().nodes.get(request.node_id),
+        Experiment,
+    ):
+        raise ValueError("Result views require an Experiment node.")
+    if intent.action == "create":
+        return request
+
+    record = store.result_view(intent.view_id)
+    if record is None or record.project_id != project_id:
+        raise ValueError("The result view is unavailable or expired.")
+    if record.kept_filename is not None:
+        raise ValueError("A kept result view cannot be revised.")
+    if record.experiment_id != request.node_id or record.chat_id != request.chat_id:
+        raise ValueError("The result view does not belong to this Experiment conversation.")
+
+    pinned = RunRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "provider": record.provider,
+            "model": record.model,
+            "reasoning": record.reasoning,
+            "run_on": record.run_on,
+            "session_id": record.native_session_id,
+        }
+    )
+    return _resolved_graph_request(service, kind, pinned)
 
 
 def _validated_task_request(
@@ -2048,9 +3317,18 @@ def _validate_stored_task_request(
     service: ProjectService,
     kind: AgentTaskKind,
     body: dict[str, object],
-) -> SkillSelection:
-    """Validate a stored request and return the selection this attempt would get."""
+) -> SkillSelection | None:
+    """Validate a stored request and return any package-selection refresh it needs."""
 
+    if kind == "campaign":
+        campaign_request = CampaignRunRequest.model_validate(body)
+        if campaign_request.role == "report":
+            return _validate_stored_campaign_report_request(service, campaign_request)
+        resolved_campaign = _resolved_campaign_request(
+            service,
+            campaign_request,
+        )
+        return service.resolve_skill_selection(cast(RunRequest, resolved_campaign))
     if kind == "paper_coach":
         resolved_coach = _resolved_coach_request(service, CoachRequest.model_validate(body))
         return service.resolve_skill_selection(resolved_coach)
@@ -2059,6 +3337,46 @@ def _validate_stored_task_request(
         service.history.require_writable()
     resolved_run = _resolved_graph_request(service, kind, request)
     return service.resolve_skill_selection(resolved_run)
+
+
+def _validate_stored_campaign_report_request(
+    service: ProjectService,
+    request: CampaignRunRequest,
+) -> None:
+    """Validate the report-only package receipt without consulting Settings defaults."""
+
+    if (
+        request.provider is None
+        or request.model is None
+        or request.reasoning is None
+        or request.run_on is None
+        or request.run_truth_scope is None
+    ):
+        raise ValueError(
+            "Campaign recovery requires its exact pinned orchestrator execution profile."
+        )
+    profile_for(request.provider)
+    if request.run_on not in service.manifest.machine_map:
+        raise ValueError(f"unknown execution machine: {request.run_on}")
+
+    expected = official_registry().resolve(
+        workflow_ids=[],
+        skill_ids=["campaign-report"],
+    )
+    if (
+        request.workflow_ids != expected.workflow_ids
+        or request.skill_ids != expected.skill_ids
+        or request.invoked_workflow_ids
+        or request.invoked_skill_ids != ["campaign-report"]
+        or request.invoked_provider_skill_names
+        or request.resolved_provider_skills
+        or request.resolved_skill_packages != expected.resolved_skill_packages
+    ):
+        raise ValueError(
+            "Campaign report recovery requires its exact stored official "
+            "campaign-report package; the saved package is missing, malformed, or stale."
+        )
+    return None
 
 
 def _resolved_graph_request(

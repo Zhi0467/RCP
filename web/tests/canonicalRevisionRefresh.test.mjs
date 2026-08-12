@@ -16,8 +16,10 @@ const {
   cachedSnapshotCanReplace,
   canonicalRevisionNeedsReload,
   inactiveProjectTabState,
+  humanSyncSuccessNotice,
   loadCanonicalRevision,
   persistProjectHumanDraft,
+  proposalChoicesClearedNotice,
   projectIdsForCacheHeartbeat,
   projectTabStateForOpen,
   reconcileInactiveProjectTabState,
@@ -263,6 +265,7 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
   };
   const snapshot = {
     id: "alpha",
+    snapshot_freshness: "fresh",
     graph: { ...graph, revision: 5, nodes: { [node.id]: movedNode } },
   };
 
@@ -296,4 +299,144 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
   assert.equal(JSON.parse(stored.get("rcp:human-draft:alpha")).base_revision, 5);
   persistProjectHumanDraft(storage, "alpha", null);
   assert.equal(stored.has("rcp:human-draft:alpha"), false);
+});
+
+test("authoritative inactive snapshots prune resolved choices and clear missing node targets", () => {
+  const node = {
+    id: "hyp/retained",
+    type: "hypothesis",
+    title: "Retained node",
+    statement: "Retained statement",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 4,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const removedNode = { ...node, id: "hyp/removed", title: "Removed node" };
+  const proposal = (id, status) => ({
+    id,
+    title: id,
+    card: { situation_cold: "", why_human_now: "", consequences: "", decision_needed: "" },
+    ops: [],
+    related_node_ids: [node.id],
+    related_edge_ids: [],
+    related_config_keys: [],
+    base_rev: 4,
+    raised_rev: 4,
+    resolved_rev: status === "pending" ? null : 5,
+    status,
+  });
+  const pending = proposal("proposal/pending", "pending");
+  const withdrawn = proposal("proposal/withdrawn", "withdrawn");
+  const oldGraph = {
+    revision: 4,
+    nodes: { [node.id]: node, [removedNode.id]: removedNode },
+    edges: {},
+    proposals: { [pending.id]: pending, [withdrawn.id]: { ...withdrawn, status: "pending" } },
+    ambiguities: {},
+    glossary: {},
+    ontology: { types: [], fields: [], relations: [] },
+    validation_messages: [],
+    belief_transitions: [],
+    replay_status: "complete",
+    replay_failure: null,
+  };
+  const draft = {
+    version: 1,
+    base_revision: 4,
+    nodes: {
+      [node.id]: {
+        base_updated_rev: 4,
+        changes: { title: "Retained staged title" },
+        standing: "asserted",
+        standing_origin: "edit",
+      },
+    },
+    removed_node_ids: [],
+    proposals: {
+      [pending.id]: { decision: "rejected" },
+      [withdrawn.id]: { decision: "approved" },
+      "proposal/missing": { decision: "rejected" },
+    },
+    ontology: null,
+    custom_nodes: {},
+  };
+  const retained = {
+    project: { id: "alpha", graph: oldGraph },
+    humanDraft: draft,
+    selectedNodeId: removedNode.id,
+    companionNodeId: node.id,
+    floatingChat: { chatId: "chat/removed", nodeId: removedNode.id },
+  };
+  const snapshot = {
+    id: "alpha",
+    snapshot_freshness: "fresh",
+    graph: {
+      ...oldGraph,
+      revision: 5,
+      nodes: { [node.id]: node },
+      proposals: { [pending.id]: pending, [withdrawn.id]: withdrawn },
+    },
+  };
+
+  const next = reconcileInactiveProjectTabState(retained, snapshot);
+
+  assert.equal(next.selectedNodeId, null);
+  assert.equal(next.companionNodeId, node.id);
+  assert.equal(next.floatingChat, null);
+  assert.deepEqual(next.humanDraft.proposals, {
+    [pending.id]: { decision: "rejected" },
+  });
+  assert.deepEqual(next.humanDraft.nodes[node.id].changes, { title: "Retained staged title" });
+  assert.deepEqual(next.draftReconciliationDiscardedProposalIds, [
+    "proposal/missing",
+    "proposal/withdrawn",
+  ]);
+
+  const stored = new Map();
+  persistProjectHumanDraft(
+    {
+      setItem(key, value) {
+        stored.set(key, value);
+      },
+      removeItem(key) {
+        stored.delete(key);
+      },
+    },
+    "alpha",
+    next.humanDraft,
+  );
+  assert.deepEqual(Object.keys(JSON.parse(stored.get("rcp:human-draft:alpha")).proposals), [
+    pending.id,
+  ]);
+  assert.equal(
+    proposalChoicesClearedNotice(next.draftReconciliationDiscardedProposalIds),
+    "Externally resolved proposal choices were cleared: proposal/missing, proposal/withdrawn.",
+  );
+
+  const stale = reconcileInactiveProjectTabState(retained, {
+    ...snapshot,
+    snapshot_freshness: "stale",
+  });
+  assert.strictEqual(stale, retained);
+});
+
+test("Sync reports stale withdrawals without claiming their proposed changes applied", () => {
+  const nextGraph = {
+    proposals: {
+      "proposal/stale": { status: "withdrawn" },
+      "proposal/applied": { status: "approved" },
+    },
+  };
+  const submitted = [
+    { proposal_id: "proposal/applied", decision: "approved" },
+    { proposal_id: "proposal/stale", decision: "rejected" },
+  ];
+
+  assert.equal(
+    humanSyncSuccessNotice(9, submitted, nextGraph),
+    "Synced revision 9. Stale proposals were withdrawn and their proposed changes were not applied: proposal/stale.",
+  );
+  assert.equal(humanSyncSuccessNotice(9, submitted.slice(0, 1), nextGraph), "Synced revision 9.");
 });

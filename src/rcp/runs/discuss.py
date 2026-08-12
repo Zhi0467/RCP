@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
@@ -11,12 +13,12 @@ from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import ReplayHalted
+from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import (
     _append_chat_exchange,
     _chat_read_dirs,
     _chat_stage_name,
-    _clear_stale_patch,
-    _clear_stale_watch,
+    _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
     _logical_chat_turn_operation_id,
@@ -25,11 +27,14 @@ from rcp.runs.chat import (
     _read_chat_patch,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
+    _retained_chat_patch_values,
     _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
+from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
+from rcp.runs.result_views import touch_conversation_stage, touch_saved_conversation_stages
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -47,6 +52,48 @@ from rcp.runs.shared import (
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable
+
+
+def _refresh_result_view_retention(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    """Roll one conversation workspace and its unkept views forward together."""
+
+    current_binding = touch_conversation_stage(local_stage, remote_stage)
+    if execution is None or not request.chat_id:
+        return
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        return
+    try:
+        now = datetime.fromisoformat(execution.store.now()).astimezone(UTC)
+        views = execution.store.list_result_views(
+            task.project_id,
+            chat_id=request.chat_id,
+            as_of=now,
+        )
+        touch_saved_conversation_stages(
+            ((view.stage_host, view.stage_root) for view in views if view.kept_filename is None),
+            current_binding=current_binding,
+        )
+        expires_at = (now + timedelta(days=RUN_STAGE_RETENTION_DAYS)).isoformat()
+        execution.store.refresh_result_view_expiry(
+            task.project_id,
+            request.chat_id,
+            expires_at=expires_at,
+            as_of=now,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            execution.store.record_agent_task_event(
+                execution.operation_id,
+                f"Result-view retention could not be refreshed: {exc}",
+                level="warning",
+            )
 
 
 def _prepare_discuss_chat_prompt(
@@ -123,6 +170,7 @@ async def stream_discuss_run(
     remote_stage: RemoteRunStage | None = None
     artifact_scope_id: str | None = None
     artifact_directory: Path | PurePosixPath | None = None
+    patch_inputs = None
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         try:
@@ -163,10 +211,15 @@ async def stream_discuss_run(
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
                 workspace = local_stage
+            _refresh_result_view_retention(
+                execution,
+                request,
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+            )
             if not reusing_checkpoint:
-                # A reused folder must not hand this turn the previous turn's patch.
-                _clear_stale_patch(workspace, remote_stage)
-                _clear_stale_watch(workspace, remote_stage)
+                # A reused folder must not hand this turn any previous turn output.
+                _clear_stale_turn_handoffs(workspace, remote_stage)
             artifact_scope_id = (
                 _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
@@ -346,12 +399,23 @@ async def stream_discuss_run(
             else:
                 assert request.message is not None
                 assert artifact_scope_id is not None
-                patch_inputs = _stage_chat_patch_inputs(
-                    local_stage,
-                    remote_stage,
-                    workspace=workspace,
-                    stage_name=stage_name,
-                )
+                patch_values = _retained_chat_patch_values(execution, request)
+                if patch_values is None:
+                    patch_inputs = _stage_chat_patch_inputs(
+                        local_stage,
+                        remote_stage,
+                        workspace=workspace,
+                        stage_name=stage_name,
+                        task_id=execution.operation_id if execution is not None else token,
+                        turn_id=f"{token}:discuss",
+                    )
+                    patch_values = {
+                        "path": patch_inputs.patch_path,
+                        "watch_path": patch_inputs.watch_path,
+                        "schema_path": patch_inputs.schema_path,
+                        "validator_command": patch_inputs.validator_command,
+                        "validator_mailbox_id": patch_inputs.validator_mailbox_id,
+                    }
                 repositories = [
                     {"alias": item.alias, "host": item.host, "path": item.path}
                     for item in context.repositories
@@ -375,13 +439,7 @@ async def stream_discuss_run(
                     },
                     "repositories": repositories,
                     "skills": {"pointers": skill_pointers},
-                    "patch": {
-                        "path": patch_inputs.patch_path,
-                        "watch_path": patch_inputs.watch_path,
-                        "schema_path": patch_inputs.schema_path,
-                        "validator_command": patch_inputs.validator_command,
-                        "validator_mailbox_id": patch_inputs.validator_mailbox_id,
-                    },
+                    "patch": patch_values,
                     "workspace": {"path": str(workspace)},
                 }
                 master_context = PromptFactory.chat_master_context(
@@ -396,11 +454,11 @@ async def stream_discuss_run(
                     focused_relations=[item.model_dump(mode="json") for item in context.relations],
                     repositories=repositories,
                     introduction_path=context.introduction_path,
-                    patch_path=patch_inputs.patch_path,
+                    patch_path=patch_values["path"],
                     workspace_path=str(workspace),
-                    output_schema_path=patch_inputs.schema_path,
-                    validator_command=patch_inputs.validator_command,
-                    watch_path=patch_inputs.watch_path,
+                    output_schema_path=patch_values["schema_path"],
+                    validator_command=patch_values["validator_command"],
+                    watch_path=patch_values["watch_path"],
                     execution_host=execution_host,
                     experiment_watcher_resources=experiment_resource_pointers,
                     skill_pointers=skill_pointers,
@@ -577,4 +635,9 @@ async def stream_discuss_run(
     finally:
         # There is no per-turn source cleanup; the reusable native-session stage
         # remains available to the normal stage sweeper.
-        pass
+        if patch_inputs is not None:
+            await asyncio.to_thread(
+                cleanup_patch_validation_mailbox,
+                staged=patch_inputs.validator_staged,
+                execution=execution,
+            )

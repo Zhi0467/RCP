@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.core.materialize import apply_valid_patch
-from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, AuthorizedHuman, Patch, ValidationMessage
+from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, Patch, ValidationMessage
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest
@@ -19,16 +19,7 @@ from rcp.storage import AgentTaskRecord
 from tests.helpers import append_fixture_patch, seed_patch
 from tests.helpers import create_named_app as create_app
 
-
-def _authorized_human(app) -> AuthorizedHuman:
-    store = app.state.background_tasks.store
-    owner = store.local_owner
-    assert owner is not None and owner.display_name is not None
-    return AuthorizedHuman(
-        space_id=store.space_id,
-        user_id=owner.user_id,
-        display_name=owner.display_name,
-    )
+from .helpers import authorized_human
 
 
 def ontology_payload() -> dict[str, object]:
@@ -895,7 +886,7 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
             ],
         ),
         active_control_node_ids=set(),
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
 
     assert state.revision == 3
@@ -932,7 +923,7 @@ def test_graph_sync_withdraws_to_asserted_and_rewrites_research_once(manifest, t
     service.review_node(
         node.id,
         ReviewRequest(standing="accepted"),
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
     accepted = service.history.state().nodes[node.id]
     client = TestClient(app)
@@ -1074,6 +1065,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
                             "ops": [
                                 {
                                     "op": "update_nodes",
+                                    "intent": "status_change",
                                     "nodes": [
                                         {
                                             "id": "hyp/replanning-restores-plasticity",
@@ -1165,17 +1157,27 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         decided.json()["proposals"]["prop/activate-replanning-hypothesis"]["status"] == "withdrawn"
     )
     assert "hyp/replanning-restores-plasticity" not in decided.json()["nodes"]
+    withdrawal_reason = (
+        "The proposal “Treat replanning as the active hypothesis” became stale because a related "
+        "research concept was removed in this Sync."
+        if same_draft
+        else "The proposal “Treat replanning as the active hypothesis” was stale and was "
+        "withdrawn without applying changes."
+    )
     assert service.history.load_patches()[-1].ops == [
         {
             "op": "resolve_proposals",
-            "resolutions": [{"id": "prop/activate-replanning-hypothesis", "status": "withdrawn"}],
+            "resolutions": [
+                {
+                    "id": "prop/activate-replanning-hypothesis",
+                    "status": "withdrawn",
+                    "reason": withdrawal_reason,
+                }
+            ],
         }
     ]
     if same_draft:
-        assert service.history.load_patches()[-1].change_summary == [
-            "The proposal “Treat replanning as the active hypothesis” became stale because a related "
-            "research concept was removed in this Sync."
-        ]
+        assert service.history.load_patches()[-1].change_summary == [withdrawal_reason]
 
 
 def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> None:
@@ -1185,7 +1187,7 @@ def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> Non
     service.review_node(
         "rq/learning-after-shift",
         ReviewRequest(standing="accepted"),
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
     client = TestClient(app)
 
@@ -1349,7 +1351,7 @@ def test_graph_sync_refuses_stale_ontology_draft(manifest, tmp_path) -> None:
     service.review_node(
         "rq/learning-after-shift",
         ReviewRequest(standing="accepted"),
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
     client = TestClient(app)
 
@@ -1688,7 +1690,7 @@ def test_graph_sync_refuses_stale_project_draft(manifest, tmp_path) -> None:
     service.review_node(
         node.id,
         ReviewRequest(standing="accepted"),
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
     client = TestClient(app)
 

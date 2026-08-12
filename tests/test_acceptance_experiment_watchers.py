@@ -11,12 +11,11 @@ from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
 
-from .helpers import append_fixture_patch
+from .helpers import TASK_SETTLE_TIMEOUT, append_fixture_patch, wait_for_task_response
 from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/acceptance-loop"
 _HYPOTHESIS_ID = "hyp/acceptance-sequence"
-_TERMINAL_TASK_STATUSES = {"succeeded", "failed", "paused", "stopped"}
 
 
 def _experiment_fixture_patch() -> Patch:
@@ -65,42 +64,13 @@ def _experiment_fixture_patch() -> Patch:
     )
 
 
-def _wait_for_task(
-    client: TestClient,
-    project_id: str,
-    operation_id: str,
-    *,
-    # The task runs on its own thread, so this bounds a genuine hang rather than
-    # the expected duration: the loop returns the moment the task is terminal, so
-    # a generous bound costs nothing on success and only a tight one can invent a
-    # failure when the full suite is competing for the CPU.
-    timeout: float = 60.0,
-) -> dict[str, object]:
-    deadline = time.monotonic() + timeout
-    task: dict[str, object] | None = None
-    while time.monotonic() < deadline:
-        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
-        assert response.status_code == 200, response.text
-        task = response.json()
-        if task["status"] in _TERMINAL_TASK_STATUSES:
-            return task
-        time.sleep(0.02)
-    raise AssertionError(
-        f"agent task {operation_id} did not finish within {timeout}s; "
-        f"last seen status={task['status']!r} phase={task.get('phase')!r} "
-        f"message={task.get('message')!r}"
-        if task is not None
-        else f"agent task {operation_id} was never observed within {timeout}s"
-    )
-
-
 def _wait_for_new_task(
     store: AppStore,
     project_id: str,
     previous_ids: set[str],
     predicate: Callable[[AgentTaskRecord], bool],
     *,
-    timeout: float = 5.0,
+    timeout: float = TASK_SETTLE_TIMEOUT,
 ) -> AgentTaskRecord:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -208,7 +178,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
             },
         )
         assert started.status_code == 202, started.text
-        origin = _wait_for_task(client, project_id, started.json()["operation_id"])
+        origin = wait_for_task_response(client, project_id, started.json()["operation_id"])
         assert origin["status"] == "succeeded", origin
         assert {"watcher_correction_requested", "watchers_armed"} <= _receipt_categories(origin)
 
@@ -251,7 +221,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
             before_ids,
             lambda task: task.request.get("trigger") == "watcher",
         )
-        wake_detail = _wait_for_task(reopened_client, project_id, wake.operation_id)
+        wake_detail = wait_for_task_response(reopened_client, project_id, wake.operation_id)
         assert wake_detail["status"] == "succeeded", wake_detail
         assert wake.request["patch_kind"] == "work"
         assert set(wake.request["watcher_ids"]) == {record.watcher_id for record in persisted}
@@ -301,7 +271,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         assert initial_request["control_invocation_ceiling"] == 1
         assert initial_request["watcher_ids"] == []
 
-        initial = _wait_for_task(client, project_id, initial_record["operation_id"])
+        initial = wait_for_task_response(client, project_id, initial_record["operation_id"])
         assert initial["status"] == "succeeded", initial
         assert {"watcher_correction_requested", "watchers_armed"} <= _receipt_categories(initial)
         assert service.history.state().nodes[_EXPERIMENT_ID].attempts == []
@@ -365,7 +335,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         assert request["control_episode_id"] != initial_episode
         assert set(request["watcher_ids"]) == {record.watcher_id for record in pending}
 
-        finished = _wait_for_task(
+        finished = wait_for_task_response(
             reopened_client,
             project_id,
             reauthorized_record["operation_id"],

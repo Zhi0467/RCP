@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from rcp.agents import PromptFactory
 from rcp.core.materialize import apply_valid_patch, materialize_patches
-from rcp.core.models import Experiment, GraphState, OntologyState, Patch
+from rcp.core.models import Ambiguity, Experiment, GraphState, OntologyState, Patch
 from rcp.core.validation import proposal_dependencies, validate_patch
 from tests.helpers import refresh_patch, seed_patch
 
@@ -432,7 +432,7 @@ def test_new_required_field_cannot_strand_existing_nodes() -> None:
 
 def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejected() -> None:
     ontology_op = {"op": "set_ontology", "ontology": _ontology()}
-    assert proposal_dependencies(GraphState(), [ontology_op]) == ([], ["ontology"])
+    assert proposal_dependencies(GraphState(), [ontology_op]) == ([], [], ["ontology"])
     proposal = {
         "id": "prop/add-training-run",
         "title": "Add TrainingRun",
@@ -523,3 +523,62 @@ def test_base_authoring_rules_appear_regardless_of_ontology_state() -> None:
         assert "Every Experiment connects to a Hypothesis or Decision" not in contract
         assert "Internal-run Evidence connects to the Experiment that produced it" in contract
         assert "an agent may neither apply nor propose `set_ontology`" in contract
+
+
+def _ambiguity_state() -> GraphState:
+    return GraphState(
+        revision=1,
+        project_truth_scope=["repo"],
+        ambiguities={
+            "amb/scope": Ambiguity(
+                id="amb/scope",
+                question="Which task families count as in scope?",
+                why_it_matters="The comparison is only meaningful within one family.",
+            )
+        },
+    )
+
+
+def test_standalone_ambiguity_resolution_is_replay_only() -> None:
+    # Ambiguities are legacy: replay must keep accepting the standalone patches
+    # already in the log, while admission refuses to write a new one. The two
+    # modes therefore have to disagree about this one operation, and a test that
+    # exercises only one mode cannot tell that the gate exists at all.
+    state = _ambiguity_state()
+    patch = _approval(
+        2,
+        [{"op": "resolve_ambiguities", "resolutions": [{"id": "amb/scope", "status": "resolved"}]}],
+    )
+
+    assert "invalid-standalone-review" not in _codes(
+        validate_patch(state, patch, ["repo"], mode="replay")
+    )
+    assert "invalid-standalone-review" in _codes(
+        validate_patch(state, patch, ["repo"], mode="admission")
+    )
+
+
+def test_one_staged_node_patch_may_carry_only_one_review() -> None:
+    # The shape rule is "exactly one edit and at most one review". A second
+    # set_standing is refused even though the edit count is already correct, so
+    # the two halves of that rule are independent.
+    state = materialize_patches(
+        [
+            _set_ontology(1, _ontology()),
+            _agent(2, [{"op": "create_nodes", "nodes": [_custom_node()]}]),
+        ],
+        ["repo"],
+    ).state
+    node_id = _custom_node()["id"]
+    edit = {
+        "op": "update_nodes",
+        "nodes": [{"id": node_id, "base_updated_rev": 2, "changes": {"title": "Renamed"}}],
+    }
+    review = {"op": "set_standing", "node_id": node_id, "standing": "asserted"}
+
+    assert "invalid-standalone-review" not in _codes(
+        validate_patch(state, _approval(3, [edit, review]), ["repo"])
+    )
+    assert "invalid-standalone-review" in _codes(
+        validate_patch(state, _approval(3, [edit, review, dict(review)]), ["repo"])
+    )

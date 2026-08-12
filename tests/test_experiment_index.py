@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 import uuid
@@ -11,11 +12,11 @@ from fastapi.testclient import TestClient
 
 import rcp.api.app as api_app_module
 from rcp.agents import AgentEvent
-from rcp.core.models import AuthorizedHuman, Patch
+from rcp.core.models import Patch
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, ProjectRecord
 
-from .helpers import append_fixture_patch, seed_patch
+from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
 from .helpers import create_named_app as create_app
 
 
@@ -51,16 +52,6 @@ def _experiment_patch() -> Patch:
     )
 
 
-def _authorized_human(app) -> AuthorizedHuman:
-    owner = app.state.background_tasks.store.local_owner
-    assert owner is not None and owner.display_name is not None
-    return AuthorizedHuman(
-        space_id=app.state.space_id,
-        user_id=owner.user_id,
-        display_name=owner.display_name,
-    )
-
-
 def _update_experiment_summary(summary: str) -> Patch:
     return Patch(
         kind="refresh",
@@ -82,19 +73,18 @@ def _update_experiment_summary(summary: str) -> Patch:
     )
 
 
-def _update_primary_question(question: str) -> Patch:
+def _update_primary_question(question: str, *, base_updated_rev: int) -> Patch:
     return Patch(
-        kind="refresh",
-        author="agent",
+        kind="approval",
+        author="human",
         summary="Updated the primary question.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
         ops=[
             {
                 "op": "update_nodes",
                 "nodes": [
                     {
                         "id": "rq/learning-after-shift",
+                        "base_updated_rev": base_updated_rev,
                         "changes": {"question": question},
                     }
                 ],
@@ -175,17 +165,6 @@ def _seed_indexed_project(app) -> tuple[str, str]:
 
 def _event_frame(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
-
-
-def _wait_for_task(store, operation_id: str) -> AgentTaskRecord:
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        record = store.agent_task(operation_id)
-        assert record is not None
-        if record.status not in {"queued", "running"}:
-            return record
-        time.sleep(0.01)
-    raise AssertionError("background task did not finish")
 
 
 def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
@@ -334,11 +313,11 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
         project_id,
         "project_chat",
         request,
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
     operation["id"] = task.operation_id
     release.set()
-    completed = _wait_for_task(store, task.operation_id)
+    completed = wait_for_task(store, task.operation_id)
 
     assert completed.status == "succeeded"
     assert stream_closed.wait(timeout=2)
@@ -407,9 +386,9 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
         project_id,
         "project_chat",
         request,
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
-    completed = _wait_for_task(store, task.operation_id)
+    completed = wait_for_task(store, task.operation_id)
 
     assert completed.status == "succeeded"
     deadline = time.monotonic() + 2
@@ -435,8 +414,12 @@ def test_versioned_cache_commit_cannot_regress_graph_or_project_summary(
     project_id, _current_episode = _seed_indexed_project(app)
     client = TestClient(app)
     older = client.get(f"/api/projects/{project_id}").json()
+    question = app.state.service.history.state().nodes["rq/learning-after-shift"]
     append_fixture_patch(
-        app.state.service, _update_primary_question("What is the newest question?")
+        app.state.service,
+        _update_primary_question(
+            "What is the newest question?", base_updated_rev=question.updated_rev
+        ),
     )
     state = app.state.service.history.materialize(write_outputs=False).state
     newer = app.state.service.project_snapshot(state=state)
@@ -614,7 +597,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
         project_id,
         "node_chat",
         request,
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
     assert entered_cache.wait(timeout=1)
 
@@ -627,7 +610,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     assert before_release["control"]["operational"]["current_status"] == "running"
 
     release_cache.set()
-    completed = _wait_for_task(app.state.background_tasks.store, task.operation_id)
+    completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
     assert completed.status == "succeeded"
     after_release = client.get("/api/experiment-loops").json()[0]
     assert after_release["node"]["current_summary"] == ("Graph visible with terminal task.")
@@ -667,9 +650,9 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
         project_id,
         "project_chat",
         request,
-        authorized_by=_authorized_human(app),
+        authorized_by=authorized_human(app),
     )
-    completed = _wait_for_task(app.state.background_tasks.store, task.operation_id)
+    completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
 
     assert completed.status == expected_status
     indexed = client.get("/api/experiment-loops").json()[0]
@@ -686,6 +669,30 @@ def test_experiment_index_fails_for_malformed_existing_cache(manifest, tmp_path:
     response = client.get("/api/experiment-loops")
 
     assert response.status_code == 503
+
+
+def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: Path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    store = app.state.background_tasks.store
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE projects SET home_space_id = NULL WHERE project_id = ?",
+            (project_id,),
+        )
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    del envelope["snapshot"]["home_space_id"]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    response = client.get("/api/experiment-loops")
+
+    assert response.status_code == 200
+    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert "home_space_id" not in json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
 
 
 def test_experiment_index_fails_when_revisioned_project_cache_is_missing(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -22,10 +21,9 @@ from .helpers import (
     append_fixture_patch,
     refresh_patch,
     seed_patch,
+    wait_for_task_response,
 )
-from .helpers import (
-    create_named_app as create_app,
-)
+from .helpers import create_named_app as create_app
 
 
 class _RecordingLauncher:
@@ -82,22 +80,6 @@ def _execution(
         store=store,
         control=AgentProcessControl(),
     )
-
-
-def _wait_for_task(
-    client: TestClient,
-    project_id: str,
-    operation_id: str,
-) -> dict[str, object]:
-    deadline = time.monotonic() + 4
-    while time.monotonic() < deadline:
-        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
-        assert response.status_code == 200
-        task = response.json()
-        if task["status"] not in {"queued", "running"}:
-            return task
-        time.sleep(0.01)
-    raise AssertionError("background task did not finish")
 
 
 def _enable_graph_audit(service) -> None:
@@ -254,7 +236,7 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1
-    assert len(list(inputs.glob("chat-validator-client-*.py"))) == 1
+    assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 1
     assert not list(inputs.glob("*human-request.txt"))
     assert not list(inputs.glob("*discuss*.md"))
     assert not list(inputs.glob("task-*-initial.md"))
@@ -375,7 +357,7 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     )
     assert first_response.status_code == 202, first_response.text
     first_operation_id = first_response.json()["operation_id"]
-    assert _wait_for_task(client, project_id, first_operation_id)["status"] == "succeeded"
+    assert wait_for_task_response(client, project_id, first_operation_id)["status"] == "succeeded"
     master_path = Path(launcher.prompts[0].splitlines()[1])
 
     second_message = "/graph-audit Keep  this spacing.\nAnd this line."
@@ -392,7 +374,7 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     )
     assert second_response.status_code == 202, second_response.text
     second_operation_id = second_response.json()["operation_id"]
-    assert _wait_for_task(client, project_id, second_operation_id)["status"] == "succeeded"
+    assert wait_for_task_response(client, project_id, second_operation_id)["status"] == "succeeded"
 
     assert launcher.workspaces[0] == launcher.workspaces[1]
     assert launcher.sessions == [None, session_id]
@@ -434,7 +416,7 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     )
     assert third_response.status_code == 202, third_response.text
     third_operation_id = third_response.json()["operation_id"]
-    assert _wait_for_task(client, project_id, third_operation_id)["status"] == "succeeded"
+    assert wait_for_task_response(client, project_id, third_operation_id)["status"] == "succeeded"
     assert launcher.prompts[2].count(third_message) == 1
     assert "Invoked for this turn" not in launcher.prompts[2]
 
@@ -475,7 +457,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
         },
     )
     assert first.status_code == 202, first.text
-    assert _wait_for_task(client, project_id, first.json()["operation_id"])["status"] == (
+    assert wait_for_task_response(client, project_id, first.json()["operation_id"])["status"] == (
         "succeeded"
     )
 
@@ -494,7 +476,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     )
     assert second.status_code == 202, second.text
     second_id = second.json()["operation_id"]
-    assert _wait_for_task(client, project_id, second_id)["status"] == "succeeded"
+    assert wait_for_task_response(client, project_id, second_id)["status"] == "succeeded"
 
     assert launcher.sessions == [None, session_id]
     assert launcher.workspaces[0] == launcher.workspaces[1]
@@ -591,7 +573,7 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
         )
         assert response.status_code == 202, response.text
         operation_id = response.json()["operation_id"]
-        assert _wait_for_task(client, project_id, operation_id)["status"] == "succeeded"
+        assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
         return operation_id
 
     turn("First question.", resume=False)
@@ -655,14 +637,19 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
         response = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=body)
         assert response.status_code == 202, response.text
         operation_id = response.json()["operation_id"]
-        assert _wait_for_task(client, project_id, operation_id)["status"] == "succeeded"
+        assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
 
     before = service.graph_snapshot()["revision"]
     turn("Record the transfer question.", resume=False)
     assert service.graph_snapshot()["revision"] > before
 
     turn("Now just answer something.", resume=True)
-    assert "RCP context update" not in launcher.prompts[1]
+    second_delta = json.loads(
+        launcher.prompts[1].split("RCP context update", 1)[1].split(":\n", 1)[1]
+    )
+    assert set(second_delta) == {"patch"}
+    assert "current" not in second_delta
+    assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]
 
     # A Sync by someone else still reaches the conversation.
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))

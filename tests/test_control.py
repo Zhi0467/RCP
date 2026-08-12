@@ -215,6 +215,7 @@ def _belief_patch_ops(
                     "ops": [
                         {
                             "op": "update_nodes",
+                            "intent": "status_change",
                             "nodes": [
                                 {
                                     "id": target,
@@ -719,6 +720,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
         "ops": [
             {
                 "op": "update_nodes",
+                "intent": "status_change",
                 "nodes": [
                     {
                         "id": "hyp/target",
@@ -913,3 +915,50 @@ def test_old_attempts_load_with_backward_compatible_control_defaults() -> None:
     assert attempt.attempt_kind == "external_run"
     assert attempt.decision_bundle == []
     assert attempt.debug is None
+
+
+def test_experiment_loop_may_queue_its_pinned_decision_but_never_decide_it() -> None:
+    # A queue and a decision are the same operation shape on the same node: one
+    # update_nodes changing only "status". Only the requested status separates
+    # the move the loop may make from the one reserved for the human, so the
+    # rule has to be read off the status rather than off the shape.
+    state = _state()
+
+    for queued in ("open", "ready", "revisit"):
+        allowed = _patch(
+            [{"op": "update_nodes", "nodes": [{"id": DECISION_ID, "changes": {"status": queued}}]}]
+        )
+        assert "experiment-loop-decision-action" not in _codes(
+            validate_patch(state, allowed, ["repo"])
+        )
+
+    decided = _patch(
+        [{"op": "update_nodes", "nodes": [{"id": DECISION_ID, "changes": {"status": "decided"}}]}]
+    )
+    assert "experiment-loop-decision-action" in _codes(validate_patch(state, decided, ["repo"]))
+
+
+def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
+    # A finished attempt is a record. Reopening one is caught elsewhere; this is
+    # the subtler move of rewriting a closed attempt into a different closed
+    # state, which leaves every fixed field untouched and so reaches the
+    # close check rather than the mutation check.
+    closed = _attempt(status="completed")
+    state = _state(attempts=[closed])
+
+    rewritten = closed.model_dump(mode="json") | {
+        "status": "failed",
+        "failure_reason": "Rewriting history after the fact.",
+    }
+    patch = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": EXPERIMENT_ID, "changes": {"attempts": [rewritten]}}],
+            }
+        ]
+    )
+
+    codes = _codes(validate_patch(state, patch, ["repo"]))
+    assert "experiment-loop-attempt-close" in codes
+    assert "experiment-loop-attempt-mutation" not in codes

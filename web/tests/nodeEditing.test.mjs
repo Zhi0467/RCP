@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
+import { createServer } from "vite";
 
 import { changedNodeFields, editableNodeFields, nodeEditDraft } from "../src/nodeEditing.ts";
-import {
-  emptyHumanDraft,
-  humanDraftChangeCount,
-  stageAttemptRelease,
-  toHumanSyncRequest,
-} from "../src/humanDraft.ts";
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const { emptyHumanDraft, humanDraftChangeCount, stageAttemptRelease, toHumanSyncRequest } =
+  await server.ssrLoadModule("/src/humanDraft.ts");
+
+after(() => server.close());
 
 const hypothesis = {
   id: "hyp/example",

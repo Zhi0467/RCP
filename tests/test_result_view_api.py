@@ -1,0 +1,456 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from rcp.core.models import Patch
+from rcp.runs.result_views import prepare_local_result_view_slot
+from rcp.service import ProjectService, RunRequest
+from rcp.storage import AgentTaskRecord, AppStore, ResultViewRecord
+from rcp.transport import StateUnavailable
+
+from .helpers import append_fixture_patch, create_named_app, seed_patch
+
+_VIEW_ID = "a" * 24
+_EXPERIMENT_ID = "exp/result-view"
+
+
+@dataclass(frozen=True)
+class _ResultViewApiFixture:
+    client: TestClient
+    store: AppStore
+    service: ProjectService
+    project_id: str
+    record: ResultViewRecord
+    stage: Path
+    source: Path
+    content: bytes
+
+
+def _experiment_patch() -> Patch:
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary="Added an Experiment for result-view API tests.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": _EXPERIMENT_ID,
+                        "type": "experiment",
+                        "title": "Inspect training results",
+                        "objective": "Exercise the result-view API contract.",
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def _create_view(
+    store: AppStore,
+    *,
+    project_id: str,
+    chat_id: str,
+    stage: Path,
+    view_id: str,
+    content: bytes,
+    expires_at: datetime,
+    source_name: str = "curves.html",
+    created_at: datetime | None = None,
+) -> tuple[ResultViewRecord, Path]:
+    stage.mkdir(parents=True, exist_ok=True)
+    source = prepare_local_result_view_slot(stage, view_id, reuse=False) / source_name
+    source.write_bytes(content)
+    created_at = created_at or datetime.now(UTC)
+    record = store.create_result_view(
+        ResultViewRecord(
+            view_id=view_id,
+            project_id=project_id,
+            experiment_id=_EXPERIMENT_ID,
+            chat_id=chat_id,
+            origin_operation_id=f"origin-{view_id}",
+            latest_operation_id=f"origin-{view_id}",
+            provider="codex",
+            model="",
+            reasoning="high",
+            run_on="laptop",
+            native_session_id=f"native-{view_id}",
+            stage_host="",
+            stage_root=str(stage),
+            source_name=source_name,
+            content_sha256=hashlib.sha256(content).hexdigest(),
+            size_bytes=len(content),
+            created_at=created_at.isoformat(),
+            updated_at=created_at.isoformat(),
+            expires_at=expires_at.isoformat(),
+        )
+    )
+    return record, source
+
+
+def _fixture(manifest, tmp_path: Path) -> _ResultViewApiFixture:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    stage = tmp_path / "conversation-stage"
+    content = b"<!doctype html><title>Loss curves</title><p>loss curve</p>"
+    record, source = _create_view(
+        store,
+        project_id=project_id,
+        chat_id=str(uuid.uuid4()),
+        stage=stage,
+        view_id=_VIEW_ID,
+        content=content,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    return _ResultViewApiFixture(
+        client=TestClient(app),
+        store=store,
+        service=service,
+        project_id=project_id,
+        record=record,
+        stage=stage,
+        source=source,
+        content=content,
+    )
+
+
+def test_result_view_list_preview_and_head_are_path_free(manifest, tmp_path: Path) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    base = f"/api/projects/{fixture.project_id}/result-views"
+
+    listed = fixture.client.get(
+        base,
+        params={
+            "experiment_id": fixture.record.experiment_id,
+            "chat_id": fixture.record.chat_id,
+        },
+    )
+
+    assert listed.status_code == 200
+    assert listed.json() == [
+        fixture.store.result_view_descriptor(fixture.record).model_dump(mode="json")
+    ]
+    assert fixture.client.get(base, params={"chat_id": "another-chat"}).json() == []
+    serialized = json.dumps(listed.json())
+    assert str(fixture.stage) not in serialized
+    assert fixture.record.content_sha256 not in serialized
+    assert fixture.record.native_session_id not in serialized
+
+    preview_url = f"{base}/{fixture.record.view_id}/preview"
+    preview = fixture.client.get(preview_url)
+    head = fixture.client.head(preview_url)
+
+    assert preview.status_code == head.status_code == 200
+    assert "loss curve" in preview.text
+    assert "rcp-result-view-gesture" in preview.text
+    assert head.content == b""
+    for header in (
+        "cache-control",
+        "content-length",
+        "content-security-policy",
+        "content-type",
+        "x-content-type-options",
+    ):
+        assert head.headers[header] == preview.headers[header]
+    assert "default-src 'none'" in preview.headers["content-security-policy"]
+    assert fixture.client.get(f"{base}/{'f' * 24}/preview").status_code == 404
+
+
+def test_preview_rejects_expired_unavailable_and_mismatched_temporary_bytes(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    base = f"/api/projects/{fixture.project_id}/result-views"
+    expired_at = datetime.now(UTC)
+    expired, _ = _create_view(
+        fixture.store,
+        project_id=fixture.project_id,
+        chat_id=fixture.record.chat_id,
+        stage=tmp_path / "expired-stage",
+        view_id="b" * 24,
+        content=b"<html>expired</html>",
+        created_at=expired_at - timedelta(seconds=2),
+        expires_at=expired_at - timedelta(seconds=1),
+    )
+    unavailable_content = b"<html>unavailable</html>"
+    unavailable_at = datetime.now(UTC)
+    unavailable = fixture.store.create_result_view(
+        ResultViewRecord(
+            **{
+                **fixture.record.model_dump(mode="python"),
+                "view_id": "c" * 24,
+                "origin_operation_id": "origin-unavailable",
+                "latest_operation_id": "origin-unavailable",
+                "stage_root": str(tmp_path / "missing-stage"),
+                "content_sha256": hashlib.sha256(unavailable_content).hexdigest(),
+                "size_bytes": len(unavailable_content),
+                "created_at": unavailable_at.isoformat(),
+                "updated_at": unavailable_at.isoformat(),
+                "expires_at": (unavailable_at + timedelta(days=1)).isoformat(),
+            }
+        )
+    )
+
+    assert fixture.client.get(f"{base}/{expired.view_id}/preview").status_code == 410
+    unavailable_response = fixture.client.get(f"{base}/{unavailable.view_id}/preview")
+    assert unavailable_response.status_code == 503
+    assert str(tmp_path / "missing-stage") not in unavailable_response.text
+
+    fixture.source.write_bytes(b"<!doctype html><p>changed after discovery</p>")
+    mismatch = fixture.client.get(f"{base}/{fixture.record.view_id}/preview")
+    assert mismatch.status_code == 410
+    assert "changed after discovery" not in mismatch.text
+
+
+def test_keep_is_idempotent_and_kept_preview_never_returns_to_scratch(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    base = f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}"
+    revision_before = fixture.service.history.state().revision
+
+    first = fixture.client.post(f"{base}/keep")
+    second = fixture.client.post(f"{base}/keep")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["state"] == "kept"
+    kept_filename = first.json()["kept_filename"]
+    assert isinstance(kept_filename, str)
+    repository_views = fixture.service.manifest.research_dir.parent / "views"
+    assert [path.name for path in repository_views.iterdir()] == [kept_filename]
+    assert (repository_views / kept_filename).read_bytes() == fixture.content
+    assert not (fixture.service.manifest.research_dir / "views").exists()
+    assert fixture.service.history.state().revision == revision_before
+
+    fixture.source.unlink()
+    preview = fixture.client.get(f"{base}/preview")
+    assert preview.status_code == 200
+    assert "loss curve" in preview.text
+
+    (repository_views / kept_filename).write_bytes(b" " * len(fixture.content))
+    assert fixture.client.get(f"{base}/preview").status_code == 410
+
+
+def test_failed_keep_preserves_the_temporary_view_and_hides_storage_paths(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+
+    def fail_keep(**_kwargs) -> str:
+        raise StateUnavailable(f"could not publish from {fixture.stage}")
+
+    monkeypatch.setattr(fixture.service.history.workspace, "keep_result_view", fail_keep)
+    base = f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}"
+
+    failed = fixture.client.post(f"{base}/keep")
+
+    assert failed.status_code == 503
+    assert str(fixture.stage) not in failed.text
+    current = fixture.store.result_view_for_diagnostics(fixture.record.view_id)
+    assert current is not None and current.kept_filename is None
+    assert fixture.source.read_bytes() == fixture.content
+    assert fixture.client.get(f"{base}/preview").status_code == 200
+
+
+def test_result_view_admission_pins_revision_and_keep_rejects_its_active_task(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    captured: list[RunRequest] = []
+
+    def fake_start(
+        project_id,
+        kind,
+        request,
+        *,
+        operation_id=None,
+        authorized_by=None,
+        stage_host=None,
+        stage_root=None,
+    ) -> AgentTaskRecord:
+        assert isinstance(request, RunRequest)
+        captured.append(request)
+        if request.result_view is not None and request.result_view.action == "revise":
+            assert stage_host == (fixture.record.stage_host or None)
+            assert stage_root == fixture.record.stage_root
+        else:
+            assert stage_host is None
+            assert stage_root is None
+        now = fixture.store.now()
+        return AgentTaskRecord(
+            operation_id=operation_id or str(uuid.uuid4()),
+            project_id=project_id,
+            kind=kind,
+            status="queued",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Queued.",
+            authorized_by=authorized_by,
+        )
+
+    monkeypatch.setattr(fixture.client.app.state.background_tasks, "start", fake_start)
+    message = "Use a log scale, but keep my wording exactly."
+    admitted = fixture.client.post(
+        f"/api/projects/{fixture.project_id}/tasks/node_chat",
+        json={
+            "provider": "claude",
+            "model": "different-model",
+            "reasoning": "low",
+            "run_on": "laptop",
+            "chat_id": fixture.record.chat_id,
+            "node_id": fixture.record.experiment_id,
+            "message": message,
+            "mode": "work",
+            "result_view": {"action": "revise", "view_id": fixture.record.view_id},
+        },
+    )
+
+    assert admitted.status_code == 202
+    pinned = captured[-1]
+    assert pinned.message == message
+    assert (
+        pinned.provider,
+        pinned.model,
+        pinned.reasoning,
+        pinned.run_on,
+        pinned.session_id,
+    ) == (
+        fixture.record.provider,
+        fixture.record.model,
+        fixture.record.reasoning,
+        fixture.record.run_on,
+        fixture.record.native_session_id,
+    )
+
+    wrong_node = fixture.client.post(
+        f"/api/projects/{fixture.project_id}/tasks/node_chat",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "node_id": "rq/learning-after-shift",
+            "message": "Draw a result.",
+            "mode": "work",
+            "result_view": {"action": "create"},
+        },
+    )
+    assert wrong_node.status_code == 422
+    assert "Experiment node" in wrong_node.text
+
+    now = fixture.store.now()
+    fixture.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="active-result-view-revision",
+            project_id=fixture.project_id,
+            kind="node_chat",
+            status="queued",
+            request=pinned.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Queued.",
+        )
+    )
+    keeping = fixture.client.post(
+        f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}/keep"
+    )
+    assert keeping.status_code == 409
+    assert fixture.store.result_view_for_diagnostics(fixture.record.view_id) == fixture.record
+
+    fixture.store.pause_agent_task("active-result-view-revision")
+    fixture.store.mark_result_view_kept(
+        fixture.record.view_id,
+        expected_content_sha256=fixture.record.content_sha256,
+        kept_filename="curves-test-paper-26-08-12.html",
+        kept_at=fixture.store.now(),
+    )
+
+    def must_not_restart(*_args, **_kwargs):
+        raise AssertionError("a kept result view revision must not restart")
+
+    monkeypatch.setattr(fixture.client.app.state.background_tasks, "resume", must_not_restart)
+    monkeypatch.setattr(fixture.client.app.state.background_tasks, "retry", must_not_restart)
+    task_url = f"/api/projects/{fixture.project_id}/tasks/active-result-view-revision"
+    assert fixture.client.post(f"{task_url}/resume").status_code == 409
+    assert fixture.client.post(f"{task_url}/retry").status_code == 409
+
+
+@pytest.mark.parametrize("status", ["paused", "interrupted"])
+def test_keep_waits_for_a_resumable_revision_then_allows_recovery(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+    status: str,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    request = RunRequest(
+        provider=fixture.record.provider,
+        model=fixture.record.model,
+        reasoning=fixture.record.reasoning,
+        run_on=fixture.record.run_on,
+        chat_scope="node",
+        node_id=fixture.record.experiment_id,
+        message="Use a log scale.",
+        chat_id=fixture.record.chat_id,
+        session_id=fixture.record.native_session_id,
+        mode="work",
+        result_view={"action": "revise", "view_id": fixture.record.view_id},
+    )
+    now = fixture.store.now()
+    recoverable = fixture.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=f"{status}-result-view-revision",
+            project_id=fixture.project_id,
+            kind="node_chat",
+            status=status,
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message=f"{status.title()}.",
+            native_session_id=fixture.record.native_session_id,
+            stage_root=fixture.record.stage_root,
+        )
+    )
+    assert recoverable.can_resume
+    base = f"/api/projects/{fixture.project_id}"
+
+    blocked = fixture.client.post(f"{base}/result-views/{fixture.record.view_id}/keep")
+    assert blocked.status_code == 409
+    assert "active result view revision" in blocked.text
+
+    tasks = fixture.client.app.state.background_tasks
+    monkeypatch.setattr(tasks, "_spawn_record", lambda record, *_args, **_kwargs: record)
+    resumed = fixture.client.post(f"{base}/tasks/{recoverable.operation_id}/resume")
+
+    assert resumed.status_code == 202
+    child_id = resumed.json()["operation_id"]
+    child = fixture.store.agent_task(child_id)
+    assert child is not None
+    assert child.parent_operation_id == recoverable.operation_id
+    assert child.stage_root == fixture.record.stage_root
+    assert child.native_session_id == fixture.record.native_session_id
+    fixture.store.complete_agent_task(child_id, applied_revision=None, result={})
+
+    kept = fixture.client.post(f"{base}/result-views/{fixture.record.view_id}/keep")
+    assert kept.status_code == 200
+    assert kept.json()["state"] == "kept"

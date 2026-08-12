@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -27,8 +27,25 @@ from rcp.agents import (
     parse_agent_patch_json,
 )
 from rcp.attachments import ChatAttachmentDescriptor
-from rcp.config import AgentSurface, AgentSurfaceConfig, MachineConfig, Manifest
+from rcp.config import (
+    AgentExecutionProfile,
+    AgentSurface,
+    AgentSurfaceConfig,
+    MachineConfig,
+    Manifest,
+)
 from rcp.control import derive_experiment_control_state
+from rcp.core.authority import (
+    CONTENT_CHANGE_INTENT,
+    MERGE_INTENT,
+    PROTECTED_RELATION_CHANGE_INTENT,
+    REMOVAL_INTENT,
+    STATUS_CHANGE_INTENT,
+    SUPERSEDE_INTENT,
+    AgentDispatchAuthority,
+    AgentDispatchScope,
+)
+from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
@@ -57,6 +74,7 @@ from rcp.limits import (
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId, ProviderSkillReference
+from rcp.runs.campaign import CampaignRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -68,15 +86,17 @@ from rcp.sources import (
     ConversationIndex,
     ConversationIndexer,
     preflight_provider_roots,
+    project_cache_roots,
 )
 from rcp.transport import repository_access as build_repository_access
 
-_SETTINGS_SURFACES: tuple[AgentSurface, ...] = (
+_SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
     "seed",
     "refresh",
     "node_chat",
     "project_chat",
     "paper_coach",
+    "orchestrator",
 )
 
 
@@ -107,6 +127,110 @@ def _proposal_applies_decision_choice(state: GraphState, proposal: Proposal) -> 
             ):
                 return True
     return False
+
+
+def _proposal_approval_standing_targets(proposal: Proposal) -> list[str]:
+    """Return belief nodes whose standing is accepted with this Proposal.
+
+    ``related_node_ids`` is a dependency set, not a review-target set. New
+    protected-change Proposals therefore use their declared intent to name only
+    the belief whose content or lifecycle changed. Historical Proposals did not
+    carry an intent and retain their existing related-node behavior.
+    """
+
+    if len(proposal.ops) != 1:
+        return list(proposal.related_node_ids)
+    operation = proposal.ops[0]
+    intent = operation.get("intent")
+    if intent is None:
+        return list(proposal.related_node_ids)
+    if intent in {REMOVAL_INTENT, PROTECTED_RELATION_CHANGE_INTENT}:
+        return []
+    if intent in {CONTENT_CHANGE_INTENT, STATUS_CHANGE_INTENT}:
+        return [operation["nodes"][0]["id"]]
+    if intent == SUPERSEDE_INTENT:
+        return [operation["nodes"][0]["id"]]
+    if intent == MERGE_INTENT:
+        return [operation["merges"][0]["duplicate"]]
+    raise ValueError(f"unknown Proposal intent: {intent!r}")
+
+
+def _proposal_judgment_patch(
+    state: GraphState,
+    proposal: Proposal,
+    *,
+    decision: Literal["approved", "rejected"],
+    reason: str | None,
+    stale_reason: str | None = None,
+) -> Patch:
+    if proposal_is_stale(state, proposal):
+        withdrawal_reason = (
+            stale_reason
+            or f"The proposal “{proposal.title}” was stale and was withdrawn without applying "
+            "changes."
+        )
+        return Patch(
+            kind="approval",
+            author="human",
+            summary=f"Withdrew stale proposal “{proposal.title}”.",
+            ops=[
+                {
+                    "op": "resolve_proposals",
+                    "resolutions": [
+                        {
+                            "id": proposal.id,
+                            "status": "withdrawn",
+                            "reason": withdrawal_reason,
+                        }
+                    ],
+                }
+            ],
+            change_summary=[withdrawal_reason],
+        )
+
+    semantic_ops = (
+        normalized_decision_proposal_ops(state, proposal) if decision == "approved" else []
+    )
+    standing_ops = [
+        {"op": "set_standing", "node_id": node_id, "standing": "accepted"}
+        for node_id in (
+            _proposal_approval_standing_targets(proposal) if decision == "approved" else []
+        )
+    ]
+    return Patch(
+        kind="approval",
+        author="human",
+        summary=f"{decision.title()} proposal “{proposal.title}”.",
+        ops=[
+            *semantic_ops,
+            {
+                "op": "resolve_proposals",
+                "resolutions": [
+                    {
+                        "id": proposal.id,
+                        "status": decision,
+                        "reason": reason,
+                    }
+                ],
+            },
+            *standing_ops,
+        ],
+        change_summary=[f"The proposal “{proposal.title}” was {decision}."],
+        human_action=(
+            "decision_choice"
+            if decision == "approved" and _proposal_applies_decision_choice(state, proposal)
+            else None
+        ),
+    )
+
+
+def _stage_sync_patch(state: GraphState, patch: Patch) -> GraphState:
+    """Advance the in-memory Sync draft exactly as append_batch will."""
+
+    return apply_valid_patch(
+        state,
+        patch.model_copy(update={"revision": state.revision + 1}),
+    )
 
 
 class GraphUpdateResult(BaseModel):
@@ -273,6 +397,25 @@ class GraphSyncRequest(BaseModel):
         return self
 
 
+class CreateResultViewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["create"]
+
+
+class ReviseResultViewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["revise"]
+    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+
+
+ResultViewRequest = Annotated[
+    CreateResultViewRequest | ReviseResultViewRequest,
+    Field(discriminator="action"),
+]
+
+
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -287,6 +430,10 @@ class RunRequest(BaseModel):
     chat_id: str | None = None
     session_id: str | None = None
     mode: ConversationMode = "discuss"
+    result_view: ResultViewRequest | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     trigger: TaskTrigger = "human"
     patch_kind: GraphPatchKind = "work"
     control_node_id: str | None = None
@@ -312,6 +459,14 @@ class RunRequest(BaseModel):
     attachment_batch_id: str | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def result_view_requires_node_work(self) -> RunRequest:
+        if self.result_view is None:
+            return self
+        if self.mode != "work" or self.chat_scope != "node" or not self.node_id:
+            raise ValueError("a result view requires node-scoped Work with a node_id")
+        return self
+
 
 class CoachRequest(BaseModel):
     message: str
@@ -329,6 +484,73 @@ class CoachRequest(BaseModel):
     resolved_skill_packages: list[SkillReference] | None = None
 
 
+def resolve_dispatch_authority(
+    kind: str,
+    request: object,
+) -> AgentDispatchAuthority | None:
+    """Resolve one profile binding from the server-owned task shape."""
+
+    if kind == "campaign":
+        if not isinstance(request, CampaignRunRequest):
+            raise TypeError("campaign dispatch requires a CampaignRunRequest")
+        if request.role == "report":
+            return None
+        return AgentDispatchAuthority(
+            profile="orchestrator" if request.role == "orchestrator" else "ordinary",
+            task_contract="orchestrate" if request.role == "orchestrator" else "work_auto",
+            scope=AgentDispatchScope(
+                run_truth_scope=sorted(set(request.run_truth_scope or ())),
+                campaign_id=request.campaign_id,
+                patch_kind="work",
+            ),
+        )
+    if kind == "paper_coach":
+        if not isinstance(request, CoachRequest):
+            raise TypeError("paper_coach dispatch requires a CoachRequest")
+        return AgentDispatchAuthority(
+            profile="ordinary",
+            task_contract="paper_readonly",
+            scope=AgentDispatchScope(),
+        )
+    if not isinstance(request, RunRequest):
+        raise TypeError(f"{kind} dispatch requires a RunRequest")
+
+    run_truth_scope = sorted(set(request.run_truth_scope or ()))
+    if kind in {"seed", "refresh"}:
+        return AgentDispatchAuthority(
+            profile="ordinary",
+            task_contract="scratch_patch",
+            scope=AgentDispatchScope(
+                run_truth_scope=run_truth_scope,
+                patch_kind=kind,
+            ),
+        )
+    if kind not in {"node_chat", "project_chat"}:
+        raise ValueError(f"Authority refused action 'dispatch': unknown task kind {kind!r}.")
+
+    chat_scope: Literal["node", "project"] = "node" if kind == "node_chat" else "project"
+    if request.chat_scope != chat_scope:
+        raise ValueError(
+            "Authority refused action 'dispatch': task kind and chat scope do not match."
+        )
+    work = request.mode == "work"
+    patch_kind = request.patch_kind if work else None
+    experiment = patch_kind == "experiment_loop"
+    return AgentDispatchAuthority(
+        profile="ordinary",
+        task_contract="work_auto" if work else "discuss",
+        scope=AgentDispatchScope(
+            run_truth_scope=run_truth_scope,
+            chat_scope=chat_scope,
+            chat_id=request.chat_id,
+            node_id=request.node_id if chat_scope == "node" else None,
+            patch_kind=patch_kind,
+            control_node_id=request.control_node_id if experiment else None,
+            control_episode_id=request.control_episode_id if experiment else None,
+        ),
+    )
+
+
 class AgentProfileSettings(BaseModel):
     provider: ProviderId
     model: str = ""
@@ -338,7 +560,8 @@ class AgentProfileSettings(BaseModel):
 
 class ProjectSettingsRequest(BaseModel):
     default_run_truth_scope: list[str] = Field(min_length=1)
-    agent_profiles: dict[AgentSurface, AgentProfileSettings]
+    default_campaign_invocation_ceiling: int | None = Field(default=None, ge=2)
+    agent_profiles: dict[AgentExecutionProfile, AgentProfileSettings]
     skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
     # Partial by machine and provider. Omission preserves every recorded path;
     # an empty string explicitly clears one provider's record.
@@ -366,6 +589,7 @@ class ProjectService:
         launcher: AgentLauncher | None = None,
         data_dir: Path | None = None,
         provider_skills: ProviderSkillInventoryManager | None = None,
+        project_id: str | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
@@ -382,9 +606,13 @@ class ProjectService:
                 else str(manifest.research_dir / "chat")
             ),
         )
+        canonical_project_id = project_id or history.project_id
+        cache_root = None
+        if data_dir is not None and canonical_project_id is not None:
+            cache_root = project_cache_roots(data_dir, canonical_project_id)[0]
         self.indexer = ConversationIndexer(
             manifest,
-            (data_dir / "source-cache") if data_dir else None,
+            cache_root,
             app_chat_origin=app_chat_origin,
         )
         self._index_lock = threading.Lock()
@@ -645,7 +873,7 @@ class ProjectService:
         refresh_profile = self.manifest.agent_profile("refresh")
         profiles = {
             surface: self.manifest.agent_profile(surface).model_dump(mode="json")
-            for surface in ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+            for surface in _SETTINGS_SURFACES
         }
         experiment_control = {
             node.id: derive_experiment_control_state(state, node.id).model_dump(mode="json")
@@ -660,6 +888,9 @@ class ProjectService:
             "run_on": refresh_profile.run_on,
             "project_truth_scope": state.project_truth_scope,
             "default_run_truth_scope": self.manifest.agent.default_run_truth_scope,
+            "default_campaign_invocation_ceiling": (
+                self.manifest.agent.default_campaign_invocation_ceiling
+            ),
             "repositories": [repository.model_dump() for repository in self.manifest.repositories],
             "machines": [machine.model_dump() for machine in self.manifest.machines],
             "primary_question": primary,
@@ -854,6 +1085,7 @@ class ProjectService:
             profiles,
             provider_path_updates,
             request.skill_defaults,
+            request.default_campaign_invocation_ceiling,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]
@@ -1016,6 +1248,41 @@ class ProjectService:
 
         patches: list[Patch] = []
 
+        removed_node_ids = set(request.removed_node_ids)
+        direct_choice_node_ids = {
+            staged.node_id
+            for staged in request.nodes
+            if isinstance(state.nodes.get(staged.node_id), Decision)
+            and _is_decision_choice(staged.changes)
+        }
+        superseded_proposal_ids = {
+            proposal.id
+            for proposal in state.proposals.values()
+            if proposal.status == "pending"
+            and any(
+                proposal_updates_node(proposal, decision_id)
+                for decision_id in direct_choice_node_ids
+            )
+        }
+        directly_changed_node_ids = {item.node_id for item in request.nodes}
+        for judgment in request.proposals:
+            if judgment.decision != "approved":
+                continue
+            proposal = state.proposals.get(judgment.proposal_id)
+            if proposal is None or proposal.status != "pending":
+                continue
+            if proposal.id in superseded_proposal_ids:
+                continue
+            overlapping_node_ids = sorted(
+                directly_changed_node_ids.intersection(proposal.related_node_ids)
+            )
+            if overlapping_node_ids:
+                raise NodeEditConflict(
+                    "A graph Sync cannot approve a Proposal and directly change its dependent "
+                    "node in the same draft: "
+                    f"{', '.join(overlapping_node_ids)}."
+                )
+
         effective_ontology = request.ontology if ontology_changed else state.ontology
         if ontology_changed:
             current_types = {item.name for item in state.ontology.types}
@@ -1122,24 +1389,11 @@ class ProjectService:
                 )
             )
 
-        removed_node_ids = set(request.removed_node_ids)
-        direct_choice_node_ids = {
-            staged.node_id
-            for staged in request.nodes
-            if isinstance(state.nodes.get(staged.node_id), Decision)
-            and _is_decision_choice(staged.changes)
-        }
-        superseded_proposal_ids = {
-            proposal.id
-            for proposal in state.proposals.values()
-            if proposal.status == "pending"
-            and any(
-                proposal_updates_node(proposal, decision_id)
-                for decision_id in direct_choice_node_ids
-            )
-        }
+        decision_state = state
+        for patch in patches:
+            decision_state = _stage_sync_patch(decision_state, patch)
         for staged in request.proposals:
-            proposal = state.proposals.get(staged.proposal_id)
+            proposal = decision_state.proposals.get(staged.proposal_id)
             if proposal is None:
                 raise KeyError(staged.proposal_id)
             if proposal.id in superseded_proposal_ids:
@@ -1147,67 +1401,21 @@ class ProjectService:
             if proposal.status != "pending":
                 raise NodeEditConflict(f"Proposal {proposal.id} is no longer pending.")
             stale_from_removal = bool(removed_node_ids.intersection(proposal.related_node_ids))
-            if self._proposal_is_stale(state, proposal) or stale_from_removal:
-                reason = (
-                    f"The proposal “{proposal.title}” became stale because a related research "
-                    "concept was removed in this Sync."
-                    if stale_from_removal
-                    else f"The proposal “{proposal.title}” was stale and was withdrawn without "
-                    "applying changes."
-                )
-                patches.append(
-                    Patch(
-                        kind="approval",
-                        author="human",
-                        summary=f"Withdrew stale proposal “{proposal.title}”.",
-                        ops=[
-                            {
-                                "op": "resolve_proposals",
-                                "resolutions": [{"id": proposal.id, "status": "withdrawn"}],
-                            }
-                        ],
-                        change_summary=[reason],
-                    )
-                )
-                continue
-            standing = "accepted" if staged.decision == "approved" else "contested"
-            semantic_ops = (
-                normalized_decision_proposal_ops(state, proposal)
-                if staged.decision == "approved"
-                else []
+            stale_reason = (
+                f"The proposal “{proposal.title}” became stale because a related research "
+                "concept was removed in this Sync."
+                if stale_from_removal
+                else None
             )
-            standing_ops = [
-                {"op": "set_standing", "node_id": node_id, "standing": standing}
-                for node_id in proposal.related_node_ids
-            ]
-            patches.append(
-                Patch(
-                    kind="approval",
-                    author="human",
-                    summary=f"{staged.decision.title()} proposal “{proposal.title}”.",
-                    ops=[
-                        *semantic_ops,
-                        {
-                            "op": "resolve_proposals",
-                            "resolutions": [
-                                {
-                                    "id": proposal.id,
-                                    "status": staged.decision,
-                                    "reason": staged.reason,
-                                }
-                            ],
-                        },
-                        *standing_ops,
-                    ],
-                    change_summary=[f"The proposal “{proposal.title}” was {staged.decision}."],
-                    human_action=(
-                        "decision_choice"
-                        if staged.decision == "approved"
-                        and _proposal_applies_decision_choice(state, proposal)
-                        else None
-                    ),
-                )
+            patch = _proposal_judgment_patch(
+                decision_state,
+                proposal,
+                decision=staged.decision,
+                reason=staged.reason,
+                stale_reason=stale_reason,
             )
+            patches.append(patch)
+            decision_state = _stage_sync_patch(decision_state, patch)
 
         for staged in request.nodes:
             node = state.nodes.get(staged.node_id)
@@ -1507,66 +1715,30 @@ class ProjectService:
         *,
         authorized_by: AuthorizedHuman | None = None,
     ) -> GraphState:
-        state = self.history.state()
-        self.history.require_writable(state)
-        proposal = state.proposals.get(proposal_id)
-        if proposal is None:
-            raise KeyError(proposal_id)
-        if proposal.status != "pending":
-            raise ValueError("proposal is not pending")
-        if self._proposal_is_stale(state, proposal):
-            patch = Patch(
-                kind="approval",
-                author="human",
-                summary=f"Withdrew stale proposal “{proposal.title}”.",
-                ops=[
-                    {
-                        "op": "resolve_proposals",
-                        "resolutions": [{"id": proposal_id, "status": "withdrawn"}],
-                    }
-                ],
-                change_summary=[
-                    f"The proposal “{proposal.title}” was stale and was withdrawn without "
-                    "applying changes."
-                ],
-            )
-        else:
-            standing = "accepted" if request.decision == "approved" else "contested"
-            semantic_ops = (
-                normalized_decision_proposal_ops(state, proposal)
-                if request.decision == "approved"
-                else []
-            )
-            standing_ops = [
-                {"op": "set_standing", "node_id": node_id, "standing": standing}
-                for node_id in proposal.related_node_ids
+        def build(state: GraphState) -> list[Patch]:
+            proposal = state.proposals.get(proposal_id)
+            if proposal is None:
+                raise KeyError(proposal_id)
+            if proposal.status != "pending":
+                raise ValueError("proposal is not pending")
+            return [
+                _proposal_judgment_patch(
+                    state,
+                    proposal,
+                    decision=request.decision,
+                    reason=request.reason,
+                )
             ]
-            patch = Patch(
-                kind="approval",
-                author="human",
-                summary=f"{request.decision.title()} proposal “{proposal.title}”.",
-                ops=[
-                    *semantic_ops,
-                    {
-                        "op": "resolve_proposals",
-                        "resolutions": [
-                            {
-                                "id": proposal_id,
-                                "status": request.decision,
-                                "reason": request.reason,
-                            }
-                        ],
-                    },
-                    *standing_ops,
-                ],
-                change_summary=[f"The proposal “{proposal.title}” was {request.decision}."],
-            )
-        _, result = self.history.append(patch, authorized_by=authorized_by)
+
+        _, result = self.history.append_batch_from_state(
+            build,
+            authorized_by=authorized_by,
+        )
         return result.state
 
     def resolve_agent_profile(
         self,
-        surface: AgentSurface,
+        surface: AgentExecutionProfile,
         *,
         provider: ProviderId | None = None,
         model: str | None = None,
@@ -1824,10 +1996,6 @@ class ProjectService:
         if last_problem is not None:
             raise last_problem
         raise ValueError("agent completed without a valid semantic Patch object")
-
-    @staticmethod
-    def _proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
-        return proposal_is_stale(state, proposal)
 
     @staticmethod
     def _primary_question(state: GraphState):

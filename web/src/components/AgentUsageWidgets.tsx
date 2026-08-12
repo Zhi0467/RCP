@@ -19,9 +19,17 @@ const taskLabels: Record<AgentTaskKind, string> = {
   node_chat: "Node chat",
   project_chat: "Project chat",
   paper_coach: "Paper coach",
+  campaign: "Auto-research",
 };
 
-const taskOrder: AgentTaskKind[] = ["seed", "refresh", "node_chat", "project_chat", "paper_coach"];
+const taskOrder: AgentTaskKind[] = [
+  "seed",
+  "refresh",
+  "node_chat",
+  "project_chat",
+  "paper_coach",
+  "campaign",
+];
 
 interface Props {
   usage: AgentUsageSnapshot | null;

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
@@ -14,16 +13,15 @@ from rcp.limits import PATCH_SELF_CHECK_MAX_COUNT
 from rcp.paper import PaperService
 from rcp.runs.graph import _validate_graph_patch_live
 from rcp.runs.patch_validator import (
-    VALIDATOR_CLIENT_SOURCE,
     PatchValidationBudget,
     PatchValidationResult,
     prepare_patch_validation_mailbox,
     serve_patch_validation_mailbox,
+    stage_patch_validation_mailbox,
 )
 from rcp.runs.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import ProjectService
 from rcp.storage import AppStore
-from rcp.transport import StateUnavailable
 from tests.helpers import agent_patch_json, refresh_patch, seed_patch
 
 
@@ -54,22 +52,14 @@ class _Execution:
 
 
 async def _run_client(
-    workspace: Path,
-    client: Path,
-    mailbox_id: str,
+    staged,
+    patch_path: Path,
     *,
     timeout: float = 2,
 ) -> subprocess.CompletedProcess[str]:
     return await asyncio.to_thread(
         subprocess.run,
-        [
-            sys.executable,
-            str(client),
-            str(workspace / "patch.json"),
-            mailbox_id,
-            str(timeout),
-            str(workspace),
-        ],
+        staged.client_argv("validate", str(patch_path), timeout_seconds=timeout),
         capture_output=True,
         text=True,
         check=False,
@@ -80,18 +70,21 @@ async def _run_client(
 async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "patch.json").write_text("{}", encoding="utf-8")
-    client = tmp_path / "validator-client.py"
-    client.write_text(VALIDATOR_CLIENT_SOURCE, encoding="utf-8")
+    patch_path = workspace / "patch.json"
+    patch_path.write_text("{}", encoding="utf-8")
 
     for status, expected_code in (("valid", 0), ("invalid", 1)):
-        mailbox_id = uuid.uuid4().hex
+        staged = stage_patch_validation_mailbox(
+            local_stage=workspace,
+            remote_stage=None,
+            task_id="validator-task",
+            turn_id=f"validator-{status}",
+            timeout_seconds=2,
+        )
         stop = asyncio.Event()
         server = asyncio.create_task(
             serve_patch_validation_mailbox(
-                mailbox_id=mailbox_id,
-                workspace=workspace,
-                remote_stage=None,
+                staged=staged,
                 execution=None,
                 validate=lambda _text, status=status: PatchValidationResult(
                     status=status,
@@ -103,13 +96,22 @@ async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_
                 budget=PatchValidationBudget(),
             )
         )
-        result = await _run_client(workspace, client, mailbox_id)
+        result = await _run_client(staged, patch_path)
         stop.set()
         await server
+        staged.cleanup()
         assert result.returncode == expected_code
         assert f'"status": "{status}"' in result.stdout
 
-    unavailable = await _run_client(workspace, client, uuid.uuid4().hex, timeout=0.2)
+    staged = stage_patch_validation_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        task_id="validator-task",
+        turn_id="validator-unavailable",
+        timeout_seconds=0.2,
+    )
+    unavailable = await _run_client(staged, patch_path, timeout=0.2)
+    staged.cleanup()
     assert unavailable.returncode == 2
     assert "did not answer" in unavailable.stdout
 
@@ -118,10 +120,15 @@ async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_
 async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "patch.json").write_text("{}", encoding="utf-8")
-    client = tmp_path / "validator-client.py"
-    client.write_text(VALIDATOR_CLIENT_SOURCE, encoding="utf-8")
-    mailbox_id = uuid.uuid4().hex
+    patch_path = workspace / "patch.json"
+    patch_path.write_text("{}", encoding="utf-8")
+    staged = stage_patch_validation_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        task_id="validator-task",
+        turn_id="bounded-validator",
+        timeout_seconds=2,
+    )
     execution = _Execution()
     calls = 0
 
@@ -134,21 +141,17 @@ async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_pa
     budget = PatchValidationBudget()
     server = asyncio.create_task(
         serve_patch_validation_mailbox(
-            mailbox_id=mailbox_id,
-            workspace=workspace,
-            remote_stage=None,
+            staged=staged,
             execution=execution,  # type: ignore[arg-type]
             validate=validate,
             stop=stop,
             budget=budget,
         )
     )
-    results = [
-        await _run_client(workspace, client, mailbox_id)
-        for _ in range(PATCH_SELF_CHECK_MAX_COUNT + 1)
-    ]
+    results = [await _run_client(staged, patch_path) for _ in range(PATCH_SELF_CHECK_MAX_COUNT + 1)]
     stop.set()
     await server
+    staged.cleanup()
 
     assert [result.returncode for result in results[:-1]] == [0] * PATCH_SELF_CHECK_MAX_COUNT
     assert results[-1].returncode == 2
@@ -162,7 +165,7 @@ def test_stable_validator_mailbox_is_cleaned_before_each_provider_pass(tmp_path:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     mailbox_id = uuid.uuid4().hex
-    stale_prefix = f"rcp-validator-{mailbox_id}-{uuid.uuid4().hex}"
+    stale_prefix = f"rcp-command-{mailbox_id}-{uuid.uuid4().hex}"
     stale_request = workspace / f"{stale_prefix}.request.json"
     stale_response = workspace / f"{stale_prefix}.response.json"
     unrelated = workspace / "keep.txt"
@@ -184,7 +187,7 @@ def test_stable_validator_mailbox_is_cleaned_before_each_provider_pass(tmp_path:
 def test_stable_validator_mailbox_preparation_fails_when_workspace_is_unavailable(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(StateUnavailable, match="workspace .* unavailable"):
+    with pytest.raises(OSError, match="run workspace .* is unavailable"):
         prepare_patch_validation_mailbox(
             mailbox_id=uuid.uuid4().hex,
             workspace=tmp_path / "missing",

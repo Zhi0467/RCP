@@ -2,6 +2,14 @@
 
 **Status:** Confirmed working design; pre-blueprint and pre-implementation.
 
+**Current UI seam (2026-08-12):** The project index now reserves the approved
+upper-right identity-panel placement for **Join team space**, **Accept
+invitation**, and **Invite member**. Until S96 and S101 are confirmed and this
+design is implemented end to end, those controls remain visibly unavailable.
+They do not collect SSH coordinates or codes, issue or persist tokens, create
+invitations, establish sessions, or mutate membership. This seam must be
+replaced by the secure path below; it is not a fallback authentication path.
+
 This document records the settled authentication, enrollment, and membership
 model for the first self-hosted team-space release. It is an internal design
 input. Before implementation, the canonical blueprint must be updated in place
@@ -70,6 +78,28 @@ Per-device credentials, federated login, and organization identity providers are
 possible later hardening. They are not required to make the first private team
 release coherent.
 
+### When secure storage is unavailable
+
+**Confirmed 2026-08-12.** Enrollment still succeeds. RCP writes the token to a
+permission-restricted file and says so **loudly and persistently** — at
+enrollment, and as a standing visible state afterwards, not a dismissible notice
+seen once.
+
+This is a deliberate trade and the cost is named rather than softened: anything
+running as that user can read the token. On a shared machine that is the
+credential model gone, and the bound on a leaked token — product authority only,
+never backup, restore, update, or removal — is the only thing still limiting the
+damage.
+
+The reason for taking it: a source build on a lab Linux box with no keyring is a
+normal way to run RCP, and refusing to enroll there would push people toward
+storing the secret somewhere worse than a mode-0600 file. The failure must never
+be silent, because a warning nobody sees converts a stated trade into an
+accident.
+
+The scenario must assert the warning is present, persistent, and accurate about
+what is exposed, and that the file is unreadable by other accounts.
+
 ## Equal members without impersonation
 
 All human members have equal team-space authority in v1. There is no ordinary
@@ -119,9 +149,28 @@ member identity. Project actions derive both the authenticated space member and
 current project membership on the server; a client cannot claim either in its
 request body.
 
-Exact pre-membership project discoverability, invite decline, leaving, and
-last-member behavior remain to be designed. They must not introduce a PI or a
-higher-ranked project owner by accident.
+### Leaving, and the last member
+
+**Confirmed 2026-08-12.** Leaving a project is always possible. A person is never
+held in a project because nobody else is in it.
+
+When the last member leaves, the project **archives by default**. It keeps its
+canonical history and its identity; it stops being an active project in the
+space. Whoever administers the machine may delete it, as a console operation
+alongside the others in
+[Team server operations](team-server-operations.md).
+
+This keeps equality intact. The alternative — refusing the last member's
+departure — would have made "the only remaining member" into a role with an
+obligation attached, which is a project owner by another name.
+
+Two things are deliberately not decided here and must be settled in the
+acceptance scenario rather than improvised: whether an archived project can be
+re-admitted and by whom, and whether space members can see that an archived
+project exists at all. Neither may reintroduce a ranked project role.
+
+Exact pre-membership project discoverability and invite decline also remain to be
+designed, under the same constraint.
 
 ## Server bootstrap and first member
 

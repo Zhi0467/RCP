@@ -16,34 +16,31 @@ last_passed: 2026-08-08 — the full backend suite covered agent assertions,
   legacy replay, withdrawal, and the human-only authority boundary
 ---
 
-# Ordinary agents propose only evidence-grounded belief changes
+# Hypothesis status Proposals stay evidence-grounded
 
 An ordinary-agent-authored graph patch is an assertion, not a request for
-blanket human approval. A Proposal is reserved for the one semantic transition
-the agent may recommend but may not apply: changing a Hypothesis belief status
-with a valid Evidence-edge cause. A Decision is itself the authority handoff: an
-ordinary agent queues it as `ready` or `revisit` but cannot record its outcome.
-The project-orchestrator exception is specified below.
+blanket human approval. S115 widens the Proposal vocabulary for protected
+belief changes, but retains this narrower sub-boundary unchanged: changing a
+Hypothesis belief status requires a valid Evidence-edge cause. A Decision is
+itself the authority handoff: an ordinary agent queues it as `ready` or
+`revisit` but cannot record its outcome.
 
 This is a backend contract. It adds no UI path: the existing node review,
 Inbox, and Experiment Run surfaces render the resulting asserted nodes,
 Proposals, and readiness state.
 
 Here **agent** means the ordinary profile and its current task surfaces. The
-project-orchestrator profile deliberately has broader authority: full direct
-control of Decisions, Experiments, Blockers, and Evidence; direct creation of
-new ResearchQuestions and Hypotheses; and Proposal-only changes to existing
-ones. It approves no Proposals at all — every agent-produced Proposal waits for
-a human ([S77](S77-auto-research-stops-at-belief.md)). Those future rules do not
-widen this implemented ordinary profile.
+other protected-belief Proposal intents and their common human judgment boundary
+are specified by [S115](S115-beliefs-change-only-through-you.md).
 
 ## Scenario
 
 - An agent creates an asserted/open-or-ready/unselected Decision, an
-  asserted/proposed Hypothesis, Evidence, Blockers, and valid relations among
-  new or existing nodes. The patch applies directly; touching an accepted
-  endpoint does not create or require a Proposal.
-- An agent updates ordinary node content, including accepted content. The patch
+  asserted/proposed Hypothesis, Evidence, Blockers, and ordinary relations among
+  new or existing nodes. Those changes apply directly; accepted standing alone
+  does not gate an otherwise direct edge. Restructuring an existing protected
+  belief through an S115 protected relation requires a Proposal.
+- An agent updates ordinary-node content, including accepted ordinary content. The patch
   applies and any changed accepted node returns to `standing="asserted"` for
   ordinary node review.
 - An agent may not create or update a Decision with `selected_option` or
@@ -90,7 +87,7 @@ widen this implemented ordinary profile.
 ## Failure means
 
 RCP rejects ordinary asserted graph structure because it touches accepted
-content; admits an agent-authored Decision outcome or direct belief transition;
-permits a Proposal shape other than an evidence-grounded Hypothesis status;
-lets an agent set standing; or lets Proposal resolution start an experiment
-without another explicit human **Run**.
+ordinary content; admits an agent-authored Decision outcome or direct
+Hypothesis-status transition; permits a Hypothesis-status Proposal without its
+Evidence-edge cause; lets an agent set standing; or lets Proposal resolution
+start an experiment without another explicit human **Run**.

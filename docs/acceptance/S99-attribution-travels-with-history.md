@@ -95,6 +95,15 @@ The change is purely additive. No historical Patch is rewritten and
 `created_by` keeps its existing `"human" | "agent"` meaning. Display-name
 snapshots are immutable even if the current member record is renamed or removed.
 
-Campaign id, orchestrator profile, parent/worker lineage, and the final immutable
-receipt schema belong to S113 after S77 and S78. Current Experiment-loop tasks
-remain ordinary-agent attribution.
+Campaign id, parent/worker lineage, and the final immutable receipt schema belong
+to S113 after S77 and S78. Current Experiment-loop tasks remain ordinary-agent
+attribution.
+
+**The orchestrator profile value landed here, additively, on 2026-08-12** — it is
+no longer deferred. `profile` is an already-canonical S99 field, and a campaign
+turn has to be able to name itself truthfully rather than sign its work
+`"ordinary"`. RCP sets the field, never the agent, so the extra value opens no
+forgery surface. What stayed deferred is what matters under invariant 1: campaign,
+parent, and worker lineage are absent from the Patch envelope entirely and live in
+operational storage, so nothing S113 has yet to decide is being written
+irreversibly into history.

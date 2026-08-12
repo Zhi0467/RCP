@@ -93,6 +93,14 @@ path must name them explicitly — the wheel force-include in
 [rcp_backend.spec](packaging/rcp_backend.spec). `official_registry()` runs on
 project open, so an omitted folder breaks project open in that build only.
 
+Every package with `kind = "skill"` in the official RCP registry is enabled by
+default; official workflows remain opt-in. The package specifications in
+`src/rcp/skill_registry.py` are the single source for both registration and
+defaults, so adding a future official skill there must make it default-on
+without a second allowlist. Preserve an explicit project selection, including
+an explicit empty list, rather than forcing defaults back on after the human
+saves Settings.
+
 `src/rcp/core/models.py`, `src/rcp/config.py`, `src/rcp/providers.py`,
 `src/rcp/skill_registry.py`, and
 `web/src/types.ts` are shared contracts. **Do not parallelize across them** — land the contract change first,
@@ -463,6 +471,12 @@ guarantees — surface the conflict instead of working around it.
    inline JavaScript remains useful, it may still navigate its own isolated
    child frame and thereby cause a navigation request; never describe this as a
    zero-network preview.
+   A **result view is not one of these per-turn artifacts.** It lives at one
+   stable `views/<view_id>/` path inside the conversation's own reused workspace
+   (invariant 10c), and a revision is an ordinary Work turn that resumes the same
+   native session and is handed that exact path. Never route a view through a
+   turn's artifact directory, and never copy, link, or switch cwd to reach it.
+   Task Resume/Retry is recovery, not the revision mechanism.
 10g. **One Experiment episode, one native session, one graceful stop.** Every
    bounded episode has exactly one validated native-session binding — provider,
    session id, execution host, and exact reusable stage — committed only by a
@@ -561,15 +575,25 @@ carrying forward, and correct an entry when they change their mind.
   what should prompt a re-run, not elapsed time.
 - Server launch commands own singleton replacement and frontend builds; the
   human should never need to look up or kill an RCP PID manually.
-- Routine RCP development uses the browser workflow and does not run Tauri
-  builds. Run the desktop checks only when native behavior changed or for final
-  pre-push/release verification. After that verification, run
-  `cargo clean --manifest-path web/src-tauri/Cargo.toml` unless more Tauri work
-  is planned, so disposable Rust build artifacts do not accumulate on disk.
+- **`RCP Dev.app` is kept, always.** It is the desktop surface the human drives,
+  so do not `cargo clean` it away as routine tidying — that deletes
+  `web/src-tauri/target/`, the dev bundle included. Shrink the cache through
+  `[profile.dev]` in [Cargo.toml](web/src-tauri/Cargo.toml) instead. Building the
+  *release* bundle is a separate, deliberate drive; "desktop is done" refers to
+  the dev app unless the human says release.
+- The dev app is a thin shell over the checkout, not a copy of it. Under
+  `debug_assertions` it runs `uv run rcp serve` from the checkout with
+  `--web-assets source` ([backend.rs](web/src-tauri/src/backend.rs)), so Python
+  and web changes are already live in it and need no rebuild. Rebuild only when
+  `web/src-tauri/` itself changed — and then it is required, because the bundle
+  carries the compiled shell. Compare the bundle's mtime against the newest
+  source under `web/src-tauri/` before claiming the desktop is current.
   `tauri build --debug` is not a diagnostics flag: `debug_assertions` is what
   selects the checkout backend, source web assets, and dev navigation policy, so
-  `RCP Dev.app` cannot be built without it. Shrink the cache through
-  `[profile.dev]` in [Cargo.toml](web/src-tauri/Cargo.toml) instead.
+  `RCP Dev.app` cannot be built without it.
+- Routine RCP development uses the browser workflow and does not run Tauri
+  builds. Run the desktop checks when native behavior changed or for final
+  pre-push/release verification.
 - Nothing versioned should be hardcoded into instructions; point at the source
   of truth instead.
 - **This repo is single-branch: commit directly to `main`.** Do not create a
@@ -742,6 +766,47 @@ carrying forward, and correct an entry when they change their mind.
   no forking, branching, merging, or divergent-copy reconciliation. Where a
   duplicate or a moved project must be recognized, the answer is a nameplate the
   project carries and a refusal, not history semantics.
+- **Ask plainly; do not answer a question with a pointer.** When the human needs
+  to decide something, put the decision itself in front of them — self-contained,
+  scoped, and readable without opening a file. "Confirm S76" and "Q6 leaves four
+  things undecided" are not questions. Name the choice, name what each option
+  costs, and say which one you would take. Design documents are where a decision
+  is *recorded*, never how it is *asked*.
+- **Permission is code, not configuration.** Both agent profiles are constants.
+  Changing what an agent may do is a code change with a scenario attached, so
+  nobody can misconfigure their way into an agent that rewrites their beliefs.
+- **The protected-type rule.** An agent operation is free unless it touches an
+  existing ResearchQuestion or Hypothesis record — those two types are the
+  project's beliefs. This covers update, remove, supersede, merge, and the edges
+  that restructure or retire one. Attaching Evidence stays direct, because the
+  status change it argues for is already gated one layer down. Connecting a node
+  created in the same Patch is not restructuring.
+- **The rule binds every agent, not only campaign workers**, from the day it
+  lands — including an ordinary Work turn the human started and is watching. One
+  authority regime, and the brake gets exercised on real use before anything runs
+  unattended. Its cost is that the Proposal vocabulary has to widen to say more
+  than one Hypothesis status change, because otherwise the rule leaves an agent
+  no legal move at all.
+- **A Proposal carries one intent, not one operation.** Supersede and merge touch
+  two nodes, so a one-operation limit would make a genuine duplicate hypothesis
+  unsayable. Intent is declared and checked against a closed set of shapes, never
+  inferred from how the operations happen to look — an unchecked relaxation is
+  just a bundle smuggled through.
+- **An auto-research campaign is scoped to the project**, not to the question it
+  started from. The budget and the protected-type rule are the brakes; there is
+  no second fence quietly doing that job. **A seated worker gets no scope of its
+  own** either — where it may be seated is bounded, what it may then touch is
+  not. Accepting that a worker can reach past its seat is the price of not
+  building the second fence.
+- **Auto-research starts from the project header, beside Ask**, because the
+  action is project-wide and belongs where project-wide actions live. Its budget
+  is typed in invocations with observed cost shown beside it: the enforced number
+  stays exact, the legible number stays honest. Its report is durable and
+  produced on every ending, including exhaustion, Stop, and failure — the endings
+  that most need explaining are the ones a success-only report stays silent for.
+- Result views are revised by **acting on the picture** — box a region,
+  underscore items — not by describing it in the composer. A gesture writes a
+  visible draft and never dispatches a turn by itself.
 - **Borrow the host's privilege system; do not restate it.** Where an operation
   needs real authority — installing, backing up, restoring, removing a person —
   require operating-system privilege on the machine rather than inventing an RCP
@@ -758,6 +823,18 @@ longer apply.
   change that adds new files proves nothing about them, and the human's commit
   is where the hooks finally see them and fail. When a change adds files, run
   `git add -A` first, then the hooks.
+- A copied test helper drifts into three different answers. Ten copies of the
+  same "wait for the task to settle" loop disagreed about which statuses are
+  terminal — `not in {"queued","running"}` treated the transient `"pausing"` as
+  settled, and one named `"stopped"` (not an `AgentTaskStatus` at all) while
+  omitting `"interrupted"`, so that copy could only ever time out on an
+  interrupted task. Poll through `wait_for_task`/`wait_for_task_response` in
+  [helpers.py](tests/helpers.py), which read `ACTIVE_AGENT_TASK_STATUSES` from
+  [storage.py](src/rcp/storage.py) rather than restating the set (2026-08-12).
+- Test timeouts are not tuning knobs. The copies above bounded the same wait at
+  2, 4, 5, 60 seconds; the loop returns the moment the task is terminal, so a
+  generous bound costs nothing on success while a tight one invents failures
+  under load. Use the shared `TASK_SETTLE_TIMEOUT`.
 - `--all-files` also **rewrites files you are not working on**. A docs-only pass
   reformatted `src/rcp/api/app.py` while another session was mid-edit on it
   (2026-08-09). When the working tree holds changes that are not yours, scope the
@@ -876,6 +953,13 @@ longer apply.
   the handshake does not arrive, and startup milestones go to stderr. Verify a
   desktop change by reading those milestones or `lsappinfo front`, not by the
   process still being alive.
+- The dev app's launch deadline must cover a frontend build. `--web-assets
+  source` rebuilds unconditionally (`prepared_web_assets` has no freshness
+  check), so the checkout backend reports its launch result only after
+  `npm run build` finishes — 17s on a warm tree, over 60s on a busy one. Reusing
+  the packaged 12s `HEALTH_READY_TIMEOUT` meant every cold dev start timed out
+  while every warm one succeeded, which is exactly the shape the cold-start rule
+  below exists to catch (fixed 2026-08-12 via `LAUNCH_RESULT_TIMEOUT`).
 - A desktop launch must be verified **cold**, with nothing on 8421. A warm
   backend answers instantly and hides every startup ordering bug: the window
   aimed itself at the backend origin before that origin existed, and the
@@ -892,6 +976,31 @@ longer apply.
   explicit width and height before concluding anything about scrolling. And React
   batches, so a click and the assertion about its result must be separate
   `javascript_tool` calls.
+- A revision turn must name the view's existing stable path. A second-turn
+  contract that named a fresh per-turn artifact directory and omitted the view
+  file made the provider draw a whole new 657 KB page instead of editing the old
+  one. The agent followed the instruction it was given, so this is an
+  orchestration error and never a native-session limitation — naming the exact
+  path makes the same revision 2.59x faster (2026-08-12, S114).
+- Wait on the condition you assert, not on the signal that precedes it. Two
+  periodic-poll watcher tests waited for the delivery callback to be *invoked* and
+  then asserted `notified`, which is written after that callback returns — so they
+  passed about two runs in three and failed inside the full suite, where the
+  machine is loaded. Put the asserted predicate itself inside `_wait_until`
+  (fixed 2026-08-12).
+- Verify the verification before trusting a red or green result. `pytest | tail`
+  reports *`tail`'s* exit code, so two failing runs looked like clean exits until
+  the output was written to a file and `$?` read directly. `-p no:randomly` was
+  also a no-op the whole time because `pytest-randomly` is not installed, which
+  turned a concurrent edit to `service.py` into a phantom "order-dependent test".
+  Check that a plugin is installed before reasoning about what it did, and never
+  read an exit code through a pipe (2026-08-12).
+- A test whose fake `stream` callable calls a method that does not exist can
+  still pass. The `AttributeError` becomes the task's `failed` status rather than
+  a test error, so it only surfaces when the run loses the race against
+  `interrupt_active_agent_tasks`. `check_pause()` was invented by one campaign
+  test and passed ~2 runs in 3; the real idiom is
+  `execution.control.pause_requested.is_set()` (fixed 2026-08-12).
 
 ## Maintaining this file
 

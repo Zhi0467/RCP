@@ -14,10 +14,9 @@ import {
   Trash2,
   TriangleAlert,
   Type,
-  UserRound,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api, clearProjectCaches } from "../api";
+import { api, clearAllProjectCaches, clearProjectCaches } from "../api";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
@@ -26,6 +25,7 @@ import {
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
+  mergeAgentProfiles,
   mergeMachineProviderPaths,
   serializeSettingsDraft,
   settingsDraftStorageKey,
@@ -34,10 +34,9 @@ import {
 import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
 import type {
   AgentRunConfig,
-  AgentSurface,
+  AgentExecutionProfile,
   AgentUsageSnapshot,
   CacheMetric,
-  IdentityResponse,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
   ProjectSnapshot,
@@ -46,7 +45,6 @@ import type {
   ProviderReadiness,
   SkillDefaults,
 } from "../types";
-import { DISPLAY_NAME_MAX_LENGTH } from "../types";
 
 interface Props {
   apiBase: string;
@@ -61,29 +59,44 @@ interface Props {
   showDisplaySettings: boolean;
   textScale: number;
   onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
-  identity: IdentityResponse | null;
-  identityError: string | null;
-  onIdentitySaved: (identity: IdentityResponse) => void;
 }
 
-const surfaces: Array<{ id: AgentSurface; label: string }> = [
+export function publishCacheMetrics(
+  metrics: ProjectCacheMetrics,
+  setVisibleMetrics: (metrics: ProjectCacheMetrics) => void,
+  onCacheMetricsChange: (metrics: ProjectCacheMetrics) => void,
+) {
+  setVisibleMetrics(metrics);
+  onCacheMetricsChange(metrics);
+}
+
+export function showClearAllCachesWarning(clearStatus: () => void, openWarning: () => void) {
+  clearStatus();
+  openWarning();
+}
+
+const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "seed", label: "Seed" },
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
+  { id: "orchestrator", label: "Orchestrator" },
 ];
 
-function profilesFrom(project: ProjectSnapshot): Record<AgentSurface, AgentRunConfig> {
+function profilesFrom(project: ProjectSnapshot): Record<AgentExecutionProfile, AgentRunConfig> {
   const canonicalMachine =
     project.repositories.find((repository) => repository.alias === project.state_repository)
       ?.machine ?? project.run_on;
   return Object.fromEntries(
-    surfaces.map(({ id }) => {
-      const profile = profileRunConfig(project.agent_profiles[id]);
+    executionProfiles.map(({ id }) => {
+      const profile =
+        id === "orchestrator"
+          ? profileRunConfig(project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
+          : profileRunConfig(project.agent_profiles[id]);
       return [id, id === "paper_coach" ? profile : { ...profile, run_on: canonicalMachine }];
     }),
-  ) as Record<AgentSurface, AgentRunConfig>;
+  ) as Record<AgentExecutionProfile, AgentRunConfig>;
 }
 
 type SkillCatalogEntry = ProjectSnapshot["skill_catalog"][number];
@@ -100,6 +113,7 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
 function stagedOrSaved(project: ProjectSnapshot) {
   const saved = {
     scope: project.default_run_truth_scope,
+    campaignInvocationCeiling: project.default_campaign_invocation_ceiling,
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
     skillDefaults: skillDefaultsFrom(project),
@@ -115,7 +129,8 @@ function stagedOrSaved(project: ProjectSnapshot) {
   // written is still present.
   return {
     scope: staged.scope,
-    profiles: { ...saved.profiles, ...staged.profiles },
+    campaignInvocationCeiling: staged.campaignInvocationCeiling ?? saved.campaignInvocationCeiling,
+    profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
   };
@@ -134,14 +149,14 @@ export function ProjectSettings({
   showDisplaySettings,
   textScale,
   onTextScaleChange,
-  identity,
-  identityError,
-  onIdentitySaved,
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
   const [scope, setScope] = useState<string[]>(() => stagedOrSaved(project).scope);
-  const [profiles, setProfiles] = useState<Record<AgentSurface, AgentRunConfig>>(
+  const [campaignInvocationCeiling, setCampaignInvocationCeiling] = useState(
+    () => stagedOrSaved(project).campaignInvocationCeiling,
+  );
+  const [profiles, setProfiles] = useState<Record<AgentExecutionProfile, AgentRunConfig>>(
     () => stagedOrSaved(project).profiles,
   );
   const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
@@ -153,15 +168,11 @@ export function ProjectSettings({
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
+  const [clearAllCachesOpen, setClearAllCachesOpen] = useState(false);
+  const [clearingAllCaches, setClearingAllCaches] = useState(false);
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
-  const [identityName, setIdentityName] = useState(identity?.user.display_name ?? "");
-  const [identitySaving, setIdentitySaving] = useState(false);
-  const [identityStatus, setIdentityStatus] = useState<{
-    kind: "saved" | "error";
-    text: string;
-  } | null>(null);
 
   // Reload the form only when the project itself changes. Keying this on the
   // whole snapshot discarded in-progress edits every time an unrelated refresh
@@ -170,6 +181,7 @@ export function ProjectSettings({
   useEffect(() => {
     const restored = stagedOrSaved(project);
     setScope(restored.scope);
+    setCampaignInvocationCeiling(restored.campaignInvocationCeiling);
     setProfiles(restored.profiles);
     setProviderPaths(restored.providerPaths);
     setSkillDefaults(restored.skillDefaults);
@@ -181,11 +193,6 @@ export function ProjectSettings({
   }, [project.cache_metrics]);
 
   useEffect(() => {
-    setIdentityName(identity?.user.display_name ?? "");
-    setIdentityStatus(null);
-  }, [identity]);
-
-  useEffect(() => {
     void onRefreshUsage();
   }, [onRefreshUsage]);
 
@@ -193,14 +200,23 @@ export function ProjectSettings({
     () =>
       JSON.stringify({
         scope: project.default_run_truth_scope,
+        campaignInvocationCeiling: project.default_campaign_invocation_ceiling,
         profiles: profilesFrom(project),
         providerPaths: machineProviderPathsFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
       }),
     [project],
   );
-  const current = JSON.stringify({ scope, profiles, providerPaths, skillDefaults });
+  const current = JSON.stringify({
+    scope,
+    campaignInvocationCeiling,
+    profiles,
+    providerPaths,
+    skillDefaults,
+  });
   const dirty = current !== baseline;
+  const campaignInvocationCeilingIsValid =
+    Number.isSafeInteger(campaignInvocationCeiling) && campaignInvocationCeiling >= 2;
 
   // Stage every edit locally so navigating away, or reloading, never loses it.
   // Clearing on a clean form is what makes Save and Reset drop the staged copy.
@@ -210,7 +226,14 @@ export function ProjectSettings({
       if (dirty) {
         localStorage.setItem(
           key,
-          serializeSettingsDraft({ version: 1, scope, profiles, providerPaths, skillDefaults }),
+          serializeSettingsDraft({
+            version: 1,
+            scope,
+            campaignInvocationCeiling,
+            profiles,
+            providerPaths,
+            skillDefaults,
+          }),
         );
       } else {
         localStorage.removeItem(key);
@@ -294,6 +317,7 @@ export function ProjectSettings({
 
   const reset = () => {
     setScope(project.default_run_truth_scope);
+    setCampaignInvocationCeiling(project.default_campaign_invocation_ceiling);
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
     setSkillDefaults(savedSkillDefaults);
@@ -301,11 +325,12 @@ export function ProjectSettings({
   };
 
   const save = async () => {
-    if (!dirty || saving || writesDisabled) return;
+    if (!dirty || saving || writesDisabled || !campaignInvocationCeilingIsValid) return;
     setSaving(true);
     setStatus(null);
     const body: ProjectSettingsRequest = {
       default_run_truth_scope: scope,
+      default_campaign_invocation_ceiling: campaignInvocationCeiling,
       agent_profiles: profiles,
       skill_defaults: skillDefaults,
     };
@@ -387,9 +412,8 @@ export function ProjectSettings({
     setStatus(null);
     try {
       const metrics = await clearProjectCaches(apiBase);
-      setCacheMetrics(metrics);
-      onCacheMetricsChange(metrics);
-      setStatus({ kind: "saved", text: "Caches cleared." });
+      publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
+      setStatus({ kind: "saved", text: "Project cache cleared." });
     } catch (caught) {
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
@@ -397,79 +421,25 @@ export function ProjectSettings({
     }
   };
 
-  const saveIdentity = async () => {
-    const displayName = identityName.trim();
-    if (!displayName || identitySaving || displayName === identity?.user.display_name) return;
-    setIdentitySaving(true);
-    setIdentityStatus(null);
+  const clearEveryProjectCache = async () => {
+    if (clearingAllCaches) return;
+    setClearingAllCaches(true);
+    setStatus(null);
     try {
-      const saved = await api<IdentityResponse>("/api/identity", {
-        method: "PATCH",
-        body: JSON.stringify({ display_name: displayName }),
-      });
-      setIdentityName(saved.user.display_name ?? "");
-      onIdentitySaved(saved);
-      setIdentityStatus({ kind: "saved", text: "Name saved." });
+      const metrics = await clearAllProjectCaches(project.id);
+      publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
+      setClearAllCachesOpen(false);
+      setStatus({ kind: "saved", text: "All project caches cleared." });
     } catch (caught) {
-      setIdentityStatus({
-        kind: "error",
-        text: caught instanceof Error ? caught.message : String(caught),
-      });
+      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setIdentitySaving(false);
+      setClearingAllCaches(false);
     }
   };
 
   return (
     <section className="settings-page">
       <AgentUsageWidgets usage={usage} providers={project.providers} />
-
-      <section className="settings-section identity-settings">
-        <header>
-          <span>
-            <UserRound size={16} />
-          </span>
-          <h2>Your identity</h2>
-        </header>
-        <div className="identity-settings-row">
-          <label>
-            Display name
-            <input
-              type="text"
-              autoComplete="off"
-              maxLength={DISPLAY_NAME_MAX_LENGTH}
-              value={identityName}
-              disabled={!identity}
-              onChange={(event) => {
-                setIdentityName(event.target.value);
-                setIdentityStatus(null);
-              }}
-            />
-          </label>
-          <button
-            className="button primary compact"
-            type="button"
-            disabled={
-              !identity ||
-              !identityName.trim() ||
-              identityName.trim() === identity.user.display_name ||
-              identitySaving
-            }
-            onClick={() => void saveIdentity()}
-          >
-            {identitySaving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />}
-            {identitySaving ? "Saving" : "Save name"}
-          </button>
-        </div>
-        {(identityError || identityStatus) && (
-          <div
-            className={`identity-settings-status ${identityStatus?.kind ?? "error"}`}
-            role={identityError || identityStatus?.kind === "error" ? "alert" : "status"}
-          >
-            {identityError || identityStatus?.text}
-          </div>
-        )}
-      </section>
 
       {showDisplaySettings && (
         <section className="settings-section display-settings">
@@ -618,15 +588,39 @@ export function ProjectSettings({
           <div>
             <h2>Agent defaults</h2>
           </div>
+          <label className="agent-campaign-default">
+            <span>
+              Auto-research budget
+              <small>Invocations per newly authorized campaign</small>
+            </span>
+            <input
+              type="number"
+              min={2}
+              step={1}
+              inputMode="numeric"
+              value={campaignInvocationCeiling}
+              disabled={writesDisabled}
+              onChange={(event) => {
+                setCampaignInvocationCeiling(Number(event.target.value));
+                setStatus(null);
+              }}
+            />
+          </label>
         </header>
         <div className="settings-agent-list">
-          {surfaces.map(({ id, label }) => (
+          {executionProfiles.map(({ id, label }) => (
             <article className="settings-agent" key={id}>
               <header>
                 <span>
                   <strong>{label}</strong>
                 </span>
-                <span>{id === "paper_coach" ? "read-only coach" : "graph patch only"}</span>
+                <span>
+                  {id === "paper_coach"
+                    ? "read-only coach"
+                    : id === "orchestrator"
+                      ? "auto-research"
+                      : "graph patch only"}
+                </span>
               </header>
               <AgentConfigControls
                 project={project}
@@ -662,22 +656,96 @@ export function ProjectSettings({
           <span>
             <HardDrive size={16} />
           </span>
-          <h2>Storage</h2>
+          <h2>Project cache</h2>
           <button
             className="button secondary compact"
             disabled={cacheClearDisabled || clearingCaches}
-            aria-label="Clear rebuildable caches"
+            aria-label="Clear project cache"
             onClick={() => void clearCaches()}
           >
             {clearingCaches ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
-            {clearingCaches ? "Clearing" : "Clear"}
+            {clearingCaches ? "Clearing" : "Clear project cache"}
           </button>
         </header>
         <div className="cache-meter-list">
           <CacheMeter label="Remote sources" metric={cacheMetrics.remote_sources} />
           <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
         </div>
+        <div className="app-cache-danger-row">
+          <TriangleAlert size={16} aria-hidden="true" />
+          <strong>Every project</strong>
+          <button
+            className="button danger compact"
+            type="button"
+            disabled={clearingAllCaches}
+            onClick={() => {
+              showClearAllCachesWarning(
+                () => setStatus(null),
+                () => setClearAllCachesOpen(true),
+              );
+            }}
+          >
+            <Trash2 size={13} /> Clear all project caches
+          </button>
+        </div>
       </section>
+
+      {clearAllCachesOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !clearingAllCaches) {
+              setClearAllCachesOpen(false);
+            }
+          }}
+        >
+          <section
+            className="project-delete-dialog app-cache-clear-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="app-cache-clear-title"
+            aria-describedby="app-cache-clear-warning"
+          >
+            <header>
+              <TriangleAlert size={18} aria-hidden="true" />
+              <h2 id="app-cache-clear-title">Clear caches for every project?</h2>
+            </header>
+            <p id="app-cache-clear-warning">
+              Rebuildable remote-source copies and session slices for all projects will be removed.
+              Canonical research and original provider data are not affected.
+            </p>
+            {status?.kind === "error" && (
+              <div className="project-delete-error" role="alert">
+                {status.text}
+              </div>
+            )}
+            <footer>
+              <button
+                className="button secondary"
+                type="button"
+                autoFocus
+                disabled={clearingAllCaches}
+                onClick={() => setClearAllCachesOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="button danger"
+                type="button"
+                disabled={clearingAllCaches}
+                onClick={() => void clearEveryProjectCache()}
+              >
+                {clearingAllCaches ? (
+                  <LoaderCircle className="spin" size={13} />
+                ) : (
+                  <Trash2 size={13} />
+                )}
+                {clearingAllCaches ? "Clearing…" : "Clear all project caches"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {inspectedPackage && (
         <SkillPackageInspector entry={inspectedPackage} onClose={() => setInspectedPackage(null)} />
@@ -697,7 +765,7 @@ export function ProjectSettings({
         </button>
         <button
           className="button primary"
-          disabled={writesDisabled || !dirty || saving}
+          disabled={writesDisabled || !dirty || saving || !campaignInvocationCeilingIsValid}
           onClick={() => void save()}
         >
           {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}

@@ -1,4 +1,12 @@
-import type { ChatAttachmentDescriptor, ProjectCacheMetrics, ProjectSnapshot } from "./types";
+import type {
+  Campaign,
+  CampaignMessage,
+  ChatAttachmentDescriptor,
+  ProjectCacheMetrics,
+  ProjectSnapshot,
+  ResultViewDescriptor,
+  StartCampaignRequest,
+} from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
@@ -102,6 +110,12 @@ export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics
   return api<ProjectCacheMetrics>(`${apiBase}/caches`, { method: "DELETE" });
 }
 
+export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
+  return api<ProjectCacheMetrics>(`/api/caches?project_id=${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+  });
+}
+
 export function loadProjectReadiness(
   apiBase: string,
   refresh = false,
@@ -148,4 +162,73 @@ export function removeChatAttachment(
     `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
     { method: "DELETE" },
   );
+}
+
+export function loadResultViews(
+  apiBase: string,
+  experimentId: string,
+  chatId: string,
+): Promise<ResultViewDescriptor[]> {
+  const query = new URLSearchParams({ experiment_id: experimentId, chat_id: chatId });
+  return api<ResultViewDescriptor[]>(`${apiBase}/result-views?${query}`);
+}
+
+export function keepResultView(apiBase: string, viewId: string): Promise<ResultViewDescriptor> {
+  return api<ResultViewDescriptor>(`${apiBase}/result-views/${encodeURIComponent(viewId)}/keep`, {
+    method: "POST",
+  });
+}
+
+export function resultViewPreviewUrl(
+  projectId: string,
+  view: Pick<ResultViewDescriptor, "view_id" | "updated_at">,
+): string {
+  const version = new URLSearchParams({ updated_at: view.updated_at });
+  return `/api/projects/${encodeURIComponent(projectId)}/result-views/${encodeURIComponent(view.view_id)}/preview?${version}`;
+}
+
+export function loadCampaigns(apiBase: string): Promise<Campaign[]> {
+  return api<Campaign[]>(`${apiBase}/campaigns`);
+}
+
+export function startCampaign(apiBase: string, request: StartCampaignRequest): Promise<Campaign> {
+  return api<Campaign>(`${apiBase}/campaigns`, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function stopCampaign(apiBase: string, campaignId: string): Promise<Campaign> {
+  return api<Campaign>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/stop`, {
+    method: "POST",
+  });
+}
+
+export function reauthorizeCampaign(
+  apiBase: string,
+  campaignId: string,
+  additionalInvocations: number,
+): Promise<Campaign> {
+  return api<Campaign>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/reauthorize`, {
+    method: "POST",
+    body: JSON.stringify({ additional_invocations: additionalInvocations }),
+  });
+}
+
+export function loadCampaignMessages(
+  apiBase: string,
+  campaignId: string,
+): Promise<CampaignMessage[]> {
+  return api<CampaignMessage[]>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/messages`);
+}
+
+export function sendCampaignMessage(
+  apiBase: string,
+  campaignId: string,
+  body: string,
+): Promise<CampaignMessage> {
+  return api<CampaignMessage>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
 }

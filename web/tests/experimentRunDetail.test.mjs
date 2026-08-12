@@ -15,6 +15,7 @@ const { ExperimentRunDetail } = await server.ssrLoadModule(
   "/src/components/ExperimentRunDetail.tsx",
 );
 const { experimentWatcherDisplayItems } = await server.ssrLoadModule("/src/runProjection.ts");
+const { ExecutionView } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
 
 after(() => server.close());
 
@@ -158,6 +159,29 @@ function watcher(fields = {}) {
     stopped_at: null,
     stop_operation_id: null,
     ...fields,
+  };
+}
+
+function graphWatcher(fields = {}) {
+  const external = watcher(fields);
+  const {
+    check_command: _checkCommand,
+    log_path: _logPath,
+    cwd: _cwd,
+    last_checked_at: _lastCheckedAt,
+    last_exit_code: _lastExitCode,
+    last_error: _lastError,
+    next_check_at: _nextCheckAt,
+    consecutive_error_count: _consecutiveErrorCount,
+    group_id: _groupId,
+    group_label: _groupLabel,
+    ...shared
+  } = external;
+  return {
+    ...shared,
+    condition: fields.condition ?? { node_id: "blk/upstream", status_in: ["resolved"] },
+    armed_revision: fields.armed_revision ?? 1,
+    last_evaluated_at: fields.last_evaluated_at ?? "2026-08-06T03:30:00Z",
   };
 }
 
@@ -329,25 +353,22 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   });
 
   assert.match(html, /Paused at invocation limit/);
+  assert.match(html, /<strong>Paused at invocation limit<\/strong><p>Start a new episode<\/p>/);
   assert.match(html, /Start new episode/);
   assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.match(html, /Stop loop/);
+  assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
+  assert.doesNotMatch(html, /Recommended next step/);
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
 });
 
-test("semantic Experiment state is distinct from loop health", () => {
-  const running = render({
-    node: node({ status: "running" }),
-    control: control({ invocations_used: 1, invocations_remaining: 2 }),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [],
-    currentWatchers: [],
-    health: "needs_action",
-  });
-  const debugging = render({
+test("detail keeps Experiment meaning under a neutral Research summary", () => {
+  const html = render({
     node: node({ status: "debugging" }),
-    control: control({ invocations_used: 1, invocations_remaining: 2 }),
+    control: control(
+      { invocations_used: 1, invocations_remaining: 2 },
+      { current_phase: "provider output" },
+    ),
     taskGroup: null,
     currentTask: null,
     watchers: [],
@@ -355,11 +376,13 @@ test("semantic Experiment state is distinct from loop health", () => {
     health: "needs_action",
   });
 
-  assert.match(running, /Experiment state: <span>Running<\/span>/);
-  assert.match(debugging, /Experiment state: <span>Debugging<\/span>/);
+  assert.match(html, /<h4>Research summary<\/h4>/);
+  assert.match(html, /The detached evaluation is still running/);
+  assert.match(html, /Inspect the held-out evaluation/);
+  assert.doesNotMatch(html, /Experiment state|Debugging|>Phase<|Recommended next step/);
 });
 
-test("degraded watcher exposes backoff and Check now without recommending stop", () => {
+test("degraded external watcher exposes backoff and Check now without recommending stop", () => {
   const degraded = watcher({
     status: "degraded",
     completed_at: null,
@@ -383,7 +406,8 @@ test("degraded watcher exposes backoff and Check now without recommending stop",
   assert.match(html, /Consecutive failures/);
   assert.match(html, />3<\/dd>/);
   assert.match(html, />Check now<\/button>/);
-  assert.doesNotMatch(html, /Recommended next step<\/span><strong>Stop loop/);
+  assert.equal((html.match(/Keep loop running; check now if needed/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /Recommended next step/);
 });
 
 test("watcher Check now renders busy and disables concurrent mutations", () => {
@@ -406,7 +430,7 @@ test("watcher Check now renders busy and disables concurrent mutations", () => {
   assert.match(html, /experiment-run-button" disabled=""/);
 });
 
-test("missing episode continuity recommends stop then start from structured state", () => {
+test("missing episode continuity recommends stop then start without parsing diagnostic text", () => {
   const task = recoveryTask({ can_retry: false, can_resume: false });
   const html = render({
     node: node(),
@@ -427,8 +451,120 @@ test("missing episode continuity recommends stop then start from structured stat
     health: "needs_action",
   });
 
-  assert.match(html, /Recommended next step/);
-  assert.match(html, /Stop loop, then start a new episode/);
+  assert.match(html, /<strong>Needs action<\/strong><p>Stop loop, then start a new episode<\/p>/);
+  assert.match(
+    html,
+    /<button type="button" class="button compact experiment-stop-loop">Stop loop<\/button>/,
+  );
+  assert.doesNotMatch(html, /Recommended next step|Agent turn failed|>Phase</);
+});
+
+test("an unavailable Stop is neither shown nor recommended", () => {
+  const task = recoveryTask({ can_retry: false, can_resume: false });
+  const html = render({
+    node: node(),
+    control: control({ episode_id: null, ready: true }),
+    taskGroup: { rootId: task.operation_id, root: task, latest: task, attempts: [task] },
+    currentTask: task,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.match(html, /<strong>Needs action<\/strong><p>Start an episode<\/p>/);
+  assert.match(html, /<button[^>]*>.*Start episode<\/button>/s);
+  assert.doesNotMatch(html, /experiment-stop-loop|Stop loop, then start a new episode/);
+});
+
+test("a succeeded legacy-attribution episode offers a fresh start without an unusable Stop", () => {
+  const task = recoveryTask({
+    operation_id: "legacy-attribution-succeeded",
+    status: "succeeded",
+    status_message: "OBSOLETE SUCCEEDED TASK STATUS",
+    phase: "complete",
+    can_retry: false,
+    can_resume: false,
+  });
+  const diagnostic =
+    "Automatic watcher wake stopped: an originating task predates durable human attribution, so RCP cannot prove who authorized the wake. Start a new Work turn or Experiment Run to continue.";
+  const run = {
+    node: node(),
+    control: control(
+      { ready: true, reasons: [], invocations_used: 1, invocations_remaining: 2 },
+      {
+        current_operation_id: task.operation_id,
+        current_status: "succeeded",
+        current_status_message: task.status_message,
+        current_phase: task.phase,
+        session: { ...operational().session, diagnostic },
+      },
+    ),
+    taskGroup: { rootId: task.operation_id, root: task, latest: task, attempts: [task] },
+    currentTask: task,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  };
+
+  const detail = render(run);
+  assert.match(detail, /<strong>Needs action<\/strong><p>Start a new episode<\/p>/);
+  assert.match(detail, /<button[^>]*>.*Start new episode<\/button>/s);
+  assert.doesNotMatch(
+    detail,
+    /experiment-stop-loop|Stop loop, then start a new episode|OBSOLETE SUCCEEDED TASK STATUS|>Phase<|Recommended next step/,
+  );
+
+  const row = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: { nodes: { [run.node.id]: run.node } },
+      attentionBlockerIds: new Set(),
+      tasks: [task],
+      watchers: [],
+      experimentControl: { [run.node.id]: run.control },
+      dismissedTaskIds: new Set(),
+      selectedExperimentId: null,
+      focusExperimentId: null,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      onDismissTask() {},
+      onSelectNode() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+    }),
+  );
+  assert.match(row, /Start a new episode/);
+  assert.doesNotMatch(row, /OBSOLETE SUCCEEDED TASK STATUS/);
+});
+
+test("graph watcher detail shows its canonical condition without shell fields", () => {
+  const graph = graphWatcher({
+    watcher_id: "graph-watcher",
+    status: "active",
+    completed_at: null,
+  });
+  const html = render({
+    node: node(),
+    control: control({ invocations_used: 1, invocations_remaining: 2, paused: false }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [graph],
+    currentWatchers: [graph],
+    health: "waiting_on_watchers",
+  });
+
+  assert.match(html, /blk\/upstream reaches resolved/);
+  assert.match(html, /Graph condition/);
+  assert.match(html, /Last evaluation/);
+  assert.match(html, /graph-watcher/);
+  assert.doesNotMatch(html, /Check command|Working directory|evaluation\.log/);
 });
 
 test("detail separates watcher provenance from semantic meaning and execution binding", () => {

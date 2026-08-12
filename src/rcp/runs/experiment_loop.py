@@ -12,18 +12,27 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.background import AgentTaskExecution
 from rcp.control import decision_drift
-from rcp.core.models import ExperimentDecisionPin, Patch
+from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.runs.shared import _stage_json_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
+    GraphCondition,
+    GraphWatcherRecord,
+    StoredWatcherRecord,
     WatcherRecord,
     WatcherStopRequest,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
-from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
+from rcp.watchers import (
+    ExperimentWatchSpec,
+    WatcherBinding,
+    WatcherCheckResult,
+    graph_condition_result,
+    validate_graph_conditions,
+)
 
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
@@ -170,7 +179,7 @@ def read_experiment_watcher_outputs(
 def preflight_episode_wake(
     runtime: ExperimentLoopRuntime,
     episode: ExperimentEpisodeRecord | None,
-    group: list[WatcherRecord],
+    group: list[StoredWatcherRecord],
 ) -> EpisodeWakePreflight:
     """Prove the episode session and exact stage before any claim or budget spend.
 
@@ -247,7 +256,7 @@ def preflight_episode_wake(
 
 
 def experiment_watcher_delivery_request(
-    group: list[WatcherRecord],
+    group: list[StoredWatcherRecord],
     *,
     trigger: Literal["experiment_run", "watcher"],
     episode_id: str,
@@ -423,15 +432,30 @@ def persist_experiment_watchers_idempotently(
     binding: WatcherBinding,
     stops: list[WatcherStopRequest] | None = None,
     *,
+    graph_conditions: list[GraphCondition] | None = None,
+    graph_state: GraphState | None = None,
+    armed_revision: int | None = None,
     expected_watcher_snapshot_token: str | None = None,
-) -> list[WatcherRecord]:
+) -> list[StoredWatcherRecord]:
     """Persist one validated handoff once across Retry/crash recovery."""
 
     if len(specs) != len(results):
         raise ValueError("Experiment-loop watcher checks do not match their specifications.")
+    conditions = list(graph_conditions or [])
+    if conditions:
+        if graph_state is None:
+            raise ValueError("Experiment graph conditions require current canonical graph state.")
+        if armed_revision is None:
+            raise ValueError("Experiment graph conditions require their validated base revision.")
+        if armed_revision > graph_state.revision:
+            raise ValueError("Experiment graph condition baseline is ahead of canonical state.")
+        serialized = [item.model_dump_json() for item in conditions]
+        if len(serialized) != len(set(serialized)):
+            raise ValueError("an Experiment handoff cannot repeat a graph condition")
+        validate_graph_conditions(conditions, graph_state)
     created_at = execution.store.now()
     stop_requests = list(stops or [])
-    desired: list[WatcherRecord] = []
+    desired: list[StoredWatcherRecord] = []
     for index, (spec, result) in enumerate(zip(specs, results, strict=True)):
         group = getattr(spec, "group", None)
         identity = json.dumps(
@@ -480,6 +504,48 @@ def persist_experiment_watchers_idempotently(
                     else None
                 ),
                 group_label=group,
+            )
+        )
+    for index, condition in enumerate(conditions):
+        identity = json.dumps(
+            {
+                "origin": binding.origin_operation_id,
+                "node_id": binding.node_id,
+                "episode_id": binding.continuation.control_episode_id,
+                "index": index,
+                "condition": condition.model_dump(mode="json"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        assert graph_state is not None
+        assert armed_revision is not None
+        result = graph_condition_result(
+            condition,
+            graph_state,
+            armed_revision=armed_revision,
+        )
+        if result == "removed":
+            raise ValueError(
+                f"Experiment graph condition target {condition.node_id!r} is not canonical."
+            )
+        completed = result == "completed"
+        desired.append(
+            GraphWatcherRecord(
+                watcher_id=str(uuid5(NAMESPACE_URL, f"rcp-experiment-graph-watcher:{identity}")),
+                project_id=binding.project_id,
+                origin_operation_id=binding.origin_operation_id,
+                origin_task_kind=binding.origin_task_kind,
+                chat_id=binding.chat_id,
+                node_id=binding.node_id,
+                execution_host=binding.execution_host,
+                condition=condition,
+                armed_revision=armed_revision,
+                continuation=binding.continuation,
+                status="completed" if completed else "active",
+                created_at=created_at,
+                last_evaluated_at=created_at,
+                completed_at=created_at if completed else None,
             )
         )
 
@@ -568,24 +634,15 @@ def _watcher_state(
             )
         )
     ]
-    return [
-        {
+    state: list[dict[str, object]] = []
+    for record in records:
+        item: dict[str, object] = {
             "watcher_id": record.watcher_id,
             "origin_operation_id": record.origin_operation_id,
             "execution_host": record.execution_host,
-            "check_command": record.check_command,
-            "log_path": record.log_path,
-            "cwd": record.cwd,
             "status": record.status,
             "created_at": record.created_at,
-            "last_checked_at": record.last_checked_at,
-            "last_exit_code": record.last_exit_code,
-            "last_error": record.last_error,
             "completed_at": record.completed_at,
-            "next_check_at": record.next_check_at,
-            "consecutive_error_count": record.consecutive_error_count,
-            "group_id": record.group_id,
-            "group_label": record.group_label,
             "notified": record.notified,
             "notification_operation_id": record.notification_operation_id,
             "stopped_by": record.stopped_by,
@@ -598,8 +655,27 @@ def _watcher_state(
             "control_revision": record.continuation.control_revision,
             "decision_bundle": record.continuation.control_decision_bundle,
         }
-        for record in records
-    ]
+        if isinstance(record, GraphWatcherRecord):
+            item["condition"] = record.condition.model_dump(mode="json")
+            item["armed_revision"] = record.armed_revision
+            item["last_evaluated_at"] = record.last_evaluated_at
+        else:
+            item.update(
+                {
+                    "check_command": record.check_command,
+                    "log_path": record.log_path,
+                    "cwd": record.cwd,
+                    "last_checked_at": record.last_checked_at,
+                    "last_exit_code": record.last_exit_code,
+                    "last_error": record.last_error,
+                    "next_check_at": record.next_check_at,
+                    "consecutive_error_count": record.consecutive_error_count,
+                    "group_id": record.group_id,
+                    "group_label": record.group_label,
+                }
+            )
+        state.append(item)
+    return state
 
 
 async def stage_chat_experiment_watcher_resources(

@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from rcp.core.authority import HYPOTHESIS_PROPOSAL_FIELDS
+from rcp.core.authority import HYPOTHESIS_PROPOSAL_FIELDS, AgentProfile
 from rcp.core.models import (
     ExperimentAttempt,
     GatedCard,
@@ -164,12 +164,6 @@ class NodeMerge(_StrictModel):
     cause: EvidenceEdgeCause | None = None
 
 
-class AgentGlossaryTerm(_StrictModel):
-    term: str
-    plain_definition: str
-    where_defined: str | None = None
-
-
 class CreateNodesOperation(_StrictModel):
     op: Literal["create_nodes"]
     nodes: list[AgentProjectNode] = Field(min_length=1)
@@ -205,11 +199,6 @@ class MergeNodesOperation(_StrictModel):
     merges: list[NodeMerge] = Field(min_length=1)
 
 
-class UpsertGlossaryOperation(_StrictModel):
-    op: Literal["upsert_glossary"]
-    terms: list[AgentGlossaryTerm] = Field(min_length=1)
-
-
 class ProposalNodeUpdate(NodeUpdate):
     cause: EvidenceEdgeCause
 
@@ -221,16 +210,87 @@ class ProposalNodeUpdate(NodeUpdate):
         return self
 
 
+class ProposalContentNodeUpdate(_StrictModel):
+    id: str
+    changes: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_content_change(self) -> ProposalContentNodeUpdate:
+        if not self.changes:
+            raise ValueError("A content change must change at least one field.")
+        return self
+
+
 class ProposalUpdateNodesOperation(_StrictModel):
     op: Literal["update_nodes"]
+    intent: Literal["status_change"]
     nodes: list[ProposalNodeUpdate] = Field(min_length=1, max_length=1)
+
+
+class ProposalContentChangeOperation(_StrictModel):
+    op: Literal["update_nodes"]
+    intent: Literal["content_change"]
+    nodes: list[ProposalContentNodeUpdate] = Field(min_length=1, max_length=1)
+
+
+class ProposalRemovalOperation(_StrictModel):
+    op: Literal["remove_nodes"]
+    intent: Literal["removal"]
+    node_ids: list[str] = Field(min_length=1, max_length=1)
+
+
+class ProposalSupersedeNode(_StrictModel):
+    id: str
+    superseded_by: str
+    explanation: str = ""
+
+
+class ProposalSupersedeOperation(_StrictModel):
+    op: Literal["supersede_nodes"]
+    intent: Literal["supersede"]
+    nodes: list[ProposalSupersedeNode] = Field(min_length=1, max_length=1)
+
+
+class ProposalNodeMerge(_StrictModel):
+    duplicate: str
+    canonical: str
+    explanation: str = ""
+
+
+class ProposalMergeOperation(_StrictModel):
+    op: Literal["merge_nodes"]
+    intent: Literal["merge"]
+    merges: list[ProposalNodeMerge] = Field(min_length=1, max_length=1)
+
+
+class ProposalCreateProtectedRelationOperation(_StrictModel):
+    op: Literal["create_edges"]
+    intent: Literal["protected_relation_change"]
+    edges: list[NewEdge] = Field(min_length=1, max_length=1)
+
+
+class ProposalRemoveProtectedRelationOperation(_StrictModel):
+    op: Literal["remove_edges"]
+    intent: Literal["protected_relation_change"]
+    edge_ids: list[str] = Field(min_length=1, max_length=1)
+
+
+AgentProposalOperation = (
+    ProposalUpdateNodesOperation
+    | ProposalContentChangeOperation
+    | ProposalRemovalOperation
+    | ProposalSupersedeOperation
+    | ProposalMergeOperation
+    | ProposalCreateProtectedRelationOperation
+    | ProposalRemoveProtectedRelationOperation
+)
 
 
 class AgentProposal(_StrictModel):
     id: str = Field(pattern=rf"^prop/{_SLUG}$")
     title: str
     card: AgentGatedCard
-    ops: list[ProposalUpdateNodesOperation] = Field(min_length=1, max_length=1)
+    ops: list[AgentProposalOperation] = Field(min_length=1, max_length=1)
 
 
 class CreateProposalsOperation(_StrictModel):
@@ -248,6 +308,12 @@ class WithdrawProposalsOperation(_StrictModel):
     proposals: list[AgentProposalWithdrawal] = Field(min_length=1)
 
 
+class SetStandingOperation(_StrictModel):
+    op: Literal["set_standing"]
+    node_id: str
+    standing: Literal["asserted", "accepted", "contested"]
+
+
 AgentOperation = Annotated[
     CreateNodesOperation
     | UpdateNodesOperation
@@ -257,8 +323,7 @@ AgentOperation = Annotated[
     | SupersedeNodesOperation
     | MergeNodesOperation
     | CreateProposalsOperation
-    | WithdrawProposalsOperation
-    | UpsertGlossaryOperation,
+    | WithdrawProposalsOperation,
     Field(discriminator="op"),
 ]
 
@@ -270,22 +335,74 @@ class AgentPatch(_StrictModel):
     change_summary: list[str] = Field(default_factory=list)
 
 
-def agent_output_schema() -> dict[str, object]:
-    return AgentPatch.model_json_schema()
+OrchestratorAgentOperation = Annotated[
+    CreateNodesOperation
+    | UpdateNodesOperation
+    | CreateEdgesOperation
+    | RemoveEdgesOperation
+    | RemoveNodesOperation
+    | SupersedeNodesOperation
+    | MergeNodesOperation
+    | CreateProposalsOperation
+    | WithdrawProposalsOperation
+    | SetStandingOperation,
+    Field(discriminator="op"),
+]
 
 
-def parse_agent_patch_json(value: str) -> AgentPatch:
+class OrchestratorAgentPatch(_StrictModel):
+    summary: str
+    ops: list[OrchestratorAgentOperation]
+    repositories_read: list[str] = Field(default_factory=list)
+    change_summary: list[str] = Field(default_factory=list)
+    agent_action: Literal["decision_choice"] | None = None
+
+    @model_validator(mode="after")
+    def require_explicit_decision_action(self) -> OrchestratorAgentPatch:
+        has_outcome = any(
+            isinstance(operation, UpdateNodesOperation)
+            and any(
+                update.changes.get("status") == "decided"
+                or update.changes.get("selected_option") is not None
+                for update in operation.nodes
+            )
+            for operation in self.ops
+        )
+        if has_outcome and self.agent_action != "decision_choice":
+            raise ValueError(
+                "An orchestrator Decision outcome requires agent_action='decision_choice'."
+            )
+        if self.agent_action == "decision_choice" and not has_outcome:
+            raise ValueError("agent_action='decision_choice' requires a Decision outcome update.")
+        return self
+
+
+def agent_output_schema(*, profile: AgentProfile = "ordinary") -> dict[str, object]:
+    return _agent_patch_model(profile).model_json_schema()
+
+
+def parse_agent_patch_json(
+    value: str,
+    *,
+    profile: AgentProfile = "ordinary",
+) -> AgentPatch | OrchestratorAgentPatch:
     """Parse one semantic deliverable while preserving actionable schema diagnostics."""
 
     try:
-        return AgentPatch.model_validate_json(value)
+        return _agent_patch_model(profile).model_validate_json(value)
     except ValidationError as exc:
         raise _agent_patch_shape_error(exc) from exc
 
 
-def validate_agent_patch_shape(patch: AgentPatch | Patch) -> None:
-    value: AgentPatch | dict[str, Any]
-    if isinstance(patch, AgentPatch):
+def validate_agent_patch_shape(
+    patch: AgentPatch | OrchestratorAgentPatch | Patch,
+    *,
+    profile: AgentProfile | None = None,
+) -> None:
+    resolved_profile = _agent_patch_profile(patch, profile)
+    model = _agent_patch_model(resolved_profile)
+    value: AgentPatch | OrchestratorAgentPatch | dict[str, Any]
+    if isinstance(patch, (AgentPatch, OrchestratorAgentPatch)):
         value = patch
     else:
         value = {
@@ -294,8 +411,10 @@ def validate_agent_patch_shape(patch: AgentPatch | Patch) -> None:
             "repositories_read": patch.repositories_read,
             "change_summary": patch.change_summary,
         }
+        if resolved_profile == "orchestrator":
+            value["agent_action"] = patch.agent_action
     try:
-        AgentPatch.model_validate(value)
+        model.model_validate(value)
     except ValidationError as exc:
         raise _agent_patch_shape_error(exc) from exc
 
@@ -316,15 +435,21 @@ def _agent_patch_shape_error(exc: ValidationError) -> ValueError:
 
 
 def prepare_agent_patch(
-    draft: AgentPatch,
+    draft: AgentPatch | OrchestratorAgentPatch,
     *,
     kind: Literal["seed", "refresh", "work", "experiment_loop"],
     run_truth_scope: list[str],
     source_operation_id: str | None = None,
+    profile: AgentProfile | None = None,
 ) -> Patch:
     """Wrap one semantic agent deliverable in RCP-owned canonical metadata."""
 
-    operations = draft.model_dump(mode="python", exclude_none=True, exclude_unset=True)["ops"]
+    resolved_profile = _agent_patch_profile(draft, profile)
+    normalized = _agent_patch_model(resolved_profile).model_validate(
+        draft.model_dump(mode="python", exclude_none=True, exclude_unset=True)
+    )
+    payload = normalized.model_dump(mode="python", exclude_none=True, exclude_unset=True)
+    operations = payload["ops"]
     for operation in operations:
         if operation.get("op") != "create_proposals":
             continue
@@ -332,6 +457,7 @@ def prepare_agent_patch(
             proposal.update(
                 {
                     "related_node_ids": [],
+                    "related_edge_ids": [],
                     "related_config_keys": [],
                     "base_rev": 0,
                     "status": "pending",
@@ -355,7 +481,29 @@ def prepare_agent_patch(
         change_summary=list(draft.change_summary),
         processed_cursors={},
         source_operation_id=source_operation_id,
+        agent_action=(
+            normalized.agent_action if isinstance(normalized, OrchestratorAgentPatch) else None
+        ),
     )
+
+
+def _agent_patch_model(
+    profile: AgentProfile,
+) -> type[AgentPatch] | type[OrchestratorAgentPatch]:
+    return OrchestratorAgentPatch if profile == "orchestrator" else AgentPatch
+
+
+def _agent_patch_profile(
+    patch: AgentPatch | OrchestratorAgentPatch | Patch,
+    profile: AgentProfile | None,
+) -> AgentProfile:
+    if profile is not None:
+        return profile
+    if isinstance(patch, OrchestratorAgentPatch):
+        return "orchestrator"
+    if isinstance(patch, Patch) and patch.profile == "orchestrator":
+        return "orchestrator"
+    return "ordinary"
 
 
 def _strip_rcp_bookkeeping(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -390,6 +538,7 @@ def _strip_rcp_bookkeeping(operations: list[dict[str, Any]]) -> list[dict[str, A
                     if key
                     not in {
                         "related_node_ids",
+                        "related_edge_ids",
                         "related_config_keys",
                         "base_rev",
                         "status",

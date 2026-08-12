@@ -11,6 +11,22 @@ SkillKind = Literal["skill", "workflow"]
 _ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
+_OFFICIAL_PACKAGE_SPECS: tuple[tuple[SkillKind, str, str], ...] = (
+    ("skill", "graph-audit", "graph-audit/SKILL.md"),
+    ("skill", "evidence-triage", "evidence-triage/SKILL.md"),
+    ("skill", "experiment-causality", "experiment-causality/SKILL.md"),
+    ("skill", "campaign-report", "campaign-report/SKILL.md"),
+    ("workflow", "research-graph-audit", "workflows/research-graph-audit/WORKFLOW.md"),
+)
+
+
+def _default_skill_ids() -> list[str]:
+    return sorted(
+        package_id
+        for kind, package_id, _relative_file in _OFFICIAL_PACKAGE_SPECS
+        if kind == "skill"
+    )
+
 
 class SkillReference(BaseModel):
     """One immutable official package selected for a run."""
@@ -28,7 +44,7 @@ class SkillDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_ids: list[str] = Field(default_factory=list)
-    skill_ids: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=_default_skill_ids)
 
 
 class SkillSelection(BaseModel):
@@ -274,26 +290,7 @@ def _package(
 def official_registry() -> SkillRegistry:
     root = Path(__file__).parent / "skills"
     packages = [
-        _package(
-            root, kind="skill", package_id="graph-audit", relative_file="graph-audit/SKILL.md"
-        ),
-        _package(
-            root,
-            kind="skill",
-            package_id="evidence-triage",
-            relative_file="evidence-triage/SKILL.md",
-        ),
-        _package(
-            root,
-            kind="skill",
-            package_id="experiment-causality",
-            relative_file="experiment-causality/SKILL.md",
-        ),
-        _package(
-            root,
-            kind="workflow",
-            package_id="research-graph-audit",
-            relative_file="workflows/research-graph-audit/WORKFLOW.md",
-        ),
+        _package(root, kind=kind, package_id=package_id, relative_file=relative_file)
+        for kind, package_id, relative_file in _OFFICIAL_PACKAGE_SPECS
     ]
     return SkillRegistry(packages, root)

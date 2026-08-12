@@ -387,10 +387,11 @@ test("Runs renders a legacy cached Experiment control without an operational blo
   );
 
   assert.match(html, /Legacy cached experiment/);
-  assert.match(html, /Cached summary/);
+  assert.match(html, /Start an episode/);
+  assert.doesNotMatch(html, /Cached summary/);
 });
 
-test("Project Settings has no ontology authoring surface", () => {
+test("Project Settings supports legacy profiles without an ontology authoring surface", () => {
   const storage = new Map();
   const previousLocalStorage = globalThis.localStorage;
   globalThis.localStorage = {
@@ -436,7 +437,7 @@ test("Project Settings has no ontology authoring surface", () => {
           machines: [{ alias: "local", host: "", provider_paths: { codex: "codex" } }],
           agent_profiles: {
             seed: profile,
-            refresh: profile,
+            refresh: { ...profile, model: "legacy-refresh" },
             node_chat: profile,
             project_chat: profile,
             paper_coach: profile,
@@ -459,6 +460,9 @@ test("Project Settings has no ontology authoring surface", () => {
 
     assert.match(html, /Project boundary/);
     assert.match(html, /Agent defaults/);
+    assert.equal(html.match(/<strong>Orchestrator<\/strong>/g)?.length, 1);
+    assert.match(html.slice(html.indexOf("<strong>Orchestrator</strong>")), /legacy-refresh/);
+    assert.doesNotMatch(html, /Your identity|Save name/);
     assert.doesNotMatch(html, /Ontology|Add node type|Add field|Add relation/);
   } finally {
     globalThis.localStorage = previousLocalStorage;

@@ -4,7 +4,6 @@ import fcntl
 import hashlib
 import json
 import os
-import shlex
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import ChatContext, agent_output_schema
+from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
@@ -31,7 +31,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
-from rcp.runs.patch_validator import VALIDATOR_CLIENT_SOURCE
+from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
@@ -39,7 +39,12 @@ from rcp.runs.shared import (
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import AgentTaskKind, AgentTaskReceiptRecord, AgentTaskRecord, AppStore
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import (
+    RemoteRunStage,
+    RunStageMailbox,
+    StateUnavailable,
+    clear_turn_handoff_files,
+)
 
 _CHAT_PROMPT_STATE_ROLE = "chat_prompt_state"
 
@@ -68,6 +73,7 @@ class _ChatPatchInputs:
     schema_path: str
     validator_command: str
     validator_mailbox_id: str
+    validator_staged: StagedCommandMailbox
 
 
 def _stage_chat_patch_inputs(
@@ -76,8 +82,10 @@ def _stage_chat_patch_inputs(
     *,
     workspace: Path,
     stage_name: str,
+    task_id: str,
+    turn_id: str,
 ) -> _ChatPatchInputs:
-    """Stage stable patch tooling once for a persistent native chat session."""
+    """Stage stable schema plus one turn-scoped unified validator credential."""
 
     schema = json.dumps(agent_output_schema(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     schema_digest = hashlib.sha256(schema.encode("utf-8")).hexdigest()[:16]
@@ -87,31 +95,22 @@ def _stage_chat_patch_inputs(
         f"chat-patch-schema-{schema_digest}.json",
         schema,
     )
-    client_digest = hashlib.sha256(VALIDATOR_CLIENT_SOURCE.encode("utf-8")).hexdigest()[:16]
-    validator_client_path = _stage_or_reuse_task_input(
-        local_stage,
-        remote_stage,
-        f"chat-validator-client-{client_digest}.py",
-        VALIDATOR_CLIENT_SOURCE,
-    )
-    mailbox_id = hashlib.sha256(f"chat-validator:{stage_name}".encode()).hexdigest()[:32]
     patch_path = str(workspace / "patch.json")
-    validator_command = shlex.join(
-        [
-            "python3",
-            validator_client_path,
-            patch_path,
-            mailbox_id,
-            str(PATCH_SELF_CHECK_TIMEOUT_SECONDS),
-            str(workspace),
-        ]
+    validator_staged = stage_patch_validation_mailbox(
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        task_id=task_id,
+        turn_id=turn_id,
+        timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     )
+    validator_command = validator_staged.client_command("validate", patch_path)
     return _ChatPatchInputs(
         patch_path=patch_path,
         watch_path=str(workspace / "watch.json"),
         schema_path=schema_path,
         validator_command=validator_command,
-        validator_mailbox_id=mailbox_id,
+        validator_mailbox_id=validator_staged.credential.mailbox_id,
+        validator_staged=validator_staged,
     )
 
 
@@ -231,6 +230,24 @@ def _committed_chat_prompt_state(
         _ChatMasterSnapshot.model_validate_json(baseline.snapshot_json),
         baseline.snapshot_sha256,
     )
+
+
+def _retained_chat_patch_values(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+) -> dict[str, str] | None:
+    """Reuse an inactive Discuss Patch contract without issuing a credential."""
+
+    previous, _ = _committed_chat_prompt_state(execution, request)
+    if previous is None or previous.contract_key != f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}":
+        return None
+    value = previous.values.get("patch")
+    if not isinstance(value, dict):
+        return None
+    names = ("path", "watch_path", "schema_path", "validator_command", "validator_mailbox_id")
+    if not all(isinstance(value.get(name), str) and value[name] for name in names):
+        return None
+    return {name: str(value[name]) for name in names}
 
 
 def _commit_chat_prompt_state(
@@ -357,26 +374,33 @@ def _chat_context_delta(
     return changed or None
 
 
-def _clear_stale_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
-    """Drop a previous turn's `patch.json` from a conversation's scratch folder.
+def _clear_stale_turn_handoffs(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    """Drop patch, watcher, and message output from a prior reusable-stage turn.
 
     Fails the turn if it cannot: a scratch folder is reused across a conversation,
-    so a survivor would be read as this turn's patch and applied under this turn's
-    authorization.
+    so a survivor could be consumed under this turn's authorization or attribution.
     """
-    if remote_stage is not None:
-        remote_stage.remove_workspace_file("patch.json")
-        return
-    (workspace / "patch.json").unlink(missing_ok=True)
+
+    mailbox = RunStageMailbox.for_stage(
+        local_stage=workspace if remote_stage is None else None,
+        remote_stage=remote_stage,
+    )
+    clear_turn_handoff_files(mailbox)
+
+
+def _clear_stale_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
+    """Compatibility seam until every Work caller uses the unified handoff clear."""
+
+    _clear_stale_turn_handoffs(workspace, remote_stage)
 
 
 def _clear_stale_watch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
-    """Drop a prior turn's watcher request from the reusable conversation stage."""
+    """Compatibility seam until every Work caller uses the unified handoff clear."""
 
-    if remote_stage is not None:
-        remote_stage.remove_workspace_file("watch.json")
-        return
-    (workspace / "watch.json").unlink(missing_ok=True)
+    _clear_stale_turn_handoffs(workspace, remote_stage)
 
 
 def _prepare_local_artifact_directory(

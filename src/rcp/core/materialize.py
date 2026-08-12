@@ -158,12 +158,13 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
         proposals: list[dict[str, Any]] = []
         for raw in operation.get("proposals", []):
             proposal = dict(raw)
-            related_node_ids, related_config_keys = proposal_dependencies(
+            related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
                 state, proposal.get("ops", [])
             )
             proposal.update(
                 {
                     "related_node_ids": related_node_ids,
+                    "related_edge_ids": related_edge_ids,
                     "related_config_keys": related_config_keys,
                     "base_rev": state.revision,
                     "status": "pending",
@@ -177,6 +178,30 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
                     "rejection_reason": None,
                 }
             )
+            proposals.append(proposal)
+        operation["proposals"] = proposals
+    return patch.model_copy(update={"ops": operations})
+
+
+def finalize_patch_bookkeeping(patch: Patch, staged_state: GraphState) -> Patch:
+    """Persist Proposal dependencies exactly as staged operations observed them."""
+
+    operations = [dict(operation) for operation in patch.ops]
+    for operation in operations:
+        if operation.get("op") != "create_proposals":
+            continue
+        proposals: list[dict[str, Any]] = []
+        for raw in operation.get("proposals", []):
+            proposal = dict(raw)
+            staged = staged_state.proposals.get(proposal.get("id"))
+            if staged is not None:
+                proposal.update(
+                    {
+                        "related_node_ids": list(staged.related_node_ids),
+                        "related_edge_ids": list(staged.related_edge_ids),
+                        "related_config_keys": list(staged.related_config_keys),
+                    }
+                )
             proposals.append(proposal)
         operation["proposals"] = proposals
     return patch.model_copy(update={"ops": operations})
@@ -343,11 +368,12 @@ def _apply_patch(
         elif name == "create_proposals":
             for raw in op.get("proposals", []):
                 data = dict(raw)
-                related_node_ids, related_config_keys = proposal_dependencies(
+                related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
                     state, data.get("ops", [])
                 )
                 data["base_rev"] = state.revision
                 data["related_node_ids"] = related_node_ids
+                data["related_edge_ids"] = related_edge_ids
                 data["related_config_keys"] = related_config_keys
                 data.setdefault("created_by", "human" if patch.author == "human" else "agent")
                 data.setdefault("created_by_operation_id", patch.source_operation_id)

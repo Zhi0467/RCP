@@ -379,6 +379,7 @@ class Proposal(BaseModel):
     card: GatedCard
     ops: list[dict[str, Any]]
     related_node_ids: list[str] = Field(default_factory=list)
+    related_edge_ids: list[str] = Field(default_factory=list)
     related_config_keys: list[str] = Field(default_factory=list)
     base_rev: int
     status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
@@ -513,6 +514,9 @@ class Patch(BaseModel):
     # and are validated by different rules, so the producer names the action
     # rather than leaving the validator to infer it from shape.
     human_action: Literal["decision_choice"] | None = None
+    # The same explicit action boundary for an elevated agent producer. RCP
+    # supplies the profile; campaign lineage remains in operational storage.
+    agent_action: Literal["decision_choice"] | None = None
     admission: Literal["accepted", "rejected"] = "accepted"
     admission_messages: list[ValidationMessage] = Field(default_factory=list)
     # RCP stamps these after reading an experiment-loop deliverable. They are
@@ -521,7 +525,7 @@ class Patch(BaseModel):
     experiment_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
     project_identity: ProjectIdentity | None = None
     authorized_by: AuthorizedHuman | None = None
-    profile: Literal["ordinary"] | None = None
+    profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="before")

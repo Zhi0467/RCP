@@ -63,3 +63,18 @@ The promises above are being turned into scenarios in
 S111–S112 prerequisites, were implemented and passed on 2026-08-11. The
 remaining team-space and campaign scenarios are still proposals and do not
 authorize implementation.
+
+The closed action list settled on 2026-08-12 and lives in
+[Identity, permissions, and agent profiles](identity-permissions-and-agent-profiles.md#action-vocabulary).
+No permission check is enforced anywhere in the code yet.
+
+Two scenarios now authorize the first enforcement, both confirmed 2026-08-12 and
+both driven against machinery that exists today, without team membership:
+[S115](../acceptance/S115-beliefs-change-only-through-you.md) owns the
+protected-type rule and the widened Proposal vocabulary it requires, and
+[S100](../acceptance/S100-permission-is-checked-twice.md) owns the two gates.
+The protected-type rule binds **every agent** from the day it lands, not only
+campaign workers — decided by the human on 2026-08-12, so that there is one
+authority regime and the brake is exercised on real use before anything runs
+unattended. S101 remains an unconfirmed proposal, and the membership half of
+S100 is deferred into it.

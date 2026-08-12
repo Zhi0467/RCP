@@ -13,6 +13,12 @@ This scenario is a proposal and is **not yet human-confirmed**. The design is
 settled in
 [Team authentication and membership](../design/team-authentication-and-membership.md).
 
+**Current UI seam (2026-08-12):** S118 places disabled **Join team space**,
+**Accept invitation**, and **Invite member** controls in the landing identity
+panel. They are deliberately labeled as not connected, expose no credential
+fields, create no invitation, store no secret, and call no team endpoint. Their
+presence is not partial implementation or evidence that this scenario passes.
+
 The first member claims the space with a code the server printed to its own
 terminal. Everyone after that is invited by an existing member. Each person ends
 up with one permanent personal credential that identifies them individually, and

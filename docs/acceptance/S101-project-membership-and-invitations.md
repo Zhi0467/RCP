@@ -13,6 +13,12 @@ This scenario is a proposal and is **not yet human-confirmed**. The design is
 settled in
 [Team authentication and membership](../design/team-authentication-and-membership.md#project-membership).
 
+**Current UI seam (2026-08-12):** S118 reserves team enrollment and
+member-invitation controls inside the landing identity panel, but implements no
+project invitation records or cards. The project shelf must not manufacture a
+sample invitation; Accept/Decline cards arrive only with this scenario's real,
+server-derived membership contract.
+
 Space enrollment and project membership are different layers. Joining the lab's
 RCP does not admit you to every project in it; a project member invites you, and
 you accept.

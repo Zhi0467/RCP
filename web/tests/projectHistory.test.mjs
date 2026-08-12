@@ -12,7 +12,9 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ProjectOverview } = await server.ssrLoadModule("/src/views/ProjectOverview.tsx");
-const { setupFinalConfirmation } = await server.ssrLoadModule("/src/views/ProjectSetup.tsx");
+const { setupExistingResearchSelection, setupFinalConfirmation } = await server.ssrLoadModule(
+  "/src/views/ProjectSetup.tsx",
+);
 const { ProjectHistoryDrawer } = await server.ssrLoadModule(
   "/src/components/ProjectHistoryDrawer.tsx",
 );
@@ -276,15 +278,30 @@ test("an identity revision does not make an unseeded project look refreshed", ()
   assert.doesNotMatch(html, /Graph revision/);
 });
 
-test("connecting an existing project names the active space as its sole writable home", () => {
+test("connecting an existing project preserves its retained canonical state", () => {
   assert.match(
     setupFinalConfirmation({
       action: "connect",
       remote_write: false,
       canonical_location: "/research/project",
     }),
-    /this active space becomes the project's sole writable home/,
+    /retained canonical state without replacing its manifest/,
   );
+});
+
+test("archive confirmation carries the exact retained-history token from preflight", () => {
+  const preview = {
+    existing_research: { archive_token: "a".repeat(64) },
+  };
+
+  assert.deepEqual(setupExistingResearchSelection(preview, "archive_and_create"), {
+    existing_research_action: "archive_and_create",
+    existing_research_token: "a".repeat(64),
+  });
+  assert.deepEqual(setupExistingResearchSelection(preview, "open_existing"), {
+    existing_research_action: "open_existing",
+    existing_research_token: null,
+  });
 });
 
 function task(operationId, kind, status, attempt) {

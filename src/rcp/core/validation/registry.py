@@ -16,8 +16,6 @@ from rcp.core.validation.ops import (
     author_create_edges,
     author_create_nodes,
     author_create_proposals,
-    author_merge_nodes,
-    author_supersede_nodes,
     author_update_nodes,
     depends_create_ambiguities,
     depends_create_edges,
@@ -70,12 +68,10 @@ OP_RULES: dict[str, OpRule] = {
     ),
     "supersede_nodes": OpRule(
         structural_validate=validate_supersede_nodes,
-        authoring_validate=author_supersede_nodes,
         dependencies=depends_supersede_nodes,
     ),
     "merge_nodes": OpRule(
         structural_validate=validate_merge_nodes,
-        authoring_validate=author_merge_nodes,
         dependencies=depends_merge_nodes,
     ),
     "create_ambiguities": OpRule(
@@ -109,9 +105,10 @@ OP_RULES: dict[str, OpRule] = {
 
 def proposal_dependencies(
     state: GraphState, ops: Iterable[dict[str, Any]]
-) -> tuple[list[str], list[str]]:
-    """Derive the graph/config objects whose state a proposal depends on."""
+) -> tuple[list[str], list[str], list[str]]:
+    """Derive the graph objects and config whose exact state a proposal depends on."""
     node_ids: set[str] = set()
+    edge_ids: set[str] = set()
     config_keys: set[str] = set()
 
     for op in ops:
@@ -125,4 +122,27 @@ def proposal_dependencies(
                 node_ids.add(node_id)
         config_keys.update(keys)
 
-    return sorted(node_ids), sorted(config_keys)
+        if name == "remove_edges":
+            edge_ids.update(
+                edge_id for edge_id in op.get("edge_ids", []) if isinstance(edge_id, str)
+            )
+        if name == "remove_nodes":
+            target_ids = {node_id for node_id in op.get("node_ids", []) if isinstance(node_id, str)}
+            edge_ids.update(
+                edge.id
+                for edge in state.edges.values()
+                if edge.source in target_ids or edge.target in target_ids
+            )
+        if name == "update_nodes":
+            for update in op.get("nodes", []):
+                if not isinstance(update, dict):
+                    continue
+                cause = update.get("cause")
+                if not isinstance(cause, dict) or not isinstance(cause.get("ref_id"), str):
+                    continue
+                if cause.get("kind") == "evidence_edge":
+                    edge_ids.add(cause["ref_id"])
+                elif cause.get("kind") == "decision":
+                    node_ids.add(cause["ref_id"])
+
+    return sorted(node_ids), sorted(edge_ids), sorted(config_keys)

@@ -15,8 +15,13 @@ impl LaunchOutcome {
         let value: Self = serde_json::from_str(line)
             .map_err(|error| format!("backend returned invalid launch JSON: {error}"))?;
         match value.outcome.as_str() {
-            "owned" | "reused" if value.instance_id.is_some() => Ok(value),
-            outcome if outcome.starts_with("refused-") && value.reason.is_some() => Ok(value),
+            "owned" if value.owned && value.instance_id.is_some() => Ok(value),
+            "reused" if !value.owned && value.instance_id.is_some() => Ok(value),
+            outcome
+                if outcome.starts_with("refused-") && !value.owned && value.reason.is_some() =>
+            {
+                Ok(value)
+            }
             _ => Err(format!(
                 "backend returned unsupported launch outcome: {}",
                 value.outcome
@@ -83,10 +88,6 @@ impl DesktopStatus {
             && health.data_dir_id == self.data_dir_id
             && health.version == self.version
     }
-
-    pub fn still_owns(&self, health: &Health) -> bool {
-        self.owned && self.matches_health(health)
-    }
 }
 
 #[cfg(test)]
@@ -124,17 +125,14 @@ mod tests {
     }
 
     #[test]
-    fn ownership_requires_the_same_health_identity() {
-        let outcome = LaunchOutcome::parse(
-            r#"{"outcome":"owned","base_url":"http://127.0.0.1:8421","instance_id":"instance-a","version":"0.3.0","owned":true}"#,
-        )
-        .unwrap();
-        let status = DesktopStatus::from_ready(&outcome, &health()).unwrap();
-        assert!(status.still_owns(&health()));
-
-        let mut replaced = health();
-        replaced.instance_id = "instance-b".into();
-        assert!(!status.still_owns(&replaced));
+    fn launch_outcome_rejects_contradictory_ownership() {
+        for raw in [
+            r#"{"outcome":"owned","base_url":"http://127.0.0.1:8421","instance_id":"instance-a","version":"0.3.0","owned":false}"#,
+            r#"{"outcome":"reused","base_url":"http://127.0.0.1:8421","instance_id":"instance-a","version":"0.3.0","owned":true}"#,
+            r#"{"outcome":"refused-version","base_url":"http://127.0.0.1:8421","instance_id":null,"version":"0.3.0","owned":true,"reason":"wrong version"}"#,
+        ] {
+            assert!(LaunchOutcome::parse(raw).is_err(), "accepted {raw}");
+        }
     }
 
     #[test]
@@ -172,6 +170,6 @@ mod tests {
         )
         .unwrap();
         let status = DesktopStatus::from_ready(&outcome, &health()).unwrap();
-        assert!(!status.still_owns(&health()));
+        assert!(!status.owned);
     }
 }

@@ -1,76 +1,119 @@
 ---
 id: S100-permission-is-checked-twice
-status: pending — not human-confirmed
+status: implemented
 tier: hermetic
 driver: pytest
-covered_by: none
+covered_by:
+  - tests/test_dispatch_authority.py
+  - tests/test_api.py::test_work_apply_rechecks_authority_after_human_removes_proposal_target
 invariants: [1, 3, 4, 10b]
+last_passed: 2026-08-12 — dispatch bindings were durable before execution,
+  refusals spent nothing, live Apply rejected authority lost to graph movement,
+  and replay required no operational authority records
 ---
 
 # Nothing unauthorized starts, and nothing unauthorized lands
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Identity, permissions, and agent profiles](../design/identity-permissions-and-agent-profiles.md#permission-is-checked-before-execution).
+Checking permission only when a patch lands is too late. By then the task has
+already spent provider budget, read the project, used credentials, and possibly
+written a repository or called an external service. Starting work is itself an
+authority-bearing action.
 
-Checking permission only at Apply is too late. By then an unauthorized task has
-already spent provider budget, read project context, used server credentials,
-and possibly written a repository or called an external service. So starting
-work is itself an authority-bearing action.
+Checking only at dispatch is also wrong, because the graph moves while a task
+runs. Both checks exist and they answer different questions. Replay answers
+neither: once a patch was admitted, a later change cannot reach back and
+invalidate it.
 
-Checking only at dispatch is also wrong, because permission can change while a
-task runs. Both checks exist, and they answer different questions. Replay
-answers neither: once a patch was admitted, later permission changes cannot
-reach back and invalidate it.
+Scope confirmed 2026-08-12, alongside
+[S115](S115-beliefs-change-only-through-you.md), whose action table this shares.
+
+## What this covers, and what it does not
+
+This scenario is the **two gates and their independence**, driven against the
+machinery that exists today. Team membership is not part of it. Neither is the
+orchestrator, its campaign, its budget, or its spawned children.
+
+That is a real narrowing and it costs one thing worth naming. The textbook
+demonstration of independence — *permission changes while the task runs* —
+needs a permission that can change, which today means membership. So the
+independence is driven the other way: the **graph** moves under a patch that was
+authorized at dispatch, and Apply refuses it anyway. Same property, reachable
+now. When membership lands, the revocation drive is added here rather than
+re-derived.
 
 ## Setup
 
-A team space with two members, a project the first belongs to and the second
-does not, and a project-owned orchestrator profile. A deterministic agent so
-timing is controllable.
+A project with an accepted Hypothesis, a pending human-gated removal Proposal,
+and a deterministic Work agent. The agent writes one observable repository
+effect, returns an answer, and proposes a content change to that Hypothesis.
 
-## Drive — proposal
+## Drive
 
-1. As the second member, attempt to start a task in that project.
-2. As the first member, start a long-running Work task that writes a file in a
-   repository and then produces a patch.
-3. While it runs, remove the first member's project membership.
-4. Let the task finish and let RCP attempt to apply its patch.
-5. Inspect the repository the task wrote, the task record, and the graph.
-6. Start an orchestrator campaign and let it dispatch a child worker. Read what
-   each task recorded.
-7. Attempt to reach an orchestration command from an ordinary Work task, and
-   attempt an elevated semantic action from the orchestrate contract while
-   carrying the ordinary profile.
-8. Replay the project with every user, membership, and profile record deleted.
+1. Attempt ordinary dispatches without a current human authorizer, and attempt
+   an ordinary-profile dispatch carrying the `orchestrate` contract.
+2. For every refusal, inspect the task table and usage ledger and prove the
+   provider entry point was never reached.
+3. Dispatch a legitimate Work turn. At provider entry, read its durable task
+   record and exact authorizer, project, profile, contract, and scope binding.
+4. Let the provider complete its repository effect and answer, then hold its
+   content Proposal immediately before canonical Apply.
+5. While it is held, approve the pending removal Proposal for the Hypothesis.
+6. Release the Work turn and let RCP revalidate against the live graph while
+   holding the append lock.
+7. Read the answer, repository effect, graph, retained patch, and task result.
+8. Replay the project with an authority resolver that fails if called.
+
+A Discuss turn that writes a stray `patch.json` is intentionally a different
+check: Discuss is authorized to launch, then its inactive Patch channel is
+discarded. It does not stand in for a pre-launch refusal.
 
 ## Assert
 
 - `an_unauthorized_dispatch_never_launches_a_provider`
 - `a_refused_dispatch_spends_no_budget_and_creates_no_scratch`
+- `a_refused_dispatch_says_which_action_was_refused`
 - `the_durable_task_record_exists_before_execution_begins`
-- `dispatch_binds_authorizer_space_project_profile_contract_scope_and_budget`
-- `a_patch_forbidden_at_apply_time_is_rejected_even_though_dispatch_allowed_it`
-- `repository_writes_and_external_effects_completed_before_rejection_stand`
-- `a_rejected_patch_is_not_described_as_retracted_work`
+- `dispatch_binds_authorizer_project_profile_contract_and_scope`
+- `a_patch_authorized_at_dispatch_can_still_be_refused_at_apply`
+- `the_two_checks_are_separate_paths_and_neither_stands_in_for_the_other`
 - `the_apply_decision_and_the_canonical_append_are_one_serialized_path`
-- `a_spawned_child_records_its_parent_and_campaign_and_uses_ordinary_authority`
-- `the_orchestrate_contract_is_required_for_orchestration_commands`
-- `the_orchestrator_profile_is_required_for_elevated_semantic_actions`
-- `replay_succeeds_with_no_identity_or_permission_records`
+- `repository_writes_and_external_effects_completed_before_refusal_stand`
+- `a_refused_patch_is_not_described_as_retracted_work`
+- `the_answer_survives_a_refused_patch`
+- `replay_succeeds_with_no_profile_or_permission_records`
 
 ## Boundary
 
-Rejecting a patch is not undoing work. Compute, repository writes, and external
+Refusing a patch is not undoing work. Compute, repository writes, and external
 calls that already happened stand, and the interface must say so rather than
-implying the task was rolled back. Stopping work is a separate operational
-action.
+implying a rollback. Stopping work is a separate operational action.
 
-Because of that gap, revoking access in practice is paired with stopping the
-person's running work rather than letting it fail hours later at Apply; that
-behavior belongs to
-[S103](S103-server-operations-are-console-operations.md).
+The answer is not the patch. A turn whose graph change is refused still returns
+what it said — the failure mode where a rejected patch discarded a chat reply is
+recorded in [`AGENTS.md`](../../AGENTS.md) and must not return.
 
-This scenario asserts the two gates and their independence. The closed action
-vocabulary itself — the exact list of semantic actions and their target grammar
-— is not yet settled and is not promised here.
+**A task recorded before dispatch authority existed carries no binding, and that
+parent imposes none.** Decided 2026-08-12 against a real store where all 224 rows
+predated the column: refusing the continuation would have stranded every Resume
+and Retry on upgrade, throwing at click time. An authorization that never happened
+cannot be invented after the fact, so the parent constrains nothing. What is
+checked twice is unaffected — the continuation still resolves and gates its own
+authority at dispatch, and re-checks it at Apply. Only the *equality* rule is
+skipped, and only where there is no earlier binding to be equal to.
+
+Deferred until team spaces exist, and added here rather than written fresh:
+revoking a member's access mid-run, the space binding on a dispatch, and the
+pairing of revocation with stopping that person's running work
+([S103](S103-server-operations-are-console-operations.md)).
+
+Deferred until the orchestrator exists: campaign and budget binding, spawned
+children recording their parent, the `orchestrate` contract, and the elevated
+profile's actions ([S77](S77-auto-research-stops-at-belief.md),
+[S78](S78-one-budget-one-stop.md)).
+
+## Failure means
+
+A task runs for an hour, spends real money, writes a repository, and only then
+discovers it was never allowed to do any of it. Or the reverse: a check at
+dispatch is treated as a reservation, and a patch lands against a graph that
+moved out from under it.

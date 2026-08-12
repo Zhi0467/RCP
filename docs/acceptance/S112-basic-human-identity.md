@@ -11,10 +11,12 @@ covered_by:
   - tests/test_identity_api.py
   - web/tests/api.test.mjs
   - web/tests/projectHistory.test.mjs
-  - browser 2026-08-11 — cancel-preserved Seed form, save-and-retry, Settings rename
-last_passed: 2026-08-11 — the isolated personal-space flow retained the exact
-  Seed message on cancel, saved an explicit name, retried the original task once,
-  and renamed the durable identity in Settings with clean browser and server logs
+  - web/tests/landingIdentity.test.mjs
+  - browser 2026-08-12 — landing Sign in, reload persistence, rename with stable
+    full id, and Settings removal
+last_passed: 2026-08-12 — the isolated personal-space flow saved and reloaded an
+  explicit name, exposed its exact durable id, and renamed it from the landing
+  identity control without changing that id
 invariants: [3, 6]
 ---
 
@@ -84,8 +86,11 @@ identity prompt. It explains that the chosen name will be copied into permanent
 project history. Cancelling returns to the unchanged draft or run form; it does
 not discard the person's work.
 
-The current display name is later editable in Settings. The interface does not
-show or suggest the operating-system account name.
+The current display name is later editable from the project index's compact
+identity control, which also shows the exact durable user id. Project Settings
+contains no second identity editor. The interface does not show or suggest the
+operating-system account name. S118 owns this placement and its visibly
+unimplemented team-space seam.
 
 ## Boundary
 

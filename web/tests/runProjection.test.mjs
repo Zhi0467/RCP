@@ -7,9 +7,13 @@ import {
   buildRunTaskProjection,
   experimentRunSection,
   experimentRecommendation,
+  experimentWatcherDisplayItems,
+  graphConditionLabel,
+  isGraphWatcherRecord,
   visibleChatWatchers,
   watcherIsActive,
   watcherIsIndividuallyStoppable,
+  watcherLastObservedAt,
 } from "../src/runProjection.ts";
 
 function task(
@@ -161,6 +165,29 @@ function watcher(id, nodeId, episodeId, status, fields = {}) {
   };
 }
 
+function graphWatcher(id, nodeId, episodeId, status, condition, fields = {}) {
+  const external = watcher(id, nodeId, episodeId, status, fields);
+  const {
+    check_command: _checkCommand,
+    log_path: _logPath,
+    cwd: _cwd,
+    last_checked_at: _lastCheckedAt,
+    last_exit_code: _lastExitCode,
+    last_error: _lastError,
+    next_check_at: _nextCheckAt,
+    consecutive_error_count: _consecutiveErrorCount,
+    group_id: _groupId,
+    group_label: _groupLabel,
+    ...shared
+  } = external;
+  return {
+    ...shared,
+    condition,
+    armed_revision: fields.armed_revision ?? 1,
+    last_evaluated_at: fields.last_evaluated_at ?? null,
+  };
+}
+
 function byId(projection) {
   return new Map([
     ...projection.running.map((entry) => [entry.id, ["running", entry]]),
@@ -294,6 +321,42 @@ test("Experiment watcher projection keeps each immutable group and ungrouped his
       .filter((item) => item.kind === "watcher")
       .map((item) => item.watcher.watcher_id),
     ["ungrouped"],
+  );
+});
+
+test("graph watchers stay ungrouped and expose condition labels and evaluation time", () => {
+  const status = graphWatcher(
+    "graph-status",
+    "experiment/grouped",
+    "episode-grouped",
+    "active",
+    { node_id: "blk/upstream", status_in: ["resolved", "superseded"] },
+    { last_evaluated_at: "2026-08-06T03:00:00Z" },
+  );
+  const proposal = graphWatcher(
+    "graph-proposal",
+    "experiment/grouped",
+    "episode-grouped",
+    "active",
+    { node_id: "hyp/result", proposal_resolved: true },
+  );
+
+  assert.equal(isGraphWatcherRecord(status), true);
+  assert.equal(
+    graphConditionLabel(status.condition),
+    "blk/upstream reaches resolved or superseded",
+  );
+  assert.equal(graphConditionLabel(proposal.condition), "Proposal on hyp/result is resolved");
+  assert.equal(watcherLastObservedAt(status), "2026-08-06T03:00:00Z");
+  assert.deepEqual(
+    visibleChatWatchers([status], "new-chat", experiment("experiment/grouped")).map(
+      (watcher) => watcher.watcher_id,
+    ),
+    ["graph-status"],
+  );
+  assert.deepEqual(
+    experimentWatcherDisplayItems([status, proposal]).map((item) => item.kind),
+    ["watcher", "watcher"],
   );
 });
 
@@ -596,6 +659,48 @@ test("historical watchers stay visible without driving current health or task se
   assert.equal(run.health, "needs_action");
 });
 
+test("a succeeded legacy-attribution episode recommends a fresh episode directly", () => {
+  const node = experiment("experiment/legacy-attribution");
+  const succeeded = loopTask(
+    "legacy-attribution-task",
+    node.id,
+    "episode-legacy-attribution",
+    "succeeded",
+    "2026-08-06T01:00:00Z",
+  );
+  const run = buildExperimentRun(
+    node,
+    control(
+      {
+        ready: true,
+        reasons: [],
+        episode_id: "episode-legacy-attribution",
+        invocations_used: 1,
+        invocations_remaining: 2,
+      },
+      {
+        current_operation_id: succeeded.operation_id,
+        current_status: "succeeded",
+        session: {
+          ...control().operational.session,
+          diagnostic:
+            "Automatic watcher wake stopped: an originating task predates durable human attribution, so RCP cannot prove who authorized the wake. Start a new Work turn or Experiment Run to continue.",
+        },
+      },
+    ),
+    [succeeded],
+    [],
+  );
+
+  assert.equal(run.currentTask.status, "succeeded");
+  assert.deepEqual(run.currentWatchers, []);
+  assert.equal(run.health, "needs_action");
+  assert.deepEqual(experimentRecommendation(run), {
+    step: "start_episode",
+    label: "Start a new episode",
+  });
+});
+
 test("compatible adopted degraded watchers drive current health through control state", () => {
   const node = experiment("experiment/adopted-degraded");
   const current = loopTask(
@@ -694,6 +799,14 @@ test("Experiment recommendations follow structured task and control states", () 
   );
   assert.equal(
     experimentRecommendation({ ...base, health: "paused_at_limit" }).step,
+    "start_episode",
+  );
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: control({ episode_id: null }),
+      currentTask: noContinuity,
+    }).step,
     "start_episode",
   );
 });

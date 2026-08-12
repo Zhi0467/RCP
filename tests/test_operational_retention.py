@@ -126,6 +126,37 @@ def test_operational_prune_ages_out_payloads_but_not_summary_receipts(tmp_path) 
     assert categories == {"operation_created", "chat_context_assembled"}
 
 
+def test_operational_prune_keeps_command_ledger_while_aging_message_events(tmp_path) -> None:
+    store = AppStore(tmp_path / "commands.sqlite3")
+    now = datetime(2026, 7, 29, tzinfo=UTC)
+    store.create_agent_task(_task("old", now - timedelta(days=200)))
+    store.record_agent_task_event("old", "ordinary trace message")
+    command = store.start_agent_command(
+        operation_id="old",
+        command_id="command",
+        campaign_id=None,
+        verb="validate",
+        idempotency_key=None,
+        payload={"request_id": "request", "arguments": {}},
+    )
+    store.finish_agent_command(
+        command.command_id,
+        status="ok",
+        payload={"result": {"status": "valid"}},
+        message="validation completed",
+    )
+    _backdate_operational_rows(store, now - timedelta(days=200))
+
+    result = store.prune_operational_storage(now=now)
+
+    assert result["events"] == 1
+    retained = store.agent_command(command.command_id)
+    assert retained is not None
+    assert retained.started_at
+    assert retained.exited_at is not None
+    assert retained.status == "ok"
+
+
 def test_operational_prune_leaves_active_work_alone(tmp_path) -> None:
     store = AppStore(tmp_path / "active.sqlite3")
     now = datetime(2026, 7, 29, tzinfo=UTC)

@@ -1,9 +1,10 @@
 import { MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ExperimentBoard } from "../components/ExperimentBoard";
+import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
 import type { ProjectTab } from "../projectTabs";
-import type { ExperimentLoopIndexEntry, ProjectCard } from "../types";
+import type { ExperimentLoopIndexEntry, IdentityResponse, ProjectCard } from "../types";
 
 interface Props {
   projects: ProjectCard[];
@@ -15,6 +16,9 @@ interface Props {
   openProjectTabs: ProjectTab[];
   onActivateProjectTab: (projectId: string) => void;
   onCloseProjectTab: (projectId: string) => void;
+  identity: IdentityResponse | null;
+  identityError: string | null;
+  onRequestIdentityName: () => Promise<boolean> | void;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -50,6 +54,9 @@ export function ProjectLanding({
   openProjectTabs,
   onActivateProjectTab,
   onCloseProjectTab,
+  identity,
+  identityError,
+  onRequestIdentityName,
 }: Props) {
   const [covers, setCovers] = useState<Record<string, CoverStyle>>(() => readCoverPreferences());
   const [openMenuProject, setOpenMenuProject] = useState<string | null>(null);
@@ -128,11 +135,14 @@ export function ProjectLanding({
           onActivate={onActivateProjectTab}
           onClose={onCloseProjectTab}
         />
+        <LandingIdentityMenu
+          identity={identity}
+          identityError={identityError}
+          onRequestName={onRequestIdentityName}
+        />
       </header>
 
       <main className="landing-main">
-        <h1>Choose a project</h1>
-
         <section className="project-shelf" aria-label="RCP projects">
           {projects.map((project, index) => {
             const unavailable = project.reachable === false;

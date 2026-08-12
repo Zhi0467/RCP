@@ -5,6 +5,7 @@ import {
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
+  mergeAgentProfiles,
   mergeMachineProviderPaths,
   serializeSettingsDraft,
 } from "../src/settingsDraft.ts";
@@ -43,7 +44,61 @@ test("settings drafts round trip staged provider paths", () => {
     version: 1,
     scope: ["repo"],
     profiles: {},
+    campaignInvocationCeiling: 14,
     providerPaths: { local: { codex: "/opt/codex" } },
   };
   assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
+});
+
+test("settings drafts reject an invalid campaign default while legacy drafts remain readable", () => {
+  assert.ok(
+    deserializeSettingsDraft(JSON.stringify({ version: 1, scope: ["repo"], profiles: {} })),
+  );
+  assert.equal(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        version: 1,
+        scope: ["repo"],
+        profiles: {},
+        campaignInvocationCeiling: 1,
+      }),
+    ),
+    null,
+  );
+});
+
+test("a five-profile v1 draft keeps the saved orchestrator profile", () => {
+  const runConfig = (model) => ({
+    provider: "codex",
+    model,
+    reasoning: "medium",
+    run_on: "local",
+  });
+  const saved = {
+    seed: runConfig("saved-seed"),
+    refresh: runConfig("saved-refresh"),
+    node_chat: runConfig("saved-node-chat"),
+    project_chat: runConfig("saved-project-chat"),
+    paper_coach: runConfig("saved-paper-coach"),
+    orchestrator: runConfig("saved-orchestrator"),
+  };
+  const legacy = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 1,
+      scope: ["repo"],
+      profiles: {
+        seed: runConfig("draft-seed"),
+        refresh: runConfig("draft-refresh"),
+        node_chat: runConfig("draft-node-chat"),
+        project_chat: runConfig("draft-project-chat"),
+        paper_coach: runConfig("draft-paper-coach"),
+      },
+    }),
+  );
+
+  assert.ok(legacy);
+  assert.deepEqual(mergeAgentProfiles(saved, legacy.profiles), {
+    ...legacy.profiles,
+    orchestrator: saved.orchestrator,
+  });
 });

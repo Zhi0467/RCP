@@ -28,6 +28,7 @@ import {
   type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
   type Ref,
+  type ReactNode,
 } from "react";
 import {
   buildNodeProjectionEmphasis,
@@ -46,7 +47,12 @@ import {
   type DagPosition,
 } from "../hooks/useForceDag";
 import { buildResearchPaths } from "../researchProjection";
-import { buildRunProjection, type AgentTaskGroup, type RunEntry } from "../runProjection";
+import {
+  buildRunProjection,
+  experimentRecommendation,
+  type AgentTaskGroup,
+  type RunEntry,
+} from "../runProjection";
 import {
   ExperimentRunDetail,
   experimentHealthLabel,
@@ -762,6 +768,7 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   stopBusyId: string | null;
   watcherCheckBusyId: string | null;
   taskActionId: string | null;
+  selectedExperimentConversation?: ReactNode;
   providerLabels?: Record<string, string>;
   mutationsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
@@ -789,6 +796,7 @@ export function ExecutionView({
   stopBusyId,
   watcherCheckBusyId,
   taskActionId,
+  selectedExperimentConversation,
   providerLabels = {},
   mutationsDisabled = false,
   onInspectTask,
@@ -848,6 +856,7 @@ export function ExecutionView({
                       stopBusy={entry.kind === "experiment" && stopBusyId === entry.id}
                       watcherCheckBusyId={watcherCheckBusyId}
                       taskActionId={taskActionId}
+                      experimentConversation={selectedExperimentConversation}
                       providerLabels={providerLabels}
                       mutationsDisabled={
                         mutationsDisabled ||
@@ -885,6 +894,7 @@ function RunEntryRow({
   stopBusy,
   watcherCheckBusyId,
   taskActionId,
+  experimentConversation,
   providerLabels,
   mutationsDisabled,
   onInspectTask,
@@ -904,6 +914,7 @@ function RunEntryRow({
   stopBusy: boolean;
   watcherCheckBusyId: string | null;
   taskActionId: string | null;
+  experimentConversation?: ReactNode;
   providerLabels: Record<string, string>;
   mutationsDisabled: boolean;
   onInspectTask: (operationId: string) => void;
@@ -987,6 +998,7 @@ function RunEntryRow({
             )}
             watcherCheckBusyId={watcherCheckBusyId}
             providerLabel={experimentProviderLabel(experiment, providerLabels)}
+            conversation={experimentConversation}
             onRun={() => onRunExperiment(experiment.node)}
             onStopLoop={() => onStopExperiment(experiment.node.id)}
             onCheckWatcher={onCheckExperimentWatcher}
@@ -1013,13 +1025,7 @@ function experimentProviderLabel(
 }
 
 function experimentRowSummary(experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"]) {
-  return (
-    experiment.currentTask?.status_message ||
-    experiment.control?.operational?.current_status_message ||
-    String(
-      experiment.node.current_summary || experiment.node.objective || "No current summary yet.",
-    )
-  );
+  return experimentRecommendation(experiment).label;
 }
 
 export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustView">) {
@@ -1188,6 +1194,7 @@ function agentTaskName(task: AgentTask): string {
     node_chat: "Node chat",
     project_chat: "Project chat",
     paper_coach: "Writing coach",
+    campaign: "Auto-research campaign",
   }[task.kind];
 }
 

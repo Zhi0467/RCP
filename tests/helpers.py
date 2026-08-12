@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from typing import Any
 
 from rcp.api import create_app
-from rcp.core.models import Patch
+from rcp.core.models import AuthorizedHuman, Patch
 from rcp.history import HistoryManager
+from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
+
+# Background tasks run on their own thread, so this bounds a genuine hang rather
+# than the expected duration. The poll returns the moment the task is terminal,
+# so a generous bound costs nothing on success, while a tight one invents
+# failures whenever the full suite is competing for the CPU.
+TASK_SETTLE_TIMEOUT = 60.0
+_TASK_POLL_INTERVAL = 0.01
 
 _RCP_OWNED_ITEM_FIELDS = {
     "create_nodes": ("nodes", {"standing", "created_rev", "updated_rev"}),
@@ -15,6 +25,7 @@ _RCP_OWNED_ITEM_FIELDS = {
         "proposals",
         {
             "related_node_ids",
+            "related_edge_ids",
             "related_config_keys",
             "base_rev",
             "status",
@@ -37,6 +48,92 @@ def create_named_app(*args: Any, **kwargs: Any):
         if owner is not None and owner.display_name is None:
             store.rename_space_user(owner.user_id, "Test researcher")
     return app
+
+
+def _store_of(app_or_store: Any) -> AppStore:
+    """Accept either an app or the store itself, so callers keep whichever they hold."""
+
+    if isinstance(app_or_store, AppStore):
+        return app_or_store
+    return app_or_store.state.background_tasks.store
+
+
+def authorized_human(
+    app_or_store: Any, *, display_name: str = "Test researcher"
+) -> AuthorizedHuman:
+    """The local owner as a patch author, naming them if the app has not already."""
+
+    store = _store_of(app_or_store)
+    owner = store.local_owner
+    assert owner is not None, "app has no local owner"
+    if owner.display_name is None:
+        owner = store.rename_space_user(owner.user_id, display_name)
+    return AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
+    )
+
+
+def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHuman:
+    """A synthetic authorizer for stores that were never opened as an app."""
+
+    return AuthorizedHuman(
+        space_id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        display_name=display_name,
+    )
+
+
+def wait_for_task(
+    app_or_store: Any,
+    operation_id: str,
+    *,
+    expect: str | None = None,
+    timeout: float = TASK_SETTLE_TIMEOUT,
+) -> AgentTaskRecord:
+    """Poll the store until the task leaves every active status."""
+
+    store = _store_of(app_or_store)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        record = store.agent_task(operation_id)
+        assert record is not None, f"task {operation_id} was never recorded"
+        if record.status not in ACTIVE_AGENT_TASK_STATUSES:
+            if expect is not None:
+                assert record.status == expect, (
+                    f"task {operation_id} settled as {record.status!r}, expected {expect!r}: "
+                    f"{record.error or record.status_message}"
+                )
+            return record
+        time.sleep(_TASK_POLL_INTERVAL)
+    raise AssertionError(f"task {operation_id} did not settle within {timeout}s")
+
+
+def wait_for_task_response(
+    client: Any,
+    project_id: str,
+    operation_id: str,
+    *,
+    expect: str | None = None,
+    timeout: float = TASK_SETTLE_TIMEOUT,
+) -> dict[str, Any]:
+    """Poll the task route until the task leaves every active status."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
+        assert response.status_code == 200, response.text
+        task = response.json()
+        if task["status"] not in ACTIVE_AGENT_TASK_STATUSES:
+            if expect is not None:
+                assert task["status"] == expect, (
+                    f"task {operation_id} settled as {task['status']!r}, expected {expect!r}: "
+                    f"{task.get('error') or task.get('status_message')}"
+                )
+            return task
+        time.sleep(_TASK_POLL_INTERVAL)
+    raise AssertionError(f"task {operation_id} did not settle within {timeout}s")
 
 
 def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):

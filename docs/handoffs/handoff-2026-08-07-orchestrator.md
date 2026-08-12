@@ -123,7 +123,7 @@ Decisions taken 2026-08-07; do not relitigate.
 
 | | Ruling | Why |
 |---|---|---|
-| Who sets the budget, and at what granularity? | **One number for the whole campaign**, set when the human presses the button, defaulting from Settings. Not per-worker. | Per-worker ceilings force the human into capacity planning up front — exactly the work being delegated. |
+| Who sets the budget, and at what granularity? | **One number for the whole campaign**, set when the human presses the button, defaulting to **10 invocations** from Settings. Not per-worker. | Per-worker ceilings force the human into capacity planning up front — exactly the work being delegated. |
 | Does the orchestrator's own turn spend a unit? | **Yes.** | One rule, no exceptions, no accounting bugs. Same reasoning as graph wakes always spending. |
 | What happens at exhaustion? | **Exactly what `invocation_ceiling` already does.** Current turns finish, nothing new starts, the campaign sits in **Needs action**, the human may reauthorize. | A careful exhaustion semantics already exists and is durable; a second one would be a worse copy. |
 | How many campaigns per project at once? | **One.** | Two orchestrators dispatching against one graph is the write-contention problem, and there is no scope-partition story. Easy to relax later, painful to retract. |
@@ -142,6 +142,22 @@ finish normally, valid patches still apply, existing and newly emitted watchers
 retain as `stopped`, no new claim wins. Do not invent a second stop semantics —
 reuse the one in the blueprint, which is already durable, idempotent, and
 restart-safe.
+
+**Decided 2026-08-12:** normal completion is one idempotent staged `finish`
+command from the orchestrator. Quiescence is not completion: a campaign may be
+quiet because its actors are asleep on mail or watchers.
+
+Provider, network, rate-limit, and resumable session failures of the orchestrator
+use the existing bounded backoff and exact-session Resume/Retry paths. Only an
+unrecoverable orchestrator failure ends the campaign. Worker failures remain
+visible work for the orchestrator rather than becoming campaign verdicts. A
+terminal orchestrator failure fences admission, retires campaign watchers with
+Stop-loop semantics, retains pending mail, and proceeds to a partial report.
+
+Human controls are campaign-level only. Runs derives a structured recommended
+action table from durable campaign and orchestrator state in the same style as
+Experiment control; it never exposes an individual worker control or infers an
+action from diagnostic prose.
 
 ## 4. Where it may seat a worker
 
@@ -346,10 +362,33 @@ Nothing here needs a new destination, and the
 [no-commentary-lines rule](../acceptance/S20-no-ui-commentary-lines.md) applies
 throughout.
 
+### Decided 2026-08-12
+
+**Auto-research starts from the project header, beside Ask.** The action's scope
+and its location agree: the campaign is project-wide, and it lives where the
+project-wide actions live. A button on one ResearchQuestion that authorizes work
+across the whole project would misstate its own reach at the moment of pressing,
+which is the confusion the project-scope ruling exists to prevent.
+
+The accepted cost is that the orchestrator starts with **no anchor** — no
+particular question in view — so its first turn could be spent choosing what to
+work on rather than working. The authorization dialog therefore accepts an
+optional starting instruction, which gives the campaign an anchor without
+misstating its project-wide scope or granting any authority.
+
+**The budget is typed in invocations, with observed cost shown beside it.** The
+enforced ceiling stays exactly `invocation_ceiling`, and the existing usage
+ledger supplies what has actually been spent. The enforced number stays exact and
+the legible number stays honest, at the price of two numbers on screen. Money as
+the input unit was rejected: it needs drifting per-provider pricing hardcoded
+somewhere, and a campaign halting because a price moved is a weaker guarantee
+than a counted ceiling.
+
 - **Runs** already nests children under a parent row, so a campaign is a parent
-  with its workers as children, one shared budget meter on the parent, and **Stop**
-  as its only campaign-level action. Invocation-level Pause/Resume/Retry stay in
-  the Agent task inspector, exactly as S72 promises for Experiment loops.
+  with its workers as children and one shared budget meter on the parent. Its
+  controls remain on that parent: a durable-state action table recommends Stop,
+  exact-session recovery, reauthorization, or report review when each is safe.
+  Workers remain inspection-only in the human UI.
 - **The human can message the orchestrator.** This is the steering gesture, and
   it is what makes auto-research feel like delegation rather than a batch job.
 - **The mail thread is inspectable** — ordered, attributed by worker and control
@@ -363,7 +402,7 @@ throughout.
   decided Decisions, and resolved Blockers do not enter the graph Inbox merely
   because auto-research touched them.
 
-### Campaign-report skill — confirmed direction, details still to grill
+### Campaign-report skill — confirmed contract
 
 RCP supplies a versioned campaign-report skill and requires the orchestrator to
 use it for the final wrap-up. The skill tells the orchestrator how to turn the
@@ -386,15 +425,35 @@ The report is not a Patch, carries no graph authority, and does not determine
 whether a campaign succeeded. It summarizes authoritative graph and task state;
 the graph and task ledger remain the source of truth.
 
-The next grill must decide which terminal states require a report—including
-normal completion, budget exhaustion, human Stop, and failure—whether the HTML
-is a durable campaign artifact or a regenerable report, when it becomes visible
-relative to still-finishing child work, the exact skill package and invocation
-contract, and how RCP handles a missing or invalid report. The implementation
-must reuse the existing sandboxed HTML rendering boundary rather than inventing
-an unrestricted campaign document surface.
+**Decided 2026-08-12: the report is a durable artifact, produced on every
+ending.** Normal completion, budget exhaustion, human Stop, and failure all
+produce one. It is captured at wrap-up and kept.
 
-## 9. Acceptance scenarios — written, not yet confirmed
+Both halves were chosen against a cheaper option, and the reasons should not be
+relitigated. Durable rather than regenerable, because a campaign is a period of
+time: a report rebuilt later against a moved graph describes something else, and
+a record that changes is not a record. Every ending rather than clean completion
+only, because *ran out of budget* and *I stopped it* are precisely the endings a
+person needs explained — reporting only on success would stay silent exactly when
+it matters.
+
+The accepted cost is partial reports. An ending that was not clean produces a
+report about an incomplete campaign, and it must read as one rather than as a
+tidy summary of work that did not happen.
+
+**Decided 2026-08-12:** the report is the campaign's concluding turn. After the
+ending fence blocks new admission, RCP waits for every already-admitted child
+turn to settle. It then spends the reserved unit by resuming the sole
+orchestrator's exact native session and actor-owned stage, stages the required
+versioned `campaign-report` official skill, and requires the exact output file
+`campaign-report.html`. Only after those children have settled and that HTML
+validates does the report become visible. Missing or invalid HTML enters the
+bounded report-only correction ladder in the same allocation, session, stage,
+skill, and output path, without repeating operational work. Rendering reuses the
+existing sandboxed HTML boundary rather than inventing an unrestricted campaign
+document surface.
+
+## 9. Acceptance scenarios — confirmed
 
 **Two scenarios, decided 2026-08-07.** Bundling them would make the cheap half
 expensive.
@@ -406,11 +465,10 @@ expensive.
   Driver `browser`. Owns budget accounting, exhaustion, Stop, and the client's
   idempotency and event-stream behavior.
 
-S78's **UI path is the least settled part of this whole program** — the
-auto-research entry point, the campaign row, and the budget display have not
-been discussed in enough detail, and the scenario says so. Per
-[`AGENTS.md`](../../AGENTS.md) step 0, confirm both before implementation, and
-expect S78's drive to change when the surface is actually designed.
+Both scenarios were human-confirmed on 2026-08-12. S78 now records the project
+header entry point, campaign parent row, one budget meter, campaign-level
+recovery controls, and concluding report turn that the implementation must
+drive in a browser.
 
 ## 10. Do not
 

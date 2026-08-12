@@ -12,15 +12,26 @@ from pathlib import PurePosixPath
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from rcp.core.models import GraphState
 from rcp.limits import (
     WATCHER_CHECK_TIMEOUT_SECONDS,
     WATCHER_CHECK_WORKERS,
     WATCHER_ERROR_MAX_CHARS,
     WATCHER_POLL_INTERVAL_SECONDS,
 )
-from rcp.storage import AppStore, WatcherContinuation, WatcherRecord, WatcherStopRequest
+from rcp.storage import (
+    AppStore,
+    GraphCondition,
+    GraphWatcherRecord,
+    NodeStatusGraphCondition,
+    ProposalResolvedGraphCondition,
+    StoredWatcherRecord,
+    WatcherContinuation,
+    WatcherRecord,
+    WatcherStopRequest,
+)
 from rcp.transport.ssh import ssh_arguments
 
 logger = logging.getLogger(__name__)
@@ -54,8 +65,17 @@ class WatchSpec(BaseModel):
         return value
 
 
-class WatchList(RootModel[list[WatchSpec]]):
-    root: list[WatchSpec] = Field(min_length=1)
+class WatchHandoff(BaseModel):
+    """One all-or-none watcher declaration with two closed condition kinds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external: list[WatchSpec]
+    graph: list[GraphCondition]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.external and not self.graph
 
 
 class ExperimentWatchSpec(WatchSpec):
@@ -78,11 +98,12 @@ class ExperimentWatchHandoff(BaseModel):
     """The Experiment-only mixed observer/retirement watcher file."""
 
     observers: list[ExperimentWatchSpec]
+    graph_conditions: list[GraphCondition]
     stops: list[WatcherStopRequest]
 
     @property
     def is_empty(self) -> bool:
-        return not self.observers and not self.stops
+        return not self.observers and not self.graph_conditions and not self.stops
 
 
 class WatcherBinding(BaseModel):
@@ -92,7 +113,7 @@ class WatcherBinding(BaseModel):
 
     project_id: str
     origin_operation_id: str
-    origin_task_kind: Literal["node_chat", "project_chat"]
+    origin_task_kind: Literal["node_chat", "project_chat", "campaign"]
     chat_id: str
     node_id: str | None = None
     execution_host: str = ""
@@ -108,6 +129,22 @@ class WatcherCheckResult(BaseModel):
 
 WatcherCheckRunner = Callable[[WatchSpec, str, float], WatcherCheckResult]
 WatcherCompletionCallback = Callable[[list[WatcherRecord]], None]
+WatcherPollCompletedCallback = Callable[[], None]
+
+
+class WatcherRetryGeneration:
+    """A retry pass lease that serializes its final side effect with stop()."""
+
+    def __init__(
+        self,
+        is_current: Callable[[], bool],
+        run_if_current: Callable[[Callable[[], None]], bool],
+    ) -> None:
+        self.is_current = is_current
+        self.run_if_current = run_if_current
+
+
+WatcherRetryCallback = Callable[[WatcherRetryGeneration], None]
 
 
 class WatcherInitialCheckError(ValueError):
@@ -125,19 +162,27 @@ class WatcherInitialCheckError(ValueError):
         super().__init__(detail)
 
 
-def parse_watch_json(payload: str) -> list[WatchSpec]:
-    return WatchList.model_validate_json(payload).root
+def parse_watch_json(payload: str) -> WatchHandoff:
+    handoff = WatchHandoff.model_validate_json(payload)
+    if handoff.is_empty:
+        raise ValueError("a watch handoff must contain at least one watcher")
+    _validate_unique_graph_conditions(handoff.graph)
+    return handoff
 
 
 def parse_experiment_watch_json(payload: str) -> ExperimentWatchHandoff:
     """Parse the one Experiment-only watcher handoff without loosening Work."""
 
     raw = json.loads(payload)
-    if not isinstance(raw, list):
-        raise ValueError("Experiment watch.json must contain a JSON list")
+    if not isinstance(raw, dict) or set(raw) != {"external", "graph"}:
+        raise ValueError("Experiment watch.json must contain exactly the external and graph lists")
+    external = raw["external"]
+    graph = raw["graph"]
+    if not isinstance(external, list) or not isinstance(graph, list):
+        raise ValueError("Experiment watch.json external and graph values must be lists")
     observers: list[ExperimentWatchSpec] = []
     stops: list[WatcherStopRequest] = []
-    for item in raw:
+    for item in external:
         if not isinstance(item, dict):
             raise ValueError("Experiment watch.json items must be objects")
         if "stop_watcher_id" in item or "reason" in item:
@@ -156,7 +201,142 @@ def parse_experiment_watch_json(payload: str) -> ExperimentWatchHandoff:
         raise ValueError(
             "an Experiment watcher group requires at least two observers: " + ", ".join(undersized)
         )
-    return ExperimentWatchHandoff(observers=observers, stops=stops)
+    graph_conditions = TypeAdapter(list[GraphCondition]).validate_python(graph)
+    _validate_unique_graph_conditions(graph_conditions)
+    return ExperimentWatchHandoff(
+        observers=observers,
+        graph_conditions=graph_conditions,
+        stops=stops,
+    )
+
+
+def _validate_unique_graph_conditions(conditions: list[GraphCondition]) -> None:
+    identities = [item.model_dump_json() for item in conditions]
+    if len(identities) != len(set(identities)):
+        raise ValueError("a watch handoff cannot repeat a graph condition")
+
+
+def validate_graph_conditions(
+    conditions: list[GraphCondition],
+    state: GraphState,
+) -> None:
+    """Validate graph conditions against one complete canonical state."""
+
+    _validate_unique_graph_conditions(conditions)
+    if state.replay_status != "complete":
+        raise ValueError("graph conditions cannot be validated while graph replay is degraded")
+    for condition in conditions:
+        node = state.nodes.get(condition.node_id)
+        if node is None:
+            raise ValueError(f"graph condition target does not exist: {condition.node_id}")
+        if not isinstance(condition, NodeStatusGraphCondition):
+            continue
+        status_field = type(node).model_fields.get("status")
+        if status_field is None:
+            raise ValueError(f"graph condition target has no status: {condition.node_id}")
+        status_adapter = TypeAdapter(status_field.annotation)
+        invalid: list[str] = []
+        for status in condition.status_in:
+            try:
+                status_adapter.validate_python(status)
+            except ValueError:
+                invalid.append(status)
+        if invalid:
+            raise ValueError(
+                f"graph condition has invalid statuses for {condition.node_id}: "
+                + ", ".join(invalid)
+            )
+
+
+def graph_condition_result(
+    condition: GraphCondition,
+    state: GraphState,
+    *,
+    armed_revision: int,
+) -> Literal["active", "completed", "removed"]:
+    """Evaluate one structurally valid condition without mutating its record."""
+
+    if state.replay_status != "complete":
+        return "active"
+    node = state.nodes.get(condition.node_id)
+    if node is None:
+        return "removed"
+    if isinstance(condition, NodeStatusGraphCondition):
+        return "completed" if getattr(node, "status", None) in condition.status_in else "active"
+    if isinstance(condition, ProposalResolvedGraphCondition):
+        resolved = any(
+            proposal.status != "pending"
+            and proposal.resolved_rev is not None
+            and proposal.resolved_rev > armed_revision
+            and condition.node_id in proposal.related_node_ids
+            for proposal in state.proposals.values()
+        )
+        return "completed" if resolved else "active"
+    raise TypeError(f"Unsupported graph condition: {type(condition).__name__}")
+
+
+def evaluate_graph_watchers(
+    store: AppStore,
+    project_id: str,
+    state: GraphState,
+) -> list[list[StoredWatcherRecord]]:
+    """Evaluate one project's graph watchers and return coalesced ready deliveries.
+
+    The caller supplies canonical state at a revision boundary or startup. A
+    degraded replay is deliberately a no-op. Completed external observers are
+    included by the store's existing grouping policy, so compatible conditions
+    that become ready together share one wake.
+    """
+
+    if state.replay_status != "complete":
+        return ready_graph_watcher_groups(store, project_id)
+    evaluated_at = store.now()
+    for record in store.active_graph_watchers(project_id):
+        if record.armed_revision is None:
+            store.initialize_graph_watcher_baseline(
+                record.watcher_id,
+                armed_revision=state.revision,
+                evaluated_at=evaluated_at,
+            )
+            continue
+        if record.armed_revision >= state.revision:
+            continue
+        result = graph_condition_result(
+            record.condition,
+            state,
+            armed_revision=record.armed_revision,
+        )
+        if result != "removed":
+            try:
+                validate_graph_conditions([record.condition], state)
+            except ValueError as exc:
+                logger.error(
+                    "Stored graph watcher %s is semantically invalid: %s",
+                    record.watcher_id,
+                    exc,
+                )
+                result = "active"
+        store.record_graph_watcher_result(
+            record.watcher_id,
+            result=result,
+            evaluated_at=evaluated_at,
+        )
+    return ready_graph_watcher_groups(store, project_id)
+
+
+def ready_graph_watcher_groups(
+    store: AppStore,
+    project_id: str,
+) -> list[list[StoredWatcherRecord]]:
+    """Return ready groups containing graph rows without evaluating conditions."""
+
+    return [
+        group
+        for group in store.completed_watcher_groups()
+        if group
+        and group[0].project_id == project_id
+        and any(isinstance(record, GraphWatcherRecord) for record in group)
+    ]
 
 
 def run_watcher_check(
@@ -249,24 +429,56 @@ def arm_watchers(
     specs: list[WatchSpec],
     binding: WatcherBinding,
     *,
+    graph_conditions: list[GraphCondition] | None = None,
+    state: GraphState | None = None,
+    watcher_ids: list[str] | None = None,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-) -> list[WatcherRecord]:
-    """Validate one list and persist all of it, or persist none of it."""
+) -> list[StoredWatcherRecord]:
+    """Validate one mixed handoff and persist all of it, or persist none of it."""
 
-    results = validate_watch_specs(
-        specs,
-        binding.execution_host,
-        check_runner=check_runner,
-        timeout=timeout,
+    conditions = list(graph_conditions or [])
+    if not specs and not conditions:
+        raise ValueError("a watch list must contain at least one watcher")
+    watcher_count = len(specs) + len(conditions)
+    if watcher_ids is None:
+        resolved_watcher_ids = [str(uuid4()) for _ in range(watcher_count)]
+    else:
+        if len(watcher_ids) != watcher_count:
+            raise ValueError("watcher_ids must match the mixed watcher handoff exactly")
+        if any(
+            not isinstance(watcher_id, str) or not watcher_id.strip() for watcher_id in watcher_ids
+        ):
+            raise ValueError("watcher_ids must contain only nonblank strings")
+        if len(watcher_ids) != len(set(watcher_ids)):
+            raise ValueError("watcher_ids must be unique")
+        resolved_watcher_ids = list(watcher_ids)
+    if conditions:
+        if state is None:
+            raise ValueError("graph watcher arming requires canonical graph state")
+        validate_graph_conditions(conditions, state)
+    results = (
+        validate_watch_specs(
+            specs,
+            binding.execution_host,
+            check_runner=check_runner,
+            timeout=timeout,
+        )
+        if specs
+        else []
     )
     created_at = _now()
-    records = []
-    for spec, result in zip(specs, results, strict=True):
+    records: list[StoredWatcherRecord] = []
+    for watcher_id, spec, result in zip(
+        resolved_watcher_ids[: len(specs)],
+        specs,
+        results,
+        strict=True,
+    ):
         completed = result.state == "complete"
         records.append(
             WatcherRecord(
-                watcher_id=str(uuid4()),
+                watcher_id=watcher_id,
                 project_id=binding.project_id,
                 origin_operation_id=binding.origin_operation_id,
                 origin_task_kind=binding.origin_task_kind,
@@ -284,6 +496,38 @@ def arm_watchers(
                 completed_at=result.checked_at if completed else None,
             )
         )
+    if state is not None:
+        for watcher_id, condition in zip(
+            resolved_watcher_ids[len(specs) :],
+            conditions,
+            strict=True,
+        ):
+            result = graph_condition_result(
+                condition,
+                state,
+                armed_revision=state.revision,
+            )
+            if result == "removed":
+                raise ValueError(f"graph condition target does not exist: {condition.node_id}")
+            completed = result == "completed"
+            records.append(
+                GraphWatcherRecord(
+                    watcher_id=watcher_id,
+                    project_id=binding.project_id,
+                    origin_operation_id=binding.origin_operation_id,
+                    origin_task_kind=binding.origin_task_kind,
+                    chat_id=binding.chat_id,
+                    node_id=binding.node_id,
+                    execution_host=binding.execution_host,
+                    condition=condition,
+                    armed_revision=state.revision,
+                    continuation=binding.continuation,
+                    status="completed" if completed else "active",
+                    created_at=created_at,
+                    last_evaluated_at=created_at,
+                    completed_at=created_at if completed else None,
+                )
+            )
     return store.create_watchers(records)
 
 
@@ -295,6 +539,7 @@ class WatcherPoller:
         store: AppStore,
         *,
         on_completed: WatcherCompletionCallback | None = None,
+        on_poll_completed: WatcherPollCompletedCallback | None = None,
         check_runner: WatcherCheckRunner = run_watcher_check,
         timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
         interval: float = WATCHER_POLL_INTERVAL_SECONDS,
@@ -303,6 +548,7 @@ class WatcherPoller:
     ) -> None:
         self.store = store
         self.on_completed = on_completed
+        self.on_poll_completed = on_poll_completed
         self.check_runner = check_runner
         self.timeout = timeout
         self.interval = interval
@@ -387,7 +633,13 @@ class WatcherPoller:
                     )
 
     def _finish_poll(self) -> list[list[WatcherRecord]]:
-        groups = self.store.completed_watcher_groups()
+        groups: list[list[WatcherRecord]] = []
+        for group in self.store.completed_watcher_groups():
+            if any(isinstance(item, GraphWatcherRecord) for item in group):
+                continue
+            external = [item for item in group if isinstance(item, WatcherRecord)]
+            if external:
+                groups.append(external)
         if self.on_completed is not None:
             for group in groups:
                 try:
@@ -397,6 +649,11 @@ class WatcherPoller:
                         "Watcher completion callback failed for %s",
                         [record.watcher_id for record in group],
                     )
+        if self.on_poll_completed is not None:
+            try:
+                self.on_poll_completed()
+            except Exception:
+                logger.exception("Watcher poll-completed callback failed")
         return groups
 
     def _run(self) -> None:
@@ -406,6 +663,100 @@ class WatcherPoller:
             except Exception:
                 logger.exception("Watcher polling pass failed")
             self._stop.wait(self.interval)
+
+
+class WatcherRetryWorker:
+    """Coalesce poll-pass signals onto generation-scoped retry threads."""
+
+    def __init__(self, callback: WatcherRetryCallback) -> None:
+        self.callback = callback
+        self._lifecycle_lock = threading.Lock()
+        self._generation = 0
+        self._accepting = False
+        self._pending: threading.Event | None = None
+        self._stop: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        with self._lifecycle_lock:
+            if self._accepting and self._thread is not None and self._thread.is_alive():
+                return
+            old_stop = self._stop
+            old_pending = self._pending
+            if old_stop is not None:
+                old_stop.set()
+            if old_pending is not None:
+                old_pending.set()
+
+            self._generation += 1
+            generation = self._generation
+            pending = threading.Event()
+            stop = threading.Event()
+            thread = threading.Thread(
+                target=self._run,
+                args=(generation, pending, stop),
+                name=f"rcp-graph-watcher-retries-{generation}",
+                daemon=True,
+            )
+            self._accepting = True
+            self._pending = pending
+            self._stop = stop
+            self._thread = thread
+            thread.start()
+
+    def signal(self) -> None:
+        with self._lifecycle_lock:
+            pending = self._pending if self._accepting else None
+        if pending is not None:
+            pending.set()
+
+    def stop(self, *, timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS + 1) -> None:
+        with self._lifecycle_lock:
+            self._accepting = False
+            self._generation += 1
+            stop = self._stop
+            pending = self._pending
+            thread = self._thread
+            if stop is not None:
+                stop.set()
+            if pending is not None:
+                pending.set()
+        if thread is not None:
+            thread.join(timeout=max(0.0, timeout))
+        with self._lifecycle_lock:
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
+                self._pending = None
+                self._stop = None
+
+    def _run(
+        self,
+        generation: int,
+        pending: threading.Event,
+        stop: threading.Event,
+    ) -> None:
+        def is_current() -> bool:
+            with self._lifecycle_lock:
+                return self._accepting and self._generation == generation
+
+        def run_if_current(callback: Callable[[], None]) -> bool:
+            with self._lifecycle_lock:
+                if not self._accepting or self._generation != generation:
+                    return False
+                callback()
+                return True
+
+        lease = WatcherRetryGeneration(is_current, run_if_current)
+
+        while True:
+            pending.wait()
+            pending.clear()
+            if stop.is_set() or not is_current():
+                return
+            try:
+                self.callback(lease)
+            except Exception:
+                logger.exception("Graph watcher ready-delivery retry failed")
 
 
 def _spec_from_record(record: WatcherRecord) -> WatchSpec:

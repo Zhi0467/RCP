@@ -19,13 +19,19 @@ from rcp.runs.experiment_loop import (
     stage_chat_experiment_watcher_resources,
 )
 from rcp.runs.shared import _parent_task_contract_path
-from rcp.runs.work import _process_experiment_watcher_maintenance, stream_work_run
-from rcp.service import RunRequest
+from rcp.runs.work import (
+    _apply_work_patch,
+    _process_experiment_watcher_maintenance,
+    stream_work_run,
+)
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
+    GraphWatcherRecord,
+    NodeStatusGraphCondition,
     WatcherContinuation,
     WatcherRecord,
 )
@@ -156,6 +162,8 @@ def _execution(
     retry_feedback: tuple[str, ...] = (),
 ) -> AgentTaskExecution:
     now = store.now()
+    dispatch_authority = resolve_dispatch_authority("node_chat", request)
+    assert dispatch_authority is not None
     owner = store.local_owner
     assert owner is not None
     if owner.display_name is None:
@@ -179,6 +187,7 @@ def _execution(
                 user_id=owner.user_id,
                 display_name=owner.display_name,
             ),
+            dispatch_authority=dispatch_authority,
         )
     )
     store.record_agent_task_receipt(
@@ -230,13 +239,16 @@ class _LoopLauncher:
         if self.write_handoff:
             (workspace / "watch.json").write_text(
                 json.dumps(
-                    [
-                        {
-                            "check_command": "false",
-                            "log_path": str(self.watcher_cwd / "detached.log"),
-                            "cwd": str(self.watcher_cwd),
-                        }
-                    ]
+                    {
+                        "external": [
+                            {
+                                "check_command": "false",
+                                "log_path": str(self.watcher_cwd / "detached.log"),
+                                "cwd": str(self.watcher_cwd),
+                            }
+                        ],
+                        "graph": [],
+                    }
                 ),
                 encoding="utf-8",
             )
@@ -292,7 +304,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
             contract = contract_path.read_text(encoding="utf-8")
             self.contracts.append(contract)
             workspace = Path(kwargs["cwd"])
-            (workspace / "watch.json").write_text("[]\n", encoding="utf-8")
+            (workspace / "watch.json").write_text('{"external":[],"graph":[]}\n', encoding="utf-8")
             correcting = "watcher correction" in contract.casefold()
             next_action = None if correcting else "Analyze and document the remaining results."
             (workspace / "patch.json").write_text(
@@ -740,7 +752,10 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert str(service.manifest.research_dir / "graph.json") in wake_contract
     assert str(service.manifest.research_dir / "research.md") in wake_contract
     assert "chat-patch-schema-" in wake_contract
-    assert "chat-validator-client-" in wake_contract
+    assert "rcp-agent-client-" in wake_contract
+    assert " --credential " in wake_contract
+    assert " --workspace " in wake_contract
+    assert " validate " in wake_contract
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None
@@ -1001,6 +1016,11 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     assert rejected_episode is not None
     assert rejected_episode.last_graph_result is not None
     assert rejected_episode.last_graph_result.startswith("rejected:")
+    root_task = store.agent_task("loop-rejected")
+    assert root_task is not None and root_task.authorized_by is not None
+    owner = store.local_owner
+    assert owner is not None
+    store.rename_space_user(owner.user_id, "Repair researcher")
 
     repair_request = initial_request.model_copy(
         update={"session_id": native_session_id, "message": None}
@@ -1039,6 +1059,12 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     assert not [event for event in repair_events if event.event == "error"]
     applied_graph = _graph_update_from_events(repair_events)
     assert applied_graph["status"] == "applied"
+    applied_patch = service.history.load_patches()[-1]
+    assert applied_patch.source_operation_id == "loop-graph-repair"
+    assert applied_patch.task_id == "loop-graph-repair"
+    assert applied_patch.authorized_by is not None
+    assert applied_patch.authorized_by.display_name == "Repair researcher"
+    assert root_task.authorized_by.display_name != applied_patch.authorized_by.display_name
 
     repaired_episode = store.experiment_episode(episode_id)
     assert repaired_episode is not None
@@ -1049,6 +1075,83 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     )
     assert repaired_episode.last_watcher_ids == rejected_episode.last_watcher_ids
     assert repaired_episode.context_baseline == rejected_episode.context_baseline
+
+
+def test_experiment_apply_resolves_the_direct_child_binding_not_its_root(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000096"
+    request = _loop_request(
+        episode_id,
+        "chat-direct-child-authority",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    root = _execution(store, project_id, "loop-authority-root", request)
+    store.fail_agent_task(root.operation_id, "Interrupted before Apply.")
+    child = _execution(
+        store,
+        project_id,
+        "loop-authority-child",
+        request,
+        continuation="retry",
+        parent_operation_id=root.operation_id,
+    )
+    stored_child = store.agent_task(child.operation_id)
+    assert stored_child is not None and stored_child.dispatch_authority is not None
+    real_resolver = service.history.agent_authority_resolver
+    assert real_resolver is not None
+    resolved_operations: list[str] = []
+
+    def mismatched_child_resolver(project: str, operation_id: str):
+        resolved_operations.append(operation_id)
+        resolved = real_resolver(project, operation_id)
+        if operation_id != child.operation_id:
+            return resolved
+        dispatch = resolved.dispatch_authority
+        assert dispatch is not None
+        mismatched_scope = dispatch.scope.model_copy(update={"run_truth_scope": ["repo-b"]})
+        return resolved.model_copy(
+            update={"dispatch_authority": dispatch.model_copy(update={"scope": mismatched_scope})}
+        )
+
+    service.history.agent_authority_resolver = mismatched_child_resolver
+    revision_before_apply = service.history.state().revision
+    result, failure = _apply_work_patch(
+        service,
+        child,
+        json.dumps(
+            {
+                "summary": "Finished the Experiment's operational work.",
+                "ops": [
+                    {
+                        "op": "update_nodes",
+                        "nodes": [{"id": _EXPERIMENT_ID, "changes": {"status": "completed"}}],
+                    }
+                ],
+                "repositories_read": [],
+                "change_summary": ["Finished the Experiment's operational work."],
+            }
+        ),
+        run_truth_scope=["repo-a"],
+        patch_kind="experiment_loop",
+        control_node_id=_EXPERIMENT_ID,
+        control_decision_bundle=[],
+    )
+
+    assert result is None
+    assert failure is not None and "run_truth_scope does not match" in failure.message
+    assert resolved_operations == [child.operation_id]
+    assert service.history.state().revision == revision_before_apply
 
 
 def _store_task(
@@ -1120,6 +1223,88 @@ def _store_watcher(
             )
         ]
     )
+
+
+def test_staged_graph_watcher_state_uses_condition_fields_without_shell_telemetry(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "graph-watcher-state.sqlite3")
+    project_id = "project-graph-watcher-state"
+    episode_id = "00000000-0000-4000-8000-000000000099"
+    _store_task(
+        store,
+        operation_id="graph-watcher-root",
+        project_id=project_id,
+        episode_id=episode_id,
+        status="running",
+    )
+    evaluated_at = "2026-08-12T00:00:00+00:00"
+    continuation = WatcherContinuation(
+        provider="codex",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        patch_kind="experiment_loop",
+        control_node_id=_EXPERIMENT_ID,
+        control_revision=2,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        control_decision_bundle=[],
+        control_completion_criteria=["The canonical blocker is resolved."],
+    )
+    store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="graph-condition",
+                project_id=project_id,
+                origin_operation_id="graph-watcher-root",
+                origin_task_kind="node_chat",
+                chat_id="watcher-state-chat",
+                node_id=_EXPERIMENT_ID,
+                condition=NodeStatusGraphCondition(
+                    node_id="blk/result",
+                    status_in=["resolved"],
+                ),
+                armed_revision=2,
+                continuation=continuation,
+                status="active",
+                created_at=evaluated_at,
+                last_evaluated_at=evaluated_at,
+            )
+        ]
+    )
+    execution = AgentTaskExecution(
+        operation_id="graph-watcher-root",
+        store=store,
+        control=AgentProcessControl(),
+    )
+
+    state = _watcher_state(
+        execution,
+        _EXPERIMENT_ID,
+        [],
+        episode_id,
+        "initial_run",
+    )
+
+    assert len(state) == 1
+    item = state[0]
+    assert item["condition"] == {"node_id": "blk/result", "status_in": ["resolved"]}
+    assert item["armed_revision"] == 2
+    assert item["last_evaluated_at"] == evaluated_at
+    assert not {
+        "check_command",
+        "log_path",
+        "cwd",
+        "last_checked_at",
+        "last_exit_code",
+        "last_error",
+        "next_check_at",
+        "consecutive_error_count",
+        "group_id",
+        "group_label",
+    }.intersection(item)
 
 
 @pytest.mark.asyncio
@@ -1216,9 +1401,10 @@ async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_pat
     workspace = tmp_path / "unstaged-workspace"
     workspace.mkdir()
     guessed = workspace / experiment_watcher_output_name("exp/outside-scope")
-    guessed.write_text("[]", encoding="utf-8")
+    guessed.write_text('{"external":[],"graph":[]}', encoding="utf-8")
 
     frames, session_id, paused = await _process_experiment_watcher_maintenance(
+        service=None,  # The unstaged path is rejected before graph-state access.
         launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
         request=request,
         execution=execution,
@@ -1267,6 +1453,13 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    parent = _execution(
+        store,
+        project_id,
+        "maintenance-work",
+        request,
+    )
+    store.fail_agent_task(parent.operation_id, "Interrupted before watcher maintenance.")
     execution = _execution(
         store,
         project_id,
@@ -1278,11 +1471,12 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
     workspace = tmp_path / "retry-workspace"
     workspace.mkdir()
     survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
-    survivor_text = '[{"stop_watcher_id": "w-1", "reason": "Superseded"}]'
+    survivor_text = '{"external":[{"stop_watcher_id":"w-1","reason":"Superseded"}],"graph":[]}'
     survivor.write_text(survivor_text, encoding="utf-8")
     predecessor_digest = hashlib.sha256(survivor_text.encode("utf-8")).hexdigest()
 
     frames, session_id, paused = await _process_experiment_watcher_maintenance(
+        service=None,  # An unchanged Retry survivor is skipped before graph-state access.
         launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
         request=request,
         execution=execution,

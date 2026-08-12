@@ -35,8 +35,6 @@ pub struct DownloadResult {
 #[derive(Serialize)]
 pub struct QuitResult {
     quitting: bool,
-    #[serde(flatten)]
-    shutdown: backend::ShutdownResult,
 }
 
 #[derive(Serialize)]
@@ -221,33 +219,9 @@ pub fn open_external(app: AppHandle, url: String) -> Result<OpenResult, String> 
 }
 
 #[tauri::command]
-pub async fn request_quit(
-    app: AppHandle,
-    state: State<'_, BackendState>,
-) -> Result<QuitResult, String> {
-    dictation::stop_active();
-    let shutdown = backend::graceful_stop(&state).await?;
-    if shutdown.forced {
-        app.dialog()
-            .message(
-                shutdown
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| "The owned backend required forced termination.".into()),
-            )
-            .title("RCP shutdown")
-            .buttons(tauri_plugin_dialog::MessageDialogButtons::Ok)
-            .blocking_show();
-    }
-    let exit_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        exit_handle.exit(0);
-    });
-    Ok(QuitResult {
-        quitting: true,
-        shutdown,
-    })
+pub fn request_quit(app: AppHandle) -> Result<QuitResult, String> {
+    let quitting = crate::request_app_quit(app);
+    Ok(QuitResult { quitting })
 }
 
 #[tauri::command]

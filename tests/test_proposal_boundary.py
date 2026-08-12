@@ -5,7 +5,7 @@ import pytest
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Patch, Proposal
 from rcp.core.validation import validate_patch
-from rcp.core.validation.proposals import normalized_decision_proposal_ops
+from rcp.core.validation.proposals import normalized_decision_proposal_ops, proposal_is_stale
 from rcp.history import HistoryManager
 from tests.helpers import seed_patch
 
@@ -25,6 +25,14 @@ def _proposal(*, proposal_id: str, node_id: str, changes: dict, cause: dict | No
     update = {"id": node_id, "changes": changes}
     if cause is not None:
         update["cause"] = cause
+    return _intent_proposal(
+        proposal_id=proposal_id,
+        operation={"op": "update_nodes", "intent": "status_change", "nodes": [update]},
+        base_rev=2,
+    )
+
+
+def _intent_proposal(*, proposal_id: str, operation: dict, base_rev: int) -> dict:
     return {
         "op": "create_proposals",
         "proposals": [
@@ -37,9 +45,8 @@ def _proposal(*, proposal_id: str, node_id: str, changes: dict, cause: dict | No
                     "consequences": "The selected research state will change.",
                     "decision_needed": "Approve or reject the transition.",
                 },
-                "ops": [{"op": "update_nodes", "nodes": [update]}],
-                "related_node_ids": [node_id],
-                "base_rev": 2,
+                "ops": [operation],
+                "base_rev": base_rev,
             }
         ],
     }
@@ -107,7 +114,27 @@ def _state_with_decision(manifest, *, governed: bool = True):
     return history.state()
 
 
-def test_ordinary_agent_update_clears_accepted_standing(manifest) -> None:
+def _state_with_second_hypothesis(manifest):
+    state = _state_with_decision(manifest)
+    addition = _agent_patch(
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/alternative-mechanism",
+                    "type": "hypothesis",
+                    "title": "Alternative mechanism",
+                    "statement": "A distinct mechanism explains the same result.",
+                }
+            ],
+        }
+    ).model_copy(update={"revision": state.revision + 1})
+    report = validate_patch(state, addition, ["repo-a", "repo-b"])
+    assert not report.rejected
+    return apply_valid_patch(state, addition)
+
+
+def test_ordinary_agent_cannot_edit_an_existing_research_question_directly(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     history.append(
@@ -125,23 +152,27 @@ def test_ordinary_agent_update_clears_accepted_standing(manifest) -> None:
         )
     )
 
-    history.append(
-        _agent_patch(
-            {
-                "op": "update_nodes",
-                "nodes": [
-                    {
-                        "id": "rq/learning-after-shift",
-                        "changes": {"motivation": "Repeated shifts make this question urgent."},
-                    }
-                ],
-            }
-        )
+    patch = _agent_patch(
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {"motivation": "Repeated shifts make this question urgent."},
+                }
+            ],
+        }
     )
+    report = validate_patch(history.state(), patch, ["repo-a"])
 
     node = history.state().nodes["rq/learning-after-shift"]
-    assert node.motivation == "Repeated shifts make this question urgent."
-    assert node.standing == "asserted"
+    assert report.rejected
+    assert any(
+        message.code == "graph-action-refused" and "update_protected_epistemic" in message.message
+        for message in report.messages
+    )
+    assert node.motivation == "Persistent agents encounter repeated changes."
+    assert node.standing == "accepted"
 
 
 def test_agent_cannot_decide_directly_or_by_proposal(manifest) -> None:
@@ -202,6 +233,805 @@ def test_belief_transition_still_requires_an_exact_proposal(manifest) -> None:
 
     assert direct_report.rejected
     assert not proposal_report.rejected
+
+
+def test_every_declared_protected_intent_is_admitted_as_one_human_question(manifest) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
+    operations = {
+        "content": {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {"question": "Can adaptation remain plastic after repeated shifts?"},
+                }
+            ],
+        },
+        "removal": {
+            "op": "remove_nodes",
+            "intent": "removal",
+            "node_ids": ["hyp/replanning-restores-plasticity"],
+        },
+        "supersede": {
+            "op": "supersede_nodes",
+            "intent": "supersede",
+            "nodes": [
+                {
+                    "id": "hyp/replanning-restores-plasticity",
+                    "superseded_by": "hyp/alternative-mechanism",
+                    "explanation": "The alternative states the mechanism more precisely.",
+                }
+            ],
+        },
+        "merge": {
+            "op": "merge_nodes",
+            "intent": "merge",
+            "merges": [
+                {
+                    "duplicate": "hyp/replanning-restores-plasticity",
+                    "canonical": "hyp/alternative-mechanism",
+                    "explanation": "Both records state the same mechanism.",
+                }
+            ],
+        },
+        "protected-create": {
+            "op": "create_edges",
+            "intent": "protected_relation_change",
+            "edges": [
+                {
+                    "source": "rq/learning-after-shift",
+                    "target": "hyp/alternative-mechanism",
+                    "relation": "has_hypothesis",
+                }
+            ],
+        },
+        "protected-remove": {
+            "op": "remove_edges",
+            "intent": "protected_relation_change",
+            "edge_ids": [edge_id],
+        },
+        "status": {
+            "op": "update_nodes",
+            "intent": "status_change",
+            "nodes": [
+                {
+                    "id": "hyp/replanning-restores-plasticity",
+                    "changes": {"status": "active"},
+                    "cause": {"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+                }
+            ],
+        },
+    }
+
+    for suffix, operation in operations.items():
+        patch = _agent_patch(
+            _intent_proposal(
+                proposal_id=f"prop/{suffix}",
+                operation=operation,
+                base_rev=state.revision,
+            )
+        )
+        report = validate_patch(state, patch, ["repo-a", "repo-b"])
+
+        assert not report.rejected, [message.message for message in report.messages]
+
+
+def test_research_question_lifecycle_uses_content_change_without_evidence(manifest) -> None:
+    state = _state_with_decision(manifest)
+    proposal = _intent_proposal(
+        proposal_id="prop/answer-question",
+        operation={
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {"status": "answered"},
+                }
+            ],
+        },
+        base_rev=state.revision,
+    )
+
+    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+
+    assert not report.rejected
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {"question": "Can plasticity persist after repeated shifts?"},
+                }
+            ],
+        },
+        {
+            "op": "remove_nodes",
+            "intent": "removal",
+            "node_ids": [
+                "rq/learning-after-shift",
+                "hyp/replanning-restores-plasticity",
+            ],
+        },
+        {
+            "op": "merge_nodes",
+            "intent": "merge",
+            "merges": [
+                {
+                    "duplicate": "hyp/replanning-restores-plasticity",
+                    "canonical": "hyp/alternative-mechanism",
+                },
+                {
+                    "duplicate": "hyp/alternative-mechanism",
+                    "canonical": "hyp/replanning-restores-plasticity",
+                },
+            ],
+        },
+        {
+            "op": "create_edges",
+            "intent": "protected_relation_change",
+            "edges": [
+                {
+                    "source": "ev/evaluation-result",
+                    "target": "hyp/replanning-restores-plasticity",
+                    "relation": "supports",
+                }
+            ],
+        },
+    ],
+)
+def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, operation) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    proposal = _intent_proposal(
+        proposal_id="prop/invalid-intent",
+        operation=operation,
+        base_rev=state.revision,
+    )
+
+    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+
+    assert report.rejected
+    assert any(message.code == "invalid-agent-proposal-shape" for message in report.messages)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {"question": "Can plasticity persist after repeated shifts?"},
+                }
+            ],
+        },
+        {
+            "op": "remove_nodes",
+            "node_ids": ["hyp/replanning-restores-plasticity"],
+        },
+        {
+            "op": "supersede_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/replanning-restores-plasticity",
+                    "superseded_by": "hyp/alternative-mechanism",
+                }
+            ],
+        },
+        {
+            "op": "merge_nodes",
+            "merges": [
+                {
+                    "duplicate": "hyp/replanning-restores-plasticity",
+                    "canonical": "hyp/alternative-mechanism",
+                }
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "source": "rq/learning-after-shift",
+                    "target": "hyp/alternative-mechanism",
+                    "relation": "has_hypothesis",
+                }
+            ],
+        },
+        {
+            "op": "remove_edges",
+            "edge_ids": [
+                "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
+            ],
+        },
+        {
+            "op": "set_standing",
+            "node_id": "hyp/replanning-restores-plasticity",
+            "standing": "accepted",
+        },
+    ],
+)
+def test_direct_agent_changes_to_existing_beliefs_are_refused_at_apply(manifest, operation) -> None:
+    state = _state_with_second_hypothesis(manifest)
+
+    report = validate_patch(state, _agent_patch(operation), ["repo-a", "repo-b"])
+
+    assert report.rejected
+    assert any(message.code == "graph-action-refused" for message in report.messages)
+
+
+def test_attaching_evidence_to_an_existing_hypothesis_stays_direct(manifest) -> None:
+    state = _state_with_decision(manifest)
+    patch = _agent_patch(
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "source": "ev/evaluation-result",
+                    "target": "hyp/replanning-restores-plasticity",
+                    "relation": "weakens",
+                    "explanation": "The alternative evaluation narrows the claim.",
+                }
+            ],
+        }
+    )
+
+    report = validate_patch(state, patch, ["repo-a", "repo-b"])
+
+    assert not report.rejected
+
+
+def test_replay_accepts_historical_proposals_without_declared_intent(manifest) -> None:
+    state = _state_with_decision(manifest)
+    patch = _agent_patch(
+        _proposal(
+            proposal_id="prop/legacy-status",
+            node_id="hyp/replanning-restores-plasticity",
+            changes={"status": "active"},
+            cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+        )
+    ).model_copy(update={"revision": state.revision + 1})
+    del patch.ops[0]["proposals"][0]["ops"][0]["intent"]
+
+    report = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+
+    assert not report.rejected
+
+
+def test_replay_does_not_add_expected_absence_to_legacy_relation_proposals(manifest) -> None:
+    state = _state_with_decision(manifest)
+    edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/legacy-create-relation",
+            "title": "Legacy relation proposal",
+            "card": {"decision_needed": "Approve the historical relation."},
+            "ops": [
+                {
+                    "op": "create_edges",
+                    "edges": [
+                        {
+                            "id": edge_id,
+                            "source": "rq/learning-after-shift",
+                            "target": "hyp/replanning-restores-plasticity",
+                            "relation": "has_hypothesis",
+                        }
+                    ],
+                }
+            ],
+            "base_rev": state.revision,
+            "raised_rev": state.revision,
+        }
+    )
+
+    assert not proposal_is_stale(state, proposal)
+
+
+def test_same_patch_edge_recreation_stales_a_new_proposal_but_remains_replayable(manifest) -> None:
+    state = _state_with_decision(manifest)
+    edge_id = "edge/evaluation-support"
+    patch = _agent_patch(
+        _proposal(
+            proposal_id="prop/status-before-recreate",
+            node_id="hyp/replanning-restores-plasticity",
+            changes={"status": "active"},
+            cause={"kind": "evidence_edge", "ref_id": edge_id},
+        ),
+        {"op": "remove_edges", "edge_ids": [edge_id]},
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "id": edge_id,
+                    "source": "ev/evaluation-result",
+                    "target": "hyp/replanning-restores-plasticity",
+                    "relation": "supports",
+                }
+            ],
+        },
+    )
+
+    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
+    historical = validate_patch(
+        state,
+        patch.model_copy(update={"revision": state.revision + 1}),
+        ["repo-a", "repo-b"],
+        mode="replay",
+    )
+
+    assert admission.rejected
+    assert any(message.code == "stale-created-proposal" for message in admission.messages)
+    assert not historical.rejected
+
+
+def test_replay_does_not_recheck_protected_action_permission(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    state = history.state()
+    patch = _agent_patch(
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {"motivation": "Historical agent wording remains replayable."},
+                }
+            ],
+        }
+    ).model_copy(update={"revision": state.revision + 1})
+
+    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
+    replay = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+
+    assert admission.rejected
+    assert not replay.rejected
+
+
+@pytest.mark.parametrize("recreated", [False, True])
+def test_protected_relation_removal_stales_when_the_named_edge_moves(
+    manifest, recreated: bool
+) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
+    patch = _agent_patch(
+        _intent_proposal(
+            proposal_id="prop/remove-protected-relation",
+            operation={
+                "op": "remove_edges",
+                "intent": "protected_relation_change",
+                "edge_ids": [edge_id],
+            },
+            base_rev=state.revision,
+        )
+    ).model_copy(update={"revision": state.revision + 1})
+    assert not validate_patch(state, patch, ["repo-a", "repo-b"]).rejected
+    proposed = apply_valid_patch(state, patch)
+    edges = dict(proposed.edges)
+    previous = edges.pop(edge_id)
+    if recreated:
+        edges[edge_id] = previous.model_copy(update={"created_rev": proposed.revision + 1})
+    moved = proposed.model_copy(update={"revision": proposed.revision + 1, "edges": edges})
+
+    assert proposal_is_stale(moved, proposed.proposals["prop/remove-protected-relation"])
+
+
+def test_removal_proposal_snapshots_exact_incident_edges_and_stales_on_set_change(
+    manifest,
+) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    target_id = "hyp/replanning-restores-plasticity"
+    patch = _agent_patch(
+        _intent_proposal(
+            proposal_id="prop/remove-replanning",
+            operation={
+                "op": "remove_nodes",
+                "intent": "removal",
+                "node_ids": [target_id],
+            },
+            base_rev=state.revision,
+        )
+    ).model_copy(update={"revision": state.revision + 1})
+    assert not validate_patch(state, patch, ["repo-a", "repo-b"]).rejected
+    proposed = apply_valid_patch(state, patch)
+    proposal = proposed.proposals["prop/remove-replanning"]
+
+    assert proposal.related_edge_ids == sorted(
+        edge.id
+        for edge in proposed.edges.values()
+        if edge.source == target_id or edge.target == target_id
+    )
+
+    unrelated = _agent_patch(
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "id": "edge/unrelated-informs",
+                    "source": "ev/evaluation-result",
+                    "target": "dec/evaluation-rule",
+                    "relation": "informs",
+                }
+            ],
+        }
+    ).model_copy(update={"revision": proposed.revision + 1})
+    with_unrelated = apply_valid_patch(proposed, unrelated)
+    assert not proposal_is_stale(with_unrelated, proposal)
+
+    incident = _agent_patch(
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "id": "edge/new-incident-evidence",
+                    "source": "ev/evaluation-result",
+                    "target": target_id,
+                    "relation": "weakens",
+                }
+            ],
+        }
+    ).model_copy(update={"revision": proposed.revision + 1})
+    with_incident = apply_valid_patch(proposed, incident)
+    assert proposal_is_stale(with_incident, proposal)
+
+
+@pytest.mark.parametrize("recreated", [False, True])
+def test_removal_proposal_stales_when_a_snapshotted_incident_edge_is_removed_or_recreated(
+    manifest,
+    recreated: bool,
+) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    target_id = "hyp/replanning-restores-plasticity"
+    patch = _agent_patch(
+        _intent_proposal(
+            proposal_id="prop/remove-replanning",
+            operation={
+                "op": "remove_nodes",
+                "intent": "removal",
+                "node_ids": [target_id],
+            },
+            base_rev=state.revision,
+        )
+    ).model_copy(update={"revision": state.revision + 1})
+    proposed = apply_valid_patch(state, patch)
+    proposal = proposed.proposals["prop/remove-replanning"]
+    edge_id = proposal.related_edge_ids[0]
+    edges = dict(proposed.edges)
+    previous = edges.pop(edge_id)
+    if recreated:
+        edges[edge_id] = previous.model_copy(update={"created_rev": proposed.revision + 1})
+    moved = proposed.model_copy(update={"revision": proposed.revision + 1, "edges": edges})
+
+    assert proposal_is_stale(moved, proposal)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "supersede_nodes",
+            "intent": "supersede",
+            "nodes": [
+                {
+                    "id": "hyp/replanning-restores-plasticity",
+                    "superseded_by": "rq/learning-after-shift",
+                }
+            ],
+        },
+        {
+            "op": "merge_nodes",
+            "intent": "merge",
+            "merges": [
+                {
+                    "duplicate": "hyp/replanning-restores-plasticity",
+                    "canonical": "rq/learning-after-shift",
+                }
+            ],
+        },
+    ],
+)
+def test_supersede_and_merge_intents_require_matching_protected_belief_types(
+    manifest,
+    operation,
+) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    proposal = _intent_proposal(
+        proposal_id="prop/cross-type-belief",
+        operation=operation,
+        base_rev=state.revision,
+    )
+
+    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+
+    assert report.rejected
+    assert any(
+        message.code == "invalid-agent-proposal-shape"
+        and "same protected belief type" in message.message
+        for message in report.messages
+    )
+
+
+@pytest.mark.parametrize(
+    ("relation", "target_id"),
+    [
+        ("supersedes", "rq/learning-after-shift"),
+        ("duplicate_of", "dec/evaluation-rule"),
+    ],
+)
+def test_protected_relation_intent_cannot_bypass_lifecycle_intent_rules(
+    manifest,
+    relation: str,
+    target_id: str,
+) -> None:
+    state = _state_with_decision(manifest)
+    proposal = _intent_proposal(
+        proposal_id=f"prop/bypass-{relation}",
+        operation={
+            "op": "create_edges",
+            "intent": "protected_relation_change",
+            "edges": [
+                {
+                    "source": "hyp/replanning-restores-plasticity",
+                    "target": target_id,
+                    "relation": relation,
+                }
+            ],
+        },
+        base_rev=state.revision,
+    )
+
+    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+
+    assert report.rejected
+    assert any(
+        message.code == "invalid-agent-proposal-shape"
+        and "dedicated supersede or merge intent" in message.message
+        for message in report.messages
+    )
+
+
+@pytest.mark.parametrize("intent", ["supersede", "merge"])
+def test_lifecycle_proposal_may_forward_reference_its_new_same_type_target(
+    manifest,
+    intent: str,
+) -> None:
+    state = _state_with_decision(manifest)
+    target_id = "hyp/forward-lifecycle-target"
+    operation = (
+        {
+            "op": "supersede_nodes",
+            "intent": "supersede",
+            "nodes": [
+                {
+                    "id": "hyp/replanning-restores-plasticity",
+                    "superseded_by": target_id,
+                }
+            ],
+        }
+        if intent == "supersede"
+        else {
+            "op": "merge_nodes",
+            "intent": "merge",
+            "merges": [
+                {
+                    "duplicate": "hyp/replanning-restores-plasticity",
+                    "canonical": target_id,
+                }
+            ],
+        }
+    )
+    patch = _agent_patch(
+        _intent_proposal(
+            proposal_id=f"prop/forward-{intent}",
+            operation=operation,
+            base_rev=state.revision,
+        ),
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": target_id,
+                    "type": "hypothesis",
+                    "title": "Forward lifecycle target",
+                    "statement": "This newly asserted belief is the proposed lifecycle target.",
+                }
+            ],
+        },
+    ).model_copy(update={"revision": state.revision + 1})
+
+    report = validate_patch(state, patch, ["repo-a", "repo-b"])
+
+    assert not report.rejected, [message.message for message in report.messages]
+    staged = apply_valid_patch(state, patch)
+    assert target_id in staged.proposals[f"prop/forward-{intent}"].related_node_ids
+
+
+@pytest.mark.parametrize("intent", ["supersede", "merge"])
+def test_later_update_of_lifecycle_target_stales_new_proposal_but_replay_is_tolerant(
+    manifest,
+    intent: str,
+) -> None:
+    state = _state_with_second_hypothesis(manifest)
+    operation = (
+        {
+            "op": "supersede_nodes",
+            "intent": "supersede",
+            "nodes": [
+                {
+                    "id": "hyp/replanning-restores-plasticity",
+                    "superseded_by": "hyp/alternative-mechanism",
+                }
+            ],
+        }
+        if intent == "supersede"
+        else {
+            "op": "merge_nodes",
+            "intent": "merge",
+            "merges": [
+                {
+                    "duplicate": "hyp/replanning-restores-plasticity",
+                    "canonical": "hyp/alternative-mechanism",
+                }
+            ],
+        }
+    )
+    patch = _agent_patch(
+        _intent_proposal(
+            proposal_id=f"prop/moving-{intent}-target",
+            operation=operation,
+            base_rev=state.revision,
+        ),
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/alternative-mechanism",
+                    "changes": {"statement": "A later operation replaced the judged wording."},
+                }
+            ],
+        },
+    ).model_copy(update={"revision": state.revision + 1})
+
+    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
+    replay = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+
+    assert any(message.code == "stale-created-proposal" for message in admission.messages)
+    assert not replay.rejected, [message.message for message in replay.messages]
+
+
+def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tolerant(
+    manifest,
+) -> None:
+    state = _state_with_decision(manifest)
+    node_id = "rq/learning-after-shift"
+    patch = _agent_patch(
+        _intent_proposal(
+            proposal_id="prop/replaced-question",
+            operation={
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [
+                    {
+                        "id": node_id,
+                        "changes": {"question": "Does the replacement retain plasticity?"},
+                    }
+                ],
+            },
+            base_rev=state.revision,
+        ),
+        {"op": "remove_nodes", "node_ids": [node_id]},
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": node_id,
+                    "type": "research_question",
+                    "title": "Replacement learning question",
+                    "question": "Can a replacement question preserve the original identity?",
+                }
+            ],
+        },
+    ).model_copy(update={"revision": state.revision + 1})
+
+    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
+    replay = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+
+    assert any(message.code == "stale-created-proposal" for message in admission.messages)
+    assert not replay.rejected, [message.message for message in replay.messages]
+
+
+@pytest.mark.parametrize(
+    ("run_scope", "repositories_read", "expected_code"),
+    [
+        (["repo-a"], ["repo-a"], "source-outside-run-scope"),
+        (["repo-a", "repo-b"], ["repo-a"], "unread-source-repository"),
+    ],
+)
+def test_content_proposal_source_refs_retain_originating_agent_scope(
+    manifest,
+    run_scope: list[str],
+    repositories_read: list[str],
+    expected_code: str,
+) -> None:
+    state = _state_with_decision(manifest)
+    proposal = _intent_proposal(
+        proposal_id=f"prop/source-scope-{expected_code}",
+        operation={
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [
+                {
+                    "id": "rq/learning-after-shift",
+                    "changes": {
+                        "source_refs": [
+                            {
+                                "machine": "laptop",
+                                "truth_repository": "repo-b",
+                                "source": "codex",
+                                "session_id": "session-source-scope",
+                                "record_uuid": "record-source-scope",
+                                "timestamp": "2026-08-12T00:00:00Z",
+                                "excerpt": "This source belongs to repo-b.",
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        base_rev=state.revision,
+    )
+    patch = _agent_patch(proposal).model_copy(
+        update={"run_truth_scope": run_scope, "repositories_read": repositories_read}
+    )
+
+    report = validate_patch(state, patch, ["repo-a", "repo-b"])
+
+    assert report.rejected
+    assert any(message.code == expected_code for message in report.messages)
+
+
+def test_duplicate_proposal_ids_in_one_create_operation_are_rejected(manifest) -> None:
+    state = _state_with_decision(manifest)
+    operation = _proposal(
+        proposal_id="prop/duplicate-id",
+        node_id="hyp/replanning-restores-plasticity",
+        changes={"status": "active"},
+        cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+    )
+    duplicate = dict(operation["proposals"][0])
+    operation["proposals"].append(duplicate)
+
+    report = validate_patch(state, _agent_patch(operation), ["repo-a", "repo-b"])
+
+    assert report.rejected
+    assert any(message.code == "duplicate-proposal-id" for message in report.messages)
+
+
+def test_legacy_duplicate_proposal_ids_remain_replayable(manifest) -> None:
+    state = _state_with_decision(manifest)
+    operation = _proposal(
+        proposal_id="prop/duplicate-id",
+        node_id="hyp/replanning-restores-plasticity",
+        changes={"status": "active"},
+        cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+    )
+    operation["proposals"].append(dict(operation["proposals"][0]))
+    historical = _agent_patch(operation).model_copy(update={"revision": state.revision + 1})
+
+    report = validate_patch(
+        state,
+        historical,
+        ["repo-a", "repo-b"],
+        mode="replay",
+    )
+
+    assert not report.rejected
 
 
 def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest) -> None:

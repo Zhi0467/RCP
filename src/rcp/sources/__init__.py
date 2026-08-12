@@ -5,6 +5,9 @@ from rcp.sources.cache import (
     CacheMetrics,
     RebuildableCache,
     RebuildableCacheMetrics,
+    discover_project_cache_roots,
+    legacy_shared_cache_roots,
+    project_cache_roots,
 )
 from rcp.sources.indexer import (
     AppChatOrigin,
@@ -21,6 +24,9 @@ __all__ = [
     "SESSION_SLICE_CACHE_LIMITS",
     "CacheLimits",
     "CacheMetrics",
+    "discover_project_cache_roots",
+    "legacy_shared_cache_roots",
+    "project_cache_roots",
     "AppChatOrigin",
     "ConversationIndex",
     "ConversationIndexer",

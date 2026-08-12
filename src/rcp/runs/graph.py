@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import shlex
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
@@ -23,17 +22,18 @@ from rcp.agents import (
     prepare_agent_patch,
     validate_agent_patch_shape,
 )
+from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.providers import classify_terminal_error
 from rcp.runs.patch_validator import (
-    VALIDATOR_CLIENT_SOURCE,
     PatchValidationBudget,
     PatchValidationResult,
     cleanup_patch_validation_mailbox,
     serve_patch_validation_mailbox,
+    stage_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
     AgentOutputProblem,
@@ -423,6 +423,7 @@ async def stream_graph_run(
     retry_state: _GraphRetryState | None = None
     graph_revision = 0
     validator_budget = PatchValidationBudget()
+    validator_staged: StagedCommandMailbox | None = None
     try:
         try:
             run_lock_lease = run_lock.__enter__()
@@ -548,23 +549,14 @@ async def stream_graph_run(
                 label=f"rcp-skills-{_task_token(execution)}",
             )
             token = _task_token(execution)
-            validator_mailbox_id = uuid.uuid4().hex
-            validator_client_path = _stage_task_input(
-                local_stage,
-                remote_stage,
-                f"task-{token}-validator-client.py",
-                VALIDATOR_CLIENT_SOURCE,
+            validator_staged = stage_patch_validation_mailbox(
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                task_id=execution.operation_id if execution is not None else token,
+                turn_id=f"{token}:graph-pass:0",
+                timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
             )
-            validator_command = shlex.join(
-                [
-                    "python3",
-                    validator_client_path,
-                    patch_path,
-                    validator_mailbox_id,
-                    str(PATCH_SELF_CHECK_TIMEOUT_SECONDS),
-                    str(workspace),
-                ]
-            )
+            validator_command = validator_staged.client_command("validate", patch_path)
             read_dirs = _agent_read_dirs(context, remote_stage, service, execution_machine.alias)
             if (
                 retry_state is not None
@@ -813,7 +805,7 @@ async def stream_graph_run(
                     remote_stage=remote_stage,
                     outcome=outcome,
                     binary=provider_binary,
-                    mailbox_id=validator_mailbox_id,
+                    validator_staged=validator_staged,
                     validator_budget=validator_budget,
                     kind=kind,
                     run_truth_scope=context.run_truth_scope,
@@ -1010,6 +1002,14 @@ async def stream_graph_run(
                 f"task-{token}-correction-{rounds}.json",
                 {"kind": kind, "problem": problem},
             )
+            validator_staged = stage_patch_validation_mailbox(
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                task_id=execution.operation_id if execution is not None else token,
+                turn_id=f"{token}:graph-pass:{rounds}",
+                timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            )
+            validator_command = validator_staged.client_command("validate", patch_path)
             correction_contract = PromptFactory.continuation_task_contract(
                 original_contract_path=base_contract_path,
                 mode="patch_correction",
@@ -1034,6 +1034,12 @@ async def stream_graph_run(
             )
         )
     finally:
+        if validator_staged is not None and not validator_staged.credential.expired:
+            await asyncio.to_thread(
+                cleanup_patch_validation_mailbox,
+                staged=validator_staged,
+                execution=execution,
+            )
         if applied:
             if local_stage is not None:
                 with suppress(OSError, ValueError):
@@ -1060,7 +1066,7 @@ async def _stream_graph_agent_events(
     remote_stage: RemoteRunStage | None,
     outcome: _ProviderOutcome,
     binary: str | None,
-    mailbox_id: str,
+    validator_staged: StagedCommandMailbox,
     validator_budget: PatchValidationBudget,
     kind: str,
     run_truth_scope: list[str],
@@ -1068,9 +1074,7 @@ async def _stream_graph_agent_events(
     stop = asyncio.Event()
     mailbox = asyncio.create_task(
         serve_patch_validation_mailbox(
-            mailbox_id=mailbox_id,
-            workspace=workspace,
-            remote_stage=remote_stage,
+            staged=validator_staged,
             execution=execution,
             validate=lambda text: _validate_graph_patch_live(
                 service,
@@ -1110,9 +1114,7 @@ async def _stream_graph_agent_events(
         finally:
             await asyncio.to_thread(
                 cleanup_patch_validation_mailbox,
-                mailbox_id=mailbox_id,
-                workspace=workspace,
-                remote_stage=remote_stage,
+                staged=validator_staged,
                 execution=execution,
             )
 

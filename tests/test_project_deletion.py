@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.projects import ProjectCatalog
+from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import RemoteRunStage
 
@@ -114,6 +115,13 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
     outside.mkdir()
     marker = outside / "must-remain"
     marker.write_text("source", encoding="utf-8")
+    cache_root, _ = project_cache_roots(data_dir, record.project_id)
+    cached = cache_root / "remote" / "saved.jsonl"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("saved cache", encoding="utf-8")
+    display = catalog._cached_snapshot_path(record.project_id)
+    display.parent.mkdir(parents=True)
+    display.write_text("saved display", encoding="utf-8")
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -134,7 +142,54 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
         catalog.delete(record.project_id)
 
     assert marker.read_text(encoding="utf-8") == "source"
+    assert cached.read_text(encoding="utf-8") == "saved cache"
+    assert display.read_text(encoding="utf-8") == "saved display"
     assert os.path.exists(outside)
+    assert store.project(record.project_id) is not None
+
+
+def test_catalog_delete_validates_snapshot_before_removing_stage_or_cache(
+    manifest, tmp_path
+) -> None:
+    data_dir = tmp_path / "app-data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    stage = data_dir / "run-stage" / "saved-stage"
+    stage.mkdir(parents=True)
+    stage_marker = stage / "patch.json"
+    stage_marker.write_text("saved stage", encoding="utf-8")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="saved-stage",
+            project_id=record.project_id,
+            kind="refresh",
+            status="failed",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="failed",
+            stage_root=str(stage),
+        )
+    )
+    cache_root, _ = project_cache_roots(data_dir, record.project_id)
+    cached = cache_root / "remote" / "saved.jsonl"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("saved cache", encoding="utf-8")
+    external = tmp_path / "external-display"
+    external.write_text("outside", encoding="utf-8")
+    display = catalog._cached_snapshot_path(record.project_id)
+    display.parent.mkdir(parents=True)
+    display.symlink_to(external)
+
+    with pytest.raises(ValueError, match="non-file project display snapshot"):
+        catalog.delete(record.project_id)
+
+    assert stage_marker.read_text(encoding="utf-8") == "saved stage"
+    assert cached.read_text(encoding="utf-8") == "saved cache"
+    assert external.read_text(encoding="utf-8") == "outside"
+    assert display.is_symlink()
     assert store.project(record.project_id) is not None
 
 

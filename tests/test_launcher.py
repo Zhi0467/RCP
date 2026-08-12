@@ -685,6 +685,27 @@ def test_codex_work_bypasses_approvals_and_sandbox() -> None:
     assert command[-1] == "-"
 
 
+def test_codex_orchestrate_keeps_unrestricted_work_access() -> None:
+    command = AgentLauncher._command(
+        "codex",
+        "orchestrate the campaign",
+        cwd=Path("/data/campaign-stage"),
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[Path("/project/repo-a")],
+        write_dirs=[Path("/project/repo-a")],
+        capability="orchestrate",
+    )
+
+    assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert "--sandbox" not in command
+    assert not any(item.startswith("sandbox_mode=") for item in command)
+    assert not any(item.startswith("approval_policy=") for item in command)
+    assert not any("workspace_roots" in item for item in command)
+    assert command[-1] == "-"
+
+
 def test_codex_work_resume_bypasses_approvals_and_sandbox() -> None:
     session_id = "019f0000-0000-7000-8000-000000000002"
     command = AgentLauncher._command(
@@ -798,6 +819,25 @@ def test_claude_work_bypasses_permissions() -> None:
 
     assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--allowedTools" not in command
+
+
+def test_claude_orchestrate_keeps_unrestricted_work_access() -> None:
+    command = AgentLauncher._command(
+        "claude",
+        "orchestrate the campaign",
+        cwd=Path("/data/campaign-stage"),
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[Path("/project/repo-a")],
+        write_dirs=[Path("/project/repo-b")],
+        capability="orchestrate",
+    )
+
+    assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--allowedTools" not in command
+    add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
+    assert add_dirs == ["/project/repo-a", "/project/repo-b"]
 
 
 def test_claude_work_resume_keeps_the_native_session_and_bypasses_permissions() -> None:

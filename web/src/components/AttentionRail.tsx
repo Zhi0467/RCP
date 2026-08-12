@@ -1,11 +1,24 @@
 import { AlertTriangle, ArrowRight, Check, X } from "lucide-react";
 import type { GlossaryIndex } from "../glossary";
-import type { HumanDraft, ProposalDecision } from "../humanDraft";
-import type { GraphNode, Proposal } from "../types";
+import { proposalApprovalConflict, type HumanDraft, type ProposalDecision } from "../humanDraft";
+import {
+  proposalSemantics,
+  type GraphNode,
+  type GraphState,
+  type Proposal,
+  type ProposalContentChangeOperation,
+  type ProposalMergeOperation,
+  type ProposalRemovalOperation,
+  type ProposalStatusChangeOperation,
+  type ProposalSupersedeOperation,
+  type ProposalCreateProtectedRelationOperation,
+  type ProposalRemoveProtectedRelationOperation,
+} from "../types";
 import { GlossaryText } from "./GlossaryText";
 
 interface ProposalJudgmentSectionProps {
   proposals: Proposal[];
+  graph: GraphState;
   glossaryIndex: GlossaryIndex;
   draft: HumanDraft | null;
   mutationsDisabled?: boolean;
@@ -20,6 +33,7 @@ interface AttentionRailProps {
 
 export function ProposalJudgmentSection({
   proposals,
+  graph,
   glossaryIndex,
   draft,
   mutationsDisabled = false,
@@ -38,7 +52,14 @@ export function ProposalJudgmentSection({
         const decision = draft?.proposals[proposal.id]?.decision;
         const approved = decision === "approved";
         const rejected = decision === "rejected";
-        const proposedAction = proposalAction(proposal);
+        const proposedAction = proposalAction(proposal, graph);
+        const approvalConflict = proposalApprovalConflict(draft, graph, proposal.id);
+        const conflictingTitles = approvalConflict?.proposalIds.map(
+          (proposalId) => graph.proposals[proposalId]?.title ?? proposalId,
+        );
+        const approvalConflictText = conflictingTitles?.length
+          ? `Approval conflicts with staged approval: ${conflictingTitles.join(", ")}.`
+          : undefined;
         return (
           <article className={`proposal-card${decision ? " draft-touched" : ""}`} key={proposal.id}>
             <div className="proposal-topline">
@@ -86,7 +107,12 @@ export function ProposalJudgmentSection({
               <div>
                 <dt>Proposed action</dt>
                 <dd>
-                  <GlossaryText text={proposedAction} glossaryIndex={glossaryIndex} />
+                  {proposedAction.map((line, index) => (
+                    <div key={`${line.label ?? "action"}-${index}`}>
+                      {line.label && <strong>{line.label}: </strong>}
+                      <GlossaryText text={line.text} glossaryIndex={glossaryIndex} />
+                    </div>
+                  ))}
                 </dd>
               </div>
             </dl>
@@ -103,12 +129,19 @@ export function ProposalJudgmentSection({
               <button
                 className={`button judgment proposal-decision-toggle approve${approved ? " selected agree" : ""}`}
                 aria-pressed={approved}
-                disabled={mutationsDisabled}
+                aria-describedby={approvalConflict ? `proposal-conflict-${proposal.id}` : undefined}
+                disabled={mutationsDisabled || (!approved && Boolean(approvalConflict))}
+                title={approvalConflictText}
                 onClick={() => onDecision(proposal, approved ? null : "approved")}
               >
                 <Check size={14} />
                 Approve
               </button>
+              {approvalConflictText && (
+                <span className="eyebrow" id={`proposal-conflict-${proposal.id}`} role="status">
+                  {approvalConflictText}
+                </span>
+              )}
             </div>
           </article>
         );
@@ -117,29 +150,164 @@ export function ProposalJudgmentSection({
   );
 }
 
-function proposalAction(proposal: Proposal): string {
-  const operations = Array.isArray(proposal.ops) ? proposal.ops : [];
-  const update = operations.find((operation) => operation.op === "update_nodes");
-  const nodes = update?.nodes;
-  const node = Array.isArray(nodes) && nodes.length === 1 ? asRecord(nodes[0]) : null;
-  const changes = node ? asRecord(node.changes) : null;
-  const selectedOption = changes && stringValue(changes.selected_option);
-  const status = changes && stringValue(changes.status);
+interface ProposalActionLine {
+  label?: string;
+  text: string;
+}
 
-  if (selectedOption && status === "decided") {
-    return `Choose “${selectedOption}” and mark the decision decided.`;
+function proposalAction(proposal: Proposal, graph: GraphState): ProposalActionLine[] {
+  const fallback = [
+    { text: proposal.card.decision_needed || "Review the stored proposal action." },
+  ];
+  const operation = proposalSemantics(proposal).operation;
+  if (!operation) return fallback;
+
+  const action = (() => {
+    switch (operation.intent) {
+      case "content_change":
+        return contentChangeAction(operation, graph);
+      case "removal":
+        return removalAction(operation, graph);
+      case "supersede":
+        return supersedeAction(operation, graph);
+      case "merge":
+        return mergeAction(operation, graph);
+      case "protected_relation_change":
+        return protectedRelationAction(operation, graph);
+      case "status_change":
+        return statusChangeAction(operation, graph);
+      default:
+        return null;
+    }
+  })();
+  return action ?? fallback;
+}
+
+function contentChangeAction(
+  operation: ProposalContentChangeOperation,
+  graph: GraphState,
+): ProposalActionLine[] | null {
+  const update = operation.nodes[0];
+  const node = graph.nodes[update.id];
+  const title = nodeTitle(graph, update.id);
+  if (!node || !title) return null;
+
+  return [
+    { label: "Node", text: title },
+    ...Object.entries(update.changes).flatMap(([field, proposed]) => [
+      { label: `Current ${compactLabel(field)}`, text: displayValue(node[field]) },
+      { label: `Proposed ${compactLabel(field)}`, text: displayValue(proposed) },
+    ]),
+  ];
+}
+
+function removalAction(
+  operation: ProposalRemovalOperation,
+  graph: GraphState,
+): ProposalActionLine[] | null {
+  const nodeId = operation.node_ids[0];
+  const title = nodeTitle(graph, nodeId);
+  if (!title) return null;
+
+  const incidentEdges = Object.values(graph.edges)
+    .filter((edge) => edge.source === nodeId || edge.target === nodeId)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const relationLines: string[] = [];
+  for (const edge of incidentEdges) {
+    const text = relationText(graph, edge);
+    if (!text) return null;
+    relationLines.push(text);
   }
-  if (selectedOption) return `Choose “${selectedOption}” for the decision.`;
-  if (status) return `Change the target status to “${status}”.`;
-  return proposal.card.decision_needed || "Review the stored proposal action.";
+
+  return [
+    { label: "Remove", text: title },
+    ...(relationLines.length > 0
+      ? relationLines.map((text) => ({ label: "Also removes", text }))
+      : [{ label: "Incident relations", text: "None" }]),
+  ];
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+function supersedeAction(
+  operation: ProposalSupersedeOperation,
+  graph: GraphState,
+): ProposalActionLine[] | null {
+  const item = operation.nodes[0];
+  const predecessorTitle = nodeTitle(graph, item.id);
+  const successorTitle = nodeTitle(graph, item.superseded_by);
+  if (!predecessorTitle || !successorTitle) return null;
+  return [
+    { label: "Supersede", text: predecessorTitle },
+    { label: "With", text: successorTitle },
+  ];
 }
 
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+function mergeAction(
+  operation: ProposalMergeOperation,
+  graph: GraphState,
+): ProposalActionLine[] | null {
+  const item = operation.merges[0];
+  const duplicateTitle = nodeTitle(graph, item.duplicate);
+  const canonicalTitle = nodeTitle(graph, item.canonical);
+  if (!duplicateTitle || !canonicalTitle) return null;
+  return [
+    { label: "Merge", text: duplicateTitle },
+    { label: "Into", text: canonicalTitle },
+  ];
+}
+
+function protectedRelationAction(
+  operation: ProposalCreateProtectedRelationOperation | ProposalRemoveProtectedRelationOperation,
+  graph: GraphState,
+): ProposalActionLine[] | null {
+  if (operation.op === "create_edges") {
+    const text = relationText(graph, operation.edges[0]);
+    return text ? [{ label: "Add relation", text }] : null;
+  }
+  const edge = graph.edges[operation.edge_ids[0]];
+  const text = edge && relationText(graph, edge);
+  return text ? [{ label: "Remove relation", text }] : null;
+}
+
+function statusChangeAction(
+  operation: ProposalStatusChangeOperation,
+  graph: GraphState,
+): ProposalActionLine[] | null {
+  const update = operation.nodes[0];
+  const node = graph.nodes[update.id];
+  const title = nodeTitle(graph, update.id);
+  const currentStatus = typeof node?.status === "string" ? node.status : null;
+  const proposedStatus = update.changes.status;
+  if (!node || !title || !currentStatus || !proposedStatus) return null;
+  return [
+    { label: "Node", text: title },
+    { label: "Status", text: `${currentStatus} → ${proposedStatus}` },
+  ];
+}
+
+function relationText(
+  graph: GraphState,
+  edge: { source: string; target: string; relation: string },
+): string | null {
+  const sourceTitle = nodeTitle(graph, edge.source);
+  const targetTitle = nodeTitle(graph, edge.target);
+  if (!sourceTitle || !targetTitle) return null;
+  return `${sourceTitle} — ${compactLabel(edge.relation)} → ${targetTitle}`;
+}
+
+function nodeTitle(graph: GraphState, nodeId: string): string | null {
+  return graph.nodes[nodeId]?.title ?? null;
+}
+
+function compactLabel(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined) return "Not set";
+  if (typeof value === "string") return `“${value}”`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(displayValue).join(", ");
+  return JSON.stringify(value);
 }
 
 export function AttentionRail({ decisions, blockers, onSelectNode }: AttentionRailProps) {

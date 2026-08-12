@@ -48,7 +48,7 @@ class RevisionSummary(BaseModel):
     author: Literal["agent", "human"] | None
     producer: Literal["agent", "human", "system"]
     authorized_by: AuthorizedHuman | None = None
-    profile: Literal["ordinary"] | None = None
+    profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = None
     created_at: str
     sentences: list[str] = Field(min_length=1)

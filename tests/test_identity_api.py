@@ -186,7 +186,7 @@ def test_team_identity_uses_only_the_trusted_resolver(tmp_path) -> None:
     assert invalid.json()["detail"]["code"] == "team_identity_invalid"
 
 
-def test_unnamed_personal_owner_gates_only_patch_capable_api_paths(
+def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     manifest,
     tmp_path,
     monkeypatch,
@@ -201,7 +201,18 @@ def test_unnamed_personal_owner_gates_only_patch_capable_api_paths(
     store = app.state.background_tasks.store
     started_kinds: list[str] = []
 
-    def fake_start(project_id, kind, request, *, operation_id=None, authorized_by=None):
+    def fake_start(
+        project_id,
+        kind,
+        request,
+        *,
+        operation_id=None,
+        authorized_by=None,
+        stage_host=None,
+        stage_root=None,
+    ):
+        assert stage_host is None
+        assert stage_root is None
         started_kinds.append(kind)
         now = store.now()
         return AgentTaskRecord(
@@ -219,23 +230,25 @@ def test_unnamed_personal_owner_gates_only_patch_capable_api_paths(
     monkeypatch.setattr(app.state.background_tasks, "start", fake_start)
 
     assert client.get(f"/api/projects/{project_id}").status_code == 200
-    discuss = client.post(
-        f"/api/projects/{project_id}/tasks/project_chat",
-        json={
-            "chat_id": str(uuid.uuid4()),
-            "message": "Explain the project.",
-            "mode": "discuss",
-        },
+    _assert_name_required(
+        client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": str(uuid.uuid4()),
+                "message": "Explain the project.",
+                "mode": "discuss",
+            },
+        )
     )
-    coach = client.post(
-        f"/api/projects/{project_id}/tasks/paper_coach",
-        json={"message": "Review the introduction."},
+    _assert_name_required(
+        client.post(
+            f"/api/projects/{project_id}/tasks/paper_coach",
+            json={"message": "Review the introduction."},
+        )
     )
     paper = client.post(f"/api/projects/{project_id}/paper/create")
-    assert discuss.status_code == 202
-    assert coach.status_code == 202
     assert paper.status_code == 200
-    assert started_kinds == ["project_chat", "paper_coach"]
+    assert started_kinds == []
 
     current_revision = service.history.state().revision
     _assert_name_required(
@@ -331,34 +344,40 @@ def test_unnamed_personal_owner_gates_only_patch_capable_api_paths(
     )
     store.create_agent_task(discuss_record)
     store.create_agent_task(coach_record)
+    recovery_authorizers: dict[str, AuthorizedHuman | None] = {}
+
+    def capture_recovery(label, record):
+        def recover(_operation_id, *, authorized_by=None, **_kwargs):
+            recovery_authorizers[label] = authorized_by
+            return record
+
+        return recover
+
     monkeypatch.setattr(
         app.state.background_tasks,
         "resume",
-        lambda _operation_id, **_kwargs: discuss_record,
+        capture_recovery("discuss", discuss_record),
     )
     monkeypatch.setattr(
         app.state.background_tasks,
         "retry",
-        lambda _operation_id, **_kwargs: coach_record,
+        capture_recovery("coach", coach_record),
     )
     monkeypatch.setattr(
         app.state.background_tasks,
         "repair_graph_update",
         lambda _operation_id, **_kwargs: discuss_record,
     )
-    assert (
-        client.post(
-            f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume"
-        ).status_code
-        == 202
+    _assert_name_required(
+        client.post(f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume")
     )
-    assert (
+    _assert_name_required(
         client.post(
             f"/api/projects/{project_id}/tasks/{coach_record.operation_id}/retry",
             json={},
-        ).status_code
-        == 202
+        )
     )
+    assert recovery_authorizers == {}
     assert (
         client.post(
             f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/repair-graph-update"
@@ -377,6 +396,18 @@ def test_unnamed_personal_owner_gates_only_patch_capable_api_paths(
 
     named = client.patch("/api/identity", json={"display_name": "Researcher"})
     assert named.status_code == 200
+    resumed_discuss = client.post(
+        f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume"
+    )
+    retried_coach = client.post(
+        f"/api/projects/{project_id}/tasks/{coach_record.operation_id}/retry",
+        json={},
+    )
+    assert resumed_discuss.status_code == retried_coach.status_code == 202
+    assert recovery_authorizers["discuss"] is not None
+    assert recovery_authorizers["coach"] is not None
+    assert recovery_authorizers["discuss"].display_name == "Researcher"
+    assert recovery_authorizers["coach"].display_name == "Researcher"
     admitted = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     assert admitted.status_code == 202
     assert started_kinds[-1] == "seed"
@@ -417,7 +448,18 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
     )
     valid_store = valid_app.state.background_tasks.store
 
-    def fake_start(project_id, kind, request, *, operation_id=None, authorized_by=None):
+    def fake_start(
+        project_id,
+        kind,
+        request,
+        *,
+        operation_id=None,
+        authorized_by=None,
+        stage_host=None,
+        stage_root=None,
+    ):
+        assert stage_host is None
+        assert stage_root is None
         now = valid_store.now()
         return AgentTaskRecord(
             operation_id=operation_id or str(uuid.uuid4()),
@@ -507,8 +549,8 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
         json={"message": "Review the introduction."},
     )
     assert discuss.status_code == coach.status_code == 202
-    assert discuss.json()["authorized_by"] is None
-    assert coach.json()["authorized_by"] is None
+    assert discuss.json()["authorized_by"]["display_name"] == "Later name"
+    assert coach.json()["authorized_by"]["display_name"] == "Later name"
 
 
 def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(

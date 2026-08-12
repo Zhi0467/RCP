@@ -110,7 +110,7 @@ test("proposal prose uses the shared inline glossary treatment", () => {
   assert.match(html, /<h3><dfn[^>]*>Plasticity<\/dfn> decision<\/h3>/);
   assert.match(html, /<dfn[^>]*>Plasticity loss<\/dfn> remains plausible\./);
   assert.match(html, /Proposed action/);
-  assert.match(html, /Choose “matched” for the decision\./);
+  assert.match(html, /Approve or reject\./);
 });
 
 test("node chat passes the prebuilt index into Markdown answers", () => {

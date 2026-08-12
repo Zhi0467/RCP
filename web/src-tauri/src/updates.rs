@@ -3,7 +3,6 @@ use std::time::Duration;
 use semver::Version;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
@@ -101,20 +100,60 @@ pub async fn apply(
         .download(|_, _| {}, || {})
         .await
         .map_err(|error| format!("update download or signature verification failed: {error}"))?;
-    let shutdown = backend::graceful_stop(backend_state).await?;
-    if shutdown.forced {
-        app.dialog()
-            .message(shutdown.reason.unwrap_or_else(|| {
-                "The owned backend required forced termination before updating.".into()
-            }))
-            .title("RCP shutdown")
-            .buttons(MessageDialogButtons::Ok)
-            .blocking_show();
+    // Updating owns the lifecycle coordinator until install hands control to
+    // the programmatic restart. Returning on any failure drops the guard and
+    // makes connect/Quit available again.
+    let update_guard = backend_state.begin_update().await?;
+    let shutdown = update_guard.stop_backend().await;
+    if let Some(message) = shutdown.problem() {
+        crate::show_shutdown_problem(app, message);
     }
-    update
-        .install(bytes)
-        .map_err(|error| format!("update installation failed: {error}"))?;
+    if !shutdown.may_exit() {
+        return Err(shutdown
+            .problem()
+            .unwrap_or("RCP could not safely stop its backend before updating")
+            .into());
+    }
+    if let Err(error) = update.install(bytes) {
+        let install_error = format!("update installation failed: {error}");
+        if let Err(reset_error) = backend_state.reset_connection_for_recovery() {
+            drop(update_guard);
+            let diagnostic = format!(
+                "{install_error}; backend recovery could not clear the stopped connection: \
+                 {reset_error}. RCP is shutting down to avoid retaining stale backend ownership."
+            );
+            eprintln!("[rcp] {diagnostic}");
+            exit_after_failed_recovery(app);
+            return Err(diagnostic);
+        }
+        // connect owns the same lifecycle coordinator as launch, Quit, and
+        // update. Release the update guard before entering that serialized path.
+        drop(update_guard);
+        return match backend::connect(app, backend_state, "Exit RCP").await {
+            Ok(status) => Err(format!(
+                "{install_error}; RCP recovered by reconnecting to {}",
+                status.base_url
+            )),
+            Err(recovery_error) => {
+                let diagnostic = format!(
+                    "{install_error}; backend recovery also failed: {recovery_error}. \
+                     RCP is shutting down to avoid retaining stale backend ownership."
+                );
+                eprintln!("[rcp] {diagnostic}");
+                exit_after_failed_recovery(app);
+                Err(diagnostic)
+            }
+        };
+    }
     app.restart();
+}
+
+fn exit_after_failed_recovery(app: &AppHandle) {
+    // Use the ordinary Quit path so a reconnect attempt that retained an
+    // uncertain child receipt still gets its final bounded cleanup attempt.
+    if !crate::request_app_quit_with_code(app.clone(), 1) {
+        app.exit(1);
+    }
 }
 
 async fn refresh_active_tasks(state: &BackendState) -> Result<u64, String> {
