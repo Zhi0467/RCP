@@ -440,6 +440,26 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
 });
 
+test("a gated human-stopped loop recommends its available requirement action", () => {
+  const reason = "Blocker blk/required-input is open.";
+  const html = render({
+    node: node(),
+    control: control(
+      { ready: false, reasons: [reason] },
+      { stop_requested: true, stop_settled: true },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "human_stopped",
+  });
+
+  assertDetailProjection(html, "Human-stopped", "Resolve the run requirements");
+  assert.match(html, new RegExp(reason.replaceAll(".", "\\.")));
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
+});
+
 test("detail keeps Experiment meaning under a neutral Research summary", () => {
   const html = render({
     node: node({ status: "debugging" }),

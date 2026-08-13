@@ -853,6 +853,21 @@ test("Experiment recommendations follow structured task and control states", () 
     experimentRecommendation({ ...base, health: "paused_at_limit" }).step,
     "start_episode",
   );
+  assert.deepEqual(
+    experimentRecommendation({
+      ...base,
+      control: control({
+        ready: false,
+        reasons: ["Blocker blk/required-input is open."],
+        episode_id: "episode-recommendation",
+      }),
+      health: "human_stopped",
+    }),
+    {
+      step: "resolve_requirements",
+      label: "Resolve the run requirements",
+    },
+  );
   assert.equal(
     experimentRecommendation({
       ...base,

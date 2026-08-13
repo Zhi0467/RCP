@@ -154,6 +154,10 @@ const nonGatingOperationalReasons = new Set([
   "Detached Experiment work is still running.",
 ]);
 
+function hasExperimentRunRequirements(control: ExperimentControlState | null): boolean {
+  return Boolean(control?.reasons.some((reason) => !nonGatingOperationalReasons.has(reason)));
+}
+
 const healthSections: Record<ExperimentLoopHealth, RunSectionKey> = {
   starting: "running",
   agent_active: "running",
@@ -239,9 +243,7 @@ export function deriveExperimentLoopHealth(
   const detachedWorkActive = Boolean(
     operational?.detached_work_active || currentWatchers.some(watcherIsActive),
   );
-  const hasGraphGate = Boolean(
-    control?.reasons.some((reason) => !nonGatingOperationalReasons.has(reason)),
-  );
+  const hasGraphGate = hasExperimentRunRequirements(control);
   const canWake = Boolean(
     !stopRequested &&
     remaining > 0 &&
@@ -277,6 +279,7 @@ export function experimentRecoveryAction(task: AgentTask | null): "resume" | "re
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const task = run.currentTask;
   const recoveryAction = experimentRecoveryAction(task);
+  const hasRunRequirements = hasExperimentRunRequirements(run.control);
   if (run.health === "stopping") {
     return { step: "wait", label: "Wait for the current turn to finish" };
   }
@@ -292,6 +295,18 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
   if (recoveryAction === "retry") {
     return { step: "retry", label: "Retry this episode, or switch provider" };
   }
+  if (run.health === "degraded") {
+    return { step: "keep_loop", label: "Keep loop running; check now if needed" };
+  }
+  if (run.health === "waiting_on_watchers") {
+    return { step: "wait", label: "Wait for watcher completion" };
+  }
+  if (run.health === "completed") {
+    return { step: "none", label: "No action needed" };
+  }
+  if (hasRunRequirements) {
+    return { step: "resolve_requirements", label: "Resolve the run requirements" };
+  }
   if (
     task &&
     actionableStatuses.has(task.status) &&
@@ -301,31 +316,20 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
   }
   if (run.health === "paused_at_limit") {
-    return { step: "start_episode", label: "Start a new episode" };
-  }
-  if (run.health === "degraded") {
-    return { step: "keep_loop", label: "Keep loop running; check now if needed" };
-  }
-  if (run.health === "waiting_on_watchers") {
-    return { step: "wait", label: "Wait for watcher completion" };
+    return run.control?.ready
+      ? { step: "start_episode", label: "Start a new episode" }
+      : { step: "review", label: "Review the loop state" };
   }
   if (run.health === "human_stopped") {
-    return { step: "start_episode", label: "Start a new episode" };
-  }
-  if (run.health === "completed") {
-    return { step: "none", label: "No action needed" };
-  }
-  if ((run.control?.reasons.length ?? 0) > 0) {
-    return { step: "resolve_requirements", label: "Resolve the run requirements" };
+    return run.control?.ready
+      ? { step: "start_episode", label: "Start a new episode" }
+      : { step: "review", label: "Review the loop state" };
   }
   if (run.control?.ready) {
     return {
       step: "start_episode",
       label: run.control.episode_id ? "Start a new episode" : "Start an episode",
     };
-  }
-  if (!run.control?.episode_id) {
-    return { step: "start_episode", label: "Start an episode" };
   }
   return { step: "review", label: "Review the loop state" };
 }
