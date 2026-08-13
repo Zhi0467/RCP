@@ -597,6 +597,10 @@ test("Experiment projection follows operational precedence and stop task placeme
     entries.get("stopping-live").map((value, index) => (index ? value.experiment.health : value)),
     ["running", "stopping"],
   );
+  assert.deepEqual(experimentRecommendation(entries.get("stopping-live")[1].experiment), {
+    step: "wait",
+    label: "Wait for the current turn to finish",
+  });
   assert.deepEqual(
     entries.get("stopping-failed").map((value, index) => (index ? value.experiment.health : value)),
     ["actionable", "stopping"],
@@ -625,6 +629,54 @@ test("Experiment projection follows operational precedence and stop task placeme
   );
   assert.equal(experimentRunSection("stopping", "interrupted"), "actionable");
   assert.equal(experimentRunSection("stopping", "running"), "running");
+});
+
+test("an unsettled Experiment stop exposes exact paused recovery before graceful waiting", () => {
+  const node = experiment("experiment/stopping-paused");
+  const paused = {
+    ...loopTask(
+      "stopping-paused-task",
+      node.id,
+      "episode-stopping-paused",
+      "paused",
+      "2026-08-06T03:00:00Z",
+    ),
+    can_resume: true,
+    can_retry: true,
+  };
+  const experimentControl = control(
+    {
+      ready: false,
+      reasons: ["A graceful stop is finishing the current loop turn."],
+      episode_id: "episode-stopping-paused",
+      invocations_used: 1,
+      invocations_remaining: 2,
+    },
+    {
+      task_active: true,
+      stop_requested: true,
+      stop_settled: false,
+      current_operation_id: paused.operation_id,
+      current_status: "paused",
+    },
+  );
+
+  const run = buildExperimentRun(node, experimentControl, [paused], []);
+  assert.equal(run.health, "needs_action");
+  assert.deepEqual(experimentRecommendation(run), {
+    step: "resume",
+    label: "Resume this episode, or switch provider",
+  });
+
+  const entry = byId(
+    buildRunProjection({
+      nodes: [node],
+      tasks: [paused],
+      experimentControl: { [node.id]: experimentControl },
+    }),
+  ).get(node.id);
+  assert.equal(entry[0], "actionable");
+  assert.equal(entry[1].experiment.health, "needs_action");
 });
 
 test("historical watchers stay visible without driving current health or task selection", () => {

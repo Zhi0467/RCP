@@ -9,11 +9,10 @@ covered_by: tests/test_experiment_stop.py, tests/test_storage.py,
   browser 2026-08-12
 invariants: [8, 10, 10b]
 reported_by: human, 2026-08-06
-last_passed: 2026-08-12 — a served-app browser drive on the reported
-  legacy-attribution episode showed one Needs action health, one Start a new
-  episode recommendation, no peer task phase or semantic state, no unusable
-  Stop, and a Watchers 5 fold beside its five completed records, with no browser
-  error or RCP server traceback.
+last_passed: 2026-08-13 — a served-app browser drive on the reported paused
+  Experiment showed Needs action on the project board and Runs detail, one Resume
+  recommendation, enabled Resume and Switch provider controls, no duplicate Stop,
+  disabled Start new episode, and no browser console error.
 ---
 
 # Runs leads with live operational state
@@ -56,8 +55,8 @@ A temporary project containing:
 - one generic node chat and one paper-coach task, proving they stay excluded.
 
 The fake provider runs long enough to inspect the active state, records a valid
-Patch and watcher handoff, and can be paused, resumed, failed, and retried from
-the existing Agent task inspector.
+Patch and watcher handoff, and can surface paused, failed, and interrupted turns
+with their valid direct recovery in the Experiment detail.
 
 ## UI path
 
@@ -70,14 +69,13 @@ the existing Agent task inspector.
    **Completed**. Empty sections may be omitted without changing that order.
 4. Select a running Experiment while its agent turn is active, while it waits
    on healthy detached work, while one watcher is degraded, and while a watcher
-   completion is waiting at the invocation ceiling. In every compact row and
-   expanded detail, confirm there is exactly one primary loop health and one
-   recommendation derived from the structured loop state, and that the row uses
-   the same recommendation. No task status or phase, and no semantic
-   **Experiment state**, appears as a competing peer state. The detail keeps its
-   last activity, budget, research summary and next action, watcher, execution,
-   and history facts. Its health block carries the recommendation; there is no
-   separately labelled **Recommended next step** strip.
+   completion is waiting at the invocation ceiling. Confirm the expanded detail
+   has two distinct projected views: exactly one **Loop health** and exactly one
+   separately labelled **Recommended next step**. The compact row carries that
+   same recommendation. No task status or phase, and no semantic **Experiment
+   state**, appears as a competing peer state. The detail keeps its last
+   activity, budget, research summary and next action, watcher, execution, and
+   history facts.
 5. Fail a loop turn with a recognized provider session limit. In the Experiment
    detail, confirm the historical failure remains visible but the primary
    health and recommendation explain that the same episode and invocation can
@@ -94,8 +92,15 @@ the existing Agent task inspector.
    unrecoverable actionable task-continuity case where Stop is available,
    confirm the recommendation is to stop and restart and the control is shown.
    Across these states, no recommendation names a control the UI does not offer.
-7. Press **Stop loop** first while an agent turn is active, then in a separate
-   episode while only watchers remain. Observe the graceful lifecycle below.
+7. Press **Stop loop** while an agent turn is queued, running, or pausing.
+   Confirm **Loop health** reads **Stopping gracefully** and **Recommended next
+   step** says to wait for current work to finish. Then pause, fail, or interrupt
+   that same turn: confirm the projection changes to **Needs action** and directly
+   recommends and enables the valid **Resume**, **Retry**, or **Switch
+   provider** recovery without an inspector detour. The durable stop still
+   prevents automatic watcher delivery, and **Start new episode** remains
+   unavailable until the turn resolves. In a separate episode, press **Stop
+   loop** while only watchers remain and observe the graceful lifecycle below.
 8. After the stop settles, press **Start new episode**. RCP starts invocation 1
    of a fresh episode using the current **Next episode limit**, with stopped
    watcher history visible but no delivered watcher trigger.
@@ -120,10 +125,13 @@ Classification uses this precedence; the first matching state wins:
    asserted open graph Blocker exists; or a nonterminal Experiment is not Running. Accepted and
    contested open Blockers remain operational graph state but leave this section after Sync. This
    includes ready-to-Run, graph-gated, human-stopped, failed/paused invocation,
-   and invocation-limit states. A failed, paused, or interrupted turn remains
-   here after **Stop loop** while its detail reads **Stopping** and links to task
-   recovery. A completed watcher waiting for human reauthorization at the
-   ceiling belongs here, not Running.
+   and invocation-limit states. An unsettled durable Stop does not override an
+   actionable current task: after that turn pauses, fails, or is interrupted,
+   its detail reads **Needs action** and directly recommends and enables the
+   valid **Resume**, **Retry**, or **Switch provider** recovery. The stop still
+   prevents automatic watcher delivery, and **Start new episode** remains
+   unavailable until resolution. A completed watcher waiting for human
+   reauthorization at the ceiling belongs here, not Running.
 3. **Completed** — succeeded ingestion work and terminal Experiments with
    `status` `completed`, `abandoned`, or `superseded`, unless a higher-priority
    operational state still applies.
@@ -133,21 +141,23 @@ new pagination or history-retention behavior; complete operational history
 remains in project History and the Agent task inspector.
 
 Each compact Experiment row and its expanded detail use the same structured
-projection: one primary loop health and one recommendation. The recommendation
-is never replaced by the latest task status, and neither task phase/status nor
-semantic `Experiment.status` is rendered as a peer state.
+projection: one primary loop health and one recommendation. The expanded detail
+renders them as two distinct outputs: exactly one **Loop health** view and one
+separately labelled **Recommended next step** view. The compact row carries the
+same recommendation instead of the latest task status, and neither task
+phase/status nor semantic `Experiment.status` is rendered as a peer state.
 
 ## Experiment run detail
 
 The detail answers these questions without making the human reconstruct state
 from unrelated task rows:
 
-- **Loop health and recommendation** — exactly one primary health: starting,
-  agent active, waiting on watchers, degraded, stopping gracefully, paused at
-  the invocation limit, needs action, human-stopped, or completed; plus one
-  recommendation derived from structured task, control, stop, and watcher state.
-  The recommendation lives inside this health block rather than a separately
-  labelled **Recommended next step** strip, and matches the compact row.
+- **Loop health** — exactly one primary health: starting, agent active, waiting
+  on watchers, degraded, stopping gracefully, paused at the invocation limit,
+  needs action, human-stopped, or completed.
+- **Recommended next step** — one separately labelled recommendation view
+  derived from structured task, control, stop, and watcher state. It remains
+  distinct from Loop health and matches the recommendation in the compact row.
 - **Activity and history** — last activity and retained diagnostics remain
   visible as supporting facts. The current task's phase or status is not shown
   as another state, and task history remains reachable without competing with
@@ -175,19 +185,22 @@ from unrelated task rows:
 Failed or paused loop turns expose their recovery where the failure is visible:
 **Retry provider** resumes the current binding, and **Switch provider…** opens
 the ordinary provider/model/reasoning controls with execution machine locked.
-Both retain the episode and invocation. An unavailable **Stop loop** is hidden
-rather than disabled; readiness-gated controls may remain visible with their
-existing reasons. A ready episode whose latest task succeeded, no
-live or completion-pending watcher, and a retained legacy-attribution session
-diagnostic recommends **Start new episode** directly. The diagnostic stays in
-execution or History rather than overriding current readiness. An unrecoverable
-actionable task-continuity state may recommend **Stop loop**, then restart only
-when Stop is actually available. **Stop loop** remains a distinct episode-level
-abandonment action when shown. The detail has no **Open agent task** button;
-provider events, diagnostics, receipts, and staged contracts remain available
-from History without making the inspector a prerequisite for recovery. The
-detail presents no per-watcher Stop action for an Experiment loop. Generic Work
-watchers keep their existing individual Stop authority.
+Both retain the episode and invocation. That direct recovery remains the
+projection when a durable Stop is unsettled and the current turn has paused,
+failed, or been interrupted; Stop does not flatten the actionable task into
+**Stopping gracefully**. An unavailable **Stop loop** is hidden rather than
+disabled; readiness-gated controls may remain visible with their existing
+reasons. A ready episode whose latest task succeeded, no live or
+completion-pending watcher, and a retained legacy-attribution session diagnostic
+recommends **Start new episode** directly. The diagnostic stays in execution or
+History rather than overriding current readiness. An unrecoverable actionable
+task-continuity state may recommend **Stop loop**, then restart only when Stop is
+actually available. **Stop loop** remains a distinct episode-level abandonment
+action when shown. The detail has no **Open agent task** button; provider events,
+diagnostics, receipts, and staged contracts remain available from History
+without making the inspector a prerequisite for recovery. The detail presents
+no per-watcher Stop action for an Experiment loop. Generic Work watchers keep
+their existing individual Stop authority.
 
 ## Graceful Stop loop
 
@@ -204,11 +217,15 @@ continuation,” not “cancel the current task” and not “change the Experim
   atomic claim, that task is the current turn and may finish normally. Its valid
   Patch and semantic bookkeeping may apply. Existing watchers and every valid
   watcher emitted by its final handoff are retained as `stopped`, never polled
-  or delivered. The UI reads **Stopping** until that task becomes terminal.
+  or delivered. While that task remains queued/running/pausing, **Loop health**
+  reads **Stopping gracefully** and the recommendation is to wait for current
+  work to finish.
 - If the current task pauses, fails, or is interrupted, the stop request remains
-  durable. The task may still Resume or Retry from the inspector because that
-  is recovery of the already-authorized turn; every eventual watcher handoff is
-  still stopped. A fresh human episode start remains disabled while that turn is
+  durable, but the projection becomes **Needs action** and directly recommends
+  and enables the valid **Resume**, **Retry**, or **Switch provider** recovery in
+  the Experiment detail. That is recovery of the already-authorized turn; every
+  eventual watcher handoff is still stopped, automatic watcher delivery remains
+  disabled, and **Start new episode** remains unavailable while that turn is
   unresolved.
 - If recovery proves impossible because the pinned native session, exact stage,
   or continuation context is no longer usable, RCP records that exact diagnostic
@@ -250,10 +267,10 @@ current turn; otherwise the stop wins and no wake task is created.
 - `completed_watcher_at_limit_is_actionable_not_running`
 - `terminal_work_is_last`
 - `loop_health_comes_from_task_control_stop_and_watcher_state`
-- `one_primary_loop_health_and_one_structured_recommendation`
+- `expanded_detail_has_one_loop_health_and_one_distinct_recommendation_view`
 - `compact_row_and_detail_share_the_same_recommendation`
 - `task_phase_status_and_semantic_experiment_status_are_not_peer_states`
-- `health_block_owns_recommendation_without_a_redundant_strip`
+- `loop_health_and_recommended_next_step_are_separate_projected_views`
 - `current_activity_survives_navigation`
 - `invocation_budget_is_truthful`
 - `episode_start_label_depends_on_history_not_semantic_status`
@@ -273,6 +290,7 @@ current turn; otherwise the stop wins and no wake task is created.
 - `stop_never_cancels_or_semantically_interprets_the_current_turn`
 - `stop_blocks_new_claims_and_terminalizes_existing_and_new_watchers`
 - `task_recovery_after_stop_cannot_reenable_automatic_continuation`
+- `unsettled_stop_projects_stopping_while_live_then_needs_action_for_recovery`
 - `unrecoverable_task_recovery_never_falls_back_and_stop_can_abandon_recovery`
 - `provider_usage_limit_remains_recoverable_until_human_stops_the_loop`
 - `stopped_watchers_are_retained_history_not_triggers`
@@ -288,14 +306,18 @@ Run looks like an ordinary chat resume; a node-chat window opens; live or
 actionable Experiment work is hidden or misordered; watcher state is presented
 as scientific progress; a task phase/status or semantic **Experiment state**
 competes with loop health; the compact row substitutes latest task status for
-the detail recommendation; the health recommendation is repeated in a separate
-**Recommended next step** strip; an unavailable control is shown or recommended;
-a settled ready episode is told to Stop solely because retained history has a
-legacy-attribution diagnostic; an unrecoverable actionable continuation omits
-Stop-and-restart while Stop is valid; Stop cancels valid current work, loses
-history, permits a later wake, silently changes graph meaning, forces a new
-episode for a provider limit, hides recovery behind an Agent-task detour, or
-confuses a historical limit message with a currently enforced limit, repaints a
-completed episode's pinned budget with the current node limit, labels episode
-start from semantic status rather than prior episode history; or a healthy wait
-and a broken watcher look the same.
+the detail recommendation; the recommendation is folded into **Loop health**, or
+the separately labelled **Recommended next step** view is missing, duplicated,
+or disagrees with the compact row; an unavailable control is shown or
+recommended; an unsettled Stop leaves a paused, failed, or interrupted current
+turn at **Stopping gracefully**, hides its valid direct recovery behind an
+Agent-task detour, permits automatic watcher delivery, or enables **Start new
+episode** before resolution; a settled ready episode is told to Stop solely
+because retained history has a legacy-attribution diagnostic; an unrecoverable
+actionable continuation omits Stop-and-restart while Stop is valid; Stop cancels
+valid current work, loses history, permits a later wake, silently changes graph
+meaning, forces a new episode for a provider limit, hides recovery behind an
+Agent-task detour, or confuses a historical limit message with a currently
+enforced limit, repaints a completed episode's pinned budget with the current
+node limit, labels episode start from semantic status rather than prior episode
+history; or a healthy wait and a broken watcher look the same.

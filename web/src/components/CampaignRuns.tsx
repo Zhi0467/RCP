@@ -226,7 +226,6 @@ function CampaignRow({
               aria-atomic="true"
             >
               <strong>{projection.healthLabel}</strong>
-              <p>{recommendation.label}</p>
             </div>
             {campaign.reports.length > 0 && (
               <div className="campaign-report-actions">
@@ -328,6 +327,11 @@ function CampaignRow({
                 {stopBusy ? "Stopping…" : "Stop"}
               </button>
             )}
+          </div>
+
+          <div className={`campaign-run-recommendation ${recommendation.kind}`}>
+            <span className="eyebrow">Recommended next step</span>
+            <strong>{recommendation.label}</strong>
           </div>
 
           {campaign.starting_instruction && (

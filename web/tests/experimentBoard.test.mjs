@@ -125,7 +125,15 @@ test("unsettled stops with actionable task states stay in Needs action exactly a
       entry(
         `stop-${status}`,
         "active",
-        control({}, { current_status: status, stop_requested: true, stop_settled: false }),
+        control(
+          {},
+          {
+            task_active: true,
+            current_status: status,
+            stop_requested: true,
+            stop_settled: false,
+          },
+        ),
       ),
     ),
   );
@@ -133,9 +141,9 @@ test("unsettled stops with actionable task states stay in Needs action exactly a
   assert.deepEqual(
     board.needsAction.map((item) => [item.entry.node.id, item.health]),
     [
-      ["stop-failed", "stopping"],
-      ["stop-interrupted", "stopping"],
-      ["stop-paused", "stopping"],
+      ["stop-failed", "needs_action"],
+      ["stop-interrupted", "needs_action"],
+      ["stop-paused", "needs_action"],
     ],
   );
   assert.equal(board.inProgress.length, 0);

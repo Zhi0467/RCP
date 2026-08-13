@@ -14,7 +14,8 @@ const server = await createServer({
 const { ExperimentRunDetail } = await server.ssrLoadModule(
   "/src/components/ExperimentRunDetail.tsx",
 );
-const { experimentWatcherDisplayItems } = await server.ssrLoadModule("/src/runProjection.ts");
+const { buildExperimentRun, experimentWatcherDisplayItems } =
+  await server.ssrLoadModule("/src/runProjection.ts");
 const { ExecutionView } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
 
 after(() => server.close());
@@ -208,6 +209,22 @@ function render(run, props = {}) {
   );
 }
 
+function assertDetailProjection(html, healthLabel, recommendationLabel) {
+  const healthViews = [
+    ...html.matchAll(/<div class="experiment-run-health[^"]*"[^>]*>(.*?)<\/div>/gs),
+  ];
+  assert.equal(healthViews.length, 1);
+  assert.equal(healthViews[0][1], `<strong>${healthLabel}</strong>`);
+
+  const recommendationViews = [
+    ...html.matchAll(/<div class="experiment-run-recommendation[^"]*">(.*?)<\/div>/gs),
+  ];
+  assert.equal(recommendationViews.length, 1);
+  assert.equal((html.match(/Recommended next step/g) ?? []).length, 1);
+  assert.match(recommendationViews[0][1], /<span class="eyebrow">Recommended next step<\/span>/);
+  assert.match(recommendationViews[0][1], new RegExp(`<strong>${recommendationLabel}</strong>`));
+}
+
 function recoveryTask(fields = {}) {
   return {
     operation_id: "wake-failed",
@@ -340,6 +357,69 @@ test("a paused Experiment offers native-session resume and disables recovery whi
   assert.match(html, /Switch provider…/);
 });
 
+test("an unsettled stop enables exact paused recovery and hides the requested Stop action", () => {
+  const task = recoveryTask({ status: "paused", can_resume: true, can_retry: true });
+  const experimentControl = control(
+    {
+      ready: false,
+      reasons: ["A graceful stop is finishing the current loop turn."],
+    },
+    {
+      task_active: true,
+      stop_requested: true,
+      stop_settled: false,
+      current_operation_id: task.operation_id,
+      current_status: "paused",
+    },
+  );
+  const run = buildExperimentRun(node(), experimentControl, [task], []);
+  const detail = render(run);
+
+  assertDetailProjection(detail, "Needs action", "Resume this episode, or switch provider");
+  assert.match(
+    detail,
+    /<button type="button" class="button primary compact experiment-recovery-button" aria-busy="false">Resume Codex<\/button>/,
+  );
+  assert.match(detail, /<button type="button" class="button compact">Switch provider…<\/button>/);
+  assert.doesNotMatch(detail, /experiment-stop-loop|Stopping gracefully/);
+  assert.match(detail, /experiment-run-button" disabled=""/);
+
+  const row = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: { nodes: { [run.node.id]: run.node } },
+      attentionBlockerIds: new Set(),
+      tasks: [task],
+      watchers: [],
+      experimentControl: { [run.node.id]: experimentControl },
+      dismissedTaskIds: new Set(),
+      selectedExperimentId: null,
+      focusExperimentId: null,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      onDismissTask() {},
+      onSelectNode() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+    }),
+  );
+  const compactRecommendation = row.match(
+    /<span class="experiment-ledger-copy">.*?<span>([^<]+)<\/span><\/span>/s,
+  )?.[1];
+  const detailRecommendation = detail.match(
+    /<div class="experiment-run-recommendation[^"]*">.*?<strong>([^<]+)<\/strong><\/div>/s,
+  )?.[1];
+  assert.equal(compactRecommendation, detailRecommendation);
+  assert.equal(compactRecommendation, "Resume this episode, or switch provider");
+});
+
 test("completed watcher at the ceiling leaves Start new episode enabled", () => {
   const completed = watcher();
   const html = render({
@@ -352,13 +432,11 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
     health: "paused_at_limit",
   });
 
-  assert.match(html, /Paused at invocation limit/);
-  assert.match(html, /<strong>Paused at invocation limit<\/strong><p>Start a new episode<\/p>/);
+  assertDetailProjection(html, "Paused at invocation limit", "Start a new episode");
   assert.match(html, /Start new episode/);
   assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.match(html, /Stop loop/);
   assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
-  assert.doesNotMatch(html, /Recommended next step/);
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
 });
 
@@ -379,7 +457,8 @@ test("detail keeps Experiment meaning under a neutral Research summary", () => {
   assert.match(html, /<h4>Research summary<\/h4>/);
   assert.match(html, /The detached evaluation is still running/);
   assert.match(html, /Inspect the held-out evaluation/);
-  assert.doesNotMatch(html, /Experiment state|Debugging|>Phase<|Recommended next step/);
+  assertDetailProjection(html, "Needs action", "Start a new episode");
+  assert.doesNotMatch(html, /Experiment state|Debugging|>Phase</);
 });
 
 test("degraded external watcher exposes backoff and Check now without recommending stop", () => {
@@ -406,8 +485,7 @@ test("degraded external watcher exposes backoff and Check now without recommendi
   assert.match(html, /Consecutive failures/);
   assert.match(html, />3<\/dd>/);
   assert.match(html, />Check now<\/button>/);
-  assert.equal((html.match(/Keep loop running; check now if needed/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /Recommended next step/);
+  assertDetailProjection(html, "Watcher degraded", "Keep loop running; check now if needed");
 });
 
 test("watcher Check now renders busy and disables concurrent mutations", () => {
@@ -451,12 +529,12 @@ test("missing episode continuity recommends stop then start without parsing diag
     health: "needs_action",
   });
 
-  assert.match(html, /<strong>Needs action<\/strong><p>Stop loop, then start a new episode<\/p>/);
+  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
   assert.match(
     html,
     /<button type="button" class="button compact experiment-stop-loop">Stop loop<\/button>/,
   );
-  assert.doesNotMatch(html, /Recommended next step|Agent turn failed|>Phase</);
+  assert.doesNotMatch(html, /Agent turn failed|>Phase</);
 });
 
 test("an unavailable Stop is neither shown nor recommended", () => {
@@ -471,7 +549,7 @@ test("an unavailable Stop is neither shown nor recommended", () => {
     health: "needs_action",
   });
 
-  assert.match(html, /<strong>Needs action<\/strong><p>Start an episode<\/p>/);
+  assertDetailProjection(html, "Needs action", "Start an episode");
   assert.match(html, /<button[^>]*>.*Start episode<\/button>/s);
   assert.doesNotMatch(html, /experiment-stop-loop|Stop loop, then start a new episode/);
 });
@@ -507,11 +585,11 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
   };
 
   const detail = render(run);
-  assert.match(detail, /<strong>Needs action<\/strong><p>Start a new episode<\/p>/);
+  assertDetailProjection(detail, "Needs action", "Start a new episode");
   assert.match(detail, /<button[^>]*>.*Start new episode<\/button>/s);
   assert.doesNotMatch(
     detail,
-    /experiment-stop-loop|Stop loop, then start a new episode|OBSOLETE SUCCEEDED TASK STATUS|>Phase<|Recommended next step/,
+    /experiment-stop-loop|Stop loop, then start a new episode|OBSOLETE SUCCEEDED TASK STATUS|>Phase</,
   );
 
   const row = renderToStaticMarkup(
@@ -540,7 +618,14 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       onSwitchExperimentProvider() {},
     }),
   );
-  assert.match(row, /Start a new episode/);
+  const compactRecommendation = row.match(
+    /<span class="experiment-ledger-copy">.*?<span>([^<]+)<\/span><\/span>/s,
+  )?.[1];
+  const detailRecommendation = detail.match(
+    /<div class="experiment-run-recommendation[^"]*">.*?<strong>([^<]+)<\/strong><\/div>/s,
+  )?.[1];
+  assert.equal(compactRecommendation, detailRecommendation);
+  assert.equal(compactRecommendation, "Start a new episode");
   assert.doesNotMatch(row, /OBSOLETE SUCCEEDED TASK STATUS/);
 });
 

@@ -2592,19 +2592,32 @@ button:disabled {
   font-weight: 550;
   line-height: 1.1;
 }
-.experiment-run-health > p {
-  color: var(--ink-soft);
-  font-size: 14px;
-  line-height: 1.45;
-  margin: 4px 0 0;
-  overflow-wrap: anywhere;
-}
 .experiment-run-actions {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
   justify-content: flex-end;
+}
+.experiment-run-recommendation {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--experiment-health) 7%, var(--sheet));
+  border-left: 3px solid var(--experiment-health);
+  display: grid;
+  gap: 7px 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 9px 11px;
+}
+.experiment-run-recommendation > .eyebrow {
+  color: var(--muted);
+}
+.experiment-run-recommendation > strong {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.experiment-run-recommendation.stop_and_restart {
+  border-left-color: var(--coral);
 }
 .experiment-run-meta {
   border-top: 1px solid var(--rule);
@@ -9572,6 +9585,9 @@ button.relation-map-node:hover {
   .experiment-run-actions .button {
     width: 100%;
   }
+  .experiment-run-recommendation {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .experiment-run-facts,
   .experiment-run-watcher-facts,
   .experiment-run-watcher-paths {
@@ -9949,9 +9965,7 @@ button.relation-map-node:hover {
 }
 
 .campaign-run-health {
-  display: grid;
   flex: 1 1 220px;
-  gap: 3px;
   margin-right: auto;
   min-width: 180px;
 }
@@ -9962,11 +9976,25 @@ button.relation-map-node:hover {
   font-weight: 650;
   color: var(--ink-strong);
 }
-.campaign-run-health p {
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.4;
-  margin: 0;
+.campaign-run-recommendation {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--campaign-tone) 7%, var(--sheet));
+  border-left: 3px solid var(--campaign-tone);
+  display: grid;
+  gap: 7px 16px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-bottom: 14px;
+  padding: 9px 11px;
+}
+.campaign-run-recommendation > .eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+.campaign-run-recommendation > strong {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
 }
 .campaign-report-actions {
   display: flex;
@@ -10218,6 +10246,9 @@ button.relation-map-node:hover {
   .campaign-run-actions .button,
   .campaign-reauthorize input {
     width: 100%;
+  }
+  .campaign-run-recommendation {
+    grid-template-columns: minmax(0, 1fr);
   }
   .campaign-task {
     margin-left: 0;

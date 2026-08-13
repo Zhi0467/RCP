@@ -117,6 +117,29 @@ function projectionSummary(value, tasks = value.tasks) {
   };
 }
 
+function assertCampaignProjectionViews(html, healthLabel, recommendationLabel) {
+  const healthViews = [
+    ...html.matchAll(/<div class="campaign-run-health[^"]*"[^>]*>(.*?)<\/div>/gs),
+  ];
+  assert.equal(healthViews.length, 1);
+  assert.equal(healthViews[0][1], `<strong>${healthLabel}</strong>`);
+
+  const compactRecommendations = [
+    ...html.matchAll(/<span class="campaign-run-summary">([^<]+)<\/span>/g),
+  ];
+  assert.equal(compactRecommendations.length, 1);
+  assert.equal(compactRecommendations[0][1], recommendationLabel);
+
+  const recommendationViews = [
+    ...html.matchAll(/<div class="campaign-run-recommendation[^"]*">(.*?)<\/div>/gs),
+  ];
+  assert.equal(recommendationViews.length, 1);
+  assert.equal((html.match(/Recommended next step/g) ?? []).length, 1);
+  assert.match(recommendationViews[0][1], /<span class="eyebrow">Recommended next step<\/span>/);
+  const detailRecommendation = recommendationViews[0][1].match(/<strong>([^<]+)<\/strong>/)?.[1];
+  assert.equal(detailRecommendation, compactRecommendations[0][1]);
+}
+
 test("authorization asks for one invocation budget and an optional starting instruction", () => {
   const html = renderToStaticMarkup(
     React.createElement(AutoResearchDialog, {
@@ -311,8 +334,7 @@ test("the campaign parent owns the only meter, nested worker, mail, stop, and re
   assert.match(html, /12,345 input/);
   assert.match(html, /678 generated/);
   assert.match(html, /status-pill active">Active/);
-  assert.equal((html.match(/Let auto-research continue/g) ?? []).length, 2);
-  assert.doesNotMatch(html, /Recommended next step/);
+  assertCampaignProjectionViews(html, "Active", "Let auto-research continue");
   assert.match(html, /campaign-task depth-1/);
   assert.match(html, />Worker</);
   assert.match(html, /experiment\/demo/);
@@ -400,11 +422,10 @@ test("Needs action exposes only additive reauthorization", () => {
       async onOperateTask() {},
     }),
   );
-  assert.equal((html.match(/Needs action/g) ?? []).length, 2);
-  assert.equal((html.match(/Add invocations to continue/g) ?? []).length, 2);
+  assertCampaignProjectionViews(html, "Needs action", "Add invocations to continue");
   assert.match(html, /aria-label="Additional campaign invocations"/);
   assert.match(html, />Reauthorize</);
-  assert.doesNotMatch(html, /Message orchestrator|Recommended next step/);
+  assert.doesNotMatch(html, /Message orchestrator/);
 });
 
 test("a raw running campaign with a failed retryable control projects only parent recovery", () => {
@@ -432,10 +453,9 @@ test("a raw running campaign with a failed retryable control projects only paren
   );
 
   assert.match(html, /class="campaign-run needs_action"/);
-  assert.equal((html.match(/Needs action/g) ?? []).length, 2);
-  assert.equal((html.match(/Retry the current turn/g) ?? []).length, 2);
+  assertCampaignProjectionViews(html, "Needs action", "Retry the current turn");
   assert.match(html, /<button class="button compact secondary" type="button">.*Retry<\/button>/s);
-  assert.doesNotMatch(html, /status-pill running|Recommended next step/);
+  assert.doesNotMatch(html, /status-pill running/);
   assert.match(html, /status-pill failed">Failed/);
 });
 
@@ -460,10 +480,10 @@ test("a healthy pausable campaign recommends continuing while Pause stays a cont
 
   assert.match(html, /class="campaign-run active"/);
   assert.match(html, /status-pill active">Active/);
-  assert.equal((html.match(/Let auto-research continue/g) ?? []).length, 2);
+  assertCampaignProjectionViews(html, "Active", "Let auto-research continue");
   assert.match(html, /<button class="button compact secondary" type="button">.*Pause<\/button>/s);
   assert.match(html, />Stop<\/button>/);
-  assert.doesNotMatch(html, /Pause the orchestrator|Recommended next step/);
+  assert.doesNotMatch(html, /Pause the orchestrator/);
 });
 
 test("campaign helpers retain one live lineage and encode the report URL", () => {
@@ -648,9 +668,8 @@ test("stopping projects graceful wait without retaining an invalid Stop control"
     }),
   );
 
-  assert.equal((html.match(/Stopping gracefully/g) ?? []).length, 2);
-  assert.equal((html.match(/Wait for the current turn to finish/g) ?? []).length, 2);
-  assert.doesNotMatch(html, />Stop<\/button>|Recommended next step/);
+  assertCampaignProjectionViews(html, "Stopping gracefully", "Wait for the current turn to finish");
+  assert.doesNotMatch(html, />Stop<\/button>/);
 });
 
 test("stopping with a paused exact control projects parent Resume instead of graceful wait", () => {
@@ -685,14 +704,10 @@ test("stopping with a paused exact control projects parent Resume instead of gra
     }),
   );
 
-  assert.equal((html.match(/Needs action/g) ?? []).length, 2);
-  assert.equal((html.match(/Resume the current turn/g) ?? []).length, 2);
+  assertCampaignProjectionViews(html, "Needs action", "Resume the current turn");
   assert.match(html, /<button class="button compact primary" type="button">.*Resume<\/button>/s);
   assert.match(html, /status-pill paused">Paused/);
-  assert.doesNotMatch(
-    html,
-    /Stopping gracefully|status-pill stopping|>Stop<\/button>|Recommended next step/,
-  );
+  assert.doesNotMatch(html, /Stopping gracefully|status-pill stopping|>Stop<\/button>/);
 });
 
 test("wrap-up waits without a report task and targets only the latest report attempt", () => {
@@ -766,10 +781,8 @@ test("wrap-up waits without a report task and targets only the latest report att
       async onOperateTask() {},
     }),
   );
-  assert.equal((html.match(/Recovering/g) ?? []).length, 2);
-  assert.equal((html.match(/Wait for automatic report recovery/g) ?? []).length, 2);
+  assertCampaignProjectionViews(html, "Recovering", "Wait for automatic report recovery");
   assert.doesNotMatch(html, />Retry</);
-  assert.doesNotMatch(html, /Recommended next step/);
 });
 
 test("the campaign parent resumes the exact paused worker that blocks wrap-up", () => {

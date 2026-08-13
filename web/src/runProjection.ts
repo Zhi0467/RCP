@@ -210,10 +210,13 @@ export function deriveExperimentLoopHealth(
   control: ExperimentControlState | null,
   taskStatus: AgentTaskStatus | null,
   currentWatchers: WatcherRecord[],
+  hasValidRecovery = false,
 ): ExperimentLoopHealth {
   const operational = control?.operational;
   const stopRequested = Boolean(operational?.stop_requested);
-  if (stopRequested && !operational?.stop_settled) return "stopping";
+  if (stopRequested && !operational?.stop_settled) {
+    return hasValidRecovery ? "needs_action" : "stopping";
+  }
   if (
     stopRequested &&
     operational?.stop_settled &&
@@ -262,22 +265,31 @@ export function deriveExperimentLoopHealth(
   return "needs_action";
 }
 
+export function experimentRecoveryAction(task: AgentTask | null): "resume" | "retry" | null {
+  if (!task || !actionableStatuses.has(task.status)) return null;
+  if (task.can_resume && (task.status === "paused" || task.status === "interrupted")) {
+    return "resume";
+  }
+  return task.can_retry ? "retry" : null;
+}
+
 /** Human guidance derived only from canonical task, control, and watcher state. */
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const task = run.currentTask;
-  if (task && runningStatuses.has(task.status)) {
-    return { step: "wait", label: "Wait for the agent" };
-  }
+  const recoveryAction = experimentRecoveryAction(task);
   if (run.health === "stopping") {
     return { step: "wait", label: "Wait for the current turn to finish" };
   }
-  if (task?.can_resume && (task.status === "paused" || task.status === "interrupted")) {
+  if (task && runningStatuses.has(task.status)) {
+    return { step: "wait", label: "Wait for the agent" };
+  }
+  if (recoveryAction === "resume") {
     return {
       step: "resume",
-      label: task.can_retry ? "Resume this episode, or switch provider" : "Resume this episode",
+      label: task?.can_retry ? "Resume this episode, or switch provider" : "Resume this episode",
     };
   }
-  if (task?.can_retry) {
+  if (recoveryAction === "retry") {
     return { step: "retry", label: "Retry this episode, or switch provider" };
   }
   if (
@@ -343,6 +355,11 @@ export function buildExperimentRun(
   const { taskGroup, currentTask } = currentExperimentTaskGroup(node.id, control, tasks);
   const taskStatus =
     currentTask?.status ?? asAgentTaskStatus(control?.operational?.current_status ?? null);
+  const hasValidRecovery =
+    experimentRecoveryAction(currentTask) !== null ||
+    (!currentTask &&
+      Boolean(control?.operational?.task_active) &&
+      Boolean(taskStatus && actionableStatuses.has(taskStatus)));
   return {
     node,
     control,
@@ -351,7 +368,13 @@ export function buildExperimentRun(
     watchers,
     watcherItems: experimentWatcherDisplayItems(watchers),
     currentWatchers,
-    health: deriveExperimentLoopHealth(node, control, taskStatus, currentWatchers),
+    health: deriveExperimentLoopHealth(
+      node,
+      control,
+      taskStatus,
+      currentWatchers,
+      hasValidRecovery,
+    ),
   };
 }
 

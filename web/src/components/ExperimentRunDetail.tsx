@@ -6,6 +6,7 @@ import {
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
   experimentRecommendation,
+  experimentRecoveryAction,
   graphConditionLabel,
   isExternalWatcherRecord,
   watcherIsActive,
@@ -124,9 +125,8 @@ export function ExperimentRunDetail({
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
   const canStop = live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status));
-  const showStop = Boolean(
-    control?.episode_id && (stopBusy || stopUnsettled || (!stopRequested && canStop)),
-  );
+  const showStop = Boolean(control?.episode_id && !stopRequested && (stopBusy || canStop));
+  const stopBlocksRecovery = stopRequested && !stopUnsettled;
   const recommendation = experimentRecommendation(run);
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
@@ -141,14 +141,13 @@ export function ExperimentRunDetail({
           aria-atomic="true"
         >
           <strong>{healthLabels[health]}</strong>
-          <p>{recommendation.label}</p>
         </div>
         <div className="experiment-run-actions" aria-label="Experiment loop actions">
           {recoveryAction && (
             <button
               type="button"
               className="button primary compact experiment-recovery-button"
-              disabled={runDisabled || recoveryBusy || stopBusy || stopUnsettled || stopRequested}
+              disabled={runDisabled || recoveryBusy || stopBusy || stopBlocksRecovery}
               aria-busy={recoveryBusy}
               onClick={() => onRecover(recoveryAction)}
             >
@@ -165,7 +164,7 @@ export function ExperimentRunDetail({
             <button
               type="button"
               className="button compact"
-              disabled={runDisabled || recoveryBusy || stopBusy || stopUnsettled || stopRequested}
+              disabled={runDisabled || recoveryBusy || stopBusy || stopBlocksRecovery}
               onClick={onSwitchProvider}
             >
               Switch provider…
@@ -192,6 +191,11 @@ export function ExperimentRunDetail({
             {runBusy ? "Starting" : control?.episode_id ? "Start new episode" : "Start episode"}
           </button>
         </div>
+      </div>
+
+      <div className={`experiment-run-recommendation ${recommendation.step}`}>
+        <span className="eyebrow">Recommended next step</span>
+        <strong>{recommendation.label}</strong>
       </div>
 
       <p className="experiment-run-meta">
@@ -658,14 +662,6 @@ function WatcherDetail({
       </details>
     </li>
   );
-}
-
-function experimentRecoveryAction(task: ExperimentRun["currentTask"]): "resume" | "retry" | null {
-  if (!task || !actionableTaskStatuses.has(task.status)) return null;
-  if (task.can_resume && (task.status === "paused" || task.status === "interrupted")) {
-    return "resume";
-  }
-  return task.can_retry ? "retry" : null;
 }
 
 function watcherDeliveryLabel(watcher: WatcherRecord): string {

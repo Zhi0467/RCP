@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.55
+**Version:** 0.57
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,12 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.57** — made an unsettled Experiment stop project Stopping only while its
+  turn is live, then Needs action with direct exact recovery if that turn pauses,
+  fails, or is interrupted, without weakening the durable stop fence.
+- **0.56** — separated Runs' Experiment-loop and Auto-research health views from
+  their labelled **Recommended next step** views while keeping compact-row
+  recommendations and validity-gated controls aligned.
 - **0.55** — replaced the campaign command client's staged bearer credential
   with a per-invocation execution-host broker that authenticates callers as part
   of the live provider process tree locally and over SSH, while explicitly
@@ -1067,17 +1073,20 @@ terminally stops every compatible current or adopted watcher and settles
 immediately; incompatible historical watcher work remains pending. An unresolved
 loop task is the current turn and finishes normally: its valid Patch and semantic
 bookkeeping apply, and those existing compatible watchers plus every valid
-watcher its final handoff emits are retained as `stopped`. If the turn pauses, fails, or is interrupted, the
-stop remains unsettled while the task stays available for Resume or Retry. A
-claim that committed first wins; otherwise the stop wins and no wake task is
-created. Stop never cancels the current task, kills external work, deletes a
-watcher, edits Experiment status, creates or closes an attempt, or discards a
-valid Patch. Task Resume and Retry remain recovery of the already-authorized
-turn but can never clear the stop intent or reenable automatic delivery, and a
-fresh human episode start stays disabled until the turn resolves. The next
-**Start new episode** action creates a fresh episode whose staged watcher state
-includes the stopped episode's records as inspectable context with no delivered
-trigger.
+watcher its final handoff emits are retained as `stopped`. While that current
+task is queued, running, or pausing, Runs projects **Stopping gracefully** and
+recommends waiting for current work to finish. If the turn pauses, fails, or is
+interrupted, the stop remains unsettled but Runs instead projects **Needs
+action** and directly recommends and enables its valid exact-session **Resume**,
+**Retry**, or **Switch provider** recovery. A claim that committed first wins;
+otherwise the stop wins and no wake task is created. Stop never cancels the
+current task, kills external work, deletes a watcher, edits Experiment status,
+creates or closes an attempt, or discards a valid Patch. Task recovery remains
+inside the already-authorized turn and can never clear the stop intent or
+reenable automatic watcher delivery; **Start new episode** stays unavailable
+until the turn resolves. The next **Start new episode** action creates a fresh
+episode whose staged watcher state includes the stopped episode's records as
+inspectable context with no delivered trigger.
 
 Recovery of a bound episode never silently falls back to a fresh provider
 session. If RCP proves the pinned session, exact stage, or continuation context
@@ -1452,16 +1461,18 @@ then produces the required partial report.
 ### Runs projection
 
 Human recovery and termination controls live on the campaign parent, never on an
-individual worker row. Runs derives exactly one campaign health and one
-recommendation from durable campaign and orchestrator state rather than parsing
-diagnostic prose. The compact campaign row and expanded detail share that same
-projection. Raw `campaign.status`, control-task status or phase, and worker
+individual worker row. Runs derives two distinct projected outputs from durable
+campaign and orchestrator state rather than parsing diagnostic prose: exactly one
+campaign health and exactly one recommendation. The expanded detail presents
+them as one **Campaign health** view and one separate view labelled
+**Recommended next step**; the compact campaign row carries that same
+recommendation. Raw `campaign.status`, control-task status or phase, and worker
 status are not peer campaign states; task and worker statuses and diagnostics
 remain visible as supporting history.
 
 The projection is fixed by structured state:
 
-| Durable condition | Campaign health | Recommendation |
+| Durable condition | Campaign health | Recommended next step |
 |---|---|---|
 | Queued or starting | Starting | Wait for auto-research to start |
 | Healthy active work | Active | Let auto-research continue |
@@ -1472,13 +1483,13 @@ The projection is fixed by structured state:
 | Healthy wrap-up | Writing report | Wait for the concluding report |
 | Terminal with a report | Completed, Stopped, or Failed | Open the concluding report |
 
-The detail's health block carries the recommendation and there is no separate
-**Recommended next step** strip. Pause and Stop are optional parent controls,
-not healthy-campaign recommendations, and each appears only when the current
-state declares it valid. Exact Resume or Retry appears only for actionable
-recovery; automatic recovery offers no duplicate manual Retry. Reauthorization
-appears at exhaustion, and the report control appears only when the terminal
-report exists. No recommendation names an unavailable action.
+The expanded detail always keeps its **Campaign health** and **Recommended next
+step** views distinct. Pause and Stop are optional parent controls, not
+healthy-campaign recommendations, and each appears only when the current state
+declares it valid. Exact Resume or Retry appears only for actionable recovery;
+automatic recovery offers no duplicate manual Retry. Reauthorization appears at
+exhaustion, and the report control appears only when the terminal report exists.
+No recommendation names an unavailable action.
 
 ### Mail
 
@@ -1702,26 +1713,28 @@ graceful takeover after recoverable work is paused.
   resolved.
   An Auto-research campaign appears as one parent row with task and worker state
   retained beneath it as supporting history. Its compact parent row and expanded
-  detail share the one campaign health and recommendation defined above; raw
-  `campaign.status`, task status or phase, and worker status never compete as peer
-  parent states. Healthy active work recommends **Let auto-research continue**;
-  automatic recovery and wrap-up recommend waiting; actionable exact recovery
-  recommends **Resume** or **Retry**, whichever is valid; exhaustion recommends
-  reauthorization; and a terminal campaign with its report recommends opening
-  that report. The health block carries the recommendation with no separate
-  **Recommended next step** strip. Pause and Stop remain optional controls shown
-  only when valid, never recommendations for healthy work, and no recommendation
-  names an unavailable action.
+  detail derive the one campaign health and recommendation defined above. The
+  expanded detail renders those as two distinct projected views: one **Campaign
+  health** and one separately labelled **Recommended next step**. The compact row
+  carries the same recommendation. Raw `campaign.status`, task status or phase,
+  and worker status never compete as peer parent states. Healthy active work
+  recommends **Let auto-research continue**; automatic recovery and wrap-up
+  recommend waiting; actionable exact recovery recommends **Resume** or
+  **Retry**, whichever is valid; exhaustion recommends reauthorization; and a
+  terminal campaign with its report recommends opening that report. Pause and
+  Stop remain optional controls shown only when valid, never recommendations for
+  healthy work, and no recommendation names an unavailable action.
   An Experiment-loop task is the deliberate exception to the chat exclusion
   because its Patch kind and control node make it research execution. Activating
   an Experiment's **Start episode** or **Start new episode** action navigates here
   and opens its run detail rather than a floating node-chat window. That detail
-  and its compact Experiment row share exactly one primary loop health and one
-  recommendation derived from structured task, control, stop, and watcher state.
-  Neither surface presents task status or phase, or semantic
-  `Experiment.status`, as a competing peer state; the compact row uses the same
-  recommendation instead of the latest task status. The detail's health block
-  carries that recommendation, with no separate **Recommended next step** strip.
+  and its compact Experiment row derive exactly one primary loop health and one
+  recommendation from structured task, control, stop, and watcher state. The
+  expanded detail renders those as two distinct projected views: one **Loop
+  health** and one separately labelled **Recommended next step**. The compact row
+  carries the same recommendation instead of the latest task status. Neither
+  surface presents task status or phase, or semantic `Experiment.status`, as a
+  competing peer state.
   It retains last activity, each episode's pinned invocation budget, the current
   node's separate **Next episode limit**, the research summary and next action,
   watcher health and provenance, immutable watcher-group detail, resolved
@@ -1733,9 +1746,14 @@ graceful takeover after recoverable work is paused.
   episode** even when retained execution history has a legacy-attribution session
   diagnostic. An unrecoverable actionable task continuation may instead
   recommend **Stop loop**, then restart only while Stop is actually available.
-  Failed or paused loop turns expose direct **Retry provider** and **Switch
-  provider** recovery when valid. The detail does not include an **Open agent
-  task** button; full task history and diagnostics remain available from History.
+  With a durable Stop unsettled, a queued, running, or pausing current task
+  projects **Stopping gracefully** and recommends waiting; if that same turn is
+  paused, failed, or interrupted, it projects **Needs action** and recommends and
+  enables the valid direct **Resume**, **Retry**, or **Switch provider** recovery.
+  The stop still prevents automatic watcher delivery and keeps **Start new
+  episode** unavailable until resolution. The detail does not include an **Open
+  agent task** button; full task history and diagnostics remain available from
+  History.
 - **Chats** groups node and project conversations with immutable turn labels,
   inline task progress under the triggering message, and no global task banner.
 - **Paper** provides a human-authored Markdown Write/Preview pane and read-only

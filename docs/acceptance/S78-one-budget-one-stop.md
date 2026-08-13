@@ -71,13 +71,15 @@ program. Three decisions closed most of it.
 ## Runs projection — confirmed 2026-08-12
 
 The campaign parent answers only two human questions: **how is auto-research
-doing?** and **what should I do next?** Its compact row and expanded detail show
-the same single campaign health and recommendation. Raw `campaign.status`, the
-current control task's status or phase, and worker status are not peer
-campaign-level answers. Task and worker rows retain their exact statuses and
-diagnostics as supporting history.
+doing?** and **what should I do next?** Its compact row and expanded detail derive
+the same single campaign health and recommendation. The expanded detail renders
+them as two distinct projected views: exactly one **Campaign health** and exactly
+one separately labelled **Recommended next step**. The compact row carries that
+same recommendation. Raw `campaign.status`, the current control task's status or
+phase, and worker status are not peer campaign-level answers. Task and worker
+rows retain their exact statuses and diagnostics as supporting history.
 
-| Durable condition | Campaign health | Recommendation | Available parent controls |
+| Durable condition | Campaign health | Recommended next step | Available parent controls |
 |---|---|---|---|
 | Queued or starting | Starting | Wait for auto-research to start | Stop only when `can_stop` |
 | A campaign turn is healthy and live | Active | Let auto-research continue | Pause and Stop only when each is valid |
@@ -89,10 +91,10 @@ diagnostics as supporting history.
 | The campaign ended and has its report | Completed, Stopped, or Failed | Open the concluding report | The matching report control |
 
 Pause and Stop are optional controls gated by validity, not recommendations for
-a healthy campaign. The expanded detail has one health block containing the
-recommendation and no separate **Recommended next step** strip. The compact row
-carries that same recommendation instead of exposing a second status vocabulary.
-A recommendation never names an action whose control is unavailable.
+a healthy campaign. The expanded detail keeps its **Campaign health** and
+**Recommended next step** views separate. The compact row carries that same
+recommendation instead of exposing a second status vocabulary. A recommendation
+never names an action whose control is unavailable.
 
 ## Setup
 
@@ -107,10 +109,11 @@ exhaust during the drive.
    beneath it, and one budget meter on the parent showing both the invocation
    ceiling and the cost observed so far.
 3. While the campaign is healthy and active, confirm its compact row and detail
-   show the same one health and **Let auto-research continue** recommendation.
-   Task status, task phase, and worker status appear only in supporting history.
-   Pause and Stop appear only when valid and neither replaces the recommendation;
-   there is no separate **Recommended next step** strip.
+   derive the same one health and **Let auto-research continue** recommendation.
+   In the expanded detail they appear as two distinct views: **Campaign health**
+   and the separately labelled **Recommended next step**. Task status, task
+   phase, and worker status appear only in supporting history. Pause and Stop
+   appear only when valid and neither replaces the recommendation.
 4. Watch orchestrator turns, worker turns, and wakes each draw from that meter.
 5. Observe automatic recovery and confirm the recommendation is to wait, with no
    duplicate manual Retry. Then interrupt a turn after it spawned a worker and
@@ -156,6 +159,7 @@ exhaust during the drive.
 - `campaign_controls_are_derived_from_state_and_never_attached_to_a_worker`
 - `campaign_parent_shows_one_health_and_one_recommendation`
 - `compact_and_expanded_campaign_views_share_the_same_projection`
+- `campaign_health_and_recommended_next_step_are_separate_projected_views`
 - `raw_campaign_task_phase_and_worker_status_are_supporting_history_not_peer_states`
 - `healthy_active_campaign_recommends_let_auto_research_continue`
 - `a_healthy_campaign_never_recommends_pause_just_because_pause_is_available`
@@ -165,7 +169,7 @@ exhaust during the drive.
 - `exhaustion_recommends_reauthorization`
 - `stopping_and_wrapup_recommend_waiting`
 - `terminal_campaign_with_report_recommends_opening_it`
-- `campaign_health_block_owns_recommendation_without_a_redundant_strip`
+- `expanded_campaign_detail_has_one_health_and_one_distinct_recommendation_view`
 - `a_campaign_recommendation_never_names_an_unavailable_control`
 - `the_campaign_row_exposes_the_detailed_html_report`
 - `the_report_covers_decisions_blockers_experiments_evidence_and_epistemic_proposals`
