@@ -9,12 +9,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { LIVE_CAMPAIGN_POLL_INTERVAL_MS, startLiveCampaignPolling } =
+const { LIVE_EPISODE_POLL_INTERVAL_MS, startLiveEpisodePolling } =
   await server.ssrLoadModule("/src/App.tsx");
 
 after(() => server.close());
 
-test("live campaign polling is single-flight and keeps failures visible until recovery", async () => {
+test("live episode polling is single-flight and keeps failures visible until recovery", async () => {
   const timers = new Map();
   const cleared = [];
   let nextTimerId = 1;
@@ -40,7 +40,7 @@ test("live campaign polling is single-flight and keeps failures visible until re
   let firstRefreshDone;
   let refreshCount = 0;
   let visibleError = null;
-  const stop = startLiveCampaignPolling(
+  const stop = startLiveEpisodePolling(
     clock,
     () => {
       refreshCount += 1;
@@ -61,7 +61,7 @@ test("live campaign polling is single-flight and keeps failures visible until re
   );
 
   const firstTimer = nextTimer();
-  assert.equal(firstTimer.delay, LIVE_CAMPAIGN_POLL_INTERVAL_MS);
+  assert.equal(firstTimer.delay, LIVE_EPISODE_POLL_INTERVAL_MS);
   firstTimer.callback();
   await settle();
   assert.equal(refreshCount, 1);
@@ -81,7 +81,7 @@ test("live campaign polling is single-flight and keeps failures visible until re
   nextTimer().callback();
   await settle();
   assert.equal(refreshCount, 3);
-  assert.equal(visibleError, null, "a successful campaign refresh clears the failure");
+  assert.equal(visibleError, null, "a successful episode refresh clears the failure");
 
   const scheduledTimerId = timers.keys().next().value;
   stop();

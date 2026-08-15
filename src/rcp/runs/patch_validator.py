@@ -52,12 +52,12 @@ def stage_patch_validation_mailbox(
     turn_id: str,
     timeout_seconds: float,
 ) -> StagedCommandMailbox:
-    """Stage the one command client with a validate-only, non-campaign credential."""
+    """Stage the one command client with a validate-only, non-episode credential."""
 
     return stage_command_mailbox(
         local_stage=local_stage,
         remote_stage=remote_stage,
-        campaign_id=None,
+        episode_id=None,
         task_id=task_id,
         turn_id=turn_id,
         timeout_seconds=timeout_seconds,
@@ -101,7 +101,7 @@ async def serve_patch_validation_mailbox(
             return CommandResponse(
                 request_id=request.request_id,
                 status="invalid",
-                message="This non-campaign credential authorizes Patch validation only.",
+                message="This validator credential authorizes Patch validation only.",
             )
         budget.count += 1
         count = budget.count

@@ -20,9 +20,16 @@ from rcp.core.authority import (
 )
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
-from rcp.runs.campaign import CampaignRunRequest
+from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
-from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore, CampaignRecord
+from rcp.storage import (
+    AgentTaskKind,
+    AgentTaskRecord,
+    AppStore,
+    AutoResearchStateRecord,
+    EpisodeRecord,
+    ProjectRecord,
+)
 from tests.helpers import seed_patch
 
 
@@ -160,7 +167,7 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
     assert discuss is not None and discuss.task_contract == "discuss"
     assert discuss.scope.model_dump() == {
         "run_truth_scope": ["repo-a"],
-        "campaign_id": None,
+        "episode_id": None,
         "chat_scope": "node",
         "chat_id": "chat-one",
         "node_id": "rq/one",
@@ -173,32 +180,28 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
     assert experiment is not None and experiment.scope.control_episode_id == episode_id
     assert paper is not None and paper.task_contract == "paper_readonly"
     orchestrator = resolve_dispatch_authority(
-        "campaign",
-        CampaignRunRequest(
-            campaign_id="campaign-one",
+        "auto_research",
+        AutoResearchRunRequest(
+            episode_id="episode-one",
             role="orchestrator",
             run_truth_scope=["repo-b", "repo-a", "repo-a"],
         ),
     )
     worker = resolve_dispatch_authority(
-        "campaign",
-        CampaignRunRequest(
-            campaign_id="campaign-one",
+        "auto_research",
+        AutoResearchRunRequest(
+            episode_id="episode-one",
             role="worker",
             run_truth_scope=["repo-a"],
             control_node_id="exp/seat",
         ),
-    )
-    report = resolve_dispatch_authority(
-        "campaign",
-        CampaignRunRequest(campaign_id="campaign-one", role="report", ending="completed"),
     )
     assert orchestrator == AgentDispatchAuthority(
         profile="orchestrator",
         task_contract="orchestrate",
         scope=AgentDispatchScope(
             run_truth_scope=["repo-a", "repo-b"],
-            campaign_id="campaign-one",
+            episode_id="episode-one",
             patch_kind="work",
         ),
     )
@@ -207,13 +210,16 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
         task_contract="work_auto",
         scope=AgentDispatchScope(
             run_truth_scope=["repo-a"],
-            campaign_id="campaign-one",
+            episode_id="episode-one",
             patch_kind="work",
         ),
     )
-    assert report is None
-    with pytest.raises(TypeError, match="CampaignRunRequest"):
-        resolve_dispatch_authority("campaign", object())
+    with pytest.raises(ValidationError, match="role"):
+        AutoResearchRunRequest.model_validate(
+            {"episode_id": "episode-one", "role": "report", "ending": "completed"}
+        )
+    with pytest.raises(TypeError, match="AutoResearchRunRequest"):
+        resolve_dispatch_authority("auto_research", object())
 
 
 def test_dispatch_binding_is_strict_and_normalized() -> None:
@@ -230,64 +236,84 @@ def test_dispatch_binding_is_strict_and_normalized() -> None:
         AgentDispatchScope(run_truth_scope=["repo-b", "repo-a"], patch_kind="work")
 
 
-def test_agent_task_authority_carries_campaign_id_from_each_exact_task_row(
+def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     authorizer = _authorizer(store)
-    campaign_id = "campaign-one"
+    episode_id = "episode-one"
     project_id = "project-one"
-    root_operation_id = "campaign-root"
+    root_operation_id = "auto-research-root"
     now = store.now()
-    root_request = CampaignRunRequest(
-        campaign_id=campaign_id,
+    store.upsert_project(
+        ProjectRecord(
+            project_id=project_id,
+            locator="/tmp/project-one/research.yaml",
+            name="Project one",
+            state_location="/tmp/project-one/.research",
+            state_remote=False,
+            added_at=now,
+        )
+    )
+    root_request = AutoResearchRunRequest(
+        episode_id=episode_id,
         role="orchestrator",
         actor_operation_id=root_operation_id,
         run_truth_scope=["repo-a"],
     )
-    root_authority = resolve_dispatch_authority("campaign", root_request)
+    root_authority = resolve_dispatch_authority("auto_research", root_request)
     assert root_authority is not None
-    _, root = store.create_campaign_with_root_task(
-        CampaignRecord(
-            campaign_id=campaign_id,
+    _, root = store.create_auto_research_episode_with_root_task(
+        EpisodeRecord(
+            episode_id=episode_id,
             project_id=project_id,
+            mode="auto_research",
             status="queued",
             invocation_ceiling=4,
             authorized_by=authorizer,
             created_at=now,
             updated_at=now,
         ),
+        AutoResearchStateRecord(
+            episode_id=episode_id,
+            starting_instruction="Investigate the question.",
+            created_at=now,
+            updated_at=now,
+        ),
         AgentTaskRecord(
             operation_id=root_operation_id,
             project_id=project_id,
-            campaign_id=campaign_id,
-            kind="campaign",
-            status="succeeded",
+            episode_id=episode_id,
+            kind="auto_research",
+            status="queued",
             request=root_request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
-            status_message="done",
+            status_message="queued",
             authorized_by=authorizer,
             dispatch_authority=root_authority,
         ),
     )
-    worker_operation_id = "campaign-worker"
-    worker_request = CampaignRunRequest(
-        campaign_id=campaign_id,
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    root = store.agent_task(root.operation_id)
+    assert root is not None
+    worker_operation_id = "auto-research-worker"
+    worker_request = AutoResearchRunRequest(
+        episode_id=episode_id,
         role="worker",
         actor_operation_id=worker_operation_id,
         control_node_id="exp/seat",
         run_truth_scope=["repo-a"],
     )
-    worker_authority = resolve_dispatch_authority("campaign", worker_request)
+    worker_authority = resolve_dispatch_authority("auto_research", worker_request)
     assert worker_authority is not None
-    store.create_campaign_agent_task(
+    store.create_auto_research_agent_task(
         AgentTaskRecord(
             operation_id=worker_operation_id,
             project_id=project_id,
-            campaign_id=campaign_id,
-            kind="campaign",
-            status="succeeded",
+            episode_id=episode_id,
+            kind="auto_research",
+            status="queued",
             request=worker_request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
@@ -313,13 +339,13 @@ def test_agent_task_authority_carries_campaign_id_from_each_exact_task_row(
     worker_binding = store.agent_task_authority(project_id, worker_operation_id)
     ordinary_binding = store.agent_task_authority(project_id, ordinary_operation_id)
 
-    assert root_binding.campaign_id == campaign_id
+    assert root_binding.episode_id == episode_id
     assert root_binding.dispatch_authority is not None
     assert root_binding.dispatch_authority.profile == "orchestrator"
-    assert worker_binding.campaign_id == campaign_id
+    assert worker_binding.episode_id == episode_id
     assert worker_binding.dispatch_authority is not None
     assert worker_binding.dispatch_authority.profile == "ordinary"
-    assert ordinary_binding.campaign_id is None
+    assert ordinary_binding.episode_id is None
 
 
 @pytest.mark.parametrize(
@@ -623,7 +649,7 @@ def _bound_child(
     )
 
 
-def test_storage_refuses_noncampaign_child_without_an_existing_parent(tmp_path: Path) -> None:
+def test_storage_refuses_non_episode_child_without_an_existing_parent(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "storage-missing.sqlite3")
     authorizer = _authorizer(store)
     request = _work_request()

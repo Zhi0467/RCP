@@ -126,7 +126,11 @@ class ProjectSetupRequest(_StrictSetupModel):
     name: str = Field(min_length=1, max_length=120)
     repositories: list[SetupRepository] = Field(min_length=1)
     state_repository: str
-    default_campaign_invocation_ceiling: int = Field(default=10, ge=2)
+    default_auto_research_invocation_ceiling: int = Field(
+        default=10,
+        ge=1,
+        description="Operational invocations per newly authorized episode.",
+    )
     execution: SetupExecution = Field(default_factory=SetupExecution)
     agents: SetupAgents | None = None
     confirmed: bool = False
@@ -740,8 +744,8 @@ def render_manifest(
         [repository.alias for repository in request.repositories if repository.default_read],
     )
     agent.add(
-        "default_campaign_invocation_ceiling",
-        request.default_campaign_invocation_ceiling,
+        "default_auto_research_invocation_ceiling",
+        request.default_auto_research_invocation_ceiling,
     )
     for surface in _SETUP_AGENT_EXECUTION_PROFILES:
         setup_profile = request.agents.profile(surface)

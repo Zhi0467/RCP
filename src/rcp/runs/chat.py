@@ -391,18 +391,6 @@ def _clear_stale_turn_handoffs(
     clear_turn_handoff_files(mailbox)
 
 
-def _clear_stale_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
-    """Compatibility seam until every Work caller uses the unified handoff clear."""
-
-    _clear_stale_turn_handoffs(workspace, remote_stage)
-
-
-def _clear_stale_watch(workspace: Path, remote_stage: RemoteRunStage | None) -> None:
-    """Compatibility seam until every Work caller uses the unified handoff clear."""
-
-    _clear_stale_turn_handoffs(workspace, remote_stage)
-
-
 def _prepare_local_artifact_directory(
     stage: Path,
     scope_id: str,
@@ -559,19 +547,6 @@ def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) ->
     if not path.is_file():
         return None
     return path.read_text(encoding="utf-8")
-
-
-def _existing_watch_digest(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> str | None:
-    try:
-        text = _read_watch_request(workspace, remote_stage)
-    except (OSError, StateUnavailable, ValueError):
-        return None
-    if text is None:
-        return None
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _record_chat_context_receipt(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import html
 import json
 import shlex
 import subprocess
@@ -70,7 +69,7 @@ _CAMPAIGN_CONTRACTS: dict[
     "# RCP auto-research orchestrator continuation": ("orchestrator", "continuation"),
     "# RCP auto-research worker contract": ("worker", "fresh"),
     "# RCP auto-research worker continuation": ("worker", "continuation"),
-    "# RCP auto-research campaign report contract": ("report", "report"),
+    "# RCP episode report contract": ("report", "report"),
 }
 
 
@@ -238,7 +237,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             action = (
                 "report_correction"
                 if campaign_contract == ("report", "report")
-                and "- exact correction diagnostic: `" in contract
+                and "- exact report correction diagnostic: `" in contract
                 else "report"
                 if campaign_contract == ("report", "report")
                 else "turn"
@@ -523,17 +522,20 @@ async def _accept_campaign_turn(
     if role == "report":
         report_attempts = updated_state.get("campaign_report_attempts", 0)
         if not isinstance(report_attempts, int) or report_attempts < 0:
-            raise ValueError("Acceptance campaign report state is malformed.")
+            raise ValueError("Acceptance episode report state is malformed.")
         updated_state["campaign_report_attempts"] = report_attempts + 1
-        if "- exact correction diagnostic: `" not in contract:
+        if "- exact report correction diagnostic: `" not in contract:
             _write_state(cwd, updated_state)
-            return "Left the first acceptance report attempt missing for correction."
-        output_path = _campaign_contract_path(contract, "- campaign HTML report: `")
-        if output_path.parent.resolve() != cwd or output_path.name != "campaign-report.html":
-            raise ValueError("Acceptance campaign report output left its exact actor stage.")
+            return "Left the first acceptance episode report attempt missing for correction."
+        output_path = _campaign_contract_path(
+            contract,
+            "- self-contained sandbox-safe HTML report: `",
+        )
+        if output_path.parent.resolve() != cwd or output_path.name != "episode-report.html":
+            raise ValueError("Acceptance episode report output left its exact actor stage.")
         _write_text_atomically(output_path, _campaign_report_html(contract))
         _write_state(cwd, updated_state)
-        return "Wrote the corrected deterministic acceptance campaign report."
+        return "Wrote the corrected deterministic acceptance episode report."
 
     fixture = updated_state.get(_CAMPAIGN_FIXTURE_STATE_KEY)
     if fixture is not None and not isinstance(fixture, dict):
@@ -561,7 +563,7 @@ async def _accept_campaign_turn(
                 label="terminal-failure worker",
                 control=control,
             )
-            return "Settled the admitted acceptance worker before the failed campaign report."
+            return "Settled the admitted acceptance worker before the failed episode report."
         if worker_fixture and reply_prefix is not None:
             first = await _run_campaign_client(
                 reply_prefix,
@@ -648,9 +650,11 @@ async def _accept_campaign_turn(
             )
             # This import is intentionally local. AcceptanceAgentLauncher is part of the
             # provider layer, while the typed verdict belongs to campaign orchestration.
-            from rcp.runs.campaign_recovery import CampaignOrchestratorTerminalFailure
+            from rcp.runs.auto_research_recovery import (
+                AutoResearchOrchestratorTerminalFailure,
+            )
 
-            raise CampaignOrchestratorTerminalFailure(
+            raise AutoResearchOrchestratorTerminalFailure(
                 "The deterministic acceptance orchestrator reached an unrecoverable "
                 "structural failure after checkpointing its native session and stage."
             )
@@ -901,7 +905,7 @@ def _command_effect_id(response: dict[str, object], verb: str) -> object:
     result = response.get("result")
     if not isinstance(result, dict):
         raise ValueError("Acceptance campaign staged command has no result object.")
-    key = {"spawn": "worker_id", "message": "message_id", "finish": "campaign_id"}.get(verb)
+    key = {"spawn": "worker_id", "message": "message_id", "finish": "episode_id"}.get(verb)
     if key is None or result.get(key) is None:
         raise ValueError("Acceptance campaign staged command has no durable effect identity.")
     return result[key]
@@ -988,32 +992,34 @@ def _campaign_report_html(contract: str) -> str:
     outcome = {
         "completed": (
             "The orchestrator seated one bounded worker, received its result, and concluded "
-            "the campaign."
+            "the episode."
         ),
         "exhausted": (
             "The sole research allocation settled normally, then the shared invocation pot "
-            "reached its reserved-report fence."
-        ),
-        "stopped": (
-            "Human Stop was persisted while the orchestrator turn was active; that already-"
-            "authorized turn then settled normally before this report."
+            "reached its operational ceiling."
         ),
         "failed": (
             "The orchestrator reached an explicitly typed unrecoverable structural failure; "
             "this is a partial report produced only after its admitted worker settled."
         ),
-    }.get(ending, f"The campaign ended as {ending} after its admitted work settled.")
-    retained_mail = ""
-    if ending == "failed":
-        retained_mail = _campaign_report_retained_mail(contract)
+    }.get(ending, f"The episode ended as {ending} after its admitted work settled.")
     return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<title>Acceptance campaign report</title>
+<title>Acceptance episode report</title>
 <article>
-  <h1>Acceptance campaign conclusion</h1>
+  <h1>Acceptance episode conclusion</h1>
   <p>{outcome}</p>
-{retained_mail}
+  <figure aria-label="Episode progression">
+    <svg viewBox="0 0 320 80" role="img" aria-label="Operational work flowed into report wrap-up">
+      <rect x="8" y="20" width="120" height="40" rx="8" fill="#d8e7ff" />
+      <path d="M136 40 H190" stroke="#345" stroke-width="4" />
+      <rect x="198" y="20" width="114" height="40" rx="8" fill="#d9f4df" />
+      <text x="68" y="45" text-anchor="middle">Operational work</text>
+      <text x="255" y="45" text-anchor="middle">Visual report</text>
+    </svg>
+    <figcaption>The hidden report continuation reused the exact episode session.</figcaption>
+  </figure>
   <p>The first report attempt was deliberately incomplete; this corrected document reused the
   exact orchestrator session and stage without repeating operational work.</p>
   <p>Human review remains authoritative for any protected belief change.</p>
@@ -1022,33 +1028,8 @@ def _campaign_report_html(contract: str) -> str:
 """
 
 
-def _campaign_report_retained_mail(contract: str) -> str:
-    history_path = _campaign_contract_path(
-        contract,
-        "- bounded campaign task, command, mail, and prior-report history: `",
-    )
-    try:
-        history = json.loads(history_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Acceptance campaign history is unreadable: {exc}") from exc
-    messages = history.get("messages") if isinstance(history, dict) else None
-    bodies = (
-        [
-            message.get("body")
-            for message in messages
-            if isinstance(message, dict) and isinstance(message.get("body"), str)
-        ]
-        if isinstance(messages, list)
-        else []
-    )
-    if not bodies:
-        return "  <p>No retained campaign mail was present.</p>"
-    rendered = " ".join(html.escape(body) for body in bodies)
-    return f"  <p>Retained campaign mail: {rendered}</p>"
-
-
 def _campaign_report_ending(contract: str) -> str:
-    marker = " campaign ending `"
+    marker = " at ending `"
     for line in contract.splitlines():
         if marker in line and line.endswith("`."):
             ending = line.rsplit(marker, 1)[1][:-2]

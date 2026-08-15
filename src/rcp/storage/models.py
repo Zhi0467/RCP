@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 import uuid
@@ -151,7 +152,8 @@ AgentTaskKind = Literal[
     "node_chat",
     "project_chat",
     "paper_coach",
-    "campaign",
+    "auto_research",
+    "episode_report",
 ]
 AgentTaskStatus = Literal[
     "queued",
@@ -178,6 +180,8 @@ _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC = (
 
 
 class AgentTaskEventRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     event_id: int
     operation_id: str
     created_at: str
@@ -185,7 +189,7 @@ class AgentTaskEventRecord(BaseModel):
     message: str
     event_kind: Literal["message", "command"] = "message"
     command_id: str | None = None
-    campaign_id: str | None = None
+    episode_id: str | None = None
     command_verb: str | None = None
     command_phase: Literal["start", "exit"] | None = None
     idempotency_key: str | None = None
@@ -230,6 +234,8 @@ class ChatSessionContextRecord(BaseModel):
 
 
 class AgentTaskRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     operation_id: str
     project_id: str
     kind: AgentTaskKind
@@ -245,7 +251,7 @@ class AgentTaskRecord(BaseModel):
     result: dict[str, object] | None = None
     attempt: int = 1
     parent_operation_id: str | None = None
-    campaign_id: str | None = None
+    episode_id: str | None = None
     native_session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
@@ -260,6 +266,7 @@ class AgentTaskRecord(BaseModel):
     can_pause: bool = False
     can_resume: bool = False
     can_retry: bool = False
+    visible: bool = True
 
 
 class ResultViewRecord(BaseModel):
@@ -324,94 +331,122 @@ class ResultViewRecord(BaseModel):
         return self
 
 
-CampaignStatus = Literal[
+AutoResearchRole = Literal["orchestrator", "worker"]
+AutoResearchMessageRole = Literal["human", "orchestrator", "worker"]
+AutoResearchRecoveryStatus = Literal["pending", "admitted", "exhausted", "blocked"]
+AutoResearchRecoveryMode = Literal["exact", "clean", "blocked"]
+
+EpisodeMode = Literal["auto_research", "experiment_loop"]
+EpisodeStatus = Literal[
     "queued",
     "running",
     "stopping",
     "wrapping_up",
     "needs_action",
-    "succeeded",
+    "completed",
     "stopped",
     "failed",
 ]
-CampaignEnding = Literal["completed", "exhausted", "stopped", "failed"]
-CampaignInvocationRole = Literal["orchestrator", "worker", "report"]
-CampaignMessageRole = Literal["human", "orchestrator", "worker"]
-CampaignRecoveryPurpose = Literal["task", "report_admission"]
-CampaignRecoveryStatus = Literal["pending", "admitted", "exhausted", "blocked"]
-CampaignRecoveryMode = Literal["exact", "clean", "report_admission", "blocked"]
+EpisodeEnding = Literal["completed", "exhausted", "stopped", "failed", "human_pause"]
+EpisodeWrapupState = Literal[
+    "not_started",
+    "pending",
+    "running",
+    "ready",
+    "failed",
+    "skipped",
+    "legacy_unavailable",
+]
+EpisodeReportAttemptStatus = Literal["queued", "running", "succeeded", "failed"]
 
 
-class CampaignRecord(BaseModel):
+class EpisodeRecord(BaseModel):
+    """The mode-neutral parent and lifecycle for one bounded episode."""
+
     model_config = ConfigDict(extra="forbid")
 
-    campaign_id: str
+    episode_id: str
     project_id: str
+    mode: EpisodeMode
+    control_node_id: str | None = None
     root_operation_id: str | None = None
-    status: CampaignStatus
-    starting_instruction: str | None = Field(default=None, max_length=16_000)
+    status: EpisodeStatus
     invocation_ceiling: int = Field(ge=1)
     invocations_used: int = Field(default=0, ge=0)
-    authorized_by: AuthorizedHuman
+    authorized_by: AuthorizedHuman | None = None
     stop_requested_at: str | None = None
-    ending: CampaignEnding | None = None
-    error: str | None = None
+    stop_settled_at: str | None = None
+    ending: EpisodeEnding | None = None
+    ending_diagnostic: str | None = None
+    wrapup_state: EpisodeWrapupState = "not_started"
+    wrapup_error: str | None = None
+    report_attempts_used: int = Field(default=0, ge=0, le=3)
     created_at: str
     updated_at: str
     ended_at: str | None = None
 
     @model_validator(mode="after")
-    def budget_is_coherent(self) -> CampaignRecord:
+    def lifecycle_is_coherent(self) -> EpisodeRecord:
         if self.invocations_used > self.invocation_ceiling:
-            raise ValueError("campaign invocations used exceed the authorized ceiling")
+            raise ValueError("episode invocations used exceed the authorized ceiling")
+        if self.ending == "stopped" and self.wrapup_state != "skipped":
+            raise ValueError("a stopped episode must skip report generation")
+        if self.wrapup_state == "skipped" and self.ending != "stopped":
+            raise ValueError("only a stopped episode may skip report generation")
+        if self.mode == "experiment_loop" and not self.control_node_id:
+            raise ValueError("an Experiment-loop episode requires its control node")
+        if self.mode == "auto_research" and self.control_node_id is not None:
+            raise ValueError("an Auto-research episode cannot carry an Experiment control node")
+        if self.wrapup_state in {"ready", "failed"} and self.ending is None:
+            raise ValueError("a terminal episode wrap-up requires its semantic ending")
         return self
 
     @property
     def invocations_remaining(self) -> int:
         return max(0, self.invocation_ceiling - self.invocations_used)
 
-    @property
-    def research_invocations_remaining(self) -> int:
-        return max(0, self.invocation_ceiling - self.invocations_used - 1)
 
-
-class CampaignBudgetMeter(BaseModel):
+class EpisodeBudgetMeter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     invocation_ceiling: int = Field(ge=1)
     invocations_used: int = Field(ge=0)
     invocations_remaining: int = Field(ge=0)
-    report_units_reserved: Literal[1] = 1
     observed_input_tokens: int = Field(default=0, ge=0)
     observed_generated_tokens: int = Field(default=0, ge=0)
 
 
-class CampaignRecoveryRecord(BaseModel):
+class EpisodeInvocationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    recovery_id: str
-    campaign_id: str
-    operation_id: str | None = None
-    purpose: CampaignRecoveryPurpose
-    failure_kind: str
-    retry_mode: CampaignRecoveryMode
-    attempts: int = Field(default=0, ge=0)
-    max_attempts: int = Field(ge=1)
-    status: CampaignRecoveryStatus
-    next_attempt_at: str | None = None
-    diagnostic: str
-    admitted_operation_id: str | None = None
+    episode_id: str
+    operation_id: str
+    invocation_number: int = Field(ge=1)
+    created_at: str
+
+
+class EpisodeReportAttemptRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str
+    episode_id: str
+    attempt_number: int = Field(ge=1, le=3)
+    allocation_operation_id: str
+    status: EpisodeReportAttemptStatus
+    error: str | None = None
     created_at: str
     updated_at: str
+    finished_at: str | None = None
 
 
-class CampaignReportRecord(BaseModel):
+class EpisodeReportRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     report_id: str
-    campaign_id: str
-    operation_id: str
-    ending: CampaignEnding
+    episode_id: str
+    attempt_id: str
+    allocation_operation_id: str
+    ending: EpisodeEnding
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     html: str
     created_at: str
@@ -420,18 +455,135 @@ class CampaignReportRecord(BaseModel):
     @classmethod
     def html_is_a_bounded_utf8_artifact(cls, value: str) -> str:
         if "\x00" in value:
-            raise ValueError("campaign report HTML contains NUL bytes")
+            raise ValueError("episode report HTML contains NUL bytes")
         if len(value.encode("utf-8")) > CHAT_ARTIFACT_MAX_FILE_BYTES:
-            raise ValueError("campaign report HTML exceeds the artifact size limit")
+            raise ValueError("episode report HTML exceeds the artifact size limit")
         return value
 
+    @model_validator(mode="after")
+    def digest_matches_html(self) -> EpisodeReportRecord:
+        if hashlib.sha256(self.html.encode("utf-8")).hexdigest() != self.sha256:
+            raise ValueError("episode report HTML does not match its digest")
+        return self
 
-class CampaignMessageRecord(BaseModel):
+
+class EpisodeWrapupRecord(BaseModel):
+    """The immutable restart fence for one episode's hidden report allocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    ending: EpisodeEnding | None
+    partial: bool
+    concluding_operation_id: str | None = None
+    allocation_operation_id: str | None = None
+    provider: str | None = None
+    run_on: str | None = None
+    execution_host: str | None = None
+    native_session_id: str | None = None
+    stage_host: str | None = None
+    stage_root: str | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
+    output_name: str | None = None
+    output_path: str | None = None
+    receipt_json: str
+    receipt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    state: EpisodeWrapupState
+    diagnostic: str | None = None
+    created_at: str
+    updated_at: str
+    finished_at: str | None = None
+
+    @model_validator(mode="after")
+    def restart_fence_is_coherent(self) -> EpisodeWrapupRecord:
+        try:
+            receipt = json.loads(self.receipt_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("episode wrap-up receipt is invalid JSON") from exc
+        if not isinstance(receipt, dict):
+            raise ValueError("episode wrap-up receipt must be a JSON object")
+        compact = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        if compact != self.receipt_json:
+            raise ValueError("episode wrap-up receipt must use canonical compact JSON")
+        if hashlib.sha256(self.receipt_json.encode("utf-8")).hexdigest() != self.receipt_sha256:
+            raise ValueError("episode wrap-up receipt does not match its digest")
+        if self.state == "skipped" and self.ending != "stopped":
+            raise ValueError("only a stopped episode may skip its wrap-up")
+        if self.ending == "stopped" and self.state != "skipped":
+            raise ValueError("a stopped episode must skip its wrap-up")
+        if self.state != "legacy_unavailable" and self.ending is None:
+            raise ValueError("a new episode wrap-up requires its semantic ending")
+        if self.output_name is not None:
+            _plain_html_name(self.output_name, label="episode report output name")
+        return self
+
+
+class EpisodeInvocationCeilingReached(ValueError):
+    pass
+
+
+class EpisodeNotRunning(ValueError):
+    pass
+
+
+class EpisodeReportAttemptLimitReached(ValueError):
+    pass
+
+
+class EpisodeReportConflict(ValueError):
+    pass
+
+
+class AutoResearchStateRecord(BaseModel):
+    """Mode-specific state attached to one generic Auto-research episode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    starting_instruction: str | None = Field(default=None, max_length=16_000)
+    created_at: str
+    updated_at: str
+
+
+class AutoResearchInvocationRecord(BaseModel):
+    """One Auto-research task and the operational allocation it belongs to."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    operation_id: str
+    allocation_operation_id: str
+    role: AutoResearchRole
+    actor_operation_id: str
+    control_node_id: str | None = None
+    created_at: str
+
+
+class AutoResearchRecoveryRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recovery_id: str
+    episode_id: str
+    operation_id: str
+    failure_kind: str
+    retry_mode: AutoResearchRecoveryMode
+    attempts: int = Field(default=0, ge=0)
+    max_attempts: int = Field(ge=1)
+    status: AutoResearchRecoveryStatus
+    next_attempt_at: str | None = None
+    diagnostic: str
+    admitted_operation_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AutoResearchMessageRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
-    campaign_id: str
-    sender_role: CampaignMessageRole
+    episode_id: str
+    sender_role: AutoResearchMessageRole
     sender_task_id: str | None = None
     authorized_by: AuthorizedHuman | None = None
     recipient_task_id: str
@@ -446,24 +598,24 @@ class CampaignMessageRecord(BaseModel):
     def message_body_is_not_blank(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("campaign message body must not be blank")
+            raise ValueError("Auto-research message body must not be blank")
         return stripped
 
     @model_validator(mode="after")
-    def only_human_messages_carry_human_identity(self) -> CampaignMessageRecord:
+    def only_human_messages_carry_human_identity(self) -> AutoResearchMessageRecord:
         if self.sender_role != "human" and self.authorized_by is not None:
-            raise ValueError("an agent campaign message cannot claim a human sender snapshot")
+            raise ValueError("an agent Auto-research message cannot claim a human sender snapshot")
         return self
 
 
-class CampaignActorBinding(BaseModel):
+class AutoResearchActorBinding(BaseModel):
     """Canonical actor identity plus the newest task carrying its native session."""
 
     model_config = ConfigDict(extra="forbid")
 
-    campaign_id: str
+    episode_id: str
     actor_operation_id: str
-    role: CampaignInvocationRole
+    role: AutoResearchRole
     control_node_id: str | None = None
     current_operation_id: str
     native_session_id: str | None = None
@@ -471,11 +623,22 @@ class CampaignActorBinding(BaseModel):
     stage_root: str | None = None
 
 
+class AutoResearchActorBusy(ValueError):
+    """One Auto-research actor already has an unresolved leaf."""
+
+    def __init__(self, actor_operation_id: str, operation_id: str) -> None:
+        self.actor_operation_id = actor_operation_id
+        self.operation_id = operation_id
+        super().__init__(
+            f"Auto-research actor {actor_operation_id} already has unresolved task {operation_id}."
+        )
+
+
 class AgentCommandInvocationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     command_id: str
-    campaign_id: str | None = None
+    episode_id: str | None = None
     operation_id: str
     verb: str
     idempotency_key: str | None = None
@@ -487,12 +650,14 @@ class AgentCommandInvocationRecord(BaseModel):
 
 
 class ExperimentEpisodeRecord(BaseModel):
-    """One bounded episode's native-session binding and graceful-stop intent.
+    """Joined projection of an Experiment episode parent and its mode state.
 
     The binding is what an automatic watcher wake resumes. It is committed only
     by a mechanically successful joint handoff, so a failed first invocation
     never leaves a session an automatic wake would try to continue. A graph-only
-    rejection is still a truthful accepted operational handoff.
+    rejection is still a truthful accepted operational handoff. Project,
+    control-node, and Stop fields are read from ``episodes``; they are not
+    duplicated in the mode-specific child row.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -628,25 +793,6 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
-class CampaignBudgetExhausted(ValueError):
-    """A campaign kept its final authorized unit for the required report."""
-
-
-class CampaignNotRunning(ValueError):
-    """A campaign cannot admit new ordinary work in its current state."""
-
-
-class CampaignActorBusy(ValueError):
-    """One campaign actor already has an unresolved leaf using its native session."""
-
-    def __init__(self, actor_operation_id: str, operation_id: str) -> None:
-        self.actor_operation_id = actor_operation_id
-        self.operation_id = operation_id
-        super().__init__(
-            f"Campaign actor {actor_operation_id} already has unresolved task {operation_id}."
-        )
-
-
 class ResultViewConflict(ValueError):
     """A result-view revision was based on bytes that are no longer current."""
 
@@ -758,10 +904,10 @@ class WatcherDeliveryRecord(BaseModel):
     watcher_id: str
     project_id: str
     origin_operation_id: str
-    origin_task_kind: Literal["node_chat", "project_chat", "campaign"]
+    origin_task_kind: Literal["node_chat", "project_chat", "auto_research"]
     chat_id: str
     node_id: str | None = None
-    experiment_episode_id: str | None = None
+    episode_id: str | None = None
     execution_host: str = ""
     continuation: WatcherContinuation
     status: WatcherStatus = "active"
@@ -985,10 +1131,9 @@ _PROJECT_ID_TABLES = (
     "chat_session_contexts",
     "result_views",
     "graph_runs",
-    "campaigns",
+    "episodes",
     "agent_usage",
     "watchers",
-    "experiment_episodes",
 )
 
 
@@ -1068,25 +1213,34 @@ __all__ = [
     "AgentUsageMetric",
     "AgentUsageRecord",
     "AgentUsageSnapshot",
-    "CampaignActorBinding",
-    "CampaignActorBusy",
-    "CampaignBudgetExhausted",
-    "CampaignBudgetMeter",
-    "CampaignEnding",
-    "CampaignInvocationRole",
-    "CampaignMessageRecord",
-    "CampaignMessageRole",
-    "CampaignNotRunning",
-    "CampaignRecord",
-    "CampaignRecoveryMode",
-    "CampaignRecoveryPurpose",
-    "CampaignRecoveryRecord",
-    "CampaignRecoveryStatus",
-    "CampaignReportRecord",
-    "CampaignStatus",
+    "AutoResearchActorBinding",
+    "AutoResearchActorBusy",
+    "AutoResearchInvocationRecord",
+    "AutoResearchMessageRecord",
+    "AutoResearchMessageRole",
+    "AutoResearchRecoveryMode",
+    "AutoResearchRecoveryRecord",
+    "AutoResearchRecoveryStatus",
+    "AutoResearchRole",
+    "AutoResearchStateRecord",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
     "ExperimentLoopRuntime",
+    "EpisodeBudgetMeter",
+    "EpisodeEnding",
+    "EpisodeInvocationCeilingReached",
+    "EpisodeInvocationRecord",
+    "EpisodeMode",
+    "EpisodeNotRunning",
+    "EpisodeRecord",
+    "EpisodeReportAttemptLimitReached",
+    "EpisodeReportAttemptRecord",
+    "EpisodeReportAttemptStatus",
+    "EpisodeReportConflict",
+    "EpisodeReportRecord",
+    "EpisodeStatus",
+    "EpisodeWrapupState",
+    "EpisodeWrapupRecord",
     "ExperimentWatcherResourceRecord",
     "GraphCondition",
     "GraphWatcherRecord",

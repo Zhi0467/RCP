@@ -168,28 +168,38 @@ def _execution(
     assert owner is not None
     if owner.display_name is None:
         owner = store.rename_space_user(owner.user_id, "Test researcher")
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=operation_id,
-            project_id=project_id,
-            kind="node_chat",
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="running",
-            attempt=2 if parent_operation_id else 1,
-            parent_operation_id=parent_operation_id,
-            native_session_id=request.session_id,
-            stage_root=stage_root,
-            authorized_by=AuthorizedHuman(
-                space_id=store.space_id,
-                user_id=owner.user_id,
-                display_name=owner.display_name,
-            ),
-            dispatch_authority=dispatch_authority,
-        )
+    episode_id = request.control_episode_id if request.patch_kind == "experiment_loop" else None
+    record = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=project_id,
+        episode_id=episode_id,
+        kind="node_chat",
+        status="queued",
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="queued",
+        attempt=2 if parent_operation_id else 1,
+        parent_operation_id=parent_operation_id,
+        native_session_id=request.session_id,
+        stage_root=stage_root,
+        authorized_by=AuthorizedHuman(
+            space_id=store.space_id,
+            user_id=owner.user_id,
+            display_name=owner.display_name,
+        ),
+        dispatch_authority=dispatch_authority,
     )
+    if request.patch_kind != "experiment_loop":
+        store.create_agent_task(record)
+    elif parent_operation_id is not None:
+        store.create_experiment_recovery_task(record)
+    elif request.trigger == "watcher":
+        stored = store.create_experiment_watcher_invocation(record, request.watcher_ids)
+        assert stored is not None
+    else:
+        store.create_experiment_episode_with_invocation(record, request.watcher_ids)
+    store.mark_agent_task_running(operation_id)
     store.record_agent_task_receipt(
         operation_id,
         "operation_created",
@@ -508,6 +518,13 @@ def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
     normalized = " ".join(message.split())
     assert "does not mean the work succeeded" in normalized
     assert "submit a replacement only when the authoritative state shows" in normalized
+    assert "unexpected process exit (including SIGTERM)" in normalized
+    assert "Two similar failures do not prove an external cause" in normalized
+    assert "plausibly transient failure is uncertainty, not a Blocker" in normalized
+    assert (
+        "failed or repeatedly terminated process without that diagnosis stays on path 1"
+        in normalized
+    )
     assert "do not wait or poll for detached work; finish this" in normalized
     assert "Merely observing that all jobs ended is not enough" in message
     assert "2. You need human input." in message
@@ -599,7 +616,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         origin_task_kind="node_chat",
         chat_id="chat-native-wake",
         node_id=_EXPERIMENT_ID,
-        experiment_episode_id=episode.episode_id,
+        episode_id=episode.episode_id,
         check_command="false",
         log_path=str(tmp_path / "detached.log"),
         cwd=str(tmp_path),
@@ -1164,18 +1181,32 @@ def _store_task(
 ) -> None:
     request = _loop_request(episode_id, "watcher-state-chat", invocation=1)
     now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=operation_id,
-            project_id=project_id,
-            kind="node_chat",
-            status=status,
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message=status,
-        )
+    owner = store.local_owner
+    assert owner is not None
+    display_name = owner.display_name or "Test researcher"
+    record = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=project_id,
+        episode_id=episode_id,
+        kind="node_chat",
+        status="queued",
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="queued",
+        authorized_by=AuthorizedHuman(
+            space_id=store.space_id,
+            user_id=owner.user_id,
+            display_name=display_name,
+        ),
     )
+    store.create_experiment_episode_with_invocation(record)
+    if status == "running":
+        store.mark_agent_task_running(operation_id)
+    elif status == "succeeded":
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+    else:
+        raise AssertionError(f"Unsupported Experiment task fixture status: {status}")
 
 
 def _store_watcher(
@@ -1211,6 +1242,7 @@ def _store_watcher(
                 origin_task_kind="node_chat",
                 chat_id="watcher-state-chat",
                 node_id=_EXPERIMENT_ID,
+                episode_id=episode_id,
                 execution_host="",
                 check_command="false",
                 log_path=f"/tmp/{watcher_id}.log",
@@ -1519,6 +1551,8 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         project_id=project_id,
         episode_id=older_episode,
     )
+    older_stopped = store.request_experiment_loop_stop(project_id, _EXPERIMENT_ID)
+    assert older_stopped is not None and older_stopped.stop_settled_at is not None
     _store_task(
         store,
         operation_id="stopped-root",

@@ -134,7 +134,7 @@ def test_operational_prune_keeps_command_ledger_while_aging_message_events(tmp_p
     command = store.start_agent_command(
         operation_id="old",
         command_id="command",
-        campaign_id=None,
+        episode_id=None,
         verb="validate",
         idempotency_key=None,
         payload={"request_id": "request", "arguments": {}},

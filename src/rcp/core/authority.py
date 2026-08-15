@@ -27,7 +27,7 @@ class AgentDispatchScope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run_truth_scope: list[str] = Field(default_factory=list)
-    campaign_id: str | None = Field(default=None, min_length=1)
+    episode_id: str | None = Field(default=None, min_length=1)
     chat_scope: Literal["node", "project"] | None = None
     chat_id: str | None = Field(default=None, min_length=1)
     node_id: str | None = Field(default=None, min_length=1)
@@ -77,7 +77,7 @@ class AgentTaskAuthority(BaseModel):
     project_id: str = Field(min_length=1)
     authorized_by: AuthorizedHuman | None
     dispatch_authority: AgentDispatchAuthority | None
-    campaign_id: str | None = Field(default=None, min_length=1)
+    episode_id: str | None = Field(default=None, min_length=1)
 
 
 ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
@@ -98,7 +98,7 @@ def _require_scope_shape(
     scope = authority.scope
     if contract == "orchestrate":
         if (
-            scope.campaign_id is None
+            scope.episode_id is None
             or not scope.run_truth_scope
             or scope.patch_kind != "work"
             or any(
@@ -113,12 +113,12 @@ def _require_scope_shape(
             )
         ):
             raise ValueError(
-                f"Authority refused action {action!r}: orchestrate requires an exact campaign, "
+                f"Authority refused action {action!r}: orchestrate requires an exact episode, "
                 "project-wide run scope, Work Patch kind, and no chat or control scope."
             )
         return
     if contract in {"discuss", "work_auto"}:
-        if contract == "work_auto" and scope.campaign_id is not None:
+        if contract == "work_auto" and scope.episode_id is not None:
             if (
                 not scope.run_truth_scope
                 or scope.patch_kind != "work"
@@ -134,14 +134,14 @@ def _require_scope_shape(
                 )
             ):
                 raise ValueError(
-                    f"Authority refused action {action!r}: a campaign worker requires an exact "
-                    "campaign, project-wide run scope, Work Patch kind, and no chat or control "
+                    f"Authority refused action {action!r}: an episode worker requires an exact "
+                    "episode, project-wide run scope, Work Patch kind, and no chat or control "
                     "scope."
                 )
             return
-        if scope.campaign_id is not None:
+        if scope.episode_id is not None:
             raise ValueError(
-                f"Authority refused action {action!r}: {contract} cannot carry campaign scope."
+                f"Authority refused action {action!r}: {contract} cannot carry episode scope."
             )
         if scope.chat_scope is None or scope.chat_id is None:
             raise ValueError(
@@ -169,7 +169,7 @@ def _require_scope_shape(
             )
         if any(
             value is not None
-            for value in (scope.campaign_id, scope.chat_scope, scope.chat_id, scope.node_id)
+            for value in (scope.episode_id, scope.chat_scope, scope.chat_id, scope.node_id)
         ):
             raise ValueError(
                 f"Authority refused action {action!r}: scratch_patch cannot carry chat identity."
@@ -181,7 +181,7 @@ def _require_scope_shape(
             scope.chat_scope,
             scope.chat_id,
             scope.node_id,
-            scope.campaign_id,
+            scope.episode_id,
             scope.patch_kind,
             scope.control_node_id,
             scope.control_episode_id,

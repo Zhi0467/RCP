@@ -139,7 +139,7 @@ async def test_campaign_broker_wraps_provider_and_preserves_exact_prompt(
     staged = stage_command_mailbox(
         local_stage=tmp_path,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=2,
@@ -212,7 +212,7 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
     staged = stage_command_mailbox(
         local_stage=tmp_path,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
     )
@@ -263,7 +263,7 @@ async def test_campaign_broker_peer_inspection_failure_prevents_provider_prompt_
     staged = stage_command_mailbox(
         local_stage=tmp_path,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
     )

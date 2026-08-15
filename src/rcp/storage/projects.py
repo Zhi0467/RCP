@@ -24,22 +24,6 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
-    CampaignActorBinding,
-    CampaignActorBusy,
-    CampaignBudgetExhausted,
-    CampaignBudgetMeter,
-    CampaignEnding,
-    CampaignInvocationRole,
-    CampaignMessageRecord,
-    CampaignMessageRole,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignRecoveryMode,
-    CampaignRecoveryPurpose,
-    CampaignRecoveryRecord,
-    CampaignRecoveryStatus,
-    CampaignReportRecord,
-    CampaignStatus,
     ChatSessionContextRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
@@ -504,32 +488,29 @@ class ProjectStoreMixin:
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
-                    "experiment_episodes": connection.execute(
-                        "DELETE FROM experiment_episodes WHERE project_id = ?", (project_id,)
-                    ).rowcount,
                 }
-                campaign_ids = connection.execute(
-                    "SELECT campaign_id FROM campaigns WHERE project_id = ?",
-                    (project_id,),
-                ).fetchall()
-                if campaign_ids:
-                    for table in (
-                        "campaign_recoveries",
-                        "campaign_messages",
-                        "campaign_reports",
-                        "campaign_invocations",
-                    ):
-                        counts[table] = connection.execute(
-                            f"""
-                            DELETE FROM {table}
-                            WHERE campaign_id IN (
-                                SELECT campaign_id FROM campaigns WHERE project_id = ?
-                            )
-                            """,
-                            (project_id,),
-                        ).rowcount
-                counts["campaigns"] = connection.execute(
-                    "DELETE FROM campaigns WHERE project_id = ?", (project_id,)
+                for table in (
+                    "auto_research_recoveries",
+                    "auto_research_messages",
+                    "auto_research_invocations",
+                    "auto_research_episodes",
+                    "experiment_episode_state",
+                    "episode_reports",
+                    "episode_report_attempts",
+                    "episode_wrapups",
+                    "episode_invocations",
+                ):
+                    counts[table] = connection.execute(
+                        f"""
+                        DELETE FROM {table}
+                        WHERE episode_id IN (
+                            SELECT episode_id FROM episodes WHERE project_id = ?
+                        )
+                        """,
+                        (project_id,),
+                    ).rowcount
+                counts["episodes"] = connection.execute(
+                    "DELETE FROM episodes WHERE project_id = ?", (project_id,)
                 ).rowcount
                 connection.execute("DELETE FROM agent_usage WHERE project_id = ?", (project_id,))
                 for table in (
@@ -714,14 +695,14 @@ class ProjectStoreMixin:
                 (project_id, legacy_id),
             )
             connection.execute(
-                "UPDATE campaigns SET project_id = ? WHERE project_id = ?",
+                "UPDATE episodes SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE agent_usage SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
             connection.execute(
                 "UPDATE watchers SET project_id = ? WHERE project_id = ?",
-                (project_id, legacy_id),
-            )
-            connection.execute(
-                "UPDATE experiment_episodes SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )

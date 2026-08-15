@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 import rcp.runs.graph as graph_run
 from rcp.agents import AgentEvent
-from rcp.runs.experiment_loop import patch_explicitly_exits
+from rcp.runs.experiment_loop import experiment_loop_semantic_ending
 from rcp.runs.graph import (
     _agent_read_dirs,
     _record_context_receipt,
@@ -157,7 +157,9 @@ def test_queued_decision_is_an_explicit_experiment_loop_exit() -> None:
             ],
         }
 
-        assert patch_explicitly_exits(json.dumps(queued), "exp/evaluation")
+        ending = experiment_loop_semantic_ending(json.dumps(queued), "exp/evaluation")
+        assert ending is not None
+        assert ending.ending == "human_pause"
 
 
 def test_remote_graph_context_rebinds_metadata_without_staging_provider_logs(

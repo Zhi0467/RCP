@@ -1,35 +1,50 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import stat
 import tempfile
 import threading
+import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import Future
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, TypeAdapter
 
 from rcp.agents import AgentLauncher
 from rcp.attachments import ChatAttachmentStore
-from rcp.config import Manifest, load_manifest
+from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, Manifest, load_manifest
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import GraphState
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
-from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
-from rcp.paper import PaperService
+from rcp.limits import (
+    PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
+    REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
+)
+from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
-from rcp.service import ProjectService, ProjectSettingsRequest
+from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.service import ProjectService, ProjectSettingsRequest, RunRequest
 from rcp.sources import project_cache_roots
-from rcp.storage import AppStore, ProjectRecord, ProjectStageRecord
+from rcp.storage import (
+    AgentTaskKind,
+    AppStore,
+    EpisodeRecord,
+    ExperimentLoopRuntime,
+    ProjectRecord,
+    ProjectStageRecord,
+)
 from rcp.transport import (
     RemoteRunStage,
     StateUnavailable,
@@ -38,7 +53,10 @@ from rcp.transport import (
 )
 from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 
-_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 2
+if TYPE_CHECKING:
+    from rcp.background import AgentTaskExecution, AgentTaskRequest
+
+_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 3
 _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
 _PATCH_LOG_HEAD_UNSET = object()
 _DISPLAY_SNAPSHOT_FIELDS = {
@@ -53,6 +71,7 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "run_on",
     "project_truth_scope",
     "default_run_truth_scope",
+    "default_auto_research_invocation_ceiling",
     "repositories",
     "machines",
     "primary_question",
@@ -77,6 +96,13 @@ class ProjectDeletionResult(BaseModel):
     removed_stages: int
     removed_display_snapshot: bool
     removed_paper_snapshot: bool
+
+
+EpisodeSerializer = Callable[[str, EpisodeRecord], dict[str, object]]
+ExperimentControlProjector = Callable[
+    [GraphState, str, ExperimentLoopRuntime],
+    dict[str, object],
+]
 
 
 class ProjectCatalog:
@@ -1021,7 +1047,7 @@ class ProjectCatalog:
             "snapshot",
         }:
             patch_log_head = None
-        elif schema_version == _DISPLAY_SNAPSHOT_SCHEMA_VERSION and set(envelope) == {
+        elif schema_version in {2, _DISPLAY_SNAPSHOT_SCHEMA_VERSION} and set(envelope) == {
             "schema_version",
             "project_id",
             "canonical_patch_head",
@@ -1036,6 +1062,8 @@ class ProjectCatalog:
             return "invalid", None
         snapshot = envelope["snapshot"]
         if not isinstance(snapshot, dict):
+            return "invalid", None
+        if not _migrate_legacy_display_snapshot_settings(snapshot):
             return "invalid", None
         # Pre-identity display caches did not carry the catalog's home-space field.
         allow_pre_identity = False
@@ -1250,6 +1278,216 @@ class ProjectCatalog:
         }
 
 
+class ProjectDisplayCache:
+    """Keeps project display snapshots current with graph and episode state."""
+
+    def __init__(
+        self,
+        store: AppStore,
+        catalog: ProjectCatalog,
+        *,
+        serialize_episode: EpisodeSerializer,
+        project_experiment_control: ExperimentControlProjector,
+        logger: logging.Logger,
+    ) -> None:
+        self._store = store
+        self._catalog = catalog
+        self._serialize_episode = serialize_episode
+        self._project_experiment_control = project_experiment_control
+        self._logger = logger
+        self._reconciliation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._probe_started_at: dict[str, float] = {}
+
+    @property
+    def reconciliation_tasks(self) -> dict[str, asyncio.Task[None]]:
+        return self._reconciliation_tasks
+
+    def refresh_cached_project_after_stream(
+        self,
+        project_id: str,
+        kind: AgentTaskKind,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        graph_capable = (
+            isinstance(request, RunRequest)
+            and (
+                kind in {"seed", "refresh"}
+                or (kind in {"node_chat", "project_chat"} and request.mode == "work")
+            )
+        ) or (kind == "auto_research" and isinstance(request, AutoResearchRunRequest))
+        if not graph_capable:
+            return
+        try:
+            service = self._catalog.loaded_service(project_id)
+            if service is None:
+                raise RuntimeError("The closed stream's project service is no longer loaded.")
+            generation = self._catalog.reserve_cached_snapshot_generation(project_id)
+            cache_status, cached = self._catalog.cached_snapshot_status(project_id)
+            if cache_status == "missing":
+                record = self._store.project(project_id)
+                if record is None or record.revision is None:
+                    return
+                raise ValueError("The expected project display snapshot is missing.")
+            if cached is None:
+                raise ValueError("The existing project display snapshot is invalid.")
+            state = service.history.materialize(write_outputs=False).state
+            paper = PaperSnapshot.model_validate(cached["paper"])
+            snapshot = service.project_snapshot(state=state, paper=paper)
+            snapshot["id"] = project_id
+            self._catalog.mark_snapshot_fresh(snapshot)
+            self.attach_experiment_control(project_id, snapshot)
+            self._catalog.commit_cached_snapshot(
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=service.history.workspace.cached_patch_log_head(),
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "Could not refresh display snapshot after task %s for project %s: %s",
+                execution.operation_id,
+                project_id,
+                exc,
+            )
+            try:
+                self._store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "display_cache_refresh_failed",
+                    {"exception_type": type(exc).__name__, "detail": str(exc)},
+                    tier="diagnostic",
+                )
+            except Exception as receipt_exc:
+                self._logger.warning(
+                    "Could not record display cache refresh failure for task %s: %s",
+                    execution.operation_id,
+                    receipt_exc,
+                )
+
+    def attach_experiment_control(
+        self,
+        project_id: str,
+        snapshot: dict[str, object],
+    ) -> None:
+        """Replace the graph-only control map with live operational state.
+
+        ``ProjectService`` has no task store, so every snapshot it builds carries a
+        default operational block. Any route that hands a snapshot to the client
+        must overwrite it here, or a Settings save would blank the Experiment
+        lifecycle the human is watching in Runs.
+        """
+
+        state = GraphState.model_validate(snapshot["graph"])
+        experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
+        runtimes = self._store.experiment_loop_runtimes(project_id, experiment_ids)
+        settle_ids = [
+            experiment_id
+            for experiment_id, runtime in runtimes.items()
+            if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
+        ]
+        for experiment_id in settle_ids:
+            self._store.settle_experiment_loop_stop(project_id, experiment_id)
+        if settle_ids:
+            runtimes.update(self._store.experiment_loop_runtimes(project_id, settle_ids))
+        controls: dict[str, object] = {}
+        for experiment_id in experiment_ids:
+            runtime = runtimes[experiment_id]
+            episode = (
+                self._store.episode(runtime.episode_id) if runtime.episode_id is not None else None
+            )
+            serialized_episode = (
+                self._serialize_episode(project_id, episode)
+                if episode is not None and episode.mode == "experiment_loop"
+                else None
+            )
+            control = self._project_experiment_control(
+                state,
+                experiment_id,
+                runtime,
+            )
+            control["episode"] = serialized_episode
+            controls[experiment_id] = control
+        snapshot["experiment_control"] = controls
+
+    async def reconcile_cached_project(self, project_id: str) -> None:
+        try:
+            head_status = await asyncio.to_thread(
+                self._catalog.probe_remote_patch_log_head,
+                project_id,
+            )
+            if head_status == "unavailable":
+                await asyncio.to_thread(
+                    self._catalog.update_cached_snapshot_freshness,
+                    project_id,
+                    "stale",
+                )
+                return
+            if head_status == "unchanged":
+                await asyncio.to_thread(
+                    self._catalog.update_cached_snapshot_freshness,
+                    project_id,
+                    "fresh",
+                )
+                return
+
+            await asyncio.to_thread(
+                self._catalog.update_cached_snapshot_freshness,
+                project_id,
+                "reconciling",
+            )
+            generation = await asyncio.to_thread(
+                self._catalog.reserve_cached_snapshot_generation,
+                project_id,
+            )
+            service, snapshot = await asyncio.to_thread(
+                self._catalog.reconcile_snapshot,
+                project_id,
+            )
+            self.attach_experiment_control(project_id, snapshot)
+            await asyncio.to_thread(
+                self._catalog.commit_cached_snapshot,
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=service.history.workspace.cached_patch_log_head(),
+            )
+        except KeyError:
+            return
+        except Exception as exc:
+            self._logger.warning(
+                "Could not reconcile display snapshot for %s: %s",
+                project_id,
+                exc,
+            )
+            with suppress(KeyError, OSError, TypeError, ValueError):
+                await asyncio.to_thread(
+                    self._catalog.update_cached_snapshot_freshness,
+                    project_id,
+                    "stale",
+                )
+
+    def schedule_project_reconciliation(self, project_id: str) -> None:
+        task = self._reconciliation_tasks.get(project_id)
+        if task is not None and not task.done():
+            return
+        now = time.monotonic()
+        last_started = self._probe_started_at.get(project_id)
+        if (
+            last_started is not None
+            and now - last_started < REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS
+        ):
+            return
+        self._probe_started_at[project_id] = now
+        task = asyncio.create_task(self.reconcile_cached_project(project_id))
+        self._reconciliation_tasks[project_id] = task
+
+        def forget(completed: asyncio.Task[None]) -> None:
+            if self._reconciliation_tasks.get(project_id) is completed:
+                self._reconciliation_tasks.pop(project_id, None)
+
+        task.add_done_callback(forget)
+
+
 def _project_id(manifest: Manifest) -> str:
     repository = manifest.repository_map[manifest.state.repository]
     machine = manifest.machine_map[repository.machine]
@@ -1391,6 +1629,8 @@ def _valid_display_snapshot(
 ) -> bool:
     if not _DISPLAY_SNAPSHOT_FIELDS.issubset(snapshot):
         return False
+    if "default_campaign_invocation_ceiling" in snapshot:
+        return False
     if snapshot.get("id") != project_id or not isinstance(snapshot.get("name"), str):
         return False
     home_space_id = snapshot.get("home_space_id")
@@ -1411,6 +1651,9 @@ def _valid_display_snapshot(
             return False
     revision = snapshot.get("revision")
     if type(revision) is not int or revision < 0:
+        return False
+    auto_research_ceiling = snapshot.get("default_auto_research_invocation_ceiling")
+    if type(auto_research_ceiling) is not int or auto_research_ceiling < 1:
         return False
     if snapshot.get("snapshot_freshness") not in {"fresh", "reconciling", "stale"}:
         return False
@@ -1449,6 +1692,19 @@ def _valid_display_snapshot(
     assert isinstance(graph, dict)
     graph_revision = graph.get("revision")
     return type(graph_revision) is int and graph_revision == revision
+
+
+def _migrate_legacy_display_snapshot_settings(snapshot: dict[str, object]) -> bool:
+    legacy_key = "default_campaign_invocation_ceiling"
+    current_key = "default_auto_research_invocation_ceiling"
+    if legacy_key not in snapshot:
+        snapshot.setdefault(current_key, DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING)
+        return True
+    if current_key in snapshot and snapshot[current_key] != snapshot[legacy_key]:
+        return False
+    snapshot.setdefault(current_key, snapshot[legacy_key])
+    del snapshot[legacy_key]
+    return True
 
 
 def _ensure_snapshot_freshness(

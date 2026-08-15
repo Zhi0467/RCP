@@ -5,9 +5,9 @@ tier: hermetic
 driver: pytest
 covered_by:
   - tests/test_s77_auto_research.py
-  - tests/test_campaign_authority.py
-  - tests/test_campaign_commands.py
-  - tests/test_campaign_stream.py
+  - tests/test_auto_research_authority.py
+  - tests/test_auto_research_commands.py
+  - tests/test_auto_research_stream.py
 invariants: [3, 4, 10b]
 ---
 
@@ -26,7 +26,7 @@ questions and hypotheses and directly controlling every other graph node type.
 Once a ResearchQuestion or Hypothesis exists, the orchestrator changes it only
 through a Proposal, and **that Proposal waits for a human**. This scenario is
 that line, and nothing about it lives in the browser — its sibling
-[S78](S78-one-budget-one-stop.md) owns the lifecycle and campaign report the
+[S78](S78-one-budget-one-stop.md) owns the lifecycle and episode report the
 human watches.
 
 An earlier version of this scenario let the orchestrator approve a Proposal

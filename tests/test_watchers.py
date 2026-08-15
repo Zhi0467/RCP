@@ -10,9 +10,11 @@ from datetime import datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
+from rcp.core.models import AuthorizedHuman
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    EpisodeInvocationCeilingReached,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
     WatcherClaimConflict,
@@ -54,6 +56,16 @@ def _binding(origin: str = "origin") -> WatcherBinding:
         chat_id="chat",
         node_id="exp-one",
         continuation=_continuation(),
+    )
+
+
+def _identity(store: AppStore) -> AuthorizedHuman:
+    owner = store.local_owner
+    assert owner is not None
+    return AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name or "Test researcher",
     )
 
 
@@ -126,6 +138,7 @@ def _loop_task(
     return AgentTaskRecord(
         operation_id=operation_id,
         project_id="project",
+        episode_id=episode_id,
         kind="node_chat",
         status="queued",
         request={
@@ -158,6 +171,7 @@ def _loop_task(
         status_message="Queued loop invocation.",
         parent_operation_id=parent_operation_id,
         attempt=2 if parent_operation_id else 1,
+        authorized_by=_identity(store),
     )
 
 
@@ -244,7 +258,7 @@ def _loop_continuation(episode_id: str, *, invocation: int = 1) -> WatcherContin
 
 def _bound_episode(store: AppStore, episode_id: str, *, operation_id: str = "loop-root") -> None:
     root = _loop_task(store, operation_id, episode_id=episode_id, invocation=1, ceiling=3)
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task(operation_id, applied_revision=None, result={})
     store.commit_experiment_episode_turn(
         episode_id=episode_id,
@@ -378,7 +392,7 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(t
         update={
             "origin_task_kind": "project_chat",
             "chat_id": "maintenance-chat",
-            "experiment_episode_id": episode_id,
+            "episode_id": episode_id,
             "continuation": resource.continuation,
         }
     )
@@ -395,7 +409,7 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(t
     assert stored[0].chat_id == "maintenance-chat"
     assert stored[0].origin_task_kind == "project_chat"
     assert stored[0].node_id == "exp-one"
-    assert stored[0].experiment_episode_id == episode_id
+    assert stored[0].episode_id == episode_id
     assert stored[0].execution_host == resource.execution_host
     assert stored[0].continuation.provider == "codex"
     assert store.watcher("old").stop_operation_id == "maintenance"
@@ -430,7 +444,7 @@ def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
             update={
                 "origin_task_kind": "project_chat",
                 "chat_id": chat_id,
-                "experiment_episode_id": episode_id,
+                "episode_id": episode_id,
                 "continuation": resource.continuation,
             }
         )
@@ -495,7 +509,7 @@ def test_observing_a_degraded_watcher_does_not_invalidate_maintenance(tmp_path) 
         update={
             "origin_task_kind": "project_chat",
             "chat_id": "maintenance-chat",
-            "experiment_episode_id": episode_id,
+            "episode_id": episode_id,
             "continuation": resource.continuation,
         }
     )
@@ -586,19 +600,19 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
         [_record("legacy-loop").model_copy(update={"continuation": _loop_continuation(episode_id)})]
     )
     with sqlite3.connect(path) as connection:
-        connection.execute("DROP INDEX watchers_experiment_episode")
-        connection.execute("ALTER TABLE watchers DROP COLUMN experiment_episode_id")
+        connection.execute("DROP INDEX watchers_episode")
+        connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
 
     reopened = AppStore(path)
     with reopened.connection() as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(watchers)")}
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(watchers)")}
         stored_episode_id = connection.execute(
-            "SELECT experiment_episode_id FROM watchers WHERE watcher_id = 'legacy-loop'"
+            "SELECT episode_id FROM watchers WHERE watcher_id = 'legacy-loop'"
         ).fetchone()[0]
 
-    assert "experiment_episode_id" in columns
-    assert "watchers_experiment_episode" in indexes
+    assert "episode_id" in columns
+    assert "watchers_episode" in indexes
     assert stored_episode_id == episode_id
 
 
@@ -926,7 +940,10 @@ def test_claimed_diagnostic_group_remains_history_not_live_work(tmp_path) -> Non
     )
 
     assert (
-        store.create_watcher_notification_task(wake, ["shard-complete", "shard-unknown"])
+        store.create_experiment_watcher_invocation(
+            wake,
+            ["shard-complete", "shard-unknown"],
+        )
         is not None
     )
     store.complete_agent_task("diagnostic-wake", applied_revision=None, result={})
@@ -1399,19 +1416,20 @@ def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(tmp
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     first = _loop_task(store, "first", episode_id=episode_id, invocation=1, ceiling=4)
-    store.create_agent_task(first)
+    store.create_experiment_episode_with_invocation(first)
     store.fail_agent_task("first", "provider failed")
 
     changed = _loop_task(
         store,
         "bad-retry",
-        episode_id=str(uuid.uuid4()),
+        episode_id=episode_id,
         invocation=1,
         ceiling=4,
         parent_operation_id="first",
     )
+    changed.request["control_revision"] = 1
     with pytest.raises(ValueError, match="preserve its control binding"):
-        store.create_agent_task(changed)
+        store.create_experiment_recovery_task(changed)
 
     recovery = _loop_task(
         store,
@@ -1421,7 +1439,7 @@ def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(tmp
         ceiling=4,
         parent_operation_id="first",
     )
-    store.create_agent_task(recovery)
+    store.create_experiment_recovery_task(recovery)
     runtime = store.experiment_loop_runtime("project", "exp-one")
     assert runtime.invocations_used == 1
     assert runtime.episode_id == episode_id
@@ -1430,14 +1448,14 @@ def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(tmp
     skipped = _loop_task(store, "third", episode_id=episode_id, invocation=3, ceiling=4)
     skipped.request["trigger"] = "watcher"
     with pytest.raises(ValueError, match="out of sequence; expected 2"):
-        store.create_agent_task(skipped)
+        store.create_experiment_watcher_invocation(skipped, [])
 
 
-def test_ceiling_keeps_completion_pending_until_new_episode_claims_it(tmp_path) -> None:
+def test_ceiling_refuses_wake_without_consuming_pending_completion(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     old_episode = str(uuid.uuid4())
     first = _loop_task(store, "first", episode_id=old_episode, invocation=1, ceiling=1)
-    store.create_agent_task(first)
+    store.create_experiment_episode_with_invocation(first)
     store.complete_agent_task("first", applied_revision=None, result={})
     watcher = _record("done", status="completed").model_copy(
         update={
@@ -1462,26 +1480,9 @@ def test_ceiling_keeps_completion_pending_until_new_episode_claims_it(tmp_path) 
         ceiling=1,
         watcher_ids=["done"],
     )
-    with pytest.raises(ValueError, match="exceeds its pinned ceiling"):
-        store.create_watcher_notification_task(over_budget, ["done"])
+    with pytest.raises(EpisodeInvocationCeilingReached, match="spent"):
+        store.create_experiment_watcher_invocation(over_budget, ["done"])
     assert store.watcher("done").notified is False
-
-    new_episode = str(uuid.uuid4())
-    claimed = _loop_task(
-        store,
-        "claimed",
-        episode_id=new_episode,
-        invocation=1,
-        ceiling=1,
-        watcher_ids=["done"],
-    )
-    claimed.request["trigger"] = "experiment_run"
-    stored = store.create_watcher_notification_task(claimed, ["done"])
-
-    assert stored is not None
-    assert stored.request["control_episode_id"] == new_episode
-    assert store.watcher("done").continuation.control_episode_id == old_episode
-    assert store.watcher("done").notified is True
 
 
 def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceiling(
@@ -1490,7 +1491,7 @@ def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceilin
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     first = _loop_task(store, "first", episode_id=episode_id, invocation=1, ceiling=1)
-    store.create_agent_task(first)
+    store.create_experiment_episode_with_invocation(first)
     store.complete_agent_task("first", applied_revision=None, result={})
     watcher = _record("bounded-work").model_copy(
         update={
@@ -1550,7 +1551,7 @@ def test_new_episode_adopts_remaining_watchers_without_mutating_their_origin(tmp
         invocation=1,
         ceiling=3,
     )
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task("reauthorized", applied_revision=None, result={})
 
     runtime = store.experiment_loop_runtime("project", "exp-one")
@@ -1565,7 +1566,7 @@ def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(tmp_path) -
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     root = _loop_task(store, "root", episode_id=episode_id, invocation=1, ceiling=3)
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.fail_agent_task("root", "provider failed")
     child = _loop_task(
         store,
@@ -1575,7 +1576,7 @@ def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(tmp_path) -
         ceiling=3,
         parent_operation_id="root",
     )
-    store.create_agent_task(child)
+    store.create_experiment_recovery_task(child)
     store.complete_agent_task("repair", applied_revision=4, result={})
     store.record_agent_task_receipt(
         "repair",
@@ -1605,11 +1606,11 @@ def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(tmp_path) -
     assert runtime.paused is False
 
 
-def test_operational_recovery_rejects_siblings_stale_roots_and_successful_tasks(tmp_path) -> None:
+def test_operational_recovery_rejects_siblings_and_successful_tasks(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     root = _loop_task(store, "root", episode_id=episode_id, invocation=1, ceiling=3)
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.fail_agent_task("root", "failed")
     child = _loop_task(
         store,
@@ -1619,46 +1620,26 @@ def test_operational_recovery_rejects_siblings_stale_roots_and_successful_tasks(
         ceiling=3,
         parent_operation_id="root",
     )
-    store.create_agent_task(child)
+    store.create_experiment_recovery_task(child)
     store.fail_agent_task("child", "failed again")
 
     sibling = child.model_copy(update={"operation_id": "sibling", "parent_operation_id": "root"})
     with pytest.raises(ValueError, match="already has a recovery child"):
-        store.create_agent_task(sibling)
+        store.create_experiment_recovery_task(sibling)
 
-    new_episode = str(uuid.uuid4())
-    newer_root = _loop_task(
-        store,
-        "new-root",
-        episode_id=new_episode,
-        invocation=1,
-        ceiling=3,
-    )
-    store.create_agent_task(newer_root)
-    store.fail_agent_task("new-root", "failed")
-    stale = _loop_task(
-        store,
-        "stale",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=3,
-        parent_operation_id="child",
-    ).model_copy(update={"attempt": 3})
-    with pytest.raises(ValueError, match="newest loop episode and invocation"):
-        store.create_agent_task(stale)
-
+    successful_store = AppStore(tmp_path / "successful.sqlite3")
     successful_episode = str(uuid.uuid4())
     successful = _loop_task(
-        store,
+        successful_store,
         "successful",
         episode_id=successful_episode,
         invocation=1,
         ceiling=3,
     )
-    store.create_agent_task(successful)
-    store.complete_agent_task("successful", applied_revision=None, result={})
+    successful_store.create_experiment_episode_with_invocation(successful)
+    successful_store.complete_agent_task("successful", applied_revision=None, result={})
     invalid_retry = _loop_task(
-        store,
+        successful_store,
         "retry-success",
         episode_id=successful_episode,
         invocation=1,
@@ -1666,14 +1647,14 @@ def test_operational_recovery_rejects_siblings_stale_roots_and_successful_tasks(
         parent_operation_id="successful",
     )
     with pytest.raises(ValueError, match="latest unresolved loop task"):
-        store.create_agent_task(invalid_retry)
+        successful_store.create_experiment_recovery_task(invalid_retry)
 
 
 def test_patch_only_graph_repair_is_not_treated_as_operational_recovery(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     root = _loop_task(store, "root", episode_id=episode_id, invocation=1)
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task(
         "root",
         applied_revision=None,
@@ -1692,7 +1673,7 @@ def test_patch_only_graph_repair_is_not_treated_as_operational_recovery(tmp_path
         parent_operation_id="root",
     )
 
-    stored = store.create_agent_task(repair)
+    stored = store.create_experiment_recovery_task(repair)
 
     assert stored.parent_operation_id == "root"
     assert stored.request["control_invocation"] == 1
@@ -1767,9 +1748,18 @@ def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE graph_runs
+            SET authorized_space_id = NULL, authorized_user_id = NULL,
+                authorized_display_name = NULL
+            WHERE operation_id = 'loop-root'
+            """
+        )
     watcher = _record("legacy-loop", origin="loop-root", status="completed").model_copy(
         update={
-            "experiment_episode_id": episode_id,
+            "episode_id": episode_id,
             "continuation": _loop_continuation(episode_id),
         }
     )

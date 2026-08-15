@@ -16,7 +16,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-import rcp.api.app as api_app_module
 import rcp.projects as projects_module
 import rcp.runs.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactory, ProviderReadiness
@@ -32,6 +31,7 @@ from rcp.config import MachineConfig, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
+from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.paper import WritingSession
 from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.runs.chat import (
@@ -44,7 +44,6 @@ from rcp.runs.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.graph import (
-    _MAX_CORRECTION_ROUNDS,
     _record_context_reuse,
     _record_progress_handoff,
     _stage_graph_context,
@@ -1008,7 +1007,7 @@ def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
         probes += 1
         return "unchanged"
 
-    monkeypatch.setattr(api_app_module, "time", FakeTime)
+    monkeypatch.setattr(projects_module, "time", FakeTime)
     monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", unchanged_head)
 
     async def wait_for_probe() -> None:
@@ -1200,10 +1199,12 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     assert len(cached_files) == 1
     cache_path = cached_files[0]
     initial_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert initial_envelope["schema_version"] == 2
+    assert initial_envelope["schema_version"] == 3
     assert initial_envelope["canonical_patch_head"] == 1
     assert initial_envelope["project_id"] == project_id
     assert initial_envelope["snapshot"] == initial.json()
+    assert initial_envelope["snapshot"]["default_auto_research_invocation_ceiling"] == 10
+    assert "default_campaign_invocation_ceiling" not in initial_envelope["snapshot"]
 
     monkeypatch.setattr(
         app.state.catalog,
@@ -1332,6 +1333,26 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     mismatched["project_id"] = project_id
     mismatched["snapshot"]["id"] = "different-project"
     cache_path.write_text(json.dumps(mismatched), encoding="utf-8")
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
+
+    legacy_snapshot = authoritative.json()
+    legacy_snapshot["default_campaign_invocation_ceiling"] = legacy_snapshot.pop(
+        "default_auto_research_invocation_ceiling"
+    )
+    legacy = {
+        "schema_version": 2,
+        "project_id": project_id,
+        "canonical_patch_head": 1,
+        "snapshot": legacy_snapshot,
+    }
+    cache_path.write_text(json.dumps(legacy), encoding="utf-8")
+    migrated = client.get(f"/api/projects/{project_id}/cached")
+    assert migrated.status_code == 200
+    assert migrated.json()["default_auto_research_invocation_ceiling"] == 10
+    assert "default_campaign_invocation_ceiling" not in migrated.json()
+
+    legacy["snapshot"]["default_auto_research_invocation_ceiling"] = 11
+    cache_path.write_text(json.dumps(legacy), encoding="utf-8")
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
     monkeypatch.setattr(projects_module, "PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES", 16)
@@ -1925,7 +1946,8 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     client = TestClient(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
-    assert before["default_campaign_invocation_ceiling"] == 10
+    assert before["default_auto_research_invocation_ceiling"] == 10
+    assert "default_campaign_invocation_ceiling" not in before
     profiles = {
         surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
         for surface, profile in before["agent_profiles"].items()
@@ -1959,13 +1981,13 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         f"/api/projects/{project_id}/settings",
         json={
             "default_run_truth_scope": ["repo-b"],
-            "default_campaign_invocation_ceiling": 1,
+            "default_auto_research_invocation_ceiling": 0,
             "agent_profiles": profiles,
         },
     )
     assert invalid_budget.status_code == 422
 
-    response = client.put(
+    legacy_budget_key = client.put(
         f"/api/projects/{project_id}/settings",
         json={
             "default_run_truth_scope": ["repo-b"],
@@ -1973,10 +1995,21 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
             "agent_profiles": profiles,
         },
     )
+    assert legacy_budget_key.status_code == 422
+
+    response = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            "default_run_truth_scope": ["repo-b"],
+            "default_auto_research_invocation_ceiling": 14,
+            "agent_profiles": profiles,
+        },
+    )
 
     assert response.status_code == 200
     assert response.json()["default_run_truth_scope"] == ["repo-b"]
-    assert response.json()["default_campaign_invocation_ceiling"] == 14
+    assert response.json()["default_auto_research_invocation_ceiling"] == 14
+    assert "default_campaign_invocation_ceiling" not in response.json()
     assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"
     assert response.json()["agent_profiles"]["orchestrator"]["model"] == "campaign-orchestrator"
     assert "write_path" not in response.json()["agent_profiles"]["refresh"]
@@ -1991,7 +2024,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert updated.agent_profile("seed").provider == "claude"
     assert updated.agent_profile("orchestrator").model == "campaign-orchestrator"
     assert updated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
-    assert updated.agent.default_campaign_invocation_ceiling == 14
+    assert updated.agent.default_auto_research_invocation_ceiling == 14
     assert updated.agent_profile("paper_coach").permissions.write_graph_patch is False
 
 
@@ -2763,9 +2796,9 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
         )
     ]
 
-    assert launcher.calls == _MAX_CORRECTION_ROUNDS + 1
+    assert launcher.calls == PATCH_CORRECTION_MAX_ROUNDS + 1
     assert launcher.resumed_sessions == [None] + [launcher.native_session_id] * (
-        _MAX_CORRECTION_ROUNDS
+        PATCH_CORRECTION_MAX_ROUNDS
     )
     assert _applied_revision(frames) is None
     assert any("without writing any JSON file" in text for text in _error_texts(frames))
@@ -7187,18 +7220,24 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         control_decision_bundle=[],
         control_completion_criteria=["The detached fixture exits cleanly."],
     )
-    store.create_agent_task(
+    store.create_experiment_episode_with_invocation(
         AgentTaskRecord(
             operation_id="loop-root-for-maintenance-wake",
             project_id=project_id,
+            episode_id=episode_id,
             kind="node_chat",
-            status="succeeded",
+            status="queued",
             request=root_request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Loop waiting on detached work.",
             authorized_by=authorized_by,
         )
+    )
+    store.complete_agent_task(
+        "loop-root-for-maintenance-wake",
+        applied_revision=None,
+        result={},
     )
     store.create_agent_task(
         AgentTaskRecord(
@@ -7321,20 +7360,26 @@ def _chat_task_execution(
     kind = "node_chat" if request.chat_scope == "node" else "project_chat"
     dispatch_authority = resolve_dispatch_authority(kind, request)
     assert dispatch_authority is not None
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=operation_id,
-            project_id=project_id,
-            kind=kind,
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="running",
-            authorized_by=authorized_by,
-            dispatch_authority=dispatch_authority,
-        )
+    record = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=project_id,
+        episode_id=(
+            request.control_episode_id if request.patch_kind == "experiment_loop" else None
+        ),
+        kind=kind,
+        status="queued" if request.patch_kind == "experiment_loop" else "running",
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="running",
+        authorized_by=authorized_by,
+        dispatch_authority=dispatch_authority,
     )
+    if request.patch_kind == "experiment_loop":
+        store.create_experiment_episode_with_invocation(record)
+        store.mark_agent_task_running(operation_id)
+    else:
+        store.create_agent_task(record)
     return AgentTaskExecution(
         operation_id=operation_id,
         store=store,
@@ -7458,12 +7503,13 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         control_decision_bundle=[],
         control_completion_criteria=["The detached fixture exits cleanly."],
     )
-    store.create_agent_task(
+    store.create_experiment_episode_with_invocation(
         AgentTaskRecord(
             operation_id="old-loop-root",
             project_id=project_id,
+            episode_id=old_episode,
             kind="node_chat",
-            status="succeeded",
+            status="queued",
             request=old_request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
@@ -7471,6 +7517,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
             authorized_by=authorized_by,
         )
     )
+    store.complete_agent_task("old-loop-root", applied_revision=None, result={})
     store.create_watchers(
         [
             WatcherRecord(
@@ -7527,10 +7574,17 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert app.state.watcher_poller.on_completed is not None
     app.state.watcher_poller.on_completed([store.watcher("pending-loop-watcher")])
     assert store.watcher("pending-loop-watcher").notified is False
+    assert app.state.watcher_poller.on_poll_completed is not None
+    app.state.watcher_poller.on_poll_completed()
+    exhausted_parent = store.episode(old_episode)
+    assert exhausted_parent is not None
+    assert exhausted_parent.status == "needs_action"
+    assert exhausted_parent.ending == "exhausted"
+    assert exhausted_parent.wrapup_state == "failed"
     completed_control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
         "exp/bounded-loop"
     ]
-    assert completed_control["paused"] is True
+    assert completed_control["paused"] is False
     assert completed_control["ready"] is True
     assert completed_control["reasons"] == []
 
@@ -7730,25 +7784,29 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     )
     store = app.state.background_tasks.store
     now = store.now()
-    operation_ids = {
-        "resume": "removed-experiment-resume",
-        "retry": "removed-experiment-retry",
-        "repair-graph-update": "removed-experiment-repair",
-    }
-    for operation_id in operation_ids.values():
-        operation_request = request.model_copy(update={"control_episode_id": str(uuid.uuid4())})
-        store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=operation_id,
-                project_id=project_id,
-                kind="node_chat",
-                status="paused",
-                request=operation_request.model_dump(mode="json"),
-                created_at=now,
-                updated_at=now,
-                status_message="Paused before the Experiment was removed.",
-            )
+    operation_id = "removed-experiment-task"
+    episode_id = request.control_episode_id
+    assert episode_id is not None
+    store.create_experiment_episode_with_invocation(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            episode_id=episode_id,
+            kind="node_chat",
+            status="queued",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Paused before the Experiment was removed.",
+            authorized_by=_named_test_authorizer(store),
         )
+    )
+    store.pause_agent_task(operation_id)
+    operation_ids = {
+        "resume": operation_id,
+        "retry": operation_id,
+        "repair-graph-update": operation_id,
+    }
 
     def unexpected_admission(*_args, **_kwargs):
         raise AssertionError("removed Experiment continuation reached task admission")

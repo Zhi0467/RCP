@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.storage.models import (  # noqa: F401
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
@@ -27,23 +28,10 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
-    CampaignActorBinding,
-    CampaignActorBusy,
-    CampaignBudgetExhausted,
-    CampaignBudgetMeter,
-    CampaignEnding,
-    CampaignInvocationRole,
-    CampaignMessageRecord,
-    CampaignMessageRole,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignRecoveryMode,
-    CampaignRecoveryPurpose,
-    CampaignRecoveryRecord,
-    CampaignRecoveryStatus,
-    CampaignReportRecord,
-    CampaignStatus,
     ChatSessionContextRecord,
+    EpisodeInvocationCeilingReached,
+    EpisodeNotRunning,
+    EpisodeRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
@@ -97,6 +85,428 @@ class ExperimentStoreMixin:
     """Bounded Experiment episodes and their loop runtime projection."""
 
     @staticmethod
+    def _experiment_episode_row(
+        connection: sqlite3.Connection,
+        episode_id: str,
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT state.*, episode.project_id, episode.control_node_id,
+                   episode.stop_requested_at, episode.stop_settled_at
+            FROM experiment_episode_state AS state
+            JOIN episodes AS episode ON episode.episode_id = state.episode_id
+            WHERE state.episode_id = ? AND episode.mode = 'experiment_loop'
+            """,
+            (episode_id,),
+        ).fetchone()
+
+    def create_experiment_episode_with_invocation(
+        self,
+        record: AgentTaskRecord,
+        watcher_ids: list[str] | None = None,
+    ) -> AgentTaskRecord:
+        """Atomically create the Experiment parent, mode child, and invocation 1."""
+
+        ids = list(watcher_ids or [])
+        episode = self._new_experiment_episode(record)
+        self._validate_new_episode(episode)
+        self._validate_experiment_watcher_ids(record, ids)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM episodes WHERE episode_id = ?", (episode.episode_id,)
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("This Experiment episode id is already in use.")
+                if self._live_episode_row(connection, episode) is not None:
+                    raise ValueError("This Experiment already has a live episode.")
+                watchers = self._ready_experiment_watchers(connection, record, ids)
+                if ids:
+                    self._validate_watcher_notification_scope(connection, record, watchers)
+                started = episode.model_copy(
+                    update={
+                        "root_operation_id": record.operation_id,
+                        "status": "running",
+                        "invocations_used": 1,
+                        "updated_at": record.created_at,
+                    }
+                )
+                self._insert_episode(connection, started)
+                connection.execute(
+                    """
+                    INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (episode.episode_id, episode.created_at, record.created_at),
+                )
+                self._insert_agent_task(connection, record)
+                connection.execute(
+                    """
+                    INSERT INTO episode_invocations (
+                        episode_id, operation_id, invocation_number, created_at
+                    ) VALUES (?, ?, 1, ?)
+                    """,
+                    (episode.episode_id, record.operation_id, record.created_at),
+                )
+                self._claim_experiment_watchers(connection, record.operation_id, ids)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not create the Experiment episode.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def create_experiment_watcher_invocation(
+        self,
+        record: AgentTaskRecord,
+        watcher_ids: list[str],
+    ) -> AgentTaskRecord | None:
+        """Claim one ready watcher unit and its next paid invocation atomically."""
+
+        ids = list(watcher_ids)
+        if (
+            record.status != "queued"
+            or not record.visible
+            or record.parent_operation_id is not None
+            or record.request.get("patch_kind") != "experiment_loop"
+            or record.request.get("trigger") != "watcher"
+            or record.request.get("control_episode_id") != record.episode_id
+        ):
+            raise ValueError("An Experiment watcher wake must be a queued paid root task.")
+        self._validate_experiment_watcher_ids(record, ids)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                watchers = self._ready_experiment_watchers(connection, record, ids)
+                episode_id = record.episode_id
+                assert episode_id is not None
+                episode_row = connection.execute(
+                    "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+                ).fetchone()
+                if episode_row is None:
+                    raise KeyError(episode_id)
+                episode = self._episode_record(episode_row)
+                if episode.mode != "experiment_loop" or episode.project_id != record.project_id:
+                    raise ValueError("The watcher wake belongs to another episode.")
+                if (
+                    episode.status != "running"
+                    or episode.ending is not None
+                    or episode.stop_requested_at is not None
+                    or self._experiment_has_ending_receipt(connection, episode_id)
+                ):
+                    return None
+                if episode.invocations_used >= episode.invocation_ceiling:
+                    raise EpisodeInvocationCeilingReached(
+                        "the episode has spent its operational invocation ceiling"
+                    )
+                expected = episode.invocations_used + 1
+                if record.request.get("control_invocation") != expected:
+                    raise ValueError(
+                        f"Experiment-loop invocation is out of sequence; expected {expected}."
+                    )
+                self._validate_experiment_watcher_wake_scope(
+                    connection,
+                    record,
+                    watchers,
+                )
+                if self._has_active_chat_overlap(connection, record):
+                    return None
+                self._insert_agent_task(connection, record)
+                connection.execute(
+                    """
+                    INSERT INTO episode_invocations (
+                        episode_id, operation_id, invocation_number, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (episode_id, record.operation_id, expected, record.created_at),
+                )
+                connection.execute(
+                    """
+                    UPDATE episodes
+                    SET invocations_used = ?, updated_at = ?
+                    WHERE episode_id = ?
+                    """,
+                    (expected, self.now(), episode_id),
+                )
+                self._claim_experiment_watchers(connection, record.operation_id, ids)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not queue the Experiment watcher wake.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def create_experiment_recovery_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        """Create a recovery/repair child without spending another paid invocation."""
+
+        if (
+            record.status != "queued"
+            or not record.visible
+            or record.parent_operation_id is None
+            or record.episode_id is None
+        ):
+            raise ValueError("An Experiment recovery requires its parent and episode lineage.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode_row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (record.episode_id,)
+            ).fetchone()
+            if episode_row is None:
+                raise KeyError(record.episode_id)
+            episode = self._episode_record(episode_row)
+            if episode.mode != "experiment_loop" or episode.project_id != record.project_id:
+                raise ValueError("The recovery task belongs to another episode.")
+            if (
+                episode.status not in {"running", "stopping"}
+                or episode.ending is not None
+                or self._experiment_has_ending_receipt(connection, record.episode_id)
+            ):
+                raise EpisodeNotRunning("the episode is not admitting recovery work")
+            if not self._experiment_recovery_has_paid_root(
+                connection,
+                record.episode_id,
+                record.parent_operation_id,
+            ):
+                raise ValueError("The Experiment recovery has no paid invocation ancestor.")
+            if self._has_active_chat_overlap(connection, record):
+                raise ValueError("Another task is already active in this conversation.")
+            self._insert_agent_task(connection, record)
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    @staticmethod
+    def _new_experiment_episode(record: AgentTaskRecord) -> EpisodeRecord:
+        request = record.request
+        episode_id = request.get("control_episode_id")
+        control_node_id = request.get("control_node_id")
+        ceiling = request.get("control_invocation_ceiling")
+        if (
+            record.status != "queued"
+            or not record.visible
+            or record.kind != "node_chat"
+            or record.parent_operation_id is not None
+            or request.get("patch_kind") != "experiment_loop"
+            or request.get("trigger") != "experiment_run"
+            or request.get("control_invocation") != 1
+            or not isinstance(episode_id, str)
+            or record.episode_id != episode_id
+            or not isinstance(control_node_id, str)
+            or not control_node_id
+            or request.get("node_id") != control_node_id
+            or not isinstance(ceiling, int)
+            or isinstance(ceiling, bool)
+            or ceiling < 1
+        ):
+            raise ValueError("An Experiment Run must be its episode's queued invocation 1.")
+        episode = EpisodeRecord(
+            episode_id=episode_id,
+            project_id=record.project_id,
+            mode="experiment_loop",
+            control_node_id=control_node_id,
+            status="queued",
+            invocation_ceiling=ceiling,
+            authorized_by=record.authorized_by,
+            created_at=record.created_at,
+            updated_at=record.created_at,
+        )
+        ExperimentStoreMixin._validate_new_experiment_episode(episode)
+        return episode
+
+    @staticmethod
+    def _validate_new_experiment_episode(episode: EpisodeRecord) -> None:
+        if episode.authorized_by is None:
+            raise ValueError("A new Experiment episode requires its human authorization snapshot.")
+
+    @staticmethod
+    def _validate_experiment_watcher_ids(
+        record: AgentTaskRecord,
+        watcher_ids: list[str],
+    ) -> None:
+        if len(watcher_ids) != len(set(watcher_ids)):
+            raise ValueError("an Experiment watcher claim requires unique watcher ids")
+        requested = record.request.get("watcher_ids")
+        if (
+            not isinstance(requested, list)
+            or any(not isinstance(item, str) for item in requested)
+            or set(requested) != set(watcher_ids)
+            or len(requested) != len(watcher_ids)
+        ):
+            raise ValueError("the Experiment task must name exactly its watcher ids")
+
+    def _ready_experiment_watchers(
+        self,
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        watcher_ids: list[str],
+    ) -> list[StoredWatcherRecord]:
+        if not watcher_ids:
+            return []
+        placeholders = ",".join("?" for _ in watcher_ids)
+        rows = connection.execute(
+            f"""
+            SELECT * FROM watchers
+            WHERE watcher_id IN ({placeholders})
+              AND status IN ('completed', 'degraded') AND notified = 0
+            """,
+            watcher_ids,
+        ).fetchall()
+        if {str(row["watcher_id"]) for row in rows} != set(watcher_ids):
+            raise ValueError("watchers are missing, unready, or already notified")
+        watchers = [self._watcher_record(row) for row in rows]
+        self._validate_watcher_notification_members(connection, watchers)
+        if {item.project_id for item in watchers} != {record.project_id}:
+            raise ValueError("watchers and Experiment task belong to different projects")
+        bindings = {
+            (
+                item.node_id,
+                item.execution_host,
+                self._automatic_watcher_delivery_policy(item.continuation),
+            )
+            for item in watchers
+            if item.continuation.patch_kind == "experiment_loop"
+        }
+        if len(bindings) != 1 or len(watchers) != len(
+            [item for item in watchers if item.continuation.patch_kind == "experiment_loop"]
+        ):
+            raise ValueError("one Experiment claim cannot merge incompatible watch lists")
+        return watchers
+
+    def _validate_experiment_watcher_wake_scope(
+        self,
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        watchers: list[StoredWatcherRecord],
+    ) -> None:
+        if not watchers:
+            raise ValueError("an automatic Experiment wake requires its completed watchers")
+        request = record.request
+        first = watchers[0]
+        continuation = first.continuation
+        if (
+            request.get("trigger") != "watcher"
+            or record.kind != "node_chat"
+            or request.get("node_id") != continuation.control_node_id
+            or request.get("control_episode_id") != record.episode_id
+            or not isinstance(request.get("chat_id"), str)
+            or not request.get("chat_id")
+        ):
+            raise ValueError("Experiment watcher delivery changed its episode scope.")
+        request_continuation = WatcherContinuation.model_validate(
+            {
+                key: (
+                    []
+                    if value is None
+                    and key in {"workflow_ids", "skill_ids", "resolved_skill_packages"}
+                    else value
+                )
+                for key in WatcherContinuation.model_fields
+                if (value := request.get(key)) is not None
+                or key in {"workflow_ids", "skill_ids", "resolved_skill_packages"}
+            }
+        )
+        if self._automatic_watcher_delivery_policy(
+            request_continuation
+        ) != self._automatic_watcher_delivery_policy(continuation):
+            raise ValueError("Experiment watcher delivery changed its immutable policy.")
+        state_row = self._experiment_episode_row(connection, record.episode_id or "")
+        if state_row is None:
+            raise ValueError("The Experiment watcher wake has no episode state.")
+        state = self._experiment_episode_record(state_row)
+        newest = connection.execute(
+            """
+            SELECT kind, request_json FROM graph_runs
+            WHERE project_id = ? AND parent_operation_id IS NULL
+              AND episode_id = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+            """,
+            (record.project_id, record.episode_id),
+        ).fetchone()
+        newest_request = json.loads(newest["request_json"]) if newest is not None else None
+        if (
+            newest_request is None
+            or newest_request.get("control_node_id") != continuation.control_node_id
+            or newest_request.get("control_episode_id") != record.episode_id
+            or newest["kind"] != record.kind
+            or request.get("chat_id") != state.chat_id
+            or any(
+                not self._experiment_watcher_matches_current(item, newest_request, state)
+                for item in watchers
+            )
+        ):
+            raise ValueError("completed watchers do not match the current Experiment episode")
+
+    @staticmethod
+    def _claim_experiment_watchers(
+        connection: sqlite3.Connection,
+        operation_id: str,
+        watcher_ids: list[str],
+    ) -> None:
+        if not watcher_ids:
+            return
+        placeholders = ",".join("?" for _ in watcher_ids)
+        cursor = connection.execute(
+            f"""
+            UPDATE watchers
+            SET notified = 1, notification_operation_id = ?
+            WHERE watcher_id IN ({placeholders})
+              AND status IN ('completed', 'degraded') AND notified = 0
+            """,
+            [operation_id, *watcher_ids],
+        )
+        if cursor.rowcount != len(watcher_ids):
+            raise RuntimeError("Experiment watcher claim changed during its transaction")
+
+    @staticmethod
+    def _experiment_recovery_has_paid_root(
+        connection: sqlite3.Connection,
+        episode_id: str,
+        operation_id: str,
+    ) -> bool:
+        current_id: str | None = operation_id
+        seen: set[str] = set()
+        while current_id is not None and current_id not in seen:
+            seen.add(current_id)
+            if (
+                connection.execute(
+                    """
+                SELECT 1 FROM episode_invocations
+                WHERE episode_id = ? AND operation_id = ?
+                """,
+                    (episode_id, current_id),
+                ).fetchone()
+                is not None
+            ):
+                return True
+            row = connection.execute(
+                "SELECT parent_operation_id FROM graph_runs WHERE operation_id = ?",
+                (current_id,),
+            ).fetchone()
+            current_id = (
+                str(row["parent_operation_id"]) if row and row["parent_operation_id"] else None
+            )
+        return False
+
+    @staticmethod
+    def _experiment_has_ending_receipt(
+        connection: sqlite3.Connection,
+        episode_id: str,
+    ) -> bool:
+        return (
+            connection.execute(
+                """
+                SELECT 1 FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+                WHERE run.episode_id = ? AND receipt.category = 'experiment_loop_exit'
+                LIMIT 1
+                """,
+                (episode_id,),
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
     def _validate_experiment_task_insert(
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
@@ -131,6 +541,8 @@ class ExperimentStoreMixin:
             raise ValueError(
                 "A bounded experiment-loop task must name a valid episode id."
             ) from exc
+        if record.episode_id != episode_id:
+            raise ValueError("A bounded experiment-loop task must use its episode parent lineage.")
         if not isinstance(invocation, int) or isinstance(invocation, bool) or invocation < 1:
             raise ValueError("A bounded experiment-loop task must name its invocation number.")
         if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < 1:
@@ -239,10 +651,7 @@ class ExperimentStoreMixin:
             raise ValueError(
                 "An automatic Experiment wake requires its exact saved session and stage."
             )
-        episode = connection.execute(
-            "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-            (episode_id,),
-        ).fetchone()
+        episode = ExperimentStoreMixin._experiment_episode_row(connection, str(episode_id))
         if episode is None or episode["stop_requested_at"] is not None:
             raise ValueError("The automatic Experiment wake has no active episode binding.")
         binding_task = connection.execute(
@@ -379,7 +788,8 @@ class ExperimentStoreMixin:
         if newest_root is None or newest_root["episode_id"] != episode_id:
             raise ValueError("Only the newest Experiment episode can repair its graph update.")
         stopped = connection.execute(
-            "SELECT stop_requested_at FROM experiment_episodes WHERE episode_id = ?",
+            "SELECT stop_requested_at FROM episodes "
+            "WHERE episode_id = ? AND mode = 'experiment_loop'",
             (episode_id,),
         ).fetchone()
         if stopped is not None and stopped["stop_requested_at"] is not None:
@@ -472,10 +882,7 @@ class ExperimentStoreMixin:
                         "Experiment watcher state changed after it was staged; inspect the "
                         "current resource before maintaining it."
                     )
-            episode = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-                (episode_id,),
-            ).fetchone()
+            episode = self._experiment_episode_row(connection, episode_id)
             if episode is not None and (
                 episode["project_id"] != (records[0].project_id if records else binding.project_id)
                 or episode["control_node_id"] != continuation.control_node_id
@@ -545,9 +952,7 @@ class ExperimentStoreMixin:
         episode_id = binding.continuation.control_episode_id
         with self.connection() as connection:
             self._admit_experiment_watcher_maintenance(connection, binding)
-            episode = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
+            episode = self._experiment_episode_row(connection, str(episode_id))
             self._validate_and_apply_agent_watcher_stops(
                 connection,
                 binding,
@@ -658,10 +1063,7 @@ class ExperimentStoreMixin:
                 raise ValueError(
                     "Experiment watcher maintenance permission denied: loop binding does not match."
                 )
-            episode_row = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-                (episode_id,),
-            ).fetchone()
+            episode_row = self._experiment_episode_row(connection, episode_id)
             if episode_row is not None and (
                 episode_row["project_id"] != binding.project_id
                 or episode_row["control_node_id"] != control_node_id
@@ -721,10 +1123,7 @@ class ExperimentStoreMixin:
             )
         if expected_episode_id is not None and expected_episode_id != episode_id:
             raise ValueError("Experiment watcher maintenance targets a stale episode.")
-        episode_row = connection.execute(
-            "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-            (episode_id,),
-        ).fetchone()
+        episode_row = self._experiment_episode_row(connection, episode_id)
         if episode_row is None:
             raise ValueError(
                 "Experiment watcher maintenance cannot prove the episode session binding."
@@ -873,9 +1272,7 @@ class ExperimentStoreMixin:
             return False
         stopped = set(stop_watcher_ids)
         with self.connection() as connection:
-            episode_row = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
+            episode_row = self._experiment_episode_row(connection, episode_id)
             if episode_row is None:
                 return False
             episode = self._experiment_episode_record(episode_row)
@@ -903,10 +1300,82 @@ class ExperimentStoreMixin:
 
     def experiment_episode(self, episode_id: str) -> ExperimentEpisodeRecord | None:
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
+            row = self._experiment_episode_row(connection, episode_id)
         return self._experiment_episode_record(row) if row is not None else None
+
+    def experiment_episode_ending_signal(
+        self,
+        episode_id: str,
+    ) -> tuple[str, dict[str, object]] | None:
+        """Return the exact accepted continuation and its mode-owned ending receipt."""
+
+        with self.connection() as connection:
+            state = self._experiment_episode_row(connection, episode_id)
+            operation_id = state["last_turn_operation_id"] if state is not None else None
+            if not isinstance(operation_id, str) or not operation_id:
+                return None
+            receipt = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'experiment_loop_exit'
+                ORDER BY receipt_id DESC LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+        if receipt is None:
+            return None
+        signal = json.loads(receipt["payload_json"])
+        if not isinstance(signal, dict) or signal.get("episode_id") != episode_id:
+            raise ValueError("The Experiment ending receipt has invalid episode lineage.")
+        return operation_id, signal
+
+    def settle_experiment_episode_wrapup(self, episode_id: str) -> bool:
+        """Quiesce this episode's observers once its non-Stop ending is fenced.
+
+        The generic episode fence prevents any later watcher claim from spending
+        another invocation. Unnotified observers keep polling or remain pending
+        so a later completion can be claimed by a fresh human Run; only observers
+        already consumed by this episode are retired before hidden report work.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode = connection.execute(
+                """
+                SELECT * FROM episodes
+                WHERE episode_id = ? AND mode = 'experiment_loop'
+                """,
+                (episode_id,),
+            ).fetchone()
+            if episode is None:
+                raise KeyError(episode_id)
+            if episode["ending"] is None or episode["ending"] == "stopped":
+                return False
+            active = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE episode_id = ? AND visible = 1
+                  AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (episode_id,),
+            ).fetchone()
+            if active is not None:
+                return False
+            connection.execute(
+                """
+                UPDATE watchers
+                SET status = 'stopped', notified = 1, next_check_at = NULL,
+                    stopped_by = COALESCE(stopped_by, 'loop'),
+                    stopped_at = COALESCE(stopped_at, ?)
+                WHERE episode_id = ?
+                  AND status IN ('active', 'degraded', 'completed')
+                  AND notified = 1
+                """,
+                (now, episode_id),
+            )
+        return True
 
     def experiment_episode_recovery_context_problem(self, operation_id: str) -> str | None:
         """Explain why this task lineage cannot retain its episode context on recovery."""
@@ -974,27 +1443,20 @@ class ExperimentStoreMixin:
     ) -> ExperimentEpisodeRecord | None:
         """Return the episode immediately before this one for the same Experiment.
 
-        Ordering comes from the root invocations, not the episode table, because
-        an episode only gets a row once it binds a session or receives a stop.
+        The generic episode parent is the canonical ordering and lifecycle ledger.
         """
 
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT json_extract(request_json, '$.control_episode_id') AS episode_id
-                FROM graph_runs
-                WHERE project_id = ? AND parent_operation_id IS NULL
-                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(request_json, '$.control_node_id') = ?
-                ORDER BY created_at DESC, rowid DESC
+                SELECT episode_id FROM episodes
+                WHERE project_id = ? AND mode = 'experiment_loop'
+                  AND control_node_id = ?
+                ORDER BY created_at DESC, episode_id DESC
                 """,
                 (project_id, control_node_id),
             ).fetchall()
-        ordered: list[str] = []
-        for row in rows:
-            value = row["episode_id"]
-            if isinstance(value, str) and value not in ordered:
-                ordered.append(value)
+        ordered = [str(row["episode_id"]) for row in rows]
         if episode_id not in ordered:
             return None
         position = ordered.index(episode_id) + 1
@@ -1020,6 +1482,7 @@ class ExperimentStoreMixin:
         graph_result: str,
         watcher_ids: list[str],
         context_baseline: dict[str, object],
+        ending_signal: dict[str, object] | None = None,
         replace_binding: bool = False,
         replacement_provenance: dict[str, object] | None = None,
     ) -> ExperimentEpisodeRecord:
@@ -1040,28 +1503,56 @@ class ExperimentStoreMixin:
             if replacement_provenance is not None
             else None
         )
+        ending_payload_json: str | None = None
+        if ending_signal is not None:
+            ending = ending_signal.get("ending")
+            if (
+                ending_signal.get("episode_id") != episode_id
+                or ending not in {"completed", "human_pause"}
+                or not isinstance(ending_signal.get("partial"), bool)
+                or ending_signal.get("partial") != (ending == "human_pause")
+                or not isinstance(ending_signal.get("receipt"), dict)
+            ):
+                raise ValueError("The Experiment ending receipt is inconsistent with its episode.")
+            try:
+                ending_payload_json = json.dumps(
+                    ending_signal,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("The Experiment ending receipt is not valid JSON.") from exc
+            if len(ending_payload_json.encode("utf-8")) > AGENT_TASK_RECEIPT_MAX_BYTES:
+                raise ValueError("The compact Experiment ending receipt exceeds its storage limit.")
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                INSERT INTO experiment_episodes (
-                    episode_id, project_id, control_node_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(episode_id) DO NOTHING
-                """,
-                (episode_id, project_id, control_node_id, now, now),
-            )
-            existing = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-                (episode_id,),
-            ).fetchone()
+            existing = self._experiment_episode_row(connection, episode_id)
             if (
                 existing is None
                 or existing["project_id"] != project_id
                 or existing["control_node_id"] != control_node_id
             ):
                 raise ValueError("This episode id belongs to a different Experiment.")
+            turn = connection.execute(
+                """
+                SELECT project_id, episode_id, request_json
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            turn_request = json.loads(turn["request_json"]) if turn is not None else None
+            if (
+                turn is None
+                or turn["project_id"] != project_id
+                or turn["episode_id"] != episode_id
+                or not isinstance(turn_request, dict)
+                or turn_request.get("control_node_id") != control_node_id
+                or turn_request.get("control_invocation") != invocation
+            ):
+                raise ValueError("The accepted handoff does not match its exact Experiment task.")
             if existing["native_session_id"] is not None:
                 fixed = {
                     "execution_machine": execution_machine,
@@ -1092,7 +1583,7 @@ class ExperimentStoreMixin:
                     )
             connection.execute(
                 """
-                UPDATE experiment_episodes
+                UPDATE experiment_episode_state
                 SET provider = ?, execution_machine = ?, execution_host = ?,
                     native_session_id = ?, stage_host = ?, stage_root = ?, chat_id = ?,
                     last_turn_operation_id = ?, last_turn_invocation = ?,
@@ -1126,6 +1617,27 @@ class ExperimentStoreMixin:
                     tier="summary",
                     created_at=now,
                 )
+            if ending_payload_json is not None:
+                committed_ending = connection.execute(
+                    """
+                    SELECT payload_json FROM graph_run_receipts
+                    WHERE operation_id = ? AND category = 'experiment_loop_exit'
+                    ORDER BY receipt_id DESC LIMIT 1
+                    """,
+                    (operation_id,),
+                ).fetchone()
+                if committed_ending is not None:
+                    if committed_ending["payload_json"] != ending_payload_json:
+                        raise ValueError("The Experiment task already has another ending receipt.")
+                else:
+                    self._insert_agent_task_receipt(
+                        connection,
+                        operation_id,
+                        "experiment_loop_exit",
+                        ending_payload_json,
+                        tier="summary",
+                        created_at=now,
+                    )
         stored = self.experiment_episode(episode_id)
         assert stored is not None
         return stored
@@ -1138,29 +1650,22 @@ class ExperimentStoreMixin:
         control_node_id: str,
         diagnostic: str | None,
     ) -> None:
-        """Persist why an automatic wake could not use this episode's session.
-
-        The row is created on demand: the episode whose very first turn never
-        bound a session is exactly the one that most needs a diagnostic, and it
-        has nothing else to write a row for it.
-        """
+        """Persist why an automatic wake could not use this episode's session."""
 
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            episode = self._experiment_episode_row(connection, episode_id)
+            if (
+                episode is None
+                or episode["project_id"] != project_id
+                or episode["control_node_id"] != control_node_id
+            ):
+                raise ValueError("This diagnostic belongs to another Experiment episode.")
             connection.execute(
-                """
-                INSERT INTO experiment_episodes (
-                    episode_id, project_id, control_node_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(episode_id) DO NOTHING
-                """,
-                (episode_id, project_id, control_node_id, now, now),
-            )
-            connection.execute(
-                "UPDATE experiment_episodes SET session_diagnostic = ?, updated_at = ? "
-                "WHERE episode_id = ? AND project_id = ? AND control_node_id = ?",
-                (diagnostic, now, episode_id, project_id, control_node_id),
+                "UPDATE experiment_episode_state "
+                "SET session_diagnostic = ?, updated_at = ? WHERE episode_id = ?",
+                (diagnostic, now, episode_id),
             )
 
     def request_experiment_loop_stop(
@@ -1175,31 +1680,12 @@ class ExperimentStoreMixin:
         finds the loop already stopped.
         """
 
-        now = self.now()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             episode_id = self._newest_experiment_episode_id(connection, project_id, control_node_id)
-            if episode_id is None:
-                return None
-            connection.execute(
-                """
-                INSERT INTO experiment_episodes (
-                    episode_id, project_id, control_node_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(episode_id) DO NOTHING
-                """,
-                (episode_id, project_id, control_node_id, now, now),
-            )
-            connection.execute(
-                """
-                UPDATE experiment_episodes
-                SET stop_requested_at = COALESCE(stop_requested_at, ?), updated_at = ?
-                WHERE episode_id = ?
-                """,
-                (now, now, episode_id),
-            )
-            self._settle_experiment_loop_stop(connection, project_id, control_node_id, episode_id)
-        return self.experiment_episode(episode_id)
+        if episode_id is None:
+            return None
+        self.request_episode_stop(episode_id)
+        return self.settle_experiment_loop_stop(project_id, control_node_id)
 
     def settle_experiment_loop_stop(
         self,
@@ -1213,7 +1699,14 @@ class ExperimentStoreMixin:
             episode_id = self._newest_experiment_episode_id(connection, project_id, control_node_id)
             if episode_id is None:
                 return None
-            self._settle_experiment_loop_stop(connection, project_id, control_node_id, episode_id)
+            quiescent = self._settle_experiment_loop_stop(
+                connection,
+                project_id,
+                control_node_id,
+                episode_id,
+            )
+        if quiescent:
+            self.mark_episode_stop_skipped(episode_id)
         return self.experiment_episode(episode_id)
 
     def _settle_experiment_loop_stop(
@@ -1232,10 +1725,7 @@ class ExperimentStoreMixin:
         but becomes stopped once the task it woke has finished successfully.
         """
 
-        requested = connection.execute(
-            "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-            (episode_id,),
-        ).fetchone()
+        requested = self._experiment_episode_row(connection, episode_id)
         if requested is None or requested["stop_requested_at"] is None:
             return False
         # A superseded attempt does not count: only the newest attempt of each
@@ -1275,8 +1765,8 @@ class ExperimentStoreMixin:
                 if diagnostic:
                     now = self.now()
                     connection.execute(
-                        "UPDATE experiment_episodes SET session_diagnostic = ?, updated_at = ? "
-                        "WHERE episode_id = ?",
+                        "UPDATE experiment_episode_state "
+                        "SET session_diagnostic = ?, updated_at = ? WHERE episode_id = ?",
                         (diagnostic, now, episode_id),
                     )
             abandonable = bool(diagnostic) and all(
@@ -1363,37 +1853,31 @@ class ExperimentStoreMixin:
                 f"WHERE watcher_id IN ({placeholders})",
                 (self.now(), *sorted(watcher_ids)),
             )
-        if requested["stop_settled_at"] is None:
-            now = self.now()
-            connection.execute(
-                "UPDATE experiment_episodes SET stop_settled_at = ?, updated_at = ? "
-                "WHERE episode_id = ?",
-                (now, now, episode_id),
-            )
         return True
 
     def settle_ready_experiment_loop_stops(self) -> int:
         """Reconcile every durable stop that no longer has a recoverable turn."""
 
-        settled = 0
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 """
                 SELECT episode_id, project_id, control_node_id
-                FROM experiment_episodes
-                WHERE stop_requested_at IS NOT NULL AND stop_settled_at IS NULL
+                FROM episodes
+                WHERE mode = 'experiment_loop'
+                  AND stop_requested_at IS NOT NULL AND stop_settled_at IS NULL
                 ORDER BY created_at, episode_id
                 """
             ).fetchall()
-            for row in rows:
-                if self._settle_experiment_loop_stop(
-                    connection,
-                    str(row["project_id"]),
-                    str(row["control_node_id"]),
-                    str(row["episode_id"]),
-                ):
-                    settled += 1
+        settled = 0
+        for row in rows:
+            before = self.episode(str(row["episode_id"]))
+            self.settle_experiment_loop_stop(
+                str(row["project_id"]),
+                str(row["control_node_id"]),
+            )
+            after = self.episode(str(row["episode_id"]))
+            if before is not None and before.stop_settled_at is None and after is not None:
+                settled += int(after.stop_settled_at is not None)
         return settled
 
     @staticmethod
@@ -1404,12 +1888,9 @@ class ExperimentStoreMixin:
     ) -> str | None:
         row = connection.execute(
             """
-            SELECT json_extract(request_json, '$.control_episode_id') AS episode_id
-            FROM graph_runs
-            WHERE project_id = ? AND parent_operation_id IS NULL
-              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-              AND json_extract(request_json, '$.control_node_id') = ?
-            ORDER BY created_at DESC, rowid DESC
+            SELECT episode_id FROM episodes
+            WHERE project_id = ? AND mode = 'experiment_loop' AND control_node_id = ?
+            ORDER BY created_at DESC, episode_id DESC
             LIMIT 1
             """,
             (project_id, control_node_id),
@@ -1448,7 +1929,7 @@ class ExperimentStoreMixin:
         project_id: str,
         requested: set[str] | None,
     ) -> dict[str, ExperimentLoopRuntime]:
-        """Load loop ledgers in four bounded reads and group them in memory."""
+        """Load the generic parents plus mode ledgers and group them in memory."""
 
         with self.connection() as connection:
             task_rows = connection.execute(
@@ -1487,8 +1968,19 @@ class ExperimentStoreMixin:
             ).fetchall()
             episode_rows = connection.execute(
                 """
-                SELECT * FROM experiment_episodes
-                WHERE project_id = ?
+                SELECT state.*, episode.project_id, episode.control_node_id,
+                       episode.stop_requested_at, episode.stop_settled_at
+                FROM experiment_episode_state AS state
+                JOIN episodes AS episode ON episode.episode_id = state.episode_id
+                WHERE episode.project_id = ? AND episode.mode = 'experiment_loop'
+                """,
+                (project_id,),
+            ).fetchall()
+            parent_rows = connection.execute(
+                """
+                SELECT * FROM episodes
+                WHERE project_id = ? AND mode = 'experiment_loop'
+                ORDER BY created_at DESC, episode_id DESC
                 """,
                 (project_id,),
             ).fetchall()
@@ -1522,8 +2014,15 @@ class ExperimentStoreMixin:
         episodes = {
             str(row["episode_id"]): self._experiment_episode_record(row) for row in episode_rows
         }
+        parents_by_control: dict[str, EpisodeRecord] = {}
+        for row in parent_rows:
+            parent = self._episode_record(row)
+            assert parent.control_node_id is not None
+            parents_by_control.setdefault(parent.control_node_id, parent)
         control_node_ids = (
-            set(tasks_by_control) | set(watchers_by_control) if requested is None else requested
+            set(tasks_by_control) | set(watchers_by_control) | set(parents_by_control)
+            if requested is None
+            else requested
         )
         return {
             control_node_id: self._derive_experiment_loop_runtime(
@@ -1531,6 +2030,7 @@ class ExperimentStoreMixin:
                 watchers_by_control.get(control_node_id, []),
                 receipt_categories,
                 episodes,
+                parents_by_control.get(control_node_id),
             )
             for control_node_id in control_node_ids
         }
@@ -1542,18 +2042,26 @@ class ExperimentStoreMixin:
         watchers: list[StoredWatcherRecord],
         receipt_categories: dict[str, set[str]],
         episodes: dict[str, ExperimentEpisodeRecord],
+        parent: EpisodeRecord | None,
     ) -> ExperimentLoopRuntime:
         """Purely derive one runtime from an already-loaded project ledger."""
 
-        root_entries = [entry for entry in task_entries if entry[0]["parent_operation_id"] is None]
-        if not root_entries:
+        if parent is None:
             return ExperimentLoopRuntime()
+        root_entries = [
+            entry
+            for entry in task_entries
+            if entry[0]["parent_operation_id"] is None
+            and entry[1].get("control_episode_id") == parent.episode_id
+        ]
+        if not root_entries:
+            raise ValueError("Stored Experiment episode is missing its paid root task.")
         _, root_request = max(
             root_entries,
             key=lambda entry: (entry[0]["created_at"], entry[0]["storage_rowid"]),
         )
         episode_id = root_request.get("control_episode_id")
-        if not isinstance(episode_id, str):
+        if not isinstance(episode_id, str) or episode_id != parent.episode_id:
             raise ValueError("Stored experiment-loop root is missing its episode id.")
         try:
             uuid.UUID(episode_id)
@@ -1590,11 +2098,11 @@ class ExperimentStoreMixin:
             raise ValueError("Stored experiment-loop root is missing its pinned ceiling.")
         if not latest_by_invocation or min(latest_by_invocation) < 1:
             raise ValueError("Stored experiment-loop root is missing its invocation number.")
-        invocations_used = max(latest_by_invocation)
+        invocations_used = parent.invocations_used
         if set(latest_by_invocation) != set(range(1, invocations_used + 1)):
             raise ValueError("Stored experiment-loop root invocations are out of sequence.")
-        if invocations_used > ceiling:
-            raise ValueError("Stored experiment-loop root exceeds its pinned ceiling.")
+        if ceiling != parent.invocation_ceiling:
+            raise ValueError("Stored experiment-loop root changed its parent invocation ceiling.")
         unresolved = any(
             row["status"] in {"queued", "running", "pausing", "paused", "failed", "interrupted"}
             and "experiment_recovery_abandoned"
@@ -1612,7 +2120,7 @@ class ExperimentStoreMixin:
             record.status == "completed" and not record.notified for record in compatible_watchers
         )
         has_watcher = detached_work_active or watcher_completion_pending
-        episode_exited = any(
+        episode_exited = parent.ending is not None or any(
             "experiment_loop_exit" in receipt_categories.get(str(row["operation_id"]), set())
             for row, _request in episode_entries
         )
@@ -1651,22 +2159,25 @@ class ExperimentStoreMixin:
             watcher_degraded=watcher_degraded,
             watcher_completion_pending=watcher_completion_pending,
             episode_exited=episode_exited,
-            active=unresolved
-            or (
-                has_watcher
-                and not at_ceiling
-                and not episode_exited
-                and not (episode is not None and episode.stop_requested_at is not None)
+            active=parent.status in {"running", "stopping"}
+            and (
+                unresolved
+                or (
+                    has_watcher
+                    and not at_ceiling
+                    and not episode_exited
+                    and parent.stop_requested_at is None
+                )
             ),
-            paused=has_watcher
+            paused=parent.status == "running"
             and at_ceiling
             and not unresolved
             and not episode_exited
-            and not (episode is not None and episode.stop_requested_at is not None),
+            and parent.stop_requested_at is None,
             decision_bundle=pins,
             completion_criteria=completion_criteria,
-            stop_requested=episode is not None and episode.stop_requested_at is not None,
-            stop_settled=episode is not None and episode.stop_settled_at is not None,
+            stop_requested=parent.stop_requested_at is not None,
+            stop_settled=parent.stop_settled_at is not None,
             session_bound=episode is not None and episode.session_bound,
             session_diagnostic=episode.session_diagnostic if episode else None,
             provider=(episode.provider if episode is not None else None)
@@ -1719,7 +2230,7 @@ class ExperimentStoreMixin:
             continuation.patch_kind == "experiment_loop"
             and continuation.control_node_id == control_node_id
             and record.node_id == control_node_id
-            and record.experiment_episode_id is not None
+            and record.episode_id is not None
             and episode_matches
         )
 
@@ -1761,10 +2272,7 @@ class ExperimentStoreMixin:
                 "SELECT * FROM watchers WHERE watcher_id = ?",
                 (watcher_id,),
             ).fetchone()
-            episode_row = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-                (episode_id,),
-            ).fetchone()
+            episode_row = self._experiment_episode_row(connection, episode_id)
             if watcher_row is None or episode_row is None:
                 return False
             record = self._watcher_record(watcher_row)
@@ -1827,10 +2335,12 @@ class ExperimentStoreMixin:
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> bool:
-        """Refuse an automatic wake whose episode already carries a stop request.
+        """Refuse an automatic wake whose episode is stopping or already closed.
 
         The check runs inside the claim's own write transaction, so a claim either
-        commits before the stop or finds it — there is no window where both win.
+        commits before the ending fence or finds it — there is no window where
+        both win. A preserved completion may only enter a fresh episode through
+        the human Run admission path.
         """
 
         request = record.request
@@ -1840,7 +2350,12 @@ class ExperimentStoreMixin:
         if not isinstance(episode_id, str):
             return False
         row = connection.execute(
-            "SELECT stop_requested_at FROM experiment_episodes WHERE episode_id = ?",
+            "SELECT status, ending, stop_requested_at FROM episodes "
+            "WHERE episode_id = ? AND mode = 'experiment_loop'",
             (episode_id,),
         ).fetchone()
-        return row is not None and row["stop_requested_at"] is not None
+        return row is not None and (
+            row["status"] != "running"
+            or row["ending"] is not None
+            or row["stop_requested_at"] is not None
+        )

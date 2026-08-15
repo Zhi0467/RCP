@@ -1,4 +1,4 @@
-"""Stdlib-only campaign command broker staged beside one provider invocation."""
+"""Stdlib-only episode command broker staged beside one provider invocation."""
 
 import argparse
 import ctypes
@@ -308,14 +308,14 @@ def _handle(
         )
     except BrokerUnavailable as exc:
         response = _error(
-            request_id, f"Campaign command could not be delivered: {exc}", "unavailable"
+            request_id, f"Auto-research command could not be delivered: {exc}", "unavailable"
         )
     except (BrokerError, ValueError) as exc:
-        response = _error(request_id, f"Campaign command rejected: {exc}", "invalid")
+        response = _error(request_id, f"Auto-research command rejected: {exc}", "invalid")
     except OSError as exc:
         # Sockets and the workspace filesystem. The request itself was fine.
         response = _error(
-            request_id, f"Campaign command could not be delivered: {exc}", "unavailable"
+            request_id, f"Auto-research command could not be delivered: {exc}", "unavailable"
         )
     try:
         connection.sendall(
@@ -465,7 +465,7 @@ def main(argv=None):
         _copy(child.stdout, sys.stdout.buffer)
         return child.wait()
     except (BrokerError, OSError, ValueError) as exc:
-        print(f"RCP campaign command broker failed: {exc}", file=sys.stderr)
+        print(f"RCP episode command broker failed: {exc}", file=sys.stderr)
         return 2
     finally:
         stop.set()

@@ -50,7 +50,7 @@ class RevisionSummary(BaseModel):
     authorized_by: AuthorizedHuman | None = None
     profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = None
-    campaign_id: str | None = None
+    episode_id: str | None = None
     created_at: str
     sentences: list[str] = Field(min_length=1)
 
@@ -115,7 +115,7 @@ def render_revision_summary(
         authorized_by=patch.authorized_by,
         profile=patch.profile,
         task_id=patch.task_id,
-        campaign_id=patch.campaign_id,
+        episode_id=patch.episode_id,
         created_at=patch.created_at.isoformat(),
         sentences=sentences,
     )

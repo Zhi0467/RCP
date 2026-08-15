@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import importlib.resources
 import json
 import os
 import queue
@@ -16,6 +17,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -31,6 +33,9 @@ from rcp.limits import (
     STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
 )
+from rcp.transport.remote_read_kept_view import MISSING as _REMOTE_VIEW_MISSING
+from rcp.transport.remote_read_kept_view import TOO_LARGE as _REMOTE_VIEW_TOO_LARGE
+from rcp.transport.remote_read_kept_view import UNSAFE as _REMOTE_VIEW_UNSAFE
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
@@ -41,429 +46,26 @@ _LOCK_CONTENDED = "contended"
 _LOCK_LEGACY_DIRECTORY = "legacy-directory"
 _LOCK_UNSAFE_ENTRY = "unsafe-entry"
 _KEPT_VIEW_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,238})\.html")
-_REMOTE_VIEW_MISSING = 44
-_REMOTE_VIEW_TOO_LARGE = 45
-_REMOTE_VIEW_UNSAFE = 46
 _ARCHIVE_TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}T[0-9]{12}Z")
 _RETAINED_HISTORY_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 _RETAINED_HISTORY_CHANGED_MESSAGE = (
     "Retained research changed since you reviewed it. Run the read-only preflight again "
     "before archiving."
 )
-_REMOTE_ADVISORY_LOCK_SCRIPT = """\
-import fcntl
-import json
-import os
-import re
-import shutil
-import stat
-import sys
-from pathlib import Path
 
 
-def relative_path(value):
-    path = Path(value)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"unsafe relative path: {value}")
-    return path
+@lru_cache(maxsize=8)
+def _remote_script(name: str) -> str:
+    """Load a shipped remote script as a package resource.
 
+    These run on the execution machine through ``python -c``, so RCP sends each
+    module's own source rather than a transcribed copy — a literal is invisible to
+    ruff and to every test. ``importlib.resources`` keeps this working for source,
+    wheel, and frozen builds alike.
+    """
 
-def apply_staged(command):
-    root = Path(command["root"])
-    stage = Path(command["stage"])
-    if (
-        Path(lock_path).name != ".refresh.lock"
-        or root != Path(lock_path).parent
-        or not root.is_absolute()
-        or stage.parent != root / ".publish"
-    ):
-        raise ValueError("invalid canonical root or staging directory")
-    paths = [relative_path(value) for value in command["paths"]]
-    commit_value = command.get("commit")
-    commit = relative_path(commit_value) if commit_value is not None else None
-    commit_is_directory = bool(command.get("commit_is_directory"))
-    ordinary = [
-        path
-        for path in paths
-        if commit is None
-        or (path != commit and not (commit_is_directory and commit in path.parents))
-    ]
-    commit_target = root / commit if commit is not None else None
-    try:
-        if commit is not None:
-            commit_source = stage / commit
-            commit_target.parent.mkdir(parents=True, exist_ok=True)
-            if commit_target.exists():
-                if commit_source.exists():
-                    if commit_is_directory:
-                        shutil.rmtree(commit_source)
-                    else:
-                        commit_source.unlink()
-            elif commit_source.exists():
-                os.replace(commit_source, commit_target)
-            else:
-                raise FileNotFoundError(f"missing staged history commit: {commit_source}")
-        for path in ordinary:
-            source = stage / path
-            target = root / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if source.is_file():
-                os.replace(source, target)
-        shutil.rmtree(stage, ignore_errors=True)
-        return {"ok": True, "commit_status": "present" if commit is not None else None}
-    except Exception as exc:
-        if commit_target is None:
-            commit_status = None
-        elif commit_is_directory:
-            commit_status = "present" if commit_target.is_dir() else "absent"
-        else:
-            commit_status = "present" if commit_target.is_file() else "absent"
-        return {"ok": False, "commit_status": commit_status, "error": str(exc)[:1000]}
+    return importlib.resources.files("rcp.transport").joinpath(name).read_text(encoding="utf-8")
 
-
-def kept_view_candidate(base_name, index):
-    if index == 1:
-        return base_name
-    return f"{base_name[:-5]}-{index}.html"
-
-
-def keep_staged_view(command):
-    root = Path(command["root"])
-    stage = Path(command["stage"])
-    base_name = command["base_name"]
-    if (
-        Path(lock_path).name != ".refresh.lock"
-        or root != Path(lock_path).parent
-        or not root.is_absolute()
-        or root.name != ".research"
-        or stage.parent != root / ".publish"
-        or not re.fullmatch(r"view-[0-9]+-[0-9]+", stage.name)
-        or not isinstance(base_name, str)
-        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html", base_name)
-    ):
-        raise ValueError("invalid result-view root, stage, or base name")
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
-        raise RuntimeError("safe result-view file operations are unavailable")
-    if not stat.S_ISDIR(os.lstat(root).st_mode):
-        raise ValueError("canonical root is not a regular directory")
-    if not stat.S_ISDIR(os.lstat(stage.parent).st_mode):
-        raise ValueError("result-view staging parent is not a regular directory")
-
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    stage_fd = os.open(stage, directory_flags)
-    try:
-        if os.listdir(stage_fd) != ["content.html"]:
-            raise ValueError("result-view stage does not contain exactly content.html")
-        source_fd = os.open("content.html", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
-        try:
-            source_info = os.fstat(source_fd)
-            if not stat.S_ISREG(source_info.st_mode):
-                raise ValueError("staged result view is not a regular file")
-            if source_info.st_size > 16 * 1024 * 1024:
-                raise ValueError("staged result view exceeds the per-file limit")
-
-            repository_fd = os.open(root.parent, directory_flags)
-            try:
-                try:
-                    os.mkdir("views", 0o755, dir_fd=repository_fd)
-                except FileExistsError:
-                    pass
-                try:
-                    views_fd = os.open("views", directory_flags, dir_fd=repository_fd)
-                except OSError as exc:
-                    raise ValueError("repository views path is not a regular directory") from exc
-                try:
-                    for index in range(1, 10000):
-                        candidate = kept_view_candidate(base_name, index)
-                        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                        try:
-                            target_fd = os.open(candidate, flags, 0o644, dir_fd=views_fd)
-                        except FileExistsError:
-                            continue
-                        try:
-                            bytes_left = 16 * 1024 * 1024
-                            while True:
-                                chunk = os.read(source_fd, min(1024 * 1024, bytes_left + 1))
-                                if not chunk:
-                                    break
-                                if len(chunk) > bytes_left:
-                                    raise ValueError(
-                                        "staged result view exceeds the per-file limit"
-                                    )
-                                bytes_left -= len(chunk)
-                                remaining = memoryview(chunk)
-                                while remaining:
-                                    written = os.write(target_fd, remaining)
-                                    if written <= 0:
-                                        raise OSError("short result-view write")
-                                    remaining = remaining[written:]
-                            os.fsync(target_fd)
-                        except BaseException:
-                            os.close(target_fd)
-                            target_fd = -1
-                            try:
-                                os.unlink(candidate, dir_fd=views_fd)
-                                os.fsync(views_fd)
-                            except OSError:
-                                pass
-                            raise
-                        finally:
-                            if target_fd >= 0:
-                                os.close(target_fd)
-                        os.fsync(views_fd)
-                        os.fsync(repository_fd)
-                        return {"ok": True, "name": candidate}
-                    raise FileExistsError("too many repository result-view name collisions")
-                finally:
-                    os.close(views_fd)
-            finally:
-                os.close(repository_fd)
-        finally:
-            os.close(source_fd)
-    finally:
-        try:
-            os.unlink("content.html", dir_fd=stage_fd)
-        except OSError:
-            pass
-        os.close(stage_fd)
-        try:
-            os.rmdir(stage)
-        except OSError:
-            pass
-
-lock_path = sys.argv[1]
-try:
-    mode = os.lstat(lock_path).st_mode
-except FileNotFoundError:
-    mode = None
-if mode is not None:
-    if stat.S_ISDIR(mode):
-        # A crashed mkdir-era run leaves its lock directory behind empty, and
-        # that artifact is RCP's to clear. rmdir reclaims exactly that case:
-        # anything with contents is somebody's state and still refuses.
-        try:
-            os.rmdir(lock_path)
-        except OSError:
-            print("legacy-directory", flush=True)
-            raise SystemExit(0)
-    elif not stat.S_ISREG(mode):
-        print("unsafe-entry", flush=True)
-        raise SystemExit(0)
-try:
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(lock_path, flags, 0o600)
-except IsADirectoryError:
-    print("legacy-directory", flush=True)
-    raise SystemExit(0)
-except OSError as exc:
-    if os.path.lexists(lock_path) and os.path.islink(lock_path):
-        print("unsafe-entry", flush=True)
-        raise SystemExit(0)
-    print("error", flush=True)
-    print(f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-    raise SystemExit(1)
-if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-    os.close(descriptor)
-    print("unsafe-entry", flush=True)
-    raise SystemExit(0)
-with os.fdopen(descriptor, "a+") as handle:
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print("contended", flush=True)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    print("acquired", flush=True)
-    for line in sys.stdin:
-        try:
-            command = json.loads(line)
-            if command.get("op") == "apply":
-                response = apply_staged(command)
-            elif command.get("op") == "keep-view":
-                response = keep_staged_view(command)
-            else:
-                raise ValueError("unsupported lock-holder command")
-        except Exception as exc:
-            response = {"ok": False, "commit_status": None, "error": str(exc)[:1000]}
-        print(json.dumps(response, separators=(",", ":")), flush=True)
-    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-"""
-
-_REMOTE_ARCHIVE_RESEARCH_SCRIPT = """\
-import hashlib
-import os
-import re
-import stat
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-timestamp = sys.argv[2]
-expected_fingerprint = sys.argv[3]
-if (
-    not root.is_absolute()
-    or str(root) == "/"
-    or root.name != ".research"
-    or not re.fullmatch(r"[0-9]{8}T[0-9]{12}Z", timestamp)
-    or (expected_fingerprint != "-" and not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint))
-):
-    print("invalid canonical research directory or archive timestamp", file=sys.stderr)
-    raise SystemExit(2)
-try:
-    mode = os.lstat(root).st_mode
-except OSError as exc:
-    print(str(exc), file=sys.stderr)
-    raise SystemExit(1)
-if not stat.S_ISDIR(mode):
-    print("canonical research path is not a regular directory", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def require_regular_file(path):
-    try:
-        mode = os.lstat(path).st_mode
-    except OSError as exc:
-        raise ValueError(str(exc)) from exc
-    if not stat.S_ISREG(mode):
-        raise ValueError(f"retained history input is not a regular file: {path}")
-
-
-def retained_history_paths():
-    manifest = root / "manifest.toml"
-    require_regular_file(manifest)
-    paths = [manifest]
-    scope_base = root / "scope-base.json"
-    if os.path.lexists(scope_base):
-        require_regular_file(scope_base)
-        paths.append(scope_base)
-    patches = root / "patches"
-    if os.path.lexists(patches):
-        if not stat.S_ISDIR(os.lstat(patches).st_mode):
-            raise ValueError(f"retained patch path is not a regular directory: {patches}")
-        for child in patches.iterdir():
-            if re.fullmatch(r"[0-9]{6}[.]json", child.name):
-                require_regular_file(child)
-                paths.append(child)
-            elif child.name.startswith("batch-"):
-                if not stat.S_ISDIR(os.lstat(child).st_mode):
-                    raise ValueError(f"retained patch batch is not a regular directory: {child}")
-                for patch in child.iterdir():
-                    if re.fullmatch(r"[0-9]{6}[.]json", patch.name):
-                        require_regular_file(patch)
-                        paths.append(patch)
-    return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
-
-
-def retained_history_fingerprint():
-    digest = hashlib.sha256(b"rcp-retained-history-v1\\0")
-    for path in retained_history_paths():
-        relative = path.relative_to(root).as_posix().encode()
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
-
-
-if expected_fingerprint != "-":
-    try:
-        actual_fingerprint = retained_history_fingerprint()
-    except (OSError, ValueError) as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
-    if actual_fingerprint != expected_fingerprint:
-        print("retained research changed since preflight", file=sys.stderr)
-        raise SystemExit(3)
-
-base_name = f"{root.name}.archive-{timestamp}"
-for index in range(1, 10000):
-    name = base_name if index == 1 else f"{base_name}-{index}"
-    archive = root.with_name(name)
-    if os.path.lexists(archive):
-        continue
-    try:
-        os.rename(root, archive)
-    except FileExistsError:
-        continue
-    except OSError as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
-    print(archive)
-    raise SystemExit(0)
-print("too many canonical research archive name collisions", file=sys.stderr)
-raise SystemExit(1)
-"""
-
-_REMOTE_READ_KEPT_VIEW_SCRIPT = """\
-import os
-import re
-import stat
-import sys
-from pathlib import Path
-
-MISSING = 44
-TOO_LARGE = 45
-UNSAFE = 46
-
-repository = Path(sys.argv[1])
-name = sys.argv[2]
-max_bytes = int(sys.argv[3])
-if (
-    not repository.is_absolute()
-    or str(repository) == "/"
-    or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html", name)
-    or max_bytes < 1
-    or max_bytes > 16 * 1024 * 1024
-    or not hasattr(os, "O_DIRECTORY")
-    or not hasattr(os, "O_NOFOLLOW")
-):
-    raise SystemExit(UNSAFE)
-directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-try:
-    repository_fd = os.open(repository, directory_flags)
-except FileNotFoundError:
-    raise SystemExit(MISSING)
-except OSError:
-    raise SystemExit(UNSAFE)
-try:
-    try:
-        views_fd = os.open("views", directory_flags, dir_fd=repository_fd)
-    except FileNotFoundError:
-        raise SystemExit(MISSING)
-    except OSError:
-        raise SystemExit(UNSAFE)
-    try:
-        try:
-            file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=views_fd)
-        except FileNotFoundError:
-            raise SystemExit(MISSING)
-        except OSError:
-            raise SystemExit(UNSAFE)
-        try:
-            info = os.fstat(file_fd)
-            if not stat.S_ISREG(info.st_mode):
-                raise SystemExit(UNSAFE)
-            if info.st_size > max_bytes:
-                raise SystemExit(TOO_LARGE)
-            remaining = max_bytes + 1
-            chunks = []
-            while remaining > 0:
-                chunk = os.read(file_fd, min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            data = b"".join(chunks)
-            if len(data) > max_bytes:
-                raise SystemExit(TOO_LARGE)
-            sys.stdout.buffer.write(data)
-        finally:
-            os.close(file_fd)
-    finally:
-        os.close(views_fd)
-finally:
-    os.close(repository_fd)
-"""
 
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
 patches=$1
@@ -1032,7 +634,12 @@ def _advisory_lock_holder_arguments(
     *,
     python_executable: str = "python3",
 ) -> list[str]:
-    return [python_executable, "-c", _REMOTE_ADVISORY_LOCK_SCRIPT, os.fspath(lock_path)]
+    return [
+        python_executable,
+        "-c",
+        _remote_script("remote_lock_holder.py"),
+        os.fspath(lock_path),
+    ]
 
 
 def _remote_advisory_lock_command(host: str, lock_path: str | os.PathLike[str]) -> list[str]:
@@ -1369,7 +976,7 @@ class SSHStateWorkspace(StateWorkspace):
                 [
                     "python3",
                     "-c",
-                    _REMOTE_ARCHIVE_RESEARCH_SCRIPT,
+                    _remote_script("remote_archive_research.py"),
                     str(self.remote_root),
                     timestamp,
                     expected_history_fingerprint or "-",
@@ -1657,7 +1264,7 @@ class SSHStateWorkspace(StateWorkspace):
             [
                 "python3",
                 "-c",
-                _REMOTE_READ_KEPT_VIEW_SCRIPT,
+                _remote_script("remote_read_kept_view.py"),
                 str(self.remote_repository),
                 safe_name,
                 str(limit),

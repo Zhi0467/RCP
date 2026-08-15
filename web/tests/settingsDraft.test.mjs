@@ -41,33 +41,70 @@ test("an older staged path set keeps provider records added since it was written
 
 test("settings drafts round trip staged provider paths", () => {
   const draft = {
-    version: 1,
+    version: 2,
     scope: ["repo"],
     profiles: {},
-    campaignInvocationCeiling: 14,
+    autoResearchInvocationCeiling: 14,
     providerPaths: { local: { codex: "/opt/codex" } },
   };
   assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
 });
 
-test("settings drafts reject an invalid campaign default while legacy drafts remain readable", () => {
-  assert.ok(
-    deserializeSettingsDraft(JSON.stringify({ version: 1, scope: ["repo"], profiles: {} })),
-  );
-  assert.equal(
+test("v1 settings drafts migrate the campaign default into the v2 episode field", () => {
+  assert.deepEqual(
     deserializeSettingsDraft(
       JSON.stringify({
         version: 1,
         scope: ["repo"],
         profiles: {},
-        campaignInvocationCeiling: 1,
+        campaignInvocationCeiling: 14,
+      }),
+    ),
+    {
+      version: 2,
+      scope: ["repo"],
+      profiles: {},
+      autoResearchInvocationCeiling: 14,
+    },
+  );
+});
+
+test("v2 settings drafts accept one operational invocation and reject legacy or invalid fields", () => {
+  assert.ok(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        version: 2,
+        scope: ["repo"],
+        profiles: {},
+        autoResearchInvocationCeiling: 1,
+      }),
+    ),
+  );
+  assert.equal(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        version: 2,
+        scope: ["repo"],
+        profiles: {},
+        autoResearchInvocationCeiling: 0,
+      }),
+    ),
+    null,
+  );
+  assert.equal(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        version: 2,
+        scope: ["repo"],
+        profiles: {},
+        campaignInvocationCeiling: 14,
       }),
     ),
     null,
   );
 });
 
-test("a five-profile v1 draft keeps the saved orchestrator profile", () => {
+test("a migrated five-profile v1 draft keeps the saved orchestrator profile", () => {
   const runConfig = (model) => ({
     provider: "codex",
     model,

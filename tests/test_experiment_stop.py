@@ -98,27 +98,100 @@ class _Loop:
             control_completion_criteria=["The detached fixture exits cleanly."],
         )
 
-    def start_episode(self, *, status: str = "succeeded", operation_id: str = "loop-root") -> str:
-        now = self.store.now()
-        request = self.root_request()
-        dispatch_authority = _task_authority(request)
-        self.store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=operation_id,
-                project_id=self.project_id,
-                kind="node_chat",
-                status=status,
-                request=request.model_dump(mode="json"),
-                created_at=now,
-                updated_at=now,
-                status_message="Working on the bounded loop.",
-                phase="agent",
-                last_activity_at=now,
-                authorized_by=self.authorizer,
-                dispatch_authority=dispatch_authority,
+    def _set_task_status(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        if record.status == "running":
+            self.store.mark_agent_task_running(record.operation_id)
+            self.store.update_agent_task_message(
+                record.operation_id,
+                record.status_message,
+                phase=record.phase,
             )
+        elif record.status == "succeeded":
+            self.store.complete_agent_task(
+                record.operation_id,
+                applied_revision=record.applied_revision,
+                result=record.result or {},
+            )
+        elif record.status == "paused":
+            self.store.pause_agent_task(
+                record.operation_id,
+                detail=record.status_message,
+                result=record.result,
+            )
+        elif record.status in {"failed", "interrupted"}:
+            self.store.fail_agent_task(
+                record.operation_id,
+                record.error or record.status_message,
+                status=record.status,
+                result=record.result,
+            )
+        elif record.status != "queued":
+            raise AssertionError(f"Unsupported fixture task status: {record.status}")
+        stored = self.store.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def start_episode(
+        self,
+        *,
+        status: str = "succeeded",
+        operation_id: str = "loop-root",
+        request: RunRequest | None = None,
+    ) -> str:
+        now = self.store.now()
+        request = request or self.root_request()
+        dispatch_authority = _task_authority(request)
+        record = AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=self.project_id,
+            episode_id=request.control_episode_id,
+            kind="node_chat",
+            status=status,
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Working on the bounded loop.",
+            phase="agent",
+            last_activity_at=now,
+            authorized_by=self.authorizer,
+            dispatch_authority=dispatch_authority,
         )
+        self.store.create_experiment_episode_with_invocation(
+            record.model_copy(update={"status": "queued", "phase": "queued"})
+        )
+        self._set_task_status(record)
         return operation_id
+
+    def create_watcher_invocation(
+        self,
+        record: AgentTaskRecord,
+        watcher_ids: list[str],
+    ) -> AgentTaskRecord:
+        queued = record.model_copy(
+            update={
+                "episode_id": self.episode_id,
+                "status": "queued",
+                "error": None,
+                "result": None,
+                "phase": "queued",
+            }
+        )
+        stored = self.store.create_experiment_watcher_invocation(queued, watcher_ids)
+        assert stored is not None
+        return self._set_task_status(record)
+
+    def create_recovery_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        queued = record.model_copy(
+            update={
+                "episode_id": self.episode_id,
+                "status": "queued",
+                "error": None,
+                "result": None,
+                "phase": "queued",
+            }
+        )
+        self.store.create_experiment_recovery_task(queued)
+        return self._set_task_status(record)
 
     def bind_session(
         self,
@@ -550,7 +623,9 @@ def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(manifest, tm
     assert response.status_code == 409, response.text
     assert "Use Stop loop" in response.json()["detail"]
     assert loop.store.watcher("still-running").status == "active"
-    assert loop.store.experiment_episode(loop.episode_id) is None
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.session_bound is False
 
 
 def test_individual_stop_rejects_experiment_watcher(manifest, tmp_path) -> None:
@@ -610,10 +685,15 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
         }
     )
     now = loop.store.now()
+    loop.arm_watcher("failed-switch-watcher", status="completed")
     failed_request = loop.root_request(invocation=2).model_copy(
-        update={"trigger": "watcher", "session_id": "native-session-abc"}
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["failed-switch-watcher"],
+        }
     )
-    loop.store.create_agent_task(
+    loop.create_watcher_invocation(
         AgentTaskRecord(
             operation_id="failed-wake-for-switch",
             project_id=loop.project_id,
@@ -627,9 +707,10 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
             native_session_id="native-session-abc",
             stage_root=str(old_stage),
             dispatch_authority=_task_authority(failed_request),
-        )
+        ),
+        ["failed-switch-watcher"],
     )
-    loop.store.create_agent_task(
+    loop.create_recovery_task(
         AgentTaskRecord(
             operation_id="successful-provider-switch",
             project_id=loop.project_id,
@@ -712,20 +793,23 @@ def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_p
     loop.start_episode()
     stage = tmp_path / "stage"
     loop.bind_session(stage)
+    loop.arm_watcher("changed-config-watcher", status="completed")
     changed = loop.root_request(invocation=2).model_copy(
         update={
             "trigger": "watcher",
             "model": "different-model",
             "session_id": "native-session-abc",
+            "watcher_ids": ["changed-config-watcher"],
         }
     )
     now = loop.store.now()
 
     with pytest.raises(ValueError, match="episode binding: model"):
-        loop.store.create_agent_task(
+        loop.store.create_experiment_watcher_invocation(
             AgentTaskRecord(
                 operation_id="changed-config",
                 project_id=loop.project_id,
+                episode_id=loop.episode_id,
                 kind="node_chat",
                 status="queued",
                 request=changed.model_dump(mode="json"),
@@ -734,7 +818,9 @@ def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_p
                 status_message="Should not start.",
                 native_session_id="native-session-abc",
                 stage_root=str(stage),
-            )
+                dispatch_authority=_task_authority(changed),
+            ),
+            ["changed-config-watcher"],
         )
 
 
@@ -756,6 +842,7 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
     record = AgentTaskRecord(
         operation_id="wrong-binding",
         project_id=loop.project_id,
+        episode_id=loop.episode_id,
         kind="node_chat",
         status="queued",
         request=request.model_dump(mode="json"),
@@ -764,10 +851,11 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
         status_message="Should not start.",
         native_session_id="wrong-session",
         stage_root=str(stage),
+        dispatch_authority=_task_authority(request),
     )
 
     with pytest.raises(ValueError, match="episode binding"):
-        loop.store.create_watcher_notification_task(record, ["ready"])
+        loop.store.create_experiment_watcher_invocation(record, ["ready"])
     assert loop.store.watcher("ready").notified is False
 
     no_session = request.model_copy(update={"session_id": None})
@@ -829,20 +917,7 @@ def test_provider_default_model_stays_pinned_after_settings_change(manifest, tmp
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
     root_request = loop.root_request().model_copy(update={"model": ""})
-    now = loop.store.now()
-    loop.store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="loop-root",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="succeeded",
-            request=root_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Waiting on the bounded loop.",
-            authorized_by=loop.authorizer,
-        )
-    )
+    loop.start_episode(request=root_request)
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher(
         "provider-default-result",
@@ -886,20 +961,7 @@ def test_default_truth_scope_is_pinned_before_watcher_completion(
         loop.root_request().model_copy(update={"run_truth_scope": requested_scope}),
     )
     assert resolved.run_truth_scope == ["repo-a"]
-    now = loop.store.now()
-    loop.store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="loop-root",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="succeeded",
-            request=resolved.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Waiting on the bounded loop.",
-            authorized_by=loop.authorizer,
-        )
-    )
+    loop.start_episode(request=resolved)
     loop.bind_session(tmp_path / "scope-stage")
     loop.arm_watcher(
         "default-scope-result",
@@ -941,14 +1003,16 @@ def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
         native_session_id="native-session-abc",
         stage_root=str(stage),
     )
+    loop.arm_watcher("second-invocation-watcher", status="completed")
     second_request = loop.root_request(invocation=2).model_copy(
         update={
             "trigger": "watcher",
             "session_id": "native-session-abc",
+            "watcher_ids": ["second-invocation-watcher"],
         }
     )
     now = loop.store.now()
-    loop.store.create_agent_task(
+    loop.create_watcher_invocation(
         AgentTaskRecord(
             operation_id="loop-second",
             project_id=loop.project_id,
@@ -960,31 +1024,18 @@ def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
             status_message="Second invocation completed.",
             native_session_id="native-session-abc",
             stage_root=str(stage),
-        )
+            dispatch_authority=_task_authority(second_request),
+        ),
+        ["second-invocation-watcher"],
     )
 
     with pytest.raises(ValueError, match="newest Experiment invocation"):
         loop.store.claim_agent_task_graph_repair("loop-root")
 
-    fresh_request = loop.root_request().model_copy(
-        update={
-            "control_episode_id": str(uuid.uuid4()),
-            "chat_id": str(uuid.uuid4()),
-        }
-    )
-    later = loop.store.now()
-    loop.store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="fresh-loop-root",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="succeeded",
-            request=fresh_request.model_dump(mode="json"),
-            created_at=later,
-            updated_at=later,
-            status_message="Fresh episode completed.",
-        )
-    )
+    loop.stop()
+    loop.episode_id = str(uuid.uuid4())
+    loop.chat_id = str(uuid.uuid4())
+    loop.start_episode(operation_id="fresh-loop-root")
     with pytest.raises(ValueError, match="newest Experiment episode"):
         loop.store.claim_agent_task_graph_repair("loop-root")
 
@@ -1125,14 +1176,16 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     loop.start_episode()
     stage = tmp_path / "wake-stage"
     loop.bind_session(stage)
+    loop.arm_watcher("failed-wake-watcher", status="completed")
     wake_request = loop.root_request(invocation=2).model_copy(
         update={
             "trigger": "watcher",
             "session_id": "native-session-abc",
+            "watcher_ids": ["failed-wake-watcher"],
         }
     )
     now = loop.store.now()
-    loop.store.create_agent_task(
+    loop.create_watcher_invocation(
         AgentTaskRecord(
             operation_id="failed-wake",
             project_id=loop.project_id,
@@ -1146,7 +1199,8 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
             native_session_id="native-session-abc",
             stage_root=str(stage),
             dispatch_authority=_task_authority(wake_request),
-        )
+        ),
+        ["failed-wake-watcher"],
     )
     candidate = "{}"
     loop.store.record_agent_task_contract(
@@ -1206,11 +1260,16 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
     loop.start_episode()
     stage = tmp_path / "wake-stage"
     loop.bind_session(stage)
+    loop.arm_watcher("limited-wake-watcher", status="completed")
     wake_request = loop.root_request(invocation=2).model_copy(
-        update={"trigger": "watcher", "session_id": "native-session-abc"}
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["limited-wake-watcher"],
+        }
     )
     now = loop.store.now()
-    loop.store.create_agent_task(
+    loop.create_watcher_invocation(
         AgentTaskRecord(
             operation_id="limited-wake",
             project_id=loop.project_id,
@@ -1224,7 +1283,8 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
             native_session_id="native-session-abc",
             stage_root=str(stage),
             dispatch_authority=_task_authority(wake_request),
-        )
+        ),
+        ["limited-wake-watcher"],
     )
     candidate = "{}"
     loop.store.record_agent_task_contract(
@@ -1266,11 +1326,16 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
     loop.bind_session(old_stage)
+    loop.arm_watcher("provider-switch-watcher", status="completed")
     failed_request = loop.root_request(invocation=2).model_copy(
-        update={"trigger": "watcher", "session_id": "native-session-abc"}
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["provider-switch-watcher"],
+        }
     )
     now = loop.store.now()
-    loop.store.create_agent_task(
+    loop.create_watcher_invocation(
         AgentTaskRecord(
             operation_id="failed-wake",
             project_id=loop.project_id,
@@ -1284,7 +1349,8 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
             native_session_id="native-session-abc",
             stage_root=str(old_stage),
             dispatch_authority=_task_authority(failed_request),
-        )
+        ),
+        ["provider-switch-watcher"],
     )
     candidate = "{}"
     loop.store.record_agent_task_contract(
@@ -1339,10 +1405,15 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
     loop.bind_session(old_stage)
     candidate = "{}"
     now = loop.store.now()
+    loop.arm_watcher("provisional-switch-watcher", status="completed")
     failed_wake_request = loop.root_request(invocation=2).model_copy(
-        update={"trigger": "watcher", "session_id": "native-session-abc"}
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["provisional-switch-watcher"],
+        }
     )
-    loop.store.create_agent_task(
+    loop.create_watcher_invocation(
         AgentTaskRecord(
             operation_id="failed-wake-before-switch",
             project_id=loop.project_id,
@@ -1356,7 +1427,8 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             native_session_id="native-session-abc",
             stage_root=str(old_stage),
             dispatch_authority=_task_authority(failed_wake_request),
-        )
+        ),
+        ["provisional-switch-watcher"],
     )
     loop.store.record_agent_task_contract(
         "failed-wake-before-switch",
@@ -1374,7 +1446,7 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             "session_id": None,
         }
     )
-    loop.store.create_agent_task(
+    loop.create_recovery_task(
         AgentTaskRecord(
             operation_id="failed-provisional-switch",
             project_id=loop.project_id,
@@ -1515,20 +1587,22 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     )
     retry_request = loop.root_request().model_copy(update={"session_id": "legacy-session"})
     now = loop.store.now()
+    loop.store.request_episode_stop(loop.episode_id)
     with loop.store.connection() as connection:
         # This row predates dispatch-authority admission. Current task creation
         # correctly refuses it; raw SQL keeps restart compatibility covered.
         connection.execute(
             """
             INSERT INTO graph_runs (
-                operation_id, project_id, kind, status, request_json,
+                operation_id, project_id, episode_id, kind, status, request_json,
                 created_at, updated_at, status_message, error, attempt,
                 parent_operation_id, native_session_id, stage_root
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "doomed-retry",
                 loop.project_id,
+                loop.episode_id,
                 "node_chat",
                 "failed",
                 json.dumps(retry_request.model_dump(mode="json"), separators=(",", ":")),
@@ -1540,22 +1614,6 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
                 "loop-root",
                 "legacy-session",
                 str(stage),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO experiment_episodes (
-                episode_id, project_id, control_node_id,
-                stop_requested_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                loop.episode_id,
-                loop.project_id,
-                EXPERIMENT_ID,
-                now,
-                now,
-                now,
             ),
         )
 
@@ -1603,17 +1661,20 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
     loop.start_episode()
     stage = tmp_path / "bound-stage"
     loop.bind_session(stage)
+    loop.arm_watcher("bound-limit-watcher", status="completed")
     request = loop.root_request(invocation=2).model_copy(
         update={
             "trigger": "watcher",
             "session_id": "native-session-abc",
+            "watcher_ids": ["bound-limit-watcher"],
         }
     )
     now = loop.store.now()
-    task = loop.store.create_agent_task(
+    task = loop.store.create_experiment_watcher_invocation(
         AgentTaskRecord(
             operation_id="limited-wake",
             project_id=loop.project_id,
+            episode_id=loop.episode_id,
             kind="node_chat",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -1623,8 +1684,10 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
             native_session_id="native-session-abc",
             stage_root=str(stage),
             dispatch_authority=_task_authority(request),
-        )
+        ),
+        ["bound-limit-watcher"],
     )
+    assert task is not None
     candidate = "{}"
     loop.store.record_agent_task_contract(
         task.operation_id,
@@ -1706,7 +1769,9 @@ def test_unbound_initial_provider_limit_remains_clean_retry_eligible(manifest, t
     failed = loop.store.agent_task(task.operation_id)
     assert failed is not None and failed.status == "failed"
     assert failed.can_retry is True
-    assert loop.store.experiment_episode(loop.episode_id) is None
+    episode = loop.store.experiment_episode(loop.episode_id)
+    assert episode is not None
+    assert episode.session_bound is False
 
     retried = Event()
 
@@ -1769,6 +1834,13 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     )
     loop.record_answers()
     new_chat_id = str(uuid.uuid4())
+    reconcile = app.state.watcher_poller.on_poll_completed
+    assert reconcile is not None
+    reconcile()
+    exhausted = loop.store.episode(loop.episode_id)
+    assert exhausted is not None
+    assert exhausted.ending == "exhausted"
+    assert exhausted.wrapup_state == "failed"
 
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
@@ -1826,10 +1898,13 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
     assert "pinned execution machine" in pinned.json()["detail"]
 
 
-def test_stop_terminalizes_compatible_node_owned_watchers(manifest, tmp_path) -> None:
+def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(
+    manifest, tmp_path
+) -> None:
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode(operation_id="old-root")
     loop.arm_watcher("old-watcher", origin_operation_id="old-root")
+    loop.stop()
     loop.episode_id = str(uuid.uuid4())
     loop.chat_id = str(uuid.uuid4())
     loop.start_episode(operation_id="current-root")
@@ -1841,19 +1916,23 @@ def test_stop_terminalizes_compatible_node_owned_watchers(manifest, tmp_path) ->
     assert loop.store.watcher("old-watcher").status == "stopped"
 
 
-def test_stop_fences_and_terminalizes_compatible_adopted_watcher(manifest, tmp_path) -> None:
+def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(
+    manifest, tmp_path
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
     loop.start_episode(operation_id="old-root")
     old_episode = loop.episode_id
     loop.arm_watcher("adopted-watcher", origin_operation_id="old-root")
+    loop.stop()
     loop.episode_id = str(uuid.uuid4())
+    loop.chat_id = str(uuid.uuid4())
     loop.start_episode(status="running", operation_id="current-root")
 
     control = loop.stop()
 
     assert control["operational"]["stop_settled"] is False
-    assert loop.store.watcher("adopted-watcher").status == "active"
+    assert loop.store.watcher("adopted-watcher").status == "stopped"
     assert "adopted-watcher" not in {record.watcher_id for record in loop.store.pollable_watchers()}
     loop.store.complete_agent_task("current-root", applied_revision=None, result={})
     assert loop.store.settle_ready_experiment_loop_stops() == 1

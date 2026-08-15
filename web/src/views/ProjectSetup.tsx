@@ -95,7 +95,8 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     paper_coach: defaultAgentProfile("gpt-5.6-luna"),
     orchestrator: defaultAgentProfile(),
   });
-  const [defaultCampaignInvocationCeiling, setDefaultCampaignInvocationCeiling] = useState(10);
+  const [defaultAutoResearchInvocationCeiling, setDefaultAutoResearchInvocationCeiling] =
+    useState(10);
   const [preview, setPreview] = useState<SetupPreview | null>(null);
   const [existingResearchOpen, setExistingResearchOpen] = useState(false);
   // Agent defaults are chosen before any manifest exists, so there is no
@@ -152,7 +153,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
       host: repo.location === "ssh" ? repo.host.trim() : "",
     })),
     state_repository: stateRepository,
-    default_campaign_invocation_ceiling: defaultCampaignInvocationCeiling,
+    default_auto_research_invocation_ceiling: defaultAutoResearchInvocationCeiling,
     execution: canonicalExecution,
     agents: Object.fromEntries(
       agentExecutionProfiles.map(({ id }) => [
@@ -209,10 +210,10 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
     if (!aliases.includes(stateRepository)) return "Choose a canonical state repository.";
     if (targetStep < 2) return null;
     if (
-      !Number.isSafeInteger(defaultCampaignInvocationCeiling) ||
-      defaultCampaignInvocationCeiling < 2
+      !Number.isSafeInteger(defaultAutoResearchInvocationCeiling) ||
+      defaultAutoResearchInvocationCeiling < 1
     ) {
-      return "Set the default auto-research budget to at least 2 invocations.";
+      return "Set the default auto-research ceiling to at least 1 operational invocation.";
     }
     const invalidAgent = agentExecutionProfiles.find(
       ({ id }) =>
@@ -440,19 +441,19 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           {step === 2 && (
             <div className="setup-section">
               <SectionHeading eyebrow="Agent roles" title="Choose the agent behind each surface." />
-              <label className="agent-campaign-default">
+              <label className="agent-auto-research-default">
                 <span>
-                  Default auto-research budget
-                  <small>Invocations per newly authorized campaign</small>
+                  Default auto-research ceiling
+                  <small>Operational invocations per newly authorized episode</small>
                 </span>
                 <input
                   type="number"
-                  min={2}
+                  min={1}
                   step={1}
                   inputMode="numeric"
-                  value={defaultCampaignInvocationCeiling}
+                  value={defaultAutoResearchInvocationCeiling}
                   onChange={(event) => {
-                    setDefaultCampaignInvocationCeiling(Number(event.target.value));
+                    setDefaultAutoResearchInvocationCeiling(Number(event.target.value));
                     setError(null);
                   }}
                 />

@@ -62,22 +62,7 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
-    CampaignActorBinding,
-    CampaignActorBusy,
-    CampaignBudgetExhausted,
-    CampaignBudgetMeter,
-    CampaignEnding,
-    CampaignInvocationRole,
-    CampaignMessageRecord,
-    CampaignMessageRole,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignRecoveryMode,
-    CampaignRecoveryPurpose,
-    CampaignRecoveryRecord,
-    CampaignRecoveryStatus,
-    CampaignReportRecord,
-    CampaignStatus,
+    AutoResearchRole,
     ChatSessionContextRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
@@ -136,7 +121,7 @@ class AgentTaskStoreMixin:
                 """
                 SELECT run.operation_id, invocation.role
                 FROM graph_runs AS run
-                LEFT JOIN campaign_invocations AS invocation
+                LEFT JOIN auto_research_invocations AS invocation
                   ON invocation.operation_id = run.operation_id
                 WHERE run.operation_id = ?
                 """,
@@ -147,8 +132,10 @@ class AgentTaskStoreMixin:
         return "orchestrator" if row["role"] == "orchestrator" else "ordinary"
 
     def create_agent_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
-        if record.campaign_id is not None:
-            raise ValueError("campaign tasks must spend from their campaign pot atomically")
+        if record.kind == "episode_report":
+            raise ValueError("episode report tasks must use their episode wrap-up allocation")
+        if record.episode_id is not None:
+            raise ValueError("episode tasks must spend from their episode manager atomically")
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -166,25 +153,27 @@ class AgentTaskStoreMixin:
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> None:
+        if self._contains_legacy_lineage_key(record.request):
+            raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
         self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
         connection.execute(
             """
             INSERT INTO graph_runs (
-                operation_id, project_id, campaign_id, kind, status, request_json,
+                operation_id, project_id, episode_id, kind, status, request_json,
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
                 parent_operation_id, native_session_id, stage_host,
                 stage_root, estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
-                authorized_user_id, authorized_display_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                authorized_user_id, authorized_display_name, visible
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
                 record.project_id,
-                record.campaign_id,
+                record.episode_id,
                 record.kind,
                 record.status,
                 json.dumps(record.request, separators=(",", ":")),
@@ -213,8 +202,19 @@ class AgentTaskStoreMixin:
                 record.authorized_by.space_id if record.authorized_by is not None else None,
                 record.authorized_by.user_id if record.authorized_by is not None else None,
                 record.authorized_by.display_name if record.authorized_by is not None else None,
+                int(record.visible),
             ),
         )
+
+    @classmethod
+    def _contains_legacy_lineage_key(cls, value: object) -> bool:
+        if isinstance(value, dict):
+            return "campaign_id" in value or any(
+                cls._contains_legacy_lineage_key(item) for item in value.values()
+            )
+        if isinstance(value, list):
+            return any(cls._contains_legacy_lineage_key(item) for item in value)
+        return False
 
     @staticmethod
     def _validate_dispatch_authority_insert(
@@ -223,54 +223,78 @@ class AgentTaskStoreMixin:
     ) -> None:
         """Keep a recovery or continuation on its parent's admitted authority."""
 
-        if record.kind == "campaign":
-            if record.campaign_id is None:
-                raise ValueError("A campaign task requires its exact campaign identity.")
+        if record.kind == "episode_report":
+            if record.episode_id is None or record.parent_operation_id is None:
+                raise ValueError(
+                    "An episode report allocation requires its concluding episode task."
+                )
+            if record.dispatch_authority is not None:
+                raise ValueError("An episode report allocation cannot carry graph authority.")
+            parent = connection.execute(
+                """
+                SELECT run.project_id, run.episode_id
+                FROM graph_runs AS run
+                WHERE run.operation_id = ? AND run.episode_id = ?
+                  AND run.visible = 1 AND run.kind != 'episode_report'
+                """,
+                (record.parent_operation_id, record.episode_id),
+            ).fetchone()
+            if parent is None or parent["project_id"] != record.project_id:
+                raise ValueError(
+                    "An episode report allocation must continue its exact concluding task."
+                )
+            return
+
+        if record.kind == "auto_research":
+            if record.episode_id is None:
+                raise ValueError("An episode task requires its exact episode identity.")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM auto_research_episodes WHERE episode_id = ?",
+                    (record.episode_id,),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("An Auto-research task requires its canonical mode state.")
             request = record.request
-            role = TypeAdapter(CampaignInvocationRole).validate_python(request.get("role"))
+            role = TypeAdapter(AutoResearchRole).validate_python(request.get("role"))
             raw_actor = request.get("actor_operation_id")
             if not isinstance(raw_actor, str) or not raw_actor.strip():
-                raise ValueError("A campaign task requires its canonical actor identity.")
+                raise ValueError("An Auto-research task requires its canonical actor identity.")
             actor_operation_id = raw_actor.strip()
             is_root = record.parent_operation_id is None
-
-            if role == "report":
-                if is_root:
-                    raise ValueError("A campaign report cannot be the campaign root actor.")
-                if record.dispatch_authority is not None:
-                    raise ValueError("A campaign report cannot carry graph dispatch authority.")
-            else:
-                expected = AgentDispatchAuthority(
-                    profile="orchestrator" if role == "orchestrator" else "ordinary",
-                    task_contract="orchestrate" if role == "orchestrator" else "work_auto",
-                    scope=AgentDispatchScope(
-                        run_truth_scope=sorted(set(request.get("run_truth_scope") or ())),
-                        campaign_id=record.campaign_id,
-                        patch_kind="work",
-                    ),
+            expected = AgentDispatchAuthority(
+                profile="orchestrator" if role == "orchestrator" else "ordinary",
+                task_contract="orchestrate" if role == "orchestrator" else "work_auto",
+                scope=AgentDispatchScope(
+                    run_truth_scope=sorted(set(request.get("run_truth_scope") or ())),
+                    episode_id=record.episode_id,
+                    patch_kind="work",
+                ),
+            )
+            require_dispatch(expected)
+            if record.dispatch_authority != expected:
+                raise ValueError(
+                    "An Auto-research task must carry its exact server-owned dispatch authority."
                 )
-                require_dispatch(expected)
-                if record.dispatch_authority != expected:
-                    raise ValueError(
-                        "A campaign task must carry its exact server-owned dispatch authority."
-                    )
 
             if is_root:
                 if role != "orchestrator" or actor_operation_id != record.operation_id:
                     raise ValueError(
-                        "A campaign root must be its sole canonical orchestrator actor."
+                        "An Auto-research root must be its sole canonical orchestrator actor."
                     )
                 return
 
             parent = connection.execute(
                 """
-                SELECT run.*, invocation.role AS campaign_role
+                SELECT run.*, invocation.role AS auto_research_role,
+                       invocation.actor_operation_id
                 FROM graph_runs AS run
-                JOIN campaign_invocations AS invocation
+                JOIN auto_research_invocations AS invocation
                   ON invocation.operation_id = run.operation_id
-                WHERE run.operation_id = ? AND run.campaign_id = ?
+                WHERE run.operation_id = ? AND run.episode_id = ?
                 """,
-                (record.parent_operation_id, record.campaign_id),
+                (record.parent_operation_id, record.episode_id),
             ).fetchone()
             if (
                 parent is None
@@ -281,100 +305,72 @@ class AgentTaskStoreMixin:
                     "An agent task continuation must preserve its parent's project and task kind."
                 )
 
-            if role == "report":
-                parent_request = json.loads(parent["request_json"])
-                parent_actor = parent_request.get("actor_operation_id") or parent["operation_id"]
-                parent_role = TypeAdapter(CampaignInvocationRole).validate_python(
-                    parent["campaign_role"]
-                )
-                origin = connection.execute(
-                    """
-                    SELECT invocation.role
-                    FROM graph_runs AS run
-                    JOIN campaign_invocations AS invocation
-                      ON invocation.operation_id = run.operation_id
-                    WHERE run.operation_id = ? AND run.campaign_id = ?
-                    """,
-                    (actor_operation_id, record.campaign_id),
-                ).fetchone()
-                if (
-                    actor_operation_id == record.operation_id
-                    or parent_actor != actor_operation_id
-                    or parent_role not in {"orchestrator", "report"}
-                    or origin is None
-                    or origin["role"] != "orchestrator"
-                ):
-                    raise ValueError(
-                        "A campaign report must retain the sole orchestrator actor lineage."
-                    )
-                return
-
             if actor_operation_id == record.operation_id:
-                parent_role = TypeAdapter(CampaignInvocationRole).validate_python(
-                    parent["campaign_role"]
+                parent_role = TypeAdapter(AutoResearchRole).validate_python(
+                    parent["auto_research_role"]
                 )
                 if role != "worker" or parent_role != "orchestrator":
                     raise ValueError(
-                        "Only the campaign orchestrator may admit a new ordinary worker actor."
+                        "Only the Auto-research orchestrator may admit a new worker actor."
                     )
                 parent_json = parent["dispatch_authority_json"]
                 if parent_json is None:
-                    raise ValueError(
-                        "A new campaign worker requires its orchestrator's durable authority."
-                    )
+                    raise ValueError("A new Auto-research worker requires orchestrator authority.")
                 parent_authority = AgentDispatchAuthority.model_validate_json(parent_json)
                 assert record.dispatch_authority is not None
                 if (
                     parent_authority.profile != "orchestrator"
                     or parent_authority.task_contract != "orchestrate"
-                    or record.dispatch_authority.scope.campaign_id
-                    != parent_authority.scope.campaign_id
+                    or record.dispatch_authority.scope.episode_id
+                    != parent_authority.scope.episode_id
                     or record.dispatch_authority.scope.run_truth_scope
                     != parent_authority.scope.run_truth_scope
                 ):
-                    raise ValueError(
-                        "A campaign worker must inherit its orchestrator's project-wide scope."
-                    )
+                    raise ValueError("An Auto-research worker must inherit project-wide scope.")
                 return
 
             origin = connection.execute(
                 """
-                SELECT run.dispatch_authority_json, invocation.role AS campaign_role
+                SELECT run.dispatch_authority_json,
+                       invocation.role AS auto_research_role
                 FROM graph_runs AS run
-                JOIN campaign_invocations AS invocation
+                JOIN auto_research_invocations AS invocation
                   ON invocation.operation_id = run.operation_id
-                WHERE run.operation_id = ? AND run.campaign_id = ?
+                WHERE run.operation_id = ? AND run.episode_id = ?
                 """,
-                (actor_operation_id, record.campaign_id),
+                (actor_operation_id, record.episode_id),
             ).fetchone()
             if origin is None:
-                raise ValueError("A campaign continuation requires its canonical actor origin.")
-            origin_role = TypeAdapter(CampaignInvocationRole).validate_python(
-                origin["campaign_role"]
+                raise ValueError(
+                    "An Auto-research continuation requires its canonical actor origin."
+                )
+            origin_role = TypeAdapter(AutoResearchRole).validate_python(
+                origin["auto_research_role"]
             )
             if origin_role != role:
-                raise ValueError("A campaign continuation cannot change its canonical actor role.")
+                raise ValueError(
+                    "An Auto-research continuation cannot change its canonical actor role."
+                )
             origin_json = origin["dispatch_authority_json"]
             if origin_json is not None:
                 origin_authority = AgentDispatchAuthority.model_validate_json(origin_json)
                 if record.dispatch_authority != origin_authority:
                     raise ValueError(
-                        "A campaign continuation must preserve its actor-origin dispatch authority."
+                        "An Auto-research continuation must preserve actor-origin authority."
                     )
                 return
 
             # Migration-only: a same-allocation Resume/Retry of an actor recorded before
             # dispatch authority existed may bind today's closed contract. Paid continuations,
             # wakes, and reauthorization may not use this exception.
-            parent_request = json.loads(parent["request_json"])
-            parent_actor = parent_request.get("actor_operation_id") or parent["operation_id"]
+            parent_actor = parent["actor_operation_id"]
             if not (
                 record.attempt == int(parent["attempt"]) + 1
                 and parent_actor == actor_operation_id
                 and parent["dispatch_authority_json"] is None
             ):
                 raise ValueError(
-                    "A campaign continuation cannot invent authority for an unbound actor."
+                    "An Auto-research continuation cannot invent authority for an unbound actor."
                 )
             return
 
@@ -516,7 +512,7 @@ class AgentTaskStoreMixin:
                            WHERE receipt.operation_id = graph_runs.operation_id
                              AND receipt.category IN (
                                  'experiment_recovery_abandoned',
-                                 'campaign_recovery_abandoned'
+                                 'auto_research_recovery_abandoned'
                              )
                        ) AS recovery_abandoned
                 FROM graph_runs WHERE operation_id = ?
@@ -549,7 +545,7 @@ class AgentTaskStoreMixin:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT operation_id, project_id, campaign_id, dispatch_authority_json,
+                SELECT operation_id, project_id, episode_id, dispatch_authority_json,
                        authorized_space_id, authorized_user_id, authorized_display_name
                 FROM graph_runs
                 WHERE project_id = ? AND operation_id = ?
@@ -563,7 +559,7 @@ class AgentTaskStoreMixin:
             operation_id=str(row["operation_id"]),
             project_id=str(row["project_id"]),
             authorized_by=self._authorized_human_snapshot(row),
-            campaign_id=row["campaign_id"],
+            episode_id=row["episode_id"],
             dispatch_authority=(
                 AgentDispatchAuthority.model_validate_json(dispatch_json)
                 if dispatch_json is not None
@@ -670,7 +666,11 @@ class AgentTaskStoreMixin:
             )
 
     def agent_tasks(
-        self, project_id: str, *, limit: int = AGENT_TASK_LIST_DEFAULT_LIMIT
+        self,
+        project_id: str,
+        *,
+        limit: int = AGENT_TASK_LIST_DEFAULT_LIMIT,
+        include_hidden: bool = False,
     ) -> list[AgentTaskRecord]:
         with self.connection() as connection:
             rows = connection.execute(
@@ -681,15 +681,47 @@ class AgentTaskStoreMixin:
                            WHERE receipt.operation_id = graph_runs.operation_id
                              AND receipt.category IN (
                                  'experiment_recovery_abandoned',
-                                 'campaign_recovery_abandoned'
+                                 'auto_research_recovery_abandoned'
                              )
                        ) AS recovery_abandoned
                 FROM graph_runs
-                WHERE project_id = ?
+                WHERE project_id = ? AND (? OR visible = 1)
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (project_id, max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT))),
+                (
+                    project_id,
+                    int(include_hidden),
+                    max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
+                ),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def episode_tasks(
+        self,
+        episode_id: str,
+        *,
+        include_hidden: bool = False,
+    ) -> list[AgentTaskRecord]:
+        """Return one episode's tasks without exposing hidden wrap-up work by default."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'auto_research_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs
+                WHERE episode_id = ? AND (? OR visible = 1)
+                ORDER BY created_at, operation_id
+                """,
+                (episode_id, int(include_hidden)),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -1007,7 +1039,13 @@ class AgentTaskStoreMixin:
         return [self._agent_usage_record(row) for row in rows]
 
     def agent_usage_snapshot(self, project_id: str) -> AgentUsageSnapshot:
-        records = self.agent_usage(project_id)
+        # Hidden report generation is an internal episode wrap-up, not an
+        # operational task or usage cell on the user-facing meter.
+        records = [
+            record
+            for record in self.agent_usage(project_id)
+            if record.task_kind != "episode_report"
+        ]
         input_processed, generated, counted_records, excluded_records = self._agent_usage_metrics(
             records
         )
@@ -1210,10 +1248,13 @@ class AgentTaskStoreMixin:
     ) -> None:
         connection.execute(
             """
-            INSERT INTO graph_run_events (operation_id, created_at, level, message)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO graph_run_events (
+                operation_id, created_at, level, message, episode_id
+            )
+            SELECT operation_id, ?, ?, ?, episode_id
+            FROM graph_runs WHERE operation_id = ?
             """,
-            (operation_id, created_at, level, detail),
+            (created_at, level, detail, operation_id),
         )
         connection.execute(
             """

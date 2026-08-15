@@ -81,7 +81,7 @@ class ProviderInvocationGate:
                     with suppress(TimeoutError):
                         stderr = await asyncio.wait_for(process.stderr.read(), timeout=0.2)
                 detail = stderr.decode("utf-8", errors="replace").strip()
-                raise RuntimeError(detail or "campaign command broker did not become ready")
+                raise RuntimeError(detail or "episode command broker did not become ready")
             yield
         finally:
             process.stdin.close()

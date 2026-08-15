@@ -113,7 +113,7 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
 function stagedOrSaved(project: ProjectSnapshot) {
   const saved = {
     scope: project.default_run_truth_scope,
-    campaignInvocationCeiling: project.default_campaign_invocation_ceiling,
+    autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
     skillDefaults: skillDefaultsFrom(project),
@@ -129,7 +129,8 @@ function stagedOrSaved(project: ProjectSnapshot) {
   // written is still present.
   return {
     scope: staged.scope,
-    campaignInvocationCeiling: staged.campaignInvocationCeiling ?? saved.campaignInvocationCeiling,
+    autoResearchInvocationCeiling:
+      staged.autoResearchInvocationCeiling ?? saved.autoResearchInvocationCeiling,
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
@@ -153,8 +154,8 @@ export function ProjectSettings({
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
   const [scope, setScope] = useState<string[]>(() => stagedOrSaved(project).scope);
-  const [campaignInvocationCeiling, setCampaignInvocationCeiling] = useState(
-    () => stagedOrSaved(project).campaignInvocationCeiling,
+  const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
+    () => stagedOrSaved(project).autoResearchInvocationCeiling,
   );
   const [profiles, setProfiles] = useState<Record<AgentExecutionProfile, AgentRunConfig>>(
     () => stagedOrSaved(project).profiles,
@@ -181,7 +182,7 @@ export function ProjectSettings({
   useEffect(() => {
     const restored = stagedOrSaved(project);
     setScope(restored.scope);
-    setCampaignInvocationCeiling(restored.campaignInvocationCeiling);
+    setAutoResearchInvocationCeiling(restored.autoResearchInvocationCeiling);
     setProfiles(restored.profiles);
     setProviderPaths(restored.providerPaths);
     setSkillDefaults(restored.skillDefaults);
@@ -200,7 +201,7 @@ export function ProjectSettings({
     () =>
       JSON.stringify({
         scope: project.default_run_truth_scope,
-        campaignInvocationCeiling: project.default_campaign_invocation_ceiling,
+        autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
         profiles: profilesFrom(project),
         providerPaths: machineProviderPathsFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
@@ -209,14 +210,14 @@ export function ProjectSettings({
   );
   const current = JSON.stringify({
     scope,
-    campaignInvocationCeiling,
+    autoResearchInvocationCeiling,
     profiles,
     providerPaths,
     skillDefaults,
   });
   const dirty = current !== baseline;
-  const campaignInvocationCeilingIsValid =
-    Number.isSafeInteger(campaignInvocationCeiling) && campaignInvocationCeiling >= 2;
+  const autoResearchInvocationCeilingIsValid =
+    Number.isSafeInteger(autoResearchInvocationCeiling) && autoResearchInvocationCeiling >= 1;
 
   // Stage every edit locally so navigating away, or reloading, never loses it.
   // Clearing on a clean form is what makes Save and Reset drop the staged copy.
@@ -227,9 +228,9 @@ export function ProjectSettings({
         localStorage.setItem(
           key,
           serializeSettingsDraft({
-            version: 1,
+            version: 2,
             scope,
-            campaignInvocationCeiling,
+            autoResearchInvocationCeiling,
             profiles,
             providerPaths,
             skillDefaults,
@@ -317,7 +318,7 @@ export function ProjectSettings({
 
   const reset = () => {
     setScope(project.default_run_truth_scope);
-    setCampaignInvocationCeiling(project.default_campaign_invocation_ceiling);
+    setAutoResearchInvocationCeiling(project.default_auto_research_invocation_ceiling);
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
     setSkillDefaults(savedSkillDefaults);
@@ -325,12 +326,12 @@ export function ProjectSettings({
   };
 
   const save = async () => {
-    if (!dirty || saving || writesDisabled || !campaignInvocationCeilingIsValid) return;
+    if (!dirty || saving || writesDisabled || !autoResearchInvocationCeilingIsValid) return;
     setSaving(true);
     setStatus(null);
     const body: ProjectSettingsRequest = {
       default_run_truth_scope: scope,
-      default_campaign_invocation_ceiling: campaignInvocationCeiling,
+      default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
       agent_profiles: profiles,
       skill_defaults: skillDefaults,
     };
@@ -588,20 +589,20 @@ export function ProjectSettings({
           <div>
             <h2>Agent defaults</h2>
           </div>
-          <label className="agent-campaign-default">
+          <label className="agent-auto-research-default">
             <span>
-              Auto-research budget
-              <small>Invocations per newly authorized campaign</small>
+              Auto-research ceiling
+              <small>Operational invocations per newly authorized episode</small>
             </span>
             <input
               type="number"
-              min={2}
+              min={1}
               step={1}
               inputMode="numeric"
-              value={campaignInvocationCeiling}
+              value={autoResearchInvocationCeiling}
               disabled={writesDisabled}
               onChange={(event) => {
-                setCampaignInvocationCeiling(Number(event.target.value));
+                setAutoResearchInvocationCeiling(Number(event.target.value));
                 setStatus(null);
               }}
             />
@@ -765,7 +766,7 @@ export function ProjectSettings({
         </button>
         <button
           className="button primary"
-          disabled={writesDisabled || !dirty || saving || !campaignInvocationCeilingIsValid}
+          disabled={writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid}
           onClick={() => void save()}
         >
           {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}

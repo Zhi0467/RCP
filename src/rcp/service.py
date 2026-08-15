@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -74,7 +74,7 @@ from rcp.limits import (
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId, ProviderSkillReference
-from rcp.runs.campaign import CampaignRunRequest
+from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -490,17 +490,15 @@ def resolve_dispatch_authority(
 ) -> AgentDispatchAuthority | None:
     """Resolve one profile binding from the server-owned task shape."""
 
-    if kind == "campaign":
-        if not isinstance(request, CampaignRunRequest):
-            raise TypeError("campaign dispatch requires a CampaignRunRequest")
-        if request.role == "report":
-            return None
+    if kind == "auto_research":
+        if not isinstance(request, AutoResearchRunRequest):
+            raise TypeError("auto_research dispatch requires an AutoResearchRunRequest")
         return AgentDispatchAuthority(
             profile="orchestrator" if request.role == "orchestrator" else "ordinary",
             task_contract="orchestrate" if request.role == "orchestrator" else "work_auto",
             scope=AgentDispatchScope(
                 run_truth_scope=sorted(set(request.run_truth_scope or ())),
-                campaign_id=request.campaign_id,
+                episode_id=request.episode_id,
                 patch_kind="work",
             ),
         )
@@ -559,8 +557,14 @@ class AgentProfileSettings(BaseModel):
 
 
 class ProjectSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     default_run_truth_scope: list[str] = Field(min_length=1)
-    default_campaign_invocation_ceiling: int | None = Field(default=None, ge=2)
+    default_auto_research_invocation_ceiling: int | None = Field(
+        default=None,
+        ge=1,
+        description="Operational invocations per newly authorized episode.",
+    )
     agent_profiles: dict[AgentExecutionProfile, AgentProfileSettings]
     skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
     # Partial by machine and provider. Omission preserves every recorded path;
@@ -888,8 +892,8 @@ class ProjectService:
             "run_on": refresh_profile.run_on,
             "project_truth_scope": state.project_truth_scope,
             "default_run_truth_scope": self.manifest.agent.default_run_truth_scope,
-            "default_campaign_invocation_ceiling": (
-                self.manifest.agent.default_campaign_invocation_ceiling
+            "default_auto_research_invocation_ceiling": (
+                self.manifest.agent.default_auto_research_invocation_ceiling
             ),
             "repositories": [repository.model_dump() for repository in self.manifest.repositories],
             "machines": [machine.model_dump() for machine in self.manifest.machines],
@@ -1085,7 +1089,7 @@ class ProjectService:
             profiles,
             provider_path_updates,
             request.skill_defaults,
-            request.default_campaign_invocation_ceiling,
+            request.default_auto_research_invocation_ceiling,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]
@@ -2007,7 +2011,3 @@ class ProjectService:
             )
         )
         return questions[0].model_dump(mode="json") if questions else None
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)

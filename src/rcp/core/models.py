@@ -515,7 +515,7 @@ class Patch(BaseModel):
     # rather than leaving the validator to infer it from shape.
     human_action: Literal["decision_choice"] | None = None
     # The same explicit action boundary for an elevated agent producer. RCP
-    # supplies the profile; campaign lineage remains in operational storage.
+    # supplies the profile; episode lineage remains in operational storage.
     agent_action: Literal["decision_choice"] | None = None
     admission: Literal["accepted", "rejected"] = "accepted"
     admission_messages: list[ValidationMessage] = Field(default_factory=list)
@@ -527,14 +527,18 @@ class Patch(BaseModel):
     authorized_by: AuthorizedHuman | None = None
     profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = Field(default=None, min_length=1)
-    campaign_id: str | None = Field(default=None, min_length=1)
+    episode_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_producer(cls, value: Any) -> Any:
-        """Treat the legacy author role as producer when no producer was stored."""
+        """Reject live legacy lineage and fill producer on older lineage-free payloads."""
 
-        if not isinstance(value, dict) or "producer" in value or "author" not in value:
+        if not isinstance(value, dict):
+            return value
+        if "campaign_id" in value:
+            raise ValueError("campaign_id is not accepted; use episode_id")
+        if "producer" in value or "author" not in value:
             return value
         migrated = dict(value)
         migrated["producer"] = migrated["author"]

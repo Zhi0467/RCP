@@ -6,8 +6,8 @@ driver: pytest + ssh
 covered_by:
   - tests/test_staged_command_client.py
   - tests/test_launcher.py
-  - tests/test_campaign_stream.py
-  - tests/test_campaign_commands.py
+  - tests/test_auto_research_stream.py
+  - tests/test_auto_research_commands.py
   - tests/test_acceptance_agent.py
   - live SSH 2026-08-12
 invariants: [4b, 8, 10g]
@@ -17,15 +17,15 @@ last_passed: 2026-08-12 — detached prior-turn process rejected locally and on
   same command
 ---
 
-# A stale process cannot command the next campaign turn
+# A stale process cannot command the next Auto-research turn
 
-Confirmed by the human on 2026-08-12. RCP protects a campaign invocation from
+Confirmed by the human on 2026-08-12. RCP protects an Auto-research invocation from
 a process left behind by an earlier RCP turn. It does not claim to remain secure
 when the execution account itself is hostile.
 
 ## Drive
 
-1. Start a campaign actor invocation on a local execution machine. From its
+1. Start an Auto-research actor invocation on a local execution machine. From its
    provider process tree, use the staged client to validate a Patch and issue
    a mutating command. Both complete through the ordinary audited command path.
 2. Leave a detached client process alive after that invocation ends. Start the

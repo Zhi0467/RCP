@@ -13,35 +13,35 @@ import {
 import { useEffect, useId, useMemo, useState } from "react";
 import { taskStatusLabel } from "../agentTasks";
 import {
-  campaignEndingLabel,
-  campaignProjection,
-  campaignReportPreviewUrl,
-  campaignTaskRoleLabel,
-  campaignTaskRows,
+  episodeEndingLabel,
+  episodeProjection,
+  episodeReportPreviewUrl,
+  episodeTaskRoleLabel,
+  episodeTaskRows,
   formatTokenCount,
-  isLiveCampaign,
+  isLiveEpisode,
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
-import type { AgentTask, Campaign, CampaignMessage } from "../types";
+import type { AgentTask, Episode, EpisodeMessage } from "../types";
 
 interface Props {
-  campaigns: Campaign[];
+  episodes: Episode[];
   tasks: AgentTask[];
-  messagesByCampaign: Readonly<Record<string, CampaignMessage[] | undefined>>;
+  messagesByEpisode: Readonly<Record<string, EpisodeMessage[] | undefined>>;
   busyAction: string | null;
   taskActionId: string | null;
   onInspectTask: (operationId: string) => void;
-  onLoadMessages: (campaignId: string) => Promise<void>;
-  onStop: (campaignId: string) => Promise<void>;
-  onReauthorize: (campaignId: string, additionalInvocations: number) => Promise<void>;
-  onSendMessage: (campaignId: string, body: string) => Promise<void>;
+  onLoadMessages: (episodeId: string) => Promise<void>;
+  onStop: (episodeId: string) => Promise<void>;
+  onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
 }
 
-export function CampaignRuns({
-  campaigns,
+export function AutoResearchEpisodes({
+  episodes,
   tasks,
-  messagesByCampaign,
+  messagesByEpisode,
   busyAction,
   taskActionId,
   onInspectTask,
@@ -51,20 +51,20 @@ export function CampaignRuns({
   onSendMessage,
   onOperateTask,
 }: Props) {
-  if (campaigns.length === 0) return null;
+  if (episodes.length === 0) return null;
   return (
-    <section className="campaign-runs" aria-label="Auto-research campaigns">
+    <section className="campaign-runs" aria-label="Auto-research episodes">
       <header>
         <h2>Auto-research</h2>
-        <span>{campaigns.length}</span>
+        <span>{episodes.length}</span>
       </header>
       <div className="campaign-run-list">
-        {campaigns.map((campaign, index) => (
-          <CampaignRow
-            campaign={campaign}
+        {episodes.map((episode, index) => (
+          <EpisodeRow
+            episode={episode}
             tasks={tasks}
-            messages={messagesByCampaign[campaign.campaign_id] ?? []}
-            initiallyExpanded={index === 0 || isLiveCampaign(campaign)}
+            messages={messagesByEpisode[episode.episode_id] ?? []}
+            initiallyExpanded={index === 0 || isLiveEpisode(episode)}
             busyAction={busyAction}
             taskActionId={taskActionId}
             onInspectTask={onInspectTask}
@@ -73,7 +73,7 @@ export function CampaignRuns({
             onReauthorize={onReauthorize}
             onSendMessage={onSendMessage}
             onOperateTask={onOperateTask}
-            key={campaign.campaign_id}
+            key={episode.episode_id}
           />
         ))}
       </div>
@@ -81,8 +81,8 @@ export function CampaignRuns({
   );
 }
 
-function CampaignRow({
-  campaign,
+function EpisodeRow({
+  episode,
   tasks,
   messages,
   initiallyExpanded,
@@ -95,17 +95,17 @@ function CampaignRow({
   onSendMessage,
   onOperateTask,
 }: {
-  campaign: Campaign;
+  episode: Episode;
   tasks: AgentTask[];
-  messages: CampaignMessage[];
+  messages: EpisodeMessage[];
   initiallyExpanded: boolean;
   busyAction: string | null;
   taskActionId: string | null;
   onInspectTask: (operationId: string) => void;
-  onLoadMessages: (campaignId: string) => Promise<void>;
-  onStop: (campaignId: string) => Promise<void>;
-  onReauthorize: (campaignId: string, additionalInvocations: number) => Promise<void>;
-  onSendMessage: (campaignId: string, body: string) => Promise<void>;
+  onLoadMessages: (episodeId: string) => Promise<void>;
+  onStop: (episodeId: string) => Promise<void>;
+  onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
 }) {
   const detailId = useId();
@@ -114,31 +114,31 @@ function CampaignRow({
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const taskRows = useMemo(
-    () => campaignTaskRows(campaign, campaign.tasks.length > 0 ? campaign.tasks : tasks),
-    [campaign, tasks],
+    () => episodeTaskRows(episode, episode.tasks.length > 0 ? episode.tasks : tasks),
+    [episode, tasks],
   );
   const projection = useMemo(
     () =>
-      campaignProjection(
-        campaign,
+      episodeProjection(
+        episode,
         taskRows.map(({ task }) => task),
       ),
-    [campaign, taskRows],
+    [episode, taskRows],
   );
   const { recommendation, taskControl } = projection;
   const parsedAdditionalInvocations = Number(additionalInvocations);
   const reauthorizationIsValid =
     additionalInvocations.trim().length > 0 &&
     Number.isSafeInteger(parsedAdditionalInvocations) &&
-    parsedAdditionalInvocations >= 2;
-  const stopBusy = busyAction === `stop:${campaign.campaign_id}`;
-  const reauthorizeBusy = busyAction === `reauthorize:${campaign.campaign_id}`;
-  const messageBusy = busyAction === `message:${campaign.campaign_id}`;
+    parsedAdditionalInvocations >= 1;
+  const stopBusy = busyAction === `stop:${episode.episode_id}`;
+  const reauthorizeBusy = busyAction === `reauthorize:${episode.episode_id}`;
+  const messageBusy = busyAction === `message:${episode.episode_id}`;
   const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
-  const campaignTimestamp = formatTimestamp(campaign.created_at, true);
+  const episodeTimestamp = formatTimestamp(episode.created_at, true);
   const showStop =
-    campaign.can_stop &&
+    episode.can_stop &&
     projection.health !== "stopping" &&
     projection.health !== "completed" &&
     projection.health !== "stopped" &&
@@ -146,20 +146,20 @@ function CampaignRow({
 
   useEffect(() => {
     if (!expanded) return;
-    void onLoadMessages(campaign.campaign_id).catch((error) => {
+    void onLoadMessages(episode.episode_id).catch((error) => {
       setLocalError(error instanceof Error ? error.message : String(error));
     });
-  }, [campaign.campaign_id, expanded, onLoadMessages]);
+  }, [episode.episode_id, expanded, onLoadMessages]);
 
   useEffect(() => {
-    if (campaign.can_reauthorize) setExpanded(true);
-  }, [campaign.can_reauthorize]);
+    if (episode.can_reauthorize) setExpanded(true);
+  }, [episode.can_reauthorize]);
 
   const submitReauthorization = async () => {
     if (!reauthorizationIsValid || anotherActionBusy) return;
     setLocalError(null);
     try {
-      await onReauthorize(campaign.campaign_id, parsedAdditionalInvocations);
+      await onReauthorize(episode.episode_id, parsedAdditionalInvocations);
       setAdditionalInvocations("");
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
@@ -171,7 +171,7 @@ function CampaignRow({
     if (!body || anotherActionBusy) return;
     setLocalError(null);
     try {
-      await onSendMessage(campaign.campaign_id, body);
+      await onSendMessage(episode.episode_id, body);
       setMessage("");
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
@@ -195,14 +195,14 @@ function CampaignRow({
         <button
           className="campaign-run-toggle"
           type="button"
-          aria-label={`${expanded ? "Collapse" : "Expand"} auto-research campaign started ${campaignTimestamp}`}
+          aria-label={`${expanded ? "Collapse" : "Expand"} auto-research episode started ${episodeTimestamp}`}
           aria-expanded={expanded}
           aria-controls={detailId}
           onClick={() => setExpanded((current) => !current)}
         />
         <span className="campaign-run-identity">
           <span className="eyebrow">
-            <Telescope size={12} /> Project campaign
+            <Telescope size={12} /> Project episode
           </span>
           <strong>Auto-research</strong>
           <span className="campaign-run-state">
@@ -210,9 +210,9 @@ function CampaignRow({
             <span className="campaign-run-summary">{recommendation.label}</span>
           </span>
         </span>
-        <CampaignBudgetMeter campaign={campaign} />
+        <EpisodeBudgetMeter episode={episode} />
         <span className="campaign-run-time">
-          <time dateTime={campaign.created_at}>{formatTimestamp(campaign.created_at)}</time>
+          <time dateTime={episode.created_at}>{formatTimestamp(episode.created_at)}</time>
           <ChevronDown size={15} aria-hidden="true" />
         </span>
       </div>
@@ -227,37 +227,17 @@ function CampaignRow({
             >
               <strong>{projection.healthLabel}</strong>
             </div>
-            {campaign.reports.length > 0 && (
+            {episode.report && episode.wrapup_state === "ready" && (
               <div className="campaign-report-actions">
-                {campaign.reports.map((report) => {
-                  const ending = campaignEndingLabel(report.ending);
-                  const timestamp = formatTimestamp(report.created_at, true);
-                  return (
-                    <a
-                      className={`button compact ${
-                        recommendation.kind === "open_report" &&
-                        recommendation.reportId === report.report_id
-                          ? "primary"
-                          : "secondary"
-                      }`}
-                      href={campaignReportPreviewUrl(
-                        campaign.project_id,
-                        campaign.campaign_id,
-                        report.report_id,
-                      )}
-                      aria-label={`Open ${ending} report from ${timestamp}`}
-                      // The report is a sandboxed document, and a report that has
-                      // aged out answers 404. Both belong in their own tab rather
-                      // than replacing the app the human is working in.
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      key={report.report_id}
-                    >
-                      <ExternalLink size={12} /> Open {ending} report ·{" "}
-                      <time dateTime={report.created_at}>{timestamp}</time>
-                    </a>
-                  );
-                })}
+                <a
+                  className={`button compact ${recommendation.kind === "open_report" ? "primary" : "secondary"}`}
+                  href={episodeReportPreviewUrl(episode.project_id, episode.episode_id)}
+                  aria-label={`Open ${episodeEndingLabel(episode.report.ending)} report from ${formatTimestamp(episode.report.created_at, true)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink size={12} /> Open report
+                </a>
               </div>
             )}
             {taskControl && (
@@ -279,11 +259,11 @@ function CampaignRow({
                   <RotateCcw size={12} />
                 )}
                 {controlTaskBusy
-                  ? `${campaignActionLabel(taskControl.kind)}…`
-                  : campaignActionLabel(taskControl.kind)}
+                  ? `${episodeActionLabel(taskControl.kind)}…`
+                  : episodeActionLabel(taskControl.kind)}
               </button>
             )}
-            {campaign.can_reauthorize && projection.health === "needs_action" && (
+            {episode.can_reauthorize && projection.health === "needs_action" && (
               <form
                 className="campaign-reauthorize"
                 onSubmit={(event) => {
@@ -293,10 +273,10 @@ function CampaignRow({
               >
                 <input
                   type="number"
-                  min={2}
+                  min={1}
                   step={1}
                   inputMode="numeric"
-                  aria-label="Additional campaign invocations"
+                  aria-label="New episode invocation ceiling"
                   value={additionalInvocations}
                   disabled={anotherActionBusy}
                   onChange={(event) => setAdditionalInvocations(event.target.value)}
@@ -318,7 +298,7 @@ function CampaignRow({
                 disabled={anotherActionBusy}
                 onClick={() => {
                   setLocalError(null);
-                  void onStop(campaign.campaign_id).catch((error) => {
+                  void onStop(episode.episode_id).catch((error) => {
                     setLocalError(error instanceof Error ? error.message : String(error));
                   });
                 }}
@@ -334,14 +314,14 @@ function CampaignRow({
             <strong>{recommendation.label}</strong>
           </div>
 
-          {campaign.starting_instruction && (
+          {episode.starting_instruction && (
             <div className="campaign-starting-instruction">
               <span className="field-label">Starting instruction</span>
-              <MarkdownAnswer text={campaign.starting_instruction} />
+              <MarkdownAnswer text={episode.starting_instruction} />
             </div>
           )}
 
-          <section className="campaign-turns" aria-label="Campaign turns">
+          <section className="campaign-turns" aria-label="Episode turns">
             <header>
               <h3>Turns</h3>
               <span>{taskRows.length}</span>
@@ -354,10 +334,10 @@ function CampaignRow({
                     <li className={`campaign-task depth-${depth}`} key={task.operation_id}>
                       <button type="button" onClick={() => onInspectTask(task.operation_id)}>
                         <span className={`campaign-task-role ${role}`}>
-                          {campaignTaskRoleLabel(role)}
+                          {episodeTaskRoleLabel(role)}
                         </span>
                         <span className="campaign-task-copy">
-                          <strong>{target || campaignTaskRoleLabel(role)}</strong>
+                          <strong>{target || episodeTaskRoleLabel(role)}</strong>
                           <span>{task.status_message}</span>
                         </span>
                         <span className={`status-pill ${task.status}`}>
@@ -373,7 +353,7 @@ function CampaignRow({
             )}
           </section>
 
-          <section className="campaign-mail" aria-label="Campaign mail">
+          <section className="campaign-mail" aria-label="Episode mail">
             <header>
               <h3>
                 <MessageCircle size={13} /> Mail
@@ -405,7 +385,7 @@ function CampaignRow({
                 <p className="campaign-empty">No messages yet.</p>
               )}
             </div>
-            {campaign.status === "running" && (
+            {episode.status === "running" && (
               <form
                 className="campaign-message-composer"
                 onSubmit={(event) => {
@@ -431,9 +411,16 @@ function CampaignRow({
               </form>
             )}
           </section>
-          {(localError || campaign.error) && (
+          {(localError ||
+            (episode.status !== "stopped" && episode.wrapup_state === "failed"
+              ? episode.wrapup_error
+              : null) ||
+            (episode.status !== "stopped" ? episode.ending_diagnostic : null)) && (
             <div className="campaign-run-error" role="alert">
-              {localError || campaign.error}
+              {localError ||
+                (episode.status !== "stopped" && episode.wrapup_state === "failed"
+                  ? `Report generation error: ${episode.wrapup_error || "The report could not be generated."}`
+                  : episode.ending_diagnostic)}
             </div>
           )}
         </div>
@@ -442,14 +429,10 @@ function CampaignRow({
   );
 }
 
-function CampaignBudgetMeter({ campaign }: { campaign: Campaign }) {
-  const budget = campaign.budget;
+function EpisodeBudgetMeter({ episode }: { episode: Episode }) {
+  const budget = episode.budget;
   const usedPercent = Math.min(100, (budget.invocations_used / budget.invocation_ceiling) * 100);
-  const reservePercent = Math.min(
-    100,
-    (budget.report_units_reserved / budget.invocation_ceiling) * 100,
-  );
-  const label = `${budget.invocations_used} of ${budget.invocation_ceiling} campaign invocations used; ${budget.report_units_reserved} reserved for the report; ${budget.observed_input_tokens} observed input tokens and ${budget.observed_generated_tokens} observed generated tokens`;
+  const label = `${budget.invocations_used} of ${budget.invocation_ceiling} operational invocations used; ${budget.observed_input_tokens} observed input tokens and ${budget.observed_generated_tokens} observed generated tokens`;
   return (
     <span
       className="campaign-budget-meter"
@@ -470,7 +453,6 @@ function CampaignBudgetMeter({ campaign }: { campaign: Campaign }) {
       </span>
       <span className="campaign-budget-track" aria-hidden="true">
         <span className="campaign-budget-spent" style={{ width: `${usedPercent}%` }} />
-        <span className="campaign-budget-reserved" style={{ width: `${reservePercent}%` }} />
       </span>
     </span>
   );
@@ -481,7 +463,7 @@ function taskTarget(task: AgentTask): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function messageSenderLabel(message: CampaignMessage): string {
+function messageSenderLabel(message: EpisodeMessage): string {
   if (message.sender_role === "human") {
     return message.authorized_by?.display_name ?? "Unattributed";
   }
@@ -502,7 +484,7 @@ function formatTimestamp(value: string, includeSeconds = false): string {
   }).format(parsed);
 }
 
-function campaignActionLabel(action: "pause" | "resume" | "retry"): string {
+function episodeActionLabel(action: "pause" | "resume" | "retry"): string {
   if (action === "pause") return "Pause";
   if (action === "resume") return "Resume";
   return "Retry";

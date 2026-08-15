@@ -80,7 +80,7 @@ These boundaries are clean seams; parallel agents rarely collide across them.
 | History | `src/rcp/history/` | append-only patch log, locking, materialized outputs |
 | Run orchestration | `src/rcp/runs/` | distinct Seed/Refresh, Work, Discuss, graph repair, and paper coach workflows; policy-neutral staging and event plumbing |
 | Service/API | `src/rcp/service.py`, `src/rcp/api/app.py`, `src/rcp/projects.py`, `src/rcp/background.py` | app construction, routes, project catalog, background task lifecycle |
-| Storage | `src/rcp/storage/` | one SQLite file; `AppStore` composed from topic mixins (spaces, projects, result_views, campaigns, experiments, watchers, agent_tasks, rows) over `base` |
+| Storage | `src/rcp/storage/` | one SQLite file; `AppStore` composed from topic mixins (spaces, projects, result_views, episodes, Auto-research, experiments, watchers, agent_tasks, rows) over `base` |
 | Paper | `src/rcp/paper/` | draft store, canonical introduction, writing sessions |
 | Setup | `src/rcp/setup.py`, `src/rcp/config.py` | manifest rendering, preflight, manifest schema |
 | Providers | `src/rcp/providers.py`, `web/src/providers.ts` | the provider registry: ids, labels, auth probe, model catalog, launch command |
@@ -491,8 +491,10 @@ guarantees — surface the conflict instead of working around it.
    native session and is handed that exact path. Never route a view through a
    turn's artifact directory, and never copy, link, or switch cwd to reach it.
    Task Resume/Retry is recovery, not the revision mechanism.
-10g. **One Experiment episode, one native session, one graceful stop.** Every
-   bounded episode has exactly one validated native-session binding — provider,
+10g. **One episode parent, one native session, one graceful stop.** Auto-research
+   and bounded Experiment control are two modes of one persisted episode parent;
+   their adapters keep distinct operational policy. Every bounded episode has
+   exactly one validated native-session binding — provider,
    session id, execution host, and exact reusable stage — committed only by a
    mechanically successful joint Patch/watcher handoff. A graph-level rejection
    is still recorded as that turn's accepted operational result. A human Run
@@ -513,7 +515,17 @@ guarantees — surface the conflict instead of working around it.
    If the exact saved continuation becomes unusable, Stop may durably abandon
    only recovery of that already-terminal task while preserving its Patch and
    full history, then settle the episode. Generic Work watcher wakes stay fresh
-   turns.
+   turns. Completion, operational-ceiling exhaustion, unrecoverable failure, and
+   a Proposal/Decision/Blocker human-authority pause fence new admissions and
+   enter one hidden report wrap-up; pressing Stop is the sole ending that skips
+   it. Report generation resumes the exact episode session and stage with only
+   the ending, official `episode-report` skill/output pointers, and a compact
+   immutable mode-produced receipt. It gets at most three provider turns total,
+   consumes and exposes no operational invocation, and terminalizes after a
+   final visible report error without Resume or Retry. The report is required to
+   be inherently visual by skill prompting only; RCP validates safe bounded HTML
+   but never mechanically scores visual form. Reauthorization always creates a
+   new episode and fresh session rather than reopening a reported parent.
 11. **`answer` is the reply; `message` is a trace.** Providers label their final
    assistant message and RCP preserves that label in `AgentEvent`
    ([launcher.py](src/rcp/agents/launcher.py)). Never treat "the last text the
@@ -786,7 +798,7 @@ carrying forward, and correct an entry when they change their mind.
   things undecided" are not questions. Name the choice, name what each option
   costs, and say which one you would take. Design documents are where a decision
   is *recorded*, never how it is *asked*.
-- The campaign orchestrator is a Work agent. It gets the project's Settings-enabled
+- The Auto-research orchestrator is a Work agent. It gets the project's Settings-enabled
   skills and workflows, staged and rendered through the same one pointer block every
   other contract uses. Only the concluding report is narrowed to its one required skill.
 - **Permission is code, not configuration.** Both agent profiles are constants.
@@ -809,7 +821,7 @@ carrying forward, and correct an entry when they change their mind.
   unsayable. Intent is declared and checked against a closed set of shapes, never
   inferred from how the operations happen to look — an unchecked relaxation is
   just a bundle smuggled through.
-- **An auto-research campaign is scoped to the project**, not to the question it
+- **An Auto-research episode is scoped to the project**, not to the question it
   started from. The budget and the protected-type rule are the brakes; there is
   no second fence quietly doing that job. **A seated worker gets no scope of its
   own** either — where it may be seated is bounded, what it may then touch is
@@ -818,9 +830,9 @@ carrying forward, and correct an entry when they change their mind.
 - **Auto-research starts from the project header, beside Ask**, because the
   action is project-wide and belongs where project-wide actions live. Its budget
   is typed in invocations with observed cost shown beside it: the enforced number
-  stays exact, the legible number stays honest. Its report is durable and
-  produced on every ending, including exhaustion, Stop, and failure — the endings
-  that most need explaining are the ones a success-only report stays silent for.
+  stays exact, the legible number stays honest. Its report allocation is hidden
+  from that operational budget. Every non-Stop ending produces the durable visual
+  report; Stop alone means no report.
 - Result views are revised by **acting on the picture** — box a region,
   underscore items — not by describing it in the composer. A gesture writes a
   visible draft and never dispatches a turn by itself.
@@ -881,7 +893,7 @@ longer apply.
   broker round-trip test used `status`, the single verb whose arguments have no
   normalizing validator, so a 1844-test green suite said nothing about the six mutating
   verbs. Cover every verb through the real transport, not one representative.
-- Only the campaign report restricts its packages. Orchestrators and workers resolve
+- Only the episode report restricts its packages. Orchestrators and workers resolve
   Settings packages like any other Work agent; if a staging call asserts an exact skill
   id, check it is the report path before copying it.
 - Do not copy commands out of the README without running them. `serve --reload`

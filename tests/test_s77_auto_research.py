@@ -25,22 +25,22 @@ from rcp.core.models import (
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
-from rcp.runs.campaign import CampaignCommandDispatcher, CampaignRunRequest
-from rcp.runs.campaign_stream import stream_campaign_worker_run
+from rcp.runs.auto_research import AutoResearchCommandDispatcher, AutoResearchRunRequest
+from rcp.runs.auto_research_stream import stream_auto_research_worker_run
 from rcp.service import ProjectService, ProposalDecisionRequest
 from rcp.storage import AppStore
 
 from .helpers import fabricated_authorizer
-from .test_campaign_commands import _Effects, _setup_campaign, _spawn_request
-from .test_campaign_stream import (
+from .test_auto_research_commands import _Effects, _setup_auto_research, _spawn_request
+from .test_auto_research_stream import (
     _dispatcher,
     _events,
     _execution,
     _service,
     _WorkerLauncher,
 )
-from .test_campaign_stream import (
-    _setup_campaign as _setup_stream_campaign,
+from .test_auto_research_stream import (
+    _setup_auto_research as _setup_stream_auto_research,
 )
 
 _SCOPE = ["repo-a"]
@@ -52,22 +52,22 @@ def _orchestrator_patch(
     agent_action: str | None = None,
     authorized_by=None,
 ) -> Patch:
-    authorized_by = authorized_by or fabricated_authorizer("Campaign researcher")
+    authorized_by = authorized_by or fabricated_authorizer("Auto-researcher")
     return Patch(
         revision=revision,
         kind="work",
         author="agent",
         producer="agent",
-        summary="Advanced the auto-research campaign.",
+        summary="Advanced the Auto-research episode.",
         ops=list(ops),
         run_truth_scope=_SCOPE,
         repositories_read=_SCOPE,
-        source_operation_id="campaign-root",
+        source_operation_id="auto-research-root",
         agent_action=agent_action,
         authorized_by=authorized_by,
         profile="orchestrator",
-        task_id="campaign-root",
-        campaign_id="campaign",
+        task_id="auto-research-root",
+        episode_id="episode",
     )
 
 
@@ -436,9 +436,9 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
         )
     assert history.state() == original
 
-    authorizer = fabricated_authorizer("Campaign researcher")
+    authorizer = fabricated_authorizer("Auto-researcher")
     authority = AgentTaskAuthority(
-        operation_id="campaign-root",
+        operation_id="auto-research-root",
         project_id="project",
         authorized_by=authorizer,
         dispatch_authority=AgentDispatchAuthority(
@@ -446,11 +446,11 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
             task_contract="orchestrate",
             scope=AgentDispatchScope(
                 run_truth_scope=_SCOPE,
-                campaign_id="campaign",
+                episode_id="episode",
                 patch_kind="work",
             ),
         ),
-        campaign_id="campaign",
+        episode_id="episode",
     )
     history.project_id = "project"
     history.require_attribution = True
@@ -458,12 +458,12 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
 
     raised, result = history.append(_protected_proposals(authorizer))
     assert raised.profile == "orchestrator"
-    assert raised.task_id == "campaign-root"
+    assert raised.task_id == "auto-research-root"
     assert raised.authorized_by == authorizer
     assert {proposal.status for proposal in result.state.proposals.values()} == {"pending"}
     assert {proposal.created_by for proposal in result.state.proposals.values()} == {"agent"}
     assert {proposal.created_by_operation_id for proposal in result.state.proposals.values()} == {
-        "campaign-root"
+        "auto-research-root"
     }
     assert result.state.nodes["rq/existing"].standing == "asserted"
 
@@ -510,9 +510,9 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
 
 
 def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path: Path) -> None:
-    store, campaign, root = _setup_campaign(tmp_path)
-    effects = _Effects(store, campaign, root)
-    dispatcher = CampaignCommandDispatcher(store, effects.bundle())
+    store, episode, root = _setup_auto_research(tmp_path)
+    effects = _Effects(store, episode, root)
+    dispatcher = AutoResearchCommandDispatcher(store, effects.bundle())
 
     for index, (node_type, node_id) in enumerate(
         (("decision", "dec/route"), ("research_question", "rq/existing")), start=1
@@ -575,7 +575,7 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
 ) -> None:
     service = _service(manifest, tmp_path)
     before = service.history.state().model_dump(mode="json")
-    store, _campaign, _root, worker = _setup_stream_campaign(tmp_path / "store")
+    store, _episode, _root, worker = _setup_stream_auto_research(tmp_path / "store")
 
     def inspect_contract(contract: str, _workspace: Path) -> None:
         compact = " ".join(contract.split())
@@ -598,10 +598,10 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
                     yield event
 
     events = await _events(
-        stream_campaign_worker_run(
+        stream_auto_research_worker_run(
             service,
             DifficultyLauncher(writer=inspect_contract),
-            CampaignRunRequest.model_validate(worker.request),
+            AutoResearchRunRequest.model_validate(worker.request),
             tmp_path / "data",
             _execution(store, worker),
             command_dispatcher=_dispatcher(store),

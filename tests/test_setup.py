@@ -67,16 +67,23 @@ def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:
 
     invalid = client.post(
         "/api/project-setup/preflight",
-        json={**payload, "default_campaign_invocation_ceiling": 1},
+        json={**payload, "default_auto_research_invocation_ceiling": 0},
     )
     assert invalid.status_code == 422
+
+    legacy_key = client.post(
+        "/api/project-setup/preflight",
+        json={**payload, "default_campaign_invocation_ceiling": 10},
+    )
+    assert legacy_key.status_code == 422
 
     preview = client.post("/api/project-setup/preflight", json=payload)
 
     assert preview.status_code == 200
     assert preview.json()["action"] == "create"
     assert preview.json()["can_create"] is True
-    assert "default_campaign_invocation_ceiling = 10" in preview.json()["manifest_preview"]
+    assert "default_auto_research_invocation_ceiling = 10" in preview.json()["manifest_preview"]
+    assert "default_campaign_invocation_ceiling" not in preview.json()["manifest_preview"]
     assert not (repository / ".research").exists()
 
     unconfirmed = client.post("/api/project-setup/create", json=payload)
@@ -95,7 +102,7 @@ def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:
     assert (
         load_manifest(
             repository / ".research" / "manifest.toml"
-        ).agent.default_campaign_invocation_ceiling
+        ).agent.default_auto_research_invocation_ceiling
         == 10
     )
     assert client.get("/api/projects").json()[0]["id"] == created.json()["id"]

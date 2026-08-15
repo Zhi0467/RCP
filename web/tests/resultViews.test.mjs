@@ -40,6 +40,10 @@ const nodeChatSource = await readFile(
   "utf8",
 );
 const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+const episodeDialogsSource = await readFile(
+  new URL("../src/hooks/useEpisodeDialogs.ts", import.meta.url),
+  "utf8",
+);
 
 after(() => server.close());
 
@@ -468,16 +472,16 @@ test("result-view loads and Keep are fenced to the exact selected tuple generati
   assert.equal(resultViewLoadIsCurrent(first, 4, 8, first, 5, 8), false);
   assert.equal(resultViewLoadIsCurrent(first, 4, 8, delimiterCollision, 4, 8), false);
 
-  const refreshPath = appSource.slice(
-    appSource.indexOf("const refreshResultViews"),
-    appSource.indexOf("const visibleChatIds"),
+  const refreshPath = episodeDialogsSource.slice(
+    episodeDialogsSource.indexOf("const refreshResultViews"),
+    episodeDialogsSource.indexOf("const keepSelectedResultView"),
   );
   assert.match(refreshPath, /const loadGeneration = \+\+resultViewLoadGeneration\.current/);
   assert.match(refreshPath, /resultViewLoadIsCurrent\(/);
 
-  const keepPath = appSource.slice(
-    appSource.indexOf("const keepSelectedResultView"),
-    appSource.indexOf("const draftChangeCount"),
+  const keepPath = episodeDialogsSource.slice(
+    episodeDialogsSource.indexOf("const keepSelectedResultView"),
+    episodeDialogsSource.indexOf("const selectedResultViews"),
   );
   assert.ok(keepPath.indexOf("const selectionKey") < keepPath.indexOf("await keepResultView"));
   assert.match(keepPath, /resultViewSelectionIsCurrent\(/);

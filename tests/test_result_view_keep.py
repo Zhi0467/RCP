@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 
 from rcp.transport.state import (
-    _REMOTE_READ_KEPT_VIEW_SCRIPT,
     LocalStateWorkspace,
     RunLockLease,
     SSHStateWorkspace,
     StateUnavailable,
     _advisory_lock_holder_arguments,
     _process_advisory_lock,
+    _remote_script,
 )
 
 
@@ -259,7 +259,7 @@ def test_remote_read_script_is_bounded_and_never_follows_links(tmp_path) -> None
             [
                 sys.executable,
                 "-c",
-                _REMOTE_READ_KEPT_VIEW_SCRIPT,
+                _remote_script("remote_read_kept_view.py"),
                 str(repository),
                 target_name,
                 str(limit),

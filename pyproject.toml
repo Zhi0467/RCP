@@ -37,7 +37,7 @@ packages = ["src/rcp"]
 "src/rcp/skills/graph-audit" = "rcp/skills/graph-audit"
 "src/rcp/skills/evidence-triage" = "rcp/skills/evidence-triage"
 "src/rcp/skills/experiment-causality" = "rcp/skills/experiment-causality"
-"src/rcp/skills/campaign-report" = "rcp/skills/campaign-report"
+"src/rcp/skills/episode-report" = "rcp/skills/episode-report"
 "src/rcp/skills/workflows" = "rcp/skills/workflows"
 
 [tool.hatch.version]

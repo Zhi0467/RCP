@@ -9,10 +9,10 @@ import type {
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 
 export interface SettingsDraft {
-  version: 1;
+  version: 2;
   scope: string[];
   profiles: Partial<Record<AgentExecutionProfile, AgentRunConfig>>;
-  campaignInvocationCeiling?: number;
+  autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
   skillDefaults?: SkillDefaults;
 }
@@ -36,23 +36,42 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
   if (!value) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || parsed.version !== 1) return null;
+    if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2)) return null;
     if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
       return null;
     if (!isRecord(parsed.profiles)) return null;
-    if (
-      parsed.campaignInvocationCeiling !== undefined &&
-      (!Number.isSafeInteger(parsed.campaignInvocationCeiling) ||
-        (parsed.campaignInvocationCeiling as number) < 2)
-    )
-      return null;
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
-    return parsed as unknown as SettingsDraft;
+
+    if (parsed.version === 2) {
+      if (parsed.campaignInvocationCeiling !== undefined) return null;
+      if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
+      return parsed as unknown as SettingsDraft;
+    }
+
+    if (!isInvocationCeiling(parsed.campaignInvocationCeiling)) return null;
+    return {
+      version: 2,
+      scope: parsed.scope,
+      profiles: parsed.profiles as SettingsDraft["profiles"],
+      ...(parsed.campaignInvocationCeiling === undefined
+        ? {}
+        : { autoResearchInvocationCeiling: parsed.campaignInvocationCeiling }),
+      ...(parsed.providerPaths === undefined
+        ? {}
+        : { providerPaths: parsed.providerPaths as MachineProviderPaths }),
+      ...(parsed.skillDefaults === undefined
+        ? {}
+        : { skillDefaults: parsed.skillDefaults as SkillDefaults }),
+    };
   } catch {
     return null;
   }
+}
+
+function isInvocationCeiling(value: unknown): value is number | undefined {
+  return value === undefined || (Number.isSafeInteger(value) && (value as number) >= 1);
 }
 
 export function machineProviderPathsFrom(machines: Machine[]): MachineProviderPaths {

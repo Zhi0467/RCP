@@ -8,13 +8,13 @@ interface Props {
   loading: boolean;
   error: string | null;
   onInspectTask: (taskId: string) => void;
-  campaignReportHref: (campaignId: string, reportId: string) => string;
+  episodeReportHref: (episodeId: string) => string;
   onClose: () => void;
 }
 
 type HistoryEntry =
   | { kind: "revision"; summary: RevisionSummary }
-  | { kind: "campaign"; campaignId: string; summaries: RevisionSummary[] };
+  | { kind: "episode"; episodeId: string; summaries: RevisionSummary[] };
 
 export function ProjectHistoryDrawer({
   summaries,
@@ -22,10 +22,10 @@ export function ProjectHistoryDrawer({
   loading,
   error,
   onInspectTask,
-  campaignReportHref,
+  episodeReportHref,
   onClose,
 }: Props) {
-  const historyEntries = groupCampaignRevisions(summaries);
+  const historyEntries = groupEpisodeRevisions(summaries);
 
   return (
     <div
@@ -81,12 +81,12 @@ export function ProjectHistoryDrawer({
               ) : historyEntries.length > 0 ? (
                 <ol className="run-events">
                   {historyEntries.map((entry) =>
-                    entry.kind === "campaign" ? (
-                      <CampaignRevisionGroup
-                        campaignId={entry.campaignId}
+                    entry.kind === "episode" ? (
+                      <EpisodeRevisionGroup
+                        episodeId={entry.episodeId}
                         summaries={entry.summaries}
-                        campaignReportHref={campaignReportHref}
-                        key={`campaign:${entry.campaignId}`}
+                        episodeReportHref={episodeReportHref}
+                        key={`episode:${entry.episodeId}`}
                       />
                     ) : (
                       <RevisionItem
@@ -107,19 +107,19 @@ export function ProjectHistoryDrawer({
   );
 }
 
-function CampaignRevisionGroup({
-  campaignId,
+function EpisodeRevisionGroup({
+  episodeId,
   summaries,
-  campaignReportHref,
+  episodeReportHref,
 }: {
-  campaignId: string;
+  episodeId: string;
   summaries: RevisionSummary[];
-  campaignReportHref: Props["campaignReportHref"];
+  episodeReportHref: Props["episodeReportHref"];
 }) {
   const newest = summaries[0];
-  const campaign = newest.campaign;
-  const report = campaign?.report;
-  const labelId = `history-campaign-${newest.to_revision}`;
+  const episode = newest.episode;
+  const report = episode?.report;
+  const labelId = `history-episode-${newest.to_revision}`;
   const authorizer = newest.authorized_by?.display_name ?? "Unattributed";
 
   return (
@@ -129,9 +129,9 @@ function CampaignRevisionGroup({
         <header className="history-campaign-header">
           <div>
             <h5 id={labelId}>
-              {campaign
-                ? `Campaign · ${campaignStateLabel(campaign.state)}`
-                : "Campaign no longer recorded"}
+              {episode
+                ? `${episodeModeLabel(episode.mode)} episode · ${episodeStateLabel(episode)}`
+                : "Episode no longer recorded"}
             </h5>
             <p className="history-campaign-meta">
               Authorized by {authorizer} ·{" "}
@@ -142,8 +142,8 @@ function CampaignRevisionGroup({
           {report && (
             <a
               className="button compact secondary"
-              href={campaignReportHref(campaignId, report.report_id)}
-              aria-label={`Open the ${report.ending} campaign report`}
+              href={episodeReportHref(episodeId)}
+              aria-label={`Open the ${report.ending} episode report`}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -189,36 +189,41 @@ function RevisionItem({ summary }: { summary: RevisionSummary }) {
   );
 }
 
-function groupCampaignRevisions(summaries: RevisionSummary[]): HistoryEntry[] {
+function groupEpisodeRevisions(summaries: RevisionSummary[]): HistoryEntry[] {
   const newestFirst = [...summaries].sort((left, right) => right.to_revision - left.to_revision);
-  const byCampaign = new Map<string, RevisionSummary[]>();
+  const byEpisode = new Map<string, RevisionSummary[]>();
   for (const summary of newestFirst) {
-    if (!summary.campaign_id) continue;
-    const group = byCampaign.get(summary.campaign_id) ?? [];
+    if (!summary.episode_id) continue;
+    const group = byEpisode.get(summary.episode_id) ?? [];
     group.push(summary);
-    byCampaign.set(summary.campaign_id, group);
+    byEpisode.set(summary.episode_id, group);
   }
 
-  const seenCampaigns = new Set<string>();
+  const seenEpisodes = new Set<string>();
   const entries: HistoryEntry[] = [];
   for (const summary of newestFirst) {
-    if (!summary.campaign_id) {
+    if (!summary.episode_id) {
       entries.push({ kind: "revision", summary });
       continue;
     }
-    if (seenCampaigns.has(summary.campaign_id)) continue;
-    seenCampaigns.add(summary.campaign_id);
+    if (seenEpisodes.has(summary.episode_id)) continue;
+    seenEpisodes.add(summary.episode_id);
     entries.push({
-      kind: "campaign",
-      campaignId: summary.campaign_id,
-      summaries: byCampaign.get(summary.campaign_id) ?? [summary],
+      kind: "episode",
+      episodeId: summary.episode_id,
+      summaries: byEpisode.get(summary.episode_id) ?? [summary],
     });
   }
   return entries;
 }
 
-function campaignStateLabel(state: NonNullable<RevisionSummary["campaign"]>["state"]): string {
-  return state === "completed" ? "Completed" : capitalize(state);
+function episodeModeLabel(mode: NonNullable<RevisionSummary["episode"]>["mode"]): string {
+  return mode === "auto_research" ? "Auto-research" : "Experiment";
+}
+
+function episodeStateLabel(episode: NonNullable<RevisionSummary["episode"]>): string {
+  if (episode.ending === "human_pause") return "Human-authority pause";
+  return capitalize(episode.ending ?? episode.status);
 }
 
 function revisionAttribution(summary: RevisionSummary): string {

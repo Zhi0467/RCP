@@ -1,4 +1,4 @@
-import { FlaskConical } from "lucide-react";
+import { ExternalLink, FlaskConical } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   type ExperimentLoopHealth,
@@ -20,6 +20,9 @@ const healthLabels: Record<ExperimentLoopHealth, string> = {
   waiting_on_watchers: "Waiting on watchers",
   degraded: "Watcher degraded",
   stopping: "Stopping gracefully",
+  wrapping_up: "Wrapping up visualization and report",
+  report_failed: "Report error",
+  failed: "Failed",
   human_stopped: "Human-stopped",
   paused_at_limit: "Paused at invocation limit",
   needs_action: "Needs action",
@@ -32,6 +35,9 @@ const healthTones: Record<ExperimentLoopHealth, string> = {
   waiting_on_watchers: "waiting",
   degraded: "degraded",
   stopping: "stopping",
+  wrapping_up: "running",
+  report_failed: "degraded",
+  failed: "degraded",
   human_stopped: "stopped",
   paused_at_limit: "paused",
   needs_action: "actionable",
@@ -51,7 +57,16 @@ export function experimentHealthTone(health: ExperimentLoopHealth): string {
 
 export function experimentLoopIsLive(run: ExperimentRun): boolean {
   const operational = run.control?.operational;
+  const episode = run.control?.episode;
+  if (
+    episode &&
+    ["ready", "failed", "skipped", "legacy_unavailable"].includes(episode.wrapup_state)
+  ) {
+    return false;
+  }
+  const episodeStatus = episode?.status;
   return Boolean(
+    (episodeStatus && ["queued", "running", "stopping", "wrapping_up"].includes(episodeStatus)) ||
     (run.currentTask && liveTaskStatuses.has(run.currentTask.status)) ||
     operational?.task_active ||
     operational?.detached_work_active ||
@@ -82,6 +97,7 @@ interface Props {
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
   onCheckWatcher: (watcherId: string) => void;
+  episodeReportHref: (episodeId: string) => string;
 }
 
 export function ExperimentRunDetail({
@@ -98,17 +114,22 @@ export function ExperimentRunDetail({
   onRecover,
   onSwitchProvider,
   onCheckWatcher,
+  episodeReportHref,
 }: Props) {
   const { node, control, taskGroup, currentTask, health } = run;
   const operational = control?.operational ?? null;
   const session = operational?.session ?? null;
+  const episode = control?.episode ?? null;
+  const episodeParentLive = Boolean(
+    episode && ["queued", "running", "stopping", "wrapping_up"].includes(episode.status),
+  );
   const live = experimentLoopIsLive(run);
   const stopUnsettled = experimentStopUnsettled(run);
   const stopRequested = Boolean(operational?.stop_requested);
   const taskInFlight = Boolean(currentTask && liveTaskStatuses.has(currentTask.status));
   const currentOperationId =
-    operational?.current_operation_id ??
     currentTask?.operation_id ??
+    operational?.current_operation_id ??
     taskGroup?.latest.operation_id;
   const attempts = node.attempts ?? [];
   const completionCriteria = node.completion_criteria ?? [];
@@ -119,12 +140,15 @@ export function ExperimentRunDetail({
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
-  const recoveryAction = experimentRecoveryAction(currentTask);
+  const reportIsTerminal = episode?.wrapup_state === "ready" || episode?.wrapup_state === "failed";
+  const recoveryAction = reportIsTerminal ? null : experimentRecoveryAction(currentTask);
   const recoveryProvider =
     providerLabel ||
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
-  const canStop = live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status));
+  const canStop =
+    episode?.status !== "wrapping_up" &&
+    (live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status)));
   const showStop = Boolean(control?.episode_id && !stopRequested && (stopBusy || canStop));
   const stopBlocksRecovery = stopRequested && !stopUnsettled;
   const recommendation = experimentRecommendation(run);
@@ -180,10 +204,27 @@ export function ExperimentRunDetail({
               {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
             </button>
           )}
+          {episode?.report && episode.wrapup_state === "ready" && episode.status !== "stopped" && (
+            <a
+              className="button primary compact"
+              href={episodeReportHref(episode.episode_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink size={12} aria-hidden="true" /> Open report
+            </a>
+          )}
           <button
             type="button"
             className="button primary compact experiment-run-button"
-            disabled={runDisabled || runBusy || taskInFlight || stopUnsettled || !control?.ready}
+            disabled={
+              runDisabled ||
+              runBusy ||
+              episodeParentLive ||
+              taskInFlight ||
+              stopUnsettled ||
+              !control?.ready
+            }
             onClick={onRun}
             aria-describedby={control?.reasons.length ? `${node.id}-run-requirements` : undefined}
           >
@@ -197,6 +238,12 @@ export function ExperimentRunDetail({
         <span className="eyebrow">Recommended next step</span>
         <strong>{recommendation.label}</strong>
       </div>
+
+      {episode?.wrapup_state === "failed" && episode.status !== "stopped" && (
+        <div className="campaign-run-error" role="alert">
+          Report generation error: {episode.wrapup_error || "The report could not be generated."}
+        </div>
+      )}
 
       <p className="experiment-run-meta">
         {control && (

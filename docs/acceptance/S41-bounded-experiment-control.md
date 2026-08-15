@@ -1,6 +1,6 @@
 ---
 id: S41-bounded-experiment-control
-status: implemented
+status: pending
 tier: hermetic
 driver: pytest + browser
 covered_by:
@@ -11,11 +11,7 @@ covered_by:
   - web/tests/experimentControlRefresh.test.mjs
   - web/tests/experimentRunDetail.test.mjs
   - web/tests/runDialog.test.mjs
-invariants: [3, 4, 4b, 10, 10b]
-last_passed: 2026-08-12 — an isolated acceptance-agent served-app drive changed
-  the node ceiling before and after a bounded episode, kept the settled episode
-  pinned at its original ceiling, and rendered the changed prospective limit
-  separately with Start episode and Start new episode at the correct times.
+invariants: [3, 4, 4b, 10, 10b, 10e, 10g]
 ---
 
 # Run an experiment through a bounded control loop
@@ -33,7 +29,8 @@ uses the watcher machinery promised by S42, with S88's node-owned Experiment
 resource, to continue the episode's bound conversation. The
 human-set `invocation_ceiling` bounds the initial Run invocation plus attributed
 watcher wakes inside one episode. Semantic `ExperimentAttempt` records neither
-spend nor reset that budget.
+spend nor reset that budget. The ceiling counts operational loop invocations
+only; the shared hidden episode wrap-up never spends or appears in that count.
 
 ## UI path
 
@@ -132,12 +129,15 @@ Confirmed by the human on 2026-08-05.
   one observer per requested watcher remain.
 - Drive a turn whose changed evidence makes an upstream choice ready or
   undermines its prior selection. It queues that pinned Decision as `ready` or
-  `revisit` in Inbox and pauses the episode. Choosing in the existing ballot does
+  `revisit` in Inbox and fences the episode for wrap-up. Runs says **Wrapping up
+  visualization and report** while the exact episode session produces its
+  visual report; then the episode pauses. Choosing in the existing ballot does
   not resume automatically; the human presses **Start new episode**, which starts
   a new episode at invocation 1 with the current **Next episode limit**.
 - Reach the configured invocation ceiling after the last allowed turn arms a
   watcher. When that watcher completes, RCP does not start an over-budget wake or
-  mark the completion delivered. The Experiment visibly says the loop is paused
+  mark the completion delivered. RCP first wraps up the episode without changing
+  its operational used / ceiling values, then visibly says the loop is paused
   at its limit. Press **Start new episode**. The prior episode keeps its pinned
   used / ceiling history; Runs and the node drawer show the current prospective
   limit separately. RCP starts the fresh episode at invocation 1 of that current
@@ -154,13 +154,21 @@ Confirmed by the human on 2026-08-05.
   Race S72's **Stop loop** or an agent's reasoned staged-observer retirement
   against notification claim: one atomic winner is visible and nothing wakes
   after the accepted stop. An Experiment loop has no per-watcher human Stop
-  action; ordinary Work watchers keep theirs.
+  action; ordinary Work watchers keep theirs. Confirm that pressing **Stop
+  loop** settles the episode without generating a report; Stop is the sole
+  no-report ending.
 - Complete an experiment successfully. The loop asserts the Evidence node and
   evidence edge, then produces exactly one Inbox item for the Hypothesis status
   transition with that same-patch edge as its cause. If optional
   `completion_criteria` exists, the pinned criterion is shown with the proposed
   belief change but never controlled the loop. Only human acceptance updates the
-  downstream belief; edges have no standing.
+  downstream belief; edges have no standing. The episode wraps up first through
+  the same generic report mechanism, using the Experiment-loop guide in the
+  official `episode-report` skill.
+- Drive a terminal operational failure. Confirm the same exact-session wrap-up
+  produces a partial report. Make report output invalid for all three automatic
+  report turns and confirm the episode still settles with one visible
+  report-generation error, no Retry control, and no blocked unrelated work.
 - Have a later graph-writing task materially introduce new work to that completed
   Experiment. The same Patch reopens it to an appropriate nonterminal status and
   refreshes `current_summary` and `next_action`; its episode action still reads
@@ -198,6 +206,7 @@ Confirmed by the human on 2026-08-05.
 - `only_the_latest_unresolved_task_may_resume_or_retry_operational_work`
 - `patch_only_repair_cannot_reactivate_a_stale_episode`
 - `loop_invocation_budget_is_consumed_by_run_and_watcher_wake`
+- `report_generation_does_not_consume_or_appear_as_a_loop_invocation`
 - `attempt_bookkeeping_is_agent_semantic_output_not_loop_budget`
 - `old_attempts_load_with_backward_compatible_control_defaults`
 - `attempt_records_pin_a_strict_decision_bundle`
@@ -205,6 +214,7 @@ Confirmed by the human on 2026-08-05.
 - `debug_retry_records_fault_change_and_prediction_before_launch`
 - `scientific_disappointment_is_not_a_retry_classification`
 - `proposal_or_blocker_pauses_the_current_loop_episode`
+- `proposal_decision_and_blocker_pauses_wrap_up_before_settling`
 - `proposal_resolution_requires_a_new_human_started_episode`
 - `resume_and_retry_receive_live_control_delta_without_spending_again`
 - `corrections_receive_narrow_context_and_cannot_repeat_operational_work`
@@ -214,10 +224,17 @@ Confirmed by the human on 2026-08-05.
 - `unrecoverable_watcher_handoff_fails_visibly_and_remains_retryable`
 - `joint_handoff_recovery_never_duplicates_patch_or_watchers`
 - `ceiling_pauses_automatic_wakes_without_discarding_completion`
+- `ceiling_wraps_up_before_presenting_human_reauthorization`
 - `human_run_claims_pending_completion_as_invocation_one_of_a_new_episode`
 - `pending_completion_context_names_human_reauthorization`
 - `compatible_cross_invocation_watchers_coalesce_under_current_delivery_policy`
 - `successful_stop_acknowledges_a_completion_before_it_can_wake`
+- `pressing_stop_is_the_only_experiment_episode_ending_that_skips_report_generation`
+- `experiment_episode_wrapup_resumes_the_exact_session_and_stage`
+- `experiment_episode_wrapup_uses_minimal_receipt_context_and_the_generic_report_skill`
+- `experiment_episode_report_is_inherently_visual_by_skill_prompting`
+- `experiment_episode_report_correction_is_hidden_and_bounded_to_three_turns`
+- `final_report_error_is_visible_nonblocking_and_has_no_retry_control`
 - `completion_criteria_is_pinned_advisory_and_visible_at_acceptance`
 - `run_uses_the_experiment_loop_patch_kind`
 - `control_watcher_wake_retains_the_experiment_loop_patch_policy`

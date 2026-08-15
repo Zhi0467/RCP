@@ -126,7 +126,7 @@ export function AutoResearchDialog({
   if (!open) return null;
   const invocationCeiling = Number(budget);
   const budgetIsValid =
-    budget.trim().length > 0 && Number.isSafeInteger(invocationCeiling) && invocationCeiling >= 2;
+    budget.trim().length > 0 && Number.isSafeInteger(invocationCeiling) && invocationCeiling >= 1;
 
   return (
     <div
@@ -166,13 +166,11 @@ export function AutoResearchDialog({
         </header>
         <div className="campaign-dialog-fields">
           <label className="campaign-budget-field">
-            <span>
-              Invocation budget <small>1 reserved for the report</small>
-            </span>
+            <span>Operational invocation ceiling</span>
             <input
               ref={budgetInput}
               type="number"
-              min={2}
+              min={1}
               step={1}
               inputMode="numeric"
               value={budget}

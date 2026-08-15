@@ -15,7 +15,7 @@ _OFFICIAL_PACKAGE_SPECS: tuple[tuple[SkillKind, str, str], ...] = (
     ("skill", "graph-audit", "graph-audit/SKILL.md"),
     ("skill", "evidence-triage", "evidence-triage/SKILL.md"),
     ("skill", "experiment-causality", "experiment-causality/SKILL.md"),
-    ("skill", "campaign-report", "campaign-report/SKILL.md"),
+    ("skill", "episode-report", "episode-report/SKILL.md"),
     ("workflow", "research-graph-audit", "workflows/research-graph-audit/WORKFLOW.md"),
 )
 

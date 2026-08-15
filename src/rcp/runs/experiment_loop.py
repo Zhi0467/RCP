@@ -6,16 +6,18 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.background import AgentTaskExecution
 from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
+from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.runs.shared import _stage_json_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
+    AgentTaskRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
@@ -34,6 +36,9 @@ from rcp.watchers import (
     validate_graph_conditions,
 )
 
+if TYPE_CHECKING:
+    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
     "Experiment status completed conflicts with a non-empty next_action. Continue useful work "
@@ -41,6 +46,13 @@ _COMPLETED_NEXT_ACTION_PROBLEM = (
     "for real detached work or explicitly pause for human authority."
 )
 _EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
+_MAX_RECEIPT_ATTEMPTS = 8
+_MAX_RECEIPT_TEXT = 400
+_MAX_RECEIPT_LIST = 3
+_MAX_RECEIPT_IDENTIFIERS = 4
+_MAX_RECEIPT_DECISIONS = 4
+_MAX_RECEIPT_ID = 100
+_MAX_RECEIPT_LIST_TEXT = 120
 
 EpisodeWakeReadiness = Literal["ready", "transient", "incompatible", "unavailable"]
 
@@ -67,6 +79,27 @@ class EpisodeWakePreflight:
     session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
+
+
+ExperimentLoopEnding = Literal["completed", "human_pause"]
+ExperimentLoopEndingSignal = Literal[
+    "experiment_completed",
+    "proposal_created",
+    "decision_awaits_human",
+    "blocker_linked",
+]
+
+
+@dataclass(frozen=True)
+class ExperimentLoopSemanticEnding:
+    """One accepted Patch's explicit semantic ending, independent of loop mechanics."""
+
+    ending: ExperimentLoopEnding
+    signals: tuple[ExperimentLoopEndingSignal, ...]
+
+    @property
+    def partial(self) -> bool:
+        return self.ending == "human_pause"
 
 
 _EXPERIMENT_WATCH_OUTPUT_PREFIX = "experiment-watch-"
@@ -212,7 +245,7 @@ def preflight_episode_wake(
         for label, expected, actual in (
             ("project", episode.project_id, record.project_id),
             ("Experiment", episode.control_node_id, record.node_id),
-            ("episode", episode.episode_id, record.experiment_episode_id),
+            ("episode", episode.episode_id, record.episode_id),
             ("check host", episode.execution_host, record.execution_host),
             ("continuation Experiment", episode.control_node_id, continuation.control_node_id),
             ("continuation episode", episode.episode_id, continuation.control_episode_id),
@@ -361,27 +394,31 @@ def experiment_exit_problem(patch_text: str | None, control_node_id: str) -> str
     return _completion_problem(operations, control_node_id)
 
 
-def patch_explicitly_exits(patch_text: str | None, control_node_id: str) -> bool:
-    """Whether one semantic loop Patch explicitly records a finish or authority pause."""
+def experiment_loop_semantic_ending(
+    patch_text: str | None,
+    control_node_id: str,
+) -> ExperimentLoopSemanticEnding | None:
+    """Classify one semantic Patch without turning mechanical failure into an ending."""
 
     if patch_text is None:
-        return False
+        return None
     try:
         patch = parse_agent_patch_json(patch_text)
     except ValueError:
-        return False
+        return None
     operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
-    if _completion_problem(operations, control_node_id) is not None:
-        return False
+    completed = _completion_problem(operations, control_node_id) is None and any(
+        update.get("id") == control_node_id
+        and isinstance(changes := update.get("changes"), dict)
+        and changes.get("status") in _EXIT_STATUSES
+        for operation in operations
+        if operation.get("op") == "update_nodes"
+        for update in operation.get("nodes", [])
+        if isinstance(update, dict)
+    )
+    pause_signals: list[ExperimentLoopEndingSignal] = []
     if any(op.get("op") == "create_proposals" and op.get("proposals") for op in operations):
-        return True
-    created_blockers = {
-        node.get("id")
-        for op in operations
-        if op.get("op") == "create_nodes"
-        for node in op.get("nodes", [])
-        if node.get("type") == "blocker"
-    }
+        pause_signals.append("proposal_created")
     for op in operations:
         if op.get("op") == "update_nodes":
             for update in op.get("nodes", []):
@@ -391,21 +428,315 @@ def patch_explicitly_exits(patch_text: str | None, control_node_id: str) -> bool
                     and isinstance(changes, dict)
                     and changes.get("status") in {"ready", "revisit"}
                 ):
-                    return True
-                if (
-                    update.get("id") == control_node_id
-                    and isinstance(changes, dict)
-                    and changes.get("status") in _EXIT_STATUSES
-                ):
-                    return True
+                    pause_signals.append("decision_awaits_human")
         if op.get("op") == "create_edges" and any(
-            edge.get("source") == control_node_id
-            and edge.get("relation") == "blocked_by"
-            and edge.get("target") in created_blockers
+            edge.get("source") == control_node_id and edge.get("relation") == "blocked_by"
             for edge in op.get("edges", [])
         ):
-            return True
-    return False
+            pause_signals.append("blocker_linked")
+    signals = tuple(dict.fromkeys(pause_signals))
+    if completed:
+        return ExperimentLoopSemanticEnding(
+            ending="completed",
+            signals=("experiment_completed", *signals),
+        )
+    if signals:
+        return ExperimentLoopSemanticEnding(ending="human_pause", signals=signals)
+    return None
+
+
+def experiment_loop_ending_signal(
+    *,
+    semantic_ending: ExperimentLoopSemanticEnding,
+    episode_id: str,
+    control_node_id: str,
+    invocation: int,
+    invocation_ceiling: int,
+    control_snapshot: dict[str, object],
+    patch_text: str,
+    graph_update: GraphUpdateResult,
+    watcher_ids: list[str],
+    stopped_watcher_ids: list[str],
+    decision_bundle: list[ExperimentDecisionPin],
+) -> dict[str, object]:
+    """Build the compact mode-owned facts persisted after a successful handoff."""
+
+    if graph_update.status != "applied":
+        raise ValueError("Only an applied Experiment Patch can carry a semantic ending.")
+    if not episode_id or not control_node_id or invocation < 1 or invocation_ceiling < invocation:
+        raise ValueError("Experiment ending signal is missing its bounded episode identity.")
+    attempts, attempt_count, current_summary, next_action = _receipt_control_result(
+        control_snapshot,
+        patch_text,
+        control_node_id,
+    )
+    candidate_attempts = attempts[-_MAX_RECEIPT_ATTEMPTS:]
+    selected_attempts: list[dict[str, object]] = []
+    selected_decisions = decision_bundle[:_MAX_RECEIPT_DECISIONS]
+    method = {
+        "design": _receipt_text(control_snapshot.get("design")),
+        "expected_outcomes": _receipt_text_list(control_snapshot.get("expected_outcomes")),
+        "interpretation_rules": _receipt_text_list(control_snapshot.get("interpretation_rules")),
+        "completion_criteria": _receipt_text_list(control_snapshot.get("completion_criteria")),
+    }
+    receipt: dict[str, object] = {
+        "control": {
+            "node_id": control_node_id,
+            "title": _receipt_text(control_snapshot.get("title")),
+            "objective": _receipt_text(control_snapshot.get("objective")),
+            "method": method,
+            "current_summary": _receipt_text(current_summary),
+            "next_action": _receipt_optional_text(next_action),
+        },
+        "invocation": {
+            "number": invocation,
+            "ceiling": invocation_ceiling,
+            "decision_bundle": [
+                {
+                    "decision_id": _receipt_text(item.decision_id, limit=_MAX_RECEIPT_ID),
+                    "decision_revision": item.decision_revision,
+                    "selected_option": _receipt_text(item.selected_option, limit=240),
+                }
+                for item in selected_decisions
+            ],
+            "omitted_decision_count": len(decision_bundle) - len(selected_decisions),
+        },
+        "attempt_observations": selected_attempts,
+        "omitted_attempt_count": attempt_count,
+        "watcher_summary": {
+            "armed_count": len(watcher_ids),
+            "armed_ids": _receipt_identifier_list(watcher_ids),
+            "stopped_count": len(stopped_watcher_ids),
+            "stopped_ids": _receipt_identifier_list(stopped_watcher_ids),
+        },
+        "graph_result": {
+            "status": graph_update.status,
+            "applied_revision": graph_update.applied_revision,
+        },
+        "semantic_signals": list(semantic_ending.signals),
+    }
+    signal: dict[str, object] = {
+        "episode_id": episode_id,
+        "ending": semantic_ending.ending,
+        "partial": semantic_ending.partial,
+        "receipt": receipt,
+    }
+    for observation in reversed(candidate_attempts):
+        selected_attempts.insert(0, observation)
+        receipt["omitted_attempt_count"] = attempt_count - len(selected_attempts)
+        if _receipt_payload_size(signal) > AGENT_TASK_RECEIPT_MAX_BYTES:
+            selected_attempts.pop(0)
+            receipt["omitted_attempt_count"] = attempt_count - len(selected_attempts)
+            break
+    if _receipt_payload_size(signal) > AGENT_TASK_RECEIPT_MAX_BYTES:
+        raise ValueError("The compact Experiment ending receipt exceeds its storage boundary.")
+    return signal
+
+
+def experiment_loop_wrapup_spec(
+    continuation_operation_id: str,
+    signal: dict[str, object],
+) -> EpisodeWrapupSpec:
+    """Turn one persisted mode signal into the shared wrap-up admission contract."""
+
+    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+
+    episode_id = signal.get("episode_id")
+    ending = signal.get("ending")
+    partial = signal.get("partial")
+    receipt = signal.get("receipt")
+    if not isinstance(episode_id, str) or not episode_id:
+        raise ValueError("Experiment ending signal has no episode id.")
+    if ending not in {"completed", "human_pause"}:
+        raise ValueError("Experiment ending signal has no semantic ending.")
+    if not isinstance(partial, bool) or partial != (ending == "human_pause"):
+        raise ValueError("Experiment ending signal has inconsistent partial state.")
+    if not isinstance(receipt, dict):
+        raise ValueError("Experiment ending signal has no compact receipt.")
+    return EpisodeWrapupSpec(
+        episode_id=episode_id,
+        ending=ending,
+        partial=partial,
+        continuation_operation_id=continuation_operation_id,
+        receipt=receipt,
+    )
+
+
+def experiment_loop_operational_ending_wrapup_spec(
+    *,
+    continuation: AgentTaskRecord,
+    request: RunRequest,
+    episode: ExperimentEpisodeRecord,
+    ending: Literal["exhausted", "failed"],
+    diagnostic: str,
+) -> EpisodeWrapupSpec:
+    """Adapt an operational ending without rebuilding the resumed session context."""
+
+    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+
+    if (
+        continuation.episode_id != episode.episode_id
+        or continuation.project_id != episode.project_id
+        or request.control_episode_id != episode.episode_id
+        or request.control_node_id != episode.control_node_id
+    ):
+        raise ValueError("The Experiment operational ending lost its exact episode lineage.")
+    invocation = request.control_invocation
+    ceiling = request.control_invocation_ceiling
+    if invocation is None or ceiling is None:
+        raise ValueError("The Experiment operational ending lost its invocation boundary.")
+    receipt: dict[str, object] = {
+        "control": {
+            "node_id": episode.control_node_id,
+            "completion_criteria": _receipt_text_list(
+                request.control_completion_criteria,
+                limit=_MAX_RECEIPT_TEXT,
+            ),
+        },
+        "invocation": {
+            "number": invocation,
+            "ceiling": ceiling,
+            "decision_bundle": [
+                {
+                    "decision_id": _receipt_text(item.decision_id, limit=_MAX_RECEIPT_ID),
+                    "decision_revision": item.decision_revision,
+                    "selected_option": _receipt_text(
+                        item.selected_option,
+                        limit=_MAX_RECEIPT_TEXT,
+                    ),
+                }
+                for item in request.control_decision_bundle[:_MAX_RECEIPT_DECISIONS]
+            ],
+        },
+        "accepted_handoff": {
+            "operation_id": continuation.operation_id,
+            "last_graph_result": _receipt_optional_text(
+                episode.last_graph_result,
+                limit=_MAX_RECEIPT_TEXT,
+            ),
+            "watcher_ids": _receipt_identifier_list(episode.last_watcher_ids),
+            "omitted_watcher_count": max(
+                0,
+                len(episode.last_watcher_ids) - _MAX_RECEIPT_IDENTIFIERS,
+            ),
+        },
+        "operational_ending": {
+            "status": continuation.status,
+            "diagnostic": _receipt_text(diagnostic, limit=_MAX_RECEIPT_TEXT),
+        },
+    }
+    return EpisodeWrapupSpec(
+        episode_id=episode.episode_id,
+        ending=ending,
+        partial=True,
+        continuation_operation_id=continuation.operation_id,
+        receipt=receipt,
+        diagnostic=diagnostic,
+    )
+
+
+def _receipt_control_result(
+    control_snapshot: dict[str, object],
+    patch_text: str,
+    control_node_id: str,
+) -> tuple[list[dict[str, object]], int, object, object]:
+    attempts = control_snapshot.get("attempts")
+    current_summary = control_snapshot.get("current_summary")
+    next_action = control_snapshot.get("next_action")
+    try:
+        patch = parse_agent_patch_json(patch_text)
+    except ValueError:
+        patch = None
+    if patch is not None:
+        for operation in patch.model_dump(mode="python", exclude_none=True)["ops"]:
+            if operation.get("op") != "update_nodes":
+                continue
+            for update in operation.get("nodes", []):
+                if not isinstance(update, dict) or update.get("id") != control_node_id:
+                    continue
+                changes = update.get("changes")
+                if not isinstance(changes, dict):
+                    continue
+                if isinstance(changes.get("attempts"), list):
+                    attempts = changes["attempts"]
+                if "current_summary" in changes:
+                    current_summary = changes["current_summary"]
+                if "next_action" in changes:
+                    next_action = changes["next_action"]
+    if not isinstance(attempts, list):
+        attempts = []
+    attempt_count = len(attempts)
+    observations: list[dict[str, object]] = []
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        observation: dict[str, object] = {
+            "id": _receipt_text(attempt.get("id"), limit=_MAX_RECEIPT_ID),
+            "sequence": attempt.get("sequence"),
+            "purpose": _receipt_text(attempt.get("purpose"), limit=200),
+            "attempt_kind": attempt.get("attempt_kind", "external_run"),
+            "configuration": _receipt_text(attempt.get("configuration"), limit=300),
+            "status": attempt.get("status"),
+            "observation": _receipt_optional_text(
+                attempt.get("outcome") or attempt.get("failure_reason"),
+                limit=300,
+            ),
+            "job_refs": _receipt_text_list(
+                attempt.get("job_refs"),
+                limit=_MAX_RECEIPT_ID,
+            ),
+        }
+        debug = attempt.get("debug")
+        if isinstance(debug, dict):
+            observation["debug"] = {
+                key: _receipt_text(debug.get(key), limit=160)
+                for key in ("mechanical_fault", "change", "predicted_effect")
+            }
+        observations.append(observation)
+    return observations, attempt_count, current_summary, next_action
+
+
+def _receipt_text(value: object, *, limit: int = _MAX_RECEIPT_TEXT) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:limit]
+
+
+def _receipt_optional_text(value: object, *, limit: int = _MAX_RECEIPT_TEXT) -> str | None:
+    text = _receipt_text(value, limit=limit)
+    return text or None
+
+
+def _receipt_text_list(
+    value: object,
+    *,
+    limit: int = _MAX_RECEIPT_LIST_TEXT,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        text for item in value[:_MAX_RECEIPT_LIST] if (text := _receipt_text(item, limit=limit))
+    ]
+
+
+def _receipt_identifier_list(values: list[str]) -> list[str]:
+    return [
+        text
+        for item in values[:_MAX_RECEIPT_IDENTIFIERS]
+        if (text := _receipt_text(item, limit=_MAX_RECEIPT_ID))
+    ]
+
+
+def _receipt_payload_size(payload: dict[str, object]) -> int:
+    return len(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    )
 
 
 def root_experiment_loop_operation_id(execution: AgentTaskExecution) -> str:
@@ -897,6 +1228,7 @@ def commit_experiment_episode_binding(
     graph_result: str,
     watcher_ids: list[str],
     context_baseline: dict[str, object],
+    ending_signal: dict[str, object] | None = None,
 ) -> None:
     """Bind this episode to the session and stage a later automatic wake resumes.
 
@@ -906,6 +1238,8 @@ def commit_experiment_episode_binding(
     accepted watcher handoff completed.
     """
 
+    if ending_signal is not None and ending_signal.get("episode_id") != request.control_episode_id:
+        raise ValueError("Experiment ending signal names another episode.")
     task = execution.store.agent_task(execution.operation_id)
     if task is None:
         raise ValueError("The completed Experiment-loop task record is unavailable.")
@@ -991,6 +1325,7 @@ def commit_experiment_episode_binding(
         graph_result=graph_result,
         watcher_ids=watcher_ids,
         context_baseline=context_baseline,
+        ending_signal=ending_signal,
         replace_binding=replacement_authorized,
         replacement_provenance=replacement_provenance,
     )

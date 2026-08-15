@@ -75,13 +75,13 @@ test("terminal tasks show no live progress in the inspector", () => {
   }
 });
 
-test("campaign tasks are inspection-only while ordinary task controls remain available", () => {
+test("Auto-research tasks are inspection-only while ordinary task controls remain available", () => {
   const ordinary = renderInspector("running");
-  const campaignTask = { ...task("running"), kind: "campaign", campaign_id: "campaign" };
-  const campaignInspector = renderToStaticMarkup(
+  const episodeTask = { ...task("running"), kind: "auto_research", episode_id: "episode" };
+  const episodeInspector = renderToStaticMarkup(
     React.createElement(AgentTaskInspector, {
-      tasks: [campaignTask],
-      task: campaignTask,
+      tasks: [episodeTask],
+      task: episodeTask,
       loading: false,
       actionBusy: false,
       onSelect() {},
@@ -94,5 +94,5 @@ test("campaign tasks are inspection-only while ordinary task controls remain ava
   );
 
   assert.match(ordinary, /run-inspector-actions/);
-  assert.doesNotMatch(campaignInspector, /run-inspector-actions/);
+  assert.doesNotMatch(episodeInspector, /run-inspector-actions/);
 });

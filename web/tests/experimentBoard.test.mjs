@@ -45,6 +45,7 @@ function control(fields = {}, operationalFields = {}) {
     invocation_ceiling: 3,
     invocations_remaining: 2,
     episode_id: "episode-1",
+    episode: null,
     paused: false,
     active: false,
     governing_decisions: [],
@@ -87,8 +88,80 @@ function entry(id, nodeStatus, controlState, projectName = "Project") {
     project_reachable: true,
     node: node(id, nodeStatus),
     control: controlState,
+    episode: controlState.episode,
   };
 }
+
+function episode(fields = {}) {
+  return {
+    episode_id: "episode-1",
+    project_id: "project",
+    mode: "experiment_loop",
+    control_node_id: "wrapping",
+    root_operation_id: "operation-1",
+    current_operation_id: null,
+    current_orchestrator_task_id: null,
+    current_control_task_id: null,
+    recovery: null,
+    status: "wrapping_up",
+    starting_instruction: null,
+    budget: {
+      invocation_ceiling: 3,
+      invocations_used: 1,
+      invocations_remaining: 2,
+      observed_input_tokens: 0,
+      observed_generated_tokens: 0,
+    },
+    authorized_by: null,
+    stop_requested_at: null,
+    ending: "completed",
+    ending_diagnostic: null,
+    wrapup_state: "running",
+    wrapup_error: null,
+    created_at: "2026-08-06T01:00:00Z",
+    updated_at: "2026-08-06T02:00:00Z",
+    ended_at: null,
+    tasks: [],
+    report: null,
+    can_stop: false,
+    can_reauthorize: false,
+    ...fields,
+  };
+}
+
+test("the board shows the shared report wrap-up as in-progress", () => {
+  const wrapping = episode();
+  const entryValue = entry("wrapping", "active", control({ episode: wrapping }));
+  const board = buildExperimentBoard([entryValue]);
+  const html = renderToStaticMarkup(
+    React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
+  );
+
+  assert.deepEqual(
+    board.inProgress.map((item) => item.health),
+    ["wrapping_up"],
+  );
+  assert.match(html, /Wrapping up visualization and report/);
+});
+
+test("a final report error is visible on the board but remains finished", () => {
+  const reportFailed = episode({
+    status: "needs_action",
+    wrapup_state: "failed",
+    wrapup_error: "The visual report could not be generated.",
+  });
+  const entryValue = entry("wrapping", "active", control({ episode: reportFailed }));
+  const board = buildExperimentBoard([entryValue]);
+  const html = renderToStaticMarkup(
+    React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
+  );
+
+  assert.deepEqual(
+    board.finished.map((item) => item.health),
+    ["report_failed"],
+  );
+  assert.match(html, /Report error/);
+});
 
 test("board reuses loop health and groups current state in operational order", () => {
   const board = buildExperimentBoard([

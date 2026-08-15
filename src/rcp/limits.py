@@ -37,7 +37,7 @@ CHAT_PAGE_MAX_LIMIT = 200
 CHAT_TITLE_MAX_CHARS = 120
 CHAT_PREVIEW_MAX_CHARS = 240
 
-# Staged agent command mailbox, and the campaign broker that fronts it.
+# Staged agent command mailbox, and the Auto-research broker that fronts it.
 # The broker deliberately outwaits the client. Whichever side gives up first owns
 # the diagnostic the agent reads, and the client's is the one that correctly says
 # "unavailable" rather than blaming the request. Keep the grace positive, or a
@@ -50,10 +50,10 @@ COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
 CHAT_ARTIFACT_MAX_COUNT = 8
 CHAT_ARTIFACT_MAX_FILE_BYTES = 16 * 1024 * 1024
 CHAT_ARTIFACT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
-# One paid campaign-mail wake carries only this bounded prefix. The byte limit
+# One paid Auto-research mail wake carries only this bounded prefix. The byte limit
 # stays well inside the reusable stage mailbox's per-file artifact ceiling.
-CAMPAIGN_MAIL_MAX_MESSAGES = 64
-CAMPAIGN_MAIL_MAX_BYTES = min(1024 * 1024, CHAT_ARTIFACT_MAX_FILE_BYTES)
+AUTO_RESEARCH_MAIL_MAX_MESSAGES = 64
+AUTO_RESEARCH_MAIL_MAX_BYTES = min(1024 * 1024, CHAT_ARTIFACT_MAX_FILE_BYTES)
 # Temporary human-provided chat inputs. Keep these independent from output artifact
 # limits even while their initial bounds happen to be the same.
 CHAT_ATTACHMENT_MAX_COUNT = 8
@@ -72,6 +72,12 @@ PATCH_SELF_CHECK_MAX_COUNT = 6
 PATCH_SELF_CHECK_POLL_SECONDS = 0.2
 PATCH_SELF_CHECK_TIMEOUT_SECONDS = 30
 PATCH_SELF_CHECK_MAX_REQUEST_BYTES = 16 * 1024 * 1024
+
+# Scratch-only correction rounds in the recovery ladder. Seed/Refresh, Work, and the
+# Auto-research worker each hand validation errors back to the same live session at
+# most this many times before the run is rejected. One number, one policy: raising it
+# here raises it everywhere, which is the point.
+PATCH_CORRECTION_MAX_ROUNDS = 2
 
 # Durable external-work watchers.
 WATCHER_CHECK_TIMEOUT_SECONDS = 15

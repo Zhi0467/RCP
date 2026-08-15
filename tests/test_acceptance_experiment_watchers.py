@@ -316,7 +316,8 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         control = reopened_client.get(f"/api/projects/{project_id}").json()["experiment_control"][
             _EXPERIMENT_ID
         ]
-        assert control["paused"] is True
+        assert control["paused"] is False
+        assert control["ready"] is True
         assert control["invocations_used"] == 1
         assert control["invocations_remaining"] == 0
         assert reopened.state.service.history.load_patches() == baseline_patches

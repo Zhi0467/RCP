@@ -6,7 +6,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -21,6 +21,7 @@ from rcp.agents import (
     validate_work_patch,
 )
 from rcp.agents.command_mailbox import StagedCommandMailbox
+from rcp.agents.context import ChatContext
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
@@ -35,18 +36,23 @@ from rcp.agents.prompts import (
     invoked_provider_skill_section,
 )
 from rcp.attachments import ChatAttachmentStore
-from rcp.background import AgentTaskExecution
+from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.history import PatchRejected, ReplayHalted
-from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS, RUN_STAGE_RETENTION_DAYS
+from rcp.limits import (
+    PATCH_CORRECTION_MAX_ROUNDS,
+    PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+    RUN_STAGE_RETENTION_DAYS,
+)
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
     _chat_context_delta,
     _chat_read_dirs,
     _chat_stage_name,
+    _ChatPatchInputs,
     _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
@@ -69,8 +75,9 @@ from rcp.runs.experiment_loop import (
     experiment_episode_context_values,
     experiment_exit_problem,
     experiment_graph_result_summary,
+    experiment_loop_ending_signal,
+    experiment_loop_semantic_ending,
     experiment_watcher_output_name,
-    patch_explicitly_exits,
     persist_experiment_watchers_idempotently,
     prepare_experiment_episode_context_candidate,
     read_experiment_watcher_outputs,
@@ -111,8 +118,9 @@ from rcp.runs.shared import (
     _task_token,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
+from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
-from rcp.storage import ResultViewRecord, WatcherContinuation
+from rcp.storage import EpisodeRecord, ResultViewRecord, WatcherContinuation
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -124,15 +132,17 @@ from rcp.watchers import (
     validate_watch_specs,
 )
 
-_MAX_CORRECTION_ROUNDS = 2
-
 
 @dataclass(frozen=True)
-class _WorkPatchFailure:
+class _DeliverableFailure:
     message: str
     correctable: bool
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
+
+
+# Auto-research shares the same patch-failure value while its orchestration remains separate.
+_WorkPatchFailure = _DeliverableFailure
 
 
 @dataclass(frozen=True)
@@ -170,6 +180,107 @@ class _WorkValidatorMailboxLifecycle:
         )
 
 
+@dataclass
+class WorkTurn:
+    """Cross-phase state carried by one operational Work turn."""
+
+    service: ProjectService
+    request: RunRequest
+    execution: AgentTaskExecution | None
+    context: ChatContext
+    workspace: Path
+    local_stage: Path | None
+    remote_stage: RemoteRunStage | None
+    execution_host: str
+    provider_binary: str | None
+    read_dirs: list[Path]
+    write_dirs: list[Path]
+    patch_inputs: _ChatPatchInputs
+    validator_lifecycle: _WorkValidatorMailboxLifecycle
+    validator_budget: PatchValidationBudget
+    outcome: _ProviderOutcome
+    answer: str | None = None
+
+    @property
+    def continuation(self) -> AgentTaskContinuation:
+        return self.execution.continuation if self.execution is not None else "fresh"
+
+    @property
+    def surface(self) -> AgentSurface:
+        return "project_chat" if self.request.chat_scope == "project" else "node_chat"
+
+    @property
+    def reusing_checkpoint(self) -> bool:
+        return bool(self.execution is not None and self.execution.reuses_native_checkpoint)
+
+    @property
+    def resuming(self) -> bool:
+        return self.continuation == "resume"
+
+    @property
+    def retrying(self) -> bool:
+        return self.continuation == "retry"
+
+    @property
+    def waking(self) -> bool:
+        return self.continuation == "watcher_wake"
+
+    @property
+    def retry_attempt(self) -> bool:
+        return self.continuation in {"retry", "handoff"}
+
+    @property
+    def uses_master_protocol(self) -> bool:
+        return (
+            self.request.trigger == "human"
+            and self.request.patch_kind == "work"
+            and not self.retry_attempt
+        )
+
+
+async def _stream_turn_agent_events(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    prompt: str,
+    *,
+    session_id: str | None,
+    outcome: _ProviderOutcome,
+    validator_staged: StagedCommandMailbox | None = None,
+    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None,
+) -> AsyncIterator[str]:
+    """Stream one Work provider continuation from the turn's staged execution context."""
+
+    async with aclosing(
+        _stream_work_agent_events(
+            turn.service,
+            launcher,
+            turn.request,
+            prompt,
+            workspace=turn.workspace,
+            session_id=session_id,
+            read_dirs=turn.read_dirs,
+            write_dirs=turn.write_dirs,
+            execution_host=turn.execution_host,
+            execution=turn.execution,
+            remote_stage=turn.remote_stage,
+            capability="work_auto",
+            outcome=outcome,
+            binary=turn.provider_binary,
+            validator_staged=validator_staged or turn.patch_inputs.validator_staged,
+            validator_lifecycle=(
+                validator_lifecycle if validator_staged is not None else turn.validator_lifecycle
+            ),
+            validator_budget=turn.validator_budget,
+            run_truth_scope=turn.context.run_truth_scope,
+            patch_kind=turn.request.patch_kind,
+            control_node_id=turn.request.control_node_id,
+            control_decision_bundle=turn.request.control_decision_bundle,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+
+
 @dataclass(frozen=True)
 class _PreparedResultView:
     action: Literal["create", "revise"]
@@ -178,6 +289,86 @@ class _PreparedResultView:
     origin_operation_id: str | None = None
     record: ResultViewRecord | None = None
     before: ResultViewSnapshot | None = None
+
+
+@dataclass(frozen=True)
+class _ResolvedWorkExecution:
+    request: RunRequest
+    execution_machine_alias: str
+    execution_host: str
+    provider_binary: str | None
+    revision_preflight: tuple[ResultViewRecord, ResultViewSnapshot] | None
+
+
+@dataclass(frozen=True)
+class _StagedWorkInputs:
+    token: str
+    artifact_scope_id: str
+    artifact_directory: Path | PurePosixPath
+    prepared_result_view: _PreparedResultView | None
+    experiment_resources: list[StagedExperimentWatcherResource]
+    experiment_resource_pointers: list[dict[str, object]]
+    skill_selection: SkillSelection
+    skill_pointers: list[dict[str, object]]
+    attachment_pointers: list[dict[str, object]]
+    repositories: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
+class _WorkPromptContext:
+    episode_context_baseline: dict[str, object] | None
+    experiment_control_snapshot: dict[str, object] | None
+    wake_episode: EpisodeRecord | None
+    context_replacement: dict[str, object] | None
+    loop_control_path: str | None
+    watcher_state_path: str | None
+    provider_switch_recovery: bool
+
+
+@dataclass(frozen=True)
+class _ComposedWorkPrompt:
+    contract_path: str
+    prompt: str
+    base_contract_path: str
+
+
+@dataclass(frozen=True)
+class _RetryDeliverableBaseline:
+    patch_digest: str | None
+    watch_digest: str | None
+    experiment_watch_digests: dict[str, str]
+
+
+@dataclass
+class _SettledWorkDeliverables:
+    native_session_id: str | None
+    graph_update: GraphUpdateResult = field(
+        default_factory=lambda: GraphUpdateResult(status="none")
+    )
+    watch_correction_rounds: int = 0
+    loop_watch_empty: bool = False
+    pending_loop_handoff: tuple[object, ...] | None = None
+    stop: bool = False
+
+
+@dataclass
+class _AppliedWorkTurn:
+    graph_update: GraphUpdateResult
+    native_session_id: str | None
+    stop: bool = False
+
+
+@dataclass(frozen=True)
+class _DeliverableRead:
+    text: str | None
+    failure: _DeliverableFailure | None = None
+
+
+@dataclass(frozen=True)
+class _DeliverableStep:
+    failure: _DeliverableFailure | None = None
+    frames: tuple[str, ...] = ()
+    stop: bool = False
 
 
 def _result_view_expiry(now: datetime) -> str:
@@ -758,6 +949,7 @@ def _experiment_maintenance_binding(
         origin_task_kind=task.kind,
         chat_id=chat_id,
         node_id=resource.control_node_id,
+        episode_id=resource.continuation.control_episode_id,
         execution_host=resource.execution_host,
         continuation=resource.continuation,
     )
@@ -946,7 +1138,7 @@ async def _process_experiment_watcher_maintenance(
 
             if (
                 not correctable
-                or correction_round >= _MAX_CORRECTION_ROUNDS
+                or correction_round >= PATCH_CORRECTION_MAX_ROUNDS
                 or not native_session_id
             ):
                 reject_maintenance(problem, staged, correction_round)
@@ -1052,85 +1244,77 @@ async def _process_experiment_watcher_maintenance(
     return frames, native_session_id, False
 
 
-async def stream_work_run(
+def _resolve_work_execution(
     service: ProjectService,
-    launcher: AgentLauncher,
     request: RunRequest,
+    execution: AgentTaskExecution | None,
+) -> _ResolvedWorkExecution:
+    surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
+    profile = service.resolve_agent_profile(
+        surface,
+        provider=request.provider,
+        model=request.model,
+        reasoning=request.reasoning,
+        run_on=request.run_on,
+    )
+    request = _pinned_to_profile(request, profile)
+    revision_preflight = _preflight_result_view_revision(request, execution)
+    execution_machine = service.manifest.machine_map[profile.run_on]
+    return _ResolvedWorkExecution(
+        request=request,
+        execution_machine_alias=execution_machine.alias,
+        execution_host=execution_machine.host,
+        provider_binary=execution_machine.provider_paths.get(profile.provider),
+        revision_preflight=revision_preflight,
+    )
+
+
+async def _stage_work_turn(
+    service: ProjectService,
+    resolved: _ResolvedWorkExecution,
     data_dir: Path,
-    execution: AgentTaskExecution | None = None,
-) -> AsyncIterator[str]:
-    """Run one operational conversation turn with optional graph reflection."""
-
-    if execution is not None and execution.continuation == "graph_repair":
-        async with aclosing(
-            _stream_work_graph_repair(
-                service,
-                launcher,
-                request,
-                data_dir,
-                execution=execution,
-            )
-        ) as stream:
-            async for frame in stream:
-                yield frame
-        return
-
+    execution: AgentTaskExecution | None,
+) -> tuple[WorkTurn, _StagedWorkInputs]:
+    request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
     reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     resuming = continuation == "resume"
-    retrying = continuation == "retry"
-    # An Experiment-loop watcher wake resumes the episode's native session, but it
-    # is a new turn at the next invocation -- never task Resume, never a retry, and
-    # never a rebuilt master contract.
     waking = continuation == "watcher_wake"
-    retry_attempt = continuation in {"retry", "handoff"}
-    uses_master_protocol = (
-        request.trigger == "human" and request.patch_kind == "work" and not retry_attempt
-    )
-    surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
-    try:
-        profile = service.resolve_agent_profile(
-            surface,
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-        )
-        request = _pinned_to_profile(request, profile)
-        revision_preflight = _preflight_result_view_revision(request, execution)
-    except ValueError as exc:
-        yield _sse(AgentEvent(event="error", text=str(exc)))
-        return
     local_stage: Path | None = None
-    execution_machine = service.manifest.machine_map[profile.run_on]
-    execution_host = execution_machine.host
-    provider_binary = execution_machine.provider_paths.get(profile.provider)
     remote_stage: RemoteRunStage | None = None
-    artifact_scope_id: str | None = None
-    artifact_directory: Path | PurePosixPath | None = None
-    prepared_result_view: _PreparedResultView | None = None
-    patch_inputs = None
+    patch_inputs: _ChatPatchInputs | None = None
     validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
-    outcome = _ProviderOutcome(session_id=request.session_id)
     validator_budget = PatchValidationBudget()
+    outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         context = service.assemble_chat(request)
+        surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
         _record_chat_context_receipt(execution, context, surface=surface)
         stage_name = _chat_stage_name(service, request, execution)
         saved_stage = execution is not None and execution.stage_root is not None
-        if execution_host:
+        if resolved.execution_host:
             if saved_stage:
                 stage_root = _validated_remote_chat_resume_stage(
-                    execution, execution_host, stage_name
+                    execution,
+                    resolved.execution_host,
+                    stage_name,
                 )
-                remote_stage = RemoteRunStage(execution_host).attach(stage_root)
+                remote_stage = RemoteRunStage(resolved.execution_host).attach(stage_root)
             else:
-                remote_stage = RemoteRunStage(execution_host).open(stage_name, reuse=True)
+                remote_stage = RemoteRunStage(resolved.execution_host).open(
+                    stage_name,
+                    reuse=True,
+                )
             assert remote_stage.root is not None
             if execution is not None:
-                execution.checkpoint_stage(execution_host, str(remote_stage.root))
+                execution.checkpoint_stage(resolved.execution_host, str(remote_stage.root))
             context = context.model_copy(
-                update=_stage_context_paths(context, service, remote_stage, execution_machine.alias)
+                update=_stage_context_paths(
+                    context,
+                    service,
+                    remote_stage,
+                    resolved.execution_machine_alias,
+                )
             )
             workspace = Path(str(remote_stage.workspace))
         else:
@@ -1164,11 +1348,6 @@ async def stream_work_run(
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
         )
-        patch_path = patch_inputs.patch_path
-        watch_path = patch_inputs.watch_path
-        schema_path = patch_inputs.schema_path
-        validator_command = patch_inputs.validator_command
-        validator_mailbox_id = patch_inputs.validator_mailbox_id
         if not reusing_checkpoint or waking:
             _clear_stale_turn_handoffs(workspace, remote_stage)
         artifact_scope_id = (
@@ -1185,27 +1364,30 @@ async def stream_work_run(
             remote_stage,
             focused_node=context.node,
             logical_operation_id=artifact_scope_id,
-            revision_preflight=revision_preflight,
+            revision_preflight=resolved.revision_preflight,
         )
         if remote_stage is not None:
-            artifact_directory = remote_stage.prepare_artifact_directory(
-                artifact_scope_id, reuse=resuming
+            artifact_directory: Path | PurePosixPath = remote_stage.prepare_artifact_directory(
+                artifact_scope_id,
+                reuse=resuming,
             )
         else:
             assert local_stage is not None
             artifact_directory = _prepare_local_artifact_directory(
-                local_stage, artifact_scope_id, reuse=resuming
+                local_stage,
+                artifact_scope_id,
+                reuse=resuming,
             )
         read_dirs = _chat_read_dirs(
             context,
             remote_stage,
             service,
-            execution_machine.alias,
+            resolved.execution_machine_alias,
         )
         write_dirs = _work_write_dirs(
             context,
             service,
-            execution_machine.alias,
+            resolved.execution_machine_alias,
             remote=remote_stage is not None,
         )
         experiment_resources = (
@@ -1253,458 +1435,1872 @@ async def stream_work_run(
             {"alias": item.alias, "host": item.host, "path": item.path}
             for item in context.repositories
         ]
-        episode_context_baseline: dict[str, object] | None = None
-        wake_episode = None
-        context_replacement: dict[str, object] | None = None
-        loop_control_path: str | None = None
-        watcher_state_path: str | None = None
-        provider_switch_recovery = False
-        if request.patch_kind == "experiment_loop":
-            control_node = context.node
-            if (
-                control_node is None
-                or control_node.get("id") != request.control_node_id
-                or control_node.get("type") != "experiment"
-            ):
-                raise ValueError("Experiment-loop work no longer resolves to its Experiment.")
-            loop_control_path, watcher_state_path = await stage_experiment_loop_context(
-                service,
-                request,
-                execution,
-                local_stage,
-                remote_stage,
-                token=token,
-                continuation=continuation,
-            )
-            assert execution is not None
-            episode = (
-                execution.store.experiment_episode(request.control_episode_id)
-                if request.control_episode_id
-                else None
-            )
-            provider_switch_recovery = bool(
-                continuation == "handoff" and episode is not None and episode.session_bound
-            )
-            ontology = service.history.state().ontology.model_dump(mode="json")
-            episode_context_baseline = prepare_experiment_episode_context_candidate(
-                execution,
-                experiment_episode_context_values(
-                    ontology_extensions=context.ontology_extensions,
-                    ontology=ontology,
-                    repositories=repositories,
-                    skill_pointers=skill_pointers,
-                ),
-            )
-            if waking:
-                if not request.control_episode_id or request.control_invocation is None:
-                    raise ValueError("Experiment-loop wake is missing its episode invocation.")
-                wake_episode = execution.store.experiment_episode(request.control_episode_id)
-                if wake_episode is None or not wake_episode.session_bound:
-                    raise ValueError(
-                        "Experiment-loop wake has no committed episode session to continue."
-                    )
-                if (
-                    wake_episode.native_session_id != request.session_id
-                    or wake_episode.stage_host != execution.stage_host
-                    or wake_episode.stage_root != execution.stage_root
-                ):
-                    raise ValueError(
-                        "Experiment-loop wake does not match its committed native session and "
-                        "exact stage."
-                    )
-                if wake_episode.last_turn_invocation != request.control_invocation - 1:
-                    raise ValueError(
-                        "Experiment-loop wake does not immediately follow the episode's last "
-                        "successful turn."
-                    )
-                if not wake_episode.last_graph_result:
-                    raise ValueError(
-                        "Experiment-loop wake cannot confirm the preceding graph handoff."
-                    )
-                context_replacement = _chat_context_delta(
-                    wake_episode.context_baseline,
-                    episode_context_baseline,
-                )
-        if reusing_checkpoint and not request.session_id:
-            raise ValueError(
-                "The continued Work turn has no native agent session; retry it from a clean "
-                "attempt instead."
-            )
-        if resuming:
-            assert execution is not None
-            original_contract_path = _parent_task_contract_path(
-                execution, local_stage, remote_stage
-            )
-            base_contract_path = original_contract_path
-            if request.patch_kind == "experiment_loop":
-                if not loop_control_path:
-                    raise ValueError("Experiment-loop Resume is missing fresh loop control.")
-                contract = experiment_loop_continuation_contract(
-                    original_contract_path=original_contract_path,
-                    mode="resume",
-                    loop_control_path=loop_control_path,
-                    patch_path=patch_path,
-                    watch_path=watch_path,
-                    output_schema_path=schema_path,
-                    validator_command=validator_command,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                )
-                contract += invoked_provider_skill_section(request.resolved_provider_skills)
-            else:
-                contract = PromptFactory.continuation_task_contract(
-                    original_contract_path=original_contract_path,
-                    mode="resume",
-                    patch_path=patch_path,
-                    validator_command=validator_command,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                    invoked_provider_skills=request.resolved_provider_skills,
-                    result_view_action=(
-                        prepared_result_view.action if prepared_result_view is not None else None
-                    ),
-                    result_view_path=(
-                        prepared_result_view.prompt_path
-                        if prepared_result_view is not None
-                        else None
-                    ),
-                )
-            contract_path, prompt = _stage_task_contract(
-                local_stage,
-                remote_stage,
-                f"task-{token}-resume.md",
-                contract,
+        turn = WorkTurn(
+            service=service,
+            request=request,
+            execution=execution,
+            context=context,
+            workspace=workspace,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            execution_host=resolved.execution_host,
+            provider_binary=resolved.provider_binary,
+            read_dirs=read_dirs,
+            write_dirs=write_dirs,
+            patch_inputs=patch_inputs,
+            validator_lifecycle=validator_lifecycle,
+            validator_budget=validator_budget,
+            outcome=outcome,
+        )
+        return turn, _StagedWorkInputs(
+            token=token,
+            artifact_scope_id=artifact_scope_id,
+            artifact_directory=artifact_directory,
+            prepared_result_view=prepared_result_view,
+            experiment_resources=experiment_resources,
+            experiment_resource_pointers=experiment_resource_pointers,
+            skill_selection=skill_selection,
+            skill_pointers=skill_pointers,
+            attachment_pointers=attachment_pointers,
+            repositories=repositories,
+        )
+    except BaseException as exc:
+        if validator_lifecycle is not None:
+            await validator_lifecycle.close(primary_error=exc)
+        elif patch_inputs is not None and not patch_inputs.validator_staged.credential.expired:
+            await _close_work_validator_mailbox(
+                patch_inputs.validator_staged,
+                stop=None,
+                task=None,
                 execution=execution,
-                role="work_resume",
+                primary_error=exc,
             )
-        elif waking:
+        raise
+
+
+async def _prepare_work_prompt_context(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+) -> _WorkPromptContext:
+    episode_context_baseline: dict[str, object] | None = None
+    experiment_control_snapshot: dict[str, object] | None = None
+    wake_episode: EpisodeRecord | None = None
+    context_replacement: dict[str, object] | None = None
+    loop_control_path: str | None = None
+    watcher_state_path: str | None = None
+    provider_switch_recovery = False
+    if turn.request.patch_kind == "experiment_loop":
+        control_node = turn.context.node
+        if (
+            control_node is None
+            or control_node.get("id") != turn.request.control_node_id
+            or control_node.get("type") != "experiment"
+        ):
+            raise ValueError("Experiment-loop work no longer resolves to its Experiment.")
+        experiment_control_snapshot = dict(control_node)
+        loop_control_path, watcher_state_path = await stage_experiment_loop_context(
+            turn.service,
+            turn.request,
+            turn.execution,
+            turn.local_stage,
+            turn.remote_stage,
+            token=staged.token,
+            continuation=turn.continuation,
+        )
+        assert turn.execution is not None
+        episode = (
+            turn.execution.store.experiment_episode(turn.request.control_episode_id)
+            if turn.request.control_episode_id
+            else None
+        )
+        provider_switch_recovery = bool(
+            turn.continuation == "handoff" and episode is not None and episode.session_bound
+        )
+        ontology = turn.service.history.state().ontology.model_dump(mode="json")
+        episode_context_baseline = prepare_experiment_episode_context_candidate(
+            turn.execution,
+            experiment_episode_context_values(
+                ontology_extensions=turn.context.ontology_extensions,
+                ontology=ontology,
+                repositories=staged.repositories,
+                skill_pointers=staged.skill_pointers,
+            ),
+        )
+        if turn.waking:
+            if not turn.request.control_episode_id or turn.request.control_invocation is None:
+                raise ValueError("Experiment-loop wake is missing its episode invocation.")
+            wake_episode = turn.execution.store.experiment_episode(turn.request.control_episode_id)
+            if wake_episode is None or not wake_episode.session_bound:
+                raise ValueError(
+                    "Experiment-loop wake has no committed episode session to continue."
+                )
             if (
-                wake_episode is None
-                or not request.control_node_id
-                or request.control_invocation is None
-                or request.control_invocation_ceiling is None
-                or not loop_control_path
-                or not watcher_state_path
+                wake_episode.native_session_id != turn.request.session_id
+                or wake_episode.stage_host != turn.execution.stage_host
+                or wake_episode.stage_root != turn.execution.stage_root
             ):
-                raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
-            contract = experiment_loop_wake_message(
-                focused_experiment_id=request.control_node_id,
-                invocation=request.control_invocation,
-                invocation_ceiling=request.control_invocation_ceiling,
-                previous_graph_result=wake_episode.last_graph_result or "",
-                previous_watcher_ids=wake_episode.last_watcher_ids,
-                delivered_watcher_ids=request.watcher_ids,
-                loop_control_path=loop_control_path,
-                watcher_state_path=watcher_state_path,
-                graph_path=context.graph_path,
-                research_path=context.research_md_path,
-                patch_path=patch_path,
-                watch_path=watch_path,
-                output_schema_path=schema_path,
-                validator_command=validator_command,
-                execution_host=execution_host,
-                context_replacement=context_replacement,
+                raise ValueError(
+                    "Experiment-loop wake does not match its committed native session and exact "
+                    "stage."
+                )
+            if wake_episode.last_turn_invocation != turn.request.control_invocation - 1:
+                raise ValueError(
+                    "Experiment-loop wake does not immediately follow the episode's last "
+                    "successful turn."
+                )
+            if not wake_episode.last_graph_result:
+                raise ValueError("Experiment-loop wake cannot confirm the preceding graph handoff.")
+            context_replacement = _chat_context_delta(
+                wake_episode.context_baseline,
+                episode_context_baseline,
+            )
+    if turn.reusing_checkpoint and not turn.request.session_id:
+        raise ValueError(
+            "The continued Work turn has no native agent session; retry it from a clean attempt "
+            "instead."
+        )
+    return _WorkPromptContext(
+        episode_context_baseline=episode_context_baseline,
+        experiment_control_snapshot=experiment_control_snapshot,
+        wake_episode=wake_episode,
+        context_replacement=context_replacement,
+        loop_control_path=loop_control_path,
+        watcher_state_path=watcher_state_path,
+        provider_switch_recovery=provider_switch_recovery,
+    )
+
+
+def _stage_retry_diagnostics(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+) -> str | None:
+    if (
+        turn.execution is None
+        or turn.uses_master_protocol
+        or not (turn.execution.retry_feedback or turn.retry_attempt)
+    ):
+        return None
+    return _stage_json_task_input(
+        turn.local_stage,
+        turn.remote_stage,
+        f"task-{staged.token}-retry-diagnostics.json",
+        {"prior_attempt_diagnostics": list(turn.execution.retry_feedback)},
+    )
+
+
+def _compose_resume_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+) -> _ComposedWorkPrompt:
+    assert turn.execution is not None
+    original_contract_path = _parent_task_contract_path(
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+    )
+    if turn.request.patch_kind == "experiment_loop":
+        if not prepared.loop_control_path:
+            raise ValueError("Experiment-loop Resume is missing fresh loop control.")
+        contract = experiment_loop_continuation_contract(
+            original_contract_path=original_contract_path,
+            mode="resume",
+            loop_control_path=prepared.loop_control_path,
+            patch_path=turn.patch_inputs.patch_path,
+            watch_path=turn.patch_inputs.watch_path,
+            output_schema_path=turn.patch_inputs.schema_path,
+            validator_command=turn.patch_inputs.validator_command,
+            invoked_skill_pointers=invoked_package_pointers(
+                staged.skill_pointers,
+                workflow_ids=turn.request.invoked_workflow_ids,
+                skill_ids=turn.request.invoked_skill_ids,
+            ),
+        )
+        contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
+    else:
+        contract = PromptFactory.continuation_task_contract(
+            original_contract_path=original_contract_path,
+            mode="resume",
+            patch_path=turn.patch_inputs.patch_path,
+            validator_command=turn.patch_inputs.validator_command,
+            invoked_skill_pointers=invoked_package_pointers(
+                staged.skill_pointers,
+                workflow_ids=turn.request.invoked_workflow_ids,
+                skill_ids=turn.request.invoked_skill_ids,
+            ),
+            invoked_provider_skills=turn.request.resolved_provider_skills,
+            result_view_action=(
+                staged.prepared_result_view.action
+                if staged.prepared_result_view is not None
+                else None
+            ),
+            result_view_path=(
+                staged.prepared_result_view.prompt_path
+                if staged.prepared_result_view is not None
+                else None
+            ),
+        )
+    contract_path, prompt = _stage_task_contract(
+        turn.local_stage,
+        turn.remote_stage,
+        f"task-{staged.token}-resume.md",
+        contract,
+        execution=turn.execution,
+        role="work_resume",
+    )
+    return _ComposedWorkPrompt(
+        contract_path=contract_path,
+        prompt=prompt,
+        base_contract_path=original_contract_path,
+    )
+
+
+def _compose_wake_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+) -> _ComposedWorkPrompt:
+    if (
+        prepared.wake_episode is None
+        or not turn.request.control_node_id
+        or turn.request.control_invocation is None
+        or turn.request.control_invocation_ceiling is None
+        or not prepared.loop_control_path
+        or not prepared.watcher_state_path
+    ):
+        raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
+    contract = experiment_loop_wake_message(
+        focused_experiment_id=turn.request.control_node_id,
+        invocation=turn.request.control_invocation,
+        invocation_ceiling=turn.request.control_invocation_ceiling,
+        previous_graph_result=prepared.wake_episode.last_graph_result or "",
+        previous_watcher_ids=prepared.wake_episode.last_watcher_ids,
+        delivered_watcher_ids=turn.request.watcher_ids,
+        loop_control_path=prepared.loop_control_path,
+        watcher_state_path=prepared.watcher_state_path,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        patch_path=turn.patch_inputs.patch_path,
+        watch_path=turn.patch_inputs.watch_path,
+        output_schema_path=turn.patch_inputs.schema_path,
+        validator_command=turn.patch_inputs.validator_command,
+        execution_host=turn.execution_host,
+        context_replacement=prepared.context_replacement,
+        invoked_skill_pointers=invoked_package_pointers(
+            staged.skill_pointers,
+            workflow_ids=turn.request.invoked_workflow_ids,
+            skill_ids=turn.request.invoked_skill_ids,
+        ),
+    )
+    contract_path, prompt = _stage_task_contract(
+        turn.local_stage,
+        turn.remote_stage,
+        f"task-{staged.token}-watcher-wake.md",
+        contract,
+        execution=turn.execution,
+        role="experiment_loop_wake",
+    )
+    return _ComposedWorkPrompt(
+        contract_path=contract_path,
+        prompt=prompt,
+        base_contract_path=contract_path,
+    )
+
+
+def _compose_fresh_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+    *,
+    retry_diagnostics_path: str | None = None,
+) -> _ComposedWorkPrompt:
+    assert turn.request.message is not None
+    focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
+    if not turn.uses_master_protocol:
+        human_request_path = _stage_task_input(
+            turn.local_stage,
+            turn.remote_stage,
+            f"task-{staged.token}-human-request.txt",
+            turn.request.message,
+        )
+        if turn.request.patch_kind == "experiment_loop":
+            if (
+                not turn.request.control_node_id
+                or not prepared.loop_control_path
+                or not prepared.watcher_state_path
+            ):
+                raise ValueError("Experiment-loop contract inputs are incomplete after staging.")
+            contract = experiment_loop_task_contract(
+                project_name=turn.context.project_name,
+                ontology_path=f"{turn.context.graph_path}#ontology",
+                ontology_extensions=turn.context.ontology_extensions,
+                graph_path=turn.context.graph_path,
+                research_path=turn.context.research_md_path,
+                focused_experiment_id=turn.request.control_node_id,
+                repositories=staged.repositories,
+                introduction_path=turn.context.introduction_path,
+                human_request_path=human_request_path,
+                loop_control_path=prepared.loop_control_path,
+                watcher_state_path=prepared.watcher_state_path,
+                patch_path=turn.patch_inputs.patch_path,
+                watch_path=turn.patch_inputs.watch_path,
+                artifact_path=str(staged.artifact_directory),
+                output_schema_path=turn.patch_inputs.schema_path,
+                validator_command=turn.patch_inputs.validator_command,
+                execution_host=turn.execution_host,
+                recovery_diagnostics_path=(
+                    retry_diagnostics_path if prepared.provider_switch_recovery else None
+                ),
+                skill_pointers=staged.skill_pointers,
                 invoked_skill_pointers=invoked_package_pointers(
-                    skill_pointers,
-                    workflow_ids=request.invoked_workflow_ids,
-                    skill_ids=request.invoked_skill_ids,
+                    staged.skill_pointers,
+                    workflow_ids=turn.request.invoked_workflow_ids,
+                    skill_ids=turn.request.invoked_skill_ids,
                 ),
             )
-            contract_path, prompt = _stage_task_contract(
-                local_stage,
-                remote_stage,
-                f"task-{token}-watcher-wake.md",
-                contract,
-                execution=execution,
-                role="experiment_loop_wake",
-            )
-            base_contract_path = contract_path
+            contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
         else:
-            assert request.message is not None
-            focused_node_id = str(context.node["id"]) if context.node else None
-            retry_diagnostics_path = (
-                _stage_json_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-retry-diagnostics.json",
-                    {"prior_attempt_diagnostics": list(execution.retry_feedback)},
-                )
-                if execution is not None
-                and not uses_master_protocol
-                and (execution.retry_feedback or retry_attempt)
-                else None
+            contract = PromptFactory.work_task_contract(
+                project_name=turn.context.project_name,
+                ontology_path=f"{turn.context.graph_path}#ontology",
+                ontology_extensions=turn.context.ontology_extensions,
+                graph_path=turn.context.graph_path,
+                research_path=turn.context.research_md_path,
+                focused_node_id=focused_node_id,
+                repositories=staged.repositories,
+                introduction_path=turn.context.introduction_path,
+                human_request_path=human_request_path,
+                patch_path=turn.patch_inputs.patch_path,
+                artifact_path=str(staged.artifact_directory),
+                output_schema_path=turn.patch_inputs.schema_path,
+                retry_diagnostics_path=retry_diagnostics_path,
+                watch_path=turn.patch_inputs.watch_path,
+                execution_host=turn.execution_host,
+                experiment_watcher_resources=staged.experiment_resource_pointers,
+                validator_command=turn.patch_inputs.validator_command,
+                skill_pointers=staged.skill_pointers,
+                invoked_skill_pointers=invoked_package_pointers(
+                    staged.skill_pointers,
+                    workflow_ids=turn.request.invoked_workflow_ids,
+                    skill_ids=turn.request.invoked_skill_ids,
+                ),
+                invoked_provider_skills=turn.request.resolved_provider_skills,
+                attachments=staged.attachment_pointers,
             )
-            # A retry that still holds its native session already has the contract in the
-            # conversation; it gets a follow-up naming what changed, not a rebuilt contract.
-            resumed_retry = retrying and reusing_checkpoint
-            loop_retry = request.patch_kind == "experiment_loop" and retrying
-            explicit_contract = not uses_master_protocol and not resumed_retry and not loop_retry
-            current_contract_path = None
-            current_prompt = None
-            if explicit_contract:
-                human_request_path = _stage_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-human-request.txt",
-                    request.message,
-                )
-                if request.patch_kind == "experiment_loop":
-                    if (
-                        not request.control_node_id
-                        or not loop_control_path
-                        or not watcher_state_path
-                    ):
-                        raise ValueError(
-                            "Experiment-loop contract inputs are incomplete after staging."
-                        )
-                    contract = experiment_loop_task_contract(
-                        project_name=context.project_name,
-                        ontology_path=f"{context.graph_path}#ontology",
-                        ontology_extensions=context.ontology_extensions,
-                        graph_path=context.graph_path,
-                        research_path=context.research_md_path,
-                        focused_experiment_id=request.control_node_id,
-                        repositories=repositories,
-                        introduction_path=context.introduction_path,
-                        human_request_path=human_request_path,
-                        loop_control_path=loop_control_path,
-                        watcher_state_path=watcher_state_path,
-                        patch_path=patch_path,
-                        watch_path=watch_path,
-                        artifact_path=str(artifact_directory),
-                        output_schema_path=schema_path,
-                        validator_command=validator_command,
-                        execution_host=execution_host,
-                        recovery_diagnostics_path=(
-                            retry_diagnostics_path if provider_switch_recovery else None
-                        ),
-                        skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
-                    )
-                    contract += invoked_provider_skill_section(request.resolved_provider_skills)
-                else:
-                    contract = PromptFactory.work_task_contract(
-                        project_name=context.project_name,
-                        ontology_path=f"{context.graph_path}#ontology",
-                        ontology_extensions=context.ontology_extensions,
-                        graph_path=context.graph_path,
-                        research_path=context.research_md_path,
-                        focused_node_id=focused_node_id,
-                        repositories=repositories,
-                        introduction_path=context.introduction_path,
-                        human_request_path=human_request_path,
-                        patch_path=patch_path,
-                        artifact_path=str(artifact_directory),
-                        output_schema_path=schema_path,
-                        retry_diagnostics_path=retry_diagnostics_path,
-                        watch_path=watch_path,
-                        execution_host=execution_host,
-                        experiment_watcher_resources=experiment_resource_pointers,
-                        validator_command=validator_command,
-                        skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
-                        invoked_provider_skills=request.resolved_provider_skills,
-                        attachments=attachment_pointers,
-                    )
-                current_contract_path, current_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
-                    contract,
-                    execution=execution,
-                    role="work_retry_base" if retry_attempt else "work",
-                )
-                base_contract_path = current_contract_path
-            elif uses_master_protocol:
-                master_context = PromptFactory.chat_master_context(
-                    project_name=context.project_name,
-                    ontology_path=f"{context.graph_path}#ontology",
-                    ontology_extensions=context.ontology_extensions,
-                    graph_path=context.graph_path,
-                    research_path=context.research_md_path,
-                    graph_revision=context.graph_revision,
-                    focused_node_id=focused_node_id,
-                    focused_node=context.node,
-                    focused_relations=[item.model_dump(mode="json") for item in context.relations],
-                    repositories=repositories,
-                    introduction_path=context.introduction_path,
-                    patch_path=patch_path,
-                    workspace_path=str(workspace),
-                    output_schema_path=schema_path,
-                    validator_command=validator_command,
-                    watch_path=watch_path,
-                    execution_host=execution_host,
-                    experiment_watcher_resources=experiment_resource_pointers,
-                    skill_pointers=skill_pointers,
-                )
-                stable_prompt_values: dict[str, object] = {
-                    "project": {"name": context.project_name},
-                    "settings": {
-                        "provider": request.provider,
-                        "model": request.model,
-                        "reasoning": request.reasoning,
-                        "run_on": request.run_on,
-                    },
-                    "current": {
-                        "ontology_path": f"{context.graph_path}#ontology",
-                        "graph_revision": context.graph_revision,
-                        "graph_path": context.graph_path,
-                        "research_path": context.research_md_path,
-                        "focused_node_id": focused_node_id,
-                        "introduction_path": context.introduction_path,
-                        "experiment_watcher_resources": experiment_resource_pointers,
-                    },
-                    "repositories": repositories,
-                    "skills": {"pointers": skill_pointers},
-                    "patch": {
-                        "path": patch_path,
-                        "watch_path": watch_path,
-                        "schema_path": schema_path,
-                        "validator_command": validator_command,
-                        "validator_mailbox_id": validator_mailbox_id,
-                    },
-                    "workspace": {"path": str(workspace)},
-                }
-                prompt, retained_master_path = _prepare_work_chat_prompt(
-                    execution,
-                    request,
-                    local_stage=local_stage,
-                    remote_stage=remote_stage,
-                    artifact_path=str(artifact_directory),
-                    master_context=master_context,
-                    stable_values=stable_prompt_values,
-                    skill_pointers=skill_pointers,
-                    attachment_pointers=attachment_pointers,
-                    result_view=prepared_result_view,
-                )
-                contract_path = retained_master_path
-                base_contract_path = retained_master_path
+        contract_path, prompt = _stage_task_contract(
+            turn.local_stage,
+            turn.remote_stage,
+            f"task-{staged.token}-{'base' if turn.retry_attempt else 'initial'}.md",
+            contract,
+            execution=turn.execution,
+            role="work_retry_base" if turn.retry_attempt else "work",
+        )
+        return _ComposedWorkPrompt(
+            contract_path=contract_path,
+            prompt=prompt,
+            base_contract_path=contract_path,
+        )
 
-            result_view_handoff = bool(
-                continuation == "handoff" and prepared_result_view is not None
-            )
-            if retrying or result_view_handoff:
-                assert execution is not None
-                if result_view_handoff:
-                    if current_contract_path is None:
-                        raise ValueError(
-                            "The result view create handoff lost its current Work contract."
-                        )
-                    original_contract_path = current_contract_path
-                    continuation_contract_path = None
-                else:
-                    original_contract_path = _parent_task_contract_path(
-                        execution, local_stage, remote_stage
-                    )
-                    continuation_contract_path = current_contract_path
-                if resumed_retry:
-                    base_contract_path = original_contract_path
-                if request.patch_kind == "experiment_loop":
-                    if not loop_control_path or not retry_diagnostics_path:
-                        raise ValueError(
-                            "Experiment-loop Retry is missing fresh control or diagnostics."
-                        )
-                    retry_contract = experiment_loop_continuation_contract(
-                        original_contract_path=original_contract_path,
-                        mode="retry",
-                        loop_control_path=loop_control_path,
-                        patch_path=patch_path,
-                        watch_path=watch_path,
-                        output_schema_path=schema_path,
-                        validator_command=validator_command,
-                        diagnostics_path=retry_diagnostics_path,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
-                    )
-                    retry_contract += invoked_provider_skill_section(
-                        request.resolved_provider_skills
-                    )
-                else:
-                    retry_contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=original_contract_path,
-                        current_contract_path=continuation_contract_path,
-                        diagnostics_path=retry_diagnostics_path,
-                        patch_path=patch_path,
-                        watch_path=watch_path,
-                        mode="retry",
-                        validator_command=validator_command,
-                        output_schema_path=schema_path if resumed_retry else None,
-                        skill_pointers=skill_pointers if resumed_retry else None,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
-                        invoked_provider_skills=request.resolved_provider_skills,
-                        result_view_action=(
-                            prepared_result_view.action
-                            if prepared_result_view is not None
-                            else None
-                        ),
-                        result_view_path=(
-                            prepared_result_view.prompt_path
-                            if prepared_result_view is not None
-                            else None
-                        ),
-                    )
-                contract_path, prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-retry.md",
-                    retry_contract,
-                    execution=execution,
-                    role="work_retry",
-                )
-            elif explicit_contract:
-                contract_path, prompt = current_contract_path, current_prompt
+    master_context = PromptFactory.chat_master_context(
+        project_name=turn.context.project_name,
+        ontology_path=f"{turn.context.graph_path}#ontology",
+        ontology_extensions=turn.context.ontology_extensions,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        graph_revision=turn.context.graph_revision,
+        focused_node_id=focused_node_id,
+        focused_node=turn.context.node,
+        focused_relations=[item.model_dump(mode="json") for item in turn.context.relations],
+        repositories=staged.repositories,
+        introduction_path=turn.context.introduction_path,
+        patch_path=turn.patch_inputs.patch_path,
+        workspace_path=str(turn.workspace),
+        output_schema_path=turn.patch_inputs.schema_path,
+        validator_command=turn.patch_inputs.validator_command,
+        watch_path=turn.patch_inputs.watch_path,
+        execution_host=turn.execution_host,
+        experiment_watcher_resources=staged.experiment_resource_pointers,
+        skill_pointers=staged.skill_pointers,
+    )
+    stable_prompt_values: dict[str, object] = {
+        "project": {"name": turn.context.project_name},
+        "settings": {
+            "provider": turn.request.provider,
+            "model": turn.request.model,
+            "reasoning": turn.request.reasoning,
+            "run_on": turn.request.run_on,
+        },
+        "current": {
+            "ontology_path": f"{turn.context.graph_path}#ontology",
+            "graph_revision": turn.context.graph_revision,
+            "graph_path": turn.context.graph_path,
+            "research_path": turn.context.research_md_path,
+            "focused_node_id": focused_node_id,
+            "introduction_path": turn.context.introduction_path,
+            "experiment_watcher_resources": staged.experiment_resource_pointers,
+        },
+        "repositories": staged.repositories,
+        "skills": {"pointers": staged.skill_pointers},
+        "patch": {
+            "path": turn.patch_inputs.patch_path,
+            "watch_path": turn.patch_inputs.watch_path,
+            "schema_path": turn.patch_inputs.schema_path,
+            "validator_command": turn.patch_inputs.validator_command,
+            "validator_mailbox_id": turn.patch_inputs.validator_mailbox_id,
+        },
+        "workspace": {"path": str(turn.workspace)},
+    }
+    prompt, retained_master_path = _prepare_work_chat_prompt(
+        turn.execution,
+        turn.request,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        artifact_path=str(staged.artifact_directory),
+        master_context=master_context,
+        stable_values=stable_prompt_values,
+        skill_pointers=staged.skill_pointers,
+        attachment_pointers=staged.attachment_pointers,
+        result_view=staged.prepared_result_view,
+    )
+    return _ComposedWorkPrompt(
+        contract_path=retained_master_path,
+        prompt=prompt,
+        base_contract_path=retained_master_path,
+    )
 
-        retry_patch_digest: str | None = None
-        retry_watch_digest: str | None = None
-        retry_experiment_watch_digests: dict[str, str] = {}
-        if retrying:
-            assert execution is not None
-            predecessor_patch = _read_chat_patch(workspace, remote_stage)
-            predecessor_watch = _read_watch_request(workspace, remote_stage)
-            retry_experiment_watch_digests = {
-                name: hashlib.sha256(text.encode("utf-8")).hexdigest()
-                for name, text in read_experiment_watcher_outputs(workspace, remote_stage).items()
-            }
-            retry_patch_digest = (
-                hashlib.sha256(predecessor_patch.encode("utf-8")).hexdigest()
-                if predecessor_patch is not None
+
+def _compose_retry_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+) -> _ComposedWorkPrompt:
+    assert turn.execution is not None
+    retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
+    resumed_retry = turn.retrying and turn.reusing_checkpoint
+    loop_retry = turn.request.patch_kind == "experiment_loop" and turn.retrying
+    explicit_contract = not turn.uses_master_protocol and not resumed_retry and not loop_retry
+    current: _ComposedWorkPrompt | None = None
+    if explicit_contract:
+        current = _compose_fresh_prompt(
+            turn,
+            staged,
+            prepared,
+            retry_diagnostics_path=retry_diagnostics_path,
+        )
+    result_view_handoff = bool(
+        turn.continuation == "handoff" and staged.prepared_result_view is not None
+    )
+    if result_view_handoff:
+        if current is None:
+            raise ValueError("The result view create handoff lost its current Work contract.")
+        original_contract_path = current.contract_path
+        continuation_contract_path = None
+    else:
+        original_contract_path = _parent_task_contract_path(
+            turn.execution,
+            turn.local_stage,
+            turn.remote_stage,
+        )
+        continuation_contract_path = current.contract_path if current is not None else None
+    base_contract_path = (
+        original_contract_path if resumed_retry or current is None else current.base_contract_path
+    )
+    if turn.request.patch_kind == "experiment_loop":
+        if not prepared.loop_control_path or not retry_diagnostics_path:
+            raise ValueError("Experiment-loop Retry is missing fresh control or diagnostics.")
+        retry_contract = experiment_loop_continuation_contract(
+            original_contract_path=original_contract_path,
+            mode="retry",
+            loop_control_path=prepared.loop_control_path,
+            patch_path=turn.patch_inputs.patch_path,
+            watch_path=turn.patch_inputs.watch_path,
+            output_schema_path=turn.patch_inputs.schema_path,
+            validator_command=turn.patch_inputs.validator_command,
+            diagnostics_path=retry_diagnostics_path,
+            invoked_skill_pointers=invoked_package_pointers(
+                staged.skill_pointers,
+                workflow_ids=turn.request.invoked_workflow_ids,
+                skill_ids=turn.request.invoked_skill_ids,
+            ),
+        )
+        retry_contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
+    else:
+        retry_contract = PromptFactory.continuation_task_contract(
+            original_contract_path=original_contract_path,
+            current_contract_path=continuation_contract_path,
+            diagnostics_path=retry_diagnostics_path,
+            patch_path=turn.patch_inputs.patch_path,
+            watch_path=turn.patch_inputs.watch_path,
+            mode="retry",
+            validator_command=turn.patch_inputs.validator_command,
+            output_schema_path=turn.patch_inputs.schema_path if resumed_retry else None,
+            skill_pointers=staged.skill_pointers if resumed_retry else None,
+            invoked_skill_pointers=invoked_package_pointers(
+                staged.skill_pointers,
+                workflow_ids=turn.request.invoked_workflow_ids,
+                skill_ids=turn.request.invoked_skill_ids,
+            ),
+            invoked_provider_skills=turn.request.resolved_provider_skills,
+            result_view_action=(
+                staged.prepared_result_view.action
+                if staged.prepared_result_view is not None
                 else None
-            )
-            retry_watch_digest = (
-                hashlib.sha256(predecessor_watch.encode("utf-8")).hexdigest()
-                if predecessor_watch is not None
+            ),
+            result_view_path=(
+                staged.prepared_result_view.prompt_path
+                if staged.prepared_result_view is not None
                 else None
+            ),
+        )
+    contract_path, prompt = _stage_task_contract(
+        turn.local_stage,
+        turn.remote_stage,
+        f"task-{staged.token}-retry.md",
+        retry_contract,
+        execution=turn.execution,
+        role="work_retry",
+    )
+    return _ComposedWorkPrompt(
+        contract_path=contract_path,
+        prompt=prompt,
+        base_contract_path=base_contract_path,
+    )
+
+
+def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBaseline:
+    if not turn.retrying:
+        return _RetryDeliverableBaseline(None, None, {})
+    assert turn.execution is not None
+    predecessor_patch = _read_chat_patch(turn.workspace, turn.remote_stage)
+    predecessor_watch = _read_watch_request(turn.workspace, turn.remote_stage)
+    experiment_watch_digests = {
+        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+        for name, text in read_experiment_watcher_outputs(
+            turn.workspace,
+            turn.remote_stage,
+        ).items()
+    }
+    patch_digest = (
+        hashlib.sha256(predecessor_patch.encode("utf-8")).hexdigest()
+        if predecessor_patch is not None
+        else None
+    )
+    watch_digest = (
+        hashlib.sha256(predecessor_watch.encode("utf-8")).hexdigest()
+        if predecessor_watch is not None
+        else None
+    )
+    turn.execution.store.record_agent_task_receipt(
+        turn.execution.operation_id,
+        "retry_deliverable_baseline",
+        {
+            "patch_sha256": patch_digest,
+            "watch_sha256": watch_digest,
+        },
+        tier="diagnostic",
+    )
+    return _RetryDeliverableBaseline(
+        patch_digest=patch_digest,
+        watch_digest=watch_digest,
+        experiment_watch_digests=experiment_watch_digests,
+    )
+
+
+def _read_initial_deliverable(
+    turn: WorkTurn,
+    filename: Literal["patch.json", "watch.json"],
+    predecessor_digest: str | None,
+    settled: _SettledWorkDeliverables,
+) -> _DeliverableRead:
+    try:
+        text = (
+            _read_chat_patch(turn.workspace, turn.remote_stage)
+            if filename == "patch.json"
+            else _read_watch_request(turn.workspace, turn.remote_stage)
+        )
+    except (OSError, StateUnavailable, ValueError) as exc:
+        text = None
+        failure = _DeliverableFailure(
+            (
+                f"The agent wrote a patch file that could not be read: {exc}"
+                if filename == "patch.json"
+                else f"The watcher request could not be read: {exc}"
+            ),
+            correctable=filename == "watch.json" and isinstance(exc, ValueError),
+        )
+    else:
+        failure = None
+    if _retry_deliverable_is_unchanged(
+        turn.execution,
+        filename=filename,
+        predecessor_digest=predecessor_digest,
+        current_text=text,
+    ):
+        text = None
+    if (
+        filename == "patch.json"
+        and turn.request.patch_kind == "experiment_loop"
+        and text is not None
+    ):
+        if turn.execution is not None:
+            turn.execution.store.record_agent_task_patch_output(
+                turn.execution.operation_id,
+                text,
             )
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "retry_deliverable_baseline",
+            turn.execution.store.record_agent_task_receipt(
+                turn.execution.operation_id,
+                "patch_retained",
                 {
-                    "patch_sha256": retry_patch_digest,
-                    "watch_sha256": retry_watch_digest,
+                    "byte_length": len(text.encode("utf-8")),
+                    "file_name": "patch.json",
                 },
                 tier="diagnostic",
             )
+        text = None
+    if filename == "patch.json" and turn.request.patch_kind == "experiment_loop":
+        # Loop graph admission is a joint Patch/watch handoff. Nothing in the
+        # generic pre-handoff path may validate-correct-and-apply it.
+        failure = None
+    elif (
+        filename == "watch.json"
+        and turn.request.patch_kind == "experiment_loop"
+        and text is None
+        and failure is None
+    ):
+        failure = _DeliverableFailure(
+            "Experiment-loop work must write watch.json as an object with external and graph "
+            "lists; leave both lists empty only after confirming nothing remains to watch.",
+            correctable=True,
+        )
+    if filename == "patch.json" and text is None and failure is None:
+        settled.graph_update = GraphUpdateResult(status="none")
+    return _DeliverableRead(text=text, failure=failure)
+
+
+async def _validate_patch_deliverable(
+    turn: WorkTurn,
+    _staged: _StagedWorkInputs,
+    patch_text: str,
+    correction_rounds: int,
+    settled: _SettledWorkDeliverables,
+) -> _DeliverableStep:
+    try:
+        result, failure = _apply_work_patch(
+            turn.service,
+            turn.execution,
+            patch_text,
+            run_truth_scope=turn.context.run_truth_scope,
+            patch_kind=turn.request.patch_kind,
+            control_node_id=turn.request.control_node_id,
+            control_decision_bundle=turn.request.control_decision_bundle,
+        )
+    except RunLockCancelled:
+        return _DeliverableStep(
+            frames=(
+                _sse(
+                    AgentEvent(
+                        event="paused",
+                        text=(
+                            "Paused while waiting for canonical state. The operational answer "
+                            "and retained patch are preserved."
+                        ),
+                    )
+                ),
+            ),
+            stop=True,
+        )
+    if result is not None:
+        settled.graph_update = result.model_copy(update={"correction_rounds": correction_rounds})
+        return _DeliverableStep()
+    assert failure is not None
+    return _DeliverableStep(failure=failure)
+
+
+def _watcher_continuation(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+) -> WatcherContinuation:
+    request_values = turn.request.model_dump(mode="json")
+    values = {
+        name: request_values[name]
+        for name in WatcherContinuation.model_fields
+        if name in request_values
+    }
+    values.update(
+        provider=turn.request.provider or "",
+        run_on=turn.request.run_on or "",
+        run_truth_scope=turn.context.run_truth_scope,
+        workflow_ids=staged.skill_selection.workflow_ids,
+        skill_ids=staged.skill_selection.skill_ids,
+        resolved_skill_packages=staged.skill_selection.resolved_skill_packages,
+    )
+    return WatcherContinuation.model_validate(values)
+
+
+def _patch_correction_contract(
+    turn: WorkTurn,
+    composed: _ComposedWorkPrompt,
+    diagnostics_path: str,
+    validator_command: str,
+) -> str:
+    return PromptFactory.continuation_task_contract(
+        original_contract_path=composed.base_contract_path,
+        mode="work_patch_correction",
+        patch_path=turn.patch_inputs.patch_path,
+        diagnostics_path=diagnostics_path,
+        validator_command=validator_command,
+    )
+
+
+def _read_corrected_deliverable(
+    turn: WorkTurn,
+    filename: Literal["patch.json", "watch.json"],
+    pre_launch_digest: str | None,
+    previous: _DeliverableFailure,
+) -> _DeliverableRead:
+    if filename == "watch.json":
+        try:
+            corrected_watch = _read_watch_request(turn.workspace, turn.remote_stage)
+        except (OSError, StateUnavailable, ValueError) as exc:
+            return _DeliverableRead(
+                text=None,
+                failure=_DeliverableFailure(
+                    f"The corrected watcher request could not be read: {exc}",
+                    correctable=True,
+                ),
+            )
+        if corrected_watch is None:
+            return _DeliverableRead(
+                text=None,
+                failure=_DeliverableFailure(
+                    "The correction completed without writing watch.json.",
+                    correctable=True,
+                ),
+            )
+        # Correction validates the resulting Patch/watch handoff, not an output
+        # delta. An empty handoff may already be correct while only patch.json changes.
+        return _DeliverableRead(text=corrected_watch)
+
+    corrected = _read_correction_patch(
+        turn.workspace,
+        turn.remote_stage,
+        pre_launch_digest=pre_launch_digest,
+    )
+    if corrected.problem == "unreadable":
+        message = f"The corrected patch could not be read: {corrected.detail}"
+    elif corrected.problem == "missing":
+        message = "The correction completed without writing patch.json."
+    elif corrected.problem == "unchanged":
+        message = (
+            f"{previous.message} The correction left patch.json byte-identical; rewrite it "
+            "with the required changes."
+        )
+    else:
+        assert corrected.text is not None
+        return _DeliverableRead(text=corrected.text)
+    return _DeliverableRead(
+        text=None,
+        failure=_DeliverableFailure(
+            message,
+            correctable=True,
+            change_summary=previous.change_summary,
+            proposal_ids=previous.proposal_ids,
+        ),
+    )
+
+
+def _reject_patch_deliverable(
+    turn: WorkTurn,
+    settled: _SettledWorkDeliverables,
+    failure: _DeliverableFailure,
+    correction_rounds: int,
+) -> _DeliverableStep:
+    repairable = _work_graph_repairable(
+        turn.execution,
+        settled.native_session_id,
+        failure,
+    )
+    settled.graph_update = GraphUpdateResult(
+        status="rejected",
+        change_summary=list(failure.change_summary),
+        proposal_ids=list(failure.proposal_ids),
+        validation_messages=_bounded_graph_messages(failure.message),
+        correction_rounds=correction_rounds,
+        repairable=repairable,
+    )
+    _record_work_graph_rejection(turn.execution, settled.graph_update)
+    return _DeliverableStep()
+
+
+async def _validate_watch_deliverable(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    watch_text: str,
+    correction_rounds: int,
+    settled: _SettledWorkDeliverables,
+) -> _DeliverableStep:
+    try:
+        if turn.execution is None:
+            raise ValueError("Watcher arming requires a durable originating operation.")
+        origin_task = turn.execution.store.agent_task(turn.execution.operation_id)
+        if origin_task is None:
+            raise ValueError("The originating Work operation is no longer available.")
+        experiment_handoff = None
+        ordinary_handoff = None
+        if turn.request.patch_kind == "experiment_loop":
+            experiment_handoff = parse_experiment_watch_json(watch_text)
+        else:
+            ordinary_handoff = parse_watch_json(watch_text)
+        if turn.request.patch_kind == "experiment_loop" and experiment_handoff.is_empty:
+            exit_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
+            if (
+                not turn.request.control_node_id
+                or experiment_loop_semantic_ending(
+                    exit_patch_text,
+                    turn.request.control_node_id,
+                )
+                is None
+            ):
+                completion_problem = (
+                    experiment_exit_problem(
+                        exit_patch_text,
+                        turn.request.control_node_id,
+                    )
+                    if turn.request.control_node_id
+                    else None
+                )
+                raise ValueError(
+                    completion_problem
+                    or "An Experiment-loop watch.json with both lists empty requires "
+                    "patch.json to explicitly record success, a Proposal, or a "
+                    "same-Patch Blocker."
+                )
+        specs = (
+            experiment_handoff.observers
+            if experiment_handoff is not None
+            else ordinary_handoff.external
+        )
+        graph_conditions = (
+            experiment_handoff.graph_conditions
+            if experiment_handoff is not None
+            else ordinary_handoff.graph
+        )
+        stop_requests = experiment_handoff.stops if experiment_handoff is not None else []
+        binding = WatcherBinding(
+            project_id=origin_task.project_id,
+            origin_operation_id=(
+                root_experiment_loop_operation_id(turn.execution)
+                if turn.request.patch_kind == "experiment_loop"
+                else turn.execution.operation_id
+            ),
+            origin_task_kind=turn.surface,
+            chat_id=turn.request.chat_id or "",
+            node_id=turn.request.node_id,
+            episode_id=(
+                turn.request.control_episode_id
+                if turn.request.patch_kind == "experiment_loop"
+                else None
+            ),
+            execution_host=turn.execution_host,
+            continuation=_watcher_continuation(turn, staged),
+        )
+        if stop_requests:
+            turn.execution.store.validate_experiment_agent_watcher_stops(
+                binding,
+                stop_requests,
+            )
+        if turn.request.patch_kind == "experiment_loop":
+            graph_armed_revision = None
+            if graph_conditions:
+                graph_state = await asyncio.to_thread(turn.service.history.state)
+                await asyncio.to_thread(
+                    validate_graph_conditions,
+                    graph_conditions,
+                    graph_state,
+                )
+                graph_armed_revision = graph_state.revision
+            check_results = (
+                await asyncio.to_thread(
+                    validate_watch_specs,
+                    specs,
+                    turn.execution_host,
+                )
+                if specs
+                else []
+            )
+            settled.pending_loop_handoff = (
+                specs,
+                check_results,
+                graph_conditions,
+                graph_armed_revision,
+                binding,
+                stop_requests,
+            )
+            armed = []
+        else:
+            graph_state = (
+                await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
+            )
+            if graph_conditions:
+                turn.execution.armed_graph_watchers = True
+            armed = await asyncio.to_thread(
+                arm_watchers,
+                turn.execution.store,
+                specs,
+                binding,
+                graph_conditions=graph_conditions,
+                state=graph_state,
+            )
+    except WatcherInitialCheckError as exc:
+        return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
+    except ValueError as exc:
+        return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
+    except (OSError, ReplayHalted, StateUnavailable) as exc:
+        return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=False))
+
+    settled.loop_watch_empty = (
+        turn.request.patch_kind == "experiment_loop"
+        and not specs
+        and not graph_conditions
+        and (
+            not stop_requests
+            or not turn.execution.store.experiment_handoff_has_live_watcher_after_stops(
+                binding,
+                [item.stop_watcher_id for item in stop_requests],
+            )
+        )
+    )
+    if turn.request.patch_kind != "experiment_loop":
+        turn.execution.store.record_agent_task_receipt(
+            turn.execution.operation_id,
+            "watchers_armed",
+            {
+                "watcher_ids": [item.watcher_id for item in armed],
+                "count": len(armed),
+                "correction_rounds": correction_rounds,
+            },
+        )
+    settled.watch_correction_rounds = correction_rounds
+    return _DeliverableStep()
+
+
+def _watch_correction_contract(
+    turn: WorkTurn,
+    composed: _ComposedWorkPrompt,
+    diagnostics_path: str,
+    validator_command: str,
+) -> str:
+    if turn.request.patch_kind == "experiment_loop":
+        return experiment_loop_watcher_correction_contract(
+            original_contract_path=composed.base_contract_path,
+            diagnostics_path=diagnostics_path,
+            watch_path=turn.patch_inputs.watch_path,
+            patch_path=turn.patch_inputs.patch_path,
+            output_schema_path=turn.patch_inputs.schema_path,
+            validator_command=validator_command,
+        )
+    return PromptFactory.continuation_task_contract(
+        original_contract_path=composed.base_contract_path,
+        mode="watch_correction",
+        diagnostics_path=diagnostics_path,
+        watch_path=turn.patch_inputs.watch_path,
+    )
+
+
+def _reject_watch_deliverable(
+    turn: WorkTurn,
+    settled: _SettledWorkDeliverables,
+    failure: _DeliverableFailure,
+    correction_rounds: int,
+) -> _DeliverableStep:
+    if turn.execution is not None:
+        turn.execution.store.record_agent_task_receipt(
+            turn.execution.operation_id,
+            "watcher_handoff_rejected",
+            {
+                "problem": failure.message[:1600],
+                "correction_rounds": correction_rounds,
+            },
+            tier="diagnostic",
+        )
+        turn.execution.store.record_agent_task_event(
+            turn.execution.operation_id,
+            f"Watcher handoff was not armed: {failure.message}",
+            level="warning",
+        )
+    settled.watch_correction_rounds = correction_rounds
+    if turn.request.patch_kind != "experiment_loop":
+        return _DeliverableStep()
+    return _DeliverableStep(
+        frames=(
+            _sse(
+                AgentEvent(
+                    event="error",
+                    text=f"Experiment-loop watcher handoff failed: {failure.message}",
+                )
+            ),
+        ),
+        stop=True,
+    )
+
+
+async def _settle_deliverable(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    filename: Literal["patch.json", "watch.json"],
+    staged: _StagedWorkInputs,
+    composed: _ComposedWorkPrompt,
+    predecessor_digest: str | None,
+    settled: _SettledWorkDeliverables,
+) -> AsyncIterator[str]:
+    if filename == "patch.json":
+        validate = _validate_patch_deliverable
+        build_contract = _patch_correction_contract
+        reject = _reject_patch_deliverable
+        maximum_corrections = PATCH_CORRECTION_MAX_ROUNDS
+        correction_receipt = "patch_correction_requested"
+        progress_message = "Correcting graph update."
+        file_label = "work-correction"
+        role_label = "work_patch_correction"
+        continuation = "graph_correction"
+        validator_turn_label = "work-patch-correction"
+        suppressed_events: frozenset[str] = frozenset()
+        error_fallback = "Patch correction failed."
+        missing_result_label = "correction"
+        diagnostics_extra: dict[str, object] = {"kind": "work"}
+    else:
+        validate = _validate_watch_deliverable
+        build_contract = _watch_correction_contract
+        reject = _reject_watch_deliverable
+        maximum_corrections = (
+            1 if turn.request.patch_kind == "experiment_loop" else PATCH_CORRECTION_MAX_ROUNDS
+        )
+        correction_receipt = "watcher_correction_requested"
+        progress_message = "Correcting watcher handoff."
+        file_label = "watch-correction"
+        role_label = "watch_correction"
+        continuation = "watch_correction"
+        validator_turn_label = (
+            "watch-correction" if turn.request.patch_kind == "experiment_loop" else None
+        )
+        suppressed_events = frozenset({"answer", "done"})
+        error_fallback = "Watcher correction failed."
+        missing_result_label = "watcher correction"
+        diagnostics_extra = {}
+
+    initial = _read_initial_deliverable(
+        turn,
+        filename,
+        predecessor_digest,
+        settled,
+    )
+    text = initial.text
+    failure = initial.failure
+    if text is None and failure is None:
+        return
+
+    correction_rounds = 0
+    while True:
+        if text is not None:
+            step = await validate(
+                turn,
+                staged,
+                text,
+                correction_rounds,
+                settled,
+            )
+            for frame in step.frames:
+                yield frame
+            if step.stop:
+                settled.stop = True
+                return
+            failure = step.failure
+            if failure is None:
+                return
+        assert failure is not None
+        if (
+            not failure.correctable
+            or correction_rounds >= maximum_corrections
+            or not settled.native_session_id
+        ):
+            step = reject(turn, settled, failure, correction_rounds)
+            for frame in step.frames:
+                yield frame
+            if step.stop:
+                settled.stop = True
+            return
+
+        correction_rounds += 1
+        if filename == "watch.json":
+            assert turn.execution is not None
+        if turn.execution is not None:
+            turn.execution.store.record_agent_task_receipt(
+                turn.execution.operation_id,
+                correction_receipt,
+                {"round": correction_rounds, "problem": failure.message[:400]},
+                tier="diagnostic",
+            )
+            turn.execution.store.update_agent_task_message(
+                turn.execution.operation_id,
+                progress_message,
+                phase="correcting",
+                event=True,
+            )
+        diagnostics_path = _stage_json_task_input(
+            turn.local_stage,
+            turn.remote_stage,
+            f"task-{staged.token}-{file_label}-{correction_rounds}.json",
+            {**diagnostics_extra, "problem": failure.message},
+        )
+        correction_validator: StagedCommandMailbox | None = None
+        correction_lifecycle: _WorkValidatorMailboxLifecycle | None = None
+        try:
+            validator_command = turn.patch_inputs.validator_command
+            if validator_turn_label is not None:
+                correction_validator = stage_patch_validation_mailbox(
+                    local_stage=turn.local_stage,
+                    remote_stage=turn.remote_stage,
+                    task_id=(
+                        turn.execution.operation_id if turn.execution is not None else staged.token
+                    ),
+                    turn_id=(f"{staged.token}:{validator_turn_label}:{correction_rounds}"),
+                    timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+                )
+                correction_lifecycle = _start_work_validator_mailbox(
+                    turn.service,
+                    correction_validator,
+                    execution=turn.execution,
+                    budget=turn.validator_budget,
+                    run_truth_scope=turn.context.run_truth_scope,
+                    patch_kind=turn.request.patch_kind,
+                    control_node_id=turn.request.control_node_id,
+                    control_decision_bundle=turn.request.control_decision_bundle,
+                )
+                validator_command = correction_validator.client_command(
+                    "validate",
+                    turn.patch_inputs.patch_path,
+                )
+            correction_contract = build_contract(
+                turn,
+                composed,
+                diagnostics_path,
+                validator_command,
+            )
+            correction_path, correction_prompt = _stage_task_contract(
+                turn.local_stage,
+                turn.remote_stage,
+                f"task-{staged.token}-{file_label}-{correction_rounds}.md",
+                correction_contract,
+                execution=turn.execution,
+                role=f"{role_label}_{correction_rounds}",
+            )
+            pre_launch_digest = (
+                _existing_patch_digest(turn.workspace, turn.remote_stage)
+                if filename == "patch.json"
+                else None
+            )
+            _record_agent_launch_receipt(
+                turn.execution,
+                turn.request,
+                prompt=correction_prompt,
+                contract_path=correction_path,
+                remote=bool(turn.execution_host),
+                resumed=True,
+                continuation=continuation,
+                extra={
+                    "surface": turn.surface,
+                    "mode": "work",
+                    "capability": "work_auto",
+                    "network_access": True,
+                    "launch_kind": continuation,
+                    "correction_round": correction_rounds,
+                    "write_directory_count": len(turn.write_dirs),
+                    "canonical_state_boundary": "prompt_only",
+                },
+            )
+            correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
+            correction_error: str | None = None
+            correction_stream = (
+                _stream_turn_agent_events(
+                    turn,
+                    launcher,
+                    correction_prompt,
+                    session_id=settled.native_session_id,
+                    outcome=correction_outcome,
+                    validator_staged=correction_validator,
+                    validator_lifecycle=correction_lifecycle,
+                )
+                if correction_validator is not None
+                else _stream_agent_events(
+                    launcher,
+                    turn.request,
+                    correction_prompt,
+                    workspace=turn.workspace,
+                    session_id=settled.native_session_id,
+                    read_dirs=turn.read_dirs,
+                    write_dirs=turn.write_dirs,
+                    execution_host=turn.execution_host,
+                    execution=turn.execution,
+                    remote_stage=turn.remote_stage,
+                    capability="work_auto",
+                    outcome=correction_outcome,
+                    binary=turn.provider_binary,
+                )
+            )
+        except BaseException as exc:
+            if correction_lifecycle is not None:
+                await correction_lifecycle.close(primary_error=exc)
+            elif correction_validator is not None and not correction_validator.credential.expired:
+                await _close_work_validator_mailbox(
+                    correction_validator,
+                    stop=None,
+                    task=None,
+                    execution=turn.execution,
+                    primary_error=exc,
+                )
+            raise
+        async with aclosing(correction_stream) as stream:
+            async for frame in stream:
+                event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+                if event.event == "error":
+                    correction_error = event.text or error_fallback
+                    continue
+                if event.event not in suppressed_events:
+                    yield frame
+        settled.native_session_id = correction_outcome.session_id or settled.native_session_id
+        if correction_outcome.paused:
+            settled.stop = True
+            return
+        if correction_error or not correction_outcome.completed:
+            detail = correction_error or (
+                f"{turn.request.provider} produced no {missing_result_label} result."
+            )
+            failure = _DeliverableFailure(
+                detail,
+                correctable=True,
+                change_summary=failure.change_summary,
+                proposal_ids=failure.proposal_ids,
+            )
+            text = None
+            correction_rounds = maximum_corrections
+            continue
+        corrected = _read_corrected_deliverable(
+            turn,
+            filename,
+            pre_launch_digest,
+            failure,
+        )
+        text = corrected.text
+        failure = corrected.failure
+
+
+async def _apply_work_turn(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    staged: _StagedWorkInputs,
+    composed: _ComposedWorkPrompt,
+    retry_baseline: _RetryDeliverableBaseline,
+    applied: _AppliedWorkTurn,
+) -> AsyncIterator[str]:
+    (
+        maintenance_frames,
+        native_session_id,
+        maintenance_paused,
+    ) = await _process_experiment_watcher_maintenance(
+        service=turn.service,
+        launcher=launcher,
+        request=turn.request,
+        execution=turn.execution,
+        staged_resources=staged.experiment_resources,
+        workspace=turn.workspace,
+        remote_stage=turn.remote_stage,
+        local_stage=turn.local_stage,
+        base_contract_path=composed.base_contract_path,
+        token=staged.token,
+        native_session_id=applied.native_session_id,
+        read_dirs=turn.read_dirs,
+        write_dirs=turn.write_dirs,
+        execution_host=turn.execution_host,
+        provider_binary=turn.provider_binary,
+        retry_output_digests=retry_baseline.experiment_watch_digests,
+    )
+    applied.native_session_id = native_session_id
+    for frame in maintenance_frames:
+        yield frame
+    if maintenance_paused:
+        applied.stop = True
+
+
+async def _apply_experiment_loop_turn(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    staged: _StagedWorkInputs,
+    composed: _ComposedWorkPrompt,
+    prompt_context: _WorkPromptContext,
+    settled: _SettledWorkDeliverables,
+    applied: _AppliedWorkTurn,
+) -> AsyncIterator[str]:
+    try:
+        final_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
+    except (OSError, StateUnavailable, ValueError) as exc:
+        yield _sse(
+            AgentEvent(
+                event="error",
+                text=f"The final Experiment-loop patch could not be read: {exc}",
+            )
+        )
+        applied.stop = True
+        return
+    if final_patch_text is None:
+        applied.graph_update = GraphUpdateResult(status="none")
+    else:
+        loop_patch_correction_rounds = 0
+        while True:
+            # A correction round that produced nothing new leaves this None so
+            # its own diagnostic reaches the agent instead of being overwritten.
+            if final_patch_text is not None:
+                if settled.loop_watch_empty and (
+                    not turn.request.control_node_id
+                    or experiment_loop_semantic_ending(
+                        final_patch_text,
+                        turn.request.control_node_id,
+                    )
+                    is None
+                ):
+                    final_failure = _DeliverableFailure(
+                        "A watch.json with both lists empty requires this Patch to retain an "
+                        "explicit success, Proposal, or same-Patch Blocker.",
+                        correctable=True,
+                    )
+                    final_result = None
+                else:
+                    try:
+                        final_result, final_failure = _apply_work_patch(
+                            turn.service,
+                            turn.execution,
+                            final_patch_text,
+                            run_truth_scope=turn.context.run_truth_scope,
+                            patch_kind=turn.request.patch_kind,
+                            control_node_id=turn.request.control_node_id,
+                            control_decision_bundle=(turn.request.control_decision_bundle),
+                        )
+                    except RunLockCancelled:
+                        yield _sse(
+                            AgentEvent(
+                                event="paused",
+                                text=(
+                                    "Paused while waiting for canonical state. The operational "
+                                    "answer and retained patch are preserved."
+                                ),
+                            )
+                        )
+                        applied.stop = True
+                        return
+                if final_result is not None:
+                    applied.graph_update = final_result.model_copy(
+                        update={"correction_rounds": loop_patch_correction_rounds}
+                    )
+                    break
+            assert final_failure is not None
+            if (
+                not final_failure.correctable
+                or loop_patch_correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
+                or not applied.native_session_id
+            ):
+                if settled.loop_watch_empty:
+                    yield _sse(
+                        AgentEvent(
+                            event="error",
+                            text=(
+                                "Experiment-loop Patch could not be validated after its watcher "
+                                f"handoff: {final_failure.message}"
+                            ),
+                        )
+                    )
+                    applied.stop = True
+                    return
+                repairable = _work_graph_repairable(
+                    turn.execution,
+                    applied.native_session_id,
+                    final_failure,
+                )
+                applied.graph_update = GraphUpdateResult(
+                    status="rejected",
+                    change_summary=list(final_failure.change_summary),
+                    proposal_ids=list(final_failure.proposal_ids),
+                    validation_messages=_bounded_graph_messages(final_failure.message),
+                    correction_rounds=loop_patch_correction_rounds,
+                    repairable=repairable,
+                )
+                _record_work_graph_rejection(turn.execution, applied.graph_update)
+                break
+
+            loop_patch_correction_rounds += 1
+            assert turn.execution is not None
+            turn.execution.store.record_agent_task_receipt(
+                turn.execution.operation_id,
+                "patch_correction_requested",
+                {
+                    "round": loop_patch_correction_rounds,
+                    "problem": final_failure.message[:400],
+                },
+                tier="diagnostic",
+            )
+            diagnostics_path = _stage_json_task_input(
+                turn.local_stage,
+                turn.remote_stage,
+                f"task-{staged.token}-loop-patch-correction-{loop_patch_correction_rounds}.json",
+                {"kind": "experiment_loop", "problem": final_failure.message},
+            )
+            loop_validator = stage_patch_validation_mailbox(
+                local_stage=turn.local_stage,
+                remote_stage=turn.remote_stage,
+                task_id=turn.execution.operation_id,
+                turn_id=(f"{staged.token}:loop-patch-correction:{loop_patch_correction_rounds}"),
+                timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            )
+            loop_validator_lifecycle = _start_work_validator_mailbox(
+                turn.service,
+                loop_validator,
+                execution=turn.execution,
+                budget=turn.validator_budget,
+                run_truth_scope=turn.context.run_truth_scope,
+                patch_kind=turn.request.patch_kind,
+                control_node_id=turn.request.control_node_id,
+                control_decision_bundle=turn.request.control_decision_bundle,
+            )
+            try:
+                loop_validator_command = loop_validator.client_command(
+                    "validate",
+                    turn.patch_inputs.patch_path,
+                )
+                correction_contract = experiment_loop_patch_correction_contract(
+                    original_contract_path=composed.base_contract_path,
+                    diagnostics_path=diagnostics_path,
+                    patch_path=turn.patch_inputs.patch_path,
+                    watch_path=turn.patch_inputs.watch_path,
+                    validator_command=loop_validator_command,
+                )
+                correction_path, correction_prompt = _stage_task_contract(
+                    turn.local_stage,
+                    turn.remote_stage,
+                    f"task-{staged.token}-loop-patch-correction-{loop_patch_correction_rounds}.md",
+                    correction_contract,
+                    execution=turn.execution,
+                    role=(f"experiment_loop_patch_correction_{loop_patch_correction_rounds}"),
+                )
+                pre_launch_digest = _existing_patch_digest(
+                    turn.workspace,
+                    turn.remote_stage,
+                )
+                _record_agent_launch_receipt(
+                    turn.execution,
+                    turn.request,
+                    prompt=correction_prompt,
+                    contract_path=correction_path,
+                    remote=bool(turn.execution_host),
+                    resumed=True,
+                    continuation="graph_correction",
+                    extra={
+                        "surface": turn.surface,
+                        "mode": "work",
+                        "capability": "work_auto",
+                        "network_access": True,
+                        "launch_kind": "graph_correction",
+                        "correction_round": loop_patch_correction_rounds,
+                        "write_directory_count": len(turn.write_dirs),
+                        "canonical_state_boundary": "prompt_only",
+                    },
+                )
+                correction_outcome = _ProviderOutcome(session_id=applied.native_session_id)
+            except BaseException as exc:
+                await loop_validator_lifecycle.close(primary_error=exc)
+                raise
+            async with aclosing(
+                _stream_turn_agent_events(
+                    turn,
+                    launcher,
+                    correction_prompt,
+                    session_id=applied.native_session_id,
+                    outcome=correction_outcome,
+                    validator_staged=loop_validator,
+                    validator_lifecycle=loop_validator_lifecycle,
+                )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            applied.native_session_id = correction_outcome.session_id or applied.native_session_id
+            if correction_outcome.paused:
+                applied.stop = True
+                return
+            if not correction_outcome.completed:
+                final_failure = _DeliverableFailure(
+                    f"{turn.request.provider} produced no Patch correction result.",
+                    correctable=True,
+                )
+                final_patch_text = None
+                loop_patch_correction_rounds = PATCH_CORRECTION_MAX_ROUNDS
+                continue
+            corrected = _read_correction_patch(
+                turn.workspace,
+                turn.remote_stage,
+                pre_launch_digest=pre_launch_digest,
+            )
+            if corrected.problem == "unreadable":
+                final_failure = _DeliverableFailure(
+                    f"The corrected loop Patch could not be read: {corrected.detail}",
+                    correctable=True,
+                )
+                final_patch_text = None
+                continue
+            if corrected.problem in {"missing", "unchanged"}:
+                final_failure = _DeliverableFailure(
+                    "The loop Patch correction did not rewrite patch.json.",
+                    correctable=True,
+                )
+                final_patch_text = None
+                continue
+            assert corrected.text is not None
+            final_patch_text = corrected.text
+
+    accepted_loop_watcher_ids: list[str] = []
+    accepted_loop_stopped_watcher_ids: list[str] = []
+    if settled.pending_loop_handoff is not None:
+        assert turn.execution is not None
+        (
+            specs,
+            check_results,
+            graph_conditions,
+            graph_armed_revision,
+            binding,
+            stop_requests,
+        ) = settled.pending_loop_handoff
+        try:
+            graph_state = (
+                await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
+            )
+            if graph_conditions:
+                turn.execution.armed_graph_watchers = True
+            armed = await asyncio.to_thread(
+                persist_experiment_watchers_idempotently,
+                turn.execution,
+                specs,
+                check_results,
+                binding,
+                stop_requests,
+                graph_conditions=graph_conditions,
+                graph_state=graph_state,
+                armed_revision=graph_armed_revision,
+            )
+        except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text=f"Experiment-loop watcher persistence failed: {exc}",
+                )
+            )
+            applied.stop = True
+            return
+        turn.execution.store.record_agent_task_receipt(
+            root_experiment_loop_operation_id(turn.execution),
+            "watchers_armed",
+            {
+                "watcher_ids": [item.watcher_id for item in armed],
+                "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
+                "count": len(armed),
+                "correction_rounds": settled.watch_correction_rounds,
+            },
+        )
+        accepted_loop_watcher_ids = [item.watcher_id for item in armed]
+        accepted_loop_stopped_watcher_ids = [item.stop_watcher_id for item in stop_requests]
+
+    if (
+        turn.execution is None
+        or prompt_context.episode_context_baseline is None
+        or prompt_context.experiment_control_snapshot is None
+    ):
+        raise ValueError("Experiment-loop handoff lost its durable episode context.")
+    ending_signal = None
+    if applied.graph_update.status == "applied" and turn.request.control_node_id:
+        semantic_ending = experiment_loop_semantic_ending(
+            final_patch_text,
+            turn.request.control_node_id,
+        )
+        if semantic_ending is not None:
+            if (
+                final_patch_text is None
+                or not turn.request.control_episode_id
+                or turn.request.control_invocation is None
+                or turn.request.control_invocation_ceiling is None
+            ):
+                raise ValueError("Experiment-loop ending lost its compact episode receipt inputs.")
+            ending_signal = experiment_loop_ending_signal(
+                semantic_ending=semantic_ending,
+                episode_id=turn.request.control_episode_id,
+                control_node_id=turn.request.control_node_id,
+                invocation=turn.request.control_invocation,
+                invocation_ceiling=turn.request.control_invocation_ceiling,
+                control_snapshot=prompt_context.experiment_control_snapshot,
+                patch_text=final_patch_text,
+                graph_update=applied.graph_update,
+                watcher_ids=accepted_loop_watcher_ids,
+                stopped_watcher_ids=accepted_loop_stopped_watcher_ids,
+                decision_bundle=turn.request.control_decision_bundle,
+            )
+    commit_experiment_episode_binding(
+        turn.execution,
+        turn.request,
+        native_session_id=applied.native_session_id,
+        execution_host=turn.execution_host,
+        stage_host=turn.execution.stage_host,
+        stage_root=turn.execution.stage_root,
+        graph_result=experiment_graph_result_summary(applied.graph_update),
+        watcher_ids=accepted_loop_watcher_ids,
+        context_baseline=prompt_context.episode_context_baseline,
+        ending_signal=ending_signal,
+    )
+
+
+def _finalize_work_turn(
+    turn: WorkTurn,
+    answer: str,
+    graph_update: GraphUpdateResult,
+) -> tuple[str, str]:
+    if turn.uses_master_protocol:
+        try:
+            _record_applied_graph_revision(
+                turn.execution,
+                turn.request,
+                turn.outcome.session_id,
+                graph_update.applied_revision,
+            )
+        except ValueError as exc:
+            if turn.execution is not None:
+                turn.execution.store.record_agent_task_event(
+                    turn.execution.operation_id,
+                    "This turn's own revision could not be absorbed into the session "
+                    f"baseline; the next turn may re-announce it: {exc}",
+                    level="warning",
+                )
+    try:
+        _append_chat_exchange(
+            turn.service,
+            turn.request,
+            answer,
+            turn.outcome.session_id,
+            graph_update.applied_revision,
+            graph_update=graph_update,
+            execution=turn.execution,
+        )
+    except (OSError, StateUnavailable, ValueError) as exc:
+        if turn.execution is not None:
+            turn.execution.store.record_agent_task_event(
+                turn.execution.operation_id,
+                f"The reply was delivered but could not be written to the chat transcript: {exc}",
+                level="warning",
+            )
+    payload: dict[str, object] = {
+        "graph_update": graph_update.model_dump(mode="json"),
+    }
+    if graph_update.applied_revision is not None:
+        payload["applied_revision"] = graph_update.applied_revision
+    return (
+        _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":")))),
+        _sse(AgentEvent(event="done")),
+    )
+
+
+async def _launch_and_stream_work_turn(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    prompt: str,
+    contract_path: str,
+    staged: _StagedWorkInputs,
+    wake_episode: EpisodeRecord | None,
+) -> AsyncIterator[str]:
+    try:
+        _record_agent_launch_receipt(
+            turn.execution,
+            turn.request,
+            prompt=prompt,
+            contract_path=contract_path,
+            remote=bool(turn.execution_host),
+            resumed=turn.reusing_checkpoint,
+            continuation=turn.continuation,
+            extra={
+                "surface": turn.surface,
+                "mode": "work",
+                "capability": "work_auto",
+                "network_access": True,
+                "launch_kind": (
+                    "retry"
+                    if turn.retry_attempt
+                    else "resume"
+                    if turn.resuming
+                    else "watcher_wake"
+                    if turn.waking
+                    else "initial"
+                ),
+                "write_directory_count": len(turn.write_dirs),
+                "canonical_state_boundary": "prompt_only",
+            },
+        )
+    except BaseException as exc:
+        await turn.validator_lifecycle.close(primary_error=exc)
+        raise
+    try:
+        try:
+            async with aclosing(
+                _stream_turn_agent_events(
+                    turn,
+                    launcher,
+                    prompt,
+                    session_id=turn.request.session_id,
+                    outcome=turn.outcome,
+                )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+        except Exception:
+            turn.outcome.failed = True
+            raise
+
+        answer = "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+        if not turn.outcome.completed:
+            if turn.outcome.failed or turn.outcome.paused:
+                return
+            turn.outcome.failed = True
+            yield _sse(
+                AgentEvent(event="error", text=f"{turn.request.provider} produced no result.")
+            )
+            return
+        if not answer:
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text=f"{turn.request.provider} finished without answering.",
+                )
+            )
+            return
+        if turn.waking and (
+            wake_episode is None or turn.outcome.session_id != wake_episode.native_session_id
+        ):
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text=(
+                        "The automatic Experiment wake did not continue its committed native "
+                        "provider session. The watcher handoff was not accepted."
+                    ),
+                )
+            )
+            return
+
+        if turn.uses_master_protocol:
+            _commit_chat_prompt_state(turn.execution, turn.request, turn.outcome.session_id)
+
+        try:
+            artifacts = _discover_chat_artifacts(
+                turn.execution,
+                staged.artifact_scope_id,
+                Path(str(staged.artifact_directory)),
+                turn.remote_stage,
+            )
+        except Exception as exc:
+            with suppress(Exception):
+                _record_artifact_discovery_receipt(
+                    turn.execution,
+                    attached=0,
+                    candidates=0,
+                    ignored={"unexpected_error": 1},
+                    detail=str(exc),
+                )
+            artifacts = []
+        _finalize_result_view_turn(
+            turn.request,
+            turn.execution,
+            staged.prepared_result_view,
+            turn.local_stage,
+            turn.remote_stage,
+            native_session_id=turn.outcome.session_id,
+        )
+    except BaseException as exc:
+        if turn.execution is not None and staged.prepared_result_view is not None:
+            _record_result_view_rejection(turn.execution, staged.prepared_result_view, str(exc))
+        raise
+    turn.answer = answer
+    yield _sse(AgentEvent(event="answer", text=answer))
+    for artifact in artifacts:
+        yield _sse(AgentEvent(event="artifact", artifact=artifact))
+
+
+async def stream_work_run(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution | None = None,
+) -> AsyncIterator[str]:
+    """Run one operational conversation turn with optional graph reflection."""
+
+    if execution is not None and execution.continuation == "graph_repair":
+        async with aclosing(
+            _stream_work_graph_repair(
+                service,
+                launcher,
+                request,
+                data_dir,
+                execution=execution,
+            )
+        ) as stream:
+            async for frame in stream:
+                yield frame
+        return
+
+    try:
+        resolved = _resolve_work_execution(service, request, execution)
+    except ValueError as exc:
+        yield _sse(AgentEvent(event="error", text=str(exc)))
+        return
+    request = resolved.request
+    turn: WorkTurn | None = None
+    patch_inputs = None
+    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
+    try:
+        turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
+        patch_inputs = turn.patch_inputs
+        validator_lifecycle = turn.validator_lifecycle
+        outcome = turn.outcome
+        resuming = turn.resuming
+        # An Experiment-loop watcher wake resumes the episode's native session, but it
+        # is a new turn at the next invocation -- never task Resume, never a retry, and
+        # never a rebuilt master contract.
+        waking = turn.waking
+        prompt_context = await _prepare_work_prompt_context(turn, staged)
+        wake_episode = prompt_context.wake_episode
+        if resuming:
+            composed_prompt = _compose_resume_prompt(turn, staged, prompt_context)
+        elif waking:
+            composed_prompt = _compose_wake_prompt(turn, staged, prompt_context)
+        else:
+            result_view_handoff = bool(
+                turn.continuation == "handoff" and staged.prepared_result_view is not None
+            )
+            if turn.retrying or result_view_handoff:
+                composed_prompt = _compose_retry_prompt(turn, staged, prompt_context)
+            else:
+                retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
+                composed_prompt = _compose_fresh_prompt(
+                    turn,
+                    staged,
+                    prompt_context,
+                    retry_diagnostics_path=retry_diagnostics_path,
+                )
+        contract_path = composed_prompt.contract_path
+        prompt = composed_prompt.prompt
+        retry_baseline = _capture_retry_deliverable_baseline(turn)
+        retry_patch_digest = retry_baseline.patch_digest
+        retry_watch_digest = retry_baseline.watch_digest
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)
@@ -1720,1173 +3316,76 @@ async def stream_work_run(
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
         raise
-    else:
-        assert validator_lifecycle is not None
-        try:
-            _record_agent_launch_receipt(
-                execution,
-                request,
-                prompt=prompt,
-                contract_path=contract_path,
-                remote=bool(execution_host),
-                resumed=reusing_checkpoint,
-                continuation=continuation,
-                extra={
-                    "surface": surface,
-                    "mode": "work",
-                    "capability": "work_auto",
-                    "network_access": True,
-                    "launch_kind": (
-                        "retry"
-                        if retry_attempt
-                        else "resume"
-                        if resuming
-                        else "watcher_wake"
-                        if waking
-                        else "initial"
-                    ),
-                    "write_directory_count": len(write_dirs),
-                    "canonical_state_boundary": "prompt_only",
-                },
+
+    assert turn is not None
+    async with aclosing(
+        _launch_and_stream_work_turn(
+            turn,
+            launcher,
+            prompt,
+            contract_path,
+            staged,
+            wake_episode,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if turn.answer is None:
+        return
+    answer = turn.answer
+
+    settled = _SettledWorkDeliverables(native_session_id=outcome.session_id)
+    for filename, predecessor_digest in (
+        ("patch.json", retry_patch_digest),
+        ("watch.json", retry_watch_digest),
+    ):
+        async with aclosing(
+            _settle_deliverable(
+                turn,
+                launcher,
+                filename,
+                staged,
+                composed_prompt,
+                predecessor_digest,
+                settled,
             )
-        except BaseException as exc:
-            await validator_lifecycle.close(primary_error=exc)
-            raise
-        try:
-            try:
-                async with aclosing(
-                    _stream_work_agent_events(
-                        service,
-                        launcher,
-                        request,
-                        prompt,
-                        workspace=workspace,
-                        session_id=request.session_id,
-                        read_dirs=read_dirs,
-                        write_dirs=write_dirs,
-                        execution_host=execution_host,
-                        execution=execution,
-                        remote_stage=remote_stage,
-                        capability="work_auto",
-                        outcome=outcome,
-                        binary=provider_binary,
-                        validator_staged=patch_inputs.validator_staged,
-                        validator_lifecycle=validator_lifecycle,
-                        validator_budget=validator_budget,
-                        run_truth_scope=context.run_truth_scope,
-                        patch_kind=request.patch_kind,
-                        control_node_id=request.control_node_id,
-                        control_decision_bundle=request.control_decision_bundle,
-                    )
-                ) as stream:
-                    async for frame in stream:
-                        yield frame
-            except Exception:
-                outcome.failed = True
-                raise
-
-            answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
-            if not outcome.completed:
-                if outcome.failed or outcome.paused:
-                    return
-                outcome.failed = True
-                yield _sse(
-                    AgentEvent(event="error", text=f"{request.provider} produced no result.")
-                )
-                return
-            if not answer:
-                yield _sse(
-                    AgentEvent(
-                        event="error", text=f"{request.provider} finished without answering."
-                    )
-                )
-                return
-            if waking and (
-                wake_episode is None or outcome.session_id != wake_episode.native_session_id
-            ):
-                yield _sse(
-                    AgentEvent(
-                        event="error",
-                        text=(
-                            "The automatic Experiment wake did not continue its committed native "
-                            "provider session. The watcher handoff was not accepted."
-                        ),
-                    )
-                )
-                return
-
-            if uses_master_protocol:
-                _commit_chat_prompt_state(execution, request, outcome.session_id)
-
-            assert artifact_scope_id is not None
-            assert artifact_directory is not None
-            try:
-                artifacts = _discover_chat_artifacts(
-                    execution,
-                    artifact_scope_id,
-                    Path(str(artifact_directory)),
-                    remote_stage,
-                )
-            except Exception as exc:
-                with suppress(Exception):
-                    _record_artifact_discovery_receipt(
-                        execution,
-                        attached=0,
-                        candidates=0,
-                        ignored={"unexpected_error": 1},
-                        detail=str(exc),
-                    )
-                artifacts = []
-            _finalize_result_view_turn(
-                request,
-                execution,
-                prepared_result_view,
-                local_stage,
-                remote_stage,
-                native_session_id=outcome.session_id,
-            )
-        except BaseException as exc:
-            if execution is not None and prepared_result_view is not None:
-                _record_result_view_rejection(execution, prepared_result_view, str(exc))
-            raise
-        yield _sse(AgentEvent(event="answer", text=answer))
-        for artifact in artifacts:
-            yield _sse(AgentEvent(event="artifact", artifact=artifact))
-
-        graph_update: GraphUpdateResult
-        correction_rounds = 0
-        native_session_id = outcome.session_id
-        try:
-            patch_text = _read_chat_patch(workspace, remote_stage)
-        except (OSError, StateUnavailable, ValueError) as exc:
-            patch_text = None
-            failure = _WorkPatchFailure(
-                f"The agent wrote a patch file that could not be read: {exc}",
-                correctable=False,
-            )
-        else:
-            failure = None
-        if _retry_deliverable_is_unchanged(
-            execution,
-            filename="patch.json",
-            predecessor_digest=retry_patch_digest,
-            current_text=patch_text,
-        ):
-            patch_text = None
-        deferred_loop_patch = request.patch_kind == "experiment_loop" and patch_text is not None
-        if deferred_loop_patch:
-            assert patch_text is not None
-            if execution is not None:
-                execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
-                execution.store.record_agent_task_receipt(
-                    execution.operation_id,
-                    "patch_retained",
-                    {
-                        "byte_length": len(patch_text.encode("utf-8")),
-                        "file_name": "patch.json",
-                    },
-                    tier="diagnostic",
-                )
-            patch_text = None
-        if request.patch_kind == "experiment_loop":
-            # Loop graph admission is a joint Patch/watch handoff. Nothing in
-            # the generic pre-handoff path may validate-correct-and-apply it.
-            failure = None
-        if patch_text is None and failure is None:
-            graph_update = GraphUpdateResult(status="none")
-        else:
-            while True:
-                if patch_text is not None:
-                    try:
-                        result, failure = _apply_work_patch(
-                            service,
-                            execution,
-                            patch_text,
-                            run_truth_scope=context.run_truth_scope,
-                            patch_kind=request.patch_kind,
-                            control_node_id=request.control_node_id,
-                            control_decision_bundle=request.control_decision_bundle,
-                        )
-                    except RunLockCancelled:
-                        yield _sse(
-                            AgentEvent(
-                                event="paused",
-                                text=(
-                                    "Paused while waiting for canonical state. The operational "
-                                    "answer and retained patch are preserved."
-                                ),
-                            )
-                        )
-                        return
-                    if result is not None:
-                        graph_update = result.model_copy(
-                            update={"correction_rounds": correction_rounds}
-                        )
-                        break
-                assert failure is not None
-                if (
-                    not failure.correctable
-                    or correction_rounds >= _MAX_CORRECTION_ROUNDS
-                    or not native_session_id
-                ):
-                    repairable = _work_graph_repairable(
-                        execution,
-                        native_session_id,
-                        failure,
-                    )
-                    graph_update = GraphUpdateResult(
-                        status="rejected",
-                        change_summary=list(failure.change_summary),
-                        proposal_ids=list(failure.proposal_ids),
-                        validation_messages=_bounded_graph_messages(failure.message),
-                        correction_rounds=correction_rounds,
-                        repairable=repairable,
-                    )
-                    _record_work_graph_rejection(execution, graph_update)
-                    break
-
-                correction_rounds += 1
-                if execution is not None:
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "patch_correction_requested",
-                        {"round": correction_rounds, "problem": failure.message[:400]},
-                        tier="diagnostic",
-                    )
-                    execution.store.update_agent_task_message(
-                        execution.operation_id,
-                        "Correcting graph update.",
-                        phase="correcting",
-                        event=True,
-                    )
-                diagnostics_path = _stage_json_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-work-correction-{correction_rounds}.json",
-                    {"kind": "work", "problem": failure.message},
-                )
-                correction_validator = stage_patch_validation_mailbox(
-                    local_stage=local_stage,
-                    remote_stage=remote_stage,
-                    task_id=execution.operation_id if execution is not None else token,
-                    turn_id=f"{token}:work-patch-correction:{correction_rounds}",
-                    timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
-                )
-                correction_validator_lifecycle = _start_work_validator_mailbox(
-                    service,
-                    correction_validator,
-                    execution=execution,
-                    budget=validator_budget,
-                    run_truth_scope=context.run_truth_scope,
-                    patch_kind=request.patch_kind,
-                    control_node_id=request.control_node_id,
-                    control_decision_bundle=request.control_decision_bundle,
-                )
-                try:
-                    correction_validator_command = correction_validator.client_command(
-                        "validate",
-                        patch_path,
-                    )
-                    correction_contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=base_contract_path,
-                        mode="work_patch_correction",
-                        patch_path=patch_path,
-                        diagnostics_path=diagnostics_path,
-                        validator_command=correction_validator_command,
-                    )
-                    correction_path, correction_prompt = _stage_task_contract(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-work-correction-{correction_rounds}.md",
-                        correction_contract,
-                        execution=execution,
-                        role=f"work_patch_correction_{correction_rounds}",
-                    )
-                    pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
-                    _record_agent_launch_receipt(
-                        execution,
-                        request,
-                        prompt=correction_prompt,
-                        contract_path=correction_path,
-                        remote=bool(execution_host),
-                        resumed=True,
-                        continuation="graph_correction",
-                        extra={
-                            "surface": surface,
-                            "mode": "work",
-                            "capability": "work_auto",
-                            "network_access": True,
-                            "launch_kind": "graph_correction",
-                            "correction_round": correction_rounds,
-                            "write_directory_count": len(write_dirs),
-                            "canonical_state_boundary": "prompt_only",
-                        },
-                    )
-                    correction_outcome = _ProviderOutcome(session_id=native_session_id)
-                    correction_error: str | None = None
-                except BaseException as exc:
-                    await correction_validator_lifecycle.close(primary_error=exc)
-                    raise
-                async with aclosing(
-                    _stream_work_agent_events(
-                        service,
-                        launcher,
-                        request,
-                        correction_prompt,
-                        workspace=workspace,
-                        session_id=native_session_id,
-                        read_dirs=read_dirs,
-                        write_dirs=write_dirs,
-                        execution_host=execution_host,
-                        execution=execution,
-                        remote_stage=remote_stage,
-                        capability="work_auto",
-                        outcome=correction_outcome,
-                        binary=provider_binary,
-                        validator_staged=correction_validator,
-                        validator_lifecycle=correction_validator_lifecycle,
-                        validator_budget=validator_budget,
-                        run_truth_scope=context.run_truth_scope,
-                        patch_kind=request.patch_kind,
-                        control_node_id=request.control_node_id,
-                        control_decision_bundle=request.control_decision_bundle,
-                    )
-                ) as stream:
-                    async for frame in stream:
-                        event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-                        if event.event == "error":
-                            correction_error = event.text or "Patch correction failed."
-                            continue
-                        yield frame
-                native_session_id = correction_outcome.session_id or native_session_id
-                if correction_outcome.paused:
-                    return
-                if correction_error or not correction_outcome.completed:
-                    detail = (
-                        correction_error or f"{request.provider} produced no correction result."
-                    )
-                    failure = _WorkPatchFailure(
-                        detail,
-                        correctable=True,
-                        change_summary=failure.change_summary,
-                        proposal_ids=failure.proposal_ids,
-                    )
-                    patch_text = None
-                    correction_rounds = _MAX_CORRECTION_ROUNDS
-                    continue
-                corrected = _read_correction_patch(
-                    workspace,
-                    remote_stage,
-                    pre_launch_digest=pre_launch_digest,
-                )
-                if corrected.problem == "unreadable":
-                    failure = _WorkPatchFailure(
-                        f"The corrected patch could not be read: {corrected.detail}",
-                        correctable=True,
-                        change_summary=failure.change_summary,
-                        proposal_ids=failure.proposal_ids,
-                    )
-                    patch_text = None
-                    continue
-                if corrected.problem == "missing":
-                    failure = _WorkPatchFailure(
-                        "The correction completed without writing patch.json.",
-                        correctable=True,
-                        change_summary=failure.change_summary,
-                        proposal_ids=failure.proposal_ids,
-                    )
-                    patch_text = None
-                    continue
-                if corrected.problem == "unchanged":
-                    failure = _WorkPatchFailure(
-                        f"{failure.message} The correction left patch.json byte-identical; "
-                        "rewrite it with the required changes.",
-                        correctable=True,
-                        change_summary=failure.change_summary,
-                        proposal_ids=failure.proposal_ids,
-                    )
-                    # Revalidating it would only reproduce the original
-                    # diagnostic and drop the one detail this round adds: that
-                    # the agent never rewrote the file.
-                    patch_text = None
-                    continue
-                assert corrected.text is not None
-                patch_text = corrected.text
-
-        watch_correction_rounds = 0
-        max_watch_corrections = 1 if request.patch_kind == "experiment_loop" else 2
-        loop_watch_empty = False
-        pending_loop_handoff = None
-        accepted_loop_watcher_ids: list[str] = []
-        try:
-            watch_text = _read_watch_request(workspace, remote_stage)
-        except ValueError as exc:
-            watch_text = None
-            watch_problem = f"The watcher request could not be read: {exc}"
-            watch_correctable = True
-        except (OSError, StateUnavailable) as exc:
-            watch_text = None
-            watch_problem = f"The watcher request could not be read: {exc}"
-            watch_correctable = False
-        else:
-            watch_problem = None
-            watch_correctable = True
-        if _retry_deliverable_is_unchanged(
-            execution,
-            filename="watch.json",
-            predecessor_digest=retry_watch_digest,
-            current_text=watch_text,
-        ):
-            watch_text = None
-        if request.patch_kind == "experiment_loop" and watch_text is None and watch_problem is None:
-            watch_problem = (
-                "Experiment-loop work must write watch.json as an object with external and graph "
-                "lists; leave both lists empty only after confirming nothing remains to watch."
-            )
-
-        while watch_text is not None or watch_problem is not None:
-            if watch_text is not None:
-                try:
-                    if execution is None:
-                        raise ValueError("Watcher arming requires a durable originating operation.")
-                    origin_task = execution.store.agent_task(execution.operation_id)
-                    if origin_task is None:
-                        raise ValueError("The originating Work operation is no longer available.")
-                    experiment_handoff = None
-                    ordinary_handoff = None
-                    if request.patch_kind == "experiment_loop":
-                        experiment_handoff = parse_experiment_watch_json(watch_text)
-                    else:
-                        ordinary_handoff = parse_watch_json(watch_text)
-                    if request.patch_kind == "experiment_loop" and experiment_handoff.is_empty:
-                        exit_patch_text = _read_chat_patch(workspace, remote_stage)
-                        if not request.control_node_id or not patch_explicitly_exits(
-                            exit_patch_text, request.control_node_id
-                        ):
-                            completion_problem = (
-                                experiment_exit_problem(exit_patch_text, request.control_node_id)
-                                if request.control_node_id
-                                else None
-                            )
-                            raise ValueError(
-                                completion_problem
-                                or "An Experiment-loop watch.json with both lists empty requires "
-                                "patch.json to explicitly record success, a Proposal, or a "
-                                "same-Patch Blocker."
-                            )
-                    specs = (
-                        experiment_handoff.observers
-                        if experiment_handoff is not None
-                        else ordinary_handoff.external
-                    )
-                    graph_conditions = (
-                        experiment_handoff.graph_conditions
-                        if experiment_handoff is not None
-                        else ordinary_handoff.graph
-                    )
-                    stop_requests = (
-                        experiment_handoff.stops if experiment_handoff is not None else []
-                    )
-                    binding = WatcherBinding(
-                        project_id=origin_task.project_id,
-                        origin_operation_id=(
-                            root_experiment_loop_operation_id(execution)
-                            if request.patch_kind == "experiment_loop"
-                            else execution.operation_id
-                        ),
-                        origin_task_kind=surface,
-                        chat_id=request.chat_id or "",
-                        node_id=request.node_id,
-                        execution_host=execution_host,
-                        continuation=WatcherContinuation(
-                            provider=request.provider or "",
-                            model=request.model,
-                            reasoning=request.reasoning,
-                            run_on=request.run_on or "",
-                            run_truth_scope=context.run_truth_scope,
-                            patch_kind=request.patch_kind,
-                            control_node_id=request.control_node_id,
-                            control_revision=request.control_revision,
-                            control_episode_id=request.control_episode_id,
-                            control_invocation=request.control_invocation,
-                            control_invocation_ceiling=request.control_invocation_ceiling,
-                            control_decision_bundle=[
-                                item.model_dump(mode="json")
-                                for item in request.control_decision_bundle
-                            ],
-                            control_completion_criteria=request.control_completion_criteria,
-                            workflow_ids=skill_selection.workflow_ids,
-                            skill_ids=skill_selection.skill_ids,
-                            invoked_workflow_ids=request.invoked_workflow_ids,
-                            invoked_skill_ids=request.invoked_skill_ids,
-                            resolved_skill_packages=skill_selection.resolved_skill_packages,
-                        ),
-                    )
-                    if stop_requests:
-                        execution.store.validate_experiment_agent_watcher_stops(
-                            binding,
-                            stop_requests,
-                        )
-                    if request.patch_kind == "experiment_loop":
-                        graph_armed_revision = None
-                        if graph_conditions:
-                            graph_state = await asyncio.to_thread(service.history.state)
-                            await asyncio.to_thread(
-                                validate_graph_conditions,
-                                graph_conditions,
-                                graph_state,
-                            )
-                            graph_armed_revision = graph_state.revision
-                        check_results = (
-                            await asyncio.to_thread(
-                                validate_watch_specs,
-                                specs,
-                                execution_host,
-                            )
-                            if specs
-                            else []
-                        )
-                        pending_loop_handoff = (
-                            specs,
-                            check_results,
-                            graph_conditions,
-                            graph_armed_revision,
-                            binding,
-                            stop_requests,
-                        )
-                        armed = []
-                    else:
-                        graph_state = (
-                            await asyncio.to_thread(service.history.state)
-                            if graph_conditions
-                            else None
-                        )
-                        if graph_conditions:
-                            execution.armed_graph_watchers = True
-                        armed = await asyncio.to_thread(
-                            arm_watchers,
-                            execution.store,
-                            specs,
-                            binding,
-                            graph_conditions=graph_conditions,
-                            state=graph_state,
-                        )
-                except WatcherInitialCheckError as exc:
-                    watch_problem = str(exc)
-                    watch_correctable = True
-                except ValueError as exc:
-                    watch_problem = str(exc)
-                    watch_correctable = True
-                except (OSError, ReplayHalted, StateUnavailable) as exc:
-                    watch_problem = str(exc)
-                    watch_correctable = False
-                else:
-                    loop_watch_empty = (
-                        request.patch_kind == "experiment_loop"
-                        and not specs
-                        and not graph_conditions
-                        and (
-                            not stop_requests
-                            or not execution.store.experiment_handoff_has_live_watcher_after_stops(
-                                binding,
-                                [item.stop_watcher_id for item in stop_requests],
-                            )
-                        )
-                    )
-                    if request.patch_kind != "experiment_loop":
-                        execution.store.record_agent_task_receipt(
-                            execution.operation_id,
-                            "watchers_armed",
-                            {
-                                "watcher_ids": [item.watcher_id for item in armed],
-                                "count": len(armed),
-                                "correction_rounds": watch_correction_rounds,
-                            },
-                        )
-                    watch_problem = None
-                    break
-
-            if watch_problem is None:
-                break
-            if (
-                not watch_correctable
-                or watch_correction_rounds >= max_watch_corrections
-                or not native_session_id
-            ):
-                if execution is not None:
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "watcher_handoff_rejected",
-                        {
-                            "problem": watch_problem[:1600],
-                            "correction_rounds": watch_correction_rounds,
-                        },
-                        tier="diagnostic",
-                    )
-                    execution.store.record_agent_task_event(
-                        execution.operation_id,
-                        f"Watcher handoff was not armed: {watch_problem}",
-                        level="warning",
-                    )
-                if request.patch_kind == "experiment_loop":
-                    yield _sse(
-                        AgentEvent(
-                            event="error",
-                            text=f"Experiment-loop watcher handoff failed: {watch_problem}",
-                        )
-                    )
-                    return
-                break
-
-            watch_correction_rounds += 1
-            assert execution is not None
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "watcher_correction_requested",
-                {"round": watch_correction_rounds, "problem": watch_problem[:400]},
-                tier="diagnostic",
-            )
-            execution.store.update_agent_task_message(
-                execution.operation_id,
-                "Correcting watcher handoff.",
-                phase="correcting",
-                event=True,
-            )
-            diagnostics_path = _stage_json_task_input(
-                local_stage,
-                remote_stage,
-                f"task-{token}-watch-correction-{watch_correction_rounds}.json",
-                {"problem": watch_problem},
-            )
-            watch_validator: StagedCommandMailbox | None = None
-            watch_validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
-            watch_validator_command = validator_command
-            if request.patch_kind == "experiment_loop":
-                watch_validator = stage_patch_validation_mailbox(
-                    local_stage=local_stage,
-                    remote_stage=remote_stage,
-                    task_id=execution.operation_id,
-                    turn_id=f"{token}:watch-correction:{watch_correction_rounds}",
-                    timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
-                )
-                watch_validator_lifecycle = _start_work_validator_mailbox(
-                    service,
-                    watch_validator,
-                    execution=execution,
-                    budget=validator_budget,
-                    run_truth_scope=context.run_truth_scope,
-                    patch_kind=request.patch_kind,
-                    control_node_id=request.control_node_id,
-                    control_decision_bundle=request.control_decision_bundle,
-                )
-            try:
-                if watch_validator is not None:
-                    watch_validator_command = watch_validator.client_command(
-                        "validate",
-                        patch_path,
-                    )
-                correction_contract = (
-                    experiment_loop_watcher_correction_contract(
-                        original_contract_path=base_contract_path,
-                        diagnostics_path=diagnostics_path,
-                        watch_path=watch_path,
-                        patch_path=patch_path,
-                        output_schema_path=schema_path,
-                        validator_command=watch_validator_command,
-                    )
-                    if request.patch_kind == "experiment_loop"
-                    else PromptFactory.continuation_task_contract(
-                        original_contract_path=base_contract_path,
-                        mode="watch_correction",
-                        diagnostics_path=diagnostics_path,
-                        watch_path=watch_path,
-                    )
-                )
-                correction_path, correction_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-watch-correction-{watch_correction_rounds}.md",
-                    correction_contract,
-                    execution=execution,
-                    role=f"watch_correction_{watch_correction_rounds}",
-                )
-                _record_agent_launch_receipt(
-                    execution,
-                    request,
-                    prompt=correction_prompt,
-                    contract_path=correction_path,
-                    remote=bool(execution_host),
-                    resumed=True,
-                    continuation="watch_correction",
-                    extra={
-                        "surface": surface,
-                        "mode": "work",
-                        "capability": "work_auto",
-                        "network_access": True,
-                        "launch_kind": "watch_correction",
-                        "correction_round": watch_correction_rounds,
-                        "write_directory_count": len(write_dirs),
-                        "canonical_state_boundary": "prompt_only",
-                    },
-                )
-                correction_outcome = _ProviderOutcome(session_id=native_session_id)
-                correction_error: str | None = None
-                if request.patch_kind == "experiment_loop":
-                    assert watch_validator is not None
-                    assert watch_validator_lifecycle is not None
-                correction_stream = (
-                    _stream_work_agent_events(
-                        service,
-                        launcher,
-                        request,
-                        correction_prompt,
-                        workspace=workspace,
-                        session_id=native_session_id,
-                        read_dirs=read_dirs,
-                        write_dirs=write_dirs,
-                        execution_host=execution_host,
-                        execution=execution,
-                        remote_stage=remote_stage,
-                        capability="work_auto",
-                        outcome=correction_outcome,
-                        binary=provider_binary,
-                        validator_staged=watch_validator,
-                        validator_lifecycle=watch_validator_lifecycle,
-                        validator_budget=validator_budget,
-                        run_truth_scope=context.run_truth_scope,
-                        patch_kind=request.patch_kind,
-                        control_node_id=request.control_node_id,
-                        control_decision_bundle=request.control_decision_bundle,
-                    )
-                    if request.patch_kind == "experiment_loop"
-                    else _stream_agent_events(
-                        launcher,
-                        request,
-                        correction_prompt,
-                        workspace=workspace,
-                        session_id=native_session_id,
-                        read_dirs=read_dirs,
-                        write_dirs=write_dirs,
-                        execution_host=execution_host,
-                        execution=execution,
-                        remote_stage=remote_stage,
-                        capability="work_auto",
-                        outcome=correction_outcome,
-                        binary=provider_binary,
-                    )
-                )
-            except BaseException as exc:
-                if watch_validator_lifecycle is not None:
-                    await watch_validator_lifecycle.close(primary_error=exc)
-                raise
-            async with aclosing(correction_stream) as stream:
-                async for frame in stream:
-                    event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-                    if event.event == "error":
-                        correction_error = event.text or "Watcher correction failed."
-                    elif event.event not in {"answer", "done"}:
-                        yield frame
-            native_session_id = correction_outcome.session_id or native_session_id
-            if correction_outcome.paused:
-                return
-            if correction_error or not correction_outcome.completed:
-                watch_problem = correction_error or (
-                    f"{request.provider} produced no watcher correction result."
-                )
-                watch_text = None
-                watch_correction_rounds = max_watch_corrections
-                continue
-            try:
-                corrected = _read_watch_request(workspace, remote_stage)
-            except (OSError, StateUnavailable, ValueError) as exc:
-                watch_problem = f"The corrected watcher request could not be read: {exc}"
-                watch_text = None
-                continue
-            if corrected is None:
-                watch_problem = "The correction completed without writing watch.json."
-                watch_text = None
-                continue
-            # Correction validates the resulting Patch/watch handoff, not an
-            # output delta. A handoff with both lists empty may already be
-            # correct while the agent repairs only patch.json to record a
-            # terminal outcome.
-            watch_text = corrected
-            watch_problem = None
-
-        if request.patch_kind == "work":
-            (
-                maintenance_frames,
-                native_session_id,
-                maintenance_paused,
-            ) = await _process_experiment_watcher_maintenance(
-                service=service,
-                launcher=launcher,
-                request=request,
-                execution=execution,
-                staged_resources=experiment_resources,
-                workspace=workspace,
-                remote_stage=remote_stage,
-                local_stage=local_stage,
-                base_contract_path=base_contract_path,
-                token=token,
-                native_session_id=native_session_id,
-                read_dirs=read_dirs,
-                write_dirs=write_dirs,
-                execution_host=execution_host,
-                provider_binary=provider_binary,
-                retry_output_digests=retry_experiment_watch_digests,
-            )
-            for frame in maintenance_frames:
+        ) as stream:
+            async for frame in stream:
                 yield frame
-            if maintenance_paused:
-                return
+        if settled.stop:
+            return
+    applied = _AppliedWorkTurn(
+        graph_update=settled.graph_update,
+        native_session_id=settled.native_session_id,
+    )
+    if request.patch_kind == "work":
+        apply_stream = _apply_work_turn(
+            turn,
+            launcher,
+            staged,
+            composed_prompt,
+            retry_baseline,
+            applied,
+        )
+    else:
+        apply_stream = _apply_experiment_loop_turn(
+            turn,
+            launcher,
+            staged,
+            composed_prompt,
+            prompt_context,
+            settled,
+            applied,
+        )
+    async with aclosing(apply_stream) as stream:
+        async for frame in stream:
+            yield frame
+    if applied.stop:
+        return
+    graph_update = applied.graph_update
 
-        if request.patch_kind == "experiment_loop":
-            try:
-                final_patch_text = _read_chat_patch(workspace, remote_stage)
-            except (OSError, StateUnavailable, ValueError) as exc:
-                yield _sse(
-                    AgentEvent(
-                        event="error",
-                        text=f"The final Experiment-loop patch could not be read: {exc}",
-                    )
-                )
-                return
-            if final_patch_text is None:
-                graph_update = GraphUpdateResult(status="none")
-            else:
-                loop_patch_correction_rounds = 0
-                while True:
-                    # A correction round that produced nothing new leaves this
-                    # None so its own diagnostic reaches the agent. Re-applying
-                    # the unchanged bytes would overwrite that diagnostic with
-                    # the original one and blank the retained patch output.
-                    if final_patch_text is not None:
-                        if loop_watch_empty and (
-                            not request.control_node_id
-                            or not patch_explicitly_exits(final_patch_text, request.control_node_id)
-                        ):
-                            final_failure = _WorkPatchFailure(
-                                "A watch.json with both lists empty requires this Patch to retain "
-                                "an explicit success, Proposal, or same-Patch Blocker.",
-                                correctable=True,
-                            )
-                            final_result = None
-                        else:
-                            try:
-                                final_result, final_failure = _apply_work_patch(
-                                    service,
-                                    execution,
-                                    final_patch_text,
-                                    run_truth_scope=context.run_truth_scope,
-                                    patch_kind=request.patch_kind,
-                                    control_node_id=request.control_node_id,
-                                    control_decision_bundle=request.control_decision_bundle,
-                                )
-                            except RunLockCancelled:
-                                yield _sse(
-                                    AgentEvent(
-                                        event="paused",
-                                        text=(
-                                            "Paused while waiting for canonical state. The "
-                                            "operational answer and retained patch are preserved."
-                                        ),
-                                    )
-                                )
-                                return
-                        if final_result is not None:
-                            graph_update = final_result.model_copy(
-                                update={"correction_rounds": loop_patch_correction_rounds}
-                            )
-                            break
-                    assert final_failure is not None
-                    if (
-                        not final_failure.correctable
-                        or loop_patch_correction_rounds >= _MAX_CORRECTION_ROUNDS
-                        or not native_session_id
-                    ):
-                        if loop_watch_empty:
-                            yield _sse(
-                                AgentEvent(
-                                    event="error",
-                                    text=(
-                                        "Experiment-loop Patch could not be validated after its "
-                                        f"watcher handoff: {final_failure.message}"
-                                    ),
-                                )
-                            )
-                            return
-                        repairable = _work_graph_repairable(
-                            execution,
-                            native_session_id,
-                            final_failure,
-                        )
-                        graph_update = GraphUpdateResult(
-                            status="rejected",
-                            change_summary=list(final_failure.change_summary),
-                            proposal_ids=list(final_failure.proposal_ids),
-                            validation_messages=_bounded_graph_messages(final_failure.message),
-                            correction_rounds=loop_patch_correction_rounds,
-                            repairable=repairable,
-                        )
-                        _record_work_graph_rejection(execution, graph_update)
-                        break
-
-                    loop_patch_correction_rounds += 1
-                    assert execution is not None
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "patch_correction_requested",
-                        {
-                            "round": loop_patch_correction_rounds,
-                            "problem": final_failure.message[:400],
-                        },
-                        tier="diagnostic",
-                    )
-                    diagnostics_path = _stage_json_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.json",
-                        {"kind": "experiment_loop", "problem": final_failure.message},
-                    )
-                    loop_validator = stage_patch_validation_mailbox(
-                        local_stage=local_stage,
-                        remote_stage=remote_stage,
-                        task_id=execution.operation_id,
-                        turn_id=(f"{token}:loop-patch-correction:{loop_patch_correction_rounds}"),
-                        timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
-                    )
-                    loop_validator_lifecycle = _start_work_validator_mailbox(
-                        service,
-                        loop_validator,
-                        execution=execution,
-                        budget=validator_budget,
-                        run_truth_scope=context.run_truth_scope,
-                        patch_kind=request.patch_kind,
-                        control_node_id=request.control_node_id,
-                        control_decision_bundle=request.control_decision_bundle,
-                    )
-                    try:
-                        loop_validator_command = loop_validator.client_command(
-                            "validate",
-                            patch_path,
-                        )
-                        correction_contract = experiment_loop_patch_correction_contract(
-                            original_contract_path=base_contract_path,
-                            diagnostics_path=diagnostics_path,
-                            patch_path=patch_path,
-                            watch_path=watch_path,
-                            validator_command=loop_validator_command,
-                        )
-                        correction_path, correction_prompt = _stage_task_contract(
-                            local_stage,
-                            remote_stage,
-                            f"task-{token}-loop-patch-correction-{loop_patch_correction_rounds}.md",
-                            correction_contract,
-                            execution=execution,
-                            role=f"experiment_loop_patch_correction_{loop_patch_correction_rounds}",
-                        )
-                        pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
-                        _record_agent_launch_receipt(
-                            execution,
-                            request,
-                            prompt=correction_prompt,
-                            contract_path=correction_path,
-                            remote=bool(execution_host),
-                            resumed=True,
-                            continuation="graph_correction",
-                            extra={
-                                "surface": surface,
-                                "mode": "work",
-                                "capability": "work_auto",
-                                "network_access": True,
-                                "launch_kind": "graph_correction",
-                                "correction_round": loop_patch_correction_rounds,
-                                "write_directory_count": len(write_dirs),
-                                "canonical_state_boundary": "prompt_only",
-                            },
-                        )
-                        correction_outcome = _ProviderOutcome(session_id=native_session_id)
-                    except BaseException as exc:
-                        await loop_validator_lifecycle.close(primary_error=exc)
-                        raise
-                    async with aclosing(
-                        _stream_work_agent_events(
-                            service,
-                            launcher,
-                            request,
-                            correction_prompt,
-                            workspace=workspace,
-                            session_id=native_session_id,
-                            read_dirs=read_dirs,
-                            write_dirs=write_dirs,
-                            execution_host=execution_host,
-                            execution=execution,
-                            remote_stage=remote_stage,
-                            capability="work_auto",
-                            outcome=correction_outcome,
-                            binary=provider_binary,
-                            validator_staged=loop_validator,
-                            validator_lifecycle=loop_validator_lifecycle,
-                            validator_budget=validator_budget,
-                            run_truth_scope=context.run_truth_scope,
-                            patch_kind=request.patch_kind,
-                            control_node_id=request.control_node_id,
-                            control_decision_bundle=request.control_decision_bundle,
-                        )
-                    ) as stream:
-                        async for frame in stream:
-                            yield frame
-                    native_session_id = correction_outcome.session_id or native_session_id
-                    if correction_outcome.paused:
-                        return
-                    if not correction_outcome.completed:
-                        final_failure = _WorkPatchFailure(
-                            f"{request.provider} produced no Patch correction result.",
-                            correctable=True,
-                        )
-                        final_patch_text = None
-                        loop_patch_correction_rounds = _MAX_CORRECTION_ROUNDS
-                        continue
-                    corrected = _read_correction_patch(
-                        workspace,
-                        remote_stage,
-                        pre_launch_digest=pre_launch_digest,
-                    )
-                    if corrected.problem == "unreadable":
-                        final_failure = _WorkPatchFailure(
-                            f"The corrected loop Patch could not be read: {corrected.detail}",
-                            correctable=True,
-                        )
-                        final_patch_text = None
-                        continue
-                    if corrected.problem in {"missing", "unchanged"}:
-                        final_failure = _WorkPatchFailure(
-                            "The loop Patch correction did not rewrite patch.json.",
-                            correctable=True,
-                        )
-                        final_patch_text = None
-                        continue
-                    assert corrected.text is not None
-                    final_patch_text = corrected.text
-
-            if pending_loop_handoff is not None:
-                assert execution is not None
-                (
-                    specs,
-                    check_results,
-                    graph_conditions,
-                    graph_armed_revision,
-                    binding,
-                    stop_requests,
-                ) = pending_loop_handoff
-                try:
-                    graph_state = (
-                        await asyncio.to_thread(service.history.state) if graph_conditions else None
-                    )
-                    if graph_conditions:
-                        execution.armed_graph_watchers = True
-                    armed = await asyncio.to_thread(
-                        persist_experiment_watchers_idempotently,
-                        execution,
-                        specs,
-                        check_results,
-                        binding,
-                        stop_requests,
-                        graph_conditions=graph_conditions,
-                        graph_state=graph_state,
-                        armed_revision=graph_armed_revision,
-                    )
-                except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
-                    yield _sse(
-                        AgentEvent(
-                            event="error",
-                            text=f"Experiment-loop watcher persistence failed: {exc}",
-                        )
-                    )
-                    return
-                execution.store.record_agent_task_receipt(
-                    root_experiment_loop_operation_id(execution),
-                    "watchers_armed",
-                    {
-                        "watcher_ids": [item.watcher_id for item in armed],
-                        "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
-                        "count": len(armed),
-                        "correction_rounds": watch_correction_rounds,
-                    },
-                )
-                accepted_loop_watcher_ids = [item.watcher_id for item in armed]
-            if (
-                execution is not None
-                and request.control_node_id
-                and graph_update.status == "applied"
-                and patch_explicitly_exits(final_patch_text, request.control_node_id)
-            ):
-                execution.store.record_agent_task_receipt(
-                    root_experiment_loop_operation_id(execution),
-                    "experiment_loop_exit",
-                    {
-                        "control_node_id": request.control_node_id,
-                        "episode_id": request.control_episode_id,
-                        "invocation": request.control_invocation,
-                        "applied_revision": graph_update.applied_revision,
-                    },
-                )
-
-            if execution is None or episode_context_baseline is None:
-                raise ValueError("Experiment-loop handoff lost its durable episode context.")
-            commit_experiment_episode_binding(
-                execution,
-                request,
-                native_session_id=native_session_id,
-                execution_host=execution_host,
-                stage_host=execution.stage_host,
-                stage_root=execution.stage_root,
-                graph_result=experiment_graph_result_summary(graph_update),
-                watcher_ids=accepted_loop_watcher_ids,
-                context_baseline=episode_context_baseline,
-            )
-
-        if uses_master_protocol:
-            try:
-                _record_applied_graph_revision(
-                    execution,
-                    request,
-                    outcome.session_id,
-                    graph_update.applied_revision,
-                )
-            except ValueError as exc:
-                if execution is not None:
-                    execution.store.record_agent_task_event(
-                        execution.operation_id,
-                        "This turn's own revision could not be absorbed into the session "
-                        f"baseline; the next turn may re-announce it: {exc}",
-                        level="warning",
-                    )
-        try:
-            _append_chat_exchange(
-                service,
-                request,
-                answer,
-                outcome.session_id,
-                graph_update.applied_revision,
-                graph_update=graph_update,
-                execution=execution,
-            )
-        except (OSError, StateUnavailable, ValueError) as exc:
-            if execution is not None:
-                execution.store.record_agent_task_event(
-                    execution.operation_id,
-                    f"The reply was delivered but could not be written to the chat transcript: {exc}",
-                    level="warning",
-                )
-        payload: dict[str, object] = {
-            "graph_update": graph_update.model_dump(mode="json"),
-        }
-        if graph_update.applied_revision is not None:
-            payload["applied_revision"] = graph_update.applied_revision
-        yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
-        yield _sse(AgentEvent(event="done"))
+    for frame in _finalize_work_turn(turn, answer, graph_update):
+        yield frame
 
 
 def _rejected_graph_update_for_repair(execution: AgentTaskExecution) -> GraphUpdateResult:
@@ -2990,6 +3489,25 @@ async def _stream_work_graph_repair(
             execution_machine.alias,
             remote=remote_stage is not None,
         )
+        assert validator_lifecycle is not None
+        outcome = _ProviderOutcome(session_id=request.session_id)
+        turn = WorkTurn(
+            service=service,
+            request=request,
+            execution=execution,
+            context=context,
+            workspace=workspace,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            execution_host=execution_host,
+            provider_binary=provider_binary,
+            read_dirs=read_dirs,
+            write_dirs=write_dirs,
+            patch_inputs=patch_inputs,
+            validator_lifecycle=validator_lifecycle,
+            validator_budget=validator_budget,
+            outcome=outcome,
+        )
         previous = _rejected_graph_update_for_repair(execution)
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
         validator_command = patch_inputs.validator_command
@@ -3058,30 +3576,13 @@ async def _stream_work_graph_repair(
     except BaseException as exc:
         await validator_lifecycle.close(primary_error=exc)
         raise
-    outcome = _ProviderOutcome(session_id=request.session_id)
     async with aclosing(
-        _stream_work_agent_events(
-            service,
+        _stream_turn_agent_events(
+            turn,
             launcher,
-            request,
             prompt,
-            workspace=workspace,
             session_id=request.session_id,
-            read_dirs=read_dirs,
-            write_dirs=write_dirs,
-            execution_host=execution_host,
-            execution=execution,
-            remote_stage=remote_stage,
-            capability="work_auto",
             outcome=outcome,
-            binary=provider_binary,
-            validator_staged=patch_inputs.validator_staged,
-            validator_lifecycle=validator_lifecycle,
-            validator_budget=validator_budget,
-            run_truth_scope=context.run_truth_scope,
-            patch_kind=request.patch_kind,
-            control_node_id=request.control_node_id,
-            control_decision_bundle=request.control_decision_bundle,
         )
     ) as stream:
         async for frame in stream:
@@ -3138,23 +3639,13 @@ async def _stream_work_graph_repair(
             correction_rounds=1,
         )
         _record_work_graph_rejection(execution, graph_update)
-    elif (
-        request.patch_kind == "experiment_loop"
-        and request.control_node_id
-        and patch_explicitly_exits(patch_text, request.control_node_id)
-    ):
-        execution.store.record_agent_task_receipt(
-            root_experiment_loop_operation_id(execution),
-            "experiment_loop_exit",
-            {
-                "control_node_id": request.control_node_id,
-                "episode_id": request.control_episode_id,
-                "invocation": request.control_invocation,
-                "applied_revision": graph_update.applied_revision,
-            },
-        )
     if request.patch_kind == "experiment_loop":
-        if not request.control_episode_id:
+        if (
+            not request.control_episode_id
+            or not request.control_node_id
+            or request.control_invocation is None
+            or request.control_invocation_ceiling is None
+        ):
             yield _sse(
                 AgentEvent(event="error", text="The graph repair lost its Experiment episode.")
             )
@@ -3168,6 +3659,39 @@ async def _stream_work_graph_repair(
                 )
             )
             return
+        control_node = context.node
+        if (
+            not isinstance(control_node, dict)
+            or control_node.get("id") != request.control_node_id
+            or control_node.get("type") != "experiment"
+        ):
+            yield _sse(
+                AgentEvent(
+                    event="error",
+                    text="The graph repair lost its Experiment control snapshot.",
+                )
+            )
+            return
+        ending_signal = None
+        if graph_update.status == "applied":
+            semantic_ending = experiment_loop_semantic_ending(
+                patch_text,
+                request.control_node_id,
+            )
+            if semantic_ending is not None:
+                ending_signal = experiment_loop_ending_signal(
+                    semantic_ending=semantic_ending,
+                    episode_id=request.control_episode_id,
+                    control_node_id=request.control_node_id,
+                    invocation=request.control_invocation,
+                    invocation_ceiling=request.control_invocation_ceiling,
+                    control_snapshot=dict(control_node),
+                    patch_text=patch_text,
+                    graph_update=graph_update,
+                    watcher_ids=episode.last_watcher_ids,
+                    stopped_watcher_ids=[],
+                    decision_bundle=request.control_decision_bundle,
+                )
         try:
             commit_experiment_episode_binding(
                 execution,
@@ -3179,6 +3703,7 @@ async def _stream_work_graph_repair(
                 graph_result=experiment_graph_result_summary(graph_update),
                 watcher_ids=episode.last_watcher_ids,
                 context_baseline=episode.context_baseline,
+                ending_signal=ending_signal,
             )
         except ValueError as exc:
             yield _sse(
@@ -3537,7 +4062,7 @@ def _apply_work_patch(
     control_node_id: str | None = None,
     control_decision_bundle: list[ExperimentDecisionPin] | None = None,
     profile: AgentProfile = "ordinary",
-) -> tuple[GraphUpdateResult | None, _WorkPatchFailure | None]:
+) -> tuple[GraphUpdateResult | None, _DeliverableFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
     if execution is not None:
@@ -3629,21 +4154,21 @@ def _apply_work_patch(
                 {"messages": [item.model_dump(mode="json") for item in exc.report.messages[:16]]},
                 tier="diagnostic",
             )
-        return None, _WorkPatchFailure(
+        return None, _DeliverableFailure(
             detail,
             correctable=True,
             change_summary=change_summary,
             proposal_ids=proposal_ids,
         )
     except (ReplayHalted, StateUnavailable) as exc:
-        return None, _WorkPatchFailure(
+        return None, _DeliverableFailure(
             str(exc),
             correctable=False,
             change_summary=change_summary,
             proposal_ids=proposal_ids,
         )
     except ValueError as exc:
-        return None, _WorkPatchFailure(
+        return None, _DeliverableFailure(
             str(exc),
             correctable=True,
             change_summary=change_summary,
@@ -3695,7 +4220,7 @@ def _bounded_graph_messages(*messages: str) -> list[str]:
 def _work_graph_repairable(
     execution: AgentTaskExecution | None,
     native_session_id: str | None,
-    failure: _WorkPatchFailure,
+    failure: _DeliverableFailure,
 ) -> bool:
     return bool(
         failure.correctable and native_session_id and execution is not None and execution.stage_root

@@ -4,7 +4,7 @@ export type AppView =
   "overview" | "attention" | "scientific" | "dag" | "execution" | "paper" | "settings" | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
-export type AgentTaskKind = AgentSurface | "campaign";
+export type AgentTaskKind = AgentSurface | "auto_research";
 export type AgentTaskStatus =
   "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
 export type ConversationMode = "discuss" | "work";
@@ -185,6 +185,7 @@ export interface ExperimentControlState {
   invocation_ceiling: number;
   invocations_remaining: number;
   episode_id: string | null;
+  episode: Episode | null;
   paused: boolean;
   active: boolean;
   governing_decisions: ExperimentDecisionPin[];
@@ -198,6 +199,7 @@ export interface ExperimentLoopIndexEntry {
   project_reachable: boolean | null;
   node: GraphNode;
   control: ExperimentControlState;
+  episode: Episode | null;
 }
 
 export interface WatcherContinuation {
@@ -228,10 +230,10 @@ interface WatcherDeliveryRecord {
   watcher_id: string;
   project_id: string;
   origin_operation_id: string;
-  origin_task_kind: "node_chat" | "project_chat";
+  origin_task_kind: "node_chat" | "project_chat" | "auto_research";
   chat_id: string;
   node_id: string | null;
-  experiment_episode_id: string | null;
+  episode_id: string | null;
   execution_host: string;
   continuation: WatcherContinuation;
   status: "active" | "degraded" | "completed" | "stopped";
@@ -879,15 +881,18 @@ export interface RevisionSummary {
   authorized_by: AuthorizedHuman | null;
   profile: "ordinary" | "orchestrator" | null;
   task_id: string | null;
-  campaign_id: string | null;
-  campaign: HistoryCampaignDecoration | null;
+  episode_id: string | null;
+  episode: HistoryEpisodeDecoration | null;
   created_at: string;
   sentences: string[];
 }
 
-export interface HistoryCampaignDecoration {
-  state: "running" | "stopped" | "exhausted" | "failed" | "completed";
-  report: CampaignReportSummary | null;
+export interface HistoryEpisodeDecoration {
+  mode: EpisodeMode;
+  status: EpisodeStatus;
+  ending: EpisodeEnding | null;
+  wrapup_state: EpisodeWrapupState;
+  report: EpisodeReportSummary | null;
 }
 
 export interface AgentTaskResult {
@@ -937,7 +942,7 @@ export interface AgentTask {
   result?: AgentTaskResult | null;
   attempt: number;
   parent_operation_id?: string | null;
-  campaign_id?: string | null;
+  episode_id?: string | null;
   native_session_id?: string | null;
   stage_host?: string | null;
   stage_root?: string | null;
@@ -956,69 +961,78 @@ export interface AgentTask {
   contracts?: AgentTaskContract[];
 }
 
-export type CampaignStatus =
+export type EpisodeMode = "auto_research" | "experiment_loop";
+
+export type EpisodeStatus =
   | "queued"
   | "running"
   | "stopping"
   | "wrapping_up"
   | "needs_action"
-  | "succeeded"
+  | "completed"
   | "stopped"
   | "failed";
 
-export type CampaignEnding = "completed" | "exhausted" | "stopped" | "failed";
+export type EpisodeEnding = "completed" | "exhausted" | "stopped" | "failed" | "human_pause";
 
-export interface CampaignBudgetMeter {
+export type EpisodeWrapupState =
+  "not_started" | "pending" | "running" | "ready" | "failed" | "skipped" | "legacy_unavailable";
+
+export interface EpisodeBudgetMeter {
   invocation_ceiling: number;
   invocations_used: number;
   invocations_remaining: number;
-  report_units_reserved: 1;
   observed_input_tokens: number;
   observed_generated_tokens: number;
 }
 
-export interface CampaignReportSummary {
+export interface EpisodeReportSummary {
   report_id: string;
-  ending: CampaignEnding;
+  ending: EpisodeEnding;
   created_at: string;
 }
 
-export interface CampaignRecoverySummary {
-  purpose: "task" | "report_admission";
+export interface AutoResearchRecoverySummary {
+  purpose: "task";
   status: "pending" | "admitted" | "exhausted" | "blocked";
-  retry_mode: "exact" | "clean" | "report_admission" | "blocked";
+  retry_mode: "exact" | "clean" | "blocked";
   operation_id: string | null;
   attempts: number;
   max_attempts: number;
   next_attempt_at: string | null;
 }
 
-export interface Campaign {
-  campaign_id: string;
+export interface Episode {
+  episode_id: string;
   project_id: string;
+  mode: EpisodeMode;
+  control_node_id: string | null;
   root_operation_id: string | null;
+  current_operation_id: string | null;
   current_orchestrator_task_id: string | null;
   current_control_task_id: string | null;
-  recovery: CampaignRecoverySummary | null;
-  status: CampaignStatus;
+  recovery: AutoResearchRecoverySummary | null;
+  status: EpisodeStatus;
   starting_instruction: string | null;
-  budget: CampaignBudgetMeter;
-  authorized_by: AuthorizedHuman;
+  budget: EpisodeBudgetMeter;
+  authorized_by: AuthorizedHuman | null;
   stop_requested_at: string | null;
-  ending: CampaignEnding | null;
-  error: string | null;
+  ending: EpisodeEnding | null;
+  ending_diagnostic: string | null;
+  wrapup_state: EpisodeWrapupState;
+  wrapup_error: string | null;
   created_at: string;
   updated_at: string;
   ended_at: string | null;
   tasks: AgentTask[];
-  reports: CampaignReportSummary[];
+  report: EpisodeReportSummary | null;
   can_stop: boolean;
   can_reauthorize: boolean;
 }
 
-export interface CampaignMessage {
+export interface EpisodeMessage {
   message_id: string;
-  campaign_id: string;
+  episode_id: string;
   sender_role: "human" | "orchestrator" | "worker";
   sender_task_id: string | null;
   authorized_by: AuthorizedHuman | null;
@@ -1030,7 +1044,8 @@ export interface CampaignMessage {
   delivery_operation_id: string | null;
 }
 
-export interface StartCampaignRequest {
+export interface StartEpisodeRequest {
+  mode: "auto_research";
   invocation_ceiling: number;
   starting_instruction?: string | null;
 }
@@ -1144,7 +1159,7 @@ export interface AgentTaskEvent {
   message: string;
   event_kind: "message" | "command";
   command_id: string | null;
-  campaign_id: string | null;
+  episode_id: string | null;
   command_verb: string | null;
   command_phase: "start" | "exit" | null;
   idempotency_key: string | null;
@@ -1191,7 +1206,7 @@ export interface ProjectSnapshot {
   run_on: string;
   project_truth_scope: string[];
   default_run_truth_scope: string[];
-  default_campaign_invocation_ceiling: number;
+  default_auto_research_invocation_ceiling: number;
   repositories: Repository[];
   machines: Machine[];
   primary_question?: GraphNode | null;
@@ -1297,7 +1312,7 @@ export interface ProjectSetupRequest {
   name: string;
   repositories: SetupRepository[];
   state_repository: string;
-  default_campaign_invocation_ceiling: number;
+  default_auto_research_invocation_ceiling: number;
   execution: SetupExecution;
   agents: SetupAgents;
   confirmed: boolean;
@@ -1307,7 +1322,7 @@ export interface ProjectSetupRequest {
 
 export interface ProjectSettingsRequest {
   default_run_truth_scope: string[];
-  default_campaign_invocation_ceiling: number;
+  default_auto_research_invocation_ceiling: number;
   agent_profiles: Record<AgentExecutionProfile, AgentRunConfig>;
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;

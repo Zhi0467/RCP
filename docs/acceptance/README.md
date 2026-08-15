@@ -191,7 +191,7 @@ it but a browser or a machine we do not have.
 | [S37](S37-desktop-text-scale.md) | Text stays readable throughout the desktop app | implemented | **desktop** | covered + driven 2026-07-31 |
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
-| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | implemented | pytest + **browser** | covered + driven 2026-08-05 |
+| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | report wrap-up revision pending |
 | [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | implemented | pytest + **browser** | covered + driven 2026-08-05 |
 | [S45](S45-floating-window-dock.md) | Dock a floating node window without closing it | implemented | **browser** | driven 2026-08-02 |
 | [S46](S46-project-header-and-chat-split.md) | Fold the project utilities and resize the Chats split | implemented | **browser** | driven 2026-08-02 |
@@ -223,7 +223,7 @@ it but a browser or a machine we do not have.
 | [S75](S75-network-access-on-every-agent-surface.md) | Every user-facing agent task can read the public web | implemented | pytest + **browser** | tests + Codex 2026-08-07 + Claude 2026-08-12 |
 | [S76](S76-graph-condition-wake.md) | Wake a conversation when a canonical graph condition becomes true | implemented | pytest | tests + web 2026-08-12 |
 | [S77](S77-auto-research-stops-at-belief.md) | Let auto-research create freely and propose changes to existing epistemic nodes | implemented | pytest | covered |
-| [S78](S78-one-budget-one-stop.md) | Give one auto-research campaign one budget and one graceful stop | implemented | **browser** | tests + browser 2026-08-12 |
+| [S78](S78-one-budget-one-stop.md) | Give one Auto-research episode one operational budget and one graceful stop | implemented | **browser** | covered + driven 2026-08-14 |
 | [S79](S79-cold-desktop-launch-renders.md) | A cold desktop launch never rests on a blank window | implemented | **desktop** | driven 2026-08-07 |
 | [S80](S80-question-hierarchy-flow-columns.md) | Read question hierarchy from the Research flow columns | implemented | **browser** | layout tests + driven 2026-08-07 |
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without reloading the UI | implemented | api + **browser** | tests + driven 2026-08-07 |
@@ -257,13 +257,14 @@ it but a browser or a machine we do not have.
 | [S110](S110-paper-draft-survives-a-canonical-change.md) | A paper draft survives a canonical change without choosing a side | implemented | pytest + **browser** | paper/storage + Incoming UI checks |
 | [S111](S111-durable-space-identity.md) | A space keeps one identity across process and path changes | implemented | pytest + api | tests + api 2026-08-11 |
 | [S112](S112-basic-human-identity.md) | A person has one durable identity inside a space | implemented | pytest + api + **browser** | tests + api + landing browser 2026-08-12 |
-| [S113](S113-campaign-attribution.md) | Campaign work retains its authorization lineage | pending | pytest + **browser** | none |
+| [S113](S113-campaign-attribution.md) | Episode work retains its authorization lineage | pending | pytest + **browser** | none |
 | [S114](S114-see-your-results-without-leaving.md) | See your results without leaving RCP | pending | pytest + **browser** + ssh | none |
 | [S115](S115-beliefs-change-only-through-you.md) | An agent may rewrite anything except what you believe | implemented | pytest + **browser** | focused tests + Inbox drive 2026-08-12 |
 | [S116](S116-choose-existing-or-fresh-research.md) | Choose existing research or start fresh before setup changes anything | implemented | pytest + **browser** + ssh | setup, transport, history, browser + live SSH 2026-08-12 |
 | [S117](S117-project-owned-caches.md) | Clear one project's cache without clearing another project's cache | implemented | pytest + **browser** | cache lifecycle, deletion, API, web, browser 2026-08-12 |
 | [S118](S118-identity-and-membership-start-at-the-index.md) | Put personal identity and an explicit team seam on the project index | implemented | pytest + **browser** | tests + browser 2026-08-12 |
 | [S119](S119-stale-processes-cannot-command-the-next-turn.md) | A stale process cannot command the next campaign turn | implemented | pytest + ssh | tests + live SSH 2026-08-12 |
+| [S120](S120-episodes-wrap-up-with-a-visual-report.md) | Episodes wrap up with a visual report | implemented | pytest + **browser** | covered + driven 2026-08-14 |
 
 S95–S105 are the original team-space set. They come from the confirmed design in
 [`../design/`](../design/README.md). S97, S99, and the narrower S111–S112

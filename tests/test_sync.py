@@ -14,7 +14,7 @@ from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, Patch, ValidationMessage
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager
-from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest
+from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest, RunRequest
 from rcp.storage import AgentTaskRecord
 from tests.helpers import append_fixture_patch, seed_patch
 from tests.helpers import create_named_app as create_app
@@ -1264,26 +1264,36 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     now = datetime.now(UTC).isoformat()
-    store.create_agent_task(
+    episode_id = str(uuid.uuid4())
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id=str(uuid.uuid4()),
+        chat_scope="node",
+        node_id="exp/active-loop",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/active-loop",
+        control_revision=1,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=5,
+        control_decision_bundle=[],
+        control_completion_criteria=[],
+    )
+    store.create_experiment_episode_with_invocation(
         AgentTaskRecord(
             operation_id="active-experiment-loop",
             project_id=project_id,
+            episode_id=episode_id,
             kind="node_chat",
             status="queued",
-            request={
-                "trigger": "experiment_run",
-                "patch_kind": "experiment_loop",
-                "control_node_id": "exp/active-loop",
-                "control_revision": 1,
-                "control_episode_id": str(uuid.uuid4()),
-                "control_invocation": 1,
-                "control_invocation_ceiling": 5,
-                "control_decision_bundle": [],
-                "control_completion_criteria": [],
-            },
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Queued bounded experiment loop.",
+            authorized_by=authorized_human(store),
         )
     )
     client = TestClient(app)

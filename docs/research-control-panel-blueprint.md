@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.57
+**Version:** 0.58
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,11 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.58** — made Auto-research and bounded Experiment control two modes of one
+  persisted episode parent; gave every non-Stop ending one hidden, exact-session,
+  visual HTML wrap-up with at most three automatic report turns; kept operational
+  invocation ceilings free of report accounting; and made a final report error
+  visible but non-blocking without a manual recovery control.
 - **0.57** — made an unsettled Experiment stop project Stopping only while its
   turn is live, then Needs action with direct exact recovery if that turn pauses,
   fails, or is interrupted, without weakening the durable stop fence.
@@ -553,12 +558,12 @@ An automatic watcher wake inherits one exact human-authorizer snapshot from its
 originating task set. If a legacy or missing task leaves that authority
 unprovable, or the set names different people, RCP stops the ready watcher unit
 with a durable visible diagnostic; it never guesses a person or retries forever.
-A Patch produced inside an auto-research campaign additionally records that
-campaign's id, including one produced by a seated worker whose profile remains
-`ordinary` — ordinary semantic authority exercised inside that campaign. RCP
+A Patch produced inside an Auto-research episode additionally records that
+episode's id, including one produced by a seated worker whose profile remains
+`ordinary` — ordinary semantic authority exercised inside that episode. RCP
 stamps the id from the producing task's own operational row, so admission never
-reads the campaign record and a removed campaign cannot fail a Patch; an
-`orchestrator` Patch with no campaign id is refused, because unattributed
+reads the episode parent and a removed episode cannot fail a Patch; an
+`orchestrator` Patch with no episode id is refused, because unattributed
 elevated work must not land quietly. The id is inert: no validation, admission,
 or permission decision reads it. A human approval Patch carries none, since
 approving an agent's Proposal is the human's own act. Parent-task and worker
@@ -950,6 +955,74 @@ without altering launch flags, permissions, graph authority, or repository
 authority. A stale native selection that the CLI no longer accepts fails visibly
 without falling back.
 
+## Episodes and visual wrap-up
+
+Auto-research and bounded Experiment control are two orchestration modes of one
+persisted parent concept: an **episode**. The parent owns identity, human
+authorization, lifecycle, ending, exact native-session binding, report state,
+and restart reconciliation. A mode adapter owns everything that differs:
+operational admission, authority, quiescence, watcher or child settlement, and
+the compact facts needed for its retrospective. There is no parallel campaign
+parent, compatibility route, or second report state machine.
+
+Persisted and API vocabulary names episodes and their `mode` as
+`auto_research` or `experiment_loop`. **Auto-research** and **Experiment** remain
+the human-facing product labels. Mode-specific worker, mail, watcher, command,
+and pinned-control records remain separate resources attached to the episode;
+sharing a parent does not merge their authority or operational policies.
+
+An operational invocation ceiling counts only operational provider turns. It
+never counts report generation. Ending an episode fences new operational work
+before wrap-up. Completion, operational-budget exhaustion, unrecoverable
+failure, and a pause for human authority through a Proposal, Decision, or
+Blocker all enter `wrapping_up`. Pressing **Stop** is the sole ending that skips
+report generation: it retains its mode's graceful settlement semantics and
+terminalizes without a report or report error.
+
+During report generation Runs shows only **Wrapping up visualization and
+report** on the episode parent. The internal report task, attempt count, and
+provider recovery controls are not human-facing and spend no operational unit.
+The exact episode session and actor-owned stage resume with one minimal
+continuation containing only:
+
+- the durable ending and whether the retrospective is partial;
+- the official episode-report skill and exact output path; and
+- one compact immutable mode-produced wrap-up receipt containing final accepted
+  graph result, final watcher or child state, and any ending diagnostic.
+
+The native session already holds its operational context, so RCP never rebuilds
+or resends the graph, research state, episode history, or transcript for this
+turn. A report resume that has lost the exact session or stage fails visibly; it
+never starts a fresh session silently.
+
+One hidden report allocation permits at most **three provider turns total**: an
+initial attempt and at most two automatic retries or same-session corrections.
+Every attempt clears the one exact `episode-report.html` output before launch.
+Missing, invalid, or unsafe HTML is returned to the same session with the exact
+diagnostic. A provider failure may consume another attempt only while exact
+resume remains mechanically available; loss of that binding ends report
+generation immediately. The attempt count and final error are durable, so a
+restart neither duplicates a successful report nor exceeds the limit.
+
+A valid report is captured as immutable bounded HTML and served through the
+existing opaque sandbox. The official versioned **episode-report** skill requires
+an inherently visual retrospective through prompting; RCP does not score or
+mechanically inspect whether the page is visual. The common skill owns the
+artifact, safety, and retrospective rules and carries two mode guides:
+
+- Experiment-loop reporting emphasizes objective, method and configuration,
+  attempts, observations, Evidence, failures, limitations, and the resulting
+  human-authority pause or next step.
+- Auto-research reporting additionally emphasizes epistemic movement,
+  Decisions, delegated-agent orchestration, failures, and the briefing needed
+  for the researcher to resume control.
+
+The report has no Patch, watcher, command, Proposal, or graph-authority output
+channel and never determines the episode's semantic verdict. If all permitted
+turns fail, the episode terminalizes anyway, Runs shows the durable
+report-generation error where the report control would have appeared, no Retry
+or Resume is offered, and new episodes and unrelated work remain available.
+
 ## Experiment control and watchers
 
 Experiment control and generic watchers are separate mechanisms. The Experiment
@@ -978,9 +1051,10 @@ semantic `Experiment.status` or the latest episode's outcome.
 
 Activating either label starts one bounded Experiment-loop episode with a durable
 episode id, invocation 1, and the current node `invocation_ceiling` pinned as
-that episode's ceiling. Every attributed watcher wake consumes one further unit
-of the pinned ceiling. A prior completed episode retains its own used / ceiling
-values as immutable operational history even if the node setting later changes.
+that episode's operational ceiling. Every attributed watcher wake consumes one
+further operational unit; hidden report generation never does. A prior completed
+episode retains its own used / ceiling values as immutable operational history
+even if the node setting later changes.
 Runs and the node drawer separately show the current node value as **Next episode
 limit**; that prospective value never repaints historical episode budgets, and
 the next episode pins it when invocation 1 starts. The start action itself
@@ -1086,7 +1160,9 @@ inside the already-authorized turn and can never clear the stop intent or
 reenable automatic watcher delivery; **Start new episode** stays unavailable
 until the turn resolves. The next **Start new episode** action creates a fresh
 episode whose staged watcher state includes the stopped episode's records as
-inspectable context with no delivered trigger.
+inspectable context with no delivered trigger. Stop is the explicit human
+decision that no retrospective is needed, so this ending alone bypasses the
+shared visual-report wrap-up.
 
 Recovery of a bound episode never silently falls back to a fresh provider
 session. If RCP proves the pinned session, exact stage, or continuation context
@@ -1102,19 +1178,22 @@ may finish, but Stop prevents launching a new repair from an old rejected result
 
 When the current episode reaches `invocation_ceiling`, RCP starts no automatic
 wake. Completed ungrouped watchers and ready groups remain visibly pending and
-unconsumed. The next human **Start new episode** action creates a fresh episode
-and, when a compatible watcher or group is pending, atomically claims and
-delivers it as invocation 1 with its original attribution. This is the only
-counter reset; creating or resolving a Proposal does not reset or resume the
-loop by itself.
+unconsumed. Once its last operational turn settles, the parent wraps up the
+exhausted episode and generates its report without spending another operational
+unit. After report success or final non-blocking report error, the next human
+**Start new episode** action creates a fresh episode and, when a compatible
+watcher or group is pending, atomically claims and delivers it as invocation 1
+with its original attribution. This is the only counter reset; creating or
+resolving a Proposal does not reset or resume the loop by itself.
 
 Debug bookkeeping precommits a mechanical fault, change, and predicted effect
 when the agent chooses to record a debug attempt. Scientific disappointment is
 not a mechanical fault. Optional completion criteria are pinned and shown for
 interpretation but never mechanically control start, retry, or exit. A Proposal,
 Blocker, or other human-authority pause is an exit from the current episode;
-after resolution, a human **Start new episode** action starts the next authorized
-episode.
+the parent generates the partial visual report before the episode terminalizes.
+After resolution, a human **Start new episode** action starts the next authorized
+episode rather than resuming the old one.
 
 ### Experiment-loop context
 
@@ -1364,13 +1443,14 @@ repository leases, stale-record policy, and direct graph manipulation remain ope
 in [`open-questions.md`](open-questions.md). Graph-wide scheduling is no longer
 among them; it is bounded by the campaign below.
 
-## Auto-research campaigns
+## Auto-research episode mode
 
-A campaign is one bounded task in which a project-owned **orchestrator** profile
-pushes the research forward without a human approving each step. Exactly one
-profile carries this authority and exactly one campaign runs per project at a
-time. There is no family of elevated agents; the moment a second profile has
-almost the same authority, the line stops being explainable.
+An Auto-research episode is one bounded episode mode in which a project-owned
+**orchestrator** profile pushes the research forward without a human approving
+each step. Exactly one profile carries this authority and exactly one live
+Auto-research episode runs per project at a time. There is no family of elevated
+agents; the moment a second profile has almost the same authority, the line
+stops being explainable.
 
 The human starts it from the project header, beside **Ask**, because the action
 is project-wide and belongs where project-wide actions live. They set the budget
@@ -1378,9 +1458,9 @@ and may type a starting instruction. That instruction is optional, is ordinary
 prose, and grants no authority — it exists so the orchestrator's first paid
 invocation goes on research rather than on choosing where to begin.
 
-### Campaign scope and its brakes
+### Auto-research scope and its brakes
 
-A campaign is scoped to the **project**, not to whatever the human was reading
+An Auto-research episode is scoped to the **project**, not to whatever the human was reading
 when they started it. It may create Evidence, run Experiments, and open Blockers
 anywhere in the project graph.
 
@@ -1398,16 +1478,16 @@ later.
 The orchestrator may create new ResearchQuestions and Hypotheses directly, and it
 has full direct control of Evidence, Decisions, Experiments, and Blockers —
 including choosing a governed Decision, which lets it satisfy an Experiment's
-readiness gate itself inside the campaign the human authorized.
+readiness gate itself inside the episode the human authorized.
 
 Once a ResearchQuestion or Hypothesis exists, the orchestrator changes it only
 through a Proposal, and **every agent-produced Proposal waits for a human**.
-Neither the orchestrator nor a child approves one. Task or campaign lineage never
+Neither the orchestrator nor a child approves one. Task or episode lineage never
 confers approval authority: the orchestrator writes the instructions for the
 child whose Proposal it would otherwise judge, so any such rule would be one step
 long.
 
-Pending epistemic review never stops independent campaign work. The orchestrator
+Pending epistemic review never stops independent Auto-research work. The orchestrator
 raises the Proposal and continues elsewhere.
 
 ### Seating
@@ -1422,74 +1502,78 @@ rather than delegating it.
 
 ### Budget and termination
 
-One number for the whole campaign, set when the human presses the button and
+One number for the whole Auto-research episode, set when the human presses the button and
 defaulting to **10 invocations** from Settings. It is typed in invocations and
 carries exactly the existing `invocation_ceiling` semantics; the usage ledger
 shows observed cost beside it, so the enforced number stays exact while the
 legible number stays honest. It is never per-worker — per-worker ceilings would
 force the human into the capacity planning they are delegating.
 
-Everything spends from that one pot: the orchestrator's own turns, every worker
-turn, and every wake, whether watcher, graph condition, or message. No exceptions
-is what makes orchestrator/worker ping-pong terminate by exhaustion rather than
-by good behavior.
+Everything operational spends from that one pot: the orchestrator's own turns,
+every worker turn, and every wake, whether watcher, graph condition, or message.
+The hidden report allocation belongs to the parent episode lifecycle and never
+spends from or appears in this operational pot. No operational exceptions is
+what makes orchestrator/worker ping-pong terminate by exhaustion rather than by
+good behavior.
 
-One unit is **reserved for the wrap-up report**, because a report is required on
-every ending and exhaustion is an ending. Without the reservation, running out of
-budget would be the one outcome that cannot explain itself.
-
-At exhaustion, current turns finish, nothing new starts, the campaign sits in
-**Needs action**, and the human may reauthorize. **Stop** generalizes the
+At exhaustion, current turns finish, nothing new starts, the episode generates
+its visual report, then sits in **Needs action**. Reauthorization creates a new
+Auto-research episode at invocation one with a fresh native session; it never
+reopens the exhausted parent or appends a second report to it.
+**Stop** generalizes the
 Experiment **Stop loop** exactly — intent persisted first, current turns finishing
 normally, valid patches still applying, existing and newly emitted watchers
-retained as `stopped`, no new claim winning. There is no second budget, second
-stop, or second wake path.
+retained as `stopped`, no new claim winning. Stop alone skips report generation.
+There is no second budget, second stop, or second wake path.
 
 Normal completion is explicit. The orchestrator invokes one idempotent staged
 `finish` command; RCP never mistakes an actor sleeping on mail or a watcher, or a
-temporarily quiet campaign, for completion.
+temporarily quiet episode, for completion.
 
 Provider, network, rate-limit, and resumable native-session failures of the sole
 orchestrator remain recoverable through the ordinary bounded backoff,
 Resume/Retry, and exact-session paths. Only an unrecoverable orchestrator failure
-ends the campaign. A worker failure remains visible work for the orchestrator to
-inspect and manage; it is never promoted into a campaign verdict. A terminal
-orchestrator failure fences new admissions, retires campaign watchers with the
+ends the episode. A worker failure remains visible work for the orchestrator to
+inspect and manage; it is never promoted into an episode verdict. A terminal
+orchestrator failure fences new admissions, retires episode watchers with the
 same durable Stop semantics, retains pending mail for the retrospective, and
-then produces the required partial report.
+then enters the shared partial visual-report wrap-up.
 
 ### Runs projection
 
-Human recovery and termination controls live on the campaign parent, never on an
-individual worker row. Runs derives two distinct projected outputs from durable
-campaign and orchestrator state rather than parsing diagnostic prose: exactly one
-campaign health and exactly one recommendation. The expanded detail presents
-them as one **Campaign health** view and one separate view labelled
-**Recommended next step**; the compact campaign row carries that same
-recommendation. Raw `campaign.status`, control-task status or phase, and worker
-status are not peer campaign states; task and worker statuses and diagnostics
-remain visible as supporting history.
+Human recovery and termination controls live on the Auto-research episode
+parent, never on an individual worker row. Runs derives two distinct projected
+outputs from durable episode and orchestrator state rather than parsing
+diagnostic prose: exactly one health and exactly one recommendation. The
+expanded detail presents them as one **Episode health** view and one separate
+view labelled **Recommended next step**; the compact Auto-research row carries
+that same recommendation. Parent status, control-task status or phase, and
+worker status are not peer episode states; task and worker statuses and
+diagnostics remain visible as supporting history.
 
 The projection is fixed by structured state:
 
-| Durable condition | Campaign health | Recommended next step |
+| Durable condition | Episode health | Recommended next step |
 |---|---|---|
 | Queued or starting | Starting | Wait for auto-research to start |
 | Healthy active work | Active | Let auto-research continue |
 | Automatic recovery pending | Recovering | Wait for automatic recovery |
 | Exact Resume or Retry available | Needs action | Use the valid Resume or Retry recovery |
 | Stop settling | Stopping gracefully | Wait for current work to finish |
-| Budget exhausted | Needs action | Reauthorize auto-research |
-| Healthy wrap-up | Writing report | Wait for the concluding report |
-| Terminal with a report | Completed, Stopped, or Failed | Open the concluding report |
+| Any non-Stop ending is fenced and reporting | Wrapping up visualization and report | Wait for wrap-up |
+| Exhausted wrap-up settled | Needs action | Reauthorize auto-research |
+| Completed or failed with a report | Completed or Failed | Open report |
+| Completed or failed with a report error | Completed or Failed | Review the report-generation error |
+| Stop settled | Stopped | No further action is needed |
 
-The expanded detail always keeps its **Campaign health** and **Recommended next
+The expanded detail always keeps its **Episode health** and **Recommended next
 step** views distinct. Pause and Stop are optional parent controls, not
 healthy-campaign recommendations, and each appears only when the current state
 declares it valid. Exact Resume or Retry appears only for actionable recovery;
 automatic recovery offers no duplicate manual Retry. Reauthorization appears at
 exhaustion, and the report control appears only when the terminal report exists.
-No recommendation names an unavailable action.
+A final report error is text, never a recovery control. No recommendation names
+an unavailable action.
 
 ### Mail
 
@@ -1559,47 +1643,26 @@ Three properties make the client safe:
 Requirements 2 and 3 are one mechanism: the event stream that makes commands
 auditable is the record that answers whether a key already ran.
 
-### The campaign report
+### The Auto-research report guide
 
-Every ending produces one durable HTML report — normal completion, budget
-exhaustion, human Stop, and failure alike. It is captured at wrap-up and kept. A
-regenerable report would change as the graph moved afterwards, and a record that
-changes is not a record; a report only on clean completion would stay silent for
-the two endings a person most needs explained.
+Auto-research uses the shared episode-report lifecycle above after normal
+completion, operational-budget exhaustion, or unrecoverable failure. Explicit
+human Stop alone says that no retrospective is wanted and bypasses it.
 
-A report for an unclean ending must read as partial, not as a tidy summary of
-work that did not happen.
+Before the parent enters shared wrap-up, the Auto-research adapter fences new
+admission and waits for every already-admitted child turn to settle so the
+retrospective cannot omit late work. Its compact immutable receipt covers the
+orchestrator and worker task lineage, staged commands and their outcomes, mail,
+watcher settlement, accepted graph results, pending epistemic Proposals, and the
+ending diagnostic. It does not restage raw graph or research context.
 
-RCP supplies a versioned campaign-report skill and requires the orchestrator to
-use it, so the skill is an RCP-owned orchestration dependency rather than an
-optional Settings selection. The skill is deliberately **minimal**: it names what
-the report must make legible — the campaign's reasoning and decisions, what
-failed, what progressed, and what still awaits a human — and leaves the form to
-the agent, which is expected to include visualizations and artifacts. It does not
-prescribe a section list. A report that no one wants to read is the failure mode
-here, and an over-specified template is how that happens.
-
-The report is not a Patch, carries no graph authority, and does not determine
-whether a campaign succeeded. Completed Experiments, Evidence, decided Decisions,
-and resolved Blockers do not enter the graph Inbox merely because auto-research
-touched them; the report is the retrospective surface instead.
-
-A missing or invalid report is a **correction**, not a campaign verdict. It is
-handed back to the same session with the exact diagnostic, under the bounded
-in-session correction ladder the Patch path already uses, and a correction round
-never repeats completed operational work. It renders through the existing
-sandboxed HTML boundary; a campaign document is not a reason to invent an
-unrestricted one.
-
-Wrap-up is the concluding turn of the campaign. The ending fence admits no new
-work, then RCP waits for every already-admitted child turn to settle so the
-retrospective cannot omit late work. The one reserved invocation resumes the
-sole orchestrator's exact native session and actor-owned stage, stages the
-required versioned `campaign-report` official skill, and requires exactly one
-`campaign-report.html` in that stage. RCP captures and exposes the report only
-after those child turns have settled and the HTML validates. A correction reuses
-that same report allocation, session, stage, skill, and output path; it never
-spends another unit or repeats campaign operations.
+The Auto-research mode guide makes the report legible as a briefing: why the
+orchestrator chose its path, how Decisions and epistemic state moved, what it
+delegated, what progressed or failed, and what still awaits the researcher. A
+report for an unclean ending reads as partial rather than implying unfinished
+work happened. Completed Experiments, Evidence, decided Decisions, and resolved
+Blockers do not enter the graph Inbox merely because Auto-research touched them;
+the visual report is the retrospective surface instead.
 
 ## Background tasks, concurrency, and provider readiness
 

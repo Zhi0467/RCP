@@ -79,7 +79,7 @@ canonical blueprint. Building the first must not silently alter the second.
 
 Graph-level scheduling across the research frontier is **no longer deferred**. It
 is decided as the bounded auto-research campaign in the blueprint's
-[Auto-research campaigns](research-control-panel-blueprint.md#auto-research-campaigns)
+[Auto-research episode mode](research-control-panel-blueprint.md#auto-research-episode-mode)
 section, and it remains outside this question — the two features share only the
 word "control."
 

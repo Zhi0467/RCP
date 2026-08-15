@@ -1,131 +1,159 @@
-import type { AgentTask, Campaign, CampaignEnding, CampaignStatus } from "./types";
+import type { AgentTask, Episode, EpisodeEnding, EpisodeStatus } from "./types";
 
-const LIVE_CAMPAIGN_STATUSES = new Set<CampaignStatus>([
+const LIVE_EPISODE_STATUSES = new Set<EpisodeStatus>([
   "queued",
   "running",
   "stopping",
   "wrapping_up",
-  "needs_action",
 ]);
 
-const CAMPAIGN_HEALTH_LABELS: Record<CampaignHealth, string> = {
+const EPISODE_HEALTH_LABELS: Record<EpisodeHealth, string> = {
   starting: "Starting",
   active: "Active",
   recovering: "Recovering",
   needs_action: "Needs action",
   stopping: "Stopping gracefully",
-  writing_report: "Writing report",
+  wrapping_up: "Wrapping up visualization and report",
   completed: "Completed",
   stopped: "Stopped",
   failed: "Failed",
 };
 
-export type CampaignTaskRole = "orchestrator" | "worker" | "wake" | "report";
+export type EpisodeTaskRole = "orchestrator" | "worker" | "wake";
 
-export interface CampaignTaskRow {
+export interface EpisodeTaskRow {
   task: AgentTask;
-  role: CampaignTaskRole;
+  role: EpisodeTaskRole;
   depth: number;
 }
 
-export type CampaignHealth =
+export type EpisodeHealth =
   | "starting"
   | "active"
   | "recovering"
   | "needs_action"
   | "stopping"
-  | "writing_report"
+  | "wrapping_up"
   | "completed"
   | "stopped"
   | "failed";
 
-export type CampaignRecommendationKind =
+export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 
-export interface CampaignRecommendation {
-  kind: CampaignRecommendationKind;
+export interface EpisodeRecommendation {
+  kind: EpisodeRecommendationKind;
   label: string;
   task: AgentTask | null;
-  reportId: string | null;
 }
 
-export interface CampaignTaskControl {
+export interface EpisodeTaskControl {
   kind: "pause" | "resume" | "retry";
   task: AgentTask;
 }
 
-type CampaignRecoveryControl = CampaignTaskControl & { kind: "resume" | "retry" };
+type EpisodeRecoveryControl = EpisodeTaskControl & { kind: "resume" | "retry" };
 
-export interface CampaignProjection {
-  health: CampaignHealth;
+export interface EpisodeProjection {
+  health: EpisodeHealth;
   healthLabel: string;
-  recommendation: CampaignRecommendation;
-  taskControl: CampaignTaskControl | null;
+  recommendation: EpisodeRecommendation;
+  taskControl: EpisodeTaskControl | null;
 }
 
-export function isLiveCampaign(campaign: Campaign): boolean {
-  return LIVE_CAMPAIGN_STATUSES.has(campaign.status);
+export function isLiveEpisode(episode: Episode): boolean {
+  return LIVE_EPISODE_STATUSES.has(episode.status);
 }
 
-export function currentCampaignControlTask(
-  campaign: Campaign,
-  tasks: AgentTask[] = campaign.tasks,
+export function mergeEpisode(episodes: Episode[], nextEpisode: Episode): Episode[] {
+  return [
+    nextEpisode,
+    ...episodes.filter((episode) => episode.episode_id !== nextEpisode.episode_id),
+  ].sort(
+    (left, right) =>
+      comparableTime(right.created_at) - comparableTime(left.created_at) ||
+      right.episode_id.localeCompare(left.episode_id),
+  );
+}
+
+export function currentEpisodeControlTask(
+  episode: Episode,
+  tasks: AgentTask[] = episode.tasks,
 ): AgentTask | null {
-  if (!campaign.current_control_task_id) return null;
-  return tasks.find((task) => task.operation_id === campaign.current_control_task_id) ?? null;
+  if (!episode.current_control_task_id) return null;
+  return tasks.find((task) => task.operation_id === episode.current_control_task_id) ?? null;
 }
 
-export function campaignProjection(
-  campaign: Campaign,
-  tasks: AgentTask[] = campaign.tasks,
-): CampaignProjection {
-  const task = currentCampaignControlTask(campaign, tasks);
-  if (
-    campaign.status === "succeeded" ||
-    campaign.status === "stopped" ||
-    campaign.status === "failed"
-  ) {
-    const report = campaign.reports.at(-1);
-    return projectCampaign(
-      campaign.status === "succeeded" ? "completed" : campaign.status,
-      report
-        ? recommendation("open_report", "Open the concluding report", task, report.report_id)
-        : recommendation(
-            campaign.status === "failed" ? "review" : "none",
-            campaign.status === "succeeded"
-              ? "No further action is needed"
-              : campaign.status === "stopped"
-                ? "No further action is available"
-                : "Review the campaign failure",
-            task,
-          ),
+export function episodeProjection(
+  episode: Episode,
+  tasks: AgentTask[] = episode.tasks,
+): EpisodeProjection {
+  const task = currentEpisodeControlTask(episode, tasks);
+
+  if (episode.wrapup_state === "pending" || episode.wrapup_state === "running") {
+    return projectEpisode(
+      "wrapping_up",
+      recommendation("wait", "Wrapping up visualization and report", task),
     );
   }
-  if (campaign.recovery?.status === "pending") {
-    return projectCampaign(
-      "recovering",
+
+  if (episode.report && episode.wrapup_state === "ready") {
+    return projectEpisode(
+      episode.status === "completed"
+        ? "completed"
+        : episode.status === "failed"
+          ? "failed"
+          : "needs_action",
+      recommendation("open_report", "Open report", task),
+    );
+  }
+
+  if (episode.wrapup_state === "failed") {
+    return projectEpisode(
+      episode.status === "completed"
+        ? "completed"
+        : episode.status === "failed"
+          ? "failed"
+          : "needs_action",
+      recommendation("review", "Report generation ended with an error", task),
+    );
+  }
+
+  if (episode.status === "stopped") {
+    return projectEpisode(
+      "stopped",
+      recommendation("none", "No further action is available", task),
+    );
+  }
+
+  if (episode.status === "completed" || episode.status === "failed") {
+    return projectEpisode(
+      episode.status,
       recommendation(
-        "wait",
-        campaign.recovery.purpose === "report_admission"
-          ? "Wait for automatic report recovery"
-          : "Wait for automatic turn recovery",
+        episode.status === "failed" ? "review" : "none",
+        episode.status === "failed" ? "Review the episode failure" : "No further action is needed",
         task,
       ),
     );
   }
-  if (
-    campaign.status === "needs_action" &&
-    campaign.ending === "exhausted" &&
-    campaign.can_reauthorize
-  ) {
-    return projectCampaign(
-      "needs_action",
-      recommendation("reauthorize", "Add invocations to continue", task),
+
+  if (episode.recovery?.status === "pending") {
+    return projectEpisode(
+      "recovering",
+      recommendation("wait", "Wait for automatic turn recovery", task),
     );
   }
-  const recoveryControl = campaignRecoveryControl(task);
+
+  if (episode.status === "needs_action" && episode.can_reauthorize) {
+    return projectEpisode(
+      "needs_action",
+      recommendation("reauthorize", "Start a new authorized episode", task),
+    );
+  }
+
+  const recoveryControl = episodeRecoveryControl(task);
   if (recoveryControl) {
-    return projectCampaign(
+    return projectEpisode(
       "needs_action",
       recommendation(
         recoveryControl.kind,
@@ -135,76 +163,74 @@ export function campaignProjection(
       recoveryControl,
     );
   }
-  if (campaign.status === "stopping") {
-    return projectCampaign(
+
+  if (episode.status === "stopping") {
+    return projectEpisode(
       "stopping",
       recommendation("wait", "Wait for the current turn to finish", task),
     );
   }
+
   if (
     task &&
     (task.status === "paused" || task.status === "interrupted" || task.status === "failed")
   ) {
-    return projectCampaign(
+    return projectEpisode(
       "needs_action",
       recommendation("review", "Review the blocked turn", task),
     );
   }
-  if (campaign.status === "wrapping_up") {
-    return projectCampaign(
-      "writing_report",
-      recommendation("wait", "Wait for the concluding report", task),
-      pauseControl(task),
-    );
-  }
-  if (campaign.status === "queued" || task?.status === "queued") {
-    return projectCampaign(
+
+  if (episode.status === "queued" || task?.status === "queued") {
+    return projectEpisode(
       "starting",
       recommendation("wait", "Wait for auto-research to start", task),
     );
   }
-  if (campaign.status === "needs_action") {
-    return projectCampaign(
+
+  if (episode.status === "needs_action") {
+    return projectEpisode(
       "needs_action",
-      recommendation("review", "Review the campaign state", task),
+      recommendation("review", "Review the episode state", task),
     );
   }
+
   if (task?.status === "pausing") {
-    return projectCampaign(
+    return projectEpisode(
       "active",
       recommendation("wait", "Wait for the current turn to pause", task),
     );
   }
-  return projectCampaign(
+
+  return projectEpisode(
     "active",
     recommendation("continue", "Let auto-research continue", task),
     pauseControl(task),
   );
 }
 
-function projectCampaign(
-  health: CampaignHealth,
-  recommendation: CampaignRecommendation,
-  taskControl: CampaignTaskControl | null = null,
-): CampaignProjection {
+function projectEpisode(
+  health: EpisodeHealth,
+  next: EpisodeRecommendation,
+  taskControl: EpisodeTaskControl | null = null,
+): EpisodeProjection {
   return {
     health,
-    healthLabel: CAMPAIGN_HEALTH_LABELS[health],
-    recommendation,
+    healthLabel: EPISODE_HEALTH_LABELS[health],
+    recommendation: next,
     taskControl,
   };
 }
 
 function recommendation(
-  kind: CampaignRecommendationKind,
+  kind: EpisodeRecommendationKind,
   label: string,
   task: AgentTask | null,
-  reportId: string | null = null,
-): CampaignRecommendation {
-  return { kind, label, task, reportId };
+): EpisodeRecommendation {
+  return { kind, label, task };
 }
 
-function campaignRecoveryControl(task: AgentTask | null): CampaignRecoveryControl | null {
+function episodeRecoveryControl(task: AgentTask | null): EpisodeRecoveryControl | null {
   if (!task) return null;
   if (task.status === "paused") {
     if (task.can_resume) return { kind: "resume", task };
@@ -217,11 +243,11 @@ function campaignRecoveryControl(task: AgentTask | null): CampaignRecoveryContro
   return null;
 }
 
-function pauseControl(task: AgentTask | null): CampaignTaskControl | null {
+function pauseControl(task: AgentTask | null): EpisodeTaskControl | null {
   return task?.status === "running" && task.can_pause ? { kind: "pause", task } : null;
 }
 
-export function campaignEndingLabel(ending: CampaignEnding): string {
+export function episodeEndingLabel(ending: EpisodeEnding): string {
   switch (ending) {
     case "completed":
       return "Completed";
@@ -231,33 +257,29 @@ export function campaignEndingLabel(ending: CampaignEnding): string {
       return "Stopped";
     case "failed":
       return "Failed";
+    case "human_pause":
+      return "Human-authority pause";
   }
 }
 
-export function campaignReportPreviewUrl(
-  projectId: string,
-  campaignId: string,
-  reportId: string,
-): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/campaigns/${encodeURIComponent(campaignId)}/reports/${encodeURIComponent(reportId)}/preview`;
+export function episodeReportPreviewUrl(projectId: string, episodeId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/report/preview`;
 }
 
-export function campaignTaskRows(campaign: Campaign, tasks: AgentTask[]): CampaignTaskRow[] {
-  const campaignTasks = tasks
-    .filter((task) => task.campaign_id === campaign.campaign_id)
+export function episodeTaskRows(episode: Episode, tasks: AgentTask[]): EpisodeTaskRow[] {
+  const episodeTasks = tasks
+    .filter((task) => task.episode_id === episode.episode_id)
     .sort(compareTaskTime);
-  const byId = new Map(campaignTasks.map((task) => [task.operation_id, task]));
-  return campaignTasks.map((task) => ({
+  const byId = new Map(episodeTasks.map((task) => [task.operation_id, task]));
+  return episodeTasks.map((task) => ({
     task,
-    role: campaignTaskRole(campaign, task),
-    depth: campaignTaskDepth(task, byId),
+    role: episodeTaskRole(episode, task),
+    depth: episodeTaskDepth(task, byId),
   }));
 }
 
-export function campaignTaskRole(campaign: Campaign, task: AgentTask): CampaignTaskRole {
-  const declared = task.request.role ?? task.request.campaign_role ?? task.request.invocation_role;
-  if (declared === "report") return "report";
-  if (task.request.campaign_phase === "report" || task.request.report_ending) return "report";
+export function episodeTaskRole(episode: Episode, task: AgentTask): EpisodeTaskRole {
+  const declared = task.request.role ?? task.request.invocation_role;
   if (
     task.request.wake_cause ||
     task.request.trigger === "watcher" ||
@@ -267,15 +289,15 @@ export function campaignTaskRole(campaign: Campaign, task: AgentTask): CampaignT
     return "wake";
   }
   if (declared === "worker") return "worker";
-  if (task.operation_id === campaign.root_operation_id) return "orchestrator";
+  if (task.operation_id === episode.root_operation_id) return "orchestrator";
   if (declared === "orchestrator" || declared === "wake") return declared;
-  if (task.kind !== "campaign" || task.request.control_node_id || task.request.node_id) {
+  if (task.kind !== "auto_research" || task.request.control_node_id || task.request.node_id) {
     return "worker";
   }
   return "orchestrator";
 }
 
-export function campaignTaskRoleLabel(role: CampaignTaskRole): string {
+export function episodeTaskRoleLabel(role: EpisodeTaskRole): string {
   switch (role) {
     case "orchestrator":
       return "Orchestrator";
@@ -283,8 +305,6 @@ export function campaignTaskRoleLabel(role: CampaignTaskRole): string {
       return "Worker";
     case "wake":
       return "Wake";
-    case "report":
-      return "Report";
   }
 }
 
@@ -292,7 +312,40 @@ export function formatTokenCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-function campaignTaskDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
+function episodeTaskDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
+  const actorOperationId = episodeActorOperationId(task);
+  const actorOrigin = actorOperationId === null ? null : byId.get(actorOperationId);
+  if (actorOrigin) return episodeActorDepth(actorOrigin, byId);
+  return episodeAncestryDepth(task, byId);
+}
+
+function episodeActorDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
+  let depth = 0;
+  let current = task;
+  let parentId = current.parent_operation_id;
+  const seen = new Set<string>([current.operation_id]);
+  while (parentId && byId.has(parentId) && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    if (
+      (episodeActorOperationId(current) ?? current.operation_id) !==
+      (episodeActorOperationId(parent) ?? parent.operation_id)
+    ) {
+      depth += 1;
+    }
+    current = parent;
+    parentId = current.parent_operation_id;
+  }
+  return Math.min(depth, 4);
+}
+
+function episodeActorOperationId(task: AgentTask): string | null {
+  const value = task.request.actor_operation_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function episodeAncestryDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
   let depth = 0;
   let parentId = task.parent_operation_id;
   const seen = new Set<string>();

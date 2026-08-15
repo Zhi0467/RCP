@@ -229,9 +229,24 @@ class HistoryManager:
     def load_patches(self) -> list[Patch]:
         with self._process_lock:
             return [
-                Patch.model_validate_json(path.read_text(encoding="utf-8"))
+                self._decode_persisted_patch(path.read_text(encoding="utf-8"))
                 for path in self._patch_paths()
             ]
+
+    @staticmethod
+    def _decode_persisted_patch(payload: str | bytes) -> Patch:
+        """Decode append-only history while keeping legacy lineage out of live parsing."""
+
+        document = json.loads(payload)
+        if isinstance(document, dict):
+            has_campaign_id = "campaign_id" in document
+            has_episode_id = "episode_id" in document
+            if has_campaign_id and has_episode_id:
+                raise ValueError("persisted Patch cannot contain both campaign_id and episode_id")
+            if has_campaign_id:
+                document = dict(document)
+                document["episode_id"] = document.pop("campaign_id")
+        return Patch.model_validate(document)
 
     def project_identity(
         self,
@@ -525,7 +540,7 @@ class HistoryManager:
                     patch.authorized_by,
                     patch.profile,
                     patch.task_id,
-                    patch.campaign_id,
+                    patch.episode_id,
                 )
             ):
                 raise ValueError("identity patches are system-owned and cannot carry attribution")
@@ -542,7 +557,7 @@ class HistoryManager:
                     "authorized_by": authorizer,
                     "profile": None,
                     "task_id": None,
-                    "campaign_id": None,
+                    "episode_id": None,
                 }
             )
 
@@ -562,12 +577,12 @@ class HistoryManager:
         if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
             raise ValueError("agent authority resolver returned another task or project")
         dispatch = require_apply(resolved, patch)
-        if dispatch.profile == "orchestrator" and resolved.campaign_id is None:
-            raise ValueError("orchestrator agent tasks require a canonical campaign_id")
+        if dispatch.profile == "orchestrator" and resolved.episode_id is None:
+            raise ValueError("orchestrator agent tasks require a canonical episode_id")
         assert resolved.authorized_by is not None
         authorizer = self._canonical_authorizer(resolved.authorized_by)
-        canonical = (authorizer, dispatch.profile, operation_id, resolved.campaign_id)
-        supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.campaign_id)
+        canonical = (authorizer, dispatch.profile, operation_id, resolved.episode_id)
+        supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.episode_id)
         if any(value is not None for value in supplied) and supplied != canonical:
             raise ValueError(
                 "agent patch attribution does not match the canonical task attribution"
@@ -577,7 +592,7 @@ class HistoryManager:
                 "authorized_by": authorizer,
                 "profile": dispatch.profile,
                 "task_id": operation_id,
-                "campaign_id": resolved.campaign_id,
+                "episode_id": resolved.episode_id,
             }
         )
 
@@ -597,7 +612,7 @@ class HistoryManager:
         profiles: dict[AgentExecutionProfile, AgentSurfaceConfig],
         provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
         skill_defaults: SkillDefaults | None = None,
-        default_campaign_invocation_ceiling: int | None = None,
+        default_auto_research_invocation_ceiling: int | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -611,7 +626,7 @@ class HistoryManager:
                 profiles,
                 provider_path_updates,
                 skill_defaults,
-                default_campaign_invocation_ceiling,
+                default_auto_research_invocation_ceiling,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
@@ -859,7 +874,7 @@ class HistoryManager:
         structural_failure: ReplayFailure | None = None
         for path in patch_paths:
             try:
-                patches.append(Patch.model_validate_json(path.read_text(encoding="utf-8")))
+                patches.append(self._decode_persisted_patch(path.read_text(encoding="utf-8")))
             except OSError as exc:
                 structural_failure = ReplayFailure(
                     revision=int(path.stem),
@@ -1231,7 +1246,3 @@ class HistoryManager:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-
-
-def history_from_path(value: str) -> HistoryManager:
-    return HistoryManager(load_manifest(value))

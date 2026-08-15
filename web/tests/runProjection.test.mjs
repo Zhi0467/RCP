@@ -273,6 +273,59 @@ test("Runs includes Experiment-loop tasks once and excludes generic chat and coa
   assert.equal(projection.actionable.length, 0);
 });
 
+test("a running Experiment retry supersedes a stale failed control attempt", () => {
+  const node = experiment("experiment/retry-active");
+  const episodeId = "episode-retry-active";
+  const failed = {
+    ...loopTask("failed-attempt", node.id, episodeId, "failed", "2026-08-14T09:50:00Z"),
+    can_retry: true,
+  };
+  const retry = {
+    ...loopTask(
+      "running-retry",
+      node.id,
+      episodeId,
+      "running",
+      "2026-08-14T09:51:00Z",
+      failed.operation_id,
+    ),
+    attempt: 2,
+  };
+  const staleControl = control(
+    {
+      ready: false,
+      reasons: ["An experiment loop is already active."],
+      episode_id: episodeId,
+      invocations_used: 3,
+      invocations_remaining: 7,
+    },
+    {
+      task_active: true,
+      current_operation_id: failed.operation_id,
+      current_status: "failed",
+      current_invocation: 3,
+    },
+  );
+
+  const run = buildExperimentRun(node, staleControl, [failed, retry], []);
+  assert.equal(run.currentTask.operation_id, retry.operation_id);
+  assert.equal(run.health, "agent_active");
+  assert.deepEqual(experimentRecommendation(run), {
+    step: "wait",
+    label: "Wait for the agent",
+  });
+
+  const entry = byId(
+    buildRunProjection({
+      nodes: [node],
+      tasks: [failed, retry],
+      experimentControl: { [node.id]: staleControl },
+    }),
+  ).get(node.id);
+  assert.equal(entry[0], "running");
+  assert.equal(entry[1].experiment.currentTask.operation_id, retry.operation_id);
+});
+
 test("Experiment watcher projection keeps each immutable group and ungrouped history distinct", () => {
   const nodeId = "experiment/grouped";
   const episodeId = "episode-grouped";

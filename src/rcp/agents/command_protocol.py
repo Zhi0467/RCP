@@ -270,7 +270,7 @@ def staged_command_broker_source() -> str:
 
 
 def command_authentication_payload(document: str) -> bytes:
-    """Canonical bytes covered by a campaign broker's per-request HMAC.
+    """Canonical bytes covered by an Auto-research broker's per-request HMAC.
 
     The broker signs the request exactly as the client wrote it, so verification
     has to canonicalize that same text. Rebuilding the payload from the validated
@@ -289,17 +289,6 @@ def command_authentication_payload(document: str) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-
-
-def credential_matches(value: CommandCredential, *, mailbox_id: str, token: str) -> bool:
-    """Compare a parsed credential with one active in-process turn binding."""
-
-    return (
-        _MAILBOX_ID.fullmatch(value.mailbox_id) is not None
-        and _CREDENTIAL.fullmatch(value.token) is not None
-        and value.mailbox_id == mailbox_id
-        and value.token == token
-    )
 
 
 def request_identity_is_well_formed(request: CommandRequest) -> bool:

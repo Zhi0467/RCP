@@ -121,21 +121,23 @@ def _record_loop(
         control_decision_bundle=[],
         control_completion_criteria=["The indexed loop reaches a conclusion."],
     )
-    store.create_agent_task(
+    store.create_experiment_episode_with_invocation(
         AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
+            episode_id=episode_id,
             kind="node_chat",
-            status="succeeded",
+            status="queued",
             request=request.model_dump(mode="json"),
             created_at=created_at,
             updated_at=created_at,
-            finished_at=created_at,
-            status_message="The loop invocation completed.",
-            phase="complete",
+            status_message="Waiting for the loop invocation.",
+            phase="queued",
             last_activity_at=created_at,
+            authorized_by=authorized_human(store),
         )
     )
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
 
 
 def _seed_indexed_project(app) -> tuple[str, str]:
@@ -153,6 +155,8 @@ def _seed_indexed_project(app) -> tuple[str, str]:
         operation_id="older-loop",
         created_at="2026-08-08T00:00:00+00:00",
     )
+    store.request_episode_stop(old_episode)
+    store.mark_episode_stop_skipped(old_episode)
     _record_loop(
         store,
         project_id,
@@ -193,7 +197,7 @@ def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
         return original(requested_project_id, requested_ids)
 
     monkeypatch.setattr(store, "experiment_loop_runtimes", capture)
-    response = client.get("/api/experiment-loops")
+    response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
     assert calls == [(project_id, ("exp/launched", "exp/never-run"))]
@@ -205,6 +209,7 @@ def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
         "project_reachable",
         "node",
         "control",
+        "episode",
     }
     assert entry["project_id"] == project_id
     assert entry["project_name"] == manifest.name
@@ -250,7 +255,7 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
         raise AssertionError("the experiment index must not open inactive projects")
 
     monkeypatch.setattr(restarted.state.catalog, "_open_service", refuse_open)
-    response = TestClient(restarted).get("/api/experiment-loops")
+    response = TestClient(restarted).get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
     assert len(response.json()) == 1
@@ -327,7 +332,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     assert (
         cached["experiment_control"]["exp/launched"]["operational"]["current_status"] == "succeeded"
     )
-    response = client.get("/api/experiment-loops")
+    response = client.get("/api/episodes?mode=experiment_loop")
     assert response.status_code == 200
     assert response.json()[0]["node"]["current_summary"] == "Refreshed after Work."
     assert response.json()[0]["control"]["episode_id"] == current_episode
@@ -337,7 +342,7 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id, _current_episode = _seed_indexed_project(app)
+    project_id, current_episode = _seed_indexed_project(app)
     assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
 
     def fail_runtime_projection(_project_id, _experiment_ids):
@@ -348,7 +353,9 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
         "experiment_loop_runtimes",
         fail_runtime_projection,
     )
-    response = TestClient(app, raise_server_exceptions=False).get("/api/experiment-loops")
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/api/episodes?mode=experiment_loop"
+    )
 
     assert response.status_code == 500
 
@@ -541,7 +548,9 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id, _current_episode = _seed_indexed_project(app)
+    project_id, current_episode = _seed_indexed_project(app)
+    app.state.background_tasks.store.request_episode_stop(current_episode)
+    app.state.background_tasks.store.mark_episode_stop_skipped(current_episode)
     client = TestClient(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     entered_cache = threading.Event()
@@ -604,7 +613,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     running = app.state.background_tasks.store.agent_task(task.operation_id)
     assert running is not None
     assert running.status == "running"
-    before_release = client.get("/api/experiment-loops").json()[0]
+    before_release = client.get("/api/episodes?mode=experiment_loop").json()[0]
     assert before_release["node"]["current_summary"] == ""
     assert before_release["control"]["episode_id"] == episode_id
     assert before_release["control"]["operational"]["current_status"] == "running"
@@ -612,7 +621,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     release_cache.set()
     completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
     assert completed.status == "succeeded"
-    after_release = client.get("/api/experiment-loops").json()[0]
+    after_release = client.get("/api/episodes?mode=experiment_loop").json()[0]
     assert after_release["node"]["current_summary"] == ("Graph visible with terminal task.")
     assert after_release["control"]["episode_id"] == episode_id
     assert after_release["control"]["operational"]["current_status"] == "succeeded"
@@ -655,7 +664,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
     completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
 
     assert completed.status == expected_status
-    indexed = client.get("/api/experiment-loops").json()[0]
+    indexed = client.get("/api/episodes?mode=experiment_loop").json()[0]
     assert indexed["node"]["current_summary"] == f"Graph before {terminal_event}."
 
 
@@ -666,7 +675,7 @@ def test_experiment_index_fails_for_malformed_existing_cache(manifest, tmp_path:
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     app.state.catalog._cached_snapshot_path(project_id).write_text("{", encoding="utf-8")
 
-    response = client.get("/api/experiment-loops")
+    response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 503
 
@@ -688,7 +697,7 @@ def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: P
     del envelope["snapshot"]["home_space_id"]
     cache_path.write_text(json.dumps(envelope), encoding="utf-8")
 
-    response = client.get("/api/experiment-loops")
+    response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
     assert response.json()[0]["control"]["episode_id"] == current_episode
@@ -704,6 +713,6 @@ def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     app.state.catalog._cached_snapshot_path(project_id).unlink()
 
-    response = client.get("/api/experiment-loops")
+    response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 503

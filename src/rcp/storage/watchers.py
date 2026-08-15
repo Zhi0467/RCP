@@ -35,22 +35,8 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
-    CampaignActorBinding,
-    CampaignActorBusy,
-    CampaignBudgetExhausted,
-    CampaignBudgetMeter,
-    CampaignEnding,
-    CampaignInvocationRole,
-    CampaignMessageRecord,
-    CampaignMessageRole,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignRecoveryMode,
-    CampaignRecoveryPurpose,
-    CampaignRecoveryRecord,
-    CampaignRecoveryStatus,
-    CampaignReportRecord,
-    CampaignStatus,
+    AutoResearchActorBusy,
+    AutoResearchRole,
     ChatSessionContextRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
@@ -228,9 +214,9 @@ class WatcherStoreMixin:
     def _prepare_watcher_for_insert(record: StoredWatcherRecord) -> StoredWatcherRecord:
         continuation = record.continuation
         if continuation.patch_kind == "experiment_loop":
-            episode_id = record.experiment_episode_id or continuation.control_episode_id
-            if episode_id != record.experiment_episode_id:
-                record = record.model_copy(update={"experiment_episode_id": episode_id})
+            episode_id = record.episode_id or continuation.control_episode_id
+            if episode_id != record.episode_id:
+                record = record.model_copy(update={"episode_id": episode_id})
         if isinstance(record, GraphWatcherRecord):
             return record
         if record.status not in {"active", "degraded"} or record.next_check_at is not None:
@@ -264,7 +250,7 @@ class WatcherStoreMixin:
                 record.origin_task_kind,
                 record.chat_id,
                 record.node_id,
-                record.experiment_episode_id,
+                record.episode_id,
                 record.execution_host,
                 record.continuation.model_dump_json(),
             )
@@ -298,8 +284,6 @@ class WatcherStoreMixin:
             if any(count < 2 for count in group_counts.values()):
                 raise ValueError("an Experiment watcher group requires at least two observers")
         if continuation.patch_kind != "experiment_loop":
-            if any(record.experiment_episode_id is not None for record in records):
-                raise ValueError("only Experiment watchers may bind to an Experiment episode")
             return
         if not all(
             (
@@ -314,9 +298,7 @@ class WatcherStoreMixin:
         assert continuation.control_invocation_ceiling is not None
         if continuation.control_invocation > continuation.control_invocation_ceiling:
             raise ValueError("an experiment-loop watcher invocation exceeds its pinned ceiling")
-        if any(
-            record.experiment_episode_id != continuation.control_episode_id for record in records
-        ):
+        if any(record.episode_id != continuation.control_episode_id for record in records):
             raise ValueError("an Experiment watcher must bind explicitly to its control episode")
 
     @staticmethod
@@ -332,7 +314,7 @@ class WatcherStoreMixin:
             "origin_task_kind",
             "chat_id",
             "node_id",
-            "experiment_episode_id",
+            "episode_id",
             "execution_host",
             "continuation",
             "group_id",
@@ -347,31 +329,31 @@ class WatcherStoreMixin:
 
     @staticmethod
     def _insert_watcher(connection: sqlite3.Connection, record: StoredWatcherRecord) -> None:
-        stopped_campaign = connection.execute(
+        stopped_episode = connection.execute(
             """
             SELECT COALESCE(
-                       campaign.stop_requested_at,
-                       campaign.ended_at,
-                       campaign.updated_at
+                       episode.stop_requested_at,
+                       episode.ended_at,
+                       episode.updated_at
                    ) AS stop_requested_at
             FROM graph_runs AS run
-            JOIN campaigns AS campaign ON campaign.campaign_id = run.campaign_id
+            JOIN episodes AS episode ON episode.episode_id = run.episode_id
             WHERE run.operation_id = ?
               AND (
-                  campaign.stop_requested_at IS NOT NULL
-                  OR campaign.ending IS NOT NULL
+                  episode.stop_requested_at IS NOT NULL
+                  OR episode.ending IS NOT NULL
               )
             """,
             (record.origin_operation_id,),
         ).fetchone()
-        if stopped_campaign is not None and record.status != "stopped":
+        if stopped_episode is not None and record.status != "stopped":
             record = record.model_copy(
                 update={
                     "status": "stopped",
                     "notified": True,
                     "next_check_at": None,
                     "stopped_by": "loop",
-                    "stopped_at": stopped_campaign["stop_requested_at"],
+                    "stopped_at": stopped_episode["stop_requested_at"],
                 }
             )
         if isinstance(record, GraphWatcherRecord):
@@ -393,7 +375,7 @@ class WatcherStoreMixin:
             """
             INSERT INTO watchers (
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, node_id, experiment_episode_id, execution_host,
+                chat_id, node_id, episode_id, execution_host,
                 check_command, log_path, cwd, graph_condition_json, armed_revision,
                 continuation_json, status, created_at, last_checked_at,
                 last_exit_code, last_error, completed_at, next_check_at,
@@ -409,7 +391,7 @@ class WatcherStoreMixin:
                 record.origin_task_kind,
                 record.chat_id,
                 record.node_id,
-                record.experiment_episode_id,
+                record.episode_id,
                 record.execution_host,
                 check_command,
                 log_path,
@@ -699,10 +681,7 @@ class WatcherStoreMixin:
                 root_request = json.loads(root["request_json"])
                 episode_id = root_request.get("control_episode_id")
                 episode_row = (
-                    connection.execute(
-                        "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-                        (episode_id,),
-                    ).fetchone()
+                    cls._experiment_episode_row(connection, episode_id)
                     if isinstance(episode_id, str)
                     else None
                 )
@@ -934,25 +913,13 @@ class WatcherStoreMixin:
                     return None
                 if self._has_active_chat_overlap(connection, record):
                     return None
-                if record.kind == "campaign":
-                    campaign_id = record.request.get("campaign_id")
-                    if not isinstance(campaign_id, str) or campaign_id != record.campaign_id:
-                        raise ValueError("campaign watcher wake has invalid campaign lineage")
-                    campaign_row = connection.execute(
-                        "SELECT * FROM campaigns WHERE campaign_id = ?",
-                        (campaign_id,),
-                    ).fetchone()
-                    if campaign_row is None:
-                        raise KeyError(campaign_id)
-                    role = TypeAdapter(CampaignInvocationRole).validate_python(
-                        record.request.get("role")
-                    )
-                    self._insert_campaign_task(
-                        connection,
-                        self._campaign_record(campaign_row),
-                        record,
-                        role,
-                    )
+                if record.kind == "auto_research":
+                    episode_id = record.request.get("episode_id")
+                    if not isinstance(episode_id, str) or episode_id != record.episode_id:
+                        raise ValueError("Auto-research watcher wake has invalid episode lineage")
+                    episode = self._load_auto_research_episode(connection, episode_id)
+                    role = TypeAdapter(AutoResearchRole).validate_python(record.request.get("role"))
+                    self._insert_paid_auto_research_task(connection, episode, record, role)
                 else:
                     self._insert_agent_task(connection, record)
                 cursor = connection.execute(
@@ -966,7 +933,7 @@ class WatcherStoreMixin:
                 )
                 if cursor.rowcount != len(ids):
                     raise RuntimeError("watcher notification changed during its transaction")
-        except CampaignActorBusy:
+        except AutoResearchActorBusy:
             return None
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not queue the watcher notification task.") from exc
@@ -1083,16 +1050,17 @@ class WatcherStoreMixin:
 
             episode_ids = sorted(
                 {
-                    item.experiment_episode_id
+                    item.episode_id
                     for item in watchers
-                    if item.experiment_episode_id is not None
+                    if item.continuation.patch_kind == "experiment_loop"
+                    and item.episode_id is not None
                 }
             )
             if episode_ids:
                 episode_placeholders = ",".join("?" for _ in episode_ids)
                 connection.execute(
                     f"""
-                    UPDATE experiment_episodes
+                    UPDATE experiment_episode_state
                     SET session_diagnostic = ?, updated_at = ?
                     WHERE episode_id IN ({episode_placeholders})
                     """,
@@ -1140,46 +1108,46 @@ class WatcherStoreMixin:
         continuation = first.continuation
         request = record.request
         trigger = request.get("trigger")
-        campaign_wake = first.origin_task_kind == "campaign"
-        if campaign_wake:
-            if record.kind != "campaign" or record.campaign_id is None:
-                raise ValueError("campaign watchers must wake a campaign task")
+        auto_research_wake = first.origin_task_kind == "auto_research"
+        if auto_research_wake:
+            if record.kind != "auto_research" or record.episode_id is None:
+                raise ValueError("Auto-research watchers must wake an Auto-research task")
             actor_bindings: set[tuple[object, ...]] = set()
             for watcher in watchers:
                 origin = connection.execute(
                     """
-                    SELECT run.campaign_id, run.request_json, invocation.role
+                    SELECT run.episode_id, run.request_json, invocation.role
                     FROM graph_runs AS run
-                    JOIN campaign_invocations AS invocation
+                    JOIN auto_research_invocations AS invocation
                       ON invocation.operation_id = run.operation_id
                     WHERE run.operation_id = ?
                     """,
                     (watcher.origin_operation_id,),
                 ).fetchone()
-                if origin is None or origin["campaign_id"] != record.campaign_id:
-                    raise ValueError("campaign watcher origin is outside the campaign")
+                if origin is None or origin["episode_id"] != record.episode_id:
+                    raise ValueError("Auto-research watcher origin is outside the episode")
                 origin_request = json.loads(origin["request_json"])
                 actor_bindings.add(
                     (
-                        origin["campaign_id"],
+                        origin["episode_id"],
                         origin_request.get("actor_operation_id") or watcher.origin_operation_id,
                         origin["role"],
                         origin_request.get("control_node_id"),
                     )
                 )
             if len(actor_bindings) != 1:
-                raise ValueError("one campaign watcher wake cannot merge different actors")
-            expected_campaign, expected_actor, expected_role, expected_seat = next(
+                raise ValueError("one Auto-research watcher wake cannot merge different actors")
+            expected_episode, expected_actor, expected_role, expected_seat = next(
                 iter(actor_bindings)
             )
             actual = (
-                request.get("campaign_id"),
+                request.get("episode_id"),
                 request.get("actor_operation_id"),
                 request.get("role"),
                 request.get("control_node_id"),
             )
-            if actual != (expected_campaign, expected_actor, expected_role, expected_seat):
-                raise ValueError("campaign watcher wake changed its canonical actor binding")
+            if actual != (expected_episode, expected_actor, expected_role, expected_seat):
+                raise ValueError("Auto-research watcher wake changed its actor binding")
         elif continuation.patch_kind == "experiment_loop":
             if (
                 record.kind != "node_chat"
@@ -1223,11 +1191,11 @@ class WatcherStoreMixin:
         )
         if request_policy != continuation_policy:
             raise ValueError("watcher notification changed its immutable delivery policy")
-        if campaign_wake:
+        if auto_research_wake:
             graph_wake = all(isinstance(item, GraphWatcherRecord) for item in watchers)
             expected_cause = "graph_condition" if graph_wake else "watcher"
             if request.get("wake_cause") != expected_cause:
-                raise ValueError("campaign watcher wake changed its continuation cause")
+                raise ValueError("Auto-research watcher wake changed its continuation cause")
             return
         if continuation.patch_kind != "experiment_loop":
             if trigger != "watcher":
@@ -1252,10 +1220,10 @@ class WatcherStoreMixin:
             newest_request = json.loads(newest["request_json"]) if newest is not None else None
             if newest_request is None or newest_request.get("control_episode_id") != episode_id:
                 raise ValueError("an automatic Experiment wake must use the newest episode")
-            episode_row = connection.execute(
-                "SELECT * FROM experiment_episodes WHERE episode_id = ?",
-                (episode_id,),
-            ).fetchone()
+            episode_row = ExperimentStoreMixin._experiment_episode_row(
+                connection,
+                episode_id,
+            )
             episode = (
                 RowMappingMixin._experiment_episode_record(episode_row)
                 if episode_row is not None

@@ -346,7 +346,7 @@ export function AgentTaskInspector({
         </div>
 
         {task &&
-          task.kind !== "campaign" &&
+          task.kind !== "auto_research" &&
           (task.can_pause ||
             task.can_resume ||
             task.can_retry ||

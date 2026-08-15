@@ -14,19 +14,21 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, Patch
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable
+
+if TYPE_CHECKING:
+    from rcp.background import AgentTaskExecution
 
 _STAGE_RETENTION_SECONDS = RUN_STAGE_RETENTION_DAYS * 24 * 3600
 _MAX_PATCH_CANDIDATES = 8

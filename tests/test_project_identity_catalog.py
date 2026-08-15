@@ -47,6 +47,7 @@ def _write_legacy_display(path: Path, project_id: str) -> None:
         "run_on": "laptop",
         "project_truth_scope": [],
         "default_run_truth_scope": [],
+        "default_campaign_invocation_ceiling": 10,
         "repositories": [],
         "machines": [],
         "primary_question": None,
@@ -90,7 +91,31 @@ def test_pre_identity_display_cache_remains_readable_before_legacy_adoption(
     assert status == "valid"
     assert cached is not None
     assert cached["home_space_id"] is None
+    assert cached["default_auto_research_invocation_ceiling"] == 10
+    assert "default_campaign_invocation_ceiling" not in cached
     assert "home_space_id" not in json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
+
+
+def test_display_cache_from_before_campaign_budget_remains_readable(
+    manifest,
+    tmp_path,
+) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    project_id = "pre-campaign-budget-project"
+    _legacy_record(manifest, store, project_id)
+    cache_path = catalog._cached_snapshot_path(project_id)
+    _write_legacy_display(cache_path, project_id)
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    del envelope["snapshot"]["default_campaign_invocation_ceiling"]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    status, cached = catalog.cached_snapshot_status(project_id)
+
+    assert status == "valid"
+    assert cached is not None
+    assert cached["default_auto_research_invocation_ceiling"] == 10
 
 
 def test_registered_legacy_project_auto_adopts_actual_id_once_and_rekeys_caches(

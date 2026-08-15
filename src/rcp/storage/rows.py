@@ -31,22 +31,6 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
-    CampaignActorBinding,
-    CampaignActorBusy,
-    CampaignBudgetExhausted,
-    CampaignBudgetMeter,
-    CampaignEnding,
-    CampaignInvocationRole,
-    CampaignMessageRecord,
-    CampaignMessageRole,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignRecoveryMode,
-    CampaignRecoveryPurpose,
-    CampaignRecoveryRecord,
-    CampaignRecoveryStatus,
-    CampaignReportRecord,
-    CampaignStatus,
     ChatSessionContextRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
@@ -126,8 +110,6 @@ class RowMappingMixin:
     def _watcher_record(row: sqlite3.Row) -> StoredWatcherRecord:
         data = dict(row)
         data["continuation"] = json.loads(data.pop("continuation_json"))
-        if "experiment_episode_id" not in data:
-            data["experiment_episode_id"] = data["continuation"].get("control_episode_id")
         data["notified"] = bool(data["notified"])
         graph_condition_json = data.pop("graph_condition_json", None)
         if graph_condition_json is None:
@@ -188,15 +170,21 @@ class RowMappingMixin:
         data["progress"] = round(min(0.99, max(0.0, progress)), 4) if status != "succeeded" else 1.0
         active = status in ACTIVE_AGENT_TASK_STATUSES
         stage_ready = not data.get("stage_host") or bool(data.get("stage_root"))
-        data["can_pause"] = status in {"queued", "running"}
+        visible = bool(data.get("visible", True))
+        data["visible"] = visible
+        data["can_pause"] = visible and status in {"queued", "running"}
         data["can_resume"] = (
-            status in {"paused", "interrupted"}
+            visible
+            and status in {"paused", "interrupted"}
             and bool(data.get("native_session_id"))
             and stage_ready
             and not recovery_abandoned
         )
         data["can_retry"] = (
-            status in {"paused", "interrupted", "failed"} and not active and not recovery_abandoned
+            visible
+            and status in {"paused", "interrupted", "failed"}
+            and not active
+            and not recovery_abandoned
         )
         return AgentTaskRecord.model_validate(data)
 
@@ -206,32 +194,6 @@ class RowMappingMixin:
         payload_json = data.pop("payload_json", None)
         data["payload"] = json.loads(payload_json) if payload_json else None
         return AgentTaskEventRecord.model_validate(data)
-
-    @staticmethod
-    def _campaign_record(row: sqlite3.Row) -> CampaignRecord:
-        data = dict(row)
-        data["authorized_by"] = RowMappingMixin._authorized_human_snapshot(data)
-        data.pop("authorized_space_id", None)
-        data.pop("authorized_user_id", None)
-        data.pop("authorized_display_name", None)
-        return CampaignRecord.model_validate(data)
-
-    @staticmethod
-    def _campaign_recovery_record(row: sqlite3.Row) -> CampaignRecoveryRecord:
-        return CampaignRecoveryRecord.model_validate(dict(row))
-
-    @staticmethod
-    def _campaign_report_record(row: sqlite3.Row) -> CampaignReportRecord:
-        return CampaignReportRecord.model_validate(dict(row))
-
-    @staticmethod
-    def _campaign_message_record(row: sqlite3.Row) -> CampaignMessageRecord:
-        data = dict(row)
-        data["authorized_by"] = RowMappingMixin._authorized_human_snapshot(data)
-        data.pop("authorized_space_id", None)
-        data.pop("authorized_user_id", None)
-        data.pop("authorized_display_name", None)
-        return CampaignMessageRecord.model_validate(data)
 
     @staticmethod
     def _authorized_human_snapshot(

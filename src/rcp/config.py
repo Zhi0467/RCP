@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from rcp.providers import DEFAULT_PROVIDER, AgentCapability, ProviderId
 from rcp.skill_registry import SkillDefaults
 
+DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
+
 
 class MachineConfig(BaseModel):
     alias: str
@@ -82,7 +84,11 @@ class AgentSurfaceConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     default_run_truth_scope: list[str]
-    default_campaign_invocation_ceiling: int = Field(default=10, ge=2)
+    default_auto_research_invocation_ceiling: int = Field(
+        default=DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
+        ge=1,
+        description="Operational invocations per newly authorized episode.",
+    )
     skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
     seed: AgentSurfaceConfig | None = None
     refresh: AgentSurfaceConfig | None = None
@@ -90,6 +96,22 @@ class AgentConfig(BaseModel):
     project_chat: AgentSurfaceConfig | None = None
     paper_coach: AgentSurfaceConfig | None = None
     orchestrator: AgentSurfaceConfig | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_auto_research_ceiling(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        legacy_key = "default_campaign_invocation_ceiling"
+        current_key = "default_auto_research_invocation_ceiling"
+        if legacy_key not in migrated:
+            return migrated
+        if current_key in migrated and migrated[current_key] != migrated[legacy_key]:
+            raise ValueError(f"agent.{legacy_key} conflicts with agent.{current_key}")
+        migrated.setdefault(current_key, migrated[legacy_key])
+        del migrated[legacy_key]
+        return migrated
 
 
 class SourcesConfig(BaseModel):
@@ -404,7 +426,7 @@ def write_agent_settings(
     profiles: dict[AgentExecutionProfile, AgentSurfaceConfig],
     provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
     skill_defaults: SkillDefaults | None = None,
-    default_campaign_invocation_ceiling: int | None = None,
+    default_auto_research_invocation_ceiling: int | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -412,10 +434,11 @@ def write_agent_settings(
         agent = tomlkit.table()
         document.add("agent", agent)
     agent["default_run_truth_scope"] = list(default_run_truth_scope)
-    agent["default_campaign_invocation_ceiling"] = (
-        manifest.agent.default_campaign_invocation_ceiling
-        if default_campaign_invocation_ceiling is None
-        else default_campaign_invocation_ceiling
+    agent.pop("default_campaign_invocation_ceiling", None)
+    agent["default_auto_research_invocation_ceiling"] = (
+        manifest.agent.default_auto_research_invocation_ceiling
+        if default_auto_research_invocation_ceiling is None
+        else default_auto_research_invocation_ceiling
     )
     selected_defaults = skill_defaults or manifest.agent.skill_defaults
     defaults_table = tomlkit.table()

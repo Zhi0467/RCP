@@ -31,81 +31,57 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  isActiveTask,
-  parseDismissedTaskIds,
-  projectActivityTask,
-  serializeDismissedTaskIds,
-  taskNotificationStorageKey,
-} from "./agentTasks";
-import {
-  chatIdForTask,
-  chatIndicator,
-  chatEntryConversationId,
-  groupChatConversations,
-  latestConversation,
-  newlyUnreadChatTaskIds,
-  type ChatKind,
-  type DraftConversation,
-} from "./chatWorkspace";
+import { isActiveTask } from "./agentTasks";
+import { chatIndicator, chatEntryConversationId, groupChatConversations } from "./chatWorkspace";
 import {
   api,
   ApiError,
-  exchangeTeamSession,
-  keepResultView,
-  loadCampaignMessages,
-  loadCampaigns as fetchCampaigns,
   loadProjectReadiness,
-  loadResultViews,
-  pinApiInstance,
-  reauthorizeCampaign,
-  registerIdentityNameRequiredHandler,
-  registerMutationFailureHandler,
-  sendCampaignMessage,
-  startCampaign,
-  stopCampaign,
+  reauthorizeEpisode,
+  sendEpisodeMessage,
+  startEpisode,
+  stopEpisode,
 } from "./api";
 import {
-  loadChatSummaryPage,
-  loadChatTranscript,
-  mergeChatSummaryPage,
-  nextChatSummaryOffset,
-  reconcileChatSelectionAfterRefresh,
-} from "./chatApi";
-import {
-  acceptCurrentBackendIdentity,
-  applyDesktopUpdate,
-  BACKEND_IDENTITY_EVENT,
   backendReconnectLabel,
-  checkDesktopUpdate,
-  DESKTOP_FOLDER_ACCESS_ACK_KEY,
   desktopShowReady,
-  desktopFolderAccessAcknowledgementValue,
-  desktopReconnectBackend,
   setDesktopWebviewZoom,
-  establishBackendIdentity,
   isDesktopRuntime,
   listenDesktopEvent,
-  needsDesktopFolderAccessAcknowledgement,
-  reverifyBackendIdentity,
-  verifyIdentityAfterMutationFailure,
-  type BackendIdentityEventDetail,
   type DesktopUpdate,
 } from "./desktopRuntime";
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
-import {
-  experimentBoardHref,
-  parseProjectHash,
-  projectHashAfterViewChange,
-} from "./experimentBoard";
+import { parseProjectHash } from "./experimentBoard";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { campaignReportPreviewUrl, isLiveCampaign } from "./campaigns";
-import type { DagViewport } from "./hooks/dagZoom";
+import { episodeReportPreviewUrl } from "./campaigns";
+import {
+  cloneAgentTasksSnapshot,
+  useAgentTasks,
+  type AgentTasksSnapshot,
+} from "./hooks/useAgentTasks";
+import { useActorIdentity } from "./hooks/useActorIdentity";
+import {
+  cloneChatStateSnapshot,
+  useChatState,
+  visibleChatTranscriptIds,
+  visibleUnreadChatId,
+  type ChatStateSnapshot,
+} from "./hooks/useChatState";
+import { useDesktopShell } from "./hooks/useDesktopShell";
+import { useEpisodeDialogs } from "./hooks/useEpisodeDialogs";
+import { useGraphSelection, type GraphSelectionTabSnapshot } from "./hooks/useGraphSelection";
+import {
+  cloneProjectHistorySnapshot,
+  useProjectHistory,
+  validationNoticeId,
+  type ProjectHistorySnapshot,
+} from "./hooks/useProjectHistory";
+import { startProjectCachePolling, useProjectTabs } from "./hooks/useProjectTabs";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
-import { CampaignRuns } from "./components/CampaignRuns";
+import { AutoResearchEpisodes } from "./components/CampaignRuns";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
@@ -147,23 +123,14 @@ import type {
   AgentTaskRequest,
   AgentUsageSnapshot,
   AppView,
-  Campaign,
-  CampaignMessage,
-  ChatSummary,
-  ChatTranscript,
   ExperimentControlState,
-  ExperimentLoopIndexEntry,
   GraphNode,
   GraphState,
   Health,
-  IdentityResponse,
   PaperSnapshot,
   ProjectCard,
   ProjectSnapshot,
-  ResultViewDescriptor,
-  RevisionSummary,
   TrustView,
-  ValidationMessage,
   WatcherRecord,
 } from "./types";
 import { decodeGraphState, decodeProjectSnapshot, DISPLAY_NAME_MAX_LENGTH } from "./types";
@@ -178,24 +145,36 @@ import {
   type TextScaleAction,
 } from "./textScale";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
-import {
-  adjacentProjectTabId,
-  closeProjectTab,
-  initialProjectHash,
-  isEditableShortcutTarget,
-  openProjectTab,
-  projectViewportRef,
-  projectTabShortcut,
-  type ProjectTab,
-  type ProjectViewState,
-} from "./projectTabs";
+
+export { revisionSummariesUrl } from "./hooks/useProjectHistory";
+export {
+  shouldLoadVisibleChatTranscript,
+  visibleChatTranscriptIds,
+  visibleUnreadChatId,
+} from "./hooks/useChatState";
+export {
+  LIVE_EPISODE_POLL_INTERVAL_MS,
+  resultViewLoadIsCurrent,
+  resultViewSelectionIsCurrent,
+  resultViewSelectionKey,
+  startLiveEpisodePolling,
+} from "./hooks/useEpisodeDialogs";
+export { relatedNodeWindowAction } from "./hooks/useGraphSelection";
+export {
+  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
+  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
+  PROJECT_TAB_CACHE_LIMIT,
+  cacheProjectTabState,
+  inactiveProjectTabState,
+  projectIdsForCacheHeartbeat,
+  projectTabStateForOpen,
+  singleFlightProjectCacheHeartbeat,
+  startProjectCachePolling,
+} from "./hooks/useProjectTabs";
+import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
-const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
-export const OPEN_PROJECT_HEARTBEAT_INTERVAL_MS = 3_000;
-export const ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS = 1_000;
-export const LIVE_CAMPAIGN_POLL_INTERVAL_MS = 1_500;
 
 export function shouldPollProviderSkillReadiness(
   inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
@@ -235,20 +214,6 @@ const NodeChat = lazy(() =>
   import("./components/NodeChat").then((module) => ({ default: module.NodeChat })),
 );
 
-const emptyGraph: GraphState = {
-  revision: 0,
-  nodes: {},
-  edges: {},
-  proposals: {},
-  ambiguities: {},
-  glossary: {},
-  validation_messages: [],
-  belief_transitions: [],
-  replay_status: "complete",
-  replay_failure: null,
-  ontology: { types: [], fields: [], relations: [] },
-};
-
 const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> = [
   { view: "overview", label: "Overview", icon: <LayoutList size={14} /> },
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
@@ -258,13 +223,6 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
   { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
 ];
-
-export function revisionSummariesUrl(apiBase: string, revision?: number): string {
-  const path = `${apiBase}/history/summaries`;
-  return revision === undefined
-    ? path
-    : `${path}?from_revision=${revision}&to_revision=${revision}`;
-}
 
 export async function loadCanonicalRevision(
   fetchJson: <T>(path: string) => Promise<T>,
@@ -279,17 +237,6 @@ export function canonicalRevisionNeedsReload(
   renderedRevision: number,
 ): boolean {
   return observedRevision > renderedRevision;
-}
-
-export function relatedNodeWindowAction(
-  sourceSlot: DetailWindowSlot,
-  targetNodeId: string,
-  originalNodeId: string | null,
-  companionNodeId: string | null,
-): { kind: "focus" | "open"; slot: DetailWindowSlot } {
-  if (targetNodeId === originalNodeId) return { kind: "focus", slot: "original" };
-  if (targetNodeId === companionNodeId) return { kind: "focus", slot: "companion" };
-  return { kind: "open", slot: sourceSlot === "original" ? "companion" : "original" };
 }
 
 function pageIsHidden(): boolean {
@@ -369,139 +316,18 @@ export async function loadExperimentWatcherPoll(
   return { watchers, tasks, project };
 }
 
-const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
-export const PROJECT_TAB_CACHE_LIMIT = 8;
 const RESULT_VIEW_TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
-
-export function resultViewSelectionKey(
-  projectId: string | null,
-  experimentId: string | null,
-  chatId: string | null,
-): string | null {
-  return projectId && experimentId && chatId
-    ? JSON.stringify([projectId, experimentId, chatId])
-    : null;
-}
-
-export function resultViewSelectionIsCurrent(
-  expectedKey: string | null,
-  expectedGeneration: number,
-  currentKey: string | null,
-  currentGeneration: number,
-): boolean {
-  return (
-    expectedKey !== null && expectedKey === currentKey && expectedGeneration === currentGeneration
-  );
-}
-
-export function resultViewLoadIsCurrent(
-  expectedKey: string | null,
-  expectedSelectionGeneration: number,
-  expectedLoadGeneration: number,
-  currentKey: string | null,
-  currentSelectionGeneration: number,
-  currentLoadGeneration: number,
-): boolean {
-  return (
-    resultViewSelectionIsCurrent(
-      expectedKey,
-      expectedSelectionGeneration,
-      currentKey,
-      currentSelectionGeneration,
-    ) && expectedLoadGeneration === currentLoadGeneration
-  );
-}
-
-export function visibleChatTranscriptIds(
-  view: AppView,
-  selectedChatId: string | null,
-  floatingChatId: string | null,
-  experimentChatId: string | null,
-): string[] {
-  return [
-    ...new Set([
-      ...(view === "chats" && selectedChatId ? [selectedChatId] : []),
-      ...(view === "execution" && experimentChatId ? [experimentChatId] : []),
-      ...(floatingChatId ? [floatingChatId] : []),
-    ]),
-  ];
-}
-
-export function visibleUnreadChatId(
-  view: AppView,
-  selectedChatId: string | null,
-  experimentChatId: string | null,
-): string | null {
-  if (view === "chats") return selectedChatId;
-  if (view === "execution") return experimentChatId;
-  return null;
-}
-
-export function shouldLoadVisibleChatTranscript(
-  chatId: string,
-  summaries: readonly Pick<ChatSummary, "chat_id">[],
-  selectedExperimentChatId: string | null,
-): boolean {
-  return (
-    chatId === selectedExperimentChatId || summaries.some((summary) => summary.chat_id === chatId)
-  );
-}
 
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
 
-interface CachedProjectTabState {
+interface CachedProjectTabState
+  extends ProjectHistorySnapshot, AgentTasksSnapshot, ChatStateSnapshot, GraphSelectionTabSnapshot {
   project: ProjectSnapshot;
-  viewState: ProjectViewState;
   projectHeaderCollapsed: boolean;
-  runScope: string[];
-  selectedNodeId: string | null;
-  companionNodeId: string | null;
-  detailFocusTokens: Record<DetailWindowSlot, number>;
-  selectedExperimentRunId: string | null;
-  focusExperimentRunId: string | null;
-  dockedNodeIds: string[];
-  floatingChat: { chatId: string; nodeId: string } | null;
-  draftConversations: DraftConversation[];
-  selectedChatId: string | null;
-  unreadChatTaskIds: Set<string>;
-  chatSummaries: ChatSummary[];
-  chatSummaryTotal: number;
-  chatSummaryNextOffset: number;
-  chatTranscripts: Map<string, ChatTranscript>;
-  selectedCanonicalChat: ChatSummary | null;
-  chatTaskStatuses: Map<string, AgentTask["status"]>;
-  dagRelationFocusId: string | null;
-  retryTask: AgentTask | null;
   humanDraft: HumanDraft | null;
   draftReconciliationDiscardedProposalIds?: string[];
-  tasks: AgentTask[];
-  latestRevisionSummary: RevisionSummary | null;
-  historyRevisionSummaries: RevisionSummary[];
-  historySummariesRevision: number | null;
-  historySummariesError: string | null;
-  projectHistoryOpen: boolean;
   usage: AgentUsageSnapshot | null;
   watchers: WatcherRecord[];
-  taskInspectorId: string | null;
-  inspectedTask: AgentTask | null;
-  activityTaskId: string | null;
-  dismissedTaskIds: Set<string>;
-  dismissedHistoryNoticeIds: Set<string>;
-}
-
-export function cacheProjectTabState<T>(
-  cache: Map<string, T>,
-  projectId: string,
-  state: T,
-  limit = PROJECT_TAB_CACHE_LIMIT,
-): void {
-  cache.delete(projectId);
-  cache.set(projectId, state);
-  while (cache.size > limit) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
 }
 
 export function cachedSnapshotCanReplace(
@@ -510,31 +336,6 @@ export function cachedSnapshotCanReplace(
   snapshot: ProjectSnapshot,
 ): boolean {
   return snapshot.id !== renderedProjectId || snapshot.graph.revision >= renderedRevision;
-}
-
-export function projectTabStateForOpen<T>(
-  cache: Map<string, T>,
-  projectId: string,
-): { state: T; loading: false } | null {
-  const state = cache.get(projectId);
-  if (!state) return null;
-  cacheProjectTabState(cache, projectId, state);
-  return { state, loading: false };
-}
-
-export function projectIdsForCacheHeartbeat(tabs: ProjectTab[]): string[] {
-  return [...new Set(tabs.map((tab) => tab.id))];
-}
-
-export function inactiveProjectTabState<T>(
-  cache: Map<string, T>,
-  tabs: ProjectTab[],
-  activeProjectId: string | null,
-  requestedProjectId: string,
-): T | null {
-  if (activeProjectId === requestedProjectId || !tabs.some((tab) => tab.id === requestedProjectId))
-    return null;
-  return cache.get(requestedProjectId) ?? null;
 }
 
 export function reconcileInactiveProjectTabState(
@@ -605,88 +406,6 @@ export function persistProjectHumanDraft(
   }
 }
 
-interface ProjectCachePollingClock {
-  setInterval(callback: () => void, delay: number): number;
-  clearInterval(intervalId: number): void;
-}
-
-interface ProjectCachePollingVisibility {
-  isHidden(): boolean;
-  listen(callback: () => void): () => void;
-}
-
-interface LiveCampaignPollingClock {
-  setTimeout(callback: () => void, delay: number): number;
-  clearTimeout(timeoutId: number): void;
-}
-
-export function startLiveCampaignPolling(
-  clock: LiveCampaignPollingClock,
-  refresh: () => Promise<void>,
-  onError: (error: unknown) => void,
-  onSuccess: () => void,
-): () => void {
-  let stopped = false;
-  let timeoutId = 0;
-  const schedule = () => {
-    timeoutId = clock.setTimeout(() => void poll(), LIVE_CAMPAIGN_POLL_INTERVAL_MS);
-  };
-  const poll = async () => {
-    try {
-      await refresh();
-      if (!stopped) onSuccess();
-    } catch (error) {
-      if (!stopped) onError(error);
-    } finally {
-      if (!stopped) schedule();
-    }
-  };
-  schedule();
-  return () => {
-    stopped = true;
-    clock.clearTimeout(timeoutId);
-  };
-}
-
-export function startProjectCachePolling(
-  clock: ProjectCachePollingClock,
-  visibility: ProjectCachePollingVisibility,
-  sweepOpenProjects: () => void,
-  observeActiveProject: () => void,
-): () => void {
-  const runWhenVisible = (callback: () => void) => () => {
-    if (!visibility.isHidden()) callback();
-  };
-  const sweepInterval = clock.setInterval(
-    runWhenVisible(sweepOpenProjects),
-    OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  );
-  const activeInterval = clock.setInterval(
-    runWhenVisible(observeActiveProject),
-    ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  );
-  const stopListening = visibility.listen(runWhenVisible(sweepOpenProjects));
-  return () => {
-    clock.clearInterval(sweepInterval);
-    clock.clearInterval(activeInterval);
-    stopListening();
-  };
-}
-
-export function singleFlightProjectCacheHeartbeat(
-  inFlight: Map<string, Promise<void>>,
-  projectId: string,
-  heartbeat: () => Promise<void>,
-): Promise<void> {
-  const pending = inFlight.get(projectId);
-  if (pending) return pending;
-  const request = heartbeat().finally(() => {
-    if (inFlight.get(projectId) === request) inFlight.delete(projectId);
-  });
-  inFlight.set(projectId, request);
-  return request;
-}
-
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const [initialRoute] = useState(() => {
@@ -698,168 +417,286 @@ export default function App() {
     }
     return { project: parseProjectHash(hash), setupOpen: hash === "#/projects/new" };
   });
-  const [identityReady, setIdentityReady] = useState(false);
-  const [identityIssue, setIdentityIssue] = useState<string | null>(null);
-  const [verifiedHealth, setVerifiedHealth] = useState<Health | null>(null);
-  const [actorIdentity, setActorIdentity] = useState<IdentityResponse | null>(null);
-  const [actorIdentityError, setActorIdentityError] = useState<string | null>(null);
-  const [actorIdentityChecked, setActorIdentityChecked] = useState(false);
-  const [teamSessionRequired, setTeamSessionRequired] = useState(false);
-  const [actorNamePromptOpen, setActorNamePromptOpen] = useState(false);
-  const [actorNameDraft, setActorNameDraft] = useState("");
-  const [actorNameSaving, setActorNameSaving] = useState(false);
-  const [actorNameError, setActorNameError] = useState<string | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdate | null>(null);
-  const [updateExpanded, setUpdateExpanded] = useState(false);
-  const [updateApplying, setUpdateApplying] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [pendingDesktopProject, setPendingDesktopProject] = useState<{
-    projectId: string;
-    experimentId: string | null;
-  } | null>(null);
-  const [desktopAccessError, setDesktopAccessError] = useState<string | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(initialRoute.project.projectId);
-  const [setupOpen, setSetupOpen] = useState(initialRoute.setupOpen);
-  const [projects, setProjects] = useState<ProjectCard[]>([]);
-  const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
-  const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
-  const [project, setProject] = useState<ProjectSnapshot | null>(null);
-  const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
-    readProjectHeaderCollapsed(projectId),
-  );
-  const [graph, setGraph] = useState<GraphState>(emptyGraph);
-  const [paper, setPaper] = useState<PaperSnapshot | null>(null);
-  const [view, setView] = useState<AppView>(initialRoute.project.view);
-  const [trustView, setTrustView] = useState<TrustView>(readTrustView);
-  const [runScope, setRunScope] = useState<string[]>([]);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [companionNode, setCompanionNode] = useState<GraphNode | null>(null);
-  const [detailFocusTokens, setDetailFocusTokens] = useState<Record<DetailWindowSlot, number>>({
-    original: 0,
-    companion: 0,
+  const {
+    identityReady,
+    identityIssue,
+    verifiedHealth,
+    actorIdentity,
+    actorIdentityError,
+    actorIdentityChecked,
+    teamSessionRequired,
+    actorNamePromptOpen,
+    actorNameDraft,
+    actorNameSaving,
+    actorNameError,
+    requestActorName,
+    settleActorNamePrompt,
+    saveActorName,
+    authenticateTeamSession: authenticateIdentityTeamSession,
+    reportIdentityIssue,
+    reverifyIdentity,
+    currentActiveAgentTasks,
+    updateActorNameDraft,
+  } = useActorIdentity();
+  const {
+    reconnecting,
+    desktopUpdate,
+    updateExpanded,
+    updateApplying,
+    updateError,
+    pendingDesktopProject,
+    desktopAccessError,
+    refreshDesktopUpdate,
+    recordDesktopUpdateReady,
+    requestDesktopProjectOpen,
+    continueDesktopProjectOpen: continueDesktopProjectAccess,
+    dismissDesktopProjectOpen,
+    reconnectBackend: reconnectDesktopBackend,
+    applyUpdate: applyDesktopShellUpdate,
+    expandUpdate,
+    dismissUpdate,
+  } = useDesktopShell(desktop);
+  const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  const reportErrorNotice = useCallback((text: string) => {
+    setNotice({ kind: "error", text });
+  }, []);
+  const {
+    projectId,
+    setupOpen,
+    projects,
+    openProjectTabs,
+    experimentLoops,
+    project,
+    projectHeaderCollapsed,
+    isActiveProject,
+    getActiveProjectId,
+    replaceProject,
+    updateProject,
+    replaceProjects,
+    loadProjectIndex,
+    applyHashRoute,
+    clearProjectRoute,
+    openSetup,
+    returnToProjects: returnToProjectIndex,
+    commitProjectOpen: commitProjectRoute,
+    activateProjectTab: activateProjectRoute,
+    closeDockedProject: closeProjectRoute,
+    removeProject,
+    resetProjectHeader,
+    restoreProjectHeader,
+    toggleProjectHeader,
+    cacheProjectState,
+    cachedProjectStateForOpen,
+    inactiveCachedProjectState,
+    isProjectTabOpen,
+    projectIdsForHeartbeat,
+    adjacentProjectId,
+    runProjectHeartbeat,
+  } = useProjectTabs<CachedProjectTabState>({
+    initialProjectId: initialRoute.project.projectId,
+    initialSetupOpen: initialRoute.setupOpen,
+    projectIndexReady:
+      identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired,
+    reportError: reportErrorNotice,
   });
-  const [selectedExperimentRunId, setSelectedExperimentRunId] = useState<string | null>(
-    initialRoute.project.experimentId,
-  );
-  const [focusExperimentRunId, setFocusExperimentRunId] = useState<string | null>(
-    initialRoute.project.experimentId,
-  );
-  const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
-  const [watcherCheckId, setWatcherCheckId] = useState<string | null>(null);
-  const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
-  const [floatingChat, setFloatingChat] = useState<{ chatId: string; nodeId: string } | null>(null);
-  const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([]);
-  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [unreadChatTaskIds, setUnreadChatTaskIds] = useState<Set<string>>(() => new Set());
-  const [chatSummaries, setChatSummaries] = useState<ChatSummary[]>([]);
-  const [chatSummaryTotal, setChatSummaryTotal] = useState(0);
-  const [chatSummaryNextOffset, setChatSummaryNextOffset] = useState(0);
-  const [chatSummariesLoading, setChatSummariesLoading] = useState(false);
-  const [chatTranscripts, setChatTranscripts] = useState<Map<string, ChatTranscript>>(
-    () => new Map(),
-  );
-  const [selectedCanonicalChat, setSelectedCanonicalChat] = useState<ChatSummary | null>(null);
-  const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
   const [textScale, setTextScale] = useState(readTextScale);
-  const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const [campaignDialogOpen, setCampaignDialogOpen] = useState(false);
-  const [campaignStartError, setCampaignStartError] = useState<string | null>(null);
-  const [campaignAction, setCampaignAction] = useState<string | null>(null);
-  const [campaignRefreshError, setCampaignRefreshError] = useState<string | null>(null);
-  const [campaignState, setCampaignState] = useState<{
-    projectId: string | null;
-    campaigns: Campaign[];
-    messages: Record<string, CampaignMessage[]>;
-  }>({ projectId: null, campaigns: [], messages: {} });
-  const [resultViewState, setResultViewState] = useState<{
-    projectId: string | null;
-    experimentId: string | null;
-    chatId: string | null;
-    views: ResultViewDescriptor[];
-    authoritative: boolean;
-    error: string | null;
-  }>({
-    projectId: null,
-    experimentId: null,
-    chatId: null,
-    views: [],
-    authoritative: false,
-    error: null,
-  });
-  const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
   const [humanDraft, setHumanDraft] = useState<HumanDraft | null>(null);
   const [syncingDraft, setSyncingDraft] = useState(false);
-  const [taskStarting, setTaskStarting] = useState(false);
-  const [taskActionId, setTaskActionId] = useState<string | null>(null);
-  const [tasks, setTasks] = useState<AgentTask[]>([]);
-  const [latestRevisionSummary, setLatestRevisionSummary] = useState<RevisionSummary | null>(null);
-  const [historyRevisionSummaries, setHistoryRevisionSummaries] = useState<RevisionSummary[]>([]);
-  const [historySummariesRevision, setHistorySummariesRevision] = useState<number | null>(null);
-  const [historySummariesError, setHistorySummariesError] = useState<string | null>(null);
-  const [projectHistoryOpen, setProjectHistoryOpen] = useState(false);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
-  const [taskInspectorId, setTaskInspectorId] = useState<string | null>(null);
-  const [inspectedTask, setInspectedTask] = useState<AgentTask | null>(null);
-  const [taskInspectorLoading, setTaskInspectorLoading] = useState(false);
-  const [activityTaskId, setActivityTaskId] = useState<string | null>(null);
-  const [dismissedTaskIds, setDismissedTaskIds] = useState<Set<string>>(() =>
-    readDismissedTaskIds(projectId),
-  );
-  const [dismissedHistoryNoticeIds, setDismissedHistoryNoticeIds] = useState<Set<string>>(() =>
-    readDismissedHistoryNoticeIds(projectId),
-  );
-  const taskStartLock = useRef(false);
-  const activeProjectId = useRef(projectId);
+  const {
+    graph,
+    paper,
+    view,
+    trustView,
+    runScope,
+    selectedNode,
+    companionNode,
+    detailFocusTokens,
+    selectedExperimentRunId,
+    focusExperimentRunId,
+    experimentStopId,
+    watcherCheckId,
+    dockedNodeIds,
+    dagRelationFocusId,
+    panelRef,
+    activeDagViewportRef,
+    captureProjectSelection,
+    restoreProjectSelection,
+    resetProjectSelection,
+    applyCanonicalProject,
+    applySyncedGraph,
+    replacePaper,
+    replaceRunScope,
+    applyRouteSelection,
+    changeView,
+    openLastResearchView,
+    changeTrustView,
+    openNode,
+    openRelatedNode: openRelatedGraphNode,
+    closeDetailSlot,
+    clearNodeSelections,
+    dockNode,
+    restoreDockedNode: restoreDockedGraphNode,
+    selectExperiment,
+    clearExperimentFocus,
+    showExperiment,
+    beginExperimentStop,
+    beginWatcherCheck,
+    clearDagRelationFocus,
+    forgetProjectViewport,
+  } = useGraphSelection({
+    initialView: initialRoute.project.view,
+    initialExperimentId: initialRoute.project.experimentId,
+    projectId,
+    loadedProjectId: project?.id ?? null,
+    loading,
+  });
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
     projectId: string;
     request: Promise<void>;
   } | null>(null);
-  const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
-  const actorIdentityRef = useRef<IdentityResponse | null>(null);
-  const actorNamePromptResolver = useRef<((saved: boolean) => void) | null>(null);
   const renderedRevisionRef = useRef(graph.revision);
-  const verifiedHealthRef = useRef<Health | null>(null);
   const initialShowHandshake = useRef(false);
-  const chatTaskStatuses = useRef<Map<string, AgentTask["status"]>>(new Map());
-  const chatSummariesRef = useRef<ChatSummary[]>([]);
-  const selectedChatIdRef = useRef<string | null>(null);
-  const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
-  const chatSummaryRefreshGeneration = useRef(0);
-  const resultViewLoadGeneration = useRef(0);
-  const resultViewSelectionRef = useRef<{ key: string | null; generation: number }>({
-    key: null,
-    generation: 0,
-  });
   const readinessRequestedProjectIds = useRef(new Set<string>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
-  const panelRef = useRef<HTMLElement>(null);
-  const panelScrollRef = useRef(new Map<AppView, number>());
-  const viewRef = useRef<AppView>(view);
-  const researchSubviewRef = useRef<AppView>("scientific");
-  const dagViewportRefsRef = useRef(new Map<string, { current: DagViewport | null }>());
-  const openProjectTabsRef = useRef(openProjectTabs);
-  const projectTabStatesRef = useRef(new Map<string, CachedProjectTabState>());
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
-  openProjectTabsRef.current = openProjectTabs;
-  activeProjectId.current = projectId;
-  actorIdentityRef.current = actorIdentity;
   renderedRevisionRef.current = graph.revision;
-  const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
-  const campaigns = campaignState.projectId === projectId ? campaignState.campaigns : [];
-  const campaignMessages = campaignState.projectId === projectId ? campaignState.messages : {};
-  const liveCampaign = campaigns.find(isLiveCampaign) ?? null;
-  const activeDagViewportRef = projectId
-    ? projectViewportRef(dagViewportRefsRef.current, projectId)
-    : null;
-
+  const {
+    snapshot: agentTasksSnapshot,
+    taskStarting,
+    taskActionId,
+    taskInspectorLoading,
+    activeTask,
+    activityTask,
+    replaceTasks,
+    upsertTask,
+    recordStartedTask,
+    presentTask: presentAgentTask,
+    selectTaskInspector,
+    chooseRetryTask,
+    closeRetryTask,
+    dismissTaskNotification,
+    beginTaskStart,
+    beginTaskAction,
+    beginTaskRepair,
+    resetProjectTasks,
+    restoreProjectTasks,
+  } = useAgentTasks({ projectId, reportError: reportErrorNotice });
+  const { retryTask, tasks, taskInspectorId, inspectedTask, dismissedTaskIds } = agentTasksSnapshot;
+  const selectedExperimentChatId =
+    view === "execution" && selectedExperimentRunId
+      ? (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
+      : null;
+  const resolveVisibleChatTranscriptIds = useCallback(
+    (selectedId: string | null, floatingId: string | null) =>
+      visibleChatTranscriptIds(view, selectedId, floatingId, selectedExperimentChatId),
+    [selectedExperimentChatId, view],
+  );
+  const {
+    snapshot: chatStateSnapshot,
+    chatSummariesLoading,
+    visibleChatSummaries,
+    selectChat,
+    setFloatingChat,
+    reconcileFloatingChat,
+    startConversation,
+    ensureConversation,
+    refreshChatSummaries,
+    loadMoreChatSummaries,
+    recordTaskUpdates,
+    recordWatcherResults,
+    markVisibleChatRead,
+    resetProjectChats,
+    restoreProjectChats,
+  } = useChatState({
+    projectId,
+    apiBase,
+    selectedExperimentChatId,
+    isActiveProject,
+    visibleTranscriptIds: resolveVisibleChatTranscriptIds,
+    reportError: reportErrorNotice,
+  });
+  const {
+    floatingChat,
+    draftConversations,
+    selectedChatId,
+    unreadChatTaskIds,
+    chatSummaryTotal,
+    chatSummaryNextOffset,
+    chatTranscripts,
+  } = chatStateSnapshot;
+  const selectedExperimentTerminalVersion = selectedExperimentChatId
+    ? tasks
+        .filter(
+          (task) =>
+            task.request.chat_id === selectedExperimentChatId &&
+            Boolean(task.request.result_view) &&
+            RESULT_VIEW_TERMINAL_STATUSES.has(task.status),
+        )
+        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+        .sort()
+        .join("|")
+    : "";
+  const {
+    runDialogOpen,
+    autoResearchDialogOpen,
+    autoResearchStartError,
+    episodeAction,
+    episodeRefreshError,
+    episodes,
+    episodeMessages,
+    liveAutoResearchEpisode,
+    selectedResultViews,
+    selectedResultViewsError,
+    openRunDialog,
+    closeRunDialog,
+    openAutoResearchDialog,
+    closeAutoResearchDialog,
+    reportAutoResearchStartError,
+    beginEpisodeAction,
+    replaceEpisode,
+    recordEpisodeMessage,
+    refreshEpisodes,
+    refreshEpisodeMessages,
+    refreshResultViews: refreshSelectedResultViews,
+    keepSelectedResultView: keepResultViewForSelection,
+  } = useEpisodeDialogs({
+    projectId,
+    apiBase,
+    selectedExperimentId: selectedExperimentRunId,
+    selectedExperimentChatId,
+    isActiveProject,
+  });
+  const {
+    snapshot: projectHistorySnapshot,
+    openProjectHistory,
+    closeProjectHistory,
+    resetProjectHistory,
+    restoreProjectHistory,
+    dismissHistoryNotices,
+  } = useProjectHistory({
+    projectId,
+    apiBase,
+    loadedProjectId: project?.id ?? null,
+    revision: graph.revision,
+    isActiveProject,
+    reportError: reportErrorNotice,
+  });
+  const {
+    latestRevisionSummary,
+    historyRevisionSummaries,
+    historySummariesRevision,
+    historySummariesError,
+    projectHistoryOpen,
+    dismissedHistoryNoticeIds,
+  } = projectHistorySnapshot;
   currentProjectStateRef.current = project
     ? {
         project,
@@ -871,66 +708,33 @@ export default function App() {
         selectedExperimentRunId,
         focusExperimentRunId,
         dockedNodeIds,
-        floatingChat,
-        draftConversations,
-        selectedChatId,
-        unreadChatTaskIds,
-        chatSummaries,
-        chatSummaryTotal,
-        chatSummaryNextOffset,
-        chatTranscripts,
-        selectedCanonicalChat,
-        chatTaskStatuses: chatTaskStatuses.current,
+        ...chatStateSnapshot,
         dagRelationFocusId,
-        retryTask,
+        ...agentTasksSnapshot,
         humanDraft,
-        tasks,
-        latestRevisionSummary,
-        historyRevisionSummaries,
-        historySummariesRevision,
-        historySummariesError,
-        projectHistoryOpen,
+        ...projectHistorySnapshot,
         usage,
         watchers,
-        taskInspectorId,
-        inspectedTask,
-        activityTaskId,
-        dismissedTaskIds,
-        dismissedHistoryNoticeIds,
       }
     : null;
 
-  const rememberProjectState = useCallback((id: string | null) => {
-    if (!id) return;
-    const current = currentProjectStateRef.current;
-    if (!current || current.project.id !== id) return;
-    const panelScroll = new Map(panelScrollRef.current);
-    const dagViewport = dagViewportRefsRef.current.get(id)?.current ?? null;
-    if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
-    cacheProjectTabState(projectTabStatesRef.current, id, {
-      ...current,
-      runScope: [...current.runScope],
-      detailFocusTokens: { ...current.detailFocusTokens },
-      dockedNodeIds: [...current.dockedNodeIds],
-      floatingChat: current.floatingChat ? { ...current.floatingChat } : null,
-      draftConversations: [...current.draftConversations],
-      unreadChatTaskIds: new Set(current.unreadChatTaskIds),
-      chatSummaries: [...current.chatSummaries],
-      chatTranscripts: new Map(current.chatTranscripts),
-      chatTaskStatuses: new Map(current.chatTaskStatuses),
-      tasks: [...current.tasks],
-      historyRevisionSummaries: [...current.historyRevisionSummaries],
-      watchers: [...current.watchers],
-      dismissedTaskIds: new Set(current.dismissedTaskIds),
-      dismissedHistoryNoticeIds: new Set(current.dismissedHistoryNoticeIds),
-      viewState: {
-        view: viewRef.current,
-        panelScroll: [...panelScroll.entries()],
-        researchSubview: researchSubviewRef.current,
-        dagViewport: dagViewport ? { ...dagViewport } : null,
-      },
-    });
-  }, []);
+  const rememberProjectState = useCallback(
+    (id: string | null) => {
+      if (!id) return;
+      const current = currentProjectStateRef.current;
+      if (!current || current.project.id !== id) return;
+      const selection = captureProjectSelection(id);
+      cacheProjectState(id, {
+        ...current,
+        ...selection,
+        ...cloneChatStateSnapshot(current),
+        ...cloneAgentTasksSnapshot(current),
+        ...cloneProjectHistorySnapshot(current),
+        watchers: [...current.watchers],
+      });
+    },
+    [cacheProjectState, captureProjectSelection],
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -940,31 +744,12 @@ export default function App() {
     return () => window.clearTimeout(timeoutId);
   }, [notice]);
 
-  // Reading the offset while the outgoing view is still mounted is the only moment it is still true.
-  const changeView = useCallback((next: AppView) => {
-    const panel = panelRef.current;
-    if (panel) panelScrollRef.current.set(viewRef.current, panel.scrollTop);
-    const replacementHash = projectHashAfterViewChange(window.location.hash, next);
-    if (replacementHash) window.history.replaceState(null, "", replacementHash);
-    setView(next);
-  }, []);
-
-  const selectChat = useCallback((chatId: string | null) => {
-    selectedChatIdRef.current = chatId;
-    setSelectedChatId(chatId);
-    if (selectedCanonicalChatRef.current?.chat_id !== chatId) {
-      selectedCanonicalChatRef.current = null;
-      setSelectedCanonicalChat(null);
-    }
-  }, []);
-
   const restoreProjectTabState = useCallback(
     (id: string, state: CachedProjectTabState, requestedView?: AppView) => {
       const nextGraph = state.project.graph;
       const presented = applyHumanDraft(nextGraph, state.humanDraft);
       const discardedProposalIds = state.draftReconciliationDiscardedProposalIds ?? [];
-      cacheProjectTabState(
-        projectTabStatesRef.current,
+      cacheProjectState(
         id,
         discardedProposalIds.length > 0
           ? { ...state, draftReconciliationDiscardedProposalIds: [] }
@@ -972,70 +757,29 @@ export default function App() {
       );
       renderedRevisionRef.current = nextGraph.revision;
       authoritativeProjectId.current = id;
-      setProject(state.project);
-      setGraph(nextGraph);
-      setPaper(state.project.paper);
-      setProjectHeaderCollapsed(state.projectHeaderCollapsed);
-      setRunScope([...state.runScope]);
-      setSelectedNode(
-        state.selectedNodeId ? (presented.nodes[state.selectedNodeId] ?? null) : null,
-      );
-      setCompanionNode(
-        state.companionNodeId ? (presented.nodes[state.companionNodeId] ?? null) : null,
-      );
-      setDetailFocusTokens({ ...state.detailFocusTokens });
-      setSelectedExperimentRunId(state.selectedExperimentRunId);
-      setFocusExperimentRunId(state.focusExperimentRunId);
-      setExperimentStopId(null);
-      setWatcherCheckId(null);
-      setDockedNodeIds(state.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
-      setFloatingChat(
-        state.floatingChat && presented.nodes[state.floatingChat.nodeId]
-          ? { ...state.floatingChat }
-          : null,
-      );
-      setDraftConversations([...state.draftConversations]);
-      selectChat(state.selectedChatId);
-      setUnreadChatTaskIds(new Set(state.unreadChatTaskIds));
-      chatSummaryRefreshGeneration.current += 1;
-      chatSummariesRef.current = [...state.chatSummaries];
-      setChatSummaries([...state.chatSummaries]);
-      setChatSummaryTotal(state.chatSummaryTotal);
-      setChatSummaryNextOffset(state.chatSummaryNextOffset);
-      setChatSummariesLoading(false);
-      setChatTranscripts(new Map(state.chatTranscripts));
-      selectedCanonicalChatRef.current = state.selectedCanonicalChat;
-      setSelectedCanonicalChat(state.selectedCanonicalChat);
-      chatTaskStatuses.current = new Map(state.chatTaskStatuses);
-      setDagRelationFocusId(state.dagRelationFocusId);
-      setRetryTask(state.retryTask);
+      replaceProject(state.project);
+      restoreProjectHeader(state.projectHeaderCollapsed);
+      restoreProjectSelection(id, state.project, presented.nodes, state, requestedView);
+      restoreProjectChats(state, presented.nodes);
+      restoreProjectTasks(state);
       setHumanDraft(state.humanDraft);
       setSyncingDraft(false);
-      setTasks([...state.tasks]);
-      setLatestRevisionSummary(state.latestRevisionSummary);
-      setHistoryRevisionSummaries([...state.historyRevisionSummaries]);
-      setHistorySummariesRevision(state.historySummariesRevision);
-      setHistorySummariesError(state.historySummariesError);
-      setProjectHistoryOpen(state.projectHistoryOpen);
+      restoreProjectHistory(state);
       setUsage(state.usage);
       setWatchers([...state.watchers]);
-      setTaskInspectorId(state.taskInspectorId);
-      setInspectedTask(state.inspectedTask);
-      setActivityTaskId(state.activityTaskId);
-      setDismissedTaskIds(new Set(state.dismissedTaskIds));
-      setDismissedHistoryNoticeIds(new Set(state.dismissedHistoryNoticeIds));
-      panelScrollRef.current = new Map(state.viewState.panelScroll);
-      researchSubviewRef.current = state.viewState.researchSubview;
-      const viewportRef = projectViewportRef(dagViewportRefsRef.current, id);
-      viewportRef.current = state.viewState.dagViewport ? { ...state.viewState.dagViewport } : null;
-      setView(requestedView ?? state.viewState.view);
       setProjectReconciliation("authoritative");
       setLoading(false);
       if (discardedProposalIds.length > 0) {
         setNotice({ kind: "info", text: proposalChoicesClearedNotice(discardedProposalIds) });
       }
     },
-    [selectChat],
+    [
+      cacheProjectState,
+      replaceProject,
+      restoreProjectChats,
+      restoreProjectHeader,
+      restoreProjectSelection,
+    ],
   );
 
   const applyProjectSnapshot = useCallback(
@@ -1044,19 +788,14 @@ export default function App() {
       const nextGraph = decodedProject.graph;
       const authoritative = decodedProject.snapshot_freshness === "fresh";
       if (
-        !cachedSnapshotCanReplace(
-          activeProjectId.current,
-          renderedRevisionRef.current,
-          decodedProject,
-        )
+        !cachedSnapshotCanReplace(getActiveProjectId(), renderedRevisionRef.current, decodedProject)
       )
         return;
       renderedRevisionRef.current = nextGraph.revision;
-      setProject((current) =>
+      updateProject((current) =>
         preserveReadiness ? preserveProjectReadiness(decodedProject, current) : decodedProject,
       );
-      setGraph(nextGraph);
-      setPaper(decodedProject.paper);
+      applyCanonicalProject(decodedProject, authoritative);
       setHumanDraft((current) => {
         if (!current) return null;
         const reconciliation = authoritative
@@ -1077,138 +816,10 @@ export default function App() {
         }
         return retained;
       });
-      setSelectedNode((current) =>
-        current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
-      );
-      setCompanionNode((current) =>
-        current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
-      );
-      setFloatingChat((current) =>
-        current && (nextGraph.nodes[current.nodeId] || !authoritative) ? current : null,
-      );
-      setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
-      setRunScope((current) =>
-        current.length
-          ? current.filter((item) => decodedProject.project_truth_scope.includes(item))
-          : decodedProject.default_run_truth_scope,
-      );
+      reconcileFloatingChat(nextGraph.nodes, !authoritative);
     },
-    [],
+    [applyCanonicalProject, getActiveProjectId, updateProject],
   );
-
-  const refreshChatSummaries = useCallback(async (requestedProjectId: string, base: string) => {
-    const generation = ++chatSummaryRefreshGeneration.current;
-    setChatSummariesLoading(true);
-    try {
-      const page = await loadChatSummaryPage(base, 0, api);
-      if (
-        activeProjectId.current !== requestedProjectId ||
-        generation !== chatSummaryRefreshGeneration.current
-      )
-        return;
-      const selectedChatId = selectedChatIdRef.current;
-      const previousSummary = selectedChatId
-        ? (chatSummariesRef.current.find((summary) => summary.chat_id === selectedChatId) ??
-          (selectedCanonicalChatRef.current?.chat_id === selectedChatId
-            ? selectedCanonicalChatRef.current
-            : null))
-        : null;
-      let validation: ChatTranscript | null | undefined;
-      if (
-        selectedChatId &&
-        previousSummary &&
-        !page.items.some((summary) => summary.chat_id === selectedChatId)
-      ) {
-        try {
-          validation = await loadChatTranscript(base, selectedChatId, api);
-        } catch (error) {
-          if (error instanceof ApiError && error.status === 404) validation = null;
-          else throw error;
-        }
-      }
-      if (
-        activeProjectId.current !== requestedProjectId ||
-        generation !== chatSummaryRefreshGeneration.current
-      )
-        return;
-      const nextSummaries = mergeChatSummaryPage([], page.items, "refresh");
-      chatSummariesRef.current = nextSummaries;
-      setChatSummaries(nextSummaries);
-      setChatSummaryTotal(page.total);
-      setChatSummaryNextOffset(nextChatSummaryOffset(page));
-      if (selectedChatIdRef.current === selectedChatId) {
-        const reconciliation = reconcileChatSelectionAfterRefresh(
-          selectedChatId,
-          previousSummary,
-          nextSummaries,
-          validation,
-        );
-        selectedChatIdRef.current = reconciliation.selectedChatId;
-        setSelectedChatId(reconciliation.selectedChatId);
-        selectedCanonicalChatRef.current = reconciliation.retainedSummary;
-        setSelectedCanonicalChat(reconciliation.retainedSummary);
-        if (validation) {
-          setChatTranscripts((current) => new Map(current).set(validation.chat_id, validation));
-        } else if (reconciliation.deleteTranscript && selectedChatId) {
-          setDraftConversations((current) =>
-            current.filter((draft) => draft.chatId !== selectedChatId),
-          );
-          setChatTranscripts((current) => {
-            if (!current.has(selectedChatId)) return current;
-            const next = new Map(current);
-            next.delete(selectedChatId);
-            return next;
-          });
-        }
-      }
-    } finally {
-      if (
-        activeProjectId.current === requestedProjectId &&
-        generation === chatSummaryRefreshGeneration.current
-      ) {
-        setChatSummariesLoading(false);
-      }
-    }
-  }, []);
-
-  const loadMoreChatSummaries = useCallback(async () => {
-    if (!projectId || !apiBase || chatSummariesLoading || chatSummaryNextOffset >= chatSummaryTotal)
-      return;
-    const requestedProjectId = projectId;
-    const generation = chatSummaryRefreshGeneration.current;
-    const offset = chatSummaryNextOffset;
-    setChatSummariesLoading(true);
-    try {
-      const page = await loadChatSummaryPage(apiBase, offset, api);
-      if (
-        activeProjectId.current !== requestedProjectId ||
-        generation !== chatSummaryRefreshGeneration.current
-      )
-        return;
-      const nextSummaries = mergeChatSummaryPage(chatSummariesRef.current, page.items, "append");
-      chatSummariesRef.current = nextSummaries;
-      setChatSummaries(nextSummaries);
-      setChatSummaryTotal(page.total);
-      setChatSummaryNextOffset(nextChatSummaryOffset(page));
-    } catch (error) {
-      if (
-        activeProjectId.current === requestedProjectId &&
-        generation === chatSummaryRefreshGeneration.current
-      ) {
-        setNotice({
-          kind: "error",
-          text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
-    } finally {
-      if (
-        activeProjectId.current === requestedProjectId &&
-        generation === chatSummaryRefreshGeneration.current
-      ) {
-        setChatSummariesLoading(false);
-      }
-    }
-  }, [apiBase, chatSummariesLoading, chatSummaryNextOffset, chatSummaryTotal, projectId]);
 
   const reload = useCallback(
     async (includeTasks = true) => {
@@ -1216,29 +827,29 @@ export default function App() {
       const requestedProjectId = projectId;
       const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
       const projectRequest = api<ProjectSnapshot>(base).then((nextProject) => {
-        if (activeProjectId.current !== requestedProjectId) return;
+        if (!isActiveProject(requestedProjectId)) return;
         applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
         authoritativeProjectId.current = requestedProjectId;
         setProjectReconciliation("authoritative");
       });
       const tasksRequest = includeTasks
         ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
-            if (activeProjectId.current === requestedProjectId) setTasks(nextTasks);
+            if (isActiveProject(requestedProjectId)) replaceTasks(nextTasks);
           })
         : Promise.resolve();
       const usageRequest = api<AgentUsageSnapshot>(`${base}/usage`)
         .then((nextUsage) => {
-          if (activeProjectId.current === requestedProjectId) setUsage(nextUsage);
+          if (isActiveProject(requestedProjectId)) setUsage(nextUsage);
         })
         .catch((error) => {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
-          if (activeProjectId.current === requestedProjectId) setUsage(null);
+          if (isActiveProject(requestedProjectId)) setUsage(null);
         });
       const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
-        if (activeProjectId.current === requestedProjectId) setWatchers(nextWatchers);
+        if (isActiveProject(requestedProjectId)) setWatchers(nextWatchers);
       });
       const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
-        if (activeProjectId.current === requestedProjectId) {
+        if (isActiveProject(requestedProjectId)) {
           setNotice({
             kind: "error",
             text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
@@ -1253,153 +864,73 @@ export default function App() {
         chatsRequest,
       ]);
     },
-    [applyProjectSnapshot, projectId, refreshChatSummaries],
+    [applyProjectSnapshot, isActiveProject, projectId, refreshChatSummaries],
   );
   reloadRef.current = reload;
 
-  const reloadAuthoritativeProject = useCallback((requestedProjectId?: string | null) => {
-    const activeId = requestedProjectId ?? activeProjectId.current;
-    if (!activeId || activeProjectId.current !== activeId) return Promise.resolve();
-    if (authoritativeReloadInFlight.current?.projectId === activeId) {
-      return authoritativeReloadInFlight.current.request;
-    }
-    const request = reloadRef.current().finally(() => {
-      if (authoritativeReloadInFlight.current?.request === request) {
-        authoritativeReloadInFlight.current = null;
+  const reloadAuthoritativeProject = useCallback(
+    (requestedProjectId?: string | null) => {
+      const activeId = requestedProjectId ?? getActiveProjectId();
+      if (!activeId || !isActiveProject(activeId)) return Promise.resolve();
+      if (authoritativeReloadInFlight.current?.projectId === activeId) {
+        return authoritativeReloadInFlight.current.request;
       }
-    });
-    authoritativeReloadInFlight.current = { projectId: activeId, request };
-    return request;
-  }, []);
-
-  const refreshCampaigns = useCallback(async () => {
-    if (!projectId || !apiBase) return;
-    const requestedProjectId = projectId;
-    const nextCampaigns = await fetchCampaigns(apiBase);
-    if (activeProjectId.current !== requestedProjectId) return;
-    setCampaignState((current) => ({
-      projectId: requestedProjectId,
-      campaigns: nextCampaigns,
-      messages: current.projectId === requestedProjectId ? current.messages : {},
-    }));
-  }, [apiBase, projectId]);
-
-  const refreshCampaignMessages = useCallback(
-    async (campaignId: string) => {
-      if (!projectId || !apiBase) return;
-      const requestedProjectId = projectId;
-      const nextMessages = await loadCampaignMessages(apiBase, campaignId);
-      if (activeProjectId.current !== requestedProjectId) return;
-      setCampaignState((current) =>
-        current.projectId === requestedProjectId
-          ? {
-              ...current,
-              messages: { ...current.messages, [campaignId]: nextMessages },
-            }
-          : current,
-      );
-    },
-    [apiBase, projectId],
-  );
-
-  useEffect(() => {
-    if (!projectId || !apiBase) {
-      setCampaignRefreshError(null);
-      setCampaignState({ projectId: null, campaigns: [], messages: {} });
-      return;
-    }
-    const requestedProjectId = projectId;
-    setCampaignRefreshError(null);
-    setCampaignState((current) =>
-      current.projectId === requestedProjectId
-        ? current
-        : { projectId: requestedProjectId, campaigns: [], messages: {} },
-    );
-    void refreshCampaigns()
-      .then(() => {
-        if (activeProjectId.current === requestedProjectId) setCampaignRefreshError(null);
-      })
-      .catch((error) => {
-        if (activeProjectId.current !== requestedProjectId) return;
-        setCampaignRefreshError(
-          `Auto-research could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      const request = reloadRef.current().finally(() => {
+        if (authoritativeReloadInFlight.current?.request === request) {
+          authoritativeReloadInFlight.current = null;
+        }
       });
-  }, [apiBase, projectId, refreshCampaigns]);
-
-  useEffect(() => {
-    const campaignId = liveCampaign?.campaign_id;
-    if (!campaignId) return;
-    return startLiveCampaignPolling(
-      {
-        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
-        clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
-      },
-      async () => {
-        await Promise.all([refreshCampaigns(), refreshCampaignMessages(campaignId)]);
-      },
-      (error) => {
-        setCampaignRefreshError(
-          `Auto-research could not refresh: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      },
-      () => setCampaignRefreshError(null),
-    );
-  }, [liveCampaign?.campaign_id, refreshCampaignMessages, refreshCampaigns]);
+      authoritativeReloadInFlight.current = { projectId: activeId, request };
+      return request;
+    },
+    [getActiveProjectId, isActiveProject],
+  );
 
   const heartbeatProjectCache = useCallback(
     (requestedProjectId: string): Promise<void> =>
-      singleFlightProjectCacheHeartbeat(
-        projectCacheHeartbeatInFlight.current,
-        requestedProjectId,
-        async () => {
-          const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-          const observedRevision = await loadCanonicalRevision(api, base);
-          const tabIsOpen = () =>
-            openProjectTabsRef.current.some((tab) => tab.id === requestedProjectId);
-          if (!tabIsOpen()) return;
-          if (activeProjectId.current === requestedProjectId) {
-            if (canonicalRevisionNeedsReload(observedRevision, renderedRevisionRef.current)) {
-              await reloadAuthoritativeProject(requestedProjectId);
-            }
-            return;
+      runProjectHeartbeat(requestedProjectId, async () => {
+        const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+        const observedRevision = await loadCanonicalRevision(api, base);
+        const tabIsOpen = () => isProjectTabOpen(requestedProjectId);
+        if (!tabIsOpen()) return;
+        if (isActiveProject(requestedProjectId)) {
+          if (canonicalRevisionNeedsReload(observedRevision, renderedRevisionRef.current)) {
+            await reloadAuthoritativeProject(requestedProjectId);
           }
+          return;
+        }
 
-          const retained = inactiveProjectTabState(
-            projectTabStatesRef.current,
-            openProjectTabsRef.current,
-            activeProjectId.current,
-            requestedProjectId,
-          );
-          if (!retained || observedRevision <= retained.project.graph.revision) return;
-          const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
-          const current = inactiveProjectTabState(
-            projectTabStatesRef.current,
-            openProjectTabsRef.current,
-            activeProjectId.current,
-            requestedProjectId,
-          );
-          if (!current) {
-            if (!tabIsOpen()) return;
-            if (
-              activeProjectId.current === requestedProjectId &&
-              canonicalRevisionNeedsReload(snapshot.graph.revision, renderedRevisionRef.current)
-            ) {
-              await reloadAuthoritativeProject(requestedProjectId);
-            }
-            return;
+        const retained = inactiveCachedProjectState(requestedProjectId);
+        if (!retained || observedRevision <= retained.project.graph.revision) return;
+        const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
+        const current = inactiveCachedProjectState(requestedProjectId);
+        if (!current) {
+          if (!tabIsOpen()) return;
+          if (
+            isActiveProject(requestedProjectId) &&
+            canonicalRevisionNeedsReload(snapshot.graph.revision, renderedRevisionRef.current)
+          ) {
+            await reloadAuthoritativeProject(requestedProjectId);
           }
-          const next = reconcileInactiveProjectTabState(current, snapshot);
-          if (next === current) return;
-          cacheProjectTabState(projectTabStatesRef.current, requestedProjectId, next);
-          try {
-            persistProjectHumanDraft(localStorage, requestedProjectId, next.humanDraft);
-          } catch {
-            // A background cache refresh must not discard the in-memory draft.
-          }
-        },
-      ),
-    [reloadAuthoritativeProject],
+          return;
+        }
+        const next = reconcileInactiveProjectTabState(current, snapshot);
+        if (next === current) return;
+        cacheProjectState(requestedProjectId, next);
+        try {
+          persistProjectHumanDraft(localStorage, requestedProjectId, next.humanDraft);
+        } catch {
+          // A background cache refresh must not discard the in-memory draft.
+        }
+      }),
+    [
+      cacheProjectState,
+      inactiveCachedProjectState,
+      isActiveProject,
+      isProjectTabOpen,
+      reloadAuthoritativeProject,
+      runProjectHeartbeat,
+    ],
   );
 
   useEffect(() => {
@@ -1421,9 +952,9 @@ export default function App() {
           return () => document.removeEventListener("visibilitychange", callback);
         },
       },
-      () => projectIdsForCacheHeartbeat(openProjectTabsRef.current).forEach(runHeartbeat),
+      () => projectIdsForHeartbeat().forEach(runHeartbeat),
       () => {
-        const activeId = activeProjectId.current;
+        const activeId = getActiveProjectId();
         if (activeId) runHeartbeat(activeId);
       },
     );
@@ -1432,186 +963,19 @@ export default function App() {
     heartbeatProjectCache,
     identityIssue,
     identityReady,
+    getActiveProjectId,
+    projectIdsForHeartbeat,
     teamSessionRequired,
   ]);
 
-  useEffect(() => {
-    if (!projectId || !apiBase || project?.id !== projectId) return;
-    const requestedProjectId = projectId;
-    const requestedRevision = graph.revision;
-    if (requestedRevision === 0) {
-      setLatestRevisionSummary(null);
-      return;
-    }
-    let cancelled = false;
-    setLatestRevisionSummary((current) =>
-      current?.to_revision === requestedRevision ? current : null,
-    );
-    void api<RevisionSummary[]>(revisionSummariesUrl(apiBase, requestedRevision))
-      .then((summaries) => {
-        if (cancelled || activeProjectId.current !== requestedProjectId) return;
-        setLatestRevisionSummary(
-          summaries.find((summary) => summary.to_revision === requestedRevision) ?? null,
-        );
-      })
-      .catch((error) => {
-        if (cancelled || activeProjectId.current !== requestedProjectId) return;
-        setLatestRevisionSummary(null);
-        setNotice({
-          kind: "error",
-          text: `Latest project change could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, graph.revision, project?.id, projectId]);
-
-  useEffect(() => {
-    if (!projectHistoryOpen || !projectId || !apiBase || project?.id !== projectId) return;
-    const requestedProjectId = projectId;
-    const requestedRevision = graph.revision;
-    let cancelled = false;
-    setHistorySummariesError(null);
-    void api<RevisionSummary[]>(revisionSummariesUrl(apiBase))
-      .then((summaries) => {
-        if (cancelled || activeProjectId.current !== requestedProjectId) return;
-        setHistoryRevisionSummaries(summaries);
-        setHistorySummariesRevision(requestedRevision);
-      })
-      .catch((error) => {
-        if (cancelled || activeProjectId.current !== requestedProjectId) return;
-        const message = `Project history could not be loaded: ${error instanceof Error ? error.message : String(error)}`;
-        setHistoryRevisionSummaries([]);
-        setHistorySummariesError(message);
-        setHistorySummariesRevision(requestedRevision);
-        setNotice({ kind: "error", text: message });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, graph.revision, project?.id, projectHistoryOpen, projectId]);
-
-  const refreshDesktopUpdate = useCallback(async () => {
-    if (!desktop) return;
-    try {
-      const result = await checkDesktopUpdate();
-      setDesktopUpdate(result?.available ? result : null);
-      setUpdateError(result?.enabled === false && result.reason ? result.reason : null);
-    } catch (error) {
-      setUpdateError(error instanceof Error ? error.message : String(error));
-    }
-  }, [desktop]);
-
-  const requestActorName = useCallback((): Promise<boolean> => {
-    if (actorNamePromptResolver.current) return Promise.resolve(false);
-    setActorNameDraft(actorIdentityRef.current?.user.display_name ?? "");
-    setActorNameError(null);
-    setActorNamePromptOpen(true);
-    return new Promise((resolve) => {
-      actorNamePromptResolver.current = resolve;
-    });
-  }, []);
-
-  const settleActorNamePrompt = useCallback((saved: boolean) => {
-    const resolve = actorNamePromptResolver.current;
-    actorNamePromptResolver.current = null;
-    setActorNamePromptOpen(false);
-    setActorNameSaving(false);
-    setActorNameError(null);
-    resolve?.(saved);
-  }, []);
-
-  const saveActorName = useCallback(async () => {
-    const displayName = actorNameDraft.trim();
-    if (!displayName || actorNameSaving) return;
-    setActorNameSaving(true);
-    setActorNameError(null);
-    try {
-      const saved = await api<IdentityResponse>("/api/identity", {
-        method: "PATCH",
-        body: JSON.stringify({ display_name: displayName }),
-      });
-      setActorIdentity(saved);
-      setActorIdentityError(null);
-      settleActorNamePrompt(true);
-    } catch (error) {
-      setActorNameError(error instanceof Error ? error.message : String(error));
-      setActorNameSaving(false);
-    }
-  }, [actorNameDraft, actorNameSaving, settleActorNamePrompt]);
-
-  useEffect(() => {
-    const onIdentity = (event: Event) => {
-      const detail = (event as CustomEvent<BackendIdentityEventDetail>).detail;
-      setIdentityReady(true);
-      setIdentityIssue(detail.ok ? null : detail.message || "RCP could not verify its backend.");
-      if (detail.health) {
-        verifiedHealthRef.current = detail.health;
-        setVerifiedHealth(detail.health);
-        if (detail.ok) pinApiInstance(detail.health.instance_id);
-      }
-    };
-    window.addEventListener(BACKEND_IDENTITY_EVENT, onIdentity);
-    registerMutationFailureHandler(verifyIdentityAfterMutationFailure);
-    void establishBackendIdentity();
-    return () => {
-      registerMutationFailureHandler(null);
-      window.removeEventListener(BACKEND_IDENTITY_EVENT, onIdentity);
-    };
-  }, []);
-
-  useEffect(() => {
-    registerIdentityNameRequiredHandler(requestActorName);
-    return () => {
-      registerIdentityNameRequiredHandler(null);
-      const resolve = actorNamePromptResolver.current;
-      actorNamePromptResolver.current = null;
-      resolve?.(false);
-    };
-  }, [requestActorName]);
-
-  useEffect(() => {
-    if (!identityReady || identityIssue || !verifiedHealth) return;
-    let stopped = false;
-    setActorIdentityChecked(false);
-    setTeamSessionRequired(false);
-    setActorIdentityError(null);
-    void api<IdentityResponse>("/api/identity")
-      .then((identity) => {
-        if (stopped) return;
-        setActorIdentity(identity);
-        setActorIdentityChecked(true);
-      })
-      .catch((error) => {
-        if (stopped) return;
-        setActorIdentity(null);
-        if (
-          verifiedHealth.space_kind === "team" &&
-          error instanceof ApiError &&
-          error.status === 401
-        ) {
-          setTeamSessionRequired(true);
-        } else {
-          setActorIdentityError(error instanceof Error ? error.message : String(error));
-        }
-        setActorIdentityChecked(true);
-      });
-    return () => {
-      stopped = true;
-    };
-  }, [identityIssue, identityReady, verifiedHealth?.space_id, verifiedHealth?.space_kind]);
-
-  const authenticateTeamSession = useCallback(async (token: string) => {
-    const identity = await exchangeTeamSession(token);
-    setActorIdentity(identity);
-    setActorIdentityError(null);
-    setActorIdentityChecked(true);
-    setTeamSessionRequired(false);
-    setSetupOpen(false);
-    setProjectId(null);
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-  }, []);
+  const authenticateTeamSession = useCallback(
+    async (token: string) => {
+      await authenticateIdentityTeamSession(token);
+      clearProjectRoute();
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    },
+    [authenticateIdentityTeamSession, clearProjectRoute],
+  );
 
   useEffect(() => {
     if (!desktop) return;
@@ -1619,17 +983,18 @@ export default function App() {
     const cleanups: Array<() => void> = [];
     const prepareShow = async () => {
       try {
-        const identity = await reverifyBackendIdentity("prepare-show");
+        const identity = await reverifyIdentity("prepare-show");
         if (identity.ok) {
-          if (activeProjectId.current) {
-            const visibleProjectId = activeProjectId.current;
+          const activeId = getActiveProjectId();
+          if (activeId) {
+            const visibleProjectId = activeId;
             const nextTasks = await api<AgentTask[]>(
               `/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`,
             );
-            if (activeProjectId.current === visibleProjectId) setTasks(nextTasks);
+            if (isActiveProject(visibleProjectId)) replaceTasks(nextTasks);
             setProjectReconciliation("reconciling");
             void reloadRef.current(false).catch((error) => {
-              if (activeProjectId.current !== visibleProjectId || stopped) return;
+              if (!isActiveProject(visibleProjectId) || stopped) return;
               setProjectReconciliation("failed");
               setNotice({
                 kind: "error",
@@ -1638,7 +1003,7 @@ export default function App() {
             });
           } else {
             const nextProjects = await api<ProjectCard[]>("/api/projects");
-            if (!stopped) setProjects(nextProjects);
+            if (!stopped) replaceProjects(nextProjects);
           }
           await refreshDesktopUpdate();
         }
@@ -1663,19 +1028,12 @@ export default function App() {
     void Promise.all([
       listenDesktopEvent("rcp://prepare-show", prepareShow),
       listenDesktopEvent<{ message?: string }>("rcp://backend-mismatch", async (payload) => {
-        if (!stopped && payload.message) setIdentityIssue(payload.message);
-        await reverifyBackendIdentity("desktop-backend-mismatch");
+        if (!stopped && payload.message) reportIdentityIssue(payload.message);
+        await reverifyIdentity("desktop-backend-mismatch");
       }),
       listenDesktopEvent<{ version?: string }>("rcp://update-ready", (payload) => {
         if (stopped) return;
-        setDesktopUpdate((current) => ({
-          enabled: true,
-          available: true,
-          version: payload.version ?? current?.version,
-          current_version: current?.current_version,
-          active_agent_tasks:
-            current?.active_agent_tasks ?? verifiedHealthRef.current?.active_agent_tasks ?? 0,
-        }));
+        recordDesktopUpdateReady(payload.version, currentActiveAgentTasks());
       }),
     ]).then((nextCleanups) => {
       if (stopped) nextCleanups.forEach((cleanup) => cleanup());
@@ -1698,11 +1056,11 @@ export default function App() {
     if (!apiBase) return;
     try {
       const readiness = await loadProjectReadiness(apiBase, true);
-      setProject((current) => (current ? { ...current, ...readiness } : current));
+      updateProject((current) => (current ? { ...current, ...readiness } : current));
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
-  }, [apiBase]);
+  }, [apiBase, updateProject]);
 
   const ensureProjectReadiness = useCallback(() => {
     if (
@@ -1718,8 +1076,8 @@ export default function App() {
     const readCachedReadiness = (completedFollowUps: number) => {
       void loadProjectReadiness(apiBase)
         .then((readiness) => {
-          if (activeProjectId.current !== requestedProjectId) return;
-          setProject((current) =>
+          if (!isActiveProject(requestedProjectId)) return;
+          updateProject((current) =>
             current?.id === requestedProjectId ? { ...current, ...readiness } : current,
           );
           if (
@@ -1730,7 +1088,7 @@ export default function App() {
           ) {
             const timeoutId = window.setTimeout(() => {
               providerSkillReadinessPoll.current = null;
-              if (activeProjectId.current !== requestedProjectId) return;
+              if (!isActiveProject(requestedProjectId)) return;
               readCachedReadiness(completedFollowUps + 1);
             }, PROVIDER_SKILL_READINESS_POLL_DELAY_MS);
             providerSkillReadinessPoll.current = { projectId: requestedProjectId, timeoutId };
@@ -1743,7 +1101,7 @@ export default function App() {
           if (providerSkillReadinessPoll.current?.projectId === requestedProjectId) {
             providerSkillReadinessPoll.current = null;
           }
-          if (activeProjectId.current !== requestedProjectId) return;
+          if (!isActiveProject(requestedProjectId)) return;
           setNotice({
             kind: "error",
             text: error instanceof Error ? error.message : String(error),
@@ -1751,7 +1109,7 @@ export default function App() {
         });
     };
     readCachedReadiness(0);
-  }, [apiBase, project?.id, projectId, projectReconciliation]);
+  }, [apiBase, isActiveProject, project?.id, projectId, projectReconciliation, updateProject]);
 
   useEffect(() => {
     return () => {
@@ -1767,40 +1125,39 @@ export default function App() {
     if (!apiBase) return;
     try {
       const nextUsage = await api<AgentUsageSnapshot>(`${apiBase}/usage`);
-      if (activeProjectId.current === projectId) setUsage(nextUsage);
+      if (projectId && isActiveProject(projectId)) setUsage(nextUsage);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
-  }, [apiBase, projectId]);
+  }, [apiBase, isActiveProject, projectId]);
 
-  const updatePaper = useCallback((nextPaper: PaperSnapshot) => {
-    setPaper(nextPaper);
-    setProject((current) => (current ? { ...current, paper: nextPaper } : current));
-  }, []);
+  const updatePaper = useCallback(
+    (nextPaper: PaperSnapshot) => {
+      replacePaper(nextPaper);
+      updateProject((current) => (current ? { ...current, paper: nextPaper } : current));
+    },
+    [replacePaper, updateProject],
+  );
 
   useEffect(() => {
     const handleHashChange = () => {
       const route = parseProjectHash(window.location.hash);
-      if (route.projectId !== activeProjectId.current) {
-        rememberProjectState(activeProjectId.current);
+      const activeId = getActiveProjectId();
+      if (route.projectId !== activeId) {
+        rememberProjectState(activeId);
       }
-      setSetupOpen(isSetupRoute());
-      setProjectId(route.projectId);
-      setView(route.view);
-      setSelectedExperimentRunId(route.experimentId);
-      setFocusExperimentRunId(route.experimentId);
+      applyHashRoute(route.projectId, isSetupRoute());
+      applyRouteSelection(route.view, route.experimentId);
     };
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
-  }, [rememberProjectState]);
+  }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
   useLayoutEffect(() => {
     if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
-    const retainedOpen = projectId
-      ? projectTabStateForOpen(projectTabStatesRef.current, projectId)
-      : null;
+    const retainedOpen = projectId ? cachedProjectStateForOpen(projectId) : null;
     const retained = retainedOpen?.state;
     setNotice(null);
     if (projectId && retained) {
@@ -1814,58 +1171,26 @@ export default function App() {
       setProjectReconciliation("opening");
       authoritativeProjectId.current = null;
       renderedRevisionRef.current = 0;
-      setProject(null);
-      setGraph(emptyGraph);
-      setPaper(null);
-      setSelectedNode(null);
-      setCompanionNode(null);
-      setSelectedExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
-      setFocusExperimentRunId(routeMatchesProject ? requestedRoute.experimentId : null);
-      setExperimentStopId(null);
-      setWatcherCheckId(null);
-      setDockedNodeIds([]);
-      setFloatingChat(null);
-      setDraftConversations([]);
-      selectChat(null);
-      setUnreadChatTaskIds(new Set());
-      chatSummaryRefreshGeneration.current += 1;
-      chatSummariesRef.current = [];
-      setChatSummaries([]);
-      setChatSummaryTotal(0);
-      setChatSummaryNextOffset(0);
-      setChatSummariesLoading(false);
-      setChatTranscripts(new Map());
-      chatTaskStatuses.current = new Map();
-      setDagRelationFocusId(null);
-      setRetryTask(null);
-      setRunScope([]);
-      setTasks([]);
-      setLatestRevisionSummary(null);
-      setHistoryRevisionSummaries([]);
-      setHistorySummariesRevision(null);
-      setHistorySummariesError(null);
-      setProjectHistoryOpen(false);
+      replaceProject(null);
+      resetProjectSelection(
+        routeMatchesProject ? requestedRoute.view : "overview",
+        routeMatchesProject ? requestedRoute.experimentId : null,
+      );
+      resetProjectChats();
+      resetProjectTasks(projectId);
+      resetProjectHistory(projectId);
       setUsage(null);
       setWatchers([]);
-      setTaskInspectorId(null);
-      setInspectedTask(null);
-      setActivityTaskId(null);
-      setDismissedTaskIds(readDismissedTaskIds(projectId));
-      setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(projectId));
-      setProjectHeaderCollapsed(readProjectHeaderCollapsed(projectId));
+      resetProjectHeader(projectId);
       setHumanDraft(null);
       setSyncingDraft(false);
-      panelScrollRef.current = new Map();
-      researchSubviewRef.current = "scientific";
-      setView(routeMatchesProject ? requestedRoute.view : "overview");
     }
     if (setupOpen) {
       setLoading(false);
       return;
     }
     if (!projectId) {
-      api<ProjectCard[]>("/api/projects")
-        .then(setProjects)
+      loadProjectIndex()
         .catch((error) =>
           setNotice({
             kind: "error",
@@ -1887,7 +1212,7 @@ export default function App() {
       const cachedPath = `/api/projects/${encodeURIComponent(projectId)}/cached`;
       try {
         const cachedProject = await api<ProjectSnapshot>(cachedPath);
-        if (cancelled || activeProjectId.current !== projectId) return;
+        if (cancelled || !isActiveProject(projectId)) return;
         applyProjectSnapshot(cachedProject, false);
         setProjectReconciliation("authoritative");
         setLoading(false);
@@ -1902,13 +1227,13 @@ export default function App() {
       try {
         await reload();
       } catch (error) {
-        if (cancelled || activeProjectId.current !== projectId) return;
+        if (cancelled || !isActiveProject(projectId)) return;
         if (!retained && authoritativeProjectId.current !== projectId) {
           setProjectReconciliation("failed");
         }
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       } finally {
-        if (!cancelled && activeProjectId.current === projectId) setLoading(false);
+        if (!cancelled && isActiveProject(projectId)) setLoading(false);
       }
     };
     void openProject();
@@ -1918,10 +1243,16 @@ export default function App() {
   }, [
     applyProjectSnapshot,
     actorIdentityChecked,
+    cachedProjectStateForOpen,
     identityIssue,
     identityReady,
+    isActiveProject,
+    loadProjectIndex,
     projectId,
     reload,
+    replaceProject,
+    resetProjectHeader,
+    resetProjectSelection,
     restoreProjectTabState,
     selectChat,
     setupOpen,
@@ -1929,87 +1260,8 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (
-      !identityReady ||
-      identityIssue ||
-      !actorIdentityChecked ||
-      teamSessionRequired ||
-      projectId ||
-      setupOpen
-    )
-      return;
-    let stopped = false;
-    let timer = 0;
-    const schedule = () => {
-      timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
-    };
-    const poll = async () => {
-      if (stopped) return;
-      if (pageIsHidden()) {
-        schedule();
-        return;
-      }
-      try {
-        const nextEntries = await api<ExperimentLoopIndexEntry[]>("/api/experiment-loops");
-        if (!stopped) setExperimentLoops(nextEntries);
-      } catch (error) {
-        if (!stopped) {
-          setNotice({
-            kind: "error",
-            text: `Experiment board could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        }
-      }
-      if (!stopped) schedule();
-    };
-    void poll();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [
-    actorIdentityChecked,
-    identityIssue,
-    identityReady,
-    projectId,
-    setupOpen,
-    teamSessionRequired,
-  ]);
-
-  useEffect(() => {
-    if (!project || project.id !== projectId) return;
-    const nextTabs = openProjectTab(openProjectTabsRef.current, {
-      id: project.id,
-      name: project.name,
-    });
-    if (nextTabs === openProjectTabsRef.current) return;
-    openProjectTabsRef.current = nextTabs;
-    setOpenProjectTabs(nextTabs);
-  }, [project, projectId]);
-
-  useEffect(() => {
     if (projectReconciliation === "authoritative") ensureProjectReadiness();
   }, [ensureProjectReadiness, projectReconciliation]);
-
-  useEffect(() => {
-    if (!projectId) return;
-    try {
-      localStorage.setItem(
-        projectHeaderCollapsedStorageKey(projectId),
-        String(projectHeaderCollapsed),
-      );
-    } catch {
-      // Layout state is a convenience; storage failures must not affect the project.
-    }
-  }, [projectHeaderCollapsed, projectId]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("rcp:trust-view", trustView);
-    } catch {
-      // The chosen view is a convenience; storage failures must not affect the project.
-    }
-  }, [trustView]);
 
   useEffect(() => {
     try {
@@ -2041,7 +1293,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [desktop]);
 
-  const activeTask = useMemo(() => tasks.find(isActiveTask) ?? null, [tasks]);
   const watchersAwaitingDelivery = useMemo(
     () => watchers.some((watcher) => !watcher.notified),
     [watchers],
@@ -2073,59 +1324,12 @@ export default function App() {
     () => buildGlossaryIndex(presentedGraph.glossary),
     [presentedGraph.glossary, presentedGraph.revision],
   );
-  const openNode = (node: GraphNode | null) => {
-    if (!node) return;
-    setDockedNodeIds((current) => current.filter((nodeId) => nodeId !== node.id));
-    if (selectedNode?.id === node.id) {
-      setDetailFocusTokens((current) => ({ ...current, original: current.original + 1 }));
-      return;
-    }
-    if (companionNode?.id === node.id) {
-      setDetailFocusTokens((current) => ({ ...current, companion: current.companion + 1 }));
-      return;
-    }
-    setSelectedNode(node);
-    setCompanionNode(null);
-    setDetailFocusTokens((current) => ({ ...current, original: current.original + 1 }));
-  };
   const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
   const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
-    const node = presentedGraph.nodes[nodeId];
-    if (!node) return;
-    setDockedNodeIds((current) => current.filter((id) => id !== nodeId));
-    const action = relatedNodeWindowAction(
-      sourceSlot,
-      nodeId,
-      selectedNode?.id ?? null,
-      companionNode?.id ?? null,
-    );
-    if (action.kind === "focus") {
-      setDetailFocusTokens((current) => ({
-        ...current,
-        [action.slot]: current[action.slot] + 1,
-      }));
-      return;
-    }
-    const targetSlot = action.slot;
-    if (targetSlot === "original") setSelectedNode(node);
-    else setCompanionNode(node);
-    setDetailFocusTokens((current) => ({
-      ...current,
-      [targetSlot]: current[targetSlot] + 1,
-    }));
-  };
-  const closeDetailSlot = (slot: DetailWindowSlot) => {
-    if (slot === "original") setSelectedNode(null);
-    else setCompanionNode(null);
-  };
-  const dockNode = (nodeId: string, slot: DetailWindowSlot) => {
-    setDockedNodeIds((current) => (current.includes(nodeId) ? current : [...current, nodeId]));
-    closeDetailSlot(slot);
+    openRelatedGraphNode(sourceSlot, presentedGraph.nodes[nodeId] ?? null);
   };
   const restoreDockedNode = (nodeId: string) => {
-    const node = presentedGraph.nodes[nodeId];
-    setDockedNodeIds((current) => current.filter((id) => id !== nodeId));
-    openNode(node ?? null);
+    restoreDockedGraphNode(nodeId, presentedGraph.nodes[nodeId] ?? null);
   };
   const dockedNodes = dockedNodeIds.flatMap((nodeId) => {
     const node = presentedGraph.nodes[nodeId];
@@ -2135,14 +1339,6 @@ export default function App() {
     () =>
       Object.fromEntries(Object.values(presentedGraph.nodes).map((node) => [node.id, node.title])),
     [presentedGraph.nodes],
-  );
-  const visibleChatSummaries = useMemo(
-    () =>
-      selectedCanonicalChat &&
-      !chatSummaries.some((summary) => summary.chat_id === selectedCanonicalChat.chat_id)
-        ? [...chatSummaries, selectedCanonicalChat]
-        : chatSummaries,
-    [chatSummaries, selectedCanonicalChat],
   );
   const conversations = useMemo(
     () =>
@@ -2155,119 +1351,7 @@ export default function App() {
       ),
     [draftConversations, nodeTitles, project?.name, tasks, visibleChatSummaries],
   );
-  const selectedExperimentChatId =
-    view === "execution" && selectedExperimentRunId
-      ? (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
-      : null;
-  const selectedResultViewKey = resultViewSelectionKey(
-    projectId,
-    selectedExperimentRunId,
-    selectedExperimentChatId,
-  );
-  if (resultViewSelectionRef.current.key !== selectedResultViewKey) {
-    resultViewSelectionRef.current = {
-      key: selectedResultViewKey,
-      generation: resultViewSelectionRef.current.generation + 1,
-    };
-  }
-  const selectedExperimentTerminalVersion = selectedExperimentChatId
-    ? tasks
-        .filter(
-          (task) =>
-            task.request.chat_id === selectedExperimentChatId &&
-            Boolean(task.request.result_view) &&
-            RESULT_VIEW_TERMINAL_STATUSES.has(task.status),
-        )
-        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
-        .sort()
-        .join("|")
-    : "";
-  const refreshResultViews = useCallback(async () => {
-    const requestedProjectId = projectId;
-    const experimentId = selectedExperimentRunId;
-    const chatId = selectedExperimentChatId;
-    const selectionKey = resultViewSelectionKey(requestedProjectId, experimentId, chatId);
-    const selectionGeneration = resultViewSelectionRef.current.generation;
-    const loadGeneration = ++resultViewLoadGeneration.current;
-    if (!requestedProjectId || !apiBase || !experimentId || !chatId || !selectionKey) {
-      setResultViewState({
-        projectId: null,
-        experimentId: null,
-        chatId: null,
-        views: [],
-        authoritative: false,
-        error: null,
-      });
-      return;
-    }
-    setResultViewState((current) =>
-      current.projectId === requestedProjectId &&
-      current.experimentId === experimentId &&
-      current.chatId === chatId
-        ? { ...current, error: null }
-        : {
-            projectId: requestedProjectId,
-            experimentId,
-            chatId,
-            views: [],
-            authoritative: false,
-            error: null,
-          },
-    );
-    try {
-      const descriptors = await loadResultViews(apiBase, experimentId, chatId);
-      if (
-        activeProjectId.current !== requestedProjectId ||
-        !resultViewLoadIsCurrent(
-          selectionKey,
-          selectionGeneration,
-          loadGeneration,
-          resultViewSelectionRef.current.key,
-          resultViewSelectionRef.current.generation,
-          resultViewLoadGeneration.current,
-        )
-      )
-        return;
-      setResultViewState((current) =>
-        current.projectId === requestedProjectId &&
-        current.experimentId === experimentId &&
-        current.chatId === chatId
-          ? {
-              ...current,
-              views: descriptors.filter(
-                (descriptor) =>
-                  descriptor.experiment_id === experimentId && descriptor.chat_id === chatId,
-              ),
-              authoritative: true,
-              error: null,
-            }
-          : current,
-      );
-    } catch (error) {
-      if (
-        activeProjectId.current !== requestedProjectId ||
-        !resultViewLoadIsCurrent(
-          selectionKey,
-          selectionGeneration,
-          loadGeneration,
-          resultViewSelectionRef.current.key,
-          resultViewSelectionRef.current.generation,
-          resultViewLoadGeneration.current,
-        )
-      )
-        return;
-      setResultViewState((current) =>
-        current.projectId === requestedProjectId &&
-        current.experimentId === experimentId &&
-        current.chatId === chatId
-          ? {
-              ...current,
-              error: `Result views could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-            }
-          : current,
-      );
-    }
-  }, [apiBase, projectId, selectedExperimentChatId, selectedExperimentRunId]);
+  const refreshResultViews = refreshSelectedResultViews;
   useEffect(() => {
     void refreshResultViews();
   }, [refreshResultViews, selectedExperimentTerminalVersion]);
@@ -2276,96 +1360,15 @@ export default function App() {
       setFloatingChat(null);
     }
   }, [floatingChat?.chatId, selectedExperimentChatId]);
-  const visibleChatIds = useMemo(
-    () =>
-      visibleChatTranscriptIds(
-        view,
-        selectedChatId,
-        floatingChat?.chatId ?? null,
-        selectedExperimentChatId,
-      ),
-    [floatingChat?.chatId, selectedChatId, selectedExperimentChatId, view],
-  );
-  const visibleChatVersions = visibleChatIds
-    .map(
-      (chatId) =>
-        `${chatId}:${visibleChatSummaries.find((summary) => summary.chat_id === chatId)?.updated_at ?? ""}`,
-    )
-    .join("|");
-  const selectedResultViews =
-    resultViewState.projectId === projectId &&
-    resultViewState.experimentId === selectedExperimentRunId &&
-    resultViewState.chatId === selectedExperimentChatId &&
-    resultViewState.authoritative
-      ? resultViewState.views
-      : undefined;
-  const selectedResultViewsError =
-    resultViewState.projectId === projectId &&
-    resultViewState.experimentId === selectedExperimentRunId &&
-    resultViewState.chatId === selectedExperimentChatId
-      ? resultViewState.error
-      : null;
-  const keepSelectedResultView = async (viewId: string) => {
-    const requestedProjectId = projectId;
-    const experimentId = selectedExperimentRunId;
-    const chatId = selectedExperimentChatId;
-    const selectionKey = resultViewSelectionKey(requestedProjectId, experimentId, chatId);
-    const selectionGeneration = resultViewSelectionRef.current.generation;
-    const requestedApiBase = apiBase;
-    if (!requestedProjectId || !requestedApiBase || !experimentId || !chatId || !selectionKey) {
-      throw new Error("This run conversation is no longer selected.");
-    }
-    const kept = await keepResultView(requestedApiBase, viewId);
-    if (kept.view_id !== viewId || kept.experiment_id !== experimentId || kept.chat_id !== chatId) {
-      throw new Error("Keep returned a result view outside the selected run conversation.");
-    }
-    if (
-      !resultViewSelectionIsCurrent(
-        selectionKey,
-        selectionGeneration,
-        resultViewSelectionRef.current.key,
-        resultViewSelectionRef.current.generation,
-      )
-    )
-      return;
-    resultViewLoadGeneration.current += 1;
-    setResultViewState((current) =>
-      current.projectId === requestedProjectId &&
-      current.experimentId === experimentId &&
-      current.chatId === chatId
-        ? {
-            ...current,
-            views: current.views.map((view) => (view.view_id === kept.view_id ? kept : view)),
-          }
-        : current,
-    );
-  };
+  const keepSelectedResultView = keepResultViewForSelection;
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
   const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
   const ontologyDraftIsStale = humanDraftOntologyIsStale(humanDraft, graph);
-  const activityTask = projectActivityTask(tasks, activityTaskId);
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
 
   const changeAppTextScale = (action: TextScaleAction) => {
     setTextScale((current) => changeTextScale(current, action));
-  };
-
-  const startConversation = (kind: ChatKind, node: GraphNode | null = null): string => {
-    const chatId = window.crypto.randomUUID();
-    const draft: DraftConversation = {
-      chatId,
-      kind,
-      nodeId: node?.id ?? null,
-      title: node?.title ?? project?.name ?? "Project",
-    };
-    setDraftConversations((current) => [draft, ...current]);
-    return chatId;
-  };
-
-  const ensureConversation = (kind: ChatKind, node: GraphNode | null = null): string => {
-    const existing = latestConversation(conversations, kind, node?.id ?? null);
-    return existing?.chatId ?? startConversation(kind, node);
   };
 
   const openChats = (preferredChatId?: string | null) => {
@@ -2374,45 +1377,20 @@ export default function App() {
       chatEntryConversationId(conversations, activityTask, unreadChatTaskIds, selectedChatId);
     selectChat(nextChatId);
     setFloatingChat(null);
-    setSelectedNode(null);
-    setCompanionNode(null);
+    clearNodeSelections();
     changeView("chats");
   };
 
-  useLayoutEffect(() => {
-    viewRef.current = view;
-    if (view === "scientific" || view === "dag") researchSubviewRef.current = view;
-    const panel = panelRef.current;
-    if (panel) panel.scrollTop = panelScrollRef.current.get(view) ?? 0;
-  }, [loading, project?.id, view]);
-
   useEffect(() => {
     if (mutationsDisabled) {
-      setRunDialogOpen(false);
-      setCampaignDialogOpen(false);
+      closeRunDialog();
+      closeAutoResearchDialog();
     }
   }, [mutationsDisabled]);
 
   useEffect(() => {
-    if (activityTask && (isActiveTask(activityTask) || activityTask.status === "paused")) {
-      setActivityTaskId(activityTask.operation_id);
-    }
-  }, [activityTask]);
-
-  useEffect(() => {
-    const nextStatuses = new Map(chatTaskStatuses.current);
     const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
-    const newlyTerminal = newlyUnreadChatTaskIds(tasks, chatTaskStatuses.current, visibleChatId);
-    const completedChatTasks = newlyUnreadChatTaskIds(tasks, chatTaskStatuses.current, null);
-    for (const task of tasks) {
-      if (!chatIdForTask(task)) continue;
-      nextStatuses.set(task.operation_id, task.status);
-    }
-    chatTaskStatuses.current = nextStatuses;
-    if (newlyTerminal.length) {
-      setUnreadChatTaskIds((current) => new Set([...current, ...newlyTerminal]));
-    }
-    if (completedChatTasks.length) {
+    if (recordTaskUpdates(tasks, visibleChatId)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
           setNotice({
@@ -2433,43 +1411,8 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!apiBase || visibleChatIds.length === 0) return;
-    let cancelled = false;
-    visibleChatIds.forEach((chatId) => {
-      if (
-        !shouldLoadVisibleChatTranscript(chatId, visibleChatSummaries, selectedExperimentChatId)
-      ) {
-        return;
-      }
-      void loadChatTranscript(apiBase, chatId, api)
-        .then((transcript) => {
-          if (cancelled) return;
-          setChatTranscripts((current) => new Map(current).set(chatId, transcript));
-        })
-        .catch((error) => {
-          if (!cancelled) {
-            setNotice({
-              kind: "error",
-              text: `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-            });
-          }
-        });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, selectedExperimentChatId, visibleChatVersions]);
-
-  useEffect(() => {
     const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
-    if (!visibleChatId) return;
-    setUnreadChatTaskIds((current) => {
-      const next = new Set(current);
-      tasks.forEach((task) => {
-        if (task.request.chat_id === visibleChatId) next.delete(task.operation_id);
-      });
-      return next.size === current.size ? current : next;
-    });
+    markVisibleChatRead(tasks, visibleChatId);
   }, [selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
@@ -2490,7 +1433,7 @@ export default function App() {
             kind: "error",
             text: error instanceof Error ? error.message : String(error),
           });
-          void reverifyBackendIdentity("active-task-poll-failure");
+          void reverifyIdentity("active-task-poll-failure");
           consecutiveFailures += 1;
           schedule(Math.min(8000, 1000 * 2 ** (consecutiveFailures - 1)));
         }
@@ -2499,12 +1442,12 @@ export default function App() {
       if (stopped) return;
       const recoveredAfterFailure = consecutiveFailures > 0;
       consecutiveFailures = 0;
-      if (recoveredAfterFailure) void reverifyBackendIdentity("active-task-poll-recovered");
+      if (recoveredAfterFailure) void reverifyIdentity("active-task-poll-recovered");
       const current = next.find((task) => task.operation_id === activeTask.operation_id);
       if (current && !isActiveTask(current)) {
         void api<AgentUsageSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/usage`).then(
           (nextUsage) => {
-            if (!stopped && activeProjectId.current === projectId) setUsage(nextUsage);
+            if (!stopped && isActiveProject(projectId)) setUsage(nextUsage);
           },
         );
         if (terminalTaskNeedsAuthoritativeProjectReload(current)) {
@@ -2533,10 +1476,10 @@ export default function App() {
             }
           }
         }
-        if (!stopped) setTasks(next);
+        if (!stopped) replaceTasks(next);
         return;
       }
-      setTasks(next);
+      replaceTasks(next);
       schedule(1000);
     };
     schedule(500);
@@ -2562,33 +1505,14 @@ export default function App() {
           tasks: nextTasks,
           project: nextProject,
         } = await loadExperimentWatcherPoll(api, base);
-        if (!stopped && activeProjectId.current === requestedProjectId) {
-          const unseenWatcherResults = nextTasks.filter(
-            (task) =>
-              task.request.trigger === "watcher" &&
-              !chatTaskStatuses.current.has(task.operation_id) &&
-              (task.status === "succeeded" ||
-                task.status === "failed" ||
-                task.status === "interrupted"),
-          );
+        if (!stopped && isActiveProject(requestedProjectId)) {
+          const hasUnseenWatcherResults = recordWatcherResults(nextTasks);
           applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
           authoritativeProjectId.current = requestedProjectId;
           setProjectReconciliation("authoritative");
           setWatchers(nextWatchers);
-          setTasks(nextTasks);
-          if (unseenWatcherResults.length > 0) {
-            setUnreadChatTaskIds(
-              (current) =>
-                new Set([
-                  ...current,
-                  ...unseenWatcherResults.flatMap((task) => {
-                    const chatId = chatIdForTask(task);
-                    return chatId && chatId !== selectedChatIdRef.current
-                      ? [task.operation_id]
-                      : [];
-                  }),
-                ]),
-            );
+          replaceTasks(nextTasks);
+          if (hasUnseenWatcherResults) {
             void refreshChatSummaries(requestedProjectId, base);
           }
         }
@@ -2604,42 +1528,6 @@ export default function App() {
       window.clearTimeout(timer);
     };
   }, [applyProjectSnapshot, projectId, refreshChatSummaries, watchersAwaitingDelivery]);
-
-  const inspectorSummary = tasks.find((task) => task.operation_id === taskInspectorId);
-  const inspectorVersion = inspectorSummary?.updated_at;
-  useEffect(() => {
-    if (!inspectorSummary) return;
-    setInspectedTask((current) =>
-      current?.operation_id === inspectorSummary.operation_id
-        ? { ...current, ...inspectorSummary, events: current.events }
-        : current,
-    );
-  }, [inspectorSummary]);
-  useEffect(() => {
-    if (!projectId || !taskInspectorId) {
-      setInspectedTask(null);
-      return;
-    }
-    let cancelled = false;
-    setTaskInspectorLoading(true);
-    api<AgentTask>(`/api/projects/${encodeURIComponent(projectId)}/tasks/${taskInspectorId}`)
-      .then((task) => {
-        if (!cancelled) setInspectedTask(task);
-      })
-      .catch((error) => {
-        if (!cancelled)
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-      })
-      .finally(() => {
-        if (!cancelled) setTaskInspectorLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [inspectorVersion, projectId, taskInspectorId]);
 
   const pendingProposals = useMemo(
     () => Object.values(graph.proposals).filter((item) => item.status === "pending"),
@@ -2687,36 +1575,6 @@ export default function App() {
     });
   };
 
-  const dismissTaskNotification = (operationId: string) => {
-    setDismissedTaskIds((current) => {
-      const next = new Set(current);
-      next.add(operationId);
-      try {
-        localStorage.setItem(
-          taskNotificationStorageKey(projectId),
-          serializeDismissedTaskIds(next),
-        );
-      } catch {}
-      return next;
-    });
-    if (taskInspectorId === operationId) {
-      setTaskInspectorId(null);
-      setInspectedTask(null);
-    }
-  };
-
-  const dismissHistoryNotices = (messages: ValidationMessage[]) => {
-    const ids = messages.map(validationNoticeId);
-    setDismissedHistoryNoticeIds((current) => {
-      const next = new Set(current);
-      ids.forEach((id) => next.add(id));
-      try {
-        localStorage.setItem(historyNoticeStorageKey(projectId), JSON.stringify([...next].sort()));
-      } catch {}
-      return next;
-    });
-  };
-
   const resetHumanDraft = () => {
     if (!projectId) return;
     try {
@@ -2749,11 +1607,9 @@ export default function App() {
       } catch (error) {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
-      setGraph(nextGraph);
-      setProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
-      setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
-      setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
-      setFloatingChat((current) => (current && nextGraph.nodes[current.nodeId] ? current : null));
+      applySyncedGraph(nextGraph);
+      updateProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
+      reconcileFloatingChat(nextGraph.nodes, false);
       await reload();
       setNotice({
         kind: "info",
@@ -2772,38 +1628,22 @@ export default function App() {
     }
   };
 
-  const recordStartedTask = (task: AgentTask) => {
-    setTasks((current) => [
-      task,
-      ...current.filter((item) => item.operation_id !== task.operation_id),
-    ]);
-    setActivityTaskId(task.operation_id);
-    setDismissedTaskIds((current) => {
-      const next = new Set(current);
-      next.delete(task.operation_id);
-      return next;
-    });
-    setNotice(null);
-  };
-
   const startAgentTask = async (
     kind: AgentTaskKind,
     request: AgentTaskRequest,
   ): Promise<AgentTask> => {
-    if (taskStartLock.current || taskStarting)
-      throw new Error("Another task start is already being submitted.");
-    taskStartLock.current = true;
-    setTaskStarting(true);
+    const finishTaskStart = beginTaskStart();
+    if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
     try {
       const task = await api<AgentTask>(`${apiBase}/tasks/${kind}`, {
         method: "POST",
         body: JSON.stringify(request),
       });
       recordStartedTask(task);
+      setNotice(null);
       return task;
     } finally {
-      taskStartLock.current = false;
-      setTaskStarting(false);
+      finishTaskStart();
     }
   };
 
@@ -2821,13 +1661,13 @@ export default function App() {
 
   const stopExperimentLoop = async (nodeId: string) => {
     if (!apiBase || experimentStopId) return;
-    setExperimentStopId(nodeId);
+    const finishExperimentStop = beginExperimentStop(nodeId);
     try {
       const control = await api<ExperimentControlState>(
         `${apiBase}/experiments/${encodeURIComponent(nodeId)}/stop`,
         { method: "POST" },
       );
-      setProject((current) =>
+      updateProject((current) =>
         current
           ? {
               ...current,
@@ -2839,7 +1679,7 @@ export default function App() {
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
     } finally {
-      setExperimentStopId(null);
+      finishExperimentStop();
     }
   };
 
@@ -2853,7 +1693,7 @@ export default function App() {
       mutationsDisabled
     )
       return;
-    setWatcherCheckId(watcherId);
+    const finishWatcherCheck = beginWatcherCheck(watcherId);
     try {
       const checked = await api<WatcherRecord>(
         `${apiBase}/watchers/${encodeURIComponent(watcherId)}/check`,
@@ -2866,7 +1706,7 @@ export default function App() {
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
     } finally {
-      setWatcherCheckId(null);
+      finishWatcherCheck();
     }
   };
 
@@ -2880,15 +1720,14 @@ export default function App() {
       setNotice({ kind: "error", text: reason });
       return;
     }
-    if (taskStartLock.current || taskStarting) {
+    const finishTaskStart = beginTaskStart();
+    if (!finishTaskStart) {
       setNotice({ kind: "error", text: "Another task start is already being submitted." });
       return;
     }
-    const chatId = ensureConversation("node_chat", node);
-    const profile = project.agent_profiles.node_chat;
-    taskStartLock.current = true;
-    setTaskStarting(true);
     try {
+      const chatId = ensureConversation(conversations, "node_chat", node, project.name);
+      const profile = project.agent_profiles.node_chat;
       const task = await api<AgentTask>(
         `${apiBase}/experiments/${encodeURIComponent(node.id)}/run`,
         {
@@ -2904,12 +1743,9 @@ export default function App() {
         },
       );
       recordStartedTask(task);
-      setSelectedExperimentRunId(node.id);
-      setFocusExperimentRunId(node.id);
-      setSelectedNode(null);
-      setCompanionNode(null);
+      setNotice(null);
       setFloatingChat(null);
-      changeView("execution");
+      showExperiment(node.id);
       try {
         await reload();
       } catch (error) {
@@ -2921,15 +1757,14 @@ export default function App() {
     } catch (caught) {
       setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      taskStartLock.current = false;
-      setTaskStarting(false);
+      finishTaskStart();
     }
   };
 
   const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
     if (!project || taskStarting || mutationsDisabled) return;
     const runKind = project.last_refresh_at ? "refresh" : "seed";
-    setRunScope(scope);
+    replaceRunScope(scope);
     try {
       await startAgentTask(runKind, {
         ...config,
@@ -2937,58 +1772,40 @@ export default function App() {
         run_truth_scope: scope,
         message,
       });
-      setRunDialogOpen(false);
+      closeRunDialog();
     } catch (caught) {
       setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     }
-  };
-
-  const replaceCampaign = (nextCampaign: Campaign) => {
-    setCampaignState((current) => {
-      if (activeProjectId.current !== nextCampaign.project_id) return current;
-      const currentCampaigns =
-        current.projectId === nextCampaign.project_id ? current.campaigns : [];
-      return {
-        projectId: nextCampaign.project_id,
-        messages: current.projectId === nextCampaign.project_id ? current.messages : {},
-        campaigns: [
-          nextCampaign,
-          ...currentCampaigns.filter(
-            (campaign) => campaign.campaign_id !== nextCampaign.campaign_id,
-          ),
-        ].sort(
-          (left, right) =>
-            Date.parse(right.created_at) - Date.parse(left.created_at) ||
-            right.campaign_id.localeCompare(left.campaign_id),
-        ),
-      };
-    });
   };
 
   const authorizeAutoResearch = async (
     invocationCeiling: number,
     startingInstruction: string | null,
   ) => {
-    if (!project || !apiBase || mutationsDisabled || campaignAction || taskStarting) return;
-    if (liveCampaign) {
-      setCampaignStartError("An auto-research campaign is already live for this project.");
+    if (!project || !apiBase || mutationsDisabled || episodeAction || taskStarting) return;
+    if (liveAutoResearchEpisode) {
+      reportAutoResearchStartError("An auto-research episode is already live for this project.");
       return;
     }
-    if (taskStartLock.current) {
-      setCampaignStartError("Another task start is already being submitted.");
+    const finishTaskStart = beginTaskStart();
+    if (!finishTaskStart) {
+      reportAutoResearchStartError("Another task start is already being submitted.");
       return;
     }
-    taskStartLock.current = true;
-    setTaskStarting(true);
-    setCampaignAction("start");
-    setCampaignStartError(null);
+    const finishEpisodeAction = beginEpisodeAction("start");
+    if (!finishEpisodeAction) {
+      finishTaskStart();
+      return;
+    }
+    reportAutoResearchStartError(null);
     try {
-      const started = await startCampaign(apiBase, {
+      const started = await startEpisode(apiBase, {
+        mode: "auto_research",
         invocation_ceiling: invocationCeiling,
         starting_instruction: startingInstruction,
       });
-      replaceCampaign(started);
-      setCampaignDialogOpen(false);
+      replaceEpisode(started);
+      closeAutoResearchDialog();
       changeView("execution");
       try {
         await reload();
@@ -2999,72 +1816,57 @@ export default function App() {
         });
       }
     } catch (error) {
-      setCampaignStartError(error instanceof Error ? error.message : String(error));
+      reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
     } finally {
-      taskStartLock.current = false;
-      setTaskStarting(false);
-      setCampaignAction(null);
+      finishTaskStart();
+      finishEpisodeAction();
     }
   };
 
-  const requestCampaignStop = async (campaignId: string) => {
-    if (!apiBase || campaignAction) return;
-    setCampaignAction(`stop:${campaignId}`);
+  const requestEpisodeStop = async (episodeId: string) => {
+    if (!apiBase || episodeAction) return;
+    const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
+    if (!finishEpisodeAction) return;
     try {
-      replaceCampaign(await stopCampaign(apiBase, campaignId));
-      await refreshCampaigns();
+      replaceEpisode(await stopEpisode(apiBase, episodeId));
+      await refreshEpisodes();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
-      setCampaignAction(null);
+      finishEpisodeAction();
     }
   };
 
-  const requestCampaignReauthorization = async (
-    campaignId: string,
-    additionalInvocations: number,
-  ) => {
-    if (!apiBase || campaignAction) return;
-    setCampaignAction(`reauthorize:${campaignId}`);
+  const requestEpisodeReauthorization = async (episodeId: string, invocationCeiling: number) => {
+    if (!apiBase || episodeAction) return;
+    const finishEpisodeAction = beginEpisodeAction(`reauthorize:${episodeId}`);
+    if (!finishEpisodeAction) return;
     try {
-      replaceCampaign(await reauthorizeCampaign(apiBase, campaignId, additionalInvocations));
+      const nextEpisode = await reauthorizeEpisode(apiBase, episodeId, invocationCeiling);
+      replaceEpisode(nextEpisode);
       await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
-      setCampaignAction(null);
+      finishEpisodeAction();
     }
   };
 
-  const messageCampaignOrchestrator = async (campaignId: string, body: string) => {
-    if (!apiBase || campaignAction) return;
-    setCampaignAction(`message:${campaignId}`);
+  const messageEpisodeOrchestrator = async (episodeId: string, body: string) => {
+    if (!apiBase || !projectId || episodeAction) return;
+    const finishEpisodeAction = beginEpisodeAction(`message:${episodeId}`);
+    if (!finishEpisodeAction) return;
     try {
-      const saved = await sendCampaignMessage(apiBase, campaignId, body);
-      setCampaignState((current) =>
-        current.projectId === projectId
-          ? {
-              ...current,
-              messages: {
-                ...current.messages,
-                [campaignId]: [
-                  ...(current.messages[campaignId] ?? []).filter(
-                    (item) => item.message_id !== saved.message_id,
-                  ),
-                  saved,
-                ],
-              },
-            }
-          : current,
-      );
-      await refreshCampaignMessages(campaignId);
+      const saved = await sendEpisodeMessage(apiBase, episodeId, body);
+      recordEpisodeMessage(projectId, episodeId, saved);
+      await refreshEpisodeMessages(episodeId);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
-      setCampaignAction(null);
+      finishEpisodeAction();
     }
   };
 
@@ -3075,25 +1877,14 @@ export default function App() {
   ) => {
     if (taskActionId) return;
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
-    setTaskActionId(task.operation_id);
+    const finishTaskAction = beginTaskAction(task.operation_id);
+    if (!finishTaskAction) return;
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
         method: "POST",
       });
-      setTasks((current) => [
-        next,
-        ...current.filter((item) => item.operation_id !== next.operation_id),
-      ]);
-      if (presentTask) {
-        setActivityTaskId(next.operation_id);
-        setTaskInspectorId(next.operation_id);
-        setInspectedTask(next);
-      }
-      setDismissedTaskIds((current) => {
-        const updated = new Set(current);
-        updated.delete(next.operation_id);
-        return updated;
-      });
+      upsertTask(next);
+      if (presentTask) presentAgentTask(next);
       setNotice(null);
     } catch (caught) {
       const taskError = caught instanceof Error ? caught.message : String(caught);
@@ -3110,161 +1901,86 @@ export default function App() {
       }
       setNotice({ kind: "error", text: taskError });
     } finally {
-      setTaskActionId(null);
+      finishTaskAction();
     }
   };
 
-  const operateCampaignOrchestratorTask = async (
+  const operateEpisodeOrchestratorTask = async (
     task: AgentTask,
     action: "pause" | "resume" | "retry",
   ) => {
     await operateTask(task, action, false);
-    await refreshCampaigns();
+    await refreshEpisodes();
   };
 
   const repairGraphUpdate = async (operationId: string): Promise<void> => {
-    if (taskStartLock.current || taskStarting || taskActionId) {
+    const finishTaskRepair = beginTaskRepair(operationId);
+    if (!finishTaskRepair) {
       throw new Error("Another task action is already being submitted.");
     }
-    if (mutationsDisabled) {
-      throw new Error("Graph repair is unavailable while replay is degraded.");
-    }
-    taskStartLock.current = true;
-    setTaskStarting(true);
-    setTaskActionId(operationId);
     try {
+      if (mutationsDisabled) {
+        throw new Error("Graph repair is unavailable while replay is degraded.");
+      }
       const next = await api<AgentTask>(
         `${apiBase}/tasks/${encodeURIComponent(operationId)}/repair-graph-update`,
         { method: "POST" },
       );
-      setTasks((current) => [
-        next,
-        ...current.filter((item) => item.operation_id !== next.operation_id),
-      ]);
-      setActivityTaskId(next.operation_id);
-      setDismissedTaskIds((current) => {
-        const updated = new Set(current);
-        updated.delete(next.operation_id);
-        return updated;
-      });
+      recordStartedTask(next);
       setNotice(null);
     } finally {
-      taskStartLock.current = false;
-      setTaskStarting(false);
-      setTaskActionId(null);
+      finishTaskRepair();
     }
   };
 
   const retryAgentTask = async (task: AgentTask, config: AgentRunConfig) => {
     if (taskActionId || mutationsDisabled) return;
-    setTaskActionId(task.operation_id);
+    const finishTaskAction = beginTaskAction(task.operation_id);
+    if (!finishTaskAction) return;
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
         method: "POST",
         body: JSON.stringify(taskRetryRequestBody(task, config)),
       });
-      setTasks((current) => [
-        next,
-        ...current.filter((item) => item.operation_id !== next.operation_id),
-      ]);
-      if (!isExperimentLoopRecovery(task)) {
-        setActivityTaskId(next.operation_id);
-        setTaskInspectorId(next.operation_id);
-        setInspectedTask(next);
-      }
-      setRetryTask(null);
-      setDismissedTaskIds((current) => {
-        const updated = new Set(current);
-        updated.delete(next.operation_id);
-        return updated;
-      });
+      upsertTask(next);
+      if (!isExperimentLoopRecovery(task)) presentAgentTask(next);
+      closeRetryTask();
       setNotice(null);
     } catch (caught) {
       setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setTaskActionId(null);
+      finishTaskAction();
     }
   };
 
   const requestRetry = (task: AgentTask) => {
     if (task.kind === "seed" || task.kind === "refresh") {
-      setRetryTask(task);
+      chooseRetryTask(task);
       return;
     }
     void operateTask(task, "retry");
   };
 
-  const tabForProject = (id: string): ProjectTab => ({
-    id,
-    name:
-      projects.find((item) => item.id === id)?.name ??
-      experimentLoops.find((item) => item.project_id === id)?.project_name ??
-      (project?.id === id ? project.name : id),
-  });
-
-  const setTabs = (nextTabs: ProjectTab[]) => {
-    openProjectTabsRef.current = nextTabs;
-    setOpenProjectTabs(nextTabs);
-  };
-
   const commitProjectOpen = (id: string, experimentId: string | null = null) => {
     if (projectId !== id) rememberProjectState(projectId);
-    setTabs(openProjectTab(openProjectTabsRef.current, tabForProject(id)));
-    setSetupOpen(false);
-    window.location.hash = experimentId
-      ? experimentBoardHref(id, experimentId).slice(1)
-      : `/projects/${encodeURIComponent(id)}`;
+    commitProjectRoute(id, experimentId);
   };
   const openProject = (id: string, experimentId: string | null = null) => {
-    if (desktop) {
-      let storedAcknowledgement: string | null = null;
-      try {
-        storedAcknowledgement = localStorage.getItem(DESKTOP_FOLDER_ACCESS_ACK_KEY);
-      } catch {}
-      if (needsDesktopFolderAccessAcknowledgement(true, storedAcknowledgement)) {
-        setDesktopAccessError(null);
-        setPendingDesktopProject({ projectId: id, experimentId });
-        return;
-      }
-    }
+    if (requestDesktopProjectOpen(id, experimentId)) return;
     commitProjectOpen(id, experimentId);
   };
   const continueDesktopProjectOpen = () => {
-    if (!pendingDesktopProject) return;
-    try {
-      localStorage.setItem(
-        DESKTOP_FOLDER_ACCESS_ACK_KEY,
-        desktopFolderAccessAcknowledgementValue(),
-      );
-      const projectToOpen = pendingDesktopProject;
-      setPendingDesktopProject(null);
-      setDesktopAccessError(null);
-      commitProjectOpen(projectToOpen.projectId, projectToOpen.experimentId);
-    } catch (error) {
-      setDesktopAccessError(
-        `RCP could not record this choice: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  };
-  const openSetup = () => {
-    setSetupOpen(true);
-    setProjectId(null);
-    window.location.hash = "/projects/new";
+    continueDesktopProjectAccess(commitProjectOpen);
   };
   const returnToProjects = () => {
     rememberProjectState(projectId);
-    setSetupOpen(false);
-    setProjectId(null);
-    window.location.hash = "";
+    returnToProjectIndex();
   };
 
   const deleteProject = async (id: string) => {
     await api(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
-    setProjects((current) => current.filter((item) => item.id !== id));
-    setExperimentLoops((current) => current.filter((item) => item.project_id !== id));
-    projectTabStatesRef.current.delete(id);
-    dagViewportRefsRef.current.delete(id);
-    setTabs(closeProjectTab(openProjectTabsRef.current, projectId, id).tabs);
+    removeProject(id);
+    forgetProjectViewport(id);
     try {
       localStorage.removeItem(humanDraftStorageKey(id));
     } catch {
@@ -3274,24 +1990,13 @@ export default function App() {
 
   const activateProjectTab = (id: string) => {
     if (id === projectId) return;
-    commitProjectOpen(id);
+    rememberProjectState(projectId);
+    activateProjectRoute(id);
   };
 
   const closeDockedProject = (id: string) => {
-    const result = closeProjectTab(openProjectTabsRef.current, projectId, id);
-    if (result.tabs === openProjectTabsRef.current) return;
-    projectTabStatesRef.current.delete(id);
-    dagViewportRefsRef.current.delete(id);
-    setTabs(result.tabs);
-    if (id !== projectId) return;
-    if (result.activeProjectId) {
-      setSetupOpen(false);
-      window.location.hash = `/projects/${encodeURIComponent(result.activeProjectId)}`;
-    } else {
-      setSetupOpen(false);
-      setProjectId(null);
-      window.location.hash = "";
-    }
+    if (!closeProjectRoute(id)) return;
+    forgetProjectViewport(id);
   };
 
   useEffect(() => {
@@ -3304,11 +2009,7 @@ export default function App() {
         returnToProjects();
         return;
       }
-      const nextProjectId = adjacentProjectTabId(
-        openProjectTabsRef.current,
-        projectId,
-        action === "previous" ? -1 : 1,
-      );
+      const nextProjectId = adjacentProjectId(action === "previous" ? -1 : 1);
       if (!nextProjectId) return;
       event.preventDefault();
       activateProjectTab(nextProjectId);
@@ -3318,49 +2019,20 @@ export default function App() {
   });
 
   const reconnectBackend = async () => {
-    if (reconnecting) return;
-    setReconnecting(true);
-    try {
-      if (desktop) {
-        const status = await desktopReconnectBackend();
-        if (window.location.origin !== new URL(status.base_url).origin) {
-          window.location.replace(`${status.base_url}/${window.location.hash}`);
-          return;
-        }
-      }
-      await acceptCurrentBackendIdentity();
-    } catch (error) {
-      setIdentityIssue(error instanceof Error ? error.message : String(error));
-    } finally {
-      setReconnecting(false);
-    }
+    await reconnectDesktopBackend(reportIdentityIssue);
   };
 
   const updateHasActiveWork =
     Boolean(activeTask) ||
     (desktopUpdate?.active_agent_tasks ?? verifiedHealth?.active_agent_tasks ?? 0) > 0;
   const applyUpdate = async () => {
-    if (!desktopUpdate || updateApplying) return;
-    setUpdateApplying(true);
-    setUpdateError(null);
-    try {
-      const identity = await reverifyBackendIdentity("update-apply");
-      if (!identity.ok) return;
-      if (identity.health) {
-        verifiedHealthRef.current = identity.health;
-        setVerifiedHealth(identity.health);
-      }
-      const hasActiveWork = Boolean(activeTask) || (identity.health?.active_agent_tasks ?? 0) > 0;
-      if (hasActiveWork && !updateExpanded) {
-        setUpdateExpanded(true);
-        return;
-      }
-      await applyDesktopUpdate(hasActiveWork);
-    } catch (error) {
-      setUpdateError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setUpdateApplying(false);
-    }
+    await applyDesktopShellUpdate(Boolean(activeTask), async () => {
+      const identity = await reverifyIdentity("update-apply");
+      return {
+        ok: identity.ok,
+        activeAgentTasks: identity.health?.active_agent_tasks ?? 0,
+      };
+    });
   };
 
   const updateSurface =
@@ -3371,13 +2043,9 @@ export default function App() {
         expanded={updateExpanded}
         applying={updateApplying}
         error={updateError}
-        onExpand={() => setUpdateExpanded(true)}
+        onExpand={expandUpdate}
         onApply={() => void applyUpdate()}
-        onDismiss={() => {
-          setDesktopUpdate(null);
-          setUpdateError(null);
-          setUpdateExpanded(false);
-        }}
+        onDismiss={dismissUpdate}
       />
     ) : null;
   const desktopAccessSurface = pendingDesktopProject ? (
@@ -3403,14 +2071,7 @@ export default function App() {
           </div>
         )}
         <footer>
-          <button
-            className="button secondary"
-            type="button"
-            onClick={() => {
-              setPendingDesktopProject(null);
-              setDesktopAccessError(null);
-            }}
-          >
+          <button className="button secondary" type="button" onClick={dismissDesktopProjectOpen}>
             Not now
           </button>
           <button
@@ -3449,10 +2110,7 @@ export default function App() {
               autoComplete="off"
               maxLength={DISPLAY_NAME_MAX_LENGTH}
               value={actorNameDraft}
-              onChange={(event) => {
-                setActorNameDraft(event.target.value);
-                setActorNameError(null);
-              }}
+              onChange={(event) => updateActorNameDraft(event.target.value)}
             />
           </label>
         </div>
@@ -3645,7 +2303,7 @@ export default function App() {
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
           onRetryTask={requestRetry}
-          onInspectTask={setTaskInspectorId}
+          onInspectTask={selectTaskInspector}
           onOpenInbox={() => changeView("attention")}
           onRepairGraphUpdate={repairGraphUpdate}
           onOpenNode={openNodeById}
@@ -3740,7 +2398,7 @@ export default function App() {
                 className="button secondary"
                 disabled={projectReconciliation !== "authoritative"}
                 onClick={() => {
-                  const chatId = startConversation("project_chat");
+                  const chatId = startConversation("project_chat", null, project.name);
                   openChats(chatId);
                 }}
               >
@@ -3753,13 +2411,14 @@ export default function App() {
                   projectReconciliation !== "authoritative" ||
                   !project.canonical_state.reachable ||
                   taskStarting ||
-                  Boolean(liveCampaign)
+                  Boolean(liveAutoResearchEpisode)
                 }
                 aria-label="Auto-research"
-                title={liveCampaign ? "An auto-research campaign is already live." : undefined}
+                title={
+                  liveAutoResearchEpisode ? "An auto-research episode is already live." : undefined
+                }
                 onClick={() => {
-                  setCampaignStartError(null);
-                  setCampaignDialogOpen(true);
+                  openAutoResearchDialog();
                 }}
               >
                 <Telescope size={14} /> <span className="auto-research-label">Auto-research</span>
@@ -3773,11 +2432,7 @@ export default function App() {
               <button
                 className="icon-button task-history-control"
                 aria-label={activeTask ? "Project history, task in progress" : "Project history"}
-                onClick={() => {
-                  setHistorySummariesRevision(null);
-                  setHistorySummariesError(null);
-                  setProjectHistoryOpen(true);
-                }}
+                onClick={openProjectHistory}
               >
                 <History size={15} />
                 {activeTask ? <span className="activity-pulse" /> : null}
@@ -3791,7 +2446,7 @@ export default function App() {
                   taskStarting
                 }
                 aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
-                onClick={() => setRunDialogOpen(true)}
+                onClick={openRunDialog}
               >
                 <RefreshCw
                   className={activeTask && activeTask.status !== "pausing" ? "spin" : ""}
@@ -3828,7 +2483,7 @@ export default function App() {
           aria-label={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
           className="project-tabs-toggle"
           title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
-          onClick={() => setProjectHeaderCollapsed((collapsed) => !collapsed)}
+          onClick={toggleProjectHeader}
         >
           {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
@@ -3841,7 +2496,9 @@ export default function App() {
             onClick={() =>
               item.view === "chats"
                 ? openChats()
-                : changeView(item.view === "scientific" ? researchSubviewRef.current : item.view)
+                : item.view === "scientific"
+                  ? openLastResearchView()
+                  : changeView(item.view)
             }
           >
             {item.icon}
@@ -3863,7 +2520,7 @@ export default function App() {
             <span>Show</span>
             <select
               value={trustView}
-              onChange={(event) => setTrustView(event.target.value as TrustView)}
+              onChange={(event) => changeTrustView(event.target.value as TrustView)}
             >
               <option value="working">Working graph</option>
               <option value="accepted">Accepted only</option>
@@ -3898,10 +2555,10 @@ export default function App() {
 
       <div className="project-notices">
         {updateSurface}
-        {campaignRefreshError && (
+        {episodeRefreshError && (
           <div className="coverage-banner replay-degraded" role="alert">
             <AlertTriangle size={15} />
-            <span>{campaignRefreshError}</span>
+            <span>{episodeRefreshError}</span>
           </div>
         )}
         {!project.canonical_state.reachable && (
@@ -4039,29 +2696,29 @@ export default function App() {
               projectId={project.id}
               viewportRef={activeDagViewportRef!}
               relationFocusNodeId={dagRelationFocusId}
-              onClearRelationFocus={() => setDagRelationFocusId(null)}
+              onClearRelationFocus={clearDagRelationFocus}
               onSelectNode={openNode}
             />
           )}
           {view === "execution" && (
             <div className="combined-runs-view">
-              <CampaignRuns
-                campaigns={campaigns}
+              <AutoResearchEpisodes
+                episodes={episodes}
                 tasks={tasks}
-                messagesByCampaign={campaignMessages}
-                busyAction={campaignAction}
+                messagesByEpisode={episodeMessages}
+                busyAction={episodeAction}
                 taskActionId={taskActionId}
-                onInspectTask={setTaskInspectorId}
-                onLoadMessages={refreshCampaignMessages}
-                onStop={requestCampaignStop}
-                onReauthorize={requestCampaignReauthorization}
-                onSendMessage={messageCampaignOrchestrator}
-                onOperateTask={operateCampaignOrchestratorTask}
+                onInspectTask={selectTaskInspector}
+                onLoadMessages={refreshEpisodeMessages}
+                onStop={requestEpisodeStop}
+                onReauthorize={requestEpisodeReauthorization}
+                onSendMessage={messageEpisodeOrchestrator}
+                onOperateTask={operateEpisodeOrchestratorTask}
               />
               <ExecutionView
                 graph={presentedGraph}
                 attentionBlockerIds={attentionBlockerIds}
-                tasks={tasks.filter((task) => !task.campaign_id)}
+                tasks={tasks.filter((task) => task.kind !== "auto_research")}
                 watchers={watchers}
                 experimentControl={project.experiment_control}
                 dismissedTaskIds={dismissedTaskIds}
@@ -4079,16 +2736,17 @@ export default function App() {
                   ]),
                 )}
                 mutationsDisabled={mutationsDisabled}
-                onInspectTask={setTaskInspectorId}
+                onInspectTask={selectTaskInspector}
                 onDismissTask={dismissTaskNotification}
                 onSelectNode={openNode}
-                onSelectExperiment={setSelectedExperimentRunId}
-                onDetailFocused={() => setFocusExperimentRunId(null)}
+                onSelectExperiment={selectExperiment}
+                onDetailFocused={clearExperimentFocus}
                 onRunExperiment={(node) => void runExperiment(node)}
                 onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
                 onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
-                onSwitchExperimentProvider={setRetryTask}
+                onSwitchExperimentProvider={chooseRetryTask}
+                episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
               />
             </div>
           )}
@@ -4116,16 +2774,16 @@ export default function App() {
               onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}
               onCacheMetricsChange={(cacheMetrics) => {
-                setProject((current) =>
+                updateProject((current) =>
                   current ? { ...current, cache_metrics: cacheMetrics } : current,
                 );
               }}
               onSaved={(saved, preserveReadiness = true) => {
                 const decoded = decodeProjectSnapshot(saved);
-                setProject((current) =>
+                updateProject((current) =>
                   preserveReadiness ? preserveProjectReadiness(decoded, current) : decoded,
                 );
-                setRunScope(decoded.default_run_truth_scope);
+                replaceRunScope(decoded.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
@@ -4151,7 +2809,7 @@ export default function App() {
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
-              onInspectTask={setTaskInspectorId}
+              onInspectTask={selectTaskInspector}
               onOpenInbox={() => changeView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
@@ -4159,7 +2817,7 @@ export default function App() {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)
                   : null;
-                selectChat(startConversation(conversation.kind, node));
+                selectChat(startConversation(conversation.kind, node, project.name));
               }}
             />
           )}
@@ -4234,7 +2892,7 @@ export default function App() {
             }
             onRunExperiment={() => void runExperiment(node)}
             onOpenChat={() => {
-              const chatId = ensureConversation("node_chat", node);
+              const chatId = ensureConversation(conversations, "node_chat", node, project.name);
               selectChat(chatId);
               setFloatingChat({ chatId, nodeId: node.id });
             }}
@@ -4272,7 +2930,7 @@ export default function App() {
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
-              onInspectTask={setTaskInspectorId}
+              onInspectTask={selectTaskInspector}
               onOpenInbox={() => {
                 setFloatingChat(null);
                 changeView("attention");
@@ -4282,7 +2940,7 @@ export default function App() {
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onNewSession={() => {
                 const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId = startConversation("node_chat", node);
+                const chatId = startConversation("node_chat", node, project.name);
                 selectChat(chatId);
                 setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
               }}
@@ -4297,15 +2955,15 @@ export default function App() {
         project={project}
         initialScope={runScope}
         busy={taskStarting}
-        onClose={() => setRunDialogOpen(false)}
+        onClose={closeRunDialog}
         onRun={(config, scope, message) => void runAgent(config, scope, message)}
       />
       <AutoResearchDialog
-        open={campaignDialogOpen}
-        busy={campaignAction === "start"}
-        error={campaignStartError}
-        initialInvocationCeiling={project.default_campaign_invocation_ceiling}
-        onClose={() => setCampaignDialogOpen(false)}
+        open={autoResearchDialogOpen}
+        busy={episodeAction === "start"}
+        error={autoResearchStartError}
+        initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
+        onClose={closeAutoResearchDialog}
         onAuthorize={(invocationCeiling, startingInstruction) =>
           void authorizeAutoResearch(invocationCeiling, startingInstruction)
         }
@@ -4325,7 +2983,7 @@ export default function App() {
           initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
           busy={taskActionId === retryTask.operation_id}
-          onClose={() => setRetryTask(null)}
+          onClose={closeRetryTask}
           onRun={(config) => void retryAgentTask(retryTask, config)}
         />
       )}
@@ -4336,13 +2994,11 @@ export default function App() {
           loading={historySummariesRevision !== graph.revision}
           error={historySummariesError}
           onInspectTask={(taskId) => {
-            setProjectHistoryOpen(false);
-            setTaskInspectorId(taskId);
+            closeProjectHistory();
+            selectTaskInspector(taskId);
           }}
-          campaignReportHref={(campaignId, reportId) =>
-            campaignReportPreviewUrl(project.id, campaignId, reportId)
-          }
-          onClose={() => setProjectHistoryOpen(false)}
+          episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
+          onClose={closeProjectHistory}
         />
       )}
       {taskInspectorId && (
@@ -4356,12 +3012,12 @@ export default function App() {
           mutatingActionsDisabled={Boolean(
             mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
           )}
-          onSelect={setTaskInspectorId}
+          onSelect={selectTaskInspector}
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
           onRetry={() => inspectedTask && requestRetry(inspectedTask)}
           onDismiss={() => inspectedTask && dismissTaskNotification(inspectedTask.operation_id)}
-          onClose={() => setTaskInspectorId(null)}
+          onClose={() => selectTaskInspector(null)}
         />
       )}
       {notice && (
@@ -4375,57 +3031,12 @@ export default function App() {
   );
 }
 
-function readDismissedTaskIds(projectId: string | null): Set<string> {
-  try {
-    return parseDismissedTaskIds(localStorage.getItem(taskNotificationStorageKey(projectId)));
-  } catch {
-    return new Set();
-  }
-}
-
-function readTrustView(): TrustView {
-  try {
-    return (localStorage.getItem("rcp:trust-view") as TrustView) || "working";
-  } catch {
-    return "working";
-  }
-}
-
 function readTextScale(): number {
   try {
     return normalizeTextScale(localStorage.getItem(TEXT_SCALE_STORAGE_KEY));
   } catch {
     return normalizeTextScale(null);
   }
-}
-
-function projectHeaderCollapsedStorageKey(projectId: string): string {
-  return `${PROJECT_HEADER_COLLAPSED_KEY}:${projectId}`;
-}
-
-function readProjectHeaderCollapsed(projectId: string | null): boolean {
-  if (!projectId) return false;
-  try {
-    return localStorage.getItem(projectHeaderCollapsedStorageKey(projectId)) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function historyNoticeStorageKey(projectId: string | null): string {
-  return `rcp:dismissed-history-notices:${projectId ?? "none"}`;
-}
-
-function readDismissedHistoryNoticeIds(projectId: string | null): Set<string> {
-  try {
-    return parseDismissedTaskIds(localStorage.getItem(historyNoticeStorageKey(projectId)));
-  } catch {
-    return new Set();
-  }
-}
-
-function validationNoticeId(message: ValidationMessage): string {
-  return JSON.stringify([message.code, message.patch_revision ?? null, message.message]);
 }
 
 function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectSnapshot {
@@ -4486,10 +3097,6 @@ export function taskRetryRequestBody(
     model: config.model,
     reasoning: config.reasoning,
   };
-}
-
-export function projectIdFromHash(hash = window.location.hash): string | null {
-  return parseProjectHash(hash).projectId;
 }
 
 function isSetupRoute(): boolean {

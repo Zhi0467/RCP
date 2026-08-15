@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -8,6 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.storage.auto_research import migrate_legacy_auto_research
+from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.models import (  # noqa: F401
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
@@ -28,22 +31,6 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
-    CampaignActorBinding,
-    CampaignActorBusy,
-    CampaignBudgetExhausted,
-    CampaignBudgetMeter,
-    CampaignEnding,
-    CampaignInvocationRole,
-    CampaignMessageRecord,
-    CampaignMessageRole,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignRecoveryMode,
-    CampaignRecoveryPurpose,
-    CampaignRecoveryRecord,
-    CampaignRecoveryStatus,
-    CampaignReportRecord,
-    CampaignStatus,
     ChatSessionContextRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
@@ -507,7 +494,7 @@ class AppStoreBase:
                 CREATE TABLE IF NOT EXISTS graph_runs (
                     operation_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
-                    campaign_id TEXT,
+                    episode_id TEXT,
                     kind TEXT NOT NULL,
                     status TEXT NOT NULL,
                     request_json TEXT NOT NULL,
@@ -528,103 +515,14 @@ class AppStoreBase:
                     estimate_samples INTEGER NOT NULL DEFAULT 0,
                     phase TEXT NOT NULL DEFAULT 'queued',
                     last_activity_at TEXT,
-                    campaign_worker_handoffs_cleared_at TEXT,
                     dispatch_authority_json TEXT,
                     authorized_space_id TEXT,
                     authorized_user_id TEXT,
-                    authorized_display_name TEXT
+                    authorized_display_name TEXT,
+                    visible INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE INDEX IF NOT EXISTS graph_runs_project
                     ON graph_runs(project_id, created_at DESC);
-                CREATE TABLE IF NOT EXISTS campaigns (
-                    campaign_id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    root_operation_id TEXT,
-                    status TEXT NOT NULL,
-                    starting_instruction TEXT,
-                    invocation_ceiling INTEGER NOT NULL CHECK(invocation_ceiling >= 1),
-                    invocations_used INTEGER NOT NULL DEFAULT 0
-                        CHECK(invocations_used >= 0 AND invocations_used <= invocation_ceiling),
-                    authorized_space_id TEXT NOT NULL,
-                    authorized_user_id TEXT NOT NULL,
-                    authorized_display_name TEXT NOT NULL,
-                    stop_requested_at TEXT,
-                    ending TEXT,
-                    error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    ended_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS campaigns_project
-                    ON campaigns(project_id, created_at DESC);
-                CREATE UNIQUE INDEX IF NOT EXISTS campaigns_one_live_project
-                    ON campaigns(project_id)
-                    WHERE status IN (
-                        'queued', 'running', 'stopping', 'wrapping_up', 'needs_action'
-                    );
-                CREATE TABLE IF NOT EXISTS campaign_invocations (
-                    campaign_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL UNIQUE,
-                    role TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(campaign_id, operation_id),
-                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id),
-                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
-                );
-                CREATE INDEX IF NOT EXISTS campaign_invocations_campaign
-                    ON campaign_invocations(campaign_id, created_at, operation_id);
-                CREATE TABLE IF NOT EXISTS campaign_reports (
-                    report_id TEXT PRIMARY KEY,
-                    campaign_id TEXT NOT NULL,
-                    operation_id TEXT NOT NULL UNIQUE,
-                    ending TEXT NOT NULL,
-                    sha256 TEXT NOT NULL,
-                    html TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id),
-                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
-                );
-                CREATE INDEX IF NOT EXISTS campaign_reports_campaign
-                    ON campaign_reports(campaign_id, created_at, report_id);
-                CREATE TABLE IF NOT EXISTS campaign_messages (
-                    message_id TEXT PRIMARY KEY,
-                    campaign_id TEXT NOT NULL,
-                    sender_role TEXT NOT NULL,
-                    sender_task_id TEXT,
-                    authorized_space_id TEXT,
-                    authorized_user_id TEXT,
-                    authorized_display_name TEXT,
-                    recipient_task_id TEXT NOT NULL,
-                    control_node_id TEXT,
-                    body TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    delivered_at TEXT,
-                    delivery_operation_id TEXT,
-                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id)
-                );
-                CREATE INDEX IF NOT EXISTS campaign_messages_campaign
-                    ON campaign_messages(campaign_id, created_at, message_id);
-                CREATE TABLE IF NOT EXISTS campaign_recoveries (
-                    recovery_id TEXT PRIMARY KEY,
-                    campaign_id TEXT NOT NULL,
-                    operation_id TEXT,
-                    purpose TEXT NOT NULL,
-                    failure_kind TEXT NOT NULL,
-                    retry_mode TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
-                    max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
-                    status TEXT NOT NULL,
-                    next_attempt_at TEXT,
-                    diagnostic TEXT NOT NULL,
-                    admitted_operation_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY(campaign_id) REFERENCES campaigns(campaign_id),
-                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id),
-                    FOREIGN KEY(admitted_operation_id) REFERENCES graph_runs(operation_id)
-                );
-                CREATE INDEX IF NOT EXISTS campaign_recoveries_due
-                    ON campaign_recoveries(status, next_attempt_at, created_at);
                 CREATE TABLE IF NOT EXISTS agent_usage (
                     usage_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
@@ -660,7 +558,7 @@ class AppStoreBase:
                     message TEXT NOT NULL,
                     event_kind TEXT NOT NULL DEFAULT 'message',
                     command_id TEXT,
-                    campaign_id TEXT,
+                    episode_id TEXT,
                     command_verb TEXT,
                     command_phase TEXT,
                     idempotency_key TEXT,
@@ -702,7 +600,7 @@ class AppStoreBase:
                     origin_task_kind TEXT NOT NULL,
                     chat_id TEXT NOT NULL,
                     node_id TEXT,
-                    experiment_episode_id TEXT,
+                    episode_id TEXT,
                     execution_host TEXT NOT NULL,
                     check_command TEXT NOT NULL,
                     log_path TEXT NOT NULL,
@@ -733,10 +631,35 @@ class AppStoreBase:
                     ON watchers(status, created_at);
                 CREATE INDEX IF NOT EXISTS watchers_delivery
                     ON watchers(project_id, origin_operation_id, notified, completed_at);
-                CREATE TABLE IF NOT EXISTS experiment_episodes (
+                CREATE TABLE IF NOT EXISTS episodes (
                     episode_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
-                    control_node_id TEXT NOT NULL,
+                    mode TEXT NOT NULL CHECK(mode IN ('auto_research', 'experiment_loop')),
+                    control_node_id TEXT,
+                    root_operation_id TEXT,
+                    status TEXT NOT NULL,
+                    invocation_ceiling INTEGER NOT NULL CHECK(invocation_ceiling >= 1),
+                    invocations_used INTEGER NOT NULL DEFAULT 0
+                        CHECK(invocations_used >= 0 AND invocations_used <= invocation_ceiling),
+                    authorized_space_id TEXT,
+                    authorized_user_id TEXT,
+                    authorized_display_name TEXT,
+                    stop_requested_at TEXT,
+                    stop_settled_at TEXT,
+                    ending TEXT,
+                    ending_diagnostic TEXT,
+                    wrapup_state TEXT NOT NULL DEFAULT 'not_started',
+                    wrapup_error TEXT,
+                    report_attempts_used INTEGER NOT NULL DEFAULT 0
+                        CHECK(report_attempts_used >= 0 AND report_attempts_used <= 3),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    ended_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS episodes_project
+                    ON episodes(project_id, created_at DESC, episode_id);
+                CREATE TABLE IF NOT EXISTS experiment_episode_state (
+                    episode_id TEXT PRIMARY KEY,
                     provider TEXT,
                     execution_machine TEXT,
                     execution_host TEXT NOT NULL DEFAULT '',
@@ -750,14 +673,150 @@ class AppStoreBase:
                     last_watcher_ids_json TEXT NOT NULL DEFAULT '[]',
                     context_baseline_json TEXT NOT NULL DEFAULT '{}',
                     session_diagnostic TEXT,
-                    stop_requested_at TEXT,
-                    stop_settled_at TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
                 );
-                CREATE INDEX IF NOT EXISTS experiment_episodes_control
-                    ON experiment_episodes(project_id, control_node_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS auto_research_episodes (
+                    episode_id TEXT PRIMARY KEY,
+                    starting_instruction TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
+                );
+                CREATE TABLE IF NOT EXISTS auto_research_invocations (
+                    episode_id TEXT NOT NULL,
+                    operation_id TEXT PRIMARY KEY,
+                    allocation_operation_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('orchestrator', 'worker')),
+                    actor_operation_id TEXT NOT NULL,
+                    control_node_id TEXT,
+                    handoffs_cleared_at TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(allocation_operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(actor_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_invocations_episode
+                    ON auto_research_invocations(episode_id, created_at, operation_id);
+                CREATE INDEX IF NOT EXISTS auto_research_invocations_actor
+                    ON auto_research_invocations(
+                        episode_id, actor_operation_id, created_at, operation_id
+                    );
+                CREATE TABLE IF NOT EXISTS auto_research_messages (
+                    message_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    sender_role TEXT NOT NULL,
+                    sender_task_id TEXT,
+                    authorized_space_id TEXT,
+                    authorized_user_id TEXT,
+                    authorized_display_name TEXT,
+                    recipient_task_id TEXT NOT NULL,
+                    control_node_id TEXT,
+                    body TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    delivery_operation_id TEXT,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_messages_episode
+                    ON auto_research_messages(episode_id, created_at, message_id);
+                CREATE TABLE IF NOT EXISTS auto_research_recoveries (
+                    recovery_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    failure_kind TEXT NOT NULL,
+                    retry_mode TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+                    max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
+                    status TEXT NOT NULL,
+                    next_attempt_at TEXT,
+                    diagnostic TEXT NOT NULL,
+                    admitted_operation_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(admitted_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_recoveries_due
+                    ON auto_research_recoveries(status, next_attempt_at, created_at);
+                CREATE TABLE IF NOT EXISTS episode_invocations (
+                    episode_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL UNIQUE,
+                    invocation_number INTEGER NOT NULL CHECK(invocation_number >= 1),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(episode_id, invocation_number),
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS episode_invocations_episode
+                    ON episode_invocations(episode_id, invocation_number);
+                CREATE TABLE IF NOT EXISTS episode_report_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL CHECK(attempt_number BETWEEN 1 AND 3),
+                    allocation_operation_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    UNIQUE(episode_id, attempt_number),
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(allocation_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS episode_report_attempts_current
+                    ON episode_report_attempts(episode_id, status, attempt_number DESC);
+                CREATE TABLE IF NOT EXISTS episode_wrapups (
+                    episode_id TEXT PRIMARY KEY,
+                    ending TEXT,
+                    partial INTEGER NOT NULL,
+                    concluding_operation_id TEXT,
+                    allocation_operation_id TEXT UNIQUE,
+                    provider TEXT,
+                    run_on TEXT,
+                    execution_host TEXT,
+                    native_session_id TEXT,
+                    stage_host TEXT,
+                    stage_root TEXT,
+                    skill_id TEXT,
+                    skill_version TEXT,
+                    output_name TEXT,
+                    output_path TEXT,
+                    receipt_json TEXT NOT NULL,
+                    receipt_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    diagnostic TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(concluding_operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(allocation_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE TABLE IF NOT EXISTS episode_reports (
+                    report_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL UNIQUE,
+                    attempt_id TEXT NOT NULL UNIQUE,
+                    allocation_operation_id TEXT NOT NULL UNIQUE,
+                    ending TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    html TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(attempt_id) REFERENCES episode_report_attempts(attempt_id),
+                    FOREIGN KEY(allocation_operation_id) REFERENCES graph_runs(operation_id)
+                );
                 """
+            )
+            self._migrate_episode_lineage(connection)
+            has_legacy_campaigns = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'campaigns'"
+                ).fetchone()
+                is not None
             )
             # Existing v0.2 databases need additive migration before the index
             # can include the new transitional state.
@@ -783,26 +842,40 @@ class AppStoreBase:
             )
             self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
             self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
-            self._ensure_column(
-                connection,
-                "graph_runs",
-                "campaign_worker_handoffs_cleared_at",
-                "TEXT",
-            )
             self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
             self._ensure_column(connection, "graph_runs", "dispatch_authority_json", "TEXT")
             self._ensure_column(connection, "graph_runs", "authorized_space_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "authorized_user_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "authorized_display_name", "TEXT")
-            self._ensure_column(connection, "graph_runs", "campaign_id", "TEXT")
-            self._ensure_column(connection, "campaign_messages", "authorized_space_id", "TEXT")
-            self._ensure_column(connection, "campaign_messages", "authorized_user_id", "TEXT")
             self._ensure_column(
                 connection,
-                "campaign_messages",
-                "authorized_display_name",
-                "TEXT",
+                "graph_runs",
+                "visible",
+                "INTEGER NOT NULL DEFAULT 1",
             )
+            if has_legacy_campaigns:
+                self._ensure_column(connection, "campaigns", "authorized_space_id", "TEXT")
+                self._ensure_column(connection, "campaigns", "authorized_user_id", "TEXT")
+                self._ensure_column(connection, "campaigns", "authorized_display_name", "TEXT")
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'campaign_messages'"
+                    ).fetchone()
+                    is not None
+                ):
+                    self._ensure_column(
+                        connection, "campaign_messages", "authorized_space_id", "TEXT"
+                    )
+                    self._ensure_column(
+                        connection, "campaign_messages", "authorized_user_id", "TEXT"
+                    )
+                    self._ensure_column(
+                        connection,
+                        "campaign_messages",
+                        "authorized_display_name",
+                        "TEXT",
+                    )
             self._ensure_column(
                 connection,
                 "graph_run_events",
@@ -810,7 +883,6 @@ class AppStoreBase:
                 "TEXT NOT NULL DEFAULT 'message'",
             )
             self._ensure_column(connection, "graph_run_events", "command_id", "TEXT")
-            self._ensure_column(connection, "graph_run_events", "campaign_id", "TEXT")
             self._ensure_column(connection, "graph_run_events", "command_verb", "TEXT")
             self._ensure_column(connection, "graph_run_events", "command_phase", "TEXT")
             self._ensure_column(connection, "graph_run_events", "idempotency_key", "TEXT")
@@ -824,7 +896,6 @@ class AppStoreBase:
             )
             self._ensure_column(connection, "watchers", "group_id", "TEXT")
             self._ensure_column(connection, "watchers", "group_label", "TEXT")
-            self._ensure_column(connection, "watchers", "experiment_episode_id", "TEXT")
             self._ensure_column(connection, "watchers", "stopped_by", "TEXT")
             self._ensure_column(connection, "watchers", "stop_reason", "TEXT")
             self._ensure_column(connection, "watchers", "stopped_at", "TEXT")
@@ -859,9 +930,10 @@ class AppStoreBase:
                 "CREATE INDEX IF NOT EXISTS team_sessions_user_expiry "
                 "ON team_sessions(user_id, expires_at)"
             )
+            connection.execute("DROP INDEX IF EXISTS graph_runs_campaign")
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS graph_runs_campaign "
-                "ON graph_runs(campaign_id, created_at, operation_id)"
+                "CREATE INDEX IF NOT EXISTS graph_runs_episode "
+                "ON graph_runs(episode_id, created_at, operation_id)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS graph_run_events_command "
@@ -877,11 +949,12 @@ class AppStoreBase:
                 "ON graph_run_events(command_id) "
                 "WHERE event_kind = 'command' AND command_phase = 'exit'"
             )
+            connection.execute("DROP INDEX IF EXISTS graph_run_events_campaign_key_start")
             connection.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS graph_run_events_campaign_key_start "
-                "ON graph_run_events(campaign_id, idempotency_key) "
+                "CREATE UNIQUE INDEX IF NOT EXISTS graph_run_events_episode_key_start "
+                "ON graph_run_events(episode_id, idempotency_key) "
                 "WHERE event_kind = 'command' AND command_phase = 'start' "
-                "AND campaign_id IS NOT NULL AND idempotency_key IS NOT NULL"
+                "AND episode_id IS NOT NULL AND idempotency_key IS NOT NULL"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS watchers_due "
@@ -899,19 +972,30 @@ class AppStoreBase:
                 "CREATE INDEX IF NOT EXISTS watchers_group_delivery_candidates "
                 "ON watchers(notified, status, group_id, consecutive_error_count)"
             )
+            connection.execute("DROP INDEX IF EXISTS watchers_experiment_episode")
             connection.execute(
-                "UPDATE watchers SET experiment_episode_id = "
-                "json_extract(continuation_json, '$.control_episode_id') "
-                "WHERE experiment_episode_id IS NULL "
-                "AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS watchers_experiment_episode "
-                "ON watchers(project_id, node_id, experiment_episode_id, status)"
+                "CREATE INDEX IF NOT EXISTS watchers_episode "
+                "ON watchers(project_id, node_id, episode_id, status)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS watchers_graph_conditions "
                 "ON watchers(project_id, status, notified, graph_condition_json)"
+            )
+            migrate_legacy_episodes(connection)
+            self._migrate_experiment_episode_state(connection)
+            if has_legacy_campaigns:
+                # The generic parent/report copy must finish before the source
+                # tables move under private archive names.
+                migrate_legacy_auto_research(connection)
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS episodes_one_live_auto_project "
+                "ON episodes(project_id) WHERE mode = 'auto_research' "
+                "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS episodes_one_live_experiment_control "
+                "ON episodes(project_id, control_node_id) WHERE mode = 'experiment_loop' "
+                "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
             )
             connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
             connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
@@ -931,6 +1015,269 @@ class AppStoreBase:
                     (code_id, code_hash, self.now()),
                 )
         return bootstrap_code
+
+    @classmethod
+    def _migrate_episode_lineage(cls, connection: sqlite3.Connection) -> None:
+        """Replace the three legacy parent columns and canonicalize stored JSON once."""
+
+        connection.execute("DROP INDEX IF EXISTS graph_runs_campaign")
+        connection.execute("DROP INDEX IF EXISTS graph_run_events_campaign_key_start")
+        connection.execute("DROP INDEX IF EXISTS watchers_experiment_episode")
+        cls._replace_lineage_column(connection, "graph_runs", "campaign_id")
+        cls._replace_lineage_column(connection, "graph_run_events", "campaign_id")
+        cls._replace_lineage_column(connection, "watchers", "experiment_episode_id")
+
+        for table, column in (
+            ("graph_runs", "request_json"),
+            ("graph_runs", "dispatch_authority_json"),
+            ("graph_run_events", "payload_json"),
+            ("watchers", "continuation_json"),
+            ("watchers", "graph_condition_json"),
+        ):
+            cls._rewrite_lineage_json_column(connection, table, column)
+
+        connection.execute("UPDATE graph_runs SET kind = 'auto_research' WHERE kind = 'campaign'")
+        connection.execute(
+            "UPDATE agent_usage SET task_kind = 'auto_research' WHERE task_kind = 'campaign'"
+        )
+        connection.execute(
+            "UPDATE watchers SET origin_task_kind = 'auto_research' "
+            "WHERE origin_task_kind = 'campaign'"
+        )
+        connection.execute(
+            """
+            UPDATE graph_runs
+            SET episode_id = COALESCE(
+                CASE
+                    WHEN json_type(request_json, '$.episode_id') = 'text'
+                    THEN json_extract(request_json, '$.episode_id')
+                END,
+                CASE
+                    WHEN json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+                     AND json_type(request_json, '$.control_episode_id') = 'text'
+                    THEN json_extract(request_json, '$.control_episode_id')
+                END
+            )
+            WHERE episode_id IS NULL
+            """
+        )
+        connection.execute(
+            """
+            UPDATE graph_run_events
+            SET episode_id = (
+                SELECT run.episode_id FROM graph_runs AS run
+                WHERE run.operation_id = graph_run_events.operation_id
+            )
+            WHERE episode_id IS NULL
+            """
+        )
+        cls._backfill_watcher_episode_lineage(connection)
+
+    @staticmethod
+    def _migrate_experiment_episode_state(connection: sqlite3.Connection) -> None:
+        """Move the legacy combined Experiment parent into its mode-only child."""
+
+        legacy_exists = (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'experiment_episodes'"
+            ).fetchone()
+            is not None
+        )
+        if legacy_exists:
+            connection.execute(
+                """
+                INSERT INTO experiment_episode_state (
+                    episode_id, provider, execution_machine, execution_host,
+                    native_session_id, stage_host, stage_root, chat_id,
+                    last_turn_operation_id, last_turn_invocation, last_graph_result,
+                    last_watcher_ids_json, context_baseline_json, session_diagnostic,
+                    created_at, updated_at
+                )
+                SELECT legacy.episode_id, legacy.provider, legacy.execution_machine,
+                       legacy.execution_host, legacy.native_session_id, legacy.stage_host,
+                       legacy.stage_root, legacy.chat_id, legacy.last_turn_operation_id,
+                       legacy.last_turn_invocation, legacy.last_graph_result,
+                       legacy.last_watcher_ids_json, legacy.context_baseline_json,
+                       legacy.session_diagnostic, legacy.created_at, legacy.updated_at
+                FROM experiment_episodes AS legacy
+                JOIN episodes AS episode ON episode.episode_id = legacy.episode_id
+                WHERE episode.mode = 'experiment_loop'
+                ON CONFLICT(episode_id) DO NOTHING
+                """
+            )
+            orphan = connection.execute(
+                """
+                SELECT legacy.episode_id
+                FROM experiment_episodes AS legacy
+                LEFT JOIN episodes AS episode ON episode.episode_id = legacy.episode_id
+                WHERE episode.episode_id IS NULL
+                LIMIT 1
+                """
+            ).fetchone()
+            if orphan is not None:
+                raise ValueError(
+                    "Legacy Experiment episode could not be moved to the generic parent: "
+                    f"{orphan['episode_id']}"
+                )
+            connection.execute("DROP INDEX IF EXISTS experiment_episodes_control")
+            connection.execute("DROP TABLE experiment_episodes")
+        connection.execute(
+            """
+            INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)
+            SELECT episode_id, created_at, updated_at
+            FROM episodes
+            WHERE mode = 'experiment_loop'
+            ON CONFLICT(episode_id) DO NOTHING
+            """
+        )
+
+    @staticmethod
+    def _replace_lineage_column(
+        connection: sqlite3.Connection,
+        table: str,
+        legacy_name: str,
+    ) -> None:
+        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+        if legacy_name in columns and "episode_id" in columns:
+            conflict = connection.execute(
+                f"SELECT 1 FROM {table} WHERE {legacy_name} IS NOT NULL "
+                f"AND episode_id IS NOT NULL AND {legacy_name} != episode_id LIMIT 1"
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError(f"{table} has conflicting legacy and canonical episode lineage")
+            connection.execute(
+                f"UPDATE {table} SET episode_id = COALESCE(episode_id, {legacy_name})"
+            )
+            connection.execute(f"ALTER TABLE {table} DROP COLUMN {legacy_name}")
+            return
+        if legacy_name in columns:
+            connection.execute(f"ALTER TABLE {table} RENAME COLUMN {legacy_name} TO episode_id")
+            return
+        if "episode_id" not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN episode_id TEXT")
+
+    @classmethod
+    def _rewrite_lineage_json_column(
+        cls,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+    ) -> None:
+        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            return
+        rows = connection.execute(
+            f"SELECT rowid AS lineage_rowid, {column} FROM {table} WHERE {column} IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            try:
+                value = json.loads(row[column])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"{table}.{column} contains invalid JSON") from exc
+            lineage_keys = cls._lineage_json_keys(value)
+            if lineage_keys == {"campaign_id", "episode_id"}:
+                raise ValueError(
+                    f"{table}.{column} row {row['lineage_rowid']} is ambiguous: "
+                    "it contains both campaign_id and episode_id"
+                )
+            rewritten, changed = cls._rewrite_lineage_json_value(
+                value,
+                location=f"{table}.{column} row {row['lineage_rowid']}",
+            )
+            if changed:
+                connection.execute(
+                    f"UPDATE {table} SET {column} = ? WHERE rowid = ?",
+                    (
+                        json.dumps(rewritten, ensure_ascii=False, separators=(",", ":")),
+                        row["lineage_rowid"],
+                    ),
+                )
+
+    @classmethod
+    def _lineage_json_keys(cls, value: object) -> set[str]:
+        if isinstance(value, dict):
+            keys = {key for key in value if key in {"campaign_id", "episode_id"}}
+            for item in value.values():
+                keys.update(cls._lineage_json_keys(item))
+            return keys
+        if isinstance(value, list):
+            keys: set[str] = set()
+            for item in value:
+                keys.update(cls._lineage_json_keys(item))
+            return keys
+        return set()
+
+    @classmethod
+    def _rewrite_lineage_json_value(
+        cls,
+        value: object,
+        *,
+        location: str,
+    ) -> tuple[object, bool]:
+        if isinstance(value, dict):
+            if "campaign_id" in value and "episode_id" in value:
+                raise ValueError(
+                    f"{location} is ambiguous: it contains both campaign_id and episode_id"
+                )
+            changed = "campaign_id" in value
+            rewritten: dict[str, object] = {}
+            for key, item in value.items():
+                canonical_key = "episode_id" if key == "campaign_id" else key
+                canonical_item, item_changed = cls._rewrite_lineage_json_value(
+                    item,
+                    location=f"{location}.{canonical_key}",
+                )
+                rewritten[canonical_key] = canonical_item
+                changed = changed or item_changed
+            return rewritten, changed
+        if isinstance(value, list):
+            changed = False
+            rewritten_items: list[object] = []
+            for index, item in enumerate(value):
+                canonical_item, item_changed = cls._rewrite_lineage_json_value(
+                    item,
+                    location=f"{location}[{index}]",
+                )
+                rewritten_items.append(canonical_item)
+                changed = changed or item_changed
+            return rewritten_items, changed
+        return value, False
+
+    @staticmethod
+    def _backfill_watcher_episode_lineage(connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT watcher.watcher_id, watcher.episode_id, watcher.continuation_json,
+                   origin.episode_id AS origin_episode_id,
+                   notification.episode_id AS notification_episode_id
+            FROM watchers AS watcher
+            LEFT JOIN graph_runs AS origin
+              ON origin.operation_id = watcher.origin_operation_id
+            LEFT JOIN graph_runs AS notification
+              ON notification.operation_id = watcher.notification_operation_id
+            WHERE watcher.episode_id IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            continuation = json.loads(row["continuation_json"])
+            candidates = {
+                candidate
+                for candidate in (
+                    row["origin_episode_id"],
+                    row["notification_episode_id"],
+                    (
+                        continuation.get("control_episode_id")
+                        if continuation.get("patch_kind") == "experiment_loop"
+                        else None
+                    ),
+                )
+                if isinstance(candidate, str) and candidate
+            }
+            if len(candidates) == 1:
+                connection.execute(
+                    "UPDATE watchers SET episode_id = ? WHERE watcher_id = ?",
+                    (next(iter(candidates)), row["watcher_id"]),
+                )
 
     @staticmethod
     def _ensure_column(

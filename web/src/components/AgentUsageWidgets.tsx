@@ -19,7 +19,7 @@ const taskLabels: Record<AgentTaskKind, string> = {
   node_chat: "Node chat",
   project_chat: "Project chat",
   paper_coach: "Paper coach",
-  campaign: "Auto-research",
+  auto_research: "Auto-research",
 };
 
 const taskOrder: AgentTaskKind[] = [
@@ -28,7 +28,7 @@ const taskOrder: AgentTaskKind[] = [
   "node_chat",
   "project_chat",
   "paper_coach",
-  "campaign",
+  "auto_research",
 ];
 
 interface Props {

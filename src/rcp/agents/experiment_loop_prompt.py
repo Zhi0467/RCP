@@ -17,6 +17,25 @@ from rcp.agents.prompts import (
 )
 from rcp.core.authority import render_agent_graph_authority_contract
 
+_TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
+- Treat an unexpected process exit (including SIGTERM), timeout, unavailable service or scheduler,
+  command failure, resource contention, or similar infrastructure symptom as a mechanical fault to
+  diagnose. It is not by itself a graph Blocker, a human-authority pause, or a reason to end the
+  episode.
+- Do not infer an external lifetime policy or authority gap from elapsed timing, repeated symptoms,
+  or the absence of an application error or OOM record. Inspect authoritative evidence along the
+  actual execution path: launch wrapper and process ancestry, scheduler or service unit and journal,
+  exit status and signal source, resource and quota state, configured timeouts, cleanup hooks, and
+  viable alternate execution paths. Form a concrete causal hypothesis, change a relevant condition,
+  and test it. Two similar failures do not prove an external cause.
+- Continue useful, safe, in-scope diagnosis, repair, and relaunch work in this episode. If the next
+  diagnostic or repaired run must outlive this turn, launch it and arm a real external observer.
+- Create a Blocker and exit only when concrete evidence identifies a persistent constraint and the
+  exact next action needed to clear it is unavailable under this contract's tools or authority.
+  First exhaust useful, safe in-scope diagnosis, repair, and alternate execution paths; then cite the
+  evidence, unavailable action, and required human action in the Blocker. An unexplained or
+  plausibly transient failure is uncertainty, not a Blocker."""
+
 
 def experiment_loop_task_contract(
     *,
@@ -144,6 +163,7 @@ Operational method:
   repository instructions. Repair a safe local problem in this invocation when practical. Keep
   examples harness-agnostic: a training job, simulation, evaluation, data collection, or analysis
   may each need different checks.
+{_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 - You may use Bash, Python, network access, SSH, and any other available tool needed for this
   Experiment. Repository pointers name expected context, not a tool allowlist. For a non-empty host,
   use the path on that host over SSH rather than copying the repository locally.
@@ -411,7 +431,10 @@ Read the fresh state before acting:
 - Patch JSON Schema: `{output_schema_path}`
 - Patch validator: `{validator_command}`{context_replacement_block_or_nothing}
 
-For this turn, take whichever path matches the operational state:
+For this turn, apply the following rule before choosing whichever path matches the operational
+state:
+
+{_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
 1. A watcher condition remains, or you have useful debugging and relaunching work to do.
 
@@ -453,9 +476,10 @@ For this turn, take whichever path matches the operational state:
 
    Use this path when an upstream Decision is now makeable, new evidence undermines a settled
    Decision, a tested Hypothesis warrants a status transition, or a scientific, design,
-   implementation, data, or infrastructure blocker cannot be resolved without human action. Write
-   one Patch at `{patch_path}` using the exact schema at `{output_schema_path}`, then run
-   `{validator_command}`.
+   implementation, data, or infrastructure constraint has been concretely diagnosed and requires a
+   specific action unavailable under this contract's tools or authority. A failed or repeatedly
+   terminated process without that diagnosis stays on path 1. Write one Patch at `{patch_path}` using
+   the exact schema at `{output_schema_path}`, then run `{validator_command}`.
 
    Put a makeable pinned Decision in the human Inbox by setting it to `ready`; use `revisit` only to
    reopen a settled pinned choice when new evidence undermines it.

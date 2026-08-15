@@ -161,11 +161,10 @@ def _blocker_status_patch(status: str) -> Patch:
 def _test_authorizer(store: AppStore) -> AuthorizedHuman:
     owner = store.local_owner
     assert owner is not None
-    assert owner.display_name == "Test researcher"
     return AuthorizedHuman(
         space_id=store.space_id,
         user_id=owner.user_id,
-        display_name=owner.display_name,
+        display_name=owner.display_name or "Test researcher",
     )
 
 
@@ -451,7 +450,7 @@ def test_experiment_graph_handoff_persists_deterministically_and_idempotently(tm
         ceiling=2,
         watcher_ids=[],
     )
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     continuation = _continuation().model_copy(
         update={
@@ -498,7 +497,7 @@ def test_experiment_graph_handoff_persists_deterministically_and_idempotently(tm
     assert isinstance(first[0], GraphWatcherRecord)
     assert first[0].watcher_id == repeated[0].watcher_id
     assert first[0].condition == condition
-    assert first[0].experiment_episode_id == episode_id
+    assert first[0].episode_id == episode_id
     assert len(store.watchers("project")) == 1
 
 
@@ -513,7 +512,7 @@ def test_experiment_same_patch_resolution_uses_pre_patch_arming_baseline(tmp_pat
         ceiling=2,
         watcher_ids=[],
     )
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     continuation = _continuation().model_copy(
         update={
@@ -652,7 +651,7 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
         }
     )
     root.request["control_revision"] = service.history.state().revision
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     stage = tmp_path / "loop-stage"
     stage.mkdir()
@@ -2220,7 +2219,7 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(tmp_path) -> None:
         ceiling=2,
         watcher_ids=[],
     )
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task("loop-root", applied_revision=None, result={})
     store.commit_experiment_episode_turn(
         episode_id=episode_id,
@@ -2262,7 +2261,7 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(tmp_path) -> None:
         }
     )
     wake.request["session_id"] = "native-loop-session"
-    queued = store.create_watcher_notification_task(wake, ["budgeted-graph"])
+    queued = store.create_experiment_watcher_invocation(wake, ["budgeted-graph"])
 
     assert queued is not None
     runtime = store.experiment_loop_runtime("project", "exp/one")
@@ -2283,7 +2282,7 @@ def test_experiment_agent_cannot_retire_graph_watcher_and_stop_list_is_atomic(
         ceiling=2,
         watcher_ids=[],
     )
-    store.create_agent_task(root)
+    store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.commit_experiment_episode_turn(
         episode_id=episode_id,
@@ -2583,6 +2582,7 @@ def _experiment_task(
     return AgentTaskRecord(
         operation_id=operation_id,
         project_id="project",
+        episode_id=episode_id,
         kind="node_chat",
         status="queued",
         request={
@@ -2613,4 +2613,5 @@ def _experiment_task(
         created_at=now,
         updated_at=now,
         status_message="Queued bounded graph wake.",
+        authorized_by=_test_authorizer(store),
     )

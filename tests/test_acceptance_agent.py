@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,10 +25,11 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandResponse
+from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.prompts import PromptFactory
 from rcp.agents.schema import parse_agent_patch_json
-from rcp.runs.campaign_recovery import CampaignOrchestratorTerminalFailure
+from rcp.runs.auto_research_recovery import AutoResearchOrchestratorTerminalFailure
 from tests.helpers import create_named_app as create_app
 
 
@@ -322,7 +324,7 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
     staged = stage_command_mailbox(
         local_stage=stage,
         remote_stage=None,
-        campaign_id="campaign-acceptance",
+        episode_id="episode-acceptance",
         task_id="task-acceptance",
         turn_id="turn-acceptance",
         timeout_seconds=2,
@@ -341,7 +343,7 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
                     "disposition": "created",
                 }
                 if request.verb == "spawn"
-                else {"campaign_id": "campaign-acceptance", "ending": "completed"}
+                else {"episode_id": "episode-acceptance", "ending": "completed"}
             )
             return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
@@ -449,7 +451,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
     staged = stage_command_mailbox(
         local_stage=stage,
         remote_stage=None,
-        campaign_id="campaign-acceptance",
+        episode_id="episode-acceptance",
         task_id="task-acceptance",
         turn_id="turn-acceptance",
         timeout_seconds=2,
@@ -489,7 +491,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
 - Command prefix for this turn: `{staged.client_command()}`
 """
             with pytest.raises(
-                CampaignOrchestratorTerminalFailure,
+                AutoResearchOrchestratorTerminalFailure,
                 match="unrecoverable structural failure",
             ):
                 async for event in AcceptanceAgentLauncher().stream(
@@ -519,7 +521,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
     assert not (stage / ".rcp-acceptance-campaign-failure-release").exists()
 
 
-def test_acceptance_campaign_report_requires_one_same_session_correction(tmp_path: Path) -> None:
+def test_acceptance_episode_report_requires_one_same_session_correction(tmp_path: Path) -> None:
     stage = tmp_path / "report-stage"
     stage.mkdir()
     launcher = AcceptanceAgentLauncher()
@@ -532,11 +534,35 @@ def test_acceptance_campaign_report_requires_one_same_session_correction(tmp_pat
     )
     session_id = actor_events[0].session_id
     assert session_id is not None
-    report_path = stage / "campaign-report.html"
-    report_contract = f"""# RCP auto-research campaign report contract
-
-- campaign HTML report: `{report_path}`
-"""
+    receipt_path = stage / "episode-receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "episode_id": "episode-acceptance",
+                "mode": "auto_research",
+                "ending": "completed",
+                "receipt": {"starting_instruction": "Investigate the accepted route."},
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    skill_path = stage / "episode-report-SKILL.md"
+    skill_path.write_text(
+        "# Episode report\n\nProduce an inherently visual, evidence-calibrated report.\n",
+        encoding="utf-8",
+    )
+    report_path = stage / "episode-report.html"
+    receipt_digest = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    report_contract = episode_report_task_contract(
+        project_name="Acceptance project",
+        ending="completed",
+        partial=False,
+        receipt_path=str(receipt_path),
+        receipt_sha256=receipt_digest,
+        report_skill_path=str(skill_path),
+        report_output_path=str(report_path),
+    )
     missing = asyncio.run(
         _events(
             launcher,
@@ -545,17 +571,30 @@ def test_acceptance_campaign_report_requires_one_same_session_correction(tmp_pat
             session_id=session_id,
         )
     )
-    assert missing[1].text == "Left the first acceptance report attempt missing for correction."
+    assert (
+        missing[1].text
+        == "Left the first acceptance episode report attempt missing for correction."
+    )
     assert not report_path.exists()
 
     diagnostic = stage / "report-diagnostic.md"
-    diagnostic.write_text("Campaign report is missing.", encoding="utf-8")
+    diagnostic.write_text("Episode report is missing.", encoding="utf-8")
+    correction_contract = episode_report_task_contract(
+        project_name="Acceptance project",
+        ending="completed",
+        partial=False,
+        receipt_path=str(receipt_path),
+        receipt_sha256=receipt_digest,
+        report_skill_path=str(skill_path),
+        report_output_path=str(report_path),
+        correction_diagnostic_path=str(diagnostic),
+    )
     corrected = asyncio.run(
         _events(
             launcher,
             _prompt(
                 stage,
-                report_contract + f"- exact correction diagnostic: `{diagnostic}`\n",
+                correction_contract,
             ),
             stage,
             session_id=session_id,
@@ -563,8 +602,8 @@ def test_acceptance_campaign_report_requires_one_same_session_correction(tmp_pat
     )
 
     assert corrected[0].session_id == session_id
-    assert corrected[1].text == "Wrote the corrected deterministic acceptance campaign report."
-    assert "Acceptance campaign conclusion" in report_path.read_text(encoding="utf-8")
+    assert corrected[1].text == "Wrote the corrected deterministic acceptance episode report."
+    assert "Acceptance episode conclusion" in report_path.read_text(encoding="utf-8")
     assert [record.action for record in launcher.launch_records[-2:]] == [
         "report",
         "report_correction",

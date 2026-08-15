@@ -30,6 +30,9 @@ export type ExperimentLoopHealth =
   | "waiting_on_watchers"
   | "degraded"
   | "stopping"
+  | "wrapping_up"
+  | "report_failed"
+  | "failed"
   | "human_stopped"
   | "paused_at_limit"
   | "needs_action"
@@ -54,6 +57,7 @@ export type ExperimentRecommendedStep =
   | "start_episode"
   | "stop_and_restart"
   | "resolve_requirements"
+  | "open_report"
   | "review"
   | "none";
 
@@ -164,6 +168,9 @@ const healthSections: Record<ExperimentLoopHealth, RunSectionKey> = {
   waiting_on_watchers: "running",
   degraded: "running",
   stopping: "running",
+  wrapping_up: "running",
+  report_failed: "completed",
+  failed: "completed",
   human_stopped: "actionable",
   paused_at_limit: "actionable",
   needs_action: "actionable",
@@ -217,6 +224,7 @@ export function deriveExperimentLoopHealth(
   hasValidRecovery = false,
 ): ExperimentLoopHealth {
   const operational = control?.operational;
+  const episode = control?.episode;
   const stopRequested = Boolean(operational?.stop_requested);
   if (stopRequested && !operational?.stop_settled) {
     return hasValidRecovery ? "needs_action" : "stopping";
@@ -228,6 +236,17 @@ export function deriveExperimentLoopHealth(
     actionableStatuses.has(taskStatus)
   ) {
     return "human_stopped";
+  }
+  if (episode?.wrapup_state === "pending" || episode?.wrapup_state === "running") {
+    return "wrapping_up";
+  }
+  if (episode?.wrapup_state === "failed") return "report_failed";
+  if (episode?.status === "failed") return "failed";
+  if (episode?.status === "stopped") return "human_stopped";
+  if (episode?.wrapup_state === "ready") {
+    if (episode.ending === "completed") return "completed";
+    if (episode.ending === "exhausted") return "paused_at_limit";
+    if (episode.ending === "human_pause") return "needs_action";
   }
   if (taskStatus === "queued") return "starting";
   if (taskStatus === "running" || taskStatus === "pausing") return "agent_active";
@@ -278,10 +297,28 @@ export function experimentRecoveryAction(task: AgentTask | null): "resume" | "re
 /** Human guidance derived only from canonical task, control, and watcher state. */
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const task = run.currentTask;
-  const recoveryAction = experimentRecoveryAction(task);
+  const wrapupTerminal =
+    run.control?.episode?.wrapup_state === "failed" ||
+    run.control?.episode?.wrapup_state === "ready";
+  const recoveryAction = wrapupTerminal ? null : experimentRecoveryAction(task);
   const hasRunRequirements = hasExperimentRunRequirements(run.control);
   if (run.health === "stopping") {
     return { step: "wait", label: "Wait for the current turn to finish" };
+  }
+  if (run.health === "wrapping_up") {
+    return { step: "wait", label: "Wrapping up visualization and report" };
+  }
+  if (run.health === "report_failed") {
+    return { step: "none", label: "Report generation ended with an error" };
+  }
+  if (run.control?.episode?.wrapup_state === "ready") {
+    return { step: "open_report", label: "Open report" };
+  }
+  if (run.control?.episode?.wrapup_state === "legacy_unavailable") {
+    return { step: "none", label: "Episode report unavailable" };
+  }
+  if (run.health === "failed") {
+    return { step: "none", label: "Episode ended" };
   }
   if (task && runningStatuses.has(task.status)) {
     return { step: "wait", label: "Wait for the agent" };
@@ -513,7 +550,7 @@ function currentExperimentTaskGroup(
       : null) ??
     groups[0] ??
     null;
-  return { taskGroup, currentTask: currentTask ?? taskGroup?.latest ?? null };
+  return { taskGroup, currentTask: taskGroup?.latest ?? currentTask ?? null };
 }
 
 function taskEpisodeId(task: AgentTask): string | null {

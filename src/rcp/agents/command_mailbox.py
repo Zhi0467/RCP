@@ -47,16 +47,16 @@ _COMMAND_STATE_PREFIXES = ("rcp-command-", ".rcp-command-", ".rcp-mailbox-")
 
 @dataclass(frozen=True, slots=True)
 class CommandTurnIdentity:
-    """The task turn, and optional campaign, an in-memory credential represents."""
+    """The task turn, and optional episode, an in-memory credential represents."""
 
-    campaign_id: str | None
+    episode_id: str | None
     task_id: str
     turn_id: str
 
     def __post_init__(self) -> None:
         values = (("task id", self.task_id), ("turn id", self.turn_id))
-        if self.campaign_id is not None:
-            values = (("campaign id", self.campaign_id), *values)
+        if self.episode_id is not None:
+            values = (("episode id", self.episode_id), *values)
         for label, value in values:
             if not isinstance(value, str) or not value.strip() or value != value.strip():
                 raise ValueError(f"command {label} must be a non-blank exact identifier")
@@ -86,8 +86,8 @@ class CommandTurnCredential:
         return self._state == "expired"
 
     def document(self) -> CommandCredential:
-        if self.identity.campaign_id is not None:
-            raise RuntimeError("campaign command authority is broker-only")
+        if self.identity.episode_id is not None:
+            raise RuntimeError("episode command authority is broker-only")
         return CommandCredential(mailbox_id=self.mailbox_id, token=self.token)
 
     def activate(self) -> None:
@@ -98,11 +98,11 @@ class CommandTurnCredential:
     def accepts(self, request: CommandRequest, document: str) -> bool:
         """Check one request against this turn's binding.
 
-        ``document`` is the request exactly as it was written, because a campaign
+        ``document`` is the request exactly as it was written, because an episode
         broker signs those bytes rather than the model they validate into.
         """
 
-        if self.identity.campaign_id is not None:
+        if self.identity.episode_id is not None:
             expected = hmac.new(
                 self._token.encode("ascii"),
                 command_authentication_payload(document),
@@ -172,7 +172,7 @@ def stage_command_mailbox(
     *,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
-    campaign_id: str | None,
+    episode_id: str | None,
     task_id: str,
     turn_id: str,
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS,
@@ -183,7 +183,7 @@ def stage_command_mailbox(
         raise ValueError("command client timeout must be a positive finite number")
     mailbox = RunStageMailbox.for_stage(local_stage=local_stage, remote_stage=remote_stage)
     prepare_command_mailbox(mailbox=mailbox)
-    identity = CommandTurnIdentity(campaign_id=campaign_id, task_id=task_id, turn_id=turn_id)
+    identity = CommandTurnIdentity(episode_id=episode_id, task_id=task_id, turn_id=turn_id)
     credential = CommandTurnCredential.issue(identity)
     credential_path: str | None = None
     invocation_gate: ProviderInvocationGate | None = None
@@ -194,7 +194,7 @@ def stage_command_mailbox(
             f"rcp-agent-client-{credential.mailbox_id}-{source_digest}.py",
             source,
         )
-        if campaign_id is None:
+        if episode_id is None:
             credential_name = f"rcp-command-{credential.mailbox_id}.credential.json"
             mailbox.write_text(
                 credential_name,
@@ -261,9 +261,9 @@ async def serve_command_mailbox(
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("command mailbox poll interval must be a positive finite number")
     credential = staged.credential
-    if credential.identity.campaign_id is not None:
+    if credential.identity.episode_id is not None:
         if invocation_gate is None or invocation_gate is not staged.invocation_gate:
-            raise ValueError("campaign command mailbox requires its exact provider invocation gate")
+            raise ValueError("episode command mailbox requires its exact provider invocation gate")
     elif invocation_gate is not None:
         raise ValueError("validate-only mailbox does not accept a provider invocation gate")
     credential.activate()
@@ -324,9 +324,9 @@ async def _answer_request(
             raise ValueError("command credential is invalid or expired")
         if (
             command_requires_idempotency_key(request.verb)
-            and staged.credential.identity.campaign_id is None
+            and staged.credential.identity.episode_id is None
         ):
-            raise ValueError(f"{request.verb} requires a campaign-bound credential")
+            raise ValueError(f"{request.verb} requires an episode-bound credential")
     except (FileNotFoundError, OSError, StateUnavailable) as exc:
         return _error_response(request_id, "unavailable", "Command request unavailable", exc)
     except (UnicodeError, ValueError, ValidationError) as exc:

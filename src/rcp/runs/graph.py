@@ -26,7 +26,7 @@ from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
-from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
+from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS, PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.providers import classify_terminal_error
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
@@ -69,7 +69,6 @@ from rcp.transport import (
 )
 
 logger = logging.getLogger(__name__)
-_MAX_CORRECTION_ROUNDS = 2
 _PREPARED_GRAPH_CONTEXT_FILE = "prepared-context.json"
 
 
@@ -974,7 +973,7 @@ async def stream_graph_run(
 
             # Rungs 2 and 3: hand the concrete problem back to the agent that is still
             # holding the analysis, rather than discarding the run and asking a human.
-            if rounds >= _MAX_CORRECTION_ROUNDS or not native_session_id:
+            if rounds >= PATCH_CORRECTION_MAX_ROUNDS or not native_session_id:
                 yield _sse(AgentEvent(event="error", text=problem))
                 return
             rounds += 1

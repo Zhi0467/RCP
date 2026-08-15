@@ -3,15 +3,15 @@
 `AppStore` is the whole public surface. Its behaviour is split across topic
 mixins purely so no single module carries ten thousand lines; the split is an
 implementation detail and nothing outside this package should import a mixin.
-Record models and exceptions live in `models` and are re-exported here, so
-`from rcp.storage import CampaignRecord` keeps working unchanged.
+Record models and exceptions live in `models` and are re-exported here.
 """
 
 from __future__ import annotations
 
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.base import AppStoreBase
-from rcp.storage.campaigns import CampaignStoreMixin
+from rcp.storage.episodes import EpisodeStoreMixin
 from rcp.storage.experiments import ExperimentStoreMixin
 from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
@@ -26,7 +26,8 @@ class AppStore(
     SpaceStoreMixin,
     ProjectStoreMixin,
     ResultViewStoreMixin,
-    CampaignStoreMixin,
+    EpisodeStoreMixin,
+    AutoResearchStoreMixin,
     ExperimentStoreMixin,
     WatcherStoreMixin,
     AgentTaskStoreMixin,

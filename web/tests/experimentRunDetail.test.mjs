@@ -90,6 +90,7 @@ function control(fields = {}, operationalFields = {}) {
     invocation_ceiling: 3,
     invocations_remaining: 0,
     episode_id: "episode-1",
+    episode: null,
     paused: true,
     active: false,
     governing_decisions: [
@@ -204,6 +205,7 @@ function render(run, props = {}) {
       onRecover() {},
       onSwitchProvider() {},
       onCheckWatcher() {},
+      episodeReportHref: (episodeId) => `/reports/${episodeId}`,
       ...props,
     }),
   );
@@ -256,6 +258,116 @@ function recoveryTask(fields = {}) {
     ...fields,
   };
 }
+
+function episode(fields = {}) {
+  return {
+    episode_id: "episode-1",
+    project_id: "project",
+    mode: "experiment_loop",
+    control_node_id: "experiment/detail",
+    root_operation_id: "turn-root",
+    current_operation_id: null,
+    current_orchestrator_task_id: null,
+    current_control_task_id: null,
+    recovery: null,
+    status: "wrapping_up",
+    starting_instruction: null,
+    budget: {
+      invocation_ceiling: 3,
+      invocations_used: 3,
+      invocations_remaining: 0,
+      observed_input_tokens: 10,
+      observed_generated_tokens: 20,
+    },
+    authorized_by: null,
+    stop_requested_at: null,
+    ending: "exhausted",
+    ending_diagnostic: null,
+    wrapup_state: "running",
+    wrapup_error: null,
+    created_at: "2026-08-06T01:00:00Z",
+    updated_at: "2026-08-06T04:00:00Z",
+    ended_at: null,
+    tasks: [],
+    report: null,
+    can_stop: false,
+    can_reauthorize: false,
+    ...fields,
+  };
+}
+
+test("Experiment wrap-up uses the shared parent state without report recovery controls", () => {
+  const run = buildExperimentRun(
+    node(),
+    control({ episode: episode() }),
+    [recoveryTask({ can_retry: true, can_resume: true })],
+    [],
+  );
+  const html = render(run);
+
+  assertDetailProjection(
+    html,
+    "Wrapping up visualization and report",
+    "Wrapping up visualization and report",
+  );
+  assert.doesNotMatch(html, /Retry codex|Resume codex|Open report/);
+  assert.match(html, /experiment-run-button" disabled=""/);
+});
+
+test("a ready Experiment report opens from the singular episode URL", () => {
+  const readyEpisode = episode({
+    status: "needs_action",
+    ending: "human_pause",
+    wrapup_state: "ready",
+    ended_at: "2026-08-06T04:00:00Z",
+    report: {
+      report_id: "report-hidden-from-url",
+      ending: "human_pause",
+      created_at: "2026-08-06T04:00:00Z",
+    },
+    can_reauthorize: true,
+  });
+  const html = render(buildExperimentRun(node(), control({ episode: readyEpisode }), [], []));
+
+  assert.match(html, /href="\/reports\/episode-1"/);
+  assert.match(html, /Open report/);
+  assert.doesNotMatch(html, /report-hidden-from-url|Retry codex|Resume codex/);
+  assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
+});
+
+test("a final Experiment report error is visible and does not block a fresh episode", () => {
+  const reportFailed = episode({
+    status: "needs_action",
+    wrapup_state: "failed",
+    wrapup_error: "The visual report could not be generated.",
+    can_reauthorize: true,
+  });
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control({ episode: reportFailed }),
+      [recoveryTask({ can_retry: true, can_resume: true })],
+      [],
+    ),
+  );
+
+  assertDetailProjection(html, "Report error", "Report generation ended with an error");
+  assert.match(html, /Report generation error: The visual report could not be generated\./);
+  assert.doesNotMatch(html, /Retry codex|Resume codex|experiment-run-button" disabled=""/);
+});
+
+test("a stopped Experiment shows neither a report nor a report error", () => {
+  const stopped = episode({
+    status: "stopped",
+    ending: "stopped",
+    ending_diagnostic: "hidden stop diagnostic",
+    wrapup_state: "skipped",
+    wrapup_error: "hidden stop error",
+  });
+  const html = render(buildExperimentRun(node(), control({ episode: stopped }), [], []));
+
+  assert.doesNotMatch(html, /Open report|Report generation error|hidden stop/);
+});
 
 test("first Experiment action starts an episode regardless of semantic status", () => {
   const html = render({
@@ -335,6 +447,41 @@ test("provider-limited Experiment recovery stays on the loop detail", () => {
   assert.ok(html.indexOf("Retry Codex to recheck availability") < html.indexOf("Last task error"));
   assert.match(html, /Last task error/);
   assert.match(html, /You&#x27;ve hit your session limit/);
+});
+
+test("running retry detail names the retry while control still names the failed attempt", () => {
+  const failed = recoveryTask({ operation_id: "failed-attempt" });
+  const retry = recoveryTask({
+    operation_id: "running-retry",
+    parent_operation_id: failed.operation_id,
+    status: "running",
+    attempt: 2,
+    created_at: "2026-08-06T04:02:00Z",
+    updated_at: "2026-08-06T04:02:00Z",
+    can_retry: false,
+    error: null,
+  });
+  const run = buildExperimentRun(
+    node(),
+    control(
+      { ready: false, reasons: ["An experiment loop is already active."] },
+      {
+        task_active: true,
+        current_operation_id: failed.operation_id,
+        current_status: "failed",
+      },
+    ),
+    [failed, retry],
+    [],
+  );
+  const html = render(run);
+
+  assertDetailProjection(html, "Agent active", "Wait for the agent");
+  assert.match(
+    html,
+    /Current task<\/dt><dd class="mono experiment-run-breakable">running-retry<\/dd>/,
+  );
+  assert.doesNotMatch(html, /Retry Codex|Switch provider…/);
 });
 
 test("a paused Experiment offers native-session resume and disables recovery while busy", () => {

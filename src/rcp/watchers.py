@@ -5,16 +5,17 @@ import logging
 import shlex
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Literal, Protocol, Self
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from rcp.core.models import GraphState
+from rcp.core.models import AuthorizedHuman, Experiment, ExperimentDecisionPin, GraphState
 from rcp.limits import (
     WATCHER_CHECK_TIMEOUT_SECONDS,
     WATCHER_CHECK_WORKERS,
@@ -22,7 +23,10 @@ from rcp.limits import (
     WATCHER_POLL_INTERVAL_SECONDS,
 )
 from rcp.storage import (
+    AgentTaskKind,
     AppStore,
+    ExperimentEpisodeRecord,
+    ExperimentLoopRuntime,
     GraphCondition,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
@@ -113,9 +117,10 @@ class WatcherBinding(BaseModel):
 
     project_id: str
     origin_operation_id: str
-    origin_task_kind: Literal["node_chat", "project_chat", "campaign"]
+    origin_task_kind: Literal["node_chat", "project_chat", "auto_research"]
     chat_id: str
     node_id: str | None = None
+    episode_id: str | None = None
     execution_host: str = ""
     continuation: WatcherContinuation
 
@@ -142,6 +147,66 @@ class WatcherRetryGeneration:
     ) -> None:
         self.is_current = is_current
         self.run_if_current = run_if_current
+
+
+class GraphWatcherRetryRegistry:
+    """Retry generations and per-project reconciliation locks for graph watchers."""
+
+    def __init__(self) -> None:
+        self._retry_guard = threading.Lock()
+        self._failures: dict[str, int] = {}
+        self._passes: dict[str, int] = {}
+        self._lock_guard = threading.Lock()
+        self._locks: dict[str, threading.Lock] = {}
+
+    def schedule(self, project_id: str) -> None:
+        """Retry transient reconciliation failures with capped poll-pass backoff."""
+
+        max_passes = max(1, 60 // WATCHER_POLL_INTERVAL_SECONDS)
+        with self._retry_guard:
+            failures = self._failures.get(project_id, 0) + 1
+            self._failures[project_id] = failures
+            self._passes[project_id] = min(
+                2 ** min(failures - 1, 6),
+                max_passes,
+            )
+
+    def clear(self, project_id: str) -> None:
+        with self._retry_guard:
+            self._failures.pop(project_id, None)
+            self._passes.pop(project_id, None)
+
+    def due(self) -> list[str]:
+        due: list[str] = []
+        with self._retry_guard:
+            for project_id, passes in list(self._passes.items()):
+                if passes <= 1:
+                    # Keep due work durable in process until its reconciliation
+                    # explicitly succeeds or reaches a non-retryable outcome. A
+                    # retry generation can be invalidated after this selection.
+                    self._passes[project_id] = 0
+                    due.append(project_id)
+                else:
+                    self._passes[project_id] = passes - 1
+        return sorted(due)
+
+    @staticmethod
+    def generation_is_current(generation: WatcherRetryGeneration | None) -> bool:
+        return generation is None or generation.is_current()
+
+    @staticmethod
+    def run_for_generation(
+        generation: WatcherRetryGeneration | None,
+        callback: Callable[[], None],
+    ) -> bool:
+        if generation is None:
+            callback()
+            return True
+        return generation.run_if_current(callback)
+
+    def lock_for(self, project_id: str) -> threading.Lock:
+        with self._lock_guard:
+            return self._locks.setdefault(project_id, threading.Lock())
 
 
 WatcherRetryCallback = Callable[[WatcherRetryGeneration], None]
@@ -339,6 +404,578 @@ def ready_graph_watcher_groups(
     ]
 
 
+class _AcceptedReplay(Protocol):
+    state: GraphState
+
+
+class _ProjectHistory(Protocol):
+    def state(self) -> GraphState: ...
+
+    def accepted_boundary_states(self) -> tuple[_AcceptedReplay, list[GraphState]]: ...
+
+
+class _ExecutionMachine(Protocol):
+    host: str
+
+
+class _ProjectManifest(Protocol):
+    machine_map: Mapping[str, _ExecutionMachine]
+
+
+class _ProjectService(Protocol):
+    history: _ProjectHistory
+    manifest: _ProjectManifest
+
+
+class _TaskExecution(Protocol):
+    operation_id: str
+    applied_revision: int | None
+    applied_graph_state: GraphState | None
+    armed_graph_watchers: bool
+
+
+class _EpisodeWakePreflight(Protocol):
+    readiness: str
+    diagnostic: str | None
+    session_id: str | None
+    stage_host: str | None
+    stage_root: str | None
+
+
+class _ExperimentInvocationAdmission(Protocol):
+    episode_id: str
+    invocation: int
+    invocation_ceiling: int
+    decision_bundle: list[ExperimentDecisionPin]
+
+
+class _CopyableRequest(Protocol):
+    def model_copy(self, *, update: Mapping[str, object]) -> Self: ...
+
+
+class _ExperimentAdmission(Protocol):
+    def __call__(
+        self,
+        project_id: str,
+        service: _ProjectService,
+        request: object,
+    ) -> AbstractContextManager[object]: ...
+
+
+class _ExperimentInvocationAdmitter(Protocol):
+    def __call__(
+        self,
+        state: GraphState,
+        experiment_id: str,
+        *,
+        episode_id: str | None,
+        invocations_used: int,
+        invocation_ceiling: int | None,
+        decision_bundle: list[ExperimentDecisionPin],
+        task_active: bool,
+        episode_exited: bool,
+        stop_requested: bool,
+    ) -> _ExperimentInvocationAdmission | None: ...
+
+
+class _ExperimentWatcherRequestBuilder(Protocol):
+    def __call__(
+        self,
+        group: list[StoredWatcherRecord],
+        *,
+        trigger: Literal["watcher"],
+        episode_id: str,
+        invocation: int,
+        invocation_ceiling: int,
+        control_revision: int,
+        decision_bundle: list[ExperimentDecisionPin],
+        completion_criteria: list[str],
+        session_id: str | None,
+    ) -> _CopyableRequest: ...
+
+
+class _WatcherNotificationStarter(Protocol):
+    def __call__(
+        self,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        request: object,
+        watcher_ids: list[str],
+        *,
+        authorized_by: AuthorizedHuman,
+        episode_stage_host: str | None = None,
+        episode_stage_root: str | None = None,
+        admission_fence: Callable[[Callable[[], None]], bool] | None = None,
+    ) -> object | None: ...
+
+
+class _ExperimentEpisodeReconciler(Protocol):
+    def __call__(
+        self,
+        episode_id: str,
+        *,
+        source: str,
+        operation_id: str | None = None,
+    ) -> None: ...
+
+
+class _GraphWatcherReplayDegraded(RuntimeError):
+    pass
+
+
+class WatcherDelivery:
+    """Reconcile and deliver ready watcher groups through injected app services."""
+
+    def __init__(
+        self,
+        store: AppStore,
+        *,
+        retry: GraphWatcherRetryRegistry,
+        project_service: Callable[[str], _ProjectService],
+        generic_request: Callable[[list[StoredWatcherRecord]], object],
+        experiment_operation_lock: Callable[[str], AbstractContextManager[object]],
+        experiment_admission: _ExperimentAdmission,
+        deliver_auto_research_group: Callable[[list[StoredWatcherRecord]], str | None],
+        preflight_episode_wake: Callable[
+            [ExperimentLoopRuntime, ExperimentEpisodeRecord | None, list[StoredWatcherRecord]],
+            _EpisodeWakePreflight,
+        ],
+        admit_experiment_watcher_invocation: _ExperimentInvocationAdmitter,
+        experiment_watcher_request: _ExperimentWatcherRequestBuilder,
+        start_watcher_notification: _WatcherNotificationStarter,
+        state_unavailable: Callable[[Exception], bool],
+        task_graph_capable: Callable[[AgentTaskKind, object], bool],
+        task_experiment_episode_id: Callable[[object], str | None],
+        reconcile_experiment_episode: _ExperimentEpisodeReconciler,
+        evaluate_graph: Callable[
+            [AppStore, str, GraphState],
+            list[list[StoredWatcherRecord]],
+        ],
+        ready_graph_groups: Callable[
+            [AppStore, str],
+            list[list[StoredWatcherRecord]],
+        ],
+        logger: logging.Logger,
+    ) -> None:
+        self._store = store
+        self._retry = retry
+        self._project_service = project_service
+        self._generic_request = generic_request
+        self._experiment_operation_lock = experiment_operation_lock
+        self._experiment_admission = experiment_admission
+        self._deliver_auto_research_group = deliver_auto_research_group
+        self._preflight_episode_wake = preflight_episode_wake
+        self._admit_experiment_watcher_invocation = admit_experiment_watcher_invocation
+        self._experiment_watcher_request = experiment_watcher_request
+        self._start_watcher_notification = start_watcher_notification
+        self._state_unavailable = state_unavailable
+        self._task_graph_capable = task_graph_capable
+        self._task_experiment_episode_id = task_experiment_episode_id
+        self._reconcile_experiment_episode = reconcile_experiment_episode
+        self._evaluate_graph = evaluate_graph
+        self._ready_graph_groups = ready_graph_groups
+        self._logger = logger
+
+    def evaluate_graph_conditions_after_task(
+        self,
+        project_id: str,
+        kind: AgentTaskKind,
+        request: object,
+        execution: _TaskExecution,
+    ) -> None:
+        episode_id = self._task_experiment_episode_id(request)
+        if episode_id is not None:
+            self._reconcile_experiment_episode(
+                episode_id,
+                source=f"task {execution.operation_id} settlement",
+                operation_id=execution.operation_id,
+            )
+        if not self._task_graph_capable(kind, request):
+            self.deliver_ready_graph_wake_groups(project_id, source="task settlement")
+            return
+        if execution.applied_revision is None and not execution.armed_graph_watchers:
+            self.deliver_ready_graph_wake_groups(project_id, source="task settlement")
+            return
+        self.evaluate_graph_wake_boundary(
+            project_id,
+            execution.applied_graph_state,
+            source=("agent patch" if execution.applied_revision is not None else "watcher arming"),
+        )
+
+    def deliver_watcher_group(
+        self,
+        group: list[StoredWatcherRecord],
+        *,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        if not group:
+            return
+        if not self._retry.generation_is_current(retry_generation):
+            return
+        watcher_ids = [item.watcher_id for item in group]
+        authorized_by, terminal_diagnostic = self._store.resolve_watcher_delivery_authorizer(
+            watcher_ids
+        )
+        if not self._retry.generation_is_current(retry_generation):
+            return
+        if authorized_by is None:
+            if terminal_diagnostic is not None:
+                self._logger.warning(
+                    "Watcher delivery terminalized for %s: %s",
+                    watcher_ids,
+                    terminal_diagnostic,
+                )
+            return
+        first = group[0]
+        continuation = first.continuation
+        service = self._project_service(first.project_id)
+        if first.origin_task_kind == "auto_research":
+            started: list[str] = []
+
+            def claim_auto_research_wake() -> None:
+                operation_id = self._deliver_auto_research_group(group)
+                if operation_id is not None:
+                    started.append(operation_id)
+
+            if retry_generation is not None:
+                if not retry_generation.run_if_current(claim_auto_research_wake):
+                    return
+            else:
+                claim_auto_research_wake()
+            if started:
+                self._logger.info(
+                    "Auto-research watcher group %s queued task %s.",
+                    watcher_ids,
+                    started[0],
+                )
+            return
+        if continuation.patch_kind == "experiment_loop":
+            control_node_id = continuation.control_node_id
+            if control_node_id is None:
+                raise ValueError("An Experiment watcher is missing its control node.")
+            with self._experiment_operation_lock(first.project_id):
+                state = service.history.state()
+                if not self._retry.generation_is_current(retry_generation):
+                    return
+                if not isinstance(state.nodes.get(control_node_id), Experiment):
+                    self._store.stop_watchers(first.project_id, watcher_ids)
+                    return
+                runtime = self._store.experiment_loop_runtime(
+                    first.project_id,
+                    control_node_id,
+                )
+                episode = (
+                    self._store.experiment_episode(runtime.episode_id)
+                    if runtime.episode_id is not None
+                    else None
+                )
+                if episode is None:
+                    preflight = self._preflight_episode_wake(runtime, None, group)
+                    if runtime.episode_id is not None:
+                        self._store.record_experiment_episode_diagnostic(
+                            episode_id=runtime.episode_id,
+                            project_id=first.project_id,
+                            control_node_id=control_node_id,
+                            diagnostic=preflight.diagnostic,
+                        )
+                    return
+                current_machine = (
+                    service.manifest.machine_map.get(runtime.run_on)
+                    if runtime.run_on is not None
+                    else None
+                )
+                current_host = current_machine.host if current_machine is not None else None
+                binding_host = episode.execution_host if episode is not None else None
+                group_hosts = {item.execution_host for item in group}
+                if (
+                    current_host is None
+                    or binding_host != current_host
+                    or (episode.stage_host or "") != current_host
+                    or group_hosts != {current_host}
+                ):
+                    if runtime.episode_id is not None:
+                        self._store.record_experiment_episode_diagnostic(
+                            episode_id=runtime.episode_id,
+                            project_id=first.project_id,
+                            control_node_id=control_node_id,
+                            diagnostic=(
+                                "The Experiment episode's saved execution host or stage host "
+                                "no longer matches the current project manifest. Stop the loop "
+                                "and start a new Run after confirming the execution target."
+                            ),
+                        )
+                    return
+                # The episode session is proved before the claim and before the
+                # budget spend, so an unusable binding never costs an invocation
+                # and never quietly becomes a fresh session.
+                preflight = self._preflight_episode_wake(runtime, episode, group)
+                if not self._retry.generation_is_current(retry_generation):
+                    return
+                if preflight.readiness == "unavailable":
+                    if runtime.episode_id is not None:
+                        self._store.record_experiment_episode_diagnostic(
+                            episode_id=runtime.episode_id,
+                            project_id=first.project_id,
+                            control_node_id=control_node_id,
+                            diagnostic=preflight.diagnostic,
+                        )
+                    return
+                if preflight.readiness != "ready":
+                    # Transient unreachability and an incompatible group both
+                    # leave the completion pending and visible for a later pass.
+                    return
+                if runtime.session_diagnostic is not None and runtime.episode_id is not None:
+                    self._store.record_experiment_episode_diagnostic(
+                        episode_id=runtime.episode_id,
+                        project_id=first.project_id,
+                        control_node_id=control_node_id,
+                        diagnostic=None,
+                    )
+                pins = [
+                    ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle
+                ]
+                admission = self._admit_experiment_watcher_invocation(
+                    state,
+                    control_node_id,
+                    episode_id=runtime.episode_id,
+                    invocations_used=runtime.invocations_used,
+                    invocation_ceiling=runtime.invocation_ceiling,
+                    decision_bundle=pins,
+                    task_active=runtime.task_active,
+                    episode_exited=runtime.episode_exited,
+                    stop_requested=runtime.stop_requested,
+                )
+                if admission is None:
+                    return
+                if runtime.control_revision is None:
+                    raise ValueError("An Experiment watcher is missing its control revision.")
+                # Watchers keep the maintenance turn as immutable creation
+                # provenance. Delivery always resumes the live episode's node
+                # chat and pinned policy instead.
+                request = self._experiment_watcher_request(
+                    group,
+                    trigger="watcher",
+                    episode_id=admission.episode_id,
+                    invocation=admission.invocation,
+                    invocation_ceiling=admission.invocation_ceiling,
+                    control_revision=runtime.control_revision,
+                    decision_bundle=admission.decision_bundle,
+                    completion_criteria=runtime.completion_criteria,
+                    session_id=preflight.session_id,
+                )
+                request = request.model_copy(
+                    update={
+                        "provider": runtime.provider,
+                        "model": runtime.model,
+                        "reasoning": runtime.reasoning,
+                        "run_on": runtime.run_on,
+                        "run_truth_scope": runtime.run_truth_scope,
+                        "chat_scope": "node",
+                        "node_id": control_node_id,
+                        "chat_id": episode.chat_id,
+                        "session_id": preflight.session_id,
+                    }
+                )
+
+                self._start_watcher_notification(
+                    first.project_id,
+                    "node_chat",
+                    request,
+                    watcher_ids,
+                    authorized_by=authorized_by,
+                    episode_stage_host=preflight.stage_host,
+                    episode_stage_root=preflight.stage_root,
+                    admission_fence=(
+                        retry_generation.run_if_current if retry_generation is not None else None
+                    ),
+                )
+            return
+
+        request = self._generic_request(group)
+        with self._experiment_admission(first.project_id, service, request):
+            self._start_watcher_notification(
+                first.project_id,
+                first.origin_task_kind,
+                request,
+                watcher_ids,
+                authorized_by=authorized_by,
+                admission_fence=(
+                    retry_generation.run_if_current if retry_generation is not None else None
+                ),
+            )
+
+    def evaluate_graph_wake_boundary(
+        self,
+        project_id: str,
+        _trigger_state: GraphState | None,
+        *,
+        source: str,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        """Reconcile canonical graph conditions without changing the trigger's verdict."""
+
+        if not self._retry.generation_is_current(retry_generation):
+            return
+        try:
+            with self._retry.lock_for(project_id):
+                active_records = self._store.active_graph_watchers(project_id)
+                if active_records:
+                    service = self._project_service(project_id)
+                    replay, boundaries = service.history.accepted_boundary_states()
+                    if not self._retry.generation_is_current(retry_generation):
+                        return
+                    if replay.state.replay_status != "complete":
+                        raise _GraphWatcherReplayDegraded(
+                            "canonical graph replay is degraded at revision "
+                            f"{replay.state.revision}"
+                        )
+
+                    # Captured task/sync state is only an arrival signal. Every
+                    # production entry point replays accepted boundaries in canonical
+                    # order so reversed task settlement cannot invert terminal watcher
+                    # outcomes. Legacy rows are based at the coherent head and never
+                    # retroactively evaluated against earlier history.
+                    evaluated_at = self._store.now()
+                    for record in active_records:
+                        if record.armed_revision is None:
+                            initialized = self._retry.run_for_generation(
+                                retry_generation,
+                                lambda record=record: self._store.initialize_graph_watcher_baseline(
+                                    record.watcher_id,
+                                    armed_revision=replay.state.revision,
+                                    evaluated_at=evaluated_at,
+                                ),
+                            )
+                            if not initialized:
+                                return
+                    for boundary in boundaries:
+                        evaluated = self._retry.run_for_generation(
+                            retry_generation,
+                            lambda boundary=boundary: self._evaluate_graph(
+                                self._store,
+                                project_id,
+                                boundary,
+                            ),
+                        )
+                        if not evaluated:
+                            return
+        except _GraphWatcherReplayDegraded as exc:
+            if not self._retry.run_for_generation(
+                retry_generation,
+                lambda: self._retry.clear(project_id),
+            ):
+                return
+            self._logger.warning(
+                "Could not reconcile graph conditions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            self.deliver_ready_graph_wake_groups(
+                project_id,
+                source=f"{source} degraded graph replay",
+                retry_generation=retry_generation,
+            )
+            return
+        except Exception as exc:
+            if isinstance(exc, OSError) or self._state_unavailable(exc):
+                if not self._retry.run_for_generation(
+                    retry_generation,
+                    lambda: self._retry.schedule(project_id),
+                ):
+                    return
+            elif not self._retry.run_for_generation(
+                retry_generation,
+                lambda: self._retry.clear(project_id),
+            ):
+                return
+            self._logger.warning(
+                "Could not reconcile graph conditions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            self.deliver_ready_graph_wake_groups(
+                project_id,
+                source=f"{source} graph evaluation failure",
+                retry_generation=retry_generation,
+            )
+            return
+        if not self._retry.run_for_generation(
+            retry_generation,
+            lambda: self._retry.clear(project_id),
+        ):
+            return
+        self.deliver_ready_graph_wake_groups(
+            project_id,
+            source=source,
+            retry_generation=retry_generation,
+        )
+
+    def deliver_ready_graph_wake_groups(
+        self,
+        project_id: str,
+        *,
+        source: str,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        """Retry ready graph delivery without evaluating an active condition."""
+
+        if not self._retry.generation_is_current(retry_generation):
+            return
+        try:
+            groups = self._ready_graph_groups(self._store, project_id)
+        except Exception as exc:
+            self._logger.warning(
+                "Could not read ready graph-condition completions after %s for project %s: %s",
+                source,
+                project_id,
+                exc,
+            )
+            return
+        for group in groups:
+            if not self._retry.generation_is_current(retry_generation):
+                return
+            try:
+                self.deliver_watcher_group(
+                    group,
+                    retry_generation=retry_generation,
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "Could not retry graph-condition completion %s for project %s: %s",
+                    [item.watcher_id for item in group],
+                    project_id,
+                    exc,
+                )
+
+    def sweep_graph_conditions_at_startup(self) -> None:
+        for project_id in self._store.graph_watcher_project_ids():
+            self.evaluate_graph_wake_boundary(project_id, None, source="startup sweep")
+
+    def retry_graph_wakes_after_poll(self, generation: WatcherRetryGeneration) -> None:
+        due = self._retry.due()
+        for project_id in due:
+            if not generation.is_current():
+                return
+            self.evaluate_graph_wake_boundary(
+                project_id,
+                None,
+                source="reconciliation retry",
+                retry_generation=generation,
+            )
+        reconciled = set(due)
+        for project_id in self._store.graph_watcher_project_ids():
+            if not generation.is_current():
+                return
+            if project_id not in reconciled:
+                self.deliver_ready_graph_wake_groups(
+                    project_id,
+                    source="watcher poll",
+                    retry_generation=generation,
+                )
+
+
 def run_watcher_check(
     spec: WatchSpec,
     execution_host: str = "",
@@ -484,6 +1121,7 @@ def arm_watchers(
                 origin_task_kind=binding.origin_task_kind,
                 chat_id=binding.chat_id,
                 node_id=binding.node_id,
+                episode_id=binding.episode_id,
                 execution_host=binding.execution_host,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
@@ -518,6 +1156,7 @@ def arm_watchers(
                     origin_task_kind=binding.origin_task_kind,
                     chat_id=binding.chat_id,
                     node_id=binding.node_id,
+                    episode_id=binding.episode_id,
                     execution_host=binding.execution_host,
                     condition=condition,
                     armed_revision=state.revision,

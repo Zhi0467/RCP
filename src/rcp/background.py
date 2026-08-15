@@ -17,44 +17,42 @@ from rcp.core.authority import AgentDispatchAuthority, require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.limits import CHAT_ARTIFACT_MAX_COUNT
 from rcp.providers import classify_terminal_error
-from rcp.runs.campaign import (
-    CampaignReportCorrection,
-    CampaignReportRequestFactory,
-    CampaignRunRequest,
-    CampaignStartRequest,
-    CampaignWakeAdmission,
-    PendingCampaignMail,
-    begin_campaign_wrapup,
-    campaign_report_correction,
-    campaign_root_request,
-    complete_campaign_report,
-    pending_campaign_mail,
+from rcp.runs.auto_research import (
+    AutoResearchRunRequest,
+    AutoResearchStartRequest,
+    AutoResearchWakeAdmission,
+    PendingAutoResearchMail,
+    auto_research_exhaustion_signal,
+    auto_research_root_request,
+    pending_auto_research_mail,
+    request_auto_research_stop,
+    settle_auto_research_stop,
 )
-from rcp.runs.campaign_mail import campaign_mail_claim_prefix
-from rcp.runs.campaign_recovery import (
-    CampaignOrchestratorTerminalFailure,
+from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
+from rcp.runs.auto_research_recovery import (
+    AutoResearchOrchestratorTerminalFailure,
     record_structural_failure,
 )
+from rcp.runs.episode_report import EpisodeReportRunRequest
 from rcp.service import (
     CoachRequest,
     GraphUpdateResult,
     RunRequest,
     resolve_dispatch_authority,
 )
-from rcp.skill_registry import SkillSelection, official_registry
+from rcp.skill_registry import SkillSelection
 from rcp.storage import (
     AgentTaskKind,
     AgentTaskRecord,
     AppStore,
-    CampaignBudgetExhausted,
-    CampaignEnding,
-    CampaignNotRunning,
-    CampaignRecord,
-    CampaignReportRecord,
+    AutoResearchStateRecord,
+    EpisodeInvocationCeilingReached,
+    EpisodeNotRunning,
+    EpisodeRecord,
 )
 from rcp.transport import RemoteRunStage
 
-AgentTaskRequest = RunRequest | CoachRequest | CampaignRunRequest
+AgentTaskRequest = RunRequest | CoachRequest | AutoResearchRunRequest | EpisodeReportRunRequest
 DispatchAuthorityResolver = Callable[
     [AgentTaskKind, AgentTaskRequest],
     AgentDispatchAuthority | None,
@@ -68,7 +66,8 @@ AgentTaskContinuation = Literal[
     "watcher_wake",
     "graph_condition_wake",
     "message_wake",
-    "campaign_continuation",
+    "auto_research_continuation",
+    "episode_report",
 ]
 
 # A watcher wake reuses a native session without being task Resume: it is a new
@@ -82,7 +81,8 @@ _NATIVE_CHECKPOINT_CONTINUATIONS = frozenset(
         "watcher_wake",
         "graph_condition_wake",
         "message_wake",
-        "campaign_continuation",
+        "auto_research_continuation",
+        "episode_report",
     }
 )
 _EXPERIMENT_SESSION_LIMIT_DIAGNOSTIC = (
@@ -94,8 +94,8 @@ _EXPERIMENT_SESSION_LIMIT_DIAGNOSTIC = (
 def _task_is_patch_capable(kind: AgentTaskKind, request: AgentTaskRequest) -> bool:
     if kind in {"seed", "refresh"}:
         return True
-    if kind == "campaign" and isinstance(request, CampaignRunRequest):
-        return request.role != "report"
+    if kind == "auto_research" and isinstance(request, AutoResearchRunRequest):
+        return True
     return (
         kind in {"node_chat", "project_chat"}
         and isinstance(request, RunRequest)
@@ -165,12 +165,11 @@ AgentTaskStreamClosedHook = Callable[
     [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None
 ]
 AgentTaskSettledHook = Callable[[str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None]
-CampaignTaskSettledHook = Callable[
-    [CampaignRecord, CampaignRunRequest, AgentTaskExecution],
+AutoResearchTaskSettledHook = Callable[
+    [EpisodeRecord, AutoResearchRunRequest, AgentTaskExecution],
     None,
 ]
-CampaignAdmissionExhaustedHook = Callable[[CampaignRecord], None]
-CampaignReauthorizationPreflight = Callable[[CampaignRunRequest], CampaignRunRequest]
+AutoResearchAdmissionExhaustedHook = Callable[[EpisodeRecord], None]
 
 
 @dataclass(frozen=True)
@@ -219,16 +218,16 @@ class BackgroundAgentTasks:
         stream: AgentTaskStream,
         on_stream_closed: AgentTaskStreamClosedHook | None = None,
         on_task_settled: AgentTaskSettledHook | None = None,
-        on_campaign_task_settled: CampaignTaskSettledHook | None = None,
-        on_campaign_admission_exhausted: CampaignAdmissionExhaustedHook | None = None,
+        on_auto_research_task_settled: AutoResearchTaskSettledHook | None = None,
+        on_auto_research_admission_exhausted: AutoResearchAdmissionExhaustedHook | None = None,
         dispatch_authority_resolver: DispatchAuthorityResolver | None = None,
     ) -> None:
         self.store = store
         self.stream = stream
         self.on_stream_closed = on_stream_closed
         self.on_task_settled = on_task_settled
-        self.on_campaign_task_settled = on_campaign_task_settled
-        self.on_campaign_admission_exhausted = on_campaign_admission_exhausted
+        self.on_auto_research_task_settled = on_auto_research_task_settled
+        self.on_auto_research_admission_exhausted = on_auto_research_admission_exhausted
         self.dispatch_authority_resolver = dispatch_authority_resolver or resolve_dispatch_authority
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
@@ -237,7 +236,7 @@ class BackgroundAgentTasks:
         self._accepting_watcher_deliveries = True
         self.store.interrupt_active_agent_tasks()
         self.store.settle_ready_experiment_loop_stops()
-        self.store.settle_ready_campaign_stops()
+        self._restart_interrupted_episode_reports()
 
     def start(
         self,
@@ -250,9 +249,26 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
     ) -> AgentTaskRecord:
-        if kind == "campaign":
+        if kind == "auto_research":
             raise ValueError(
-                "Use start_campaign so the shared budget and root are created atomically."
+                "Use start_auto_research so its episode and root are created atomically."
+            )
+        if kind == "episode_report":
+            raise ValueError(
+                "Use start_episode_report so the existing hidden allocation is preserved."
+            )
+        experiment_root = (
+            isinstance(request, RunRequest)
+            and request.patch_kind == "experiment_loop"
+            and request.trigger == "experiment_run"
+        )
+        if (
+            isinstance(request, RunRequest)
+            and request.patch_kind == "experiment_loop"
+            and not experiment_root
+        ):
+            raise ValueError(
+                "An Experiment watcher wake or recovery must use its dedicated admission path."
             )
         if kind in {"seed", "refresh"} and request.session_id:
             raise ValueError(
@@ -285,26 +301,26 @@ class BackgroundAgentTasks:
             stage_root=stage_root,
         )
 
-    def start_campaign(
+    def start_auto_research(
         self,
         project_id: str,
-        request: CampaignStartRequest,
+        request: AutoResearchStartRequest,
         *,
         authorized_by: AuthorizedHuman,
-        campaign_id: str | None = None,
+        episode_id: str | None = None,
         operation_id: str | None = None,
-    ) -> tuple[CampaignRecord, AgentTaskRecord]:
-        """Create the sole live project campaign and spend its root turn atomically."""
+    ) -> tuple[EpisodeRecord, AgentTaskRecord]:
+        """Create one fresh Auto-research episode and spend its first invocation."""
 
         if not authorized_by.display_name.strip():
-            raise ValueError("A campaign requires a named human authorizer snapshot.")
-        campaign_id = campaign_id or str(uuid.uuid4())
+            raise ValueError("Auto-research requires a named human authorizer snapshot.")
+        episode_id = episode_id or str(uuid.uuid4())
         operation_id = operation_id or str(uuid.uuid4())
-        run_request = campaign_root_request(request, campaign_id=campaign_id).model_copy(
+        run_request = auto_research_root_request(request, episode_id=episode_id).model_copy(
             update={"actor_operation_id": operation_id}
         )
         dispatch_authority = self._resolved_dispatch_authority(
-            "campaign",
+            "auto_research",
             run_request,
             project_id=project_id,
             operation_id=operation_id,
@@ -313,18 +329,16 @@ class BackgroundAgentTasks:
         request_data = run_request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(
             project_id,
-            "campaign",
+            "auto_research",
             request_data,
         )
         now = self.store.now()
-        campaign = CampaignRecord(
-            campaign_id=campaign_id,
+        episode = EpisodeRecord(
+            episode_id=episode_id,
             project_id=project_id,
-            root_operation_id=operation_id,
+            mode="auto_research",
             status="queued",
-            starting_instruction=request.starting_instruction,
             invocation_ceiling=request.invocation_ceiling,
-            invocations_used=0,
             authorized_by=authorized_by,
             created_at=now,
             updated_at=now,
@@ -332,13 +346,13 @@ class BackgroundAgentTasks:
         task = AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
-            campaign_id=campaign_id,
-            kind="campaign",
+            episode_id=episode_id,
+            kind="auto_research",
             status="queued",
             request=request_data,
             created_at=now,
             updated_at=now,
-            status_message="Waiting for the campaign orchestrator to start.",
+            status_message="Waiting for the Auto-research orchestrator to start.",
             estimate_seconds=estimate,
             estimate_samples=samples,
             phase="queued",
@@ -346,69 +360,83 @@ class BackgroundAgentTasks:
             authorized_by=authorized_by,
             dispatch_authority=dispatch_authority,
         )
-        stored_campaign, stored_task = self.store.create_campaign_with_root_task(campaign, task)
-        return stored_campaign, self._spawn_record(
+        stored_episode, stored_task = self.store.create_auto_research_episode_with_root_task(
+            episode,
+            AutoResearchStateRecord(
+                episode_id=episode_id,
+                starting_instruction=request.starting_instruction,
+                created_at=now,
+                updated_at=now,
+            ),
+            task,
+        )
+        return stored_episode, self._spawn_record(
             stored_task,
             run_request,
             continuation="fresh",
         )
 
-    def start_campaign_turn(
+    def start_auto_research_turn(
         self,
-        campaign_id: str,
-        request: CampaignRunRequest,
+        episode_id: str,
+        request: AutoResearchRunRequest,
         *,
         parent_operation_id: str | None = None,
         operation_id: str | None = None,
-        mail_delivery: PendingCampaignMail | None = None,
-        wake_admission: CampaignWakeAdmission | None = None,
+        mail_delivery: PendingAutoResearchMail | None = None,
+        wake_admission: AutoResearchWakeAdmission | None = None,
     ) -> AgentTaskRecord | None:
-        """Admit one orchestrator/worker turn or wake from the campaign's single pot."""
+        """Admit one operational actor turn from the episode invocation budget."""
 
-        campaign = self._campaign_for_request(campaign_id, request)
-        if request.role == "report":
-            raise ValueError("Use start_campaign_report for the reserved report turn.")
+        episode = self._auto_research_for_request(episode_id, request)
         operation_id = operation_id or str(uuid.uuid4())
-        parent = self._campaign_parent(campaign, parent_operation_id)
-        parent_role = self.store.campaign_invocation_role(parent.operation_id)
+        parent = self._auto_research_parent(episode, parent_operation_id)
+        parent_role = self.store.auto_research_invocation_role(parent.operation_id)
         if parent_role not in {"orchestrator", "worker"}:
-            raise ValueError("Campaign continuation parent has no canonical actor role.")
-        parent_request = CampaignRunRequest.model_validate(parent.request)
+            raise ValueError("Auto-research continuation parent has no canonical actor role.")
+        parent_request = AutoResearchRunRequest.model_validate(parent.request)
         if parent_request.role != parent_role:
-            raise ValueError("Campaign continuation parent role disagrees with its durable actor.")
+            raise ValueError(
+                "Auto-research continuation parent role disagrees with its durable actor."
+            )
         parent_actor_id = parent_request.actor_operation_id or parent.operation_id
         requested_actor_id = request.actor_operation_id
         if request.wake_cause is not None:
             if request.role != parent_role:
-                raise ValueError("A campaign wake cannot change its canonical actor role.")
+                raise ValueError("An Auto-research wake cannot change its canonical actor role.")
             if requested_actor_id is not None and requested_actor_id != parent_actor_id:
-                raise ValueError("A campaign wake cannot change its canonical actor identity.")
+                raise ValueError(
+                    "An Auto-research wake cannot change its canonical actor identity."
+                )
             if (
                 parent_role == "worker"
                 and request.control_node_id != parent_request.control_node_id
             ):
-                raise ValueError("A campaign worker wake cannot change its canonical seat.")
+                raise ValueError("An Auto-research worker wake cannot change its canonical seat.")
             request = request.model_copy(update={"actor_operation_id": parent_actor_id})
         elif request.role == "worker":
             if parent_role != "orchestrator":
-                raise ValueError("Only the campaign orchestrator may seat a worker.")
+                raise ValueError("Only the Auto-research orchestrator may seat a worker.")
             if requested_actor_id is not None and requested_actor_id != operation_id:
-                raise ValueError("A new campaign worker must use its own canonical actor identity.")
+                raise ValueError(
+                    "A new Auto-research worker must use its own canonical actor identity."
+                )
             if request.session_id is not None:
-                raise ValueError("A new campaign worker must start a fresh native session.")
+                raise ValueError("A new Auto-research worker must start a fresh native session.")
             request = request.model_copy(update={"actor_operation_id": operation_id})
         else:
-            if parent_role != "orchestrator" or parent_actor_id != campaign.root_operation_id:
-                raise ValueError("Only the root campaign actor may continue as orchestrator.")
+            if parent_role != "orchestrator" or parent_actor_id != episode.root_operation_id:
+                raise ValueError("Only the root Auto-research actor may continue as orchestrator.")
             if requested_actor_id is not None and requested_actor_id != parent_actor_id:
                 raise ValueError(
-                    "A campaign orchestrator turn cannot change its canonical actor identity."
+                    "An Auto-research orchestrator turn cannot change its canonical actor identity."
                 )
             request = request.model_copy(update={"actor_operation_id": parent_actor_id})
+
         authority_origin = self.store.agent_task(parent_actor_id)
         if authority_origin is None or authority_origin.dispatch_authority is None:
             raise ValueError(
-                "Authority refused action 'dispatch': the canonical campaign actor has no "
+                "Authority refused action 'dispatch': the canonical Auto-research actor has no "
                 "durable authority binding."
             )
         canonical_scope = authority_origin.dispatch_authority.scope.run_truth_scope
@@ -416,48 +444,48 @@ class BackgroundAgentTasks:
             canonical_scope
         ):
             raise ValueError(
-                "Authority refused action 'dispatch': a campaign actor cannot change its "
+                "Authority refused action 'dispatch': an Auto-research actor cannot change its "
                 "project-wide run truth scope."
             )
         request = request.model_copy(update={"run_truth_scope": list(canonical_scope)})
+        if episode.status != "running" or episode.stop_requested_at is not None:
+            raise EpisodeNotRunning("the Auto-research episode is not admitting new work")
+        if episode.invocations_used >= episode.invocation_ceiling:
+            self._auto_research_admission_exhausted(episode)
+            raise EpisodeInvocationCeilingReached(
+                "the Auto-research operational invocation ceiling is exhausted"
+            )
+
         existing_actor = request.actor_operation_id != operation_id
         stage_host: str | None = None
         stage_root: str | None = None
-        research_admission_possible = (
-            campaign.status == "running"
-            and campaign.stop_requested_at is None
-            and campaign.invocations_used < campaign.invocation_ceiling - 1
-        )
-        if existing_actor and not research_admission_possible:
-            if campaign.status != "running" or campaign.stop_requested_at is not None:
-                raise CampaignNotRunning("the campaign is not admitting new work")
-            self._campaign_admission_exhausted(campaign)
-            raise CampaignBudgetExhausted(
-                "the campaign research budget is exhausted; the report invocation is reserved"
-            )
         if existing_actor:
-            binding = self.store.campaign_actor_binding(parent.operation_id)
+            binding = self.store.auto_research_actor_binding(parent.operation_id)
             if (
                 binding.actor_operation_id != request.actor_operation_id
                 or binding.role != request.role
                 or binding.control_node_id != request.control_node_id
             ):
                 raise ValueError(
-                    "A campaign continuation must preserve its canonical actor role and seat."
+                    "An Auto-research continuation must preserve its canonical actor role and seat."
                 )
             if not binding.native_session_id or not binding.stage_root:
                 raise ValueError(
-                    "A campaign continuation requires the actor's exact saved session and stage."
+                    "An Auto-research continuation requires the actor's exact saved session "
+                    "and stage."
                 )
             if request.session_id not in {None, binding.native_session_id}:
-                raise ValueError("A campaign continuation cannot change its saved native session.")
+                raise ValueError(
+                    "An Auto-research continuation cannot change its saved native session."
+                )
             request = request.model_copy(update={"session_id": binding.native_session_id})
             stage_host = binding.stage_host
             stage_root = binding.stage_root
+
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(
-            campaign.project_id,
-            "campaign",
+            episode.project_id,
+            "auto_research",
             request_data,
         )
         continuation: AgentTaskContinuation = {
@@ -467,35 +495,36 @@ class BackgroundAgentTasks:
             "message": "message_wake",
         }[request.wake_cause]
         if request.wake_cause is None and existing_actor:
-            continuation = "campaign_continuation"
+            continuation = "auto_research_continuation"
         if request.wake_cause is not None:
             assert stage_root is not None
         if request.wake_cause == "message":
             if (
                 mail_delivery is None
                 or not mail_delivery.messages
-                or mail_delivery.campaign_id != campaign_id
-                or mail_delivery.recipient_task_id != parent.operation_id
+                or mail_delivery.episode_id != episode_id
+                or mail_delivery.recipient_task_id != parent_actor_id
             ):
                 raise ValueError(
-                    "A campaign message wake requires its exact non-empty coalesced mail batch."
+                    "An Auto-research message wake requires its exact non-empty mail batch."
                 )
             if wake_admission is not None:
                 raise ValueError(
-                    "Campaign message wake admission is owned by the mail transaction."
+                    "Auto-research message wake admission is owned by the mail transaction."
                 )
         elif request.wake_cause in {"watcher", "graph_condition"}:
             if wake_admission is None:
                 raise ValueError(
-                    "Campaign watcher wakes require the existing atomic wake-admission hook."
+                    "Auto-research watcher wakes require their atomic wake-admission hook."
                 )
         elif mail_delivery is not None:
-            raise ValueError("Only a campaign message wake may claim a mail batch.")
+            raise ValueError("Only an Auto-research message wake may claim a mail batch.")
         elif wake_admission is not None:
-            raise ValueError("Only a campaign watcher wake may use wake admission.")
+            raise ValueError("Only an Auto-research watcher wake may use wake admission.")
+        assert episode.authorized_by is not None
         return self._create_and_spawn(
-            campaign.project_id,
-            "campaign",
+            episode.project_id,
+            "auto_research",
             request,
             parent=parent,
             continuation=continuation,
@@ -504,135 +533,18 @@ class BackgroundAgentTasks:
             estimate_seconds=estimate,
             estimate_samples=samples,
             operation_id=operation_id,
-            authorized_by=campaign.authorized_by,
-            campaign_mail_delivery=mail_delivery,
-            campaign_wake_admission=wake_admission,
+            authorized_by=episode.authorized_by,
+            auto_research_mail_delivery=mail_delivery,
+            auto_research_wake_admission=wake_admission,
         )
 
-    def start_campaign_report(
-        self,
-        campaign_id: str,
-        ending: CampaignEnding,
-        *,
-        request_factory: CampaignReportRequestFactory,
-        error: str | None = None,
-        operation_id: str | None = None,
-    ) -> AgentTaskRecord:
-        """Spend the reserved unit in the sole orchestrator's exact saved session."""
+    def stop_auto_research(self, episode_id: str) -> EpisodeRecord:
+        """Persist Stop without cancelling the already-authorized actor turn."""
 
-        current = self.store.campaign(campaign_id)
-        if current is None:
-            raise KeyError(campaign_id)
-        campaign = begin_campaign_wrapup(
-            self.store,
-            campaign_id,
-            ending,
-            error=error,
-        )
-        if campaign.root_operation_id is None:
-            raise ValueError("A campaign report requires its sole orchestrator actor.")
-        binding = self.store.campaign_actor_binding(campaign.root_operation_id)
-        if (
-            binding.actor_operation_id != campaign.root_operation_id
-            or binding.role != "orchestrator"
-            or not binding.native_session_id
-            or not binding.stage_root
-        ):
-            raise ValueError(
-                "A campaign report requires the orchestrator's exact saved session and stage."
-            )
-        parent = self._require_operation(binding.current_operation_id)
-        parent_request = CampaignRunRequest.model_validate(parent.request)
-        operation_id = operation_id or str(uuid.uuid4())
-        request = request_factory(campaign)
-        self._campaign_for_request(campaign_id, request)
-        if request.role != "report" or request.ending != ending:
-            raise ValueError("The report request factory returned another campaign role or ending.")
-        pinned = {
-            "provider": parent_request.provider,
-            "run_truth_scope": parent_request.run_truth_scope,
-            "model": parent_request.model,
-            "reasoning": parent_request.reasoning,
-            "run_on": parent_request.run_on,
-            "session_id": binding.native_session_id,
-            "actor_operation_id": campaign.root_operation_id,
-        }
-        for field, value in pinned.items():
-            supplied = getattr(request, field)
-            if supplied is not None and supplied != value:
-                raise ValueError(
-                    f"A campaign report cannot change the orchestrator's saved {field}."
-                )
-        report_skills = official_registry().resolve(
-            workflow_ids=[],
-            skill_ids=["campaign-report"],
-        )
-        request = request.model_copy(
-            update={
-                **pinned,
-                "workflow_ids": [],
-                "skill_ids": ["campaign-report"],
-                "invoked_workflow_ids": [],
-                "invoked_skill_ids": ["campaign-report"],
-                "invoked_provider_skill_names": [],
-                "resolved_provider_skills": [],
-                "resolved_skill_packages": report_skills.resolved_skill_packages,
-            }
-        )
-        request_data = request.model_dump(mode="json")
-        estimate, samples = self.store.agent_task_estimate(
-            campaign.project_id,
-            "campaign",
-            request_data,
-        )
-        return self._create_and_spawn(
-            campaign.project_id,
-            "campaign",
-            request,
-            parent=parent,
-            continuation="campaign_continuation",
-            stage_host=binding.stage_host,
-            stage_root=binding.stage_root,
-            estimate_seconds=estimate,
-            estimate_samples=samples,
-            operation_id=operation_id,
-            authorized_by=campaign.authorized_by,
-            campaign_report_ending=ending,
-            campaign_report_error=error,
-        )
-
-    def reconcile_campaign_report(
-        self,
-        campaign_id: str,
-        *,
-        request_factory: CampaignReportRequestFactory,
-        error: str | None = None,
-        operation_id: str | None = None,
-    ) -> AgentTaskRecord | None:
-        """Idempotently admit a fenced ending's report once all prior turns settle."""
-
-        campaign = self.store.campaign(campaign_id)
-        if campaign is None or campaign.status != "wrapping_up" or campaign.ending is None:
-            return None
-        try:
-            return self.start_campaign_report(
-                campaign_id,
-                campaign.ending,
-                request_factory=request_factory,
-                error=error if error is not None else campaign.error,
-                operation_id=operation_id,
-            )
-        except CampaignNotRunning:
-            # A same-allocation recovery may have raced the settlement read.
-            return None
-
-    def stop_campaign(self, campaign_id: str) -> CampaignRecord:
-        """Persist Stop intent without cancelling an already-authorized turn."""
-
-        before = self.store.campaign(campaign_id)
-        if before is None:
-            raise KeyError(campaign_id)
-        stopped = self.store.request_campaign_stop(campaign_id)
+        before = self.store.episode(episode_id)
+        if before is None or before.mode != "auto_research":
+            raise KeyError(episode_id)
+        stopped = request_auto_research_stop(self.store, episode_id)
         if (
             before.stop_requested_at is None
             and stopped.stop_requested_at is not None
@@ -640,155 +552,62 @@ class BackgroundAgentTasks:
         ):
             self.store.record_agent_task_event(
                 stopped.root_operation_id,
-                "Campaign Stop requested; current turns will finish and no new work will start.",
+                "Auto-research Stop requested; current turns will finish and no new work will "
+                "start.",
             )
-        return stopped
+        return settle_auto_research_stop(self.store, episode_id) or stopped
 
-    def reauthorize_campaign(
-        self,
-        campaign_id: str,
-        additional_invocations: int,
-        *,
-        request_preflight: CampaignReauthorizationPreflight,
-        operation_id: str | None = None,
-    ) -> tuple[CampaignRecord, AgentTaskRecord]:
-        """Extend an exhausted campaign and resume its sole orchestrator atomically."""
-
-        campaign = self.store.campaign(campaign_id)
-        if campaign is None or campaign.root_operation_id is None:
-            raise KeyError(campaign_id)
-        binding = self.store.campaign_actor_binding(campaign.root_operation_id)
-        if (
-            binding.role != "orchestrator"
-            or binding.actor_operation_id != campaign.root_operation_id
-        ):
-            raise ValueError("campaign reauthorization cannot replace its orchestrator actor")
-        if not binding.native_session_id or not binding.stage_root:
-            raise ValueError(
-                "campaign reauthorization requires the orchestrator's exact saved session and stage"
-            )
-        parent = self._require_operation(binding.current_operation_id)
-        request = CampaignRunRequest.model_validate(parent.request).model_copy(
-            update={
-                "campaign_id": campaign_id,
-                "role": "orchestrator",
-                "actor_operation_id": campaign.root_operation_id,
-                "control_node_id": None,
-                "session_id": binding.native_session_id,
-                "instruction": None,
-                "wake_cause": None,
-                "watcher_ids": [],
-                "ending": None,
-            }
-        )
-        resolved_request = request_preflight(request)
-        if not isinstance(resolved_request, CampaignRunRequest):
-            raise TypeError("Campaign reauthorization preflight changed the request type.")
-        resolution_receipt_fields = {
-            "workflow_ids",
-            "skill_ids",
-            "resolved_provider_skills",
-            "resolved_skill_packages",
-        }
-        if resolved_request.model_dump(exclude=resolution_receipt_fields) != request.model_dump(
-            exclude=resolution_receipt_fields
-        ):
-            raise ValueError(
-                "Campaign reauthorization preflight cannot change the saved actor, profile, "
-                "scope, session, requested skills, or continuation lineage."
-            )
-        request = resolved_request
-        request_data = request.model_dump(mode="json")
-        estimate, samples = self.store.agent_task_estimate(
-            campaign.project_id,
-            "campaign",
-            request_data,
-        )
-        operation_id = operation_id or str(uuid.uuid4())
-        now = self.store.now()
-        dispatch_authority = self._resolved_dispatch_authority(
-            "campaign",
-            request,
-            project_id=campaign.project_id,
-            parent=parent,
-            operation_id=operation_id,
-            continuation="campaign_continuation",
-        )
-        assert dispatch_authority is not None
-        task = AgentTaskRecord(
-            operation_id=operation_id,
-            project_id=campaign.project_id,
-            campaign_id=campaign_id,
-            kind="campaign",
-            status="queued",
-            request=request_data,
-            created_at=now,
-            updated_at=now,
-            status_message="Waiting for the reauthorized campaign orchestrator to continue.",
-            parent_operation_id=parent.operation_id,
-            native_session_id=binding.native_session_id,
-            stage_host=binding.stage_host,
-            stage_root=binding.stage_root,
-            estimate_seconds=estimate,
-            estimate_samples=samples,
-            phase="queued",
-            last_activity_at=now,
-            authorized_by=campaign.authorized_by,
-            dispatch_authority=dispatch_authority,
-        )
-        reauthorized, stored = self.store.reauthorize_campaign_with_task(
-            campaign_id,
-            additional_invocations,
-            task,
-        )
-        return reauthorized, self._spawn_record(
-            stored,
-            request,
-            continuation="campaign_continuation",
-            parent=parent,
-        )
-
-    def complete_campaign_report(
+    def pending_auto_research_mail(
         self,
         *,
-        campaign_id: str,
-        operation_id: str,
-        ending: CampaignEnding,
-        candidate: str | bytes | None,
-    ) -> tuple[CampaignRecord, CampaignReportRecord]:
-        return complete_campaign_report(
-            self.store,
-            campaign_id=campaign_id,
-            operation_id=operation_id,
-            ending=ending,
-            candidate=candidate,
-        )
-
-    def campaign_report_correction(
-        self,
-        operation_id: str,
-        *,
-        round: int,
-        diagnostic: str,
-    ) -> CampaignReportCorrection:
-        return campaign_report_correction(
-            self.store,
-            operation_id,
-            round=round,
-            diagnostic=diagnostic,
-        )
-
-    def pending_campaign_mail(
-        self,
-        *,
-        campaign_id: str,
+        episode_id: str,
         recipient_task_id: str,
-    ) -> PendingCampaignMail:
-        return pending_campaign_mail(
+    ) -> PendingAutoResearchMail:
+        return pending_auto_research_mail(
             self.store,
-            campaign_id=campaign_id,
+            episode_id=episode_id,
             recipient_task_id=recipient_task_id,
         )
+
+    def start_episode_report(self, episode_id: str) -> AgentTaskRecord | None:
+        """Launch or restart the one durable hidden allocation for an episode."""
+
+        episode = self.store.episode(episode_id)
+        if episode is None:
+            raise KeyError(episode_id)
+        if episode.status != "wrapping_up" or episode.wrapup_state not in {"pending", "running"}:
+            return None
+        wrapup = self.store.episode_wrapup(episode_id)
+        if wrapup is None or wrapup.allocation_operation_id is None:
+            raise ValueError("The episode report lost its durable allocation fence.")
+        existing = self.store.agent_task(wrapup.allocation_operation_id)
+        if existing is not None and existing.status in {"queued", "running", "pausing"}:
+            with self._controls_lock:
+                worker = self._workers.get(existing.operation_id)
+                if worker is not None:
+                    return existing
+            if existing.status != "queued":
+                return None
+        task = self.store.requeue_interrupted_episode_report_allocation(episode_id)
+        if task.status != "queued":
+            return None
+        if task.kind != "episode_report" or task.visible or task.episode_id != episode_id:
+            raise ValueError("The episode report allocation lost its hidden task boundary.")
+        request = EpisodeReportRunRequest.model_validate(task.request)
+        if request.episode_id != episode_id:
+            raise ValueError("The episode report request changed its parent episode.")
+        parent = self._require_operation(task.parent_operation_id or "")
+        return self._spawn_record(
+            task,
+            request,
+            continuation="episode_report",
+            parent=parent,
+        )
+
+    def _restart_interrupted_episode_reports(self) -> None:
+        for episode in self.store.episodes_awaiting_report():
+            with suppress(KeyError, RuntimeError, ValueError):
+                self.start_episode_report(episode.episode_id)
 
     def start_watcher_notification(
         self,
@@ -829,6 +648,17 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "An Experiment watcher wake requires its episode's session and exact stage."
             )
+        if experiment_wake:
+            episode = self.store.episode(request.control_episode_id or "")
+            if (
+                episode is None
+                or episode.mode != "experiment_loop"
+                or episode.project_id != project_id
+            ):
+                raise ValueError("The Experiment watcher wake lost its episode parent.")
+            if episode.authorized_by is None:
+                raise ValueError("The Experiment episode lost its human authorizer snapshot.")
+            authorized_by = episode.authorized_by
         if request.watcher_ids != watcher_ids:
             raise ValueError("The watcher notification request must name its watcher records.")
         self._validate_request_type(kind, request)
@@ -844,6 +674,9 @@ class BackgroundAgentTasks:
         record = AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
+            episode_id=request.control_episode_id
+            if experiment_wake or experiment_reauthorization
+            else None,
             kind=kind,
             status="queued",
             request=request_data,
@@ -867,7 +700,18 @@ class BackgroundAgentTasks:
             with self._watcher_delivery_lock:
                 if not self._accepting_watcher_deliveries:
                     return
-                stored = self.store.create_watcher_notification_task(record, watcher_ids)
+                if experiment_reauthorization:
+                    stored = self.store.create_experiment_episode_with_invocation(
+                        record,
+                        watcher_ids,
+                    )
+                elif experiment_wake:
+                    stored = self.store.create_experiment_watcher_invocation(
+                        record,
+                        watcher_ids,
+                    )
+                else:
+                    stored = self.store.create_watcher_notification_task(record, watcher_ids)
                 if stored is None:
                     return
                 started = self._spawn_record(
@@ -891,6 +735,8 @@ class BackgroundAgentTasks:
         authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
+        if previous.kind == "episode_report":
+            raise ValueError("Episode report recovery is automatic and has no Resume control.")
         if not previous.can_resume or not previous.native_session_id:
             raise ValueError(
                 "This task has no resumable native agent checkpoint. Retry it instead."
@@ -934,11 +780,13 @@ class BackgroundAgentTasks:
         authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
         previous = self._require_operation(operation_id)
+        if previous.kind == "episode_report":
+            raise ValueError("Episode report recovery is automatic and has no Retry control.")
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
-        if isinstance(original, CampaignRunRequest):
-            return self._retry_campaign_task(
+        if isinstance(original, AutoResearchRunRequest):
+            return self._retry_auto_research_task(
                 previous,
                 original,
                 provider=provider,
@@ -1119,10 +967,10 @@ class BackgroundAgentTasks:
             )
         return retried
 
-    def _retry_campaign_task(
+    def _retry_auto_research_task(
         self,
         previous: AgentTaskRecord,
-        original: CampaignRunRequest,
+        original: AutoResearchRunRequest,
         *,
         provider: str | None,
         model: str | None,
@@ -1130,7 +978,7 @@ class BackgroundAgentTasks:
         run_on: str | None,
         skills: SkillSelection | None,
     ) -> AgentTaskRecord:
-        """Recover one paid campaign allocation without changing its execution binding."""
+        """Recover one paid Auto-research allocation without changing its binding."""
 
         requested = {
             "provider": provider,
@@ -1145,7 +993,7 @@ class BackgroundAgentTasks:
         ]
         if changed:
             raise ValueError(
-                "Campaign recovery cannot change its pinned " + ", ".join(changed) + "."
+                "Auto-research recovery cannot change its pinned " + ", ".join(changed) + "."
             )
         session_limit = self._failure_is_session_limit(previous)
         continuation_unavailable = self._continuation_context_is_unavailable(previous)
@@ -1179,15 +1027,15 @@ class BackgroundAgentTasks:
             elif not owned_checkpoint:
                 problem = "the prior task has no complete RCP-owned session and stage"
         if problem is not None:
-            campaign = self.store.campaign(original.campaign_id)
-            if campaign is not None and campaign.stop_requested_at is not None:
-                self.store.abandon_campaign_recovery(
+            episode = self.store.episode(original.episode_id)
+            if episode is not None and episode.stop_requested_at is not None:
+                self.store.abandon_auto_research_recovery(
                     previous.operation_id,
                     diagnostic=problem,
                 )
-                self.store.settle_campaign_stop(campaign.campaign_id)
+                settle_auto_research_stop(self.store, episode.episode_id, diagnostic=problem)
             raise ValueError(
-                "Campaign recovery cannot start a fresh provider session because "
+                "Auto-research recovery cannot start a fresh provider session because "
                 f"{problem}. Its original allocation and operational history were preserved."
             )
         if clean_orchestrator_retry:
@@ -1203,7 +1051,7 @@ class BackgroundAgentTasks:
             assert previous.native_session_id is not None
             session_id = previous.native_session_id
             classification = None
-        request = CampaignRunRequest.model_validate(
+        request = AutoResearchRunRequest.model_validate(
             {
                 **original.model_dump(mode="json"),
                 "session_id": session_id,
@@ -1224,7 +1072,7 @@ class BackgroundAgentTasks:
         if classification is not None:
             self.store.record_agent_task_receipt(
                 retried.operation_id,
-                "campaign_orchestrator_clean_retry",
+                "auto_research_orchestrator_clean_retry",
                 {
                     "classification": classification,
                     "same_allocation": True,
@@ -1446,6 +1294,9 @@ class BackgroundAgentTasks:
             raise
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
+        current = self._require_operation(operation_id)
+        if current.kind == "episode_report":
+            raise ValueError("Episode report generation has no manual Pause control.")
         record = self.store.request_agent_task_pause(operation_id)
         with self._controls_lock:
             control = self._controls.get(operation_id)
@@ -1453,14 +1304,14 @@ class BackgroundAgentTasks:
             control.request_pause()
         return record
 
-    def pause_campaign_worker(
+    def pause_auto_research_worker(
         self,
         operation_id: str,
-        campaign_id: str,
+        episode_id: str,
     ) -> AgentTaskRecord:
-        """Commit the campaign gate before signalling the worker process."""
+        """Commit the episode gate before signalling the worker process."""
 
-        record = self.store.request_campaign_worker_pause(operation_id, campaign_id)
+        record = self.store.request_auto_research_worker_pause(operation_id, episode_id)
         with self._controls_lock:
             control = self._controls.get(operation_id)
         if control is not None:
@@ -1493,29 +1344,33 @@ class BackgroundAgentTasks:
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = True
 
-    def _campaign_for_request(
+    def _auto_research_for_request(
         self,
-        campaign_id: str,
-        request: CampaignRunRequest,
-    ) -> CampaignRecord:
-        if request.campaign_id != campaign_id:
-            raise ValueError("Campaign request does not match its campaign lineage.")
-        campaign = self.store.campaign(campaign_id)
-        if campaign is None:
-            raise KeyError(campaign_id)
-        return campaign
+        episode_id: str,
+        request: AutoResearchRunRequest,
+    ) -> EpisodeRecord:
+        if request.episode_id != episode_id:
+            raise ValueError("Auto-research request does not match its episode lineage.")
+        episode = self.store.episode(episode_id)
+        if (
+            episode is None
+            or episode.mode != "auto_research"
+            or self.store.auto_research_state(episode_id) is None
+        ):
+            raise KeyError(episode_id)
+        return episode
 
-    def _campaign_parent(
+    def _auto_research_parent(
         self,
-        campaign: CampaignRecord,
+        episode: EpisodeRecord,
         operation_id: str | None,
     ) -> AgentTaskRecord:
-        parent_id = operation_id or campaign.root_operation_id
+        parent_id = operation_id or episode.root_operation_id
         if parent_id is None:
-            raise ValueError("Campaign has no root operation for child lineage.")
+            raise ValueError("Auto-research has no root operation for child lineage.")
         parent = self._require_operation(parent_id)
-        if parent.project_id != campaign.project_id or parent.campaign_id != campaign.campaign_id:
-            raise ValueError("Campaign child parent is outside the campaign lineage.")
+        if parent.project_id != episode.project_id or parent.episode_id != episode.episode_id:
+            raise ValueError("Auto-research child parent is outside the episode lineage.")
         return parent
 
     def _create_and_spawn(
@@ -1532,26 +1387,34 @@ class BackgroundAgentTasks:
         stage_root: str | None = None,
         operation_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
-        campaign_mail_delivery: PendingCampaignMail | None = None,
-        campaign_wake_admission: CampaignWakeAdmission | None = None,
-        campaign_report_ending: CampaignEnding | None = None,
-        campaign_report_error: str | None = None,
+        auto_research_mail_delivery: PendingAutoResearchMail | None = None,
+        auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
     ) -> AgentTaskRecord | None:
-        campaign: CampaignRecord | None = None
-        if isinstance(request, CampaignRunRequest):
-            if kind != "campaign":
-                raise TypeError("CampaignRunRequest requires campaign task kind.")
-            campaign = self._campaign_for_request(request.campaign_id, request)
-            authorized_by = campaign.authorized_by
-        elif (
-            campaign_mail_delivery is not None
-            or campaign_wake_admission is not None
-            or campaign_report_ending is not None
-        ):
-            raise ValueError("Only a campaign task may use campaign wake admission.")
+        episode: EpisodeRecord | None = None
+        if isinstance(request, AutoResearchRunRequest):
+            if kind != "auto_research":
+                raise TypeError("AutoResearchRunRequest requires auto_research task kind.")
+            episode = self._auto_research_for_request(request.episode_id, request)
+            authorized_by = episode.authorized_by
+        elif isinstance(request, EpisodeReportRunRequest):
+            raise TypeError("EpisodeReportRunRequest requires an existing hidden allocation.")
+        elif isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
+            stored_episode = self.store.episode(request.control_episode_id or "")
+            if stored_episode is not None:
+                if (
+                    stored_episode.mode != "experiment_loop"
+                    or stored_episode.project_id != project_id
+                    or stored_episode.control_node_id != request.control_node_id
+                ):
+                    raise ValueError("The Experiment task changed its episode parent scope.")
+                authorized_by = stored_episode.authorized_by
+            elif parent is not None or request.trigger != "experiment_run":
+                raise ValueError("The Experiment continuation lost its episode parent.")
+        elif auto_research_mail_delivery is not None or auto_research_wake_admission is not None:
+            raise ValueError("Only Auto-research may use Auto-research wake admission.")
         if _task_is_patch_capable(kind, request) and authorized_by is None:
             raise ValueError("A patch-capable agent task requires a human authorizer snapshot.")
-        if kind != "campaign" and authorized_by is None:
+        if authorized_by is None:
             raise ValueError("An ordinary agent task requires a human authorizer snapshot.")
         if authorized_by is not None and not authorized_by.display_name.strip():
             raise ValueError("A human authorizer snapshot must include a nonblank display name.")
@@ -1578,7 +1441,13 @@ class BackgroundAgentTasks:
         task_record = AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
-            campaign_id=(request.campaign_id if isinstance(request, CampaignRunRequest) else None),
+            episode_id=(
+                request.episode_id
+                if isinstance(request, AutoResearchRunRequest)
+                else request.control_episode_id
+                if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop"
+                else None
+            ),
             kind=kind,
             status="queued",
             request=request.model_dump(mode="json"),
@@ -1597,65 +1466,73 @@ class BackgroundAgentTasks:
             authorized_by=authorized_by,
             dispatch_authority=dispatch_authority,
         )
-        if campaign_mail_delivery is not None:
-            selected_messages = campaign_mail_claim_prefix(
-                campaign_id=campaign_mail_delivery.campaign_id,
-                recipient_task_id=campaign_mail_delivery.recipient_task_id,
+        if auto_research_mail_delivery is not None:
+            selected_messages = auto_research_mail_claim_prefix(
+                episode_id=auto_research_mail_delivery.episode_id,
+                recipient_task_id=auto_research_mail_delivery.recipient_task_id,
                 delivery_operation_id=task_record.operation_id,
                 delivered_at=task_record.created_at,
-                messages=campaign_mail_delivery.messages,
+                messages=auto_research_mail_delivery.messages,
             )
             if not selected_messages:
                 return None
-            campaign_mail_delivery = campaign_mail_delivery.model_copy(
+            auto_research_mail_delivery = auto_research_mail_delivery.model_copy(
                 update={"messages": selected_messages}
             )
-        if isinstance(request, CampaignRunRequest):
-            assert campaign is not None
+        if isinstance(request, AutoResearchRunRequest):
+            assert episode is not None
             try:
-                if campaign_report_ending is not None:
-                    if request.role != "report":
-                        raise ValueError("Only a campaign report may claim the reserved unit.")
-                    _, record = self.store.allocate_campaign_report_task(
-                        task_record,
-                        ending=campaign_report_ending,
-                        error=campaign_report_error,
-                    )
-                    if record.operation_id != task_record.operation_id:
-                        return record
-                elif continuation in {"resume", "retry"}:
-                    record = self.store.create_campaign_recovery_task(task_record)
-                elif campaign_mail_delivery is not None:
-                    record = self.store.create_campaign_message_wake_task(
+                if continuation in {"resume", "retry"}:
+                    record = self.store.create_auto_research_recovery_task(task_record)
+                elif auto_research_mail_delivery is not None:
+                    record = self.store.create_auto_research_message_wake_task(
                         task_record,
                         role=request.role,
-                        recipient_task_id=campaign_mail_delivery.recipient_task_id,
-                        message_ids=campaign_mail_delivery.message_ids,
+                        recipient_task_id=auto_research_mail_delivery.recipient_task_id,
+                        message_ids=auto_research_mail_delivery.message_ids,
                     )
-                elif campaign_wake_admission is not None:
+                elif auto_research_wake_admission is not None:
                     assert request.wake_cause is not None
-                    record = campaign_wake_admission(
+                    record = auto_research_wake_admission(
                         task_record,
                         request.role,
                         request.wake_cause,
                     )
                 else:
-                    record = self.store.create_campaign_agent_task(task_record, role=request.role)
-            except CampaignBudgetExhausted:
-                self._campaign_admission_exhausted(campaign)
+                    record = self.store.create_auto_research_agent_task(
+                        task_record,
+                        role=request.role,
+                    )
+            except EpisodeInvocationCeilingReached:
+                self._auto_research_admission_exhausted(episode)
                 raise
             if record is None:
-                if campaign_wake_admission is None and campaign_mail_delivery is None:
+                if auto_research_wake_admission is None and auto_research_mail_delivery is None:
                     raise RuntimeError(
-                        "campaign admission returned no task outside a watcher or mail wake"
+                        "Auto-research admission returned no task outside a watcher or mail wake"
                     )
                 return None
             if (
                 record.operation_id != task_record.operation_id
-                or record.project_id != campaign.project_id
-                or record.campaign_id != campaign.campaign_id
+                or record.project_id != episode.project_id
+                or record.episode_id != episode.episode_id
             ):
-                raise ValueError("Campaign wake admission returned another task lineage.")
+                raise ValueError("Auto-research wake admission returned another task lineage.")
+        elif isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
+            if request.trigger == "experiment_run" and parent is None:
+                record = self.store.create_experiment_episode_with_invocation(
+                    task_record,
+                    request.watcher_ids,
+                )
+            elif parent is not None and continuation in {
+                "resume",
+                "retry",
+                "handoff",
+                "graph_repair",
+            }:
+                record = self.store.create_experiment_recovery_task(task_record)
+            else:
+                raise ValueError("An Experiment watcher wake must use start_watcher_notification.")
         else:
             record = self.store.create_agent_task(task_record)
         return self._spawn_record(record, request, continuation=continuation, parent=parent)
@@ -1671,20 +1548,22 @@ class BackgroundAgentTasks:
         continuation: AgentTaskContinuation = "fresh",
     ) -> AgentDispatchAuthority | None:
         authority = self.dispatch_authority_resolver(kind, request)
-        if kind == "campaign":
-            if not isinstance(request, CampaignRunRequest):
-                raise TypeError("campaign dispatch requires a CampaignRunRequest")
-            if request.role == "report":
-                if authority is not None:
-                    raise ValueError(
-                        "Authority refused action 'dispatch': a campaign report has no graph "
-                        "authority binding."
-                    )
-                return None
+        if kind == "episode_report":
+            if not isinstance(request, EpisodeReportRunRequest):
+                raise TypeError("episode_report dispatch requires an EpisodeReportRunRequest")
+            if authority is not None:
+                raise ValueError(
+                    "Authority refused action 'dispatch': an episode report has no graph "
+                    "authority binding."
+                )
+            return None
+        if kind == "auto_research":
+            if not isinstance(request, AutoResearchRunRequest):
+                raise TypeError("auto_research dispatch requires an AutoResearchRunRequest")
             if authority is None:
                 raise ValueError(
-                    "Authority refused action 'dispatch': the campaign actor has no authority "
-                    "binding."
+                    "Authority refused action 'dispatch': the Auto-research actor has no "
+                    "authority binding."
                 )
         elif authority is None:
             raise ValueError(
@@ -1693,11 +1572,12 @@ class BackgroundAgentTasks:
         assert authority is not None
         require_dispatch(authority)
 
-        if kind == "campaign":
-            assert isinstance(request, CampaignRunRequest)
+        if kind == "auto_research":
+            assert isinstance(request, AutoResearchRunRequest)
             if operation_id is None:
                 raise ValueError(
-                    "Authority refused action 'dispatch': campaign admission has no operation id."
+                    "Authority refused action 'dispatch': Auto-research admission has no "
+                    "operation id."
                 )
             actor_operation_id = request.actor_operation_id
             if parent is None:
@@ -1707,26 +1587,26 @@ class BackgroundAgentTasks:
                     or request.wake_cause is not None
                 ):
                     raise ValueError(
-                        "Authority refused action 'dispatch': a campaign root must be its sole "
-                        "orchestrator actor."
+                        "Authority refused action 'dispatch': an Auto-research root must be its "
+                        "sole orchestrator actor."
                     )
                 return authority
 
             stored_parent = self.store.agent_task(parent.operation_id)
             if stored_parent is None:
                 raise ValueError(
-                    "Authority refused action 'dispatch': the campaign parent is missing."
+                    "Authority refused action 'dispatch': the Auto-research parent is missing."
                 )
             if (
                 stored_parent.project_id != project_id
-                or stored_parent.kind != "campaign"
-                or stored_parent.campaign_id != request.campaign_id
+                or stored_parent.kind != "auto_research"
+                or stored_parent.episode_id != request.episode_id
             ):
                 raise ValueError(
-                    "Authority refused action 'dispatch': a campaign continuation must preserve "
-                    "its parent project and campaign."
+                    "Authority refused action 'dispatch': an Auto-research continuation must "
+                    "preserve its parent project and episode."
                 )
-            binding = self.store.campaign_actor_binding(parent.operation_id)
+            binding = self.store.auto_research_actor_binding(parent.operation_id)
             if actor_operation_id == operation_id:
                 if (
                     request.role != "worker"
@@ -1740,27 +1620,28 @@ class BackgroundAgentTasks:
                 return authority
             if actor_operation_id != binding.actor_operation_id or request.role != binding.role:
                 raise ValueError(
-                    "Authority refused action 'dispatch': a campaign continuation cannot change "
-                    "its canonical actor or role."
+                    "Authority refused action 'dispatch': an Auto-research continuation cannot "
+                    "change its canonical actor or role."
                 )
             origin = self.store.agent_task(binding.actor_operation_id)
             if origin is None:
                 raise ValueError(
-                    "Authority refused action 'dispatch': the canonical campaign actor is missing."
+                    "Authority refused action 'dispatch': the canonical Auto-research actor is "
+                    "missing."
                 )
             if origin.dispatch_authority is None:
                 if continuation not in {"resume", "retry"}:
                     raise ValueError(
-                        "Authority refused action 'dispatch': the canonical campaign actor has no "
-                        "durable authority binding."
+                        "Authority refused action 'dispatch': the canonical Auto-research actor "
+                        "has no durable authority binding."
                     )
-                # A pre-authority campaign allocation remains recoverable. Its recovery is
+                # A pre-authority Auto-research allocation remains recoverable. Its recovery is
                 # still checked against today's closed profile contract before launch.
                 return authority
             if authority != origin.dispatch_authority:
                 raise ValueError(
-                    "Authority refused action 'dispatch': a campaign continuation cannot change "
-                    "its canonical actor's authority binding."
+                    "Authority refused action 'dispatch': an Auto-research continuation cannot "
+                    "change its canonical actor's authority binding."
                 )
             return origin.dispatch_authority
 
@@ -1798,33 +1679,44 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord:
         operation_id = record.operation_id
         reuses_native_checkpoint = continuation in _NATIVE_CHECKPOINT_CONTINUATIONS
-        self.store.record_agent_task_receipt(
-            operation_id,
-            "operation_created",
-            {
-                "kind": record.kind,
-                "attempt": record.attempt,
-                "has_parent": parent is not None,
-                "continuation_cause": continuation,
-                "resumed": reuses_native_checkpoint,
-            },
+        already_recorded = record.kind == "episode_report" and any(
+            receipt.category == "operation_created"
+            for receipt in self.store.agent_task_receipts(operation_id)
         )
+        if not already_recorded:
+            self.store.record_agent_task_receipt(
+                operation_id,
+                "operation_created",
+                {
+                    "kind": record.kind,
+                    "attempt": record.attempt,
+                    "has_parent": parent is not None,
+                    "continuation_cause": continuation,
+                    "resumed": reuses_native_checkpoint,
+                },
+            )
         if (
             parent
-            and isinstance(request, CampaignRunRequest)
+            and isinstance(request, AutoResearchRunRequest)
             and continuation not in {"resume", "retry", "handoff", "graph_repair"}
         ):
             label = {
-                "fresh": f"Campaign {request.role} turn",
-                "watcher_wake": "Campaign watcher wake",
-                "graph_condition_wake": "Campaign graph-condition wake",
-                "message_wake": "Campaign message wake",
-                "campaign_continuation": "Campaign human-authorized continuation",
+                "fresh": f"Auto-research {request.role} turn",
+                "watcher_wake": "Auto-research watcher wake",
+                "graph_condition_wake": "Auto-research graph-condition wake",
+                "message_wake": "Auto-research message wake",
+                "auto_research_continuation": "Auto-research human-authorized continuation",
             }[continuation]
             self.store.record_agent_task_event(
                 operation_id,
                 f"{label} queued from task {parent.operation_id[:8]}.",
             )
+        elif parent and isinstance(request, EpisodeReportRunRequest):
+            if not already_recorded:
+                self.store.record_agent_task_event(
+                    operation_id,
+                    "Wrapping up visualization and report",
+                )
         elif parent:
             action = (
                 "Repairing the graph update from"
@@ -1928,9 +1820,9 @@ class BackgroundAgentTasks:
             )
         except Exception as exc:  # The persisted task is the API error boundary.
             if (
-                isinstance(request, CampaignRunRequest)
+                isinstance(request, AutoResearchRunRequest)
                 and request.role == "orchestrator"
-                and isinstance(exc, CampaignOrchestratorTerminalFailure)
+                and isinstance(exc, AutoResearchOrchestratorTerminalFailure)
             ):
                 record_structural_failure(
                     self,
@@ -1938,10 +1830,9 @@ class BackgroundAgentTasks:
                     diagnostic=str(exc),
                 )
             elif (
-                isinstance(request, CampaignRunRequest)
-                and request.role in {"orchestrator", "report"}
-                and isinstance(exc, TaskFailed)
-            ):
+                isinstance(request, EpisodeReportRunRequest)
+                or (isinstance(request, AutoResearchRunRequest) and request.role == "orchestrator")
+            ) and isinstance(exc, TaskFailed):
                 self.store.record_agent_task_receipt(
                     operation_id,
                     "provider_terminal_error",
@@ -1964,11 +1855,18 @@ class BackgroundAgentTasks:
                 result["artifacts"] = [item.model_dump(mode="json") for item in artifacts]
             if isinstance(exc, TaskFailed):
                 self._record_bound_experiment_session_limit(record, request, str(exc))
-            self.store.fail_agent_task(
-                operation_id,
-                str(exc),
-                result=result if partial or artifacts else None,
+            current = self.store.agent_task(operation_id)
+            report_already_finalized = (
+                isinstance(request, EpisodeReportRunRequest)
+                and current is not None
+                and current.status in {"succeeded", "failed"}
             )
+            if not report_already_finalized:
+                self.store.fail_agent_task(
+                    operation_id,
+                    str(exc),
+                    result=result if partial or artifacts else None,
+                )
         else:
             # Only ingest runs owe a graph revision. A chat turn answers a
             # question; changing the graph is the exception, not the contract.
@@ -1994,11 +1892,18 @@ class BackgroundAgentTasks:
                     ]
                 if outcome.graph_update is not None:
                     result["graph_update"] = outcome.graph_update.model_dump(mode="json")
-                self.store.complete_agent_task(
-                    operation_id,
-                    applied_revision=outcome.applied_revision,
-                    result=result,
+                current = self.store.agent_task(operation_id)
+                report_already_finalized = (
+                    isinstance(request, EpisodeReportRunRequest)
+                    and current is not None
+                    and current.status in {"succeeded", "failed"}
                 )
+                if not report_already_finalized:
+                    self.store.complete_agent_task(
+                        operation_id,
+                        applied_revision=outcome.applied_revision,
+                        result=result,
+                    )
         finally:
             try:
                 if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
@@ -2036,6 +1941,8 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
+        if isinstance(request, EpisodeReportRunRequest):
+            return
         if self.on_task_settled is not None:
             try:
                 self.on_task_settled(record.project_id, record.kind, request, execution)
@@ -2049,41 +1956,52 @@ class BackgroundAgentTasks:
                         {"exception_type": type(exc).__name__},
                         tier="diagnostic",
                     )
-        if isinstance(request, CampaignRunRequest):
-            campaign = self.store.campaign(request.campaign_id)
-            if campaign is None:
+        if isinstance(request, AutoResearchRunRequest):
+            episode = self.store.episode(request.episode_id)
+            if episode is None:
                 return
-            if campaign.stop_requested_at is not None:
-                campaign = self.store.settle_campaign_stop(campaign.campaign_id)
-            if self.on_campaign_task_settled is None:
+            if episode.stop_requested_at is not None:
+                settled = settle_auto_research_stop(self.store, episode.episode_id)
+                if settled is not None:
+                    episode = settled
+            if self.on_auto_research_task_settled is None:
                 return
             try:
-                self.on_campaign_task_settled(campaign, request, execution)
+                self.on_auto_research_task_settled(episode, request, execution)
             except Exception as exc:
                 with suppress(Exception):
                     self.store.record_agent_task_receipt(
                         execution.operation_id,
-                        "campaign_task_settled_callback_failed",
+                        "auto_research_task_settled_callback_failed",
                         {"exception_type": type(exc).__name__},
                         tier="diagnostic",
                     )
 
-    def _campaign_admission_exhausted(self, campaign: CampaignRecord) -> None:
-        campaign = begin_campaign_wrapup(
+    def _auto_research_admission_exhausted(self, episode: EpisodeRecord) -> None:
+        # Hitting the ceiling refuses the *next* paid invocation.  It must not
+        # revoke authority from an invocation that was already admitted at the
+        # ceiling: that turn may still finish, emit its final patch, or declare
+        # completion.  Normal task settlement performs the terminal
+        # completion/exhaustion choice once all admitted work is quiescent.
+        if not self.store.auto_research_is_quiescent(episode.episode_id):
+            return
+        auto_research_exhaustion_signal(
             self.store,
-            campaign.campaign_id,
-            "exhausted",
+            episode.episode_id,
+            diagnostic="The Auto-research operational invocation ceiling was exhausted.",
         )
-        if campaign.root_operation_id is not None:
+        current = self.store.episode(episode.episode_id)
+        assert current is not None
+        if current.root_operation_id is not None:
             with suppress(Exception):
                 self.store.record_agent_task_event(
-                    campaign.root_operation_id,
-                    "Campaign research budget exhausted; the report unit remains reserved.",
+                    current.root_operation_id,
+                    "Auto-research operational invocation ceiling exhausted.",
                     level="warning",
                 )
-        if self.on_campaign_admission_exhausted is not None:
+        if self.on_auto_research_admission_exhausted is not None:
             with suppress(Exception):
-                self.on_campaign_admission_exhausted(campaign)
+                self.on_auto_research_admission_exhausted(current)
 
     async def _consume(
         self,
@@ -2331,17 +2249,23 @@ class BackgroundAgentTasks:
     def _request_from_record(record: AgentTaskRecord) -> AgentTaskRequest:
         if record.kind == "paper_coach":
             return CoachRequest.model_validate(record.request)
-        if record.kind == "campaign":
-            return CampaignRunRequest.model_validate(record.request)
+        if record.kind == "auto_research":
+            return AutoResearchRunRequest.model_validate(record.request)
+        if record.kind == "episode_report":
+            return EpisodeReportRunRequest.model_validate(record.request)
         return RunRequest.model_validate(record.request)
 
     @staticmethod
     def _validate_request_type(kind: AgentTaskKind, request: AgentTaskRequest) -> None:
         if kind == "paper_coach" and not isinstance(request, CoachRequest):
             raise TypeError("paper_coach requires a CoachRequest")
-        if kind == "campaign" and not isinstance(request, CampaignRunRequest):
-            raise TypeError("campaign requires a CampaignRunRequest")
-        if kind not in {"paper_coach", "campaign"} and not isinstance(request, RunRequest):
+        if kind == "auto_research" and not isinstance(request, AutoResearchRunRequest):
+            raise TypeError("auto_research requires an AutoResearchRunRequest")
+        if kind == "episode_report" and not isinstance(request, EpisodeReportRunRequest):
+            raise TypeError("episode_report requires an EpisodeReportRunRequest")
+        if kind not in {"paper_coach", "auto_research", "episode_report"} and not isinstance(
+            request, RunRequest
+        ):
             raise TypeError(f"{kind} requires a RunRequest")
 
     def _forget_control(self, operation_id: str) -> None:

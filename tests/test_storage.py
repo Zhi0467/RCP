@@ -596,20 +596,32 @@ def _create_experiment_runtime_fixture(
         "control_invocation_ceiling": 3,
         "control_decision_bundle": [],
         "control_completion_criteria": ["Detached work has finished."],
+        "watcher_ids": [],
     }
     now = store.now()
-    store.create_agent_task(
+    owner = store.local_owner
+    assert owner is not None
+    if owner.display_name is None:
+        owner = store.rename_space_user(owner.user_id, "Experiment owner")
+    authorized_by = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
+    )
+    store.create_experiment_episode_with_invocation(
         AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
+            episode_id=episode_id,
             kind="node_chat",
-            status=status,
+            status="queued",
             request=request,
             created_at=now,
             updated_at=now,
-            status_message=status,
-            phase="agent" if status != "succeeded" else "complete",
+            status_message="queued",
+            phase="queued",
             last_activity_at=now,
+            authorized_by=authorized_by,
         )
     )
     store.commit_experiment_episode_turn(
@@ -629,6 +641,14 @@ def _create_experiment_runtime_fixture(
         watcher_ids=[],
         context_baseline={},
     )
+    if status == "running":
+        store.mark_agent_task_running(operation_id)
+    elif status == "succeeded":
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+    elif status == "failed":
+        store.fail_agent_task(operation_id, "fixture failure")
+    else:
+        raise ValueError(f"Unsupported Experiment fixture status: {status}")
     if arm_watcher:
         store.create_watchers(
             [
@@ -671,9 +691,9 @@ _PROJECT_ID_TABLES = (
     "writing_sessions",
     "chat_session_contexts",
     "graph_runs",
+    "episodes",
     "agent_usage",
     "watchers",
-    "experiment_episodes",
 )
 
 
@@ -801,9 +821,9 @@ def _insert_destination_conflict(
         "writing_sessions": "native_session_id",
         "chat_session_contexts": "native_session_id",
         "graph_runs": "operation_id",
+        "episodes": "episode_id",
         "agent_usage": "usage_id",
         "watchers": "watcher_id",
-        "experiment_episodes": "episode_id",
     }
     with store.connection() as connection:
         source = connection.execute(
@@ -1111,11 +1131,11 @@ def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
     all_experiment_selects = store.select_count
 
     assert set(runtimes) == set(control_node_ids)
-    assert one_experiment_selects == all_experiment_selects == 4
+    assert one_experiment_selects == all_experiment_selects == 5
 
     store.select_count = 0
     assert store.active_experiment_control_ids(project_id) == set(control_node_ids)
-    assert store.select_count == 4
+    assert store.select_count == 5
 
 
 def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:
@@ -1539,9 +1559,17 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "writing_sessions": 1,
         "chat_session_contexts": 1,
         "watchers": 0,
-        "experiment_episodes": 0,
+        "experiment_episode_state": 0,
         "result_views": 0,
-        "campaigns": 0,
+        "auto_research_recoveries": 0,
+        "auto_research_messages": 0,
+        "auto_research_invocations": 0,
+        "auto_research_episodes": 0,
+        "episode_reports": 0,
+        "episode_report_attempts": 0,
+        "episode_wrapups": 0,
+        "episode_invocations": 0,
+        "episodes": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
         "graph_run_receipts": 1,
@@ -1625,17 +1653,15 @@ _LEGACY_PROJECT_DATA_TABLES = (
     "chat_session_contexts",
     "result_views",
     "graph_runs",
-    "campaigns",
+    "episodes",
     "agent_usage",
     "watchers",
-    "experiment_episodes",
 )
 
 
 def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: str) -> str:
     _seed_project_identity_rows(store, project_id, label=label)
     operation_id = f"operation-{label}"
-    campaign_id = f"legacy-campaign-{label}"
     created_at = "2026-08-12T01:02:03+00:00"
     user_id = str(uuid.uuid4())
     dispatch_authority_json = json.dumps(
@@ -1676,38 +1702,16 @@ def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: s
         connection.execute(
             """
             UPDATE graph_runs
-            SET campaign_id = ?, dispatch_authority_json = ?,
+            SET dispatch_authority_json = ?,
                 authorized_space_id = ?, authorized_user_id = ?,
                 authorized_display_name = 'Original Authorizer'
             WHERE operation_id = ?
             """,
             (
-                campaign_id,
                 dispatch_authority_json,
                 store.space_id,
                 user_id,
                 operation_id,
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO campaigns (
-                campaign_id, project_id, root_operation_id, status, starting_instruction,
-                invocation_ceiling, invocations_used,
-                authorized_space_id, authorized_user_id, authorized_display_name,
-                ending, created_at, updated_at, ended_at
-            ) VALUES (?, ?, ?, 'ended', 'Legacy campaign', 3, 1, ?, ?,
-                      'Original Authorizer', 'completed', ?, ?, ?)
-            """,
-            (
-                campaign_id,
-                project_id,
-                operation_id,
-                store.space_id,
-                user_id,
-                created_at,
-                created_at,
-                created_at,
             ),
         )
     return operation_id
@@ -2022,14 +2026,14 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
         columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
     assert "graph_runs_active_project" not in indexes
     assert "agent_tasks_active_project" not in indexes
-    assert "graph_runs_campaign" in indexes
+    assert "graph_runs_episode" in indexes
     assert {
-        "campaign_id",
-        "campaign_worker_handoffs_cleared_at",
+        "episode_id",
         "authorized_space_id",
         "authorized_user_id",
         "authorized_display_name",
     } <= columns
+    assert "campaign_worker_handoffs_cleared_at" not in columns
 
 
 def test_agent_task_authorizer_snapshot_round_trips_and_survives_restart(tmp_path) -> None:
@@ -2206,7 +2210,7 @@ def test_agent_task_authorizer_distinguishes_unknown_from_legacy_task(tmp_path) 
         store.agent_task_authorizer("unknown-operation")
 
 
-def test_agent_task_attribution_schema_has_campaign_lineage_without_duplicate_identity_fields(
+def test_agent_task_attribution_schema_has_episode_lineage_without_duplicate_identity_fields(
     tmp_path,
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -2217,7 +2221,7 @@ def test_agent_task_attribution_schema_has_campaign_lineage_without_duplicate_id
         "authorized_space_id",
         "authorized_user_id",
         "authorized_display_name",
-        "campaign_id",
+        "episode_id",
     } <= columns
     assert {
         "orchestrator_profile_id",

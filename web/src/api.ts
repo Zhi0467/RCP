@@ -1,12 +1,14 @@
 import type {
-  Campaign,
-  CampaignMessage,
   ChatAttachmentDescriptor,
+  Episode,
+  EpisodeMessage,
+  EpisodeMode,
+  ExperimentLoopIndexEntry,
   IdentityResponse,
   ProjectCacheMetrics,
   ProjectSnapshot,
   ResultViewDescriptor,
-  StartCampaignRequest,
+  StartEpisodeRequest,
   TeamInvitation,
   TeamInvitationIssue,
 } from "./types";
@@ -208,47 +210,49 @@ export function resultViewPreviewUrl(
   return `/api/projects/${encodeURIComponent(projectId)}/result-views/${encodeURIComponent(view.view_id)}/preview?${version}`;
 }
 
-export function loadCampaigns(apiBase: string): Promise<Campaign[]> {
-  return api<Campaign[]>(`${apiBase}/campaigns`);
+export function loadEpisodes(apiBase: string, mode?: EpisodeMode): Promise<Episode[]> {
+  const query = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+  return api<Episode[]>(`${apiBase}/episodes${query}`);
 }
 
-export function startCampaign(apiBase: string, request: StartCampaignRequest): Promise<Campaign> {
-  return api<Campaign>(`${apiBase}/campaigns`, {
+export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {
+  return api<ExperimentLoopIndexEntry[]>("/api/episodes?mode=experiment_loop");
+}
+
+export function startEpisode(apiBase: string, request: StartEpisodeRequest): Promise<Episode> {
+  return api<Episode>(`${apiBase}/episodes`, {
     method: "POST",
     body: JSON.stringify(request),
   });
 }
 
-export function stopCampaign(apiBase: string, campaignId: string): Promise<Campaign> {
-  return api<Campaign>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/stop`, {
+export function stopEpisode(apiBase: string, episodeId: string): Promise<Episode> {
+  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/stop`, {
     method: "POST",
   });
 }
 
-export function reauthorizeCampaign(
+export function reauthorizeEpisode(
   apiBase: string,
-  campaignId: string,
-  additionalInvocations: number,
-): Promise<Campaign> {
-  return api<Campaign>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/reauthorize`, {
+  episodeId: string,
+  invocationCeiling: number,
+): Promise<Episode> {
+  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/reauthorize`, {
     method: "POST",
-    body: JSON.stringify({ additional_invocations: additionalInvocations }),
+    body: JSON.stringify({ invocation_ceiling: invocationCeiling }),
   });
 }
 
-export function loadCampaignMessages(
-  apiBase: string,
-  campaignId: string,
-): Promise<CampaignMessage[]> {
-  return api<CampaignMessage[]>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/messages`);
+export function loadEpisodeMessages(apiBase: string, episodeId: string): Promise<EpisodeMessage[]> {
+  return api<EpisodeMessage[]>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/messages`);
 }
 
-export function sendCampaignMessage(
+export function sendEpisodeMessage(
   apiBase: string,
-  campaignId: string,
+  episodeId: string,
   body: string,
-): Promise<CampaignMessage> {
-  return api<CampaignMessage>(`${apiBase}/campaigns/${encodeURIComponent(campaignId)}/messages`, {
+): Promise<EpisodeMessage> {
+  return api<EpisodeMessage>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/messages`, {
     method: "POST",
     body: JSON.stringify({ body }),
   });

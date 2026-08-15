@@ -11,6 +11,7 @@ from rcp.core.authority import (
     AgentDispatchScope,
     AgentTaskAuthority,
     require_apply,
+    require_dispatch,
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.validation import validate_patch
@@ -47,7 +48,7 @@ def _task_authority(
     project_id: str = PROJECT_ID,
     profile: str = "ordinary",
     task_contract: str = "scratch_patch",
-    campaign_id: str | None = None,
+    episode_id: str | None = None,
 ) -> AgentTaskAuthority:
     return AgentTaskAuthority(
         operation_id=operation_id,
@@ -58,12 +59,102 @@ def _task_authority(
             task_contract=task_contract,
             scope=AgentDispatchScope(
                 run_truth_scope=["repo-a"],
-                campaign_id=campaign_id,
+                episode_id=episode_id,
                 patch_kind=patch_kind,
             ),
         ),
-        campaign_id=campaign_id,
+        episode_id=episode_id,
     )
+
+
+def _write_persisted_patch(manifest, document: dict[str, object]) -> None:
+    patches_dir = manifest.research_dir / "patches"
+    patches_dir.mkdir(exist_ok=True)
+    (patches_dir / "000001.json").write_text(
+        json.dumps(document),
+        encoding="utf-8",
+    )
+
+
+def test_new_patch_lineage_serializes_only_episode_id_and_rejects_live_campaign_id() -> None:
+    patch = seed_patch().model_copy(
+        update={
+            "revision": 1,
+            "episode_id": "episode-one",
+        }
+    )
+
+    document = json.loads(patch.model_dump_json())
+
+    assert document["episode_id"] == "episode-one"
+    assert "campaign_id" not in document
+    document["campaign_id"] = document.pop("episode_id")
+    with pytest.raises(ValueError, match="campaign_id.*episode_id"):
+        Patch.model_validate(document)
+
+
+def test_orchestrator_dispatch_requires_an_exact_episode_id() -> None:
+    authority = AgentDispatchAuthority(
+        profile="orchestrator",
+        task_contract="orchestrate",
+        scope=AgentDispatchScope(
+            run_truth_scope=["repo-a"],
+            patch_kind="work",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="orchestrate requires an exact episode"):
+        require_dispatch(authority)
+
+
+def test_persisted_legacy_campaign_id_replays_as_episode_id(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.ensure_layout()
+    document = (
+        seed_patch()
+        .model_copy(
+            update={
+                "revision": 1,
+                "episode_id": "episode-one",
+            }
+        )
+        .model_dump(mode="json")
+    )
+    document["campaign_id"] = document.pop("episode_id")
+    _write_persisted_patch(manifest, document)
+
+    loaded = history.load_patches()
+    replayed = history.materialize(write_outputs=False)
+
+    assert loaded[0].episode_id == "episode-one"
+    assert replayed.patches[0].episode_id == "episode-one"
+    assert replayed.state.revision == 1
+    assert replayed.state.replay_status == "complete"
+
+
+def test_persisted_patch_with_both_lineage_keys_is_rejected(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.ensure_layout()
+    document = (
+        seed_patch()
+        .model_copy(
+            update={
+                "revision": 1,
+                "episode_id": "episode-new",
+            }
+        )
+        .model_dump(mode="json")
+    )
+    document["campaign_id"] = "episode-legacy"
+    _write_persisted_patch(manifest, document)
+
+    with pytest.raises(ValueError, match="both campaign_id and episode_id"):
+        history.load_patches()
+    replayed = history.materialize(write_outputs=False)
+
+    assert replayed.state.replay_status == "degraded"
+    assert replayed.state.replay_failure is not None
+    assert replayed.state.replay_failure.code == "patch-schema-invalid"
 
 
 def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
@@ -80,7 +171,7 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
 
     single, _ = history.append(
         _review("rq/learning-after-shift", "accepted", "Accepted the question").model_copy(
-            update={"campaign_id": "agent-campaign"}
+            update={"episode_id": "agent-episode"}
         ),
         authorized_by=authorizer,
     )
@@ -99,7 +190,7 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
     assert single.authorized_by == authorizer
     assert single.profile is None
     assert single.task_id is None
-    assert single.campaign_id is None
+    assert single.episode_id is None
     assert [patch.authorized_by for patch in batch] == [authorizer, authorizer]
     assert result.state.revision == 4
     assert [patch.authorized_by for patch in history.load_patches()[1:]] == [
@@ -172,28 +263,28 @@ def test_agent_candidate_and_append_use_resolved_direct_task_snapshot(manifest) 
     assert candidate.authorized_by == authorizer
     assert candidate.profile == "ordinary"
     assert candidate.task_id == operation_id
-    assert candidate.campaign_id is None
+    assert candidate.episode_id is None
     assert history.load_patches() == []
 
     appended, result = history.append(raw)
     assert appended.authorized_by == authorizer
     assert appended.profile == "ordinary"
     assert appended.task_id == appended.source_operation_id == operation_id
-    assert appended.campaign_id is None
+    assert appended.episode_id is None
     assert result.state.revision == 1
 
 
-def test_campaign_worker_keeps_ordinary_profile_and_campaign_id(manifest) -> None:
+def test_episode_worker_keeps_ordinary_profile_and_episode_id(manifest) -> None:
     authorizer = fabricated_authorizer("Alice")
     operation_id = "worker-operation"
-    campaign_id = "campaign-one"
+    episode_id = "episode-one"
     authority = _task_authority(
         operation_id,
         authorizer,
         patch_kind="work",
         profile="ordinary",
         task_contract="work_auto",
-        campaign_id=campaign_id,
+        episode_id=episode_id,
     )
     history = HistoryManager(
         manifest,
@@ -204,7 +295,7 @@ def test_campaign_worker_keeps_ordinary_profile_and_campaign_id(manifest) -> Non
     raw = Patch(
         kind="work",
         author="agent",
-        summary="Campaign worker result",
+        summary="Episode worker result",
         ops=[],
         run_truth_scope=["repo-a"],
         source_operation_id=operation_id,
@@ -213,24 +304,24 @@ def test_campaign_worker_keeps_ordinary_profile_and_campaign_id(manifest) -> Non
     appended, result = history.append(raw)
 
     assert appended.profile == "ordinary"
-    assert appended.campaign_id == campaign_id
-    assert history.load_patches()[0].campaign_id == campaign_id
+    assert appended.episode_id == episode_id
+    assert history.load_patches()[0].episode_id == episode_id
     summary = build_revision_summaries(history.load_patches(), result)[0]
     assert summary.profile == "ordinary"
-    assert summary.campaign_id == campaign_id
+    assert summary.episode_id == episode_id
 
 
-def test_campaign_orchestrator_patch_keeps_campaign_id(manifest) -> None:
+def test_episode_orchestrator_patch_keeps_episode_id(manifest) -> None:
     authorizer = fabricated_authorizer("Alice")
     operation_id = "orchestrator-operation"
-    campaign_id = "campaign-one"
+    episode_id = "episode-one"
     authority = _task_authority(
         operation_id,
         authorizer,
         patch_kind="work",
         profile="orchestrator",
         task_contract="orchestrate",
-        campaign_id=campaign_id,
+        episode_id=episode_id,
     )
     history = HistoryManager(
         manifest,
@@ -251,10 +342,10 @@ def test_campaign_orchestrator_patch_keeps_campaign_id(manifest) -> None:
     )
 
     assert appended.profile == "orchestrator"
-    assert appended.campaign_id == campaign_id
+    assert appended.episode_id == episode_id
 
 
-def test_orchestrator_without_canonical_campaign_id_is_refused(manifest) -> None:
+def test_orchestrator_without_canonical_episode_id_is_refused(manifest) -> None:
     authorizer = fabricated_authorizer("Alice")
     operation_id = "orchestrator-operation"
     authority = AgentTaskAuthority(
@@ -266,11 +357,11 @@ def test_orchestrator_without_canonical_campaign_id_is_refused(manifest) -> None
             task_contract="orchestrate",
             scope=AgentDispatchScope(
                 run_truth_scope=["repo-a"],
-                campaign_id="campaign-one",
+                episode_id="episode-one",
                 patch_kind="work",
             ),
         ),
-        campaign_id=None,
+        episode_id=None,
     )
     history = HistoryManager(
         manifest,
@@ -287,13 +378,13 @@ def test_orchestrator_without_canonical_campaign_id_is_refused(manifest) -> None
         source_operation_id=operation_id,
     )
 
-    with pytest.raises(ValueError, match="orchestrator.*campaign_id"):
+    with pytest.raises(ValueError, match="orchestrator.*episode_id"):
         history.append(raw)
 
     assert history.load_patches() == []
 
 
-def test_supplied_campaign_id_must_match_canonical_task(manifest) -> None:
+def test_supplied_episode_id_must_match_canonical_task(manifest) -> None:
     authorizer = fabricated_authorizer("Alice")
     operation_id = "worker-operation"
     authority = _task_authority(
@@ -301,7 +392,7 @@ def test_supplied_campaign_id_must_match_canonical_task(manifest) -> None:
         authorizer,
         patch_kind="work",
         task_contract="work_auto",
-        campaign_id="campaign-one",
+        episode_id="episode-one",
     )
     history = HistoryManager(
         manifest,
@@ -312,11 +403,11 @@ def test_supplied_campaign_id_must_match_canonical_task(manifest) -> None:
     raw = Patch(
         kind="work",
         author="agent",
-        summary="Campaign worker result",
+        summary="Episode worker result",
         ops=[],
         run_truth_scope=["repo-a"],
         source_operation_id=operation_id,
-        campaign_id="campaign-other",
+        episode_id="episode-other",
     )
 
     with pytest.raises(ValueError, match="does not match the canonical"):
@@ -426,16 +517,16 @@ def test_identity_claim_stays_system_owned_under_attribution_policy(manifest) ->
     assert stored.authorized_by is None
     assert stored.profile is None
     assert stored.task_id is None
-    assert stored.campaign_id is None
+    assert stored.episode_id is None
 
 
-def test_default_manager_remains_legacy_compatible(manifest) -> None:
+def test_default_manager_remains_attribution_opt_out_compatible(manifest) -> None:
     history = HistoryManager(manifest)
 
     appended, result = history.append(seed_patch())
 
     assert appended.authorized_by is None
-    assert appended.campaign_id is None
+    assert appended.episode_id is None
     assert result.state.revision == 1
 
 
@@ -450,18 +541,18 @@ def test_attribution_policy_does_not_apply_during_legacy_replay(manifest) -> Non
 
     assert state.revision == 1
     assert guarded.load_patches()[0].authorized_by is None
-    assert guarded.load_patches()[0].campaign_id is None
+    assert guarded.load_patches()[0].episode_id is None
 
 
-def test_campaign_id_is_inert_to_validation_and_apply_permission() -> None:
+def test_episode_id_is_inert_to_validation_and_apply_permission() -> None:
     authorizer = fabricated_authorizer("Alice")
     operation_id = "operation-1"
     authority = _task_authority(operation_id, authorizer)
     base = _agent_patch(operation_id).model_copy(update={"revision": 1})
     verdicts: list[str] = []
 
-    for campaign_id in (None, "campaign-one", "garbage-id"):
-        patch = base.model_copy(update={"campaign_id": campaign_id})
+    for episode_id in (None, "episode-one", "garbage-id"):
+        patch = base.model_copy(update={"episode_id": episode_id})
         report = validate_patch(
             GraphState(),
             patch,

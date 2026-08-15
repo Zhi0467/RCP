@@ -83,7 +83,7 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
         stage_command_mailbox(
             local_stage=workspace,
             remote_stage=None,
-            campaign_id="campaign",
+            episode_id="episode",
             task_id="task",
             turn_id="turn",
         )
@@ -130,7 +130,7 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=2,
@@ -149,7 +149,7 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
     handled: list[str] = []
 
     def handler(request, identity):
-        assert identity.campaign_id == "campaign"
+        assert identity.episode_id == "episode"
         assert identity.task_id == "task"
         assert identity.turn_id == "turn"
         handled.append(request.verb)
@@ -249,7 +249,7 @@ async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path)
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id=None,
+        episode_id=None,
         task_id="validator-task",
         turn_id="validator-turn",
         timeout_seconds=2,
@@ -278,7 +278,7 @@ async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path)
 
     assert code == 1
     assert json.loads(output)["status"] == "invalid"
-    assert "campaign-bound credential" in output
+    assert "episode-bound credential" in output
     assert not handled
 
 
@@ -289,7 +289,7 @@ async def test_campaign_broker_signature_cannot_authorize_a_modified_request(tmp
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=2,
@@ -356,7 +356,7 @@ async def test_detached_prior_turn_process_cannot_command_reused_stage(tmp_path)
     first = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="first-task",
         turn_id="first-turn",
         timeout_seconds=2,
@@ -393,7 +393,7 @@ async def test_detached_prior_turn_process_cannot_command_reused_stage(tmp_path)
     second = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="second-task",
         turn_id="second-turn",
         timeout_seconds=2,
@@ -489,7 +489,7 @@ async def test_staged_client_rejects_oversized_patch_before_writing_request(tmp_
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=2,
@@ -513,7 +513,7 @@ async def test_staged_client_rejects_oversized_status_id_before_writing_request(
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=2,
@@ -594,7 +594,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=10,
@@ -665,7 +665,7 @@ async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) ->
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        campaign_id="campaign",
+        episode_id="episode",
         task_id="task",
         turn_id="turn",
         timeout_seconds=2,

@@ -21,7 +21,7 @@ invariants: [1, 2, 3]
 # History says who authorized a change
 
 This base-attribution scenario was confirmed by the human on 2026-08-11.
-Campaign and orchestrator lineage moved to S113 and is deliberately not implied
+Episode and orchestrator lineage moved to S113 and is deliberately not implied
 here.
 
 Canonical history currently records only `"human"` or `"agent"`. A team needs
@@ -33,7 +33,7 @@ request body.
 A human Patch records the authorizing `space_id`, durable `user_id`, and display
 name as it existed when the Patch was appended. An ordinary-agent Patch records
 that same `authorized_by` block, `profile="ordinary"`, and the direct task id.
-It carries no campaign id merely because campaigns may exist later.
+It carries no episode id unless that task is actually bound to an episode.
 
 ## Setup
 
@@ -95,7 +95,7 @@ The change is purely additive. No historical Patch is rewritten and
 `created_by` keeps its existing `"human" | "agent"` meaning. Display-name
 snapshots are immutable even if the current member record is renamed or removed.
 
-Campaign id, parent/worker lineage, and the final immutable receipt schema belong
+Episode id, parent/worker lineage, and the final immutable receipt schema belong
 to S113 after S77 and S78. Current Experiment-loop tasks remain ordinary-agent
 attribution.
 

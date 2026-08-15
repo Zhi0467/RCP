@@ -202,7 +202,7 @@ stays what it always was — the working copy the agent edits in place by resumi
 its own session, which is the property that makes a revision cheap and is not
 changed by this. After a turn, RCP validates the file as before and persists the
 bytes alongside the digest and size it already records. Kept and unkept views are
-then read the same way, and a campaign report already sets this precedent by
+then read the same way, and an episode report sets this precedent by
 storing its HTML the same way under the same size cap.
 
 What this deletes rather than documents: the rollback subsystem, in full. A

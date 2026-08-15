@@ -154,7 +154,7 @@ test("Project history separates revision prose from the complete clickable Agent
     onInspectTask(taskId) {
       inspected.push(taskId);
     },
-    campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
+    episodeReportHref: (episodeId) => `/preview/${episodeId}`,
     onClose() {},
   };
   const html = renderToStaticMarkup(React.createElement(ProjectHistoryDrawer, props));
@@ -187,7 +187,7 @@ test("Project history reports loading without hiding the already-loaded Agent ta
       loading: true,
       error: null,
       onInspectTask() {},
-      campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
+      episodeReportHref: (episodeId) => `/preview/${episodeId}`,
       onClose() {},
     }),
   );
@@ -248,7 +248,7 @@ test("Project history labels system, attributed, and legacy revisions without in
       loading: false,
       error: null,
       onInspectTask() {},
-      campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
+      episodeReportHref: (episodeId) => `/preview/${episodeId}`,
       onClose() {},
     }),
   );
@@ -259,7 +259,7 @@ test("Project history labels system, attributed, and legacy revisions without in
   assert.match(html, /Refresh · Human · Unattributed/);
 });
 
-test("Project history groups campaign envelopes while preserving revision attribution", () => {
+test("Project history groups episode envelopes while preserving revision attribution", () => {
   const authorized = {
     space_id: "123e4567-e89b-42d3-a456-426614174000",
     user_id: "123e4567-e89b-42d3-a456-426614174001",
@@ -278,10 +278,16 @@ test("Project history groups campaign envelopes while preserving revision attrib
       authorized_by: authorized,
       profile: "orchestrator",
       task_id: "task-orchestrator",
-      campaign_id: "campaign-live",
-      campaign: { state: "exhausted", report },
+      episode_id: "episode-live",
+      episode: {
+        mode: "auto_research",
+        status: "needs_action",
+        ending: "exhausted",
+        wrapup_state: "ready",
+        report,
+      },
       created_at: "2026-08-03T08:06:00Z",
-      sentences: ["Coordinated the campaign."],
+      sentences: ["Coordinated the episode."],
     },
     {
       ...latestSummary,
@@ -290,10 +296,10 @@ test("Project history groups campaign envelopes while preserving revision attrib
       authorized_by: authorized,
       profile: "ordinary",
       task_id: "task-missing-new",
-      campaign_id: "campaign-missing",
-      campaign: null,
+      episode_id: "episode-missing",
+      episode: null,
       created_at: "2026-08-03T08:05:00Z",
-      sentences: ["Recorded missing campaign work."],
+      sentences: ["Recorded missing episode work."],
     },
     {
       ...latestSummary,
@@ -305,10 +311,10 @@ test("Project history groups campaign envelopes while preserving revision attrib
       authorized_by: authorized,
       profile: null,
       task_id: null,
-      campaign_id: null,
-      campaign: null,
+      episode_id: null,
+      episode: null,
       created_at: "2026-08-03T08:04:00Z",
-      sentences: ["Approved the campaign proposal."],
+      sentences: ["Approved the episode proposal."],
     },
     {
       ...latestSummary,
@@ -317,8 +323,14 @@ test("Project history groups campaign envelopes while preserving revision attrib
       authorized_by: authorized,
       profile: "ordinary",
       task_id: "task-worker",
-      campaign_id: "campaign-live",
-      campaign: { state: "exhausted", report },
+      episode_id: "episode-live",
+      episode: {
+        mode: "auto_research",
+        status: "needs_action",
+        ending: "exhausted",
+        wrapup_state: "ready",
+        report,
+      },
       created_at: "2026-08-03T08:03:00Z",
       sentences: ["Recorded worker research."],
     },
@@ -329,10 +341,10 @@ test("Project history groups campaign envelopes while preserving revision attrib
       authorized_by: authorized,
       profile: "ordinary",
       task_id: "task-missing-old",
-      campaign_id: "campaign-missing",
-      campaign: null,
+      episode_id: "episode-missing",
+      episode: null,
       created_at: "2026-08-03T08:02:00Z",
-      sentences: ["Recorded earlier missing campaign work."],
+      sentences: ["Recorded earlier missing episode work."],
     },
     {
       ...latestSummary,
@@ -341,8 +353,8 @@ test("Project history groups campaign envelopes while preserving revision attrib
       authorized_by: authorized,
       profile: "ordinary",
       task_id: "task-independent",
-      campaign_id: null,
-      campaign: null,
+      episode_id: null,
+      episode: null,
       created_at: "2026-08-03T08:01:00Z",
       sentences: ["Recorded independent work."],
     },
@@ -355,30 +367,32 @@ test("Project history groups campaign envelopes while preserving revision attrib
       loading: false,
       error: null,
       onInspectTask() {},
-      campaignReportHref: (campaignId, reportId) => `/preview/${campaignId}/${reportId}`,
+      episodeReportHref: (episodeId) => `/preview/${episodeId}`,
       onClose() {},
     }),
   );
 
   assert.equal(html.match(/class="history-campaign-group"/g)?.length, 2);
-  assert.match(html, /Campaign · Exhausted/);
+  assert.match(html, /Auto-research episode · Exhausted/);
   assert.match(html, /Authorized by Ada Researcher/);
   assert.match(html, /2 revisions/);
-  assert.match(html, /Campaign no longer recorded/);
-  // A campaign id may appear in the report link's href, but never as text a
+  assert.match(html, /Episode no longer recorded/);
+  // An episode id may appear in the report link's href, but never as text a
   // human reads: a group identifies itself by state, not by a bare id.
-  assert.doesNotMatch(html.replace(/<[^>]*>/g, " "), /campaign-live|campaign-missing/);
+  assert.doesNotMatch(html.replace(/<[^>]*>/g, " "), /episode-live|episode-missing/);
   assert.match(html, /Orchestrator Agent task · task-orchestrator/);
   assert.match(html, /Ordinary Agent task · task-worker/);
   assert.match(html, /Approval · Ada Researcher/);
   assert.equal(html.match(/Open report/g)?.length, 1);
-  assert.ok(html.indexOf("Campaign · Exhausted") < html.indexOf("Campaign no longer recorded"));
   assert.ok(
-    html.indexOf("Campaign no longer recorded") < html.indexOf("Approved the campaign proposal"),
+    html.indexOf("Auto-research episode · Exhausted") < html.indexOf("Episode no longer recorded"),
   );
   assert.ok(
-    html.indexOf("</section></li>", html.indexOf("Campaign no longer recorded")) <
-      html.indexOf("Approved the campaign proposal"),
+    html.indexOf("Episode no longer recorded") < html.indexOf("Approved the episode proposal"),
+  );
+  assert.ok(
+    html.indexOf("</section></li>", html.indexOf("Episode no longer recorded")) <
+      html.indexOf("Approved the episode proposal"),
   );
 });
 
@@ -395,24 +409,30 @@ test("Project history report control links to the decorated report's preview", (
       summaries: [
         {
           ...latestSummary,
-          campaign_id: "campaign-live",
-          campaign: { state: "completed", report },
+          episode_id: "episode-live",
+          episode: {
+            mode: "experiment_loop",
+            status: "completed",
+            ending: "completed",
+            wrapup_state: "ready",
+            report,
+          },
         },
       ],
       tasks: [],
       loading: false,
       error: null,
       onInspectTask() {},
-      campaignReportHref(campaignId, reportId) {
-        requested.push([campaignId, reportId]);
-        return `/preview/${campaignId}/${reportId}`;
+      episodeReportHref(episodeId) {
+        requested.push(episodeId);
+        return `/preview/${episodeId}`;
       },
       onClose() {},
     }),
   );
 
-  assert.deepEqual(requested, [["campaign-live", "report-final"]]);
-  assert.match(html, /href="\/preview\/campaign-live\/report-final"/);
+  assert.deepEqual(requested, ["episode-live"]);
+  assert.match(html, /href="\/preview\/episode-live"/);
   assert.match(html, /Open report/);
 });
 

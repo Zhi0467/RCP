@@ -8,6 +8,7 @@ from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
     Manifest,
+    load_manifest,
     permissions_for,
     write_agent_settings,
 )
@@ -65,12 +66,34 @@ def test_legacy_manifest_derives_an_independent_orchestrator_from_refresh(manife
     assert "[agent.orchestrator]" not in original
 
 
-def test_legacy_manifest_defaults_campaign_budget_without_writing(manifest) -> None:
+def test_legacy_manifest_defaults_auto_research_ceiling_without_writing(manifest) -> None:
     original = manifest.path.read_bytes()
 
-    assert manifest.agent.default_campaign_invocation_ceiling == 10
+    assert manifest.agent.default_auto_research_invocation_ceiling == 10
     assert manifest.path.read_bytes() == original
     assert b"default_campaign_invocation_ceiling" not in original
+
+
+def test_legacy_manifest_decodes_campaign_ceiling_without_writing(manifest) -> None:
+    original = manifest.path.read_text(encoding="utf-8")
+    legacy = original.replace(
+        "[agent]",
+        "[agent]\ndefault_campaign_invocation_ceiling = 7",
+    )
+    manifest.path.write_text(legacy, encoding="utf-8")
+
+    migrated = load_manifest(manifest.path)
+
+    assert migrated.agent.default_auto_research_invocation_ceiling == 7
+    assert manifest.path.read_text(encoding="utf-8") == legacy
+
+
+def test_manifest_rejects_conflicting_auto_research_ceiling_keys(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["agent"]["default_campaign_invocation_ceiling"] = 8
+
+    with pytest.raises(ValueError, match="conflicts"):
+        Manifest.model_validate(payload)
 
 
 def test_current_five_profile_manifest_without_orchestrator_still_normalizes(manifest) -> None:
@@ -113,17 +136,27 @@ def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> N
     )
     profiles = {name: manifest.agent_profile(name).model_copy(deep=True) for name in names}
     profiles["orchestrator"].model = "orchestrator-model"
+    manifest.path.write_text(
+        manifest.path.read_text(encoding="utf-8").replace(
+            "[agent]",
+            "[agent]\ndefault_campaign_invocation_ceiling = 10",
+        ),
+        encoding="utf-8",
+    )
 
     updated = write_agent_settings(
         manifest,
         list(manifest.agent.default_run_truth_scope),
         profiles,
-        default_campaign_invocation_ceiling=14,
+        default_auto_research_invocation_ceiling=14,
     )
 
     assert updated.agent_profile("orchestrator").model == "orchestrator-model"
-    assert updated.agent.default_campaign_invocation_ceiling == 14
+    assert updated.agent.default_auto_research_invocation_ceiling == 14
     assert "[agent.orchestrator]" in manifest.path.read_text(encoding="utf-8")
+    content = manifest.path.read_text(encoding="utf-8")
+    assert "default_auto_research_invocation_ceiling = 14" in content
+    assert "default_campaign_invocation_ceiling" not in content
 
 
 def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> None:

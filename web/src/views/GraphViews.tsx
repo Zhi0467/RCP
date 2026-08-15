@@ -780,6 +780,7 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
+  episodeReportHref: (episodeId: string) => string;
 }
 
 export function ExecutionView({
@@ -808,6 +809,7 @@ export function ExecutionView({
   onCheckExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
+  episodeReportHref,
 }: ExecutionProps) {
   const selectedDetailRef = useRef<HTMLDivElement>(null);
   const projection = buildRunProjection({
@@ -874,6 +876,7 @@ export function ExecutionView({
                       onCheckExperimentWatcher={onCheckExperimentWatcher}
                       onRecoverExperiment={onRecoverExperiment}
                       onSwitchExperimentProvider={onSwitchExperimentProvider}
+                      episodeReportHref={episodeReportHref}
                       key={`${entry.kind}:${entry.id}`}
                     />
                   ))}
@@ -906,6 +909,7 @@ function RunEntryRow({
   onCheckExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
+  episodeReportHref,
 }: {
   entry: RunEntry;
   selectedExperimentId: string | null;
@@ -926,6 +930,7 @@ function RunEntryRow({
   onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
+  episodeReportHref: (episodeId: string) => string;
 }) {
   if (entry.kind === "task") {
     return (
@@ -1008,6 +1013,7 @@ function RunEntryRow({
             onSwitchProvider={() => {
               if (experiment.currentTask) onSwitchExperimentProvider(experiment.currentTask);
             }}
+            episodeReportHref={episodeReportHref}
           />
         </div>
       )}
@@ -1194,7 +1200,7 @@ function agentTaskName(task: AgentTask): string {
     node_chat: "Node chat",
     project_chat: "Project chat",
     paper_coach: "Writing coach",
-    campaign: "Auto-research campaign",
+    auto_research: "Auto-research",
   }[task.kind];
 }
 

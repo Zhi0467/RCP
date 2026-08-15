@@ -788,6 +788,12 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "debug.mechanical_fault" in contract
     assert "first write the planned attempt" in compact
     assert "update that same not-yet-applied Patch" in compact
+    assert "unexpected process exit (including SIGTERM)" in compact
+    assert "not by itself a graph Blocker, a human-authority pause" in compact
+    assert "Two similar failures do not prove an external cause" in compact
+    assert "launch it and arm a real external observer" in compact
+    assert "exact next action needed to clear it is unavailable" in compact
+    assert "plausibly transient failure is uncertainty, not a Blocker" in compact
     assert "attempts, status, `current_summary`, and `next_action`" in compact
     assert "set `next_action` to null when nothing remains" in compact
     assert "not a substitute for the attempt ledger or Evidence truth" in compact

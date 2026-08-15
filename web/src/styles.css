@@ -7873,7 +7873,7 @@ button.relation-map-node:hover {
   display: grid;
   gap: 12px;
 }
-.agent-campaign-default {
+.agent-auto-research-default {
   align-items: center;
   background: var(--sheet);
   border: 1px solid var(--rule);
@@ -7883,18 +7883,18 @@ button.relation-map-node:hover {
   margin-bottom: 12px;
   padding: 11px 13px;
 }
-.agent-campaign-default > span {
+.agent-auto-research-default > span {
   color: var(--ink);
   font-size: 10px;
   font-weight: 700;
 }
-.agent-campaign-default small {
+.agent-auto-research-default small {
   color: var(--muted);
   display: block;
   font: 500 8px var(--sans);
   margin-top: 3px;
 }
-.agent-campaign-default input {
+.agent-auto-research-default input {
   background: var(--paper);
   border: 1px solid var(--line-strong);
   border-radius: 4px;
@@ -8286,7 +8286,7 @@ button.relation-map-node:hover {
   justify-content: space-between;
   padding: 18px 20px;
 }
-.agent-defaults-heading .agent-campaign-default {
+.agent-defaults-heading .agent-auto-research-default {
   background: transparent;
   border: 0;
   margin: 0;
@@ -9779,7 +9779,7 @@ button.relation-map-node:hover {
 .campaign-run.starting,
 .campaign-run.active,
 .campaign-run.recovering,
-.campaign-run.writing_report {
+.campaign-run.wrapping_up {
   --campaign-tone: var(--teal);
 }
 .campaign-run.needs_action,
@@ -9874,7 +9874,7 @@ button.relation-map-node:hover {
 }
 .campaign-run .status-pill.starting,
 .campaign-run .status-pill.recovering,
-.campaign-run .status-pill.writing_report,
+.campaign-run .status-pill.wrapping_up,
 .campaign-run .status-pill.completed {
   background: var(--green-soft);
   color: var(--green);
@@ -9922,21 +9922,6 @@ button.relation-map-node:hover {
   bottom: 0;
   left: 0;
   position: absolute;
-  top: 0;
-}
-.campaign-budget-reserved {
-  background: repeating-linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--mustard) 55%, transparent) 0,
-    color-mix(in srgb, var(--mustard) 55%, transparent) 2px,
-    var(--sheet) 2px,
-    var(--sheet) 4px
-  );
-  border-left: 1px solid var(--mustard);
-  bottom: 0;
-  min-width: 3px;
-  position: absolute;
-  right: 0;
   top: 0;
 }
 .campaign-run-time {
