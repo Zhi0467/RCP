@@ -436,7 +436,12 @@ class ProjectSetupManager:
             agent_readiness=agent_readiness,
         )
 
-    def create(self, request: ProjectSetupRequest) -> dict[str, object]:
+    def create(
+        self,
+        request: ProjectSetupRequest,
+        *,
+        seat_member: str | None = None,
+    ) -> dict[str, object]:
         if not request.confirmed:
             raise ValueError("project creation requires final human confirmation")
         preview = self.preflight(request)
@@ -487,6 +492,7 @@ class ProjectSetupManager:
             record = self.catalog.register_degraded_read_only(
                 locator,
                 materialization=retained.materialization,
+                seat_member=seat_member,
             )
             return self.catalog.card(record.project_id)
 
@@ -499,6 +505,7 @@ class ProjectSetupManager:
                     if preview.action == "create" or selected_action == "archive_and_create"
                     else "adopted"
                 ),
+                seat_member=seat_member,
             )
             _, snapshot = self.catalog.open_snapshot(record.project_id)
             self.catalog.update_summary(record.project_id, snapshot)

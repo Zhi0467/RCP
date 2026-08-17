@@ -234,7 +234,10 @@ def _binding_diagnostic(
 ) -> str | None:
     if continuation is None:
         return "Episode report generation cannot find its exact continuation task."
-    if continuation.project_id != episode.project_id or continuation.episode_id != episode.episode_id:
+    if (
+        continuation.project_id != episode.project_id
+        or continuation.episode_id != episode.episode_id
+    ):
         return "Episode report generation cannot prove its continuation task lineage."
     if continuation.visible is False or continuation.kind == "episode_report":
         return "Episode report generation cannot continue from an internal task."

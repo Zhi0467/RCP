@@ -4,6 +4,7 @@ import hmac
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
+from typing import Literal
 
 from rcp.limits import (
     TEAM_CODE_FAILED_ATTEMPT_LIMIT,
@@ -40,6 +41,8 @@ from rcp.storage.models import (  # noqa: F401
     GraphCondition,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
+    ProjectInvitationRecord,
+    ProjectMemberRecord,
     ProjectRecord,
     ProjectStageRecord,
     ProposalResolvedGraphCondition,
@@ -133,6 +136,222 @@ class SpaceStoreMixin:
         if len(users) != 1 or users[0].identity_kind != "local_owner":
             raise RuntimeError("A personal RCP space must contain exactly one local owner.")
         return users[0]
+
+    def seat_project_member(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        seated_by: str | None = None,
+    ) -> ProjectMemberRecord:
+        """Seat one person on one project, idempotently.
+
+        Binds the durable ``user_id``. A display name is deliberately not
+        required: a person exists before they have chosen one, and creating a
+        project must keep working without one.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM space_users WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(f"Unknown RCP space user {user_id}.")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO project_members (project_id, user_id, seated_at, seated_by)
+                VALUES (?, ?, ?, ?)
+                """,
+                (project_id, user_id, now, seated_by),
+            )
+            row = connection.execute(
+                "SELECT * FROM project_members WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+        assert row is not None
+        return ProjectMemberRecord.model_validate(dict(row))
+
+    def project_members(self, project_id: str) -> list[ProjectMemberRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_members
+                WHERE project_id = ?
+                ORDER BY seated_at, user_id
+                """,
+                (project_id,),
+            ).fetchall()
+        return [ProjectMemberRecord.model_validate(dict(row)) for row in rows]
+
+    def is_project_member(self, project_id: str, user_id: str) -> bool:
+        with self.connection() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+                    (project_id, user_id),
+                ).fetchone()
+                is not None
+            )
+
+    def member_project_ids(self, user_id: str) -> set[str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT project_id FROM project_members WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        return {row["project_id"] for row in rows}
+
+    def invite_to_project(
+        self,
+        project_id: str,
+        invited_user_id: str,
+        *,
+        invited_by: str,
+    ) -> ProjectInvitationRecord:
+        """Invite one existing space member to one project.
+
+        Any member may invite; there is no approval chain and no rank. The
+        invitee must already be enrolled in the space, because a project
+        invitation grants no credential and cannot be used to join the space.
+        """
+
+        now = self.now()
+        invitation_id = str(uuid.uuid4())
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for user_id, label in ((invited_by, "inviter"), (invited_user_id, "invitee")):
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM space_users WHERE user_id = ?", (user_id,)
+                    ).fetchone()
+                    is None
+                ):
+                    raise KeyError(f"The {label} is not a member of this RCP space.")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+                    (project_id, invited_by),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("Only a project member may invite someone to it.")
+            if (
+                connection.execute(
+                    "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+                    (project_id, invited_user_id),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("That person is already a member of this project.")
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO project_invitations (
+                        invitation_id, project_id, invited_user_id, invited_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (invitation_id, project_id, invited_user_id, invited_by, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("That person already has a pending invitation.") from exc
+        return ProjectInvitationRecord(
+            invitation_id=invitation_id,
+            project_id=project_id,
+            invited_user_id=invited_user_id,
+            invited_by=invited_by,
+            created_at=now,
+        )
+
+    def pending_project_invitations(self, invited_user_id: str) -> list[ProjectInvitationRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_invitations
+                WHERE invited_user_id = ? AND response IS NULL
+                ORDER BY created_at DESC, invitation_id
+                """,
+                (invited_user_id,),
+            ).fetchall()
+        return [ProjectInvitationRecord.model_validate(dict(row)) for row in rows]
+
+    def answer_project_invitation(
+        self,
+        invitation_id: str,
+        *,
+        invited_user_id: str,
+        response: Literal["accepted", "declined"],
+    ) -> ProjectInvitationRecord:
+        """Accept or decline. Declining leaves no membership and no residue."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM project_invitations WHERE invitation_id = ?",
+                (invitation_id,),
+            ).fetchone()
+            # An invitation addressed to somebody else is answered exactly as a
+            # missing one, so nobody learns that it exists.
+            if row is None or row["invited_user_id"] != invited_user_id:
+                raise KeyError(invitation_id)
+            if row["response"] is not None:
+                raise ValueError("That invitation was already answered.")
+            connection.execute(
+                "UPDATE project_invitations SET response = ?, responded_at = ? "
+                "WHERE invitation_id = ?",
+                (response, now, invitation_id),
+            )
+            if response == "accepted":
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO project_members (
+                        project_id, user_id, seated_at, seated_by
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (row["project_id"], invited_user_id, now, row["invited_by"]),
+                )
+            updated = connection.execute(
+                "SELECT * FROM project_invitations WHERE invitation_id = ?",
+                (invitation_id,),
+            ).fetchone()
+        return ProjectInvitationRecord.model_validate(dict(updated))
+
+    def leave_project(self, project_id: str, user_id: str) -> None:
+        """Give up your own membership of one project.
+
+        The last member cannot leave: a memberless project would be invisible to
+        everyone, and there is no administrator rank able to recover it. Invite
+        somebody first, or delete the project.
+        """
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            members = connection.execute(
+                "SELECT user_id FROM project_members WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+            member_ids = {row["user_id"] for row in members}
+            if user_id not in member_ids:
+                raise KeyError(f"{user_id} is not a member of {project_id}.")
+            if len(member_ids) == 1:
+                raise ValueError(
+                    "You are the only member of this project. Invite someone else "
+                    "before leaving, or delete the project."
+                )
+            connection.execute(
+                "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            )
+            # A pending invitation is not a claim on the project.
+            connection.execute(
+                "DELETE FROM project_invitations "
+                "WHERE project_id = ? AND invited_user_id = ? AND response IS NULL",
+                (project_id, user_id),
+            )
 
     def rename_space(self, name: str) -> str:
         normalized = normalize_space_name(name)
@@ -242,6 +461,24 @@ class SpaceStoreMixin:
                         f"UPDATE {table} SET consumed_at = ?, consumed_by = ? "  # noqa: S608
                         f"WHERE {id_column} = ?",
                         (now, member.user_id, code_id),
+                    )
+                    # A project the server opened before anyone enrolled has no
+                    # members, so it is invisible to everybody and nobody can
+                    # invite themselves to it. Whoever enrols claims it; once a
+                    # project has any member, invitations govern it instead.
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO project_members (
+                            project_id, user_id, seated_at, seated_by
+                        )
+                        SELECT projects.project_id, ?, ?, NULL
+                        FROM projects
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM project_members
+                            WHERE project_members.project_id = projects.project_id
+                        )
+                        """,
+                        (member.user_id, now),
                     )
         if error is not None:
             raise error

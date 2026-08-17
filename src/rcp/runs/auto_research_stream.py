@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ from rcp.agents.command_protocol import CommandRequest, CommandResponse, Validat
 from rcp.agents.prompts import PromptFactory
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
-from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
 from rcp.providers import classify_terminal_error
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
@@ -41,6 +42,12 @@ from rcp.runs.auto_research import (
     AutoResearchCommandEffectResult,
     AutoResearchCommandInvalid,
     AutoResearchRunRequest,
+)
+from rcp.runs.auto_research_lifecycle import (
+    AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
+    auto_research_lifecycle_delivery,
+    parse_auto_research_lifecycle_delivery,
+    stage_auto_research_lifecycle_delivery,
 )
 from rcp.runs.auto_research_mail import (
     AUTO_RESEARCH_MAIL_HANDOFF_FILE,
@@ -106,7 +113,7 @@ _WORKER_CONTINUATIONS = frozenset(
         "auto_research_continuation",
     }
 )
-_ORCHESTRATOR_CONTINUATIONS = _WORKER_CONTINUATIONS
+_ORCHESTRATOR_CONTINUATIONS = _WORKER_CONTINUATIONS | {"lifecycle_wake"}
 
 
 @dataclass(frozen=True)
@@ -141,6 +148,7 @@ class _WorkerStage:
 class _PatchSettlement:
     graph_update: GraphUpdateResult | None
     frames: tuple[str, ...] = ()
+    had_patch: bool = False
 
 
 async def stream_auto_research_orchestrator_run(
@@ -161,10 +169,24 @@ async def stream_auto_research_orchestrator_run(
                 "auto_research orchestrator stream and command dispatcher must share one store"
             )
         stage = _open_orchestrator_stage(service, data_dir, execution, turn)
+        command_files = RunStageMailbox.for_stage(
+            local_stage=stage.local,
+            remote_stage=stage.remote,
+        )
+        command_dispatcher = command_dispatcher.with_command_files(
+            reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
+            consumer=command_files.remove_if_sha256,
+            refresher=lambda: _refreshed_orchestrator_state_paths(
+                service,
+                turn.request,
+                stage,
+            ),
+        )
         context = _auto_research_context(service, turn.request, stage)
         _prepare_orchestrator_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
+        lifecycle_path = _stage_claimed_lifecycle(execution, turn, stage)
         token = _task_token(execution)
         schema = (
             json.dumps(
@@ -226,6 +248,7 @@ async def stream_auto_research_orchestrator_run(
                 validator_command=validator_command,
                 command_client=staged_commands.client_command(),
                 messages_path=messages_path,
+                lifecycle_path=lifecycle_path,
                 skill_pointers=orchestrator_skill_pointers,
             )
             read_dirs = _chat_read_dirs(
@@ -342,16 +365,55 @@ async def stream_auto_research_orchestrator_run(
         )
         for frame in settlement.frames:
             yield frame
+        graph_updates = _ordered_orchestrator_graph_updates(execution)
         graph_update = settlement.graph_update
-        if graph_update is None:
+        if graph_update is not None and (settlement.had_patch or not graph_updates):
+            graph_updates.append(graph_update)
+        if not graph_updates:
             return
-        payload: dict[str, object] = {"graph_update": graph_update.model_dump(mode="json")}
-        if graph_update.applied_revision is not None:
-            payload["applied_revision"] = graph_update.applied_revision
+        graph_update = graph_updates[-1]
+        payload: dict[str, object] = {
+            "graph_update": graph_update.model_dump(mode="json"),
+            "graph_updates": [item.model_dump(mode="json") for item in graph_updates],
+        }
+        latest_applied_revision = next(
+            (
+                item.applied_revision
+                for item in reversed(graph_updates)
+                if item.applied_revision is not None
+            ),
+            None,
+        )
+        if latest_applied_revision is not None:
+            payload["applied_revision"] = latest_applied_revision
         yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
         yield _sse(AgentEvent(event="done"))
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
+
+
+def _ordered_orchestrator_graph_updates(
+    execution: AgentTaskExecution,
+) -> list[GraphUpdateResult]:
+    """Rebuild this turn's in-turn Apply history from its durable commit ledger."""
+
+    graph_updates: list[GraphUpdateResult] = []
+    for record in execution.store.auto_research_apply_results(execution.operation_id):
+        effect_result = record.result.get("result")
+        if not isinstance(effect_result, dict):
+            continue
+        raw_graph_update = effect_result.get("graph_update")
+        if raw_graph_update is None:
+            continue
+        try:
+            graph_updates.append(GraphUpdateResult.model_validate(raw_graph_update))
+        except (TypeError, ValueError):
+            execution.store.record_agent_task_event(
+                execution.operation_id,
+                f"Ignored an invalid durable Apply result: {record.apply_id}.",
+                level="warning",
+            )
+    return graph_updates
 
 
 async def stream_auto_research_worker_run(
@@ -1000,6 +1062,15 @@ def _auto_research_context(
     return context
 
 
+def _refreshed_orchestrator_state_paths(
+    service: ProjectService,
+    request: AutoResearchRunRequest,
+    stage: _WorkerStage,
+) -> tuple[int, str, str]:
+    context = _auto_research_context(service, request, stage)
+    return context.graph_revision, context.graph_path, context.research_md_path
+
+
 def _claimed_messages(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
@@ -1026,7 +1097,12 @@ def _prepare_worker_handoffs(
         _HANDOFFS_CLEARED_RECEIPT,
         {
             "version": 1,
-            "files": ["patch.json", "watch.json", AUTO_RESEARCH_MAIL_HANDOFF_FILE],
+            "files": [
+                "patch.json",
+                "watch.json",
+                AUTO_RESEARCH_MAIL_HANDOFF_FILE,
+                AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
+            ],
         },
     )
 
@@ -1046,7 +1122,12 @@ def _prepare_orchestrator_handoffs(
         _HANDOFFS_CLEARED_RECEIPT,
         {
             "version": 1,
-            "files": ["patch.json", "watch.json", AUTO_RESEARCH_MAIL_HANDOFF_FILE],
+            "files": [
+                "patch.json",
+                "watch.json",
+                AUTO_RESEARCH_MAIL_HANDOFF_FILE,
+                AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
+            ],
         },
     )
 
@@ -1088,6 +1169,47 @@ def _stage_claimed_mail(
     return None
 
 
+def _stage_claimed_lifecycle(
+    execution: AgentTaskExecution,
+    turn: _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> str | None:
+    notices = execution.store.auto_research_lifecycle_delivery(turn.allocation_operation_id)
+    mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
+    if notices:
+        if turn.binding.role != "orchestrator":
+            raise ValueError("Lifecycle notices may wake only the Auto-research orchestrator.")
+        delivery = auto_research_lifecycle_delivery(
+            episode_id=turn.request.episode_id,
+            recipient_task_id=turn.binding.actor_operation_id,
+            delivery_operation_id=turn.allocation_operation_id,
+            notices=notices,
+        )
+        if (
+            turn.recovering_allocation
+            and AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE in mailbox.entry_names()
+        ):
+            retained = parse_auto_research_lifecycle_delivery(
+                mailbox.read_text(
+                    AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
+                    max_bytes=AUTO_RESEARCH_LIFECYCLE_MAX_BYTES,
+                )
+            )
+            if retained != delivery:
+                raise ValueError(
+                    "Retained Auto-research lifecycle input differs from its durable claim."
+                )
+        else:
+            stage_auto_research_lifecycle_delivery(mailbox, delivery)
+        return str(stage.workspace / AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE)
+    mailbox.remove(AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE)
+    if turn.request.wake_cause == "lifecycle":
+        raise ValueError(
+            "AutoResearch lifecycle wake has no lifecycle facts claimed by this paid allocation."
+        )
+    return None
+
+
 def _worker_reply_key(turn: _CanonicalWorkerTurn) -> str:
     digest = hashlib.sha256(
         (
@@ -1113,6 +1235,7 @@ def _orchestrator_prompt(
     validator_command: str,
     command_client: str,
     messages_path: str | None,
+    lifecycle_path: str | None,
     skill_pointers: list[dict[str, object]],
 ) -> tuple[str, str]:
     repositories = [
@@ -1147,6 +1270,7 @@ def _orchestrator_prompt(
             command_client=command_client,
             instruction_path=instruction_path,
             messages_path=messages_path,
+            lifecycle_path=lifecycle_path,
             skill_pointers=skill_pointers,
         )
         role = (
@@ -1186,6 +1310,7 @@ def _orchestrator_prompt(
             validator_command=validator_command,
             command_client=command_client,
             messages_path=messages_path,
+            lifecycle_path=lifecycle_path,
             retry_diagnostics_path=retry_diagnostics_path,
             skill_pointers=skill_pointers,
         )
@@ -1383,6 +1508,11 @@ class _ValidateOnlyAutoResearchCommandDispatcher(AutoResearchCommandDispatcher):
         planned_worker_id: str | None,
         planned_message_id: str | None,
         planned_watcher_id: str | None,
+        planned_apply_id: str | None,
+        planned_resume_operation_id: str | None,
+        planned_episode_effect_id: str | None,
+        planned_inbox_effect_id: str | None,
+        planned_finish_effect_id: str | None,
     ) -> AutoResearchCommandEffectResult:
         if not isinstance(request, ValidateCommandRequest):
             raise AutoResearchCommandInvalid(
@@ -1394,6 +1524,11 @@ class _ValidateOnlyAutoResearchCommandDispatcher(AutoResearchCommandDispatcher):
             planned_worker_id=planned_worker_id,
             planned_message_id=planned_message_id,
             planned_watcher_id=planned_watcher_id,
+            planned_apply_id=planned_apply_id,
+            planned_resume_operation_id=planned_resume_operation_id,
+            planned_episode_effect_id=planned_episode_effect_id,
+            planned_inbox_effect_id=planned_inbox_effect_id,
+            planned_finish_effect_id=planned_finish_effect_id,
         )
 
 
@@ -1542,6 +1677,7 @@ async def _settle_worker_patch(
         current_text=patch_text,
     ):
         patch_text = None
+    had_patch = patch_text is not None or failure is not None
     if patch_text is None and failure is None:
         return _PatchSettlement(GraphUpdateResult(status="none"))
 
@@ -1549,6 +1685,15 @@ async def _settle_worker_patch(
     correction_frames: list[str] = []
     while True:
         if patch_text is not None:
+            source_effect_id: str | None = None
+            recovered_apply = False
+            patch_digest = hashlib.sha256(patch_text.encode("utf-8")).hexdigest()
+            if _profile == "orchestrator":
+                source_effect_id, recovered_apply = _orchestrator_final_source_effect_id(
+                    service,
+                    execution,
+                    patch_digest=patch_digest,
+                )
             try:
                 result, failure = _apply_work_patch(
                     service,
@@ -1558,7 +1703,19 @@ async def _settle_worker_patch(
                     or service.manifest.agent.default_run_truth_scope,
                     patch_kind="work",
                     profile=_profile,
+                    source_effect_id=source_effect_id,
                 )
+                if result is not None and recovered_apply:
+                    consumer = command_dispatcher.command_file_consumer
+                    if consumer is None:
+                        raise ValueError(
+                            "The retained in-turn Apply Patch could not be consumed during "
+                            "final settlement."
+                        )
+                    if not consumer("patch.json", patch_digest):
+                        raise ValueError(
+                            "The retained in-turn Apply Patch changed before final settlement."
+                        )
             except RunLockCancelled:
                 correction_frames.append(
                     _sse(
@@ -1572,11 +1729,12 @@ async def _settle_worker_patch(
                         )
                     )
                 )
-                return _PatchSettlement(None, tuple(correction_frames))
+                return _PatchSettlement(None, tuple(correction_frames), had_patch=had_patch)
             if result is not None:
                 return _PatchSettlement(
                     result.model_copy(update={"correction_rounds": correction_rounds}),
                     tuple(correction_frames),
+                    had_patch=had_patch,
                 )
         assert failure is not None
         if (
@@ -1593,7 +1751,7 @@ async def _settle_worker_patch(
                 repairable=False,
             )
             _record_work_graph_rejection(execution, rejected)
-            return _PatchSettlement(rejected, tuple(correction_frames))
+            return _PatchSettlement(rejected, tuple(correction_frames), had_patch=had_patch)
 
         correction_rounds += 1
         execution.store.record_agent_task_receipt(
@@ -1711,7 +1869,7 @@ async def _settle_worker_patch(
                     else:
                         correction_frames.append(frame)
         if correction_outcome.paused:
-            return _PatchSettlement(None, tuple(correction_frames))
+            return _PatchSettlement(None, tuple(correction_frames), had_patch=had_patch)
         if (
             correction_error is not None
             or correction_outcome.failed
@@ -1763,6 +1921,44 @@ async def _settle_worker_patch(
         else:
             assert corrected.text is not None
             patch_text = corrected.text
+
+
+def _orchestrator_final_source_effect_id(
+    service: ProjectService,
+    execution: AgentTaskExecution,
+    *,
+    patch_digest: str,
+) -> tuple[str, bool]:
+    """Reuse an in-turn Apply commit when its exact handoff survives to settlement."""
+
+    matches = [
+        patch
+        for patch in service.history.load_patches()
+        if patch.admission == "accepted"
+        and patch.kind == "work"
+        and patch.source_operation_id == execution.operation_id
+        and patch.source_effect_sha256 == patch_digest
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            "The retained orchestrator Patch matches multiple canonical in-turn Apply commits."
+        )
+    if matches:
+        source_effect_id = matches[0].source_effect_id
+        if source_effect_id is None:
+            raise ValueError(
+                "The retained orchestrator Patch matches a canonical commit without an effect id."
+            )
+        return source_effect_id, True
+    return (
+        str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "rcp:auto-research-final-apply:" + execution.operation_id,
+            )
+        ),
+        False,
+    )
 
 
 async def _settle_orchestrator_patch(

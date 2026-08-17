@@ -191,7 +191,7 @@ it but a browser or a machine we do not have.
 | [S37](S37-desktop-text-scale.md) | Text stays readable throughout the desktop app | implemented | **desktop** | covered + driven 2026-07-31 |
 | [S38](S38-chat-workspace.md) | Keep the node in view while its conversation continues | implemented | **browser** | covered + driven 2026-08-01 |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + **browser** | 10 checks |
-| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | report wrap-up revision pending |
+| [S41](S41-bounded-experiment-control.md) | Run an experiment through a bounded control loop | pending | pytest + **browser** | built and test-covered; reopened for the wrap-up revision, undriven |
 | [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | implemented | pytest + **browser** | covered + driven 2026-08-05 |
 | [S45](S45-floating-window-dock.md) | Dock a floating node window without closing it | implemented | **browser** | driven 2026-08-02 |
 | [S46](S46-project-header-and-chat-split.md) | Fold the project utilities and resize the Chats split | implemented | **browser** | driven 2026-08-02 |
@@ -240,12 +240,12 @@ it but a browser or a machine we do not have.
 | [S93](S93-one-hop-relation-map.md) | Read a node's immediate structure without leaving it | implemented | **browser** | tests + browser 2026-08-08 |
 | [S94](S94-decision-ripeness-and-the-agent-contract.md) | Ordinary agents queue Decisions; they do not decide them | implemented | pytest | covered |
 | [S95](S95-durable-team-space.md) | A team space outlives every process that serves it | pending — **not human-confirmed** | pytest + api | none |
-| [S96](S96-joining-a-team-space.md) | Join a team space once, and stay joined | pending — **not human-confirmed** | pytest + api | none |
+| [S96](S96-joining-a-team-space.md) | Join a team space once, and stay joined | implemented | pytest + api + **browser** | tests 2026-08-15; served login drive outstanding |
 | [S97](S97-a-project-carries-its-identity.md) | A project says who it is and where it belongs | implemented | pytest + **browser** | tests + browser 2026-08-11 |
 | [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project over to the lab, once | pending — **not human-confirmed** | pytest + **browser** | none |
 | [S99](S99-attribution-travels-with-history.md) | History says who authorized a change | implemented | pytest + **browser** | tests + browser 2026-08-11 |
 | [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts, and nothing unauthorized lands | implemented | pytest | dispatch authority + live Apply movement |
-| [S101](S101-project-membership-and-invitations.md) | Being in the lab is not being on the project | pending — **not human-confirmed** | pytest + **browser** | none |
+| [S101](S101-project-membership.md) | Being in the lab is not being on the project | implemented | pytest + **browser** | `tests/test_project_membership.py`; browser 2026-08-15 |
 | [S102](S102-team-runs-execute-as-the-space-account.md) | Team work runs where the space can reach it, as the space | pending — **not human-confirmed** | pytest + api + ssh | none |
 | [S103](S103-server-operations-are-console-operations.md) | Dangerous operations need the machine, not a login | pending — **not human-confirmed** | pytest + api | none |
 | [S104](S104-backups-never-pause-work.md) | A backup interrupts nothing and overclaims nothing | pending — **not human-confirmed** | pytest | none |
@@ -257,19 +257,26 @@ it but a browser or a machine we do not have.
 | [S110](S110-paper-draft-survives-a-canonical-change.md) | A paper draft survives a canonical change without choosing a side | implemented | pytest + **browser** | paper/storage + Incoming UI checks |
 | [S111](S111-durable-space-identity.md) | A space keeps one identity across process and path changes | implemented | pytest + api | tests + api 2026-08-11 |
 | [S112](S112-basic-human-identity.md) | A person has one durable identity inside a space | implemented | pytest + api + **browser** | tests + api + landing browser 2026-08-12 |
-| [S113](S113-campaign-attribution.md) | Episode work retains its authorization lineage | pending | pytest + **browser** | none |
-| [S114](S114-see-your-results-without-leaving.md) | See your results without leaving RCP | pending | pytest + **browser** + ssh | none |
+| [S113](S113-campaign-attribution.md) | Episode work retains its authorization lineage | implemented | pytest + **browser** | tests 2026-08-15; History drawer drive outstanding |
+| [S114](S114-see-your-results-without-leaving.md) | See your results without leaving RCP | implemented | pytest + **browser** + ssh | tests 2026-08-15; Runs frame and SSH drive outstanding |
 | [S115](S115-beliefs-change-only-through-you.md) | An agent may rewrite anything except what you believe | implemented | pytest + **browser** | focused tests + Inbox drive 2026-08-12 |
 | [S116](S116-choose-existing-or-fresh-research.md) | Choose existing research or start fresh before setup changes anything | implemented | pytest + **browser** + ssh | setup, transport, history, browser + live SSH 2026-08-12 |
 | [S117](S117-project-owned-caches.md) | Clear one project's cache without clearing another project's cache | implemented | pytest + **browser** | cache lifecycle, deletion, API, web, browser 2026-08-12 |
 | [S118](S118-identity-and-membership-start-at-the-index.md) | Put personal identity and an explicit team seam on the project index | implemented | pytest + **browser** | tests + browser 2026-08-12 |
 | [S119](S119-stale-processes-cannot-command-the-next-turn.md) | A stale process cannot command the next campaign turn | implemented | pytest + ssh | tests + live SSH 2026-08-12 |
-| [S120](S120-episodes-wrap-up-with-a-visual-report.md) | Episodes wrap up with a visual report | implemented | pytest + **browser** | covered + driven 2026-08-14 |
+| [S120](S120-episodes-wrap-up-with-a-visual-report.md) | Episodes wrap up with a visual report | implemented | pytest + **browser** + **desktop** | covered; browser driven 2026-08-14; native route covered 2026-08-16, desktop re-drive outstanding |
+| [S121](S121-a-refusal-explains-itself.md) | A refusal explains itself, and says what it did not undo | pending | pytest + **browser** | none — confirmed 2026-08-15, not yet built |
+| [S122](S122-project-invitations.md) | Someone puts you on the project, and you can leave it | implemented | pytest + **browser** | `tests/test_project_invitations.py`; api + browser 2026-08-15 |
+| [S123](S123-auto-research-orchestrates-in-one-turn.md) | Auto-research repairs, reflects, and launches an Experiment in one turn | implemented | pytest | covered |
+| [S124](S124-auto-research-harvests-child-lifecycle.md) | Auto-research harvests child lifecycle before it finishes | implemented | pytest | covered |
 
 S95–S105 are the original team-space set. They come from the confirmed design in
-[`../design/`](../design/README.md). S97, S99, and the narrower S111–S112
-prerequisites are implemented; the other team-space scenarios are not
-human-confirmed and do not authorize implementation. S77 was rewritten in the
+[`../design/`](../design/README.md). S96, S97, S99, S101, and the narrower
+S111–S112 prerequisites are implemented. S101 was confirmed and split on
+2026-08-15 — it kept the membership boundary and was built the same day, and its
+invitation half became S122, which was built the same day. S95,
+S98, and S102–S105 remain unconfirmed and do not authorize implementation. S77
+was rewritten in the
 same design pass: its earlier child-produced-Proposal approval rule was removed,
 and every agent-produced Proposal now waits for a human.
 

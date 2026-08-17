@@ -62,6 +62,8 @@ def test_system_identity_revision_is_valid_without_graph_scope(action: str, mode
         ("repositories_read", ["repo"], "identity-has-run-scope"),
         ("processed_cursors", {"session": "cursor"}, "identity-has-cursors"),
         ("source_operation_id", "operation", "identity-has-operation-id"),
+        ("source_effect_id", "effect", "identity-has-operation-id"),
+        ("source_effect_sha256", "0" * 64, "identity-has-operation-id"),
         ("human_action", "decision_choice", "identity-has-human-action"),
         ("agent_action", "decision_choice", "identity-has-agent-action"),
         (

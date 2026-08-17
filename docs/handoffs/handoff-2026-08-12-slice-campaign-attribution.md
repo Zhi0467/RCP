@@ -22,7 +22,7 @@ temptation to add a second field.
 - `Patch` in [models.py](../../src/rcp/core/models.py) already carries
   `authorized_by`, `profile` (`"ordinary" | "orchestrator"`), `task_id`, and
   `project_identity`.
-- `agent_task_authority` in [storage.py](../../src/rcp/storage.py) resolves
+- `agent_task_authority` in [storage/agent_tasks.py](../../src/rcp/storage/agent_tasks.py) resolves
   attribution from the producing task's own `graph_runs` row — **and that table
   already has a `campaign_id` column.** Stamping is one more column in one
   existing `SELECT`. Admission never needs the `campaigns` table.
@@ -48,7 +48,7 @@ Then fan out.
 | Agent | Files | Owns |
 |---|---|---|
 | History | `src/rcp/history/` | stamping, the refusal, the projection field |
-| Storage | `src/rcp/storage.py` | carrying `campaign_id` on the resolved task authority |
+| Storage | `src/rcp/storage/agent_tasks.py` | carrying `campaign_id` on the resolved task authority |
 | Service | `src/rcp/api/app.py` | decorating a group header with live campaign state |
 | Web | `web/src/components/ProjectHistoryDrawer.tsx` | the profile label fix, grouping, the report link |
 | Tests | `tests/`, `web/tests/` | S113's asserts |

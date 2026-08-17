@@ -22,6 +22,7 @@ from rcp.runs.shared import _parent_task_contract_path
 from rcp.runs.work import (
     _apply_work_patch,
     _process_experiment_watcher_maintenance,
+    _required_work_continuation_session_id,
     stream_work_run,
 )
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -205,8 +206,8 @@ def _execution(
         "operation_created",
         {
             "kind": "node_chat",
-            "attempt": 1,
-            "has_parent": False,
+            "attempt": record.attempt,
+            "has_parent": parent_operation_id is not None,
             "resumed": continuation == "resume",
             "continuation_cause": continuation,
         },
@@ -277,6 +278,170 @@ async def _events(stream) -> list[AgentEvent]:
     async for frame in stream:
         events.append(AgentEvent.model_validate_json(frame.removeprefix("data: ").strip()))
     return events
+
+
+def test_experiment_watcher_wake_requires_its_exact_saved_native_session(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    request = _loop_request(
+        "00000000-0000-4000-8000-000000000099",
+        "chat-exact-experiment-watcher-wake",
+        invocation=2,
+        trigger="watcher",
+        session_id="saved-experiment-watcher-session",
+        watcher_ids=["completed-experiment-watcher"],
+    )
+    execution = AgentTaskExecution(
+        operation_id="experiment-watcher-wake",
+        store=store,
+        control=AgentProcessControl(),
+        continuation="watcher_wake",
+    )
+
+    assert (
+        _required_work_continuation_session_id(
+            request,
+            execution,
+            session_id=request.session_id,
+        )
+        == "saved-experiment-watcher-session"
+    )
+
+
+@pytest.mark.parametrize(
+    ("resumed_session_id", "accepted"),
+    [
+        ("saved-experiment-resume-session", True),
+        ("different-experiment-resume-session", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_experiment_resume_requires_the_exact_saved_native_session(
+    manifest,
+    tmp_path: Path,
+    resumed_session_id: str,
+    accepted: bool,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000098"
+    saved_session_id = "saved-experiment-resume-session"
+    initial_request = _loop_request(
+        episode_id,
+        "chat-exact-experiment-resume",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    initial_execution = _execution(
+        store,
+        project_id,
+        "loop-before-exact-resume",
+        initial_request,
+    )
+    initial_launcher = _LoopLauncher(saved_session_id, tmp_path, write_handoff=True)
+    initial_events = await _events(
+        stream_work_run(
+            service,
+            initial_launcher,
+            initial_request,
+            data_dir,
+            execution=initial_execution,
+        )
+    )
+    assert not [event for event in initial_events if event.event == "error"]
+    assert initial_execution.stage_root is not None
+    store.checkpoint_agent_task(
+        initial_execution.operation_id,
+        native_session_id=saved_session_id,
+        stage_root=initial_execution.stage_root,
+    )
+    store.pause_agent_task(initial_execution.operation_id)
+
+    bound_before = store.experiment_episode(episode_id)
+    assert bound_before is not None
+    assert store.experiment_loop_runtime(project_id, _EXPERIMENT_ID).invocations_used == 1
+    revision_before = service.history.state().revision
+    patch_count_before = len(service.history.load_patches())
+    watcher_ids_before = [item.watcher_id for item in store.watchers(project_id)]
+    resume_request = initial_request.model_copy(update={"session_id": saved_session_id})
+    resume_execution = _execution(
+        store,
+        project_id,
+        f"loop-exact-resume-{'accepted' if accepted else 'mismatch'}",
+        resume_request,
+        continuation="resume",
+        stage_root=initial_execution.stage_root,
+        parent_operation_id=initial_execution.operation_id,
+    )
+    resume_launcher = _LoopLauncher(resumed_session_id, tmp_path, write_handoff=True)
+    resume_launcher.patch_payload = {
+        "summary": "Recorded one bounded resumed attempt.",
+        "ops": [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": _EXPERIMENT_ID,
+                        "changes": {
+                            "status": "running",
+                            "attempts": [
+                                {
+                                    "id": "resume-attempt-1",
+                                    "sequence": 1,
+                                    "purpose": "Verify exact-session Resume.",
+                                    "attempt_kind": "external_run",
+                                    "decision_bundle": [],
+                                    "status": "running",
+                                    "job_refs": ["resume-job-1"],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+        "repositories_read": [],
+        "change_summary": ["Recorded one bounded resumed attempt."],
+    }
+
+    resume_events = await _events(
+        stream_work_run(
+            service,
+            resume_launcher,
+            resume_request,
+            data_dir,
+            execution=resume_execution,
+        )
+    )
+
+    bound_after = store.experiment_episode(episode_id)
+    assert bound_after is not None
+    # Resume is recovery of invocation one, never another paid Experiment allocation.
+    assert store.experiment_loop_runtime(project_id, _EXPERIMENT_ID).invocations_used == 1
+    if accepted:
+        assert not [event for event in resume_events if event.event == "error"]
+        assert service.history.state().revision == revision_before + 1
+        assert bound_after.last_turn_operation_id == resume_execution.operation_id
+        assert bound_after.native_session_id == saved_session_id
+        return
+
+    errors = [event.text for event in resume_events if event.event == "error"]
+    assert any("exact saved native session" in text for text in errors)
+    assert service.history.state().revision == revision_before
+    assert len(service.history.load_patches()) == patch_count_before
+    assert [item.watcher_id for item in store.watchers(project_id)] == watcher_ids_before
+    assert bound_after.last_turn_operation_id == bound_before.last_turn_operation_id
+    assert bound_after.native_session_id == saved_session_id
+    assert any(
+        receipt.category == "continuation_context_unavailable"
+        and receipt.payload.get("reason") == "native_session_mismatch"
+        for receipt in store.agent_task_receipts(resume_execution.operation_id)
+    )
 
 
 @pytest.mark.asyncio

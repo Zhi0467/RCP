@@ -167,9 +167,7 @@ async def stream_episode_report_run(
                 stage.remote.finalize_inputs()
 
             if attempt is None:
-                attempt = execution.store.allocate_episode_report_attempt(
-                    turn.episode.episode_id
-                )
+                attempt = execution.store.allocate_episode_report_attempt(turn.episode.episode_id)
                 if attempt.attempt_number != attempt_number:
                     raise RuntimeError("Episode report attempt allocation changed under launch.")
             execution.store.mark_episode_report_attempt_running(attempt.attempt_id)
@@ -633,7 +631,9 @@ def _settle_unlaunchable_existing_wrapup(
 
     with suppress(KeyError, RuntimeError, ValueError):
         task = execution.store.agent_task(execution.operation_id)
-        episode_id = task.episode_id if task is not None and task.episode_id else supplied_episode_id
+        episode_id = (
+            task.episode_id if task is not None and task.episode_id else supplied_episode_id
+        )
         execution.store.fail_episode_report_allocation_unlaunchable(episode_id, diagnostic)
 
 

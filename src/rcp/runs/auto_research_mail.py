@@ -90,7 +90,9 @@ class AutoResearchMailDelivery(BaseModel):
             if message.delivery_operation_id != self.delivery_operation_id:
                 raise ValueError("auto_research mail delivery crosses claimed wake operations")
         if _auto_research_mail_wire_size(self) > AUTO_RESEARCH_MAIL_MAX_BYTES:
-            raise ValueError(f"auto_research mail delivery exceeds {AUTO_RESEARCH_MAIL_MAX_BYTES} bytes")
+            raise ValueError(
+                f"auto_research mail delivery exceeds {AUTO_RESEARCH_MAIL_MAX_BYTES} bytes"
+            )
         return self
 
     @property
@@ -166,7 +168,9 @@ def parse_auto_research_mail_delivery(value: str | bytes) -> AutoResearchMailDel
 
     encoded = value.encode("utf-8") if isinstance(value, str) else value
     if len(encoded) > AUTO_RESEARCH_MAIL_MAX_BYTES:
-        raise ValueError(f"auto_research mail delivery exceeds {AUTO_RESEARCH_MAIL_MAX_BYTES} bytes")
+        raise ValueError(
+            f"auto_research mail delivery exceeds {AUTO_RESEARCH_MAIL_MAX_BYTES} bytes"
+        )
     return AutoResearchMailDelivery.model_validate_json(encoded)
 
 

@@ -9,7 +9,11 @@ from typing import Literal
 
 from pydantic import TypeAdapter
 
-from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES, WATCHER_ERROR_BACKOFF_SECONDS
+from rcp.limits import (
+    AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
+    AUTO_RESEARCH_MAIL_MAX_MESSAGES,
+    WATCHER_ERROR_BACKOFF_SECONDS,
+)
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AgentCommandInvocationRecord,
@@ -17,6 +21,8 @@ from rcp.storage.models import (
     AgentTaskRecord,
     AutoResearchActorBinding,
     AutoResearchActorBusy,
+    AutoResearchChildAdmissionRecord,
+    AutoResearchCommandFileRecord,
     AutoResearchInvocationRecord,
     AutoResearchMessageRecord,
     AutoResearchRecoveryMode,
@@ -188,7 +194,9 @@ class AutoResearchStoreMixin:
                         "a stopping episode only admits recovery of an explicitly paused turn"
                     )
                 if episode.status not in {"running", "stopping"}:
-                    raise EpisodeNotRunning("the episode cannot recover after its ending is durable")
+                    raise EpisodeNotRunning(
+                        "the episode cannot recover after its ending is durable"
+                    )
                 if episode.wrapup_state in {"running", "ready", "failed", "skipped"}:
                     raise EpisodeNotRunning("episode report settlement already closed recovery")
 
@@ -306,8 +314,7 @@ class AutoResearchStoreMixin:
                 ):
                     raise ValueError("Auto-research mail delivery crosses an episode or recipient")
                 if any(
-                    item["delivered_at"] is not None
-                    or item["delivery_operation_id"] is not None
+                    item["delivered_at"] is not None or item["delivery_operation_id"] is not None
                     for item in messages
                 ):
                     return None
@@ -333,6 +340,157 @@ class AutoResearchStoreMixin:
                 )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not create the Auto-research mail wake task.") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def create_auto_research_lifecycle_wake_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        lifecycle_notice_ids: list[str],
+        message_ids: list[str] | None = None,
+    ) -> AgentTaskRecord | None:
+        """Spend one root allocation and bind one exact lifecycle/mail prefix to it."""
+
+        if record.episode_id is None:
+            raise ValueError("an Auto-research lifecycle wake must carry its episode id")
+        if (
+            not lifecycle_notice_ids
+            or len(lifecycle_notice_ids) != len(set(lifecycle_notice_ids))
+            or len(lifecycle_notice_ids) > AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+        ):
+            raise ValueError(
+                "an Auto-research lifecycle wake needs at most "
+                f"{AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES} unique notices"
+            )
+        coalesced_message_ids = list(message_ids or [])
+        if len(coalesced_message_ids) != len(set(coalesced_message_ids)):
+            raise ValueError("an Auto-research lifecycle wake requires unique mail ids")
+        if len(coalesced_message_ids) > AUTO_RESEARCH_MAIL_MAX_MESSAGES:
+            raise ValueError(
+                "an Auto-research lifecycle wake may claim at most "
+                f"{AUTO_RESEARCH_MAIL_MAX_MESSAGES} messages"
+            )
+        notice_placeholders = ",".join("?" for _ in lifecycle_notice_ids)
+        message_placeholders = ",".join("?" for _ in coalesced_message_ids)
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                episode = self._load_auto_research_episode(connection, record.episode_id)
+                if episode.root_operation_id is None:
+                    raise ValueError("the Auto-research lifecycle wake has no root recipient")
+                notices = connection.execute(
+                    f"""
+                    SELECT notice_id, episode_id, delivered_at, delivery_operation_id,
+                           acknowledged_at
+                    FROM auto_research_lifecycle_notices
+                    WHERE notice_id IN ({notice_placeholders})
+                    """,
+                    lifecycle_notice_ids,
+                ).fetchall()
+                if {str(item["notice_id"]) for item in notices} != set(lifecycle_notice_ids):
+                    raise ValueError("Auto-research lifecycle delivery names a missing notice")
+                if any(item["episode_id"] != record.episode_id for item in notices):
+                    raise ValueError("Auto-research lifecycle delivery crosses an episode")
+                if any(
+                    item["delivered_at"] is not None
+                    or item["delivery_operation_id"] is not None
+                    or item["acknowledged_at"] is not None
+                    for item in notices
+                ):
+                    return None
+                pending_notice_prefix = connection.execute(
+                    """
+                    SELECT notice_id FROM auto_research_lifecycle_notices
+                    WHERE episode_id = ? AND delivered_at IS NULL
+                      AND acknowledged_at IS NULL
+                    ORDER BY created_at, notice_id LIMIT ?
+                    """,
+                    (record.episode_id, len(lifecycle_notice_ids)),
+                ).fetchall()
+                if [str(item["notice_id"]) for item in pending_notice_prefix] != (
+                    lifecycle_notice_ids
+                ):
+                    return None
+                if coalesced_message_ids:
+                    messages = connection.execute(
+                        f"""
+                        SELECT message_id, episode_id, recipient_task_id,
+                               delivered_at, delivery_operation_id
+                        FROM auto_research_messages
+                        WHERE message_id IN ({message_placeholders})
+                        """,
+                        coalesced_message_ids,
+                    ).fetchall()
+                    if {str(item["message_id"]) for item in messages} != set(coalesced_message_ids):
+                        raise ValueError("Auto-research mail delivery names a missing message")
+                    if any(
+                        item["episode_id"] != record.episode_id
+                        or item["recipient_task_id"] != episode.root_operation_id
+                        for item in messages
+                    ):
+                        raise ValueError(
+                            "Auto-research lifecycle mail crosses an episode or root recipient"
+                        )
+                    if any(
+                        item["delivered_at"] is not None
+                        or item["delivery_operation_id"] is not None
+                        for item in messages
+                    ):
+                        return None
+                    pending_message_prefix = connection.execute(
+                        """
+                        SELECT message_id FROM auto_research_messages
+                        WHERE episode_id = ? AND recipient_task_id = ?
+                          AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                        ORDER BY created_at, message_id LIMIT ?
+                        """,
+                        (
+                            record.episode_id,
+                            episode.root_operation_id,
+                            len(coalesced_message_ids),
+                        ),
+                    ).fetchall()
+                    if [str(item["message_id"]) for item in pending_message_prefix] != (
+                        coalesced_message_ids
+                    ):
+                        return None
+                self._insert_paid_auto_research_task(
+                    connection,
+                    episode,
+                    record,
+                    "orchestrator",
+                )
+                connection.execute(
+                    f"""
+                    UPDATE auto_research_lifecycle_notices
+                    SET state = 'delivered', delivered_at = ?, delivery_operation_id = ?
+                    WHERE notice_id IN ({notice_placeholders})
+                      AND delivered_at IS NULL AND acknowledged_at IS NULL
+                    """,
+                    (
+                        record.created_at,
+                        record.operation_id,
+                        *lifecycle_notice_ids,
+                    ),
+                )
+                if coalesced_message_ids:
+                    connection.execute(
+                        f"""
+                        UPDATE auto_research_messages
+                        SET delivered_at = ?, delivery_operation_id = ?
+                        WHERE message_id IN ({message_placeholders})
+                          AND delivered_at IS NULL
+                        """,
+                        (
+                            record.created_at,
+                            record.operation_id,
+                            *coalesced_message_ids,
+                        ),
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not create the Auto-research lifecycle wake task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
@@ -414,8 +572,7 @@ class AutoResearchStoreMixin:
             raise ValueError("Auto-research actor operation id must be nonblank")
         requested_actor = requested_actor.strip() if isinstance(requested_actor, str) else None
         is_root = (
-            record.operation_id == episode.root_operation_id
-            and record.parent_operation_id is None
+            record.operation_id == episode.root_operation_id and record.parent_operation_id is None
         )
         if is_root:
             if role != "orchestrator" or requested_actor not in {None, record.operation_id}:
@@ -488,7 +645,9 @@ class AutoResearchStoreMixin:
                 )
                 if (
                     latest is not None
-                    and (latest["native_session_id"] is not None or latest["stage_root"] is not None)
+                    and (
+                        latest["native_session_id"] is not None or latest["stage_root"] is not None
+                    )
                     and not clean_retry
                     and (
                         record.native_session_id != latest["native_session_id"]
@@ -614,9 +773,7 @@ class AutoResearchStoreMixin:
             (episode_id, actor_operation_id),
         ).fetchone()
 
-    def auto_research_invocation(
-        self, operation_id: str
-    ) -> AutoResearchInvocationRecord | None:
+    def auto_research_invocation(self, operation_id: str) -> AutoResearchInvocationRecord | None:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM auto_research_invocations WHERE operation_id = ?",
@@ -714,9 +871,12 @@ class AutoResearchStoreMixin:
         status_counts = {str(row["status"]): int(row["count"]) for row in status_rows}
         role_counts = {str(row["role"]): int(row["count"]) for row in role_rows}
         total = sum(status_counts.values())
-        return total, status_counts, role_counts, [
-            self._agent_task_record(row) for row in reversed(rows)
-        ]
+        return (
+            total,
+            status_counts,
+            role_counts,
+            [self._agent_task_record(row) for row in reversed(rows)],
+        )
 
     def auto_research_event_history(
         self, episode_id: str, *, limit: int
@@ -812,9 +972,7 @@ class AutoResearchStoreMixin:
             if invocation is None:
                 raise ValueError("Auto-research recovery requires an Auto-research task")
             if invocation["episode_status"] not in {"running", "stopping"}:
-                raise EpisodeNotRunning(
-                    "the Auto-research episode no longer accepts recovery work"
-                )
+                raise EpisodeNotRunning("the Auto-research episode no longer accepts recovery work")
             recovery_id = f"task:{invocation['allocation_operation_id']}"
             existing = connection.execute(
                 "SELECT * FROM auto_research_recoveries WHERE recovery_id = ?",
@@ -920,9 +1078,7 @@ class AutoResearchStoreMixin:
             ).fetchall()
         return [self._auto_research_recovery_record(row) for row in rows]
 
-    def auto_research_recovery(
-        self, recovery_id: str
-    ) -> AutoResearchRecoveryRecord | None:
+    def auto_research_recovery(self, recovery_id: str) -> AutoResearchRecoveryRecord | None:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM auto_research_recoveries WHERE recovery_id = ?",
@@ -945,9 +1101,7 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._auto_research_recovery_record(row) if row is not None else None
 
-    def auto_research_task_recovery_child(
-        self, operation_id: str
-    ) -> AgentTaskRecord | None:
+    def auto_research_task_recovery_child(self, operation_id: str) -> AgentTaskRecord | None:
         with self.connection() as connection:
             row = connection.execute(
                 """
@@ -1021,9 +1175,7 @@ class AutoResearchStoreMixin:
             attempts = int(row["attempts"]) + 1
             exhausted = attempts >= int(row["max_attempts"])
             next_attempt_at = (
-                None
-                if exhausted
-                else self._auto_research_recovery_next_attempt_at(now, attempts)
+                None if exhausted else self._auto_research_recovery_next_attempt_at(now, attempts)
             )
             connection.execute(
                 """
@@ -1050,9 +1202,7 @@ class AutoResearchStoreMixin:
     def _auto_research_recovery_next_attempt_at(self, now: str, attempts: int) -> str:
         parsed = self._parse_time(now)
         assert parsed is not None
-        delay = WATCHER_ERROR_BACKOFF_SECONDS[
-            min(attempts, len(WATCHER_ERROR_BACKOFF_SECONDS) - 1)
-        ]
+        delay = WATCHER_ERROR_BACKOFF_SECONDS[min(attempts, len(WATCHER_ERROR_BACKOFF_SECONDS) - 1)]
         return (parsed + timedelta(seconds=delay)).isoformat()
 
     def auto_research_recovery_candidates(self) -> list[AgentTaskRecord]:
@@ -1137,26 +1287,39 @@ class AutoResearchStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            episode = self._load_auto_research_episode(connection, episode_id)
-            if episode.stop_requested_at is None and episode.ending is None:
-                raise EpisodeNotRunning("the episode ending fence must be durable first")
-            stopped_at = episode.stop_requested_at or episode.updated_at or now
-            if episode.stop_requested_at is not None:
-                reason = "Auto-research episode stopped."
-            else:
-                reason = f"Auto-research episode ended ({episode.ending})."
-            return connection.execute(
-                """
-                UPDATE watchers
-                SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stopped_by = COALESCE(stopped_by, 'loop'),
-                    stop_reason = COALESCE(stop_reason, ?),
-                    stopped_at = COALESCE(stopped_at, ?)
-                WHERE episode_id = ? AND origin_task_kind = 'auto_research'
-                  AND status IN ('active', 'degraded', 'completed')
-                """,
-                (reason, stopped_at, episode_id),
-            ).rowcount
+            return self._settle_auto_research_watchers_in_connection(
+                connection,
+                episode_id=episode_id,
+                now=now,
+            )
+
+    def _settle_auto_research_watchers_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        episode_id: str,
+        now: str,
+    ) -> int:
+        episode = self._load_auto_research_episode(connection, episode_id)
+        if episode.stop_requested_at is None and episode.ending is None:
+            raise EpisodeNotRunning("the episode ending fence must be durable first")
+        stopped_at = episode.stop_requested_at or episode.updated_at or now
+        if episode.stop_requested_at is not None:
+            reason = "Auto-research episode stopped."
+        else:
+            reason = f"Auto-research episode ended ({episode.ending})."
+        return connection.execute(
+            """
+            UPDATE watchers
+            SET status = 'stopped', notified = 1, next_check_at = NULL,
+                stopped_by = COALESCE(stopped_by, 'loop'),
+                stop_reason = COALESCE(stop_reason, ?),
+                stopped_at = COALESCE(stopped_at, ?)
+            WHERE episode_id = ? AND origin_task_kind = 'auto_research'
+              AND status IN ('active', 'degraded', 'completed')
+            """,
+            (reason, stopped_at, episode_id),
+        ).rowcount
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:
         """Whether all mode tasks are settled enough for the generic ending manager."""
@@ -1225,13 +1388,22 @@ class AutoResearchStoreMixin:
                 raise KeyError(record.episode_id)
             recipient = connection.execute(
                 """
-                SELECT 1 FROM auto_research_invocations
+                SELECT role, actor_operation_id FROM auto_research_invocations
                 WHERE episode_id = ? AND operation_id = ?
                 """,
                 (record.episode_id, record.recipient_task_id),
             ).fetchone()
-            if recipient is None:
+            child_recipient = connection.execute(
+                """
+                SELECT worker_id, control_node_id FROM auto_research_child_work
+                WHERE episode_id = ? AND worker_id = ?
+                """,
+                (record.episode_id, record.recipient_task_id),
+            ).fetchone()
+            if recipient is None and child_recipient is None:
                 raise ValueError("Auto-research mail recipient is outside the episode")
+            if recipient is not None and child_recipient is not None:
+                raise ValueError("Auto-research mail recipient identity is ambiguous")
             if record.sender_role == "human":
                 if episode["status"] != "running" or episode["ending"] is not None:
                     raise EpisodeNotRunning("the episode is not accepting new human mail")
@@ -1246,19 +1418,43 @@ class AutoResearchStoreMixin:
                     raise ValueError("an agent Auto-research message must name its sender task")
                 sender = connection.execute(
                     """
-                    SELECT role FROM auto_research_invocations
+                    SELECT role, actor_operation_id FROM auto_research_invocations
                     WHERE episode_id = ? AND operation_id = ?
                     """,
                     (record.episode_id, record.sender_task_id),
                 ).fetchone()
-                if sender is None or sender["role"] != record.sender_role:
+                child_sender = connection.execute(
+                    """
+                    SELECT route.episode_id, route.control_node_id
+                    FROM auto_research_child_work_attempts AS attempt
+                    JOIN auto_research_child_work AS route
+                      ON route.worker_id = attempt.worker_id
+                    WHERE attempt.operation_id = ? AND route.episode_id = ?
+                    """,
+                    (record.sender_task_id, record.episode_id),
+                ).fetchone()
+                if sender is not None and child_sender is not None:
+                    raise ValueError("Auto-research mail sender identity is ambiguous")
+                if child_sender is not None:
+                    if record.sender_role != "worker":
+                        raise ValueError("ordinary child Work mail must use the worker role")
+                    if record.recipient_task_id != episode["root_operation_id"]:
+                        raise ValueError(
+                            "an ordinary child Work attempt may reply only to its orchestrator"
+                        )
+                    if record.control_node_id not in {
+                        None,
+                        child_sender["control_node_id"],
+                    }:
+                        raise ValueError("ordinary child Work mail changed its control seat")
+                elif sender is None or sender["role"] != record.sender_role:
                     raise ValueError("Auto-research mail sender role does not match its task")
-                if (
+                elif (
                     record.sender_role == "worker"
                     and record.recipient_task_id != episode["root_operation_id"]
                 ):
                     raise ValueError("a worker may reply only to the Auto-research orchestrator")
-                if record.sender_role == "orchestrator":
+                elif record.sender_role == "orchestrator":
                     if (
                         episode["status"] != "running"
                         or episode["ending"] is not None
@@ -1267,14 +1463,17 @@ class AutoResearchStoreMixin:
                         raise EpisodeNotRunning(
                             "the episode is no longer accepting orchestrator mail"
                         )
-                    target = connection.execute(
-                        """
-                        SELECT role FROM auto_research_invocations
-                        WHERE episode_id = ? AND operation_id = ?
-                        """,
-                        (record.episode_id, record.recipient_task_id),
-                    ).fetchone()
-                    if target is None or target["role"] != "worker":
+                    if sender["actor_operation_id"] != episode["root_operation_id"]:
+                        raise ValueError("only the canonical orchestrator may address workers")
+                    if child_recipient is not None:
+                        if record.control_node_id not in {
+                            None,
+                            child_recipient["control_node_id"],
+                        }:
+                            raise ValueError(
+                                "ordinary child Work mail changed its recipient control seat"
+                            )
+                    elif recipient is None or recipient["role"] != "worker":
                         raise ValueError("the orchestrator may address only one of its workers")
             connection.execute(
                 """
@@ -1396,24 +1595,43 @@ class AutoResearchStoreMixin:
         verb: str,
         idempotency_key: str | None,
         payload: dict[str, object],
+        file_snapshot: AutoResearchCommandFileRecord | None = None,
+        child_admission: AutoResearchChildAdmissionRecord | None = None,
+        apply_admission_limit: int | None = None,
     ) -> AgentCommandInvocationRecord:
         if not command_id or not verb:
             raise ValueError("command identity and verb must not be blank")
         if idempotency_key is not None and episode_id is None:
             raise ValueError("a mutating command key requires an episode binding")
+        if file_snapshot is not None and (
+            file_snapshot.command_id != command_id
+            or file_snapshot.operation_id != operation_id
+            or file_snapshot.episode_id != episode_id
+        ):
+            raise ValueError("the command file snapshot does not match its command binding")
+        if child_admission is not None and child_admission.episode_id != episode_id:
+            raise ValueError("the child admission does not match its command episode")
+        if apply_admission_limit is not None and (
+            verb != "apply"
+            or idempotency_key is None
+            or child_admission is not None
+            or apply_admission_limit < 1
+        ):
+            raise ValueError("an Apply admission limit requires one keyed Apply command")
         now = self.now()
-        payload_json = self._bounded_command_payload(payload)
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 task = connection.execute(
-                    "SELECT episode_id FROM graph_runs WHERE operation_id = ?",
+                    "SELECT episode_id, project_id FROM graph_runs WHERE operation_id = ?",
                     (operation_id,),
                 ).fetchone()
                 if task is None:
                     raise KeyError(operation_id)
                 if task["episode_id"] != episode_id:
                     raise ValueError("command episode binding does not match its task")
+                if child_admission is not None and task["project_id"] != child_admission.project_id:
+                    raise ValueError("the child admission does not match its command project")
                 if idempotency_key is not None:
                     existing = self._agent_command_by_key_from_connection(
                         connection, episode_id=episode_id, idempotency_key=idempotency_key
@@ -1422,6 +1640,39 @@ class AutoResearchStoreMixin:
                         if existing.verb != verb:
                             raise ValueError("idempotency key was already used for another verb")
                         return existing
+                resolved_payload = payload
+                resolved_file_snapshot = file_snapshot
+                if apply_admission_limit is not None:
+                    admitted_count = self._auto_research_apply_admission_count_from_connection(
+                        connection,
+                        operation_id,
+                    )
+                    if admitted_count >= apply_admission_limit:
+                        resolved_payload = {
+                            **payload,
+                            "apply_admitted": False,
+                            "apply_admission_limit": apply_admission_limit,
+                        }
+                        resolved_file_snapshot = None
+                    else:
+                        resolved_payload = {
+                            **payload,
+                            "apply_admitted": True,
+                            "apply_admission_limit": apply_admission_limit,
+                        }
+                payload_json = self._bounded_command_payload(resolved_payload)
+                admit_child = child_admission
+                if child_admission is not None:
+                    parent = self._load_auto_research_episode(
+                        connection,
+                        child_admission.episode_id,
+                    )
+                    if (
+                        parent.status != "running"
+                        or parent.ending is not None
+                        or parent.stop_requested_at is not None
+                    ):
+                        admit_child = None
                 self._insert_agent_command_event(
                     connection,
                     operation_id=operation_id,
@@ -1435,6 +1686,13 @@ class AutoResearchStoreMixin:
                     level="info",
                     created_at=now,
                 )
+                if resolved_file_snapshot is not None:
+                    self._insert_auto_research_command_file(
+                        connection,
+                        resolved_file_snapshot,
+                    )
+                if admit_child is not None:
+                    self._insert_auto_research_child_admission(connection, admit_child)
         except sqlite3.IntegrityError:
             if episode_id is None or idempotency_key is None:
                 raise
@@ -1447,6 +1705,32 @@ class AutoResearchStoreMixin:
         stored = self.agent_command(command_id)
         assert stored is not None
         return stored
+
+    def auto_research_apply_admission_count(self, operation_id: str) -> int:
+        with self.connection() as connection:
+            return self._auto_research_apply_admission_count_from_connection(
+                connection,
+                operation_id,
+            )
+
+    @staticmethod
+    def _auto_research_apply_admission_count_from_connection(
+        connection: sqlite3.Connection,
+        operation_id: str,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM graph_run_events
+            WHERE operation_id = ? AND event_kind = 'command'
+              AND command_phase = 'start' AND command_verb = 'apply'
+              AND idempotency_key IS NOT NULL
+              AND COALESCE(json_extract(payload_json, '$.apply_admitted'), 1) = 1
+            """,
+            (operation_id,),
+        ).fetchone()
+        assert row is not None
+        return int(row["count"])
 
     def finish_agent_command(
         self,
@@ -1499,6 +1783,44 @@ class AutoResearchStoreMixin:
                 connection, episode_id=episode_id, idempotency_key=idempotency_key
             )
 
+    def auto_research_child_resume_command_owns_operation(
+        self,
+        episode_id: str,
+        *,
+        child_kind: Literal["work", "experiment"],
+        child_id: str,
+        operation_id: str,
+    ) -> bool:
+        """Prove a queued recovery was admitted by one exact keyed CLI Resume intent."""
+
+        if child_kind == "work":
+            verb = "resume"
+            planned_field = "planned_resume_operation_id"
+            expected_arguments = {"worker_id": child_id}
+        else:
+            verb = "episode"
+            planned_field = "planned_episode_effect_id"
+            expected_arguments = {"action": "resume", "episode_id": child_id}
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload_json FROM graph_run_events
+                WHERE event_kind = 'command' AND command_phase = 'start'
+                  AND episode_id = ? AND command_verb = ?
+                  AND idempotency_key IS NOT NULL
+                  AND json_extract(payload_json, '$.{planned_field}') = ?
+                ORDER BY event_id
+                """,
+                (episode_id, verb, operation_id),
+            ).fetchall()
+        if len(rows) != 1:
+            return False
+        payload = json.loads(rows[0]["payload_json"])
+        arguments = payload.get("arguments")
+        return isinstance(arguments, dict) and all(
+            arguments.get(key) == value for key, value in expected_arguments.items()
+        )
+
     @staticmethod
     def _agent_command_by_key_from_connection(
         connection: sqlite3.Connection,
@@ -1517,9 +1839,7 @@ class AutoResearchStoreMixin:
         ).fetchone()
         if row is None:
             return None
-        return AutoResearchStoreMixin._agent_command_from_connection(
-            connection, row["command_id"]
-        )
+        return AutoResearchStoreMixin._agent_command_from_connection(connection, row["command_id"])
 
     @staticmethod
     def _agent_command_from_connection(
@@ -1849,9 +2169,7 @@ def _legacy_allocation_operation_id(
         parent = row["parent_operation_id"]
 
 
-def _legacy_handoffs_cleared_at(
-    connection: sqlite3.Connection, operation_id: object
-) -> object:
+def _legacy_handoffs_cleared_at(connection: sqlite3.Connection, operation_id: object) -> object:
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(graph_runs)")}
     if "campaign_worker_handoffs_cleared_at" not in columns:
         return None

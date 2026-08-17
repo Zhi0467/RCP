@@ -51,9 +51,7 @@ class EpisodeStoreMixin:
 
         self._validate_new_episode(record)
         if record.mode == "auto_research":
-            raise ValueError(
-                "Auto-research roots must use the atomic mode adapter admission."
-            )
+            raise ValueError("Auto-research roots must use the atomic mode adapter admission.")
         if (
             root_task.episode_id != record.episode_id
             or root_task.project_id != record.project_id
@@ -285,9 +283,12 @@ class EpisodeStoreMixin:
             if existing is not None:
                 if existing["episode_id"] != episode_id:
                     raise ValueError("this operation is already allocated to another episode")
-                if connection.execute(
-                    "SELECT 1 FROM graph_runs WHERE operation_id = ?", (task.operation_id,)
-                ).fetchone() is None:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM graph_runs WHERE operation_id = ?", (task.operation_id,)
+                    ).fetchone()
+                    is None
+                ):
                     raise RuntimeError("the episode invocation lost its task")
                 invocation = self._episode_invocation_record(existing)
             else:
@@ -489,6 +490,14 @@ class EpisodeStoreMixin:
                     episode_id,
                 ),
             )
+            self._terminalize_auto_research_child_experiment_with_notice(
+                connection,
+                child_episode_id=episode_id,
+                status=self._status_for_ending(str(wrapup.ending)),
+                ending=str(wrapup.ending),
+                diagnostic=wrapup.diagnostic or ending_diagnostic,
+                created_at=now,
+            )
         episode = self.episode(episode_id)
         assert episode is not None
         return episode, stored
@@ -519,9 +528,12 @@ class EpisodeStoreMixin:
             episode = self._episode_record(row)
             if episode.ending == "stopped" and episode.wrapup_state == "skipped":
                 return episode
-            if connection.execute(
-                "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
-            ).fetchone() is not None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
+                ).fetchone()
+                is not None
+            ):
                 raise EpisodeNotRunning("report generation has already begun")
             if episode.status not in {"queued", "running", "stopping"}:
                 raise EpisodeNotRunning("the episode has already ended")
@@ -563,6 +575,14 @@ class EpisodeStoreMixin:
                 WHERE episode_id = ?
                 """,
                 (now, now, diagnostic, now, now, episode_id),
+            )
+            self._terminalize_auto_research_child_experiment_with_notice(
+                connection,
+                child_episode_id=episode_id,
+                status="stopped",
+                ending="stopped",
+                diagnostic=diagnostic,
+                created_at=now,
             )
         stored = self.episode(episode_id)
         assert stored is not None
@@ -682,10 +702,10 @@ class EpisodeStoreMixin:
             if wrapup_row is None or wrapup_row["allocation_operation_id"] is None:
                 raise EpisodeNotRunning("the episode has no report allocation to restart")
             episode = self._episode_record(episode_row)
-            if (
-                episode.status != "wrapping_up"
-                or episode.wrapup_state not in {"pending", "running"}
-            ):
+            if episode.status != "wrapping_up" or episode.wrapup_state not in {
+                "pending",
+                "running",
+            }:
                 raise EpisodeNotRunning("the episode report allocation cannot restart")
             operation_id = str(wrapup_row["allocation_operation_id"])
             task_row = connection.execute(
@@ -718,9 +738,8 @@ class EpisodeStoreMixin:
                 """,
                 (episode_id,),
             ).fetchone()
-            if (
-                int(episode.report_attempts_used) >= _REPORT_ATTEMPT_LIMIT
-                and (current is None or current["status"] != "queued")
+            if int(episode.report_attempts_used) >= _REPORT_ATTEMPT_LIMIT and (
+                current is None or current["status"] != "queued"
             ):
                 if current is None or current["status"] != "running":
                     raise EpisodeNotRunning("the episode has spent all report attempts")
@@ -758,6 +777,14 @@ class EpisodeStoreMixin:
                     WHERE operation_id = ? AND status = ?
                     """,
                     (diagnostic, diagnostic, now, now, operation_id, prior_status),
+                )
+                self._terminalize_auto_research_child_experiment_with_notice(
+                    connection,
+                    child_episode_id=episode_id,
+                    status=final_status,
+                    ending=str(episode.ending),
+                    diagnostic=diagnostic,
+                    created_at=now,
                 )
                 terminal_task = connection.execute(
                     "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
@@ -914,6 +941,14 @@ class EpisodeStoreMixin:
                 """,
                 (diagnostic, diagnostic, now, now, operation_id),
             )
+            self._terminalize_auto_research_child_experiment_with_notice(
+                connection,
+                child_episode_id=episode_id,
+                status=final_status,
+                ending=str(episode.ending),
+                diagnostic=diagnostic,
+                created_at=now,
+            )
             stored_episode_row = connection.execute(
                 "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
             ).fetchone()
@@ -1065,6 +1100,14 @@ class EpisodeStoreMixin:
                     """,
                     (error, error, now, now, row["allocation_operation_id"]),
                 )
+                self._terminalize_auto_research_child_experiment_with_notice(
+                    connection,
+                    child_episode_id=episode_id,
+                    status=final_status,
+                    ending=str(episode_row["ending"]),
+                    diagnostic=error,
+                    created_at=now,
+                )
             else:
                 connection.execute(
                     "UPDATE episodes SET wrapup_state = 'pending', wrapup_error = NULL, "
@@ -1176,6 +1219,14 @@ class EpisodeStoreMixin:
                 WHERE episode_id = ?
                 """,
                 (self._status_for_ending(report.ending), now, now, episode.episode_id),
+            )
+            self._terminalize_auto_research_child_experiment_with_notice(
+                connection,
+                child_episode_id=episode.episode_id,
+                status=self._status_for_ending(report.ending),
+                ending=report.ending,
+                diagnostic=episode.ending_diagnostic,
+                created_at=now,
             )
         stored_episode = self.episode(report.episode_id)
         stored_report = self.episode_report(report.episode_id)
@@ -1388,7 +1439,9 @@ class EpisodeStoreMixin:
             "receipt_sha256",
             "created_at",
         )
-        return all(getattr(stored, field) == getattr(requested, field) for field in immutable_fields)
+        return all(
+            getattr(stored, field) == getattr(requested, field) for field in immutable_fields
+        )
 
     @staticmethod
     def _live_episode_row(
@@ -1516,7 +1569,9 @@ def _migrate_campaign_episodes(connection: sqlite3.Connection) -> None:
         )
         ending = _campaign_ending(campaign, report)
         status = _campaign_status(campaign, ending, report is not None)
-        wrapup_state = _legacy_wrapup_state(status=status, ending=ending, has_report=report is not None)
+        wrapup_state = _legacy_wrapup_state(
+            status=status, ending=ending, has_report=report is not None
+        )
         ending_diagnostic = campaign["error"]
         authorizer = (
             campaign["authorized_space_id"],
@@ -1603,8 +1658,7 @@ def _migrate_campaign_episodes(connection: sqlite3.Connection) -> None:
             )
         for operation_id in set(report_operations):
             connection.execute(
-                "UPDATE graph_runs SET kind = 'episode_report', visible = 0 "
-                "WHERE operation_id = ?",
+                "UPDATE graph_runs SET kind = 'episode_report', visible = 0 WHERE operation_id = ?",
                 (operation_id,),
             )
             connection.execute(
@@ -1676,7 +1730,9 @@ def _migrate_campaign_wrapup(
     stage_root = report["stage_root"] if report is not None else None
     output_name = "campaign-report.html" if report is not None else None
     output_path = (
-        f"{str(stage_root).rstrip('/')}/{output_name}" if stage_root and output_name else output_name
+        f"{str(stage_root).rstrip('/')}/{output_name}"
+        if stage_root and output_name
+        else output_name
     )
     allocation_operation_id = str(report["operation_id"]) if report is not None else None
     wrapup = EpisodeWrapupRecord(
@@ -1707,9 +1763,7 @@ def _migrate_campaign_wrapup(
         updated_at=campaign["updated_at"],
         finished_at=campaign["ended_at"] or campaign["updated_at"],
     )
-    connection.execute(
-        "SELECT 1 FROM episodes WHERE episode_id = ?", (campaign_id,)
-    ).fetchone()
+    connection.execute("SELECT 1 FROM episodes WHERE episode_id = ?", (campaign_id,)).fetchone()
     _insert_legacy_wrapup(connection, wrapup)
     if report is None:
         return

@@ -58,6 +58,7 @@ _CAMPAIGN_FAILURE_ACTIVE_FILE = ".rcp-acceptance-campaign-failure-active"
 _CAMPAIGN_FAILURE_RELEASE_FILE = ".rcp-acceptance-campaign-failure-release"
 _CAMPAIGN_FAILURE_WORKER_ACTIVE_FILE = ".rcp-acceptance-campaign-worker-active"
 _CAMPAIGN_FAILURE_WORKER_RELEASE_FILE = ".rcp-acceptance-campaign-worker-release"
+_CAMPAIGN_ORDINARY_CHILD_MARKER = "## Auto-research child Work boundary"
 _CAMPAIGN_CONTRACTS: dict[
     str,
     tuple[
@@ -286,6 +287,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     resolved_cwd,
                     state,
                     stable_session,
+                    prompt=prompt,
                     contract=contract,
                     role=campaign_role,
                     phase=campaign_phase,
@@ -467,6 +469,13 @@ def _campaign_contract(
     ]
     | None
 ):
+    if _CAMPAIGN_ORDINARY_CHILD_MARKER in contract:
+        phase = (
+            "continuation"
+            if "Continue the exact Auto-research child Work assignment" in contract
+            else "fresh"
+        )
+        return "worker", phase
     return _CAMPAIGN_CONTRACTS.get(contract.partition("\n")[0])
 
 
@@ -492,6 +501,7 @@ async def _accept_campaign_turn(
     state: dict[str, object],
     session_id: str,
     *,
+    prompt: str,
     contract: str,
     role: Literal["orchestrator", "worker", "report"],
     phase: Literal["fresh", "continuation", "report"],
@@ -544,6 +554,7 @@ async def _accept_campaign_turn(
 
     if role == "worker":
         reply_prefix = _campaign_command_prefix(contract, "- Reply command prefix: `")
+        reply_template = _campaign_ordinary_child_reply_template(contract)
         instruction_path = _campaign_optional_path(contract, "- worker instruction: `")
         worker_fixture = False
         held_failure_worker = False
@@ -554,6 +565,9 @@ async def _accept_campaign_turn(
                 raise ValueError(f"Acceptance worker instruction is unreadable: {exc}") from exc
             worker_fixture = _CAMPAIGN_WORKER_REPLY_MARKER in instruction
             held_failure_worker = _CAMPAIGN_FAILURE_WORKER_MARKER in instruction
+        elif _CAMPAIGN_ORDINARY_CHILD_MARKER in contract:
+            worker_fixture = _CAMPAIGN_WORKER_REPLY_MARKER in prompt
+            held_failure_worker = _CAMPAIGN_FAILURE_WORKER_MARKER in prompt
         if held_failure_worker:
             _write_state(cwd, updated_state)
             await _wait_for_campaign_fixture_release(
@@ -564,15 +578,15 @@ async def _accept_campaign_turn(
                 control=control,
             )
             return "Settled the admitted acceptance worker before the failed episode report."
-        if worker_fixture and reply_prefix is not None:
-            first = await _run_campaign_client(
-                reply_prefix,
-                "Acceptance worker completed its bounded assignment.",
-            )
-            second = await _run_campaign_client(
-                reply_prefix,
-                "Acceptance worker completed its bounded assignment.",
-            )
+        if worker_fixture and (reply_prefix is not None or reply_template is not None):
+            body = "Acceptance worker completed its bounded assignment."
+            if reply_prefix is not None:
+                first = await _run_campaign_client(reply_prefix, body)
+                second = await _run_campaign_client(reply_prefix, body)
+            else:
+                assert reply_template is not None
+                first = await _run_campaign_reply_template(reply_template, body)
+                second = await _run_campaign_reply_template(reply_template, body)
             if _command_effect_id(first, "message") != _command_effect_id(second, "message"):
                 raise ValueError("Acceptance worker reply key did not deduplicate.")
         _write_state(cwd, updated_state)
@@ -600,6 +614,11 @@ async def _accept_campaign_turn(
             if command_prefix is None:
                 raise ValueError("Acceptance campaign exhaustion fixture has no command prefix.")
             seat_node_id = _campaign_seat_node(contract)
+            instruction_path = _campaign_worker_instruction(
+                cwd,
+                "exhaustion-probe.md",
+                "This worker must not be admitted after the research pot is empty.",
+            )
             exhausted = await _run_campaign_client(
                 command_prefix,
                 "spawn",
@@ -607,8 +626,8 @@ async def _accept_campaign_turn(
                 "acceptance-exhaustion-probe",
                 "--seat-node",
                 seat_node_id,
-                "--instruction",
-                "This worker must not be admitted after the research pot is empty.",
+                "--instruction-file",
+                str(instruction_path),
                 allow_invalid=True,
             )
             if exhausted.get("status") != "invalid":
@@ -628,6 +647,11 @@ async def _accept_campaign_turn(
         if directive == "fail":
             if phase == "fresh" and not fixture_state.get("spawned"):
                 seat_node_id = _campaign_seat_node(contract)
+                instruction_path = _campaign_worker_instruction(
+                    cwd,
+                    "terminal-failure-worker.md",
+                    _CAMPAIGN_FAILURE_WORKER_MARKER,
+                )
                 result = await _run_deduplicated_campaign_command(
                     command_prefix,
                     "spawn",
@@ -635,8 +659,8 @@ async def _accept_campaign_turn(
                     "acceptance-failure-worker",
                     "--seat-node",
                     seat_node_id,
-                    "--instruction",
-                    _CAMPAIGN_FAILURE_WORKER_MARKER,
+                    "--instruction-file",
+                    str(instruction_path),
                 )
                 fixture_state.update(spawned=True, spawn_result=result)
             updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
@@ -665,15 +689,20 @@ async def _accept_campaign_turn(
                 if isinstance(persisted_seat_node_id, str) and persisted_seat_node_id
                 else _campaign_seat_node(contract)
             )
+            instruction_path = _campaign_worker_instruction(
+                cwd,
+                "interrupted-worker.md",
+                f"{_CAMPAIGN_WORKER_REPLY_MARKER}\n"
+                "Complete this worker allocation exactly once across orchestrator recovery.",
+            )
             spawn_arguments = (
                 "spawn",
                 "--key",
                 "acceptance-interrupt-spawn",
                 "--seat-node",
                 seat_node_id,
-                "--instruction",
-                f"{_CAMPAIGN_WORKER_REPLY_MARKER}\n"
-                "Complete this worker allocation exactly once across orchestrator recovery.",
+                "--instruction-file",
+                str(instruction_path),
             )
             if not fixture_state.get("spawned"):
                 result = await _run_deduplicated_campaign_command(
@@ -698,6 +727,15 @@ async def _accept_campaign_turn(
             )
             if _campaign_outcome_identity(result, "worker_id") != fixture_state.get("worker_id"):
                 raise ValueError("Acceptance interrupted spawn did not return its durable worker.")
+            harvested = await _run_campaign_client(
+                command_prefix,
+                "inbox",
+                "--key",
+                "acceptance-harvest-after-interrupt",
+                "--harvest",
+            )
+            if harvested.get("status") != "ok":
+                raise ValueError("Acceptance interrupted recovery did not harvest child lifecycle.")
             await _run_deduplicated_campaign_command(
                 command_prefix,
                 "finish",
@@ -715,6 +753,12 @@ async def _accept_campaign_turn(
             fixture_state["finished"] = True
         elif phase == "fresh" and not fixture_state.get("spawned"):
             seat_node_id = _campaign_seat_node(contract)
+            instruction_path = _campaign_worker_instruction(
+                cwd,
+                "bounded-worker.md",
+                f"{_CAMPAIGN_WORKER_REPLY_MARKER}\n"
+                "Complete the bounded acceptance assignment and reply to the orchestrator.",
+            )
             result = await _run_deduplicated_campaign_command(
                 command_prefix,
                 "spawn",
@@ -722,9 +766,8 @@ async def _accept_campaign_turn(
                 "acceptance-spawn",
                 "--seat-node",
                 seat_node_id,
-                "--instruction",
-                f"{_CAMPAIGN_WORKER_REPLY_MARKER}\n"
-                "Complete the bounded acceptance assignment and reply to the orchestrator.",
+                "--instruction-file",
+                str(instruction_path),
             )
             fixture_state.update(spawned=True, spawn_result=result)
         else:
@@ -738,6 +781,14 @@ async def _accept_campaign_turn(
         updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
     _write_state(cwd, updated_state)
     return f"Completed the deterministic acceptance campaign {role} turn without a graph Patch."
+
+
+def _campaign_worker_instruction(cwd: Path, filename: str, text: str) -> Path:
+    """Write one stable direct file for the real file-backed Spawn client."""
+
+    path = cwd / filename
+    _write_text_atomically(path, text.rstrip() + "\n")
+    return path
 
 
 def _campaign_fixture_directive(
@@ -875,6 +926,24 @@ def _campaign_command_prefix(contract: str, prefix: str) -> str | None:
     return value
 
 
+def _campaign_ordinary_child_reply_template(contract: str) -> str | None:
+    marker = "optional reply to your orchestrator:"
+    if marker not in contract:
+        return None
+    tail = contract.partition(marker)[2]
+    line = next((item.strip() for item in tail.splitlines() if item.strip()), "")
+    if not line.startswith("`") or not line.endswith("`") or "`" in line[1:-1]:
+        raise ValueError("Acceptance ordinary child contract has a malformed reply command.")
+    value = line[1:-1]
+    try:
+        argv = shlex.split(value)
+    except ValueError as exc:
+        raise ValueError("Acceptance ordinary child reply command is invalid.") from exc
+    if argv.count("<idempotency-key>") != 1 or argv.count("<reply-body>") != 1:
+        raise ValueError("Acceptance ordinary child reply command lost its placeholders.")
+    return value
+
+
 async def _run_deduplicated_campaign_command(
     command_prefix: str,
     *arguments: str,
@@ -922,6 +991,27 @@ async def _run_campaign_client(
         raise ValueError(f"Acceptance campaign command prefix is invalid: {exc}") from exc
     if not argv:
         raise ValueError("Acceptance campaign command prefix is empty.")
+    return await _run_campaign_argv(argv, allow_invalid=allow_invalid)
+
+
+async def _run_campaign_reply_template(
+    command: str,
+    body: str,
+) -> dict[str, object]:
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise ValueError("Acceptance ordinary child reply command is invalid.") from exc
+    argv[argv.index("<idempotency-key>")] = "acceptance-worker-reply"
+    argv[argv.index("<reply-body>")] = body
+    return await _run_campaign_argv(argv)
+
+
+async def _run_campaign_argv(
+    argv: list[str],
+    *,
+    allow_invalid: bool = False,
+) -> dict[str, object]:
     process = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,

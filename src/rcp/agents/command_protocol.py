@@ -17,6 +17,7 @@ COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
     "validate",
+    "apply",
     "status",
     "spawn",
     "pause",
@@ -24,21 +25,37 @@ CommandVerb = Literal[
     "stop",
     "message",
     "watch_graph",
+    "episode",
+    "inbox",
     "finish",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
+    "apply",
     "spawn",
     "pause",
     "resume",
     "stop",
     "message",
     "watch_graph",
+    "episode",
+    "inbox",
     "finish",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
-    {"spawn", "pause", "resume", "stop", "message", "watch_graph", "finish"}
+    {
+        "apply",
+        "spawn",
+        "pause",
+        "resume",
+        "stop",
+        "message",
+        "watch_graph",
+        "episode",
+        "inbox",
+        "finish",
+    }
 )
 
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -62,34 +79,54 @@ class ValidateArguments(BaseModel):
     patch: str
 
 
+class ApplyArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    patch_file: Literal["patch.json"]
+
+
 class StatusArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     worker_id: str | None = Field(default=None, min_length=1, max_length=200)
+    episode_id: str | None = Field(default=None, min_length=1, max_length=200)
 
-    @field_validator("worker_id")
+    @field_validator("worker_id", "episode_id")
     @classmethod
-    def normalize_worker_id(cls, value: str | None) -> str | None:
+    def normalize_target_id(cls, value: str | None) -> str | None:
         if value is None:
             return None
         stripped = value.strip()
         if not stripped:
-            raise ValueError("worker id must not be blank")
+            raise ValueError("status target id must not be blank")
         return stripped
+
+    @model_validator(mode="after")
+    def target_is_unambiguous(self) -> StatusArguments:
+        if self.worker_id is not None and self.episode_id is not None:
+            raise ValueError("status accepts either a worker id or an episode id, not both")
+        return self
+
+
+_SAFE_WORKSPACE_FILENAME = r"^[A-Za-z0-9._-]+$"
 
 
 class SpawnArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     seat_node_id: str = Field(min_length=1, max_length=200)
-    instruction: str = Field(min_length=1, max_length=16_000)
+    instruction_file: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=_SAFE_WORKSPACE_FILENAME,
+    )
 
-    @field_validator("seat_node_id", "instruction")
+    @field_validator("seat_node_id")
     @classmethod
     def strip_nonblank_text(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("command text must not be blank")
+            raise ValueError("seat node id must not be blank")
         return stripped
 
 
@@ -129,6 +166,67 @@ class WatchGraphArguments(BaseModel):
         return stripped
 
 
+class ExperimentKickoffArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["kick_off_experiment"]
+    node_id: str = Field(min_length=1, max_length=200)
+    goal_file: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=_SAFE_WORKSPACE_FILENAME,
+    )
+    invocation_limit: int | None = Field(default=None, gt=0)
+
+    @field_validator("node_id")
+    @classmethod
+    def strip_nonblank_node_id(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Experiment node id must not be blank")
+        return stripped
+
+
+class EpisodeControlArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["stop", "resume"]
+    episode_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("episode_id")
+    @classmethod
+    def strip_nonblank_episode_id(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("episode id must not be blank")
+        return stripped
+
+
+EpisodeArguments: TypeAlias = Annotated[
+    ExperimentKickoffArguments | EpisodeControlArguments,
+    Field(discriminator="action"),
+]
+
+
+class InboxHarvestArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["harvest"]
+
+
+class InboxClearArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["clear"]
+
+
+InboxArguments: TypeAlias = Annotated[
+    InboxHarvestArguments | InboxClearArguments,
+    Field(discriminator="action"),
+]
+
+
 class FinishArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -156,6 +254,11 @@ class _CommandRequest(BaseModel):
 class ValidateCommandRequest(_CommandRequest):
     verb: Literal["validate"]
     arguments: ValidateArguments
+
+
+class ApplyCommandRequest(_CommandRequest):
+    verb: Literal["apply"]
+    arguments: ApplyArguments
 
 
 class StatusCommandRequest(_CommandRequest):
@@ -193,6 +296,16 @@ class WatchGraphCommandRequest(_CommandRequest):
     arguments: WatchGraphArguments
 
 
+class EpisodeCommandRequest(_CommandRequest):
+    verb: Literal["episode"]
+    arguments: EpisodeArguments
+
+
+class InboxCommandRequest(_CommandRequest):
+    verb: Literal["inbox"]
+    arguments: InboxArguments
+
+
 class FinishCommandRequest(_CommandRequest):
     verb: Literal["finish"]
     arguments: FinishArguments = Field(default_factory=FinishArguments)
@@ -200,6 +313,7 @@ class FinishCommandRequest(_CommandRequest):
 
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
+    | ApplyCommandRequest
     | StatusCommandRequest
     | SpawnCommandRequest
     | PauseCommandRequest
@@ -207,6 +321,8 @@ CommandRequest: TypeAlias = Annotated[
     | StopCommandRequest
     | MessageCommandRequest
     | WatchGraphCommandRequest
+    | EpisodeCommandRequest
+    | InboxCommandRequest
     | FinishCommandRequest,
     Field(discriminator="verb"),
 ]

@@ -45,6 +45,11 @@ CHAT_PREVIEW_MAX_CHARS = 240
 COMMAND_MAILBOX_TIMEOUT_SECONDS = 30.0
 COMMAND_MAILBOX_POLL_SECONDS = 0.2
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
+AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES = 16 * 1024
+AUTO_RESEARCH_APPLY_MAX_PER_TURN = 32
+# One turn's in-turn Applies plus the end-of-turn settlement disposition. The
+# capture side and the storage side must agree, so it is derived once here.
+GRAPH_UPDATE_HISTORY_MAX_COUNT = AUTO_RESEARCH_APPLY_MAX_PER_TURN + 1
 
 # Temporary agent-created preview artifacts.
 CHAT_ARTIFACT_MAX_COUNT = 8
@@ -54,6 +59,8 @@ CHAT_ARTIFACT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 # stays well inside the reusable stage mailbox's per-file artifact ceiling.
 AUTO_RESEARCH_MAIL_MAX_MESSAGES = 64
 AUTO_RESEARCH_MAIL_MAX_BYTES = min(1024 * 1024, CHAT_ARTIFACT_MAX_FILE_BYTES)
+AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES = 50
+AUTO_RESEARCH_LIFECYCLE_MAX_BYTES = 256 * 1024
 # Temporary human-provided chat inputs. Keep these independent from output artifact
 # limits even while their initial bounds happen to be the same.
 CHAT_ATTACHMENT_MAX_COUNT = 8

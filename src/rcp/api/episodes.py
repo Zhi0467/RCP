@@ -206,7 +206,9 @@ def serialize_episode(
             recovery,
         ) = _auto_research_projection(store, episode, task_records)
 
-    stored_report = None if episode.ending == "stopped" else store.episode_report(episode.episode_id)
+    stored_report = (
+        None if episode.ending == "stopped" else store.episode_report(episode.episode_id)
+    )
     report = (
         EpisodeReportSummary(
             report_id=stored_report.report_id,
@@ -397,8 +399,7 @@ def _auto_research_control_task_id(
                 and orchestrator_recovery.status != "admitted"
             )
         )
-        and store.auto_research_invocation_role(current_orchestrator.operation_id)
-        == "orchestrator"
+        and store.auto_research_invocation_role(current_orchestrator.operation_id) == "orchestrator"
     ):
         return current_orchestrator.operation_id
 

@@ -7473,6 +7473,34 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
     assert service.history.state().nodes["exp/bounded-loop"].attempts == []
 
 
+def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+    goal = "  Establish whether the bounded runner survives a graceful restart.  "
+    seen = threading.Event()
+
+    async def stream(_project_id, kind, request, _execution):
+        assert kind == "node_chat"
+        assert request.message == goal
+        seen.set()
+        yield _sse(AgentEvent(event="answer", text="Goal accepted."))
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    response = client.post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4()), "message": goal},
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["request"]["message"] == goal
+    assert seen.wait(timeout=1)
+
+
 def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -7601,9 +7629,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         assert request.reasoning == "medium"
         assert request.run_on == "laptop"
         assert request.run_truth_scope == ["repo-a"]
-        assert request.message == (
-            "Continue the bounded Experiment loop from its staged watcher state."
-        )
+        assert request.message == ("Begin a bounded Experiment-loop episode for exp/bounded-loop.")
         assert "/tmp/pending-loop.log" not in request.message
         yield _sse(AgentEvent(event="answer", text="Inspected the pending result."))
         yield _sse(AgentEvent(event="done"))

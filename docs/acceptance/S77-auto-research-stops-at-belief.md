@@ -21,6 +21,10 @@ It depends on [S115](S115-beliefs-change-only-through-you.md), which builds the
 protected-type rule and the widened Proposal vocabulary this scenario exercises
 from the orchestrator's side. Do not implement it first.
 
+Step 9's finish boundary was confirmed by the human on 2026-08-16 after an
+orchestrator ended with unused budget at a self-resolvable infrastructure
+Blocker.
+
 The orchestrator may structure and conduct the research, including creating new
 questions and hypotheses and directly controlling every other graph node type.
 Once a ResearchQuestion or Hypothesis exists, the orchestrator changes it only
@@ -44,7 +48,7 @@ elevated profile from the
 
 ## Drive
 
-1. Start a campaign and let the orchestrator create a new ResearchQuestion and
+1. Start an Auto-research episode and let the orchestrator create a new ResearchQuestion and
    Hypothesis, create Evidence and relations, and choose the governed Decision.
 2. Let it set lifecycle and standing on the Decision, Experiment, Blocker, and
    Evidence, and remove one expendable node of each type.
@@ -59,8 +63,15 @@ elevated profile from the
    ResearchQuestion, then on the Experiment and the Blocker.
 7. Confirm the orchestrator's Decision choice satisfies the Experiment's
    governing gate without another human approval.
-8. Let the campaign continue on independent work while protected Proposals
+8. Let the episode continue on independent work while protected Proposals
    remain pending.
+9. Give the orchestrator a Blocker whose remaining prerequisite is delayed by
+   temporary compute capacity but can be resolved with its existing authority
+   and tools. Let the seated worker settle after diagnosing that path. Confirm
+   the orchestrator uses the remaining episode budget to act, delegate, or
+   arrange an observable continuation instead of treating the settled child,
+   the open Blocker, or the downstream human-only Experiment launch as normal
+   episode completion.
 
 ## Assert
 
@@ -78,6 +89,7 @@ elevated profile from the
 - `seating_refusal_does_not_reduce_direct_authority_over_the_same_node`
 - `governing_decision_readiness_accepts_the_orchestrator_choice`
 - `pending_epistemic_review_does_not_stop_independent_campaign_work`
+- `agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_episode`
 
 ## Boundary
 
@@ -105,12 +117,26 @@ this is what happens under the shipped prompt; it does not assert that RCP
 mechanically prevents a child from producing one, and nothing may be built on
 the assumption that it does.
 
-Human-initiated work outside a campaign is unchanged: an ordinary Work task a
+Human-initiated work outside an Auto-research episode is unchanged: an ordinary Work task a
 person starts still produces a Proposal when it touches a gated operation,
 because that person is there to judge it.
+
+A Blocker is an operational fact, not a human-authority boundary by type. Before
+calling `finish`, the orchestrator must identify the exact remaining dependency.
+If no new human judgment, credential, approval, privileged action, or
+coordination with another person is required, it keeps going within the existing
+episode authorization. Temporary resource occupancy and a downstream
+human-started Experiment do not excuse leaving agent-resolvable preparation
+unfinished. The orchestrator acts directly, seats another executable worker, or
+arranges a durable observable continuation; it does not busy-poll or merely keep
+a provider turn open.
 
 Exactly one profile carries this authority. This scenario does not promise a
 family of elevated agents.
 
 Budget accounting, Stop, and the Runs surface belong to
 [S78](S78-one-budget-one-stop.md).
+In-turn Apply, child Experiment kickoff, lifecycle delivery, and the mechanical
+finish guard belong to pending [S123](S123-auto-research-orchestrates-in-one-turn.md)
+and [S124](S124-auto-research-harvests-child-lifecycle.md); this implemented
+scenario does not claim those commands already exist.

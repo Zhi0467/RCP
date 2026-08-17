@@ -1,10 +1,20 @@
 ---
 id: S113-campaign-attribution
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: none
+covered_by:
+  - tests/test_history_attribution.py
+  - tests/test_episode_history_api.py
+  - tests/test_dispatch_authority.py::test_agent_task_authority_carries_episode_id_from_each_exact_task_row
+  - tests/test_identity_patch_contract.py::test_base_attribution_is_strict_additive_with_nullable_episode_lineage
+  - web/tests/projectHistory.test.mjs
 invariants: [1, 3, 4]
+last_checked: 2026-08-15 — the envelope field, admission refusals, legacy
+  `campaign_id` replay decode, and History grouping are covered by the backend
+  and web suites. The History drawer half is undriven and stays that way by
+  decision, because no hermetic fixture emits an episode-attributed graph Patch
+  and a browser drive would need a new acceptance fixture first.
 ---
 
 # Episode work retains its authorization lineage

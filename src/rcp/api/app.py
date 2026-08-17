@@ -14,7 +14,17 @@ from pathlib import Path
 from typing import Annotated, Literal, cast
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -90,13 +100,19 @@ from rcp.runs.auto_research import (
     AutoResearchStartRequest,
     settle_auto_research_stop,
 )
+from rcp.runs.auto_research_child_reconcile import (
+    reconcile_pending_auto_research_child_admissions,
+)
 from rcp.runs.auto_research_delivery import (
     deliver_auto_research_watcher_group,
+    deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
+    reconcile_pending_auto_research_lifecycle,
     reconcile_pending_auto_research_mail,
     record_auto_research_message,
 )
 from rcp.runs.auto_research_effects import auto_research_command_effects
+from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.auto_research_stream import (
     stream_auto_research_orchestrator_run,
@@ -107,13 +123,20 @@ from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.episode_reconcile import EpisodeReconciler
 from rcp.runs.episode_report import EpisodeReportRunRequest, stream_episode_report_run
+from rcp.runs.experiment_admission import (
+    experiment_start_message,
+    fresh_experiment_run_request,
+    resolve_experiment_node_work_request,
+)
 from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
 from rcp.runs.graph import stream_graph_run
+from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.runs.shared import _sweep_stale_stages
-from rcp.runs.work import _validate_work_patch_live, stream_work_run
+from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     ChatSummaryPage,
@@ -223,6 +246,12 @@ class PaperSaveRequest(BaseModel):
 
 class ProjectRegisterRequest(BaseModel):
     locator: str
+
+
+class ProjectInviteRequest(BaseModel):
+    """Who is being invited. The server derives the inviter from the session."""
+
+    user_id: str
 
 
 class RetryAgentTaskRequest(BaseModel):
@@ -434,18 +463,51 @@ def create_app(
                     result=result,
                 )
 
+            def apply_auto_research_patch(context, patch_text, source_effect_id):
+                result, failure = _apply_work_patch(
+                    service,
+                    execution,
+                    patch_text,
+                    run_truth_scope=list(
+                        context.request.run_truth_scope
+                        or service.manifest.agent.default_run_truth_scope
+                    ),
+                    patch_kind="work",
+                    profile="orchestrator",
+                    source_operation_id=context.task.operation_id,
+                    source_effect_id=source_effect_id,
+                )
+                if failure is not None:
+                    return None, failure.message, failure.correctable
+                return result, None, False
+
             effects = auto_research_command_effects(
                 store=store,
                 background=background_tasks,
                 validate=validate_auto_research_patch,
-                worker_request_factory=_auto_research_worker_request,
+                worker_request_factory=lambda context, arguments, instruction, worker_id: (
+                    _auto_research_worker_request(
+                        service,
+                        context,
+                        arguments,
+                        instruction,
+                        worker_id,
+                    )
+                ),
                 graph_state=service.history.state,
                 execution_host=execution_machine.host,
+                apply_patch=apply_auto_research_patch,
+                on_graph_applied=lambda: evaluate_graph_wake_boundary(
+                    project_id,
+                    None,
+                    source="Auto-research in-turn Apply",
+                ),
                 on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
                     ready_project_id,
                     None,
                     source="Auto-research graph condition",
                 ),
+                experiment_coordinator=auto_research_experiment_coordinator,
             )
             dispatcher = AutoResearchCommandDispatcher(store, effects)
             stream_auto_research = (
@@ -511,6 +573,60 @@ def create_app(
         background_task_stream,
         on_stream_closed=refresh_cached_project_after_stream,
     )
+    auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
+        store,
+        background_tasks,
+        project_service=lambda project_id: _project_service(catalog, project_id),
+        operation_lock=experiment_operation_lock,
+    )
+
+    def restart_child_worker_request(
+        context: AutoResearchCommandContext,
+        arguments: SpawnArguments,
+        instruction: str,
+        worker_id: str,
+    ) -> RunRequest:
+        return _auto_research_worker_request(
+            _project_service(catalog, context.task.project_id),
+            context,
+            arguments,
+            instruction,
+            worker_id,
+        )
+
+    def restart_child_seat_node_type(project_id: str, node_id: str) -> str | None:
+        node = _project_service(catalog, project_id).history.state().nodes.get(node_id)
+        return node.type if node is not None else None
+
+    # Reconciliation runs on the 5s watcher poll, so a stuck admission would log
+    # a dozen identical warnings a minute. Report each distinct reason once and
+    # again whenever it changes, which is the part an operator can act on.
+    reported_child_deferrals: set[tuple[str, str]] = set()
+
+    def reconcile_auto_research_children(episode_id: str | None = None):
+        reconciliation = reconcile_pending_auto_research_child_admissions(
+            store,
+            background_tasks,
+            auto_research_experiment_coordinator,
+            worker_request_factory=restart_child_worker_request,
+            seat_node_type=restart_child_seat_node_type,
+            episode_id=episode_id,
+        )
+        for deferral in reconciliation.deferrals:
+            signature = (deferral.admission_id, deferral.reason)
+            if signature in reported_child_deferrals:
+                continue
+            reported_child_deferrals.add(signature)
+            logger.warning(
+                "Auto-research child admission %s (%s) in episode %s is still unreflected "
+                "and blocks finish: %s",
+                deferral.admission_id,
+                deferral.child_kind,
+                deferral.episode_id,
+                deferral.reason,
+            )
+        return reconciliation
+
     episode_reconciler = EpisodeReconciler(store, background_tasks, logger=logger)
     reconcile_auto_research_wrapup = episode_reconciler.reconcile_auto_research_wrapup
     reconcile_auto_research_episode = episode_reconciler.reconcile_auto_research_episode
@@ -536,21 +652,8 @@ def create_app(
             background_tasks.start_watcher_notification(*args, **kwargs)
         ),
         state_unavailable=lambda exc: isinstance(exc, StateUnavailable),
-        task_graph_capable=lambda kind, request: (
-            (
-                isinstance(request, RunRequest)
-                and (
-                    kind in {"seed", "refresh"}
-                    or (kind in {"node_chat", "project_chat"} and request.mode == "work")
-                )
-            )
-            or (kind == "auto_research" and isinstance(request, AutoResearchRunRequest))
-        ),
-        task_experiment_episode_id=lambda request: (
-            (request.control_episode_id or "")
-            if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop"
-            else None
-        ),
+        task_graph_capable=task_graph_capable,
+        task_experiment_episode_id=task_experiment_episode_id,
         reconcile_experiment_episode=episode_reconciler.reconcile_experiment_episode,
         evaluate_graph=lambda candidate_store, project_id, state: evaluate_graph_watchers(
             candidate_store,
@@ -567,7 +670,33 @@ def create_app(
     evaluate_graph_wake_boundary = watcher_delivery.evaluate_graph_wake_boundary
     sweep_graph_conditions_at_startup = watcher_delivery.sweep_graph_conditions_at_startup
     retry_graph_wakes_after_poll = watcher_delivery.retry_graph_wakes_after_poll
-    background_tasks.on_task_settled = watcher_delivery.evaluate_graph_conditions_after_task
+
+    def after_task_settled(
+        project_id: str,
+        kind: AgentTaskKind,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        watcher_delivery.evaluate_graph_conditions_after_task(
+            project_id,
+            kind,
+            request,
+            execution,
+        )
+        for episode in store.episodes(project_id):
+            if episode.mode == "auto_research":
+                reconcile_auto_research_children(episode.episode_id)
+                auto_research_experiment_coordinator.reconcile(episode.episode_id)
+                reconcile_pending_auto_research_lifecycle(
+                    background_tasks,
+                    episode_id=episode.episode_id,
+                )
+                reconcile_pending_auto_research_mail(
+                    background_tasks,
+                    episode_id=episode.episode_id,
+                )
+
+    background_tasks.on_task_settled = after_task_settled
 
     background_tasks.on_auto_research_task_settled = reconcile_auto_research_task
     background_tasks.on_auto_research_admission_exhausted = lambda episode: (
@@ -583,9 +712,13 @@ def create_app(
     def after_watcher_poll() -> None:
         graph_watcher_retry_worker.signal()
         reconcile_auto_research_recovery_pass()
+        auto_research_episode_ids: list[str] = []
         for project in store.projects():
             for episode in store.episodes(project.project_id):
                 if episode.mode == "auto_research":
+                    auto_research_episode_ids.append(episode.episode_id)
+                    reconcile_auto_research_children(episode.episode_id)
+                    auto_research_experiment_coordinator.reconcile(episode.episode_id)
                     reconcile_auto_research_episode(
                         episode.episode_id,
                         source="watcher poll",
@@ -595,6 +728,15 @@ def create_app(
                         episode.episode_id,
                         source="watcher poll",
                     )
+        for episode_id in auto_research_episode_ids:
+            reconcile_pending_auto_research_lifecycle(
+                background_tasks,
+                episode_id=episode_id,
+            )
+            reconcile_pending_auto_research_mail(
+                background_tasks,
+                episode_id=episode_id,
+            )
 
     watcher_poller = WatcherPoller(
         store,
@@ -665,6 +807,22 @@ def create_app(
         try:
             background_tasks.accept_watcher_notifications()
             store.prune_operational_storage()
+            await asyncio.to_thread(background_tasks.reconcile_committed_auto_research_dispatches)
+            child_reconciliation = await asyncio.to_thread(
+                reconcile_auto_research_children,
+            )
+            if child_reconciliation.cancelled:
+                logger.warning(
+                    "Cancelled %s unlaunchable Auto-research child admission(s) at startup.",
+                    child_reconciliation.cancelled,
+                )
+            for project in store.projects():
+                for episode in store.episodes(project.project_id):
+                    if episode.mode == "auto_research":
+                        await asyncio.to_thread(
+                            auto_research_experiment_coordinator.reconcile,
+                            episode.episode_id,
+                        )
             orphaned_endings = await asyncio.to_thread(
                 reconcile_orphaned_auto_research_failures,
                 background_tasks,
@@ -676,9 +834,16 @@ def create_app(
                     source="startup failure recovery",
                 )
             try:
+                await asyncio.to_thread(
+                    reconcile_pending_auto_research_lifecycle,
+                    background_tasks,
+                )
                 await asyncio.to_thread(reconcile_pending_auto_research_mail, background_tasks)
             except Exception as exc:
-                logger.warning("Could not reconcile pending Auto-research mail at startup: %s", exc)
+                logger.warning(
+                    "Could not reconcile pending Auto-research lifecycle or mail at startup: %s",
+                    exc,
+                )
             for project in store.projects():
                 for episode in store.episodes(project.project_id):
                     if episode.mode == "auto_research":
@@ -1033,16 +1198,40 @@ def create_app(
         acting_user(request)
         return {"space_name": store.rename_space(body.name)}
 
+    # S101. Every project-scoped route hangs off this one router, so membership
+    # is declared once instead of remembered 36 times. A route added outside it
+    # is caught by test_project_membership's route enumeration, not by review.
+    def require_project_membership(project_id: str, request: Request) -> str:
+        canonical = catalog.resolve_project_id(project_id)
+        if not store.is_project_member(canonical, acting_user(request).user_id):
+            # A refusal is indistinguishable from an unknown project. A 403
+            # would confirm the project exists, which is the one thing a
+            # non-member must not learn.
+            raise HTTPException(status_code=404, detail="Project not found")
+        return canonical
+
+    projects_router = APIRouter(dependencies=[Depends(require_project_membership)])
+    # Exposed so the route-enumeration test can prove membership is attached,
+    # rather than trusting that every project route was declared in one place.
+    app.state.project_membership_dependency = require_project_membership
+
     @app.get("/api/projects")
-    def projects() -> list[dict[str, object]]:
-        return catalog.cards()
+    def projects(request: Request) -> list[dict[str, object]]:
+        visible = store.member_project_ids(acting_user(request).user_id)
+        return [card for card in catalog.cards() if card["id"] in visible]
 
     @app.get("/api/episodes")
     def experiment_episodes(
+        request: Request,
         mode: Literal["experiment_loop"] = Query(...),
     ) -> list[dict[str, object]]:
+        # This board reads node titles out of every project's cached graph, so
+        # an unfiltered answer would publish research and not just names.
+        visible = store.member_project_ids(acting_user(request).user_id)
         entries: list[dict[str, object]] = []
         for record in store.projects():
+            if record.project_id not in visible:
+                continue
             cache_status, cached = catalog.cached_snapshot_status(record.project_id)
             if cache_status == "invalid" or (
                 cache_status == "missing" and record.revision is not None
@@ -1100,6 +1289,63 @@ def create_app(
                 )
         return entries
 
+    @app.get("/api/space/users")
+    def space_users(request: Request) -> list[dict[str, object]]:
+        """Who is enrolled in this space, so Invite can offer them by name.
+
+        Names are not unique, so the control resolves to the durable id.
+        """
+
+        acting_user(request)
+        return [
+            {"user_id": user.user_id, "display_name": user.display_name}
+            for user in store.space_users()
+        ]
+
+    # S122. Deliberately *outside* the membership router: you are not a member
+    # of the project you are being invited to, and Inbox lives inside the
+    # project shell, which is unreachable before membership.
+    @app.get("/api/project-invitations")
+    def project_invitations_for_me(request: Request) -> list[dict[str, object]]:
+        user = acting_user(request)
+        names = {item.user_id: item.display_name for item in store.space_users()}
+        entries = []
+        for invitation in store.pending_project_invitations(user.user_id):
+            record = store.project(invitation.project_id)
+            if record is None:
+                continue
+            entries.append(
+                {
+                    "invitation_id": invitation.invitation_id,
+                    "project_id": invitation.project_id,
+                    "project_name": record.name,
+                    "space_name": store.space_name,
+                    "invited_by": invitation.invited_by,
+                    "invited_by_name": names.get(invitation.invited_by),
+                    "created_at": invitation.created_at,
+                }
+            )
+        return entries
+
+    @app.post("/api/project-invitations/{invitation_id}/{response}")
+    def answer_project_invitation(
+        invitation_id: str,
+        response: Literal["accept", "decline"],
+        request: Request,
+    ) -> dict[str, object]:
+        user = acting_user(request)
+        try:
+            answered = store.answer_project_invitation(
+                invitation_id,
+                invited_user_id=user.user_id,
+                response="accepted" if response == "accept" else "declined",
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Invitation not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return answered.model_dump(mode="json")
+
     @app.get("/api/providers")
     def providers(refresh: bool = False) -> list[dict[str, object]]:
         """The registry probed on this machine, for surfaces with no project yet.
@@ -1113,14 +1359,16 @@ def create_app(
         ]
 
     @app.post("/api/projects")
-    def register_project(body: ProjectRegisterRequest) -> dict[str, object]:
+    def register_project(body: ProjectRegisterRequest, request: Request) -> dict[str, object]:
+        # Deliberately not require_patch_capable_identity: creating a project
+        # does not demand a display name, and S01/S112/S116 rely on that.
         try:
-            record = catalog.register(body.locator)
+            record = catalog.register(body.locator, seat_member=acting_user(request).user_id)
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return catalog.card(record.project_id)
 
-    @app.delete("/api/projects/{project_id}")
+    @projects_router.delete("/api/projects/{project_id}")
     def delete_project(project_id: str) -> dict[str, object]:
         try:
             return catalog.delete(project_id).model_dump(mode="json")
@@ -1140,13 +1388,13 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/project-setup/create")
-    def create_project(body: ProjectSetupRequest) -> dict[str, object]:
+    def create_project(body: ProjectSetupRequest, request: Request) -> dict[str, object]:
         try:
-            return setup.create(body)
+            return setup.create(body, seat_member=acting_user(request).user_id)
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.get("/api/projects/{project_id}")
+    @projects_router.get("/api/projects/{project_id}")
     async def project(project_id: str) -> dict[str, object]:
         cached = catalog.cached_snapshot(project_id)
         if cached is not None:
@@ -1180,7 +1428,57 @@ def create_app(
                     return latest
         return snapshot
 
-    @app.get("/api/projects/{project_id}/cached")
+    @projects_router.get("/api/projects/{project_id}/members")
+    def project_members(project_id: str) -> list[dict[str, object]]:
+        canonical = catalog.resolve_project_id(project_id)
+        users = {user.user_id: user for user in store.space_users()}
+        return [
+            {
+                "user_id": record.user_id,
+                "display_name": (
+                    users[record.user_id].display_name if record.user_id in users else None
+                ),
+                "seated_at": record.seated_at,
+            }
+            for record in store.project_members(canonical)
+        ]
+
+    @projects_router.post("/api/projects/{project_id}/invitations", status_code=201)
+    def invite_project_member(
+        project_id: str,
+        body: ProjectInviteRequest,
+        request: Request,
+    ) -> dict[str, object]:
+        canonical = catalog.resolve_project_id(project_id)
+        # The server derives the inviter from the session; the body names only
+        # who is being invited.
+        inviter = acting_user(request)
+        try:
+            invitation = store.invite_to_project(
+                canonical,
+                body.user_id,
+                invited_by=inviter.user_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return invitation.model_dump(mode="json")
+
+    @projects_router.post("/api/projects/{project_id}/leave", status_code=204)
+    def leave_project(project_id: str, request: Request) -> Response:
+        canonical = catalog.resolve_project_id(project_id)
+        leaving = acting_user(request)
+        try:
+            store.leave_project(canonical, leaving.user_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Project not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        fence_episodes_for_departed_member(store, background_tasks, canonical, leaving.user_id)
+        return Response(status_code=204)
+
+    @projects_router.get("/api/projects/{project_id}/cached")
     def cached_project(project_id: str) -> dict[str, object]:
         snapshot = catalog.cached_snapshot(project_id)
         if snapshot is None:
@@ -1188,7 +1486,7 @@ def create_app(
         attach_experiment_control(project_id, snapshot)
         return snapshot
 
-    @app.get("/api/projects/{project_id}/cached/revision")
+    @projects_router.get("/api/projects/{project_id}/cached/revision")
     async def cached_project_revision(project_id: str) -> dict[str, object]:
         snapshot = catalog.cached_snapshot(project_id)
         if snapshot is None:
@@ -1200,7 +1498,7 @@ def create_app(
             "last_remote_sync_at": snapshot["last_remote_sync_at"],
         }
 
-    @app.get("/api/projects/{project_id}/readiness")
+    @projects_router.get("/api/projects/{project_id}/readiness")
     def project_readiness(project_id: str, refresh: bool = False) -> dict[str, object]:
         try:
             return catalog.readiness_snapshot(project_id, refresh=refresh)
@@ -1209,17 +1507,17 @@ def create_app(
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    @app.get("/api/projects/{project_id}/graph")
+    @projects_router.get("/api/projects/{project_id}/graph")
     def graph(project_id: str) -> dict[str, object]:
         return _project_service(catalog, project_id).graph_snapshot()
 
-    @app.get("/api/projects/{project_id}/revision")
+    @projects_router.get("/api/projects/{project_id}/revision")
     def project_revision(project_id: str) -> dict[str, int]:
         service = _project_service(catalog, project_id)
         return {"revision": service.history.current_accepted_revision()}
 
-    @app.get("/api/projects/{project_id}/repositories/files/preview")
-    @app.head("/api/projects/{project_id}/repositories/files/preview")
+    @projects_router.get("/api/projects/{project_id}/repositories/files/preview")
+    @projects_router.head("/api/projects/{project_id}/repositories/files/preview")
     def preview_repository_file(
         project_id: str,
         request: Request,
@@ -1250,7 +1548,7 @@ def create_app(
             },
         )
 
-    @app.put("/api/projects/{project_id}/settings")
+    @projects_router.put("/api/projects/{project_id}/settings")
     def update_project_settings(
         project_id: str,
         body: ProjectSettingsRequest,
@@ -1265,7 +1563,9 @@ def create_app(
         attach_experiment_control(project_id, snapshot)
         return snapshot
 
-    @app.post("/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve")
+    @projects_router.post(
+        "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve"
+    )
     def resolve_project_provider_path(
         project_id: str,
         machine_alias: str,
@@ -1284,12 +1584,12 @@ def create_app(
             attach_experiment_control(project_id, project)
         return result
 
-    @app.get("/api/projects/{project_id}/history")
+    @projects_router.get("/api/projects/{project_id}/history")
     def history(project_id: str, from_revision: int = 1, to_revision: int | None = None):
         service = _project_service(catalog, project_id)
         return service.history.slice(from_revision, to_revision)
 
-    @app.get("/api/projects/{project_id}/history/summaries")
+    @projects_router.get("/api/projects/{project_id}/history/summaries")
     def history_summaries(
         project_id: str,
         from_revision: int = 1,
@@ -1314,12 +1614,12 @@ def create_app(
             for summary in summaries
         ]
 
-    @app.get("/api/projects/{project_id}/sources")
+    @projects_router.get("/api/projects/{project_id}/sources")
     def sources(project_id: str, refresh: bool = False):
         service = _project_service(catalog, project_id)
         return service.index_snapshot(refresh=refresh).model_dump(mode="json")
 
-    @app.post("/api/projects/{project_id}/sync")
+    @projects_router.post("/api/projects/{project_id}/sync")
     def sync_graph(project_id: str, body: GraphSyncRequest, request: Request):
         authorized_by = require_patch_capable_identity(request)
         service = _project_service(catalog, project_id)
@@ -1348,7 +1648,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.delete("/api/projects/{project_id}/caches")
+    @projects_router.delete("/api/projects/{project_id}/caches")
     def clear_rebuildable_caches(project_id: str):
         service = _project_service(catalog, project_id)
         if store.has_active_agent_task(project_id):
@@ -1397,7 +1697,7 @@ def create_app(
         ).clear()
         return current_service.indexer.cache_metrics().model_dump(mode="json")
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/chats/{chat_id}/attachments",
         response_model=ChatAttachmentUpload,
     )
@@ -1424,7 +1724,7 @@ def create_app(
         finally:
             file.file.close()
 
-    @app.delete(
+    @projects_router.delete(
         "/api/projects/{project_id}/chats/{chat_id}/attachments/{attachment_id}",
     )
     def remove_chat_attachment(
@@ -1447,7 +1747,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"removed": True}
 
-    @app.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
+    @projects_router.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
     def start_agent_task(
         project_id: str,
         kind: AgentTaskKind,
@@ -1547,7 +1847,9 @@ def create_app(
                 admission_lock.release()
         return record.model_dump(mode="json")
 
-    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/run", status_code=202)
+    @projects_router.post(
+        "/api/projects/{project_id}/experiments/{node_id:path}/run", status_code=202
+    )
     def run_experiment(
         project_id: str,
         node_id: str,
@@ -1578,7 +1880,7 @@ def create_app(
                     else store.completed_experiment_watcher_group(project_id, node_id)
                 )
                 if pending_group is not None:
-                    request = experiment_watcher_delivery_request(
+                    experiment_request = experiment_watcher_delivery_request(
                         pending_group,
                         trigger="experiment_run",
                         episode_id=episode_id,
@@ -1588,29 +1890,23 @@ def create_app(
                         decision_bundle=control.governing_decisions,
                         completion_criteria=list(node.completion_criteria),
                     )
-                    profile = service.resolve_agent_profile("node_chat")
-                    request = request.model_copy(
+                    experiment_request = experiment_request.model_copy(
                         update={
-                            "provider": profile.provider,
-                            "model": profile.model,
-                            "reasoning": profile.reasoning,
-                            "run_on": profile.run_on,
                             "run_truth_scope": supplied.run_truth_scope,
                             "chat_scope": "node",
                             "node_id": node_id,
+                            "message": experiment_start_message(supplied.message, node_id),
                             "chat_id": supplied.chat_id,
                             "session_id": None,
                         }
                     )
-                    request = _resolved_graph_request(
-                        service,
-                        "node_chat",
-                        request,
+                    experiment_request = resolve_experiment_node_work_request(
+                        service, experiment_request
                     )
                     record = background_tasks.start_watcher_notification(
                         project_id,
                         "node_chat",
-                        request,
+                        experiment_request,
                         [item.watcher_id for item in pending_group],
                         authorized_by=authorized_by,
                     )
@@ -1620,35 +1916,18 @@ def create_app(
                             "conversation is active."
                         )
                     return record.model_dump(mode="json")
-                profile = service.resolve_agent_profile("node_chat")
-                request = supplied.model_copy(
-                    update={
-                        "provider": profile.provider,
-                        "model": profile.model,
-                        "reasoning": profile.reasoning,
-                        "run_on": profile.run_on,
-                        "chat_scope": "node",
-                        "node_id": node_id,
-                        "message": f"Begin a bounded Experiment-loop episode for {node_id}.",
-                        "session_id": None,
-                        "mode": "work",
-                        "trigger": "experiment_run",
-                        "patch_kind": "experiment_loop",
-                        "control_node_id": node_id,
-                        "control_revision": state.revision,
-                        "control_episode_id": episode_id,
-                        "control_invocation": 1,
-                        "control_invocation_ceiling": node.invocation_ceiling,
-                        "control_decision_bundle": control.governing_decisions,
-                        "control_completion_criteria": list(node.completion_criteria),
-                        "watcher_ids": [],
-                    }
+                experiment_request = fresh_experiment_run_request(
+                    service,
+                    supplied,
+                    node=node,
+                    state_revision=state.revision,
+                    control=control,
+                    episode_id=episode_id,
                 )
-                request = _resolved_graph_request(service, "node_chat", request)
                 record = background_tasks.start(
                     project_id,
                     "node_chat",
-                    request,
+                    experiment_request,
                     authorized_by=authorized_by,
                 )
         except ValueError as exc:
@@ -1656,22 +1935,22 @@ def create_app(
             raise HTTPException(status_code=status, detail=str(exc)) from exc
         return record.model_dump(mode="json")
 
-    @app.get("/api/projects/{project_id}/tasks")
+    @projects_router.get("/api/projects/{project_id}/tasks")
     def agent_tasks(project_id: str) -> list[dict[str, object]]:
         _require_registered_project(catalog, project_id)
         return [record.model_dump(mode="json") for record in store.agent_tasks(project_id)]
 
-    @app.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)
+    @projects_router.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)
     def agent_usage(project_id: str) -> AgentUsageSnapshot:
         _require_registered_project(catalog, project_id)
         return store.agent_usage_snapshot(project_id)
 
-    @app.get("/api/projects/{project_id}/watchers")
+    @projects_router.get("/api/projects/{project_id}/watchers")
     def project_watchers(project_id: str) -> list[dict[str, object]]:
         _require_registered_project(catalog, project_id)
         return [record.model_dump(mode="json") for record in store.watchers(project_id)]
 
-    @app.post("/api/projects/{project_id}/watchers/{watcher_id}/check")
+    @projects_router.post("/api/projects/{project_id}/watchers/{watcher_id}/check")
     def check_watcher_now(project_id: str, watcher_id: str) -> dict[str, object]:
         _require_registered_project(catalog, project_id)
         try:
@@ -1682,7 +1961,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return watcher.model_dump(mode="json")
 
-    @app.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
+    @projects_router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
     def stop_watcher(project_id: str, watcher_id: str) -> dict[str, object]:
         _require_registered_project(catalog, project_id)
         watcher = store.watcher(watcher_id)
@@ -1703,7 +1982,7 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return stopped[0].model_dump(mode="json")
 
-    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
+    @projects_router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
     def stop_experiment_watchers(project_id: str, node_id: str) -> list[dict[str, object]]:
         """Reject the retired bulk watcher control in favor of graceful Stop loop."""
 
@@ -1716,7 +1995,7 @@ def create_app(
     # Registered after `.../watchers/stop`: `{node_id:path}` is greedy, so this
     # route would otherwise swallow that one with a node id ending in
     # "/watchers".
-    @app.post("/api/projects/{project_id}/experiments/{node_id:path}/stop")
+    @projects_router.post("/api/projects/{project_id}/experiments/{node_id:path}/stop")
     def stop_experiment_loop(project_id: str, node_id: str) -> dict[str, object]:
         """Finish the current turn, then disable automatic continuation.
 
@@ -1735,7 +2014,7 @@ def create_app(
             _, control = _experiment_control(store, project_id, state, node_id)
         return control.model_dump(mode="json")
 
-    @app.get(
+    @projects_router.get(
         "/api/projects/{project_id}/chats",
         response_model=ChatSummaryPage,
     )
@@ -1751,7 +2030,7 @@ def create_app(
         service = _project_service(catalog, project_id)
         return service.chat_summaries(offset=offset, limit=limit)
 
-    @app.get(
+    @projects_router.get(
         "/api/projects/{project_id}/chats/{chat_id}",
         response_model=ChatTranscript,
     )
@@ -1765,7 +2044,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Chat not found")
         return transcript
 
-    @app.get(
+    @projects_router.get(
         "/api/projects/{project_id}/episodes",
         response_model=list[EpisodeResponse],
     )
@@ -1776,7 +2055,7 @@ def create_app(
         _require_registered_project(catalog, project_id)
         return serialize_episodes(store, project_id, mode=mode)
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/episodes",
         response_model=EpisodeResponse,
         status_code=202,
@@ -1806,7 +2085,7 @@ def create_app(
             status = 409 if live else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/episodes/{episode_id}/stop",
         response_model=EpisodeResponse,
     )
@@ -1832,7 +2111,7 @@ def create_app(
             raise RuntimeError("The stopped episode could not be reloaded.")
         return serialize_episode(store, project_id, current)
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/episodes/{episode_id}/reauthorize",
         response_model=EpisodeResponse,
         status_code=202,
@@ -1878,7 +2157,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return serialize_episode(store, project_id, fresh)
 
-    @app.get(
+    @projects_router.get(
         "/api/projects/{project_id}/episodes/{episode_id}/messages",
         response_model=list[AutoResearchMessageRecord],
     )
@@ -1891,7 +2170,7 @@ def create_app(
             raise HTTPException(status_code=409, detail="This episode has no Auto-research mail.")
         return store.auto_research_messages(episode.episode_id)
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/episodes/{episode_id}/messages",
         response_model=AutoResearchMessageRecord,
         status_code=201,
@@ -1923,11 +2202,16 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
-            deliver_pending_auto_research_mail(
+            started = deliver_pending_auto_research_lifecycle(
                 background_tasks,
                 episode_id=episode.episode_id,
-                recipient_task_id=episode.root_operation_id,
             )
+            if started is None:
+                deliver_pending_auto_research_mail(
+                    background_tasks,
+                    episode_id=episode.episode_id,
+                    recipient_task_id=episode.root_operation_id,
+                )
         except Exception as exc:
             logger.warning(
                 "Could not deliver durable Auto-research message %s immediately: %s",
@@ -1939,8 +2223,8 @@ def create_app(
             raise RuntimeError("The durable episode message could not be reloaded.")
         return current
 
-    @app.get("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
-    @app.head("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+    @projects_router.get("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+    @projects_router.head("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
     def preview_episode_report(
         project_id: str,
         episode_id: str,
@@ -1968,7 +2252,7 @@ def create_app(
             },
         )
 
-    @app.get(
+    @projects_router.get(
         "/api/projects/{project_id}/result-views",
         response_model=list[ResultViewDescriptor],
     )
@@ -1984,8 +2268,8 @@ def create_app(
             chat_id=chat_id,
         )
 
-    @app.get("/api/projects/{project_id}/result-views/{view_id}/preview")
-    @app.head("/api/projects/{project_id}/result-views/{view_id}/preview")
+    @projects_router.get("/api/projects/{project_id}/result-views/{view_id}/preview")
+    @projects_router.head("/api/projects/{project_id}/result-views/{view_id}/preview")
     async def preview_result_view(
         project_id: str,
         view_id: str,
@@ -2015,7 +2299,7 @@ def create_app(
             headers=headers,
         )
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/result-views/{view_id}/keep",
         response_model=ResultViewDescriptor,
     )
@@ -2060,7 +2344,7 @@ def create_app(
                 ) from exc
             return store.result_view_descriptor(kept)
 
-    @app.get("/api/projects/{project_id}/tasks/{operation_id}")
+    @projects_router.get("/api/projects/{project_id}/tasks/{operation_id}")
     def agent_task(project_id: str, operation_id: str) -> dict[str, object]:
         _require_registered_project(catalog, project_id)
         record = store.agent_task(operation_id)
@@ -2079,8 +2363,12 @@ def create_app(
         ]
         return detail
 
-    @app.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
-    @app.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
+    @projects_router.get(
+        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview"
+    )
+    @projects_router.head(
+        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview"
+    )
     async def preview_agent_artifact(
         project_id: str,
         operation_id: str,
@@ -2118,8 +2406,12 @@ def create_app(
             headers=headers,
         )
 
-    @app.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
-    @app.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
+    @projects_router.get(
+        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"
+    )
+    @projects_router.head(
+        "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"
+    )
     async def download_agent_artifact(
         project_id: str,
         operation_id: str,
@@ -2150,7 +2442,7 @@ def create_app(
             },
         )
 
-    @app.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
+    @projects_router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
     def pause_agent_task(project_id: str, operation_id: str) -> dict[str, object]:
         _project_service(catalog, project_id)
         record = store.agent_task(operation_id)
@@ -2161,7 +2453,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
+    @projects_router.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
     def resume_agent_task(
         project_id: str,
         operation_id: str,
@@ -2204,7 +2496,7 @@ def create_app(
             if result_view_resume_lock is not None:
                 result_view_resume_lock.release()
 
-    @app.post(
+    @projects_router.post(
         "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update",
         status_code=202,
     )
@@ -2218,7 +2510,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Agent task not found")
         authorized_by = (
             require_patch_capable_identity(request)
-            if _task_is_patch_capable(previous.kind, previous.request)
+            if task_graph_capable(previous.kind, previous.request)
             else None
         )
         service = _project_service(catalog, project_id)
@@ -2233,7 +2525,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.post("/api/projects/{project_id}/tasks/{operation_id}/retry", status_code=202)
+    @projects_router.post("/api/projects/{project_id}/tasks/{operation_id}/retry", status_code=202)
     def retry_agent_task(
         project_id: str,
         operation_id: str,
@@ -2314,25 +2606,27 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {**package.catalog_entry(), "body": body}
 
-    @app.get("/api/projects/{project_id}/paper")
+    @projects_router.get("/api/projects/{project_id}/paper")
     def get_paper(project_id: str):
         paper = _project_service(catalog, project_id).paper
         return paper.snapshot().model_dump(mode="json")
 
-    @app.post("/api/projects/{project_id}/paper/create")
+    @projects_router.post("/api/projects/{project_id}/paper/create")
     def create_paper(project_id: str):
         paper = _project_service(catalog, project_id).paper
         return paper.create().model_dump(mode="json")
 
-    @app.put("/api/projects/{project_id}/paper")
+    @projects_router.put("/api/projects/{project_id}/paper")
     def save_paper(project_id: str, body: PaperSaveRequest):
         paper = _project_service(catalog, project_id).paper
         return paper.save(body.content, body.base_hash).model_dump(mode="json")
 
-    @app.get("/api/projects/{project_id}/paper/sessions")
+    @projects_router.get("/api/projects/{project_id}/paper/sessions")
     def paper_sessions(project_id: str):
         paper = _project_service(catalog, project_id).paper
         return [item.model_dump(mode="json") for item in paper.sessions()]
+
+    app.include_router(projects_router)
 
     web_dist = web_dist_path()
     if web_dist.exists():
@@ -2601,21 +2895,6 @@ def _experiment_control_node_id(
     return node_id
 
 
-def _task_is_patch_capable(
-    kind: AgentTaskKind,
-    request: AgentTaskRequest | dict[str, object],
-) -> bool:
-    if kind in {"seed", "refresh"}:
-        return True
-    if kind == "auto_research":
-        return True
-    if kind not in {"node_chat", "project_chat"}:
-        return False
-    if isinstance(request, RunRequest):
-        return request.mode == "work"
-    return request.get("mode") == "work"
-
-
 def _history_episode_decoration(
     store: AppStore,
     project_id: str,
@@ -2676,22 +2955,26 @@ def _resolved_auto_research_start_request(
 
 
 def _auto_research_worker_request(
-    context: AutoResearchCommandContext,
+    service: ProjectService,
+    _context: AutoResearchCommandContext,
     arguments: SpawnArguments,
-) -> AutoResearchRunRequest:
-    """Seat a fresh worker without re-reading mutable project Settings."""
+    instruction: str,
+    worker_id: str,
+) -> RunRequest:
+    """Resolve a spawned child through the current ordinary node-Work profile."""
 
-    return AutoResearchRunRequest.model_validate(
-        {
-            **context.request.model_dump(mode="json"),
-            "role": "worker",
-            "actor_operation_id": None,
-            "session_id": None,
-            "instruction": arguments.instruction,
-            "control_node_id": arguments.seat_node_id,
-            "wake_cause": None,
-            "watcher_ids": [],
-        }
+    return _resolved_graph_request(
+        service,
+        "node_chat",
+        RunRequest(
+            chat_id=worker_id,
+            chat_scope="node",
+            node_id=arguments.seat_node_id,
+            message=instruction,
+            mode="work",
+            trigger="orchestrator",
+            patch_kind="work",
+        ),
     )
 
 

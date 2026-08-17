@@ -1,6 +1,6 @@
 ---
 id: S96-joining-a-team-space
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest + api + browser
 covered_by:
@@ -13,6 +13,15 @@ covered_by:
   - web/tests/api.test.mjs
   - web/tests/teamEnrollment.test.mjs
 invariants: [3, 8]
+last_checked: 2026-08-15 — an isolated served team space drove steps 1–4. Init
+  printed the bootstrap code once and serving printed no credential, the browser
+  showed the login page instead of the index, the pasted token left no trace in
+  the DOM or JavaScript storage, the session cookie was invisible to script and
+  survived reload, the index opened under the member's name, reusing the
+  bootstrap code was refused, and an invitation rendered its space name and
+  expiry beside a code absent from the URL. Steps 5–11 — a second member,
+  invitation reuse and lockout, rotation and revocation against running work,
+  and the credential sweep — were not driven.
 ---
 
 # Join a team space once, and stay joined

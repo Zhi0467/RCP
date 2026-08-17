@@ -28,6 +28,7 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageMetric,
     AgentUsageRecord,
     AgentUsageSnapshot,
+    AutoResearchChildExperimentRecord,
     ChatSessionContextRecord,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
@@ -104,11 +105,17 @@ class ExperimentStoreMixin:
         self,
         record: AgentTaskRecord,
         watcher_ids: list[str] | None = None,
+        *,
+        auto_research_route: AutoResearchChildExperimentRecord | None = None,
+        auto_research_admission_id: str | None = None,
     ) -> AgentTaskRecord:
         """Atomically create the Experiment parent, mode child, and invocation 1."""
 
         ids = list(watcher_ids or [])
-        episode = self._new_experiment_episode(record)
+        episode = self._new_experiment_episode(
+            record,
+            auto_research_route=auto_research_route,
+        )
         self._validate_new_episode(episode)
         self._validate_experiment_watcher_ids(record, ids)
         try:
@@ -134,6 +141,27 @@ class ExperimentStoreMixin:
                         "updated_at": record.created_at,
                     }
                 )
+                if auto_research_route is not None:
+                    if (
+                        auto_research_route.child_episode_id != episode.episode_id
+                        or auto_research_route.project_id != episode.project_id
+                        or auto_research_route.control_node_id != episode.control_node_id
+                    ):
+                        raise ValueError(
+                            "the Auto-research route does not match the Experiment episode"
+                        )
+                    self._activate_auto_research_child_experiment(
+                        connection,
+                        auto_research_route,
+                        admission_id=auto_research_admission_id,
+                    )
+                    self._claim_auto_research_experiment_allowance(
+                        connection,
+                        auto_research_episode_id=auto_research_route.auto_research_episode_id,
+                        child_episode_id=episode.episode_id,
+                        operation_id=record.operation_id,
+                        created_at=record.created_at,
+                    )
                 self._insert_episode(connection, started)
                 connection.execute(
                     """
@@ -162,6 +190,8 @@ class ExperimentStoreMixin:
         self,
         record: AgentTaskRecord,
         watcher_ids: list[str],
+        *,
+        auto_research_episode_id: str | None = None,
     ) -> AgentTaskRecord | None:
         """Claim one ready watcher unit and its next paid invocation atomically."""
 
@@ -213,6 +243,32 @@ class ExperimentStoreMixin:
                 )
                 if self._has_active_chat_overlap(connection, record):
                     return None
+                route = connection.execute(
+                    """
+                    SELECT auto_research_episode_id
+                    FROM auto_research_child_experiments
+                    WHERE child_episode_id = ? AND state = 'running'
+                    """,
+                    (episode_id,),
+                ).fetchone()
+                routed_parent_id = (
+                    str(route["auto_research_episode_id"]) if route is not None else None
+                )
+                if (
+                    auto_research_episode_id is not None
+                    and routed_parent_id != auto_research_episode_id
+                ):
+                    raise ValueError(
+                        "the Experiment watcher wake does not match its Auto-research route"
+                    )
+                if routed_parent_id is not None:
+                    self._claim_auto_research_experiment_allowance(
+                        connection,
+                        auto_research_episode_id=routed_parent_id,
+                        child_episode_id=episode_id,
+                        operation_id=record.operation_id,
+                        created_at=record.created_at,
+                    )
                 self._insert_agent_task(connection, record)
                 connection.execute(
                     """
@@ -237,7 +293,12 @@ class ExperimentStoreMixin:
         assert stored is not None
         return stored
 
-    def create_experiment_recovery_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+    def create_experiment_recovery_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str | None = None,
+    ) -> AgentTaskRecord:
         """Create a recovery/repair child without spending another paid invocation."""
 
         if (
@@ -257,6 +318,24 @@ class ExperimentStoreMixin:
             episode = self._episode_record(episode_row)
             if episode.mode != "experiment_loop" or episode.project_id != record.project_id:
                 raise ValueError("The recovery task belongs to another episode.")
+            route = connection.execute(
+                """
+                SELECT auto_research_episode_id, state
+                FROM auto_research_child_experiments
+                WHERE child_episode_id = ?
+                """,
+                (record.episode_id,),
+            ).fetchone()
+            if route is not None:
+                if route["state"] != "running":
+                    raise EpisodeNotRunning(
+                        "the routed child Experiment is no longer accepting recovery work"
+                    )
+                parent = self._load_auto_research_episode(
+                    connection,
+                    str(route["auto_research_episode_id"]),
+                )
+                self._validate_auto_research_parent_admission(parent)
             if (
                 episode.status not in {"running", "stopping"}
                 or episode.ending is not None
@@ -272,23 +351,34 @@ class ExperimentStoreMixin:
             if self._has_active_chat_overlap(connection, record):
                 raise ValueError("Another task is already active in this conversation.")
             self._insert_agent_task(connection, record)
+            if continuation_cause is not None:
+                self._insert_agent_task_dispatch_intent_receipt(
+                    connection,
+                    record,
+                    continuation_cause=continuation_cause,
+                )
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
 
     @staticmethod
-    def _new_experiment_episode(record: AgentTaskRecord) -> EpisodeRecord:
+    def _new_experiment_episode(
+        record: AgentTaskRecord,
+        *,
+        auto_research_route: AutoResearchChildExperimentRecord | None = None,
+    ) -> EpisodeRecord:
         request = record.request
         episode_id = request.get("control_episode_id")
         control_node_id = request.get("control_node_id")
         ceiling = request.get("control_invocation_ceiling")
+        expected_trigger = "orchestrator" if auto_research_route is not None else "experiment_run"
         if (
             record.status != "queued"
             or not record.visible
             or record.kind != "node_chat"
             or record.parent_operation_id is not None
             or request.get("patch_kind") != "experiment_loop"
-            or request.get("trigger") != "experiment_run"
+            or request.get("trigger") != expected_trigger
             or request.get("control_invocation") != 1
             or not isinstance(episode_id, str)
             or record.episode_id != episode_id
@@ -602,8 +692,23 @@ class ExperimentStoreMixin:
             return
 
         trigger = request.get("trigger")
-        if trigger not in {"experiment_run", "watcher"}:
-            raise ValueError("A root experiment-loop task must be a Run or watcher invocation.")
+        if trigger not in {"experiment_run", "orchestrator", "watcher"}:
+            raise ValueError(
+                "A root experiment-loop task must be a Run, orchestrator, or watcher invocation."
+            )
+        if trigger == "orchestrator":
+            route = connection.execute(
+                """
+                SELECT 1 FROM auto_research_child_experiments
+                WHERE child_episode_id = ? AND project_id = ? AND control_node_id = ?
+                  AND state = 'running'
+                """,
+                (episode_id, record.project_id, node_id),
+            ).fetchone()
+            if route is None:
+                raise ValueError(
+                    "An orchestrator Experiment start requires its active Auto-research route."
+                )
         rows = connection.execute(
             """
             SELECT request_json FROM graph_runs
@@ -628,8 +733,8 @@ class ExperimentStoreMixin:
             )
         if invocation == 1 and prior:
             raise ValueError("An experiment-loop episode may have only one first invocation.")
-        if trigger == "experiment_run" and invocation != 1:
-            raise ValueError("A human Run must start at experiment-loop invocation 1.")
+        if trigger in {"experiment_run", "orchestrator"} and invocation != 1:
+            raise ValueError("A Run or orchestrator start must be experiment-loop invocation 1.")
         if trigger == "watcher" and not prior:
             raise ValueError("An automatic watcher wake requires an existing loop episode.")
         if trigger == "watcher":
@@ -1879,6 +1984,54 @@ class ExperimentStoreMixin:
             if before is not None and before.stop_settled_at is None and after is not None:
                 settled += int(after.stop_settled_at is not None)
         return settled
+
+    def stopping_experiment_recovery_candidates(self) -> list[AgentTaskRecord]:
+        """Return each durable Stop's unresolved leaf that may finish in recovery.
+
+        These are already-authorized turns, not new Experiment invocations.  The
+        background adapter still proves the exact native session and stage before
+        it creates a recovery child; this query only identifies the leaves whose
+        Stop would otherwise remain unresolved after a process restart.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT task.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = task.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'auto_research_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM episodes AS episode
+                JOIN experiment_episode_state AS state
+                  ON state.episode_id = episode.episode_id
+                JOIN graph_runs AS task
+                  ON task.episode_id = episode.episode_id
+                WHERE episode.mode = 'experiment_loop'
+                  AND episode.stop_requested_at IS NOT NULL
+                  AND episode.stop_settled_at IS NULL
+                  AND episode.ending IS NULL
+                  AND state.session_diagnostic IS NULL
+                  AND task.visible = 1
+                  AND task.status IN ('paused', 'failed', 'interrupted')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_runs AS child
+                      WHERE child.parent_operation_id = task.operation_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_run_receipts AS receipt
+                      WHERE receipt.operation_id = task.operation_id
+                        AND receipt.category = 'experiment_recovery_abandoned'
+                  )
+                ORDER BY episode.created_at, episode.episode_id,
+                         task.created_at, task.operation_id
+                """
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
 
     @staticmethod
     def _newest_experiment_episode_id(

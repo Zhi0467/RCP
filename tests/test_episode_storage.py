@@ -19,7 +19,7 @@ from rcp.storage import (
     EpisodeReportRecord,
     EpisodeWrapupRecord,
 )
-from rcp.storage.episodes import compact_episode_receipt
+from rcp.storage.episodes import _legacy_experiment_lifecycle, compact_episode_receipt
 
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
@@ -368,7 +368,9 @@ def test_operational_ceiling_is_independent_of_hidden_report_attempts(tmp_path) 
         "observed_generated_tokens": 10,
     }
     assert store.agent_task(hidden_task.operation_id) is not None
-    assert hidden_task.operation_id not in {task.operation_id for task in store.agent_tasks("project")}
+    assert hidden_task.operation_id not in {
+        task.operation_id for task in store.agent_tasks("project")
+    }
     assert hidden_task.operation_id in {
         task.operation_id for task in store.agent_tasks("project", include_hidden=True)
     }
@@ -475,11 +477,14 @@ def test_ending_fence_stops_new_work_before_hidden_report_allocation(tmp_path) -
             "episode",
             _operational_task(store, "late-operation", episode_id="episode"),
         )
-    assert store.fence_episode_ending(
-        "episode",
-        "exhausted",
-        diagnostic="The operational ceiling was reached.",
-    ) == fenced
+    assert (
+        store.fence_episode_ending(
+            "episode",
+            "exhausted",
+            diagnostic="The operational ceiling was reached.",
+        )
+        == fenced
+    )
     with pytest.raises(EpisodeReportConflict, match="immutable"):
         store.fence_episode_ending("episode", "failed", diagnostic="different")
 
@@ -600,13 +605,16 @@ def test_restart_requeues_only_the_same_hidden_report_allocation(tmp_path) -> No
     second = store.allocate_episode_report_attempt("episode")
     assert second.attempt_number == 2
     assert second.allocation_operation_id == allocation.operation_id
-    assert len(
-        [
-            task
-            for task in store.agent_tasks("project", include_hidden=True)
-            if task.kind == "episode_report"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                task
+                for task in store.agent_tasks("project", include_hidden=True)
+                if task.kind == "episode_report"
+            ]
+        )
+        == 1
+    )
 
 
 def test_restart_requeues_the_same_shutdown_paused_hidden_allocation(tmp_path) -> None:
@@ -693,7 +701,9 @@ def test_unlaunchable_wrapup_is_terminal_without_a_hidden_allocation(tmp_path) -
     assert episode.wrapup_error == "The exact native session is unavailable."
     assert episode.report_attempts_used == 0
     assert store.episode_report_attempts("episode") == []
-    assert all(task.kind != "episode_report" for task in store.agent_tasks("project", include_hidden=True))
+    assert all(
+        task.kind != "episode_report" for task in store.agent_tasks("project", include_hidden=True)
+    )
     assert store.fail_episode_wrapup_unlaunchable("episode", wrapup)[1] == wrapup
     store.create_episode(_episode(store, "replacement"))
 
@@ -805,7 +815,13 @@ def test_campaign_migration_keeps_latest_report_and_is_idempotent(tmp_path) -> N
                     report_id, campaign_id, operation_id, ending, sha256, html, created_at
                 ) VALUES (?, 'campaign', ?, 'completed', ?, ?, ?)
                 """,
-                (report_id, operation_id, hashlib.sha256(html.encode()).hexdigest(), html, created_at),
+                (
+                    report_id,
+                    operation_id,
+                    hashlib.sha256(html.encode()).hexdigest(),
+                    html,
+                    created_at,
+                ),
             )
 
     migrated = AppStore(path)
@@ -823,9 +839,12 @@ def test_campaign_migration_keeps_latest_report_and_is_idempotent(tmp_path) -> N
     assert migrated.agent_task("old-report-task").visible is False
     assert AppStore(path).episode_report("campaign") == report
     with migrated.connection() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM episode_reports WHERE episode_id = 'campaign'"
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM episode_reports WHERE episode_id = 'campaign'"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_campaign_migration_removes_each_legacy_report_reservation(tmp_path) -> None:
@@ -1205,3 +1224,218 @@ def test_experiment_exit_migration_classifies_only_retained_proof(tmp_path) -> N
     assert unknown.wrapup_state == "legacy_unavailable"
     assert "no retained Patch" in unknown.ending_diagnostic
     assert migrated.episode_wrapup(unknown_id).ending is None
+
+
+_LEGACY_WRAPUPS_NOT_NULL_DDL = """
+CREATE TABLE episode_wrapups (
+    episode_id TEXT PRIMARY KEY,
+    ending TEXT NOT NULL,
+    partial INTEGER NOT NULL,
+    concluding_operation_id TEXT,
+    allocation_operation_id TEXT UNIQUE,
+    provider TEXT,
+    run_on TEXT,
+    execution_host TEXT,
+    native_session_id TEXT,
+    stage_host TEXT,
+    stage_root TEXT,
+    skill_id TEXT,
+    skill_version TEXT,
+    output_name TEXT,
+    output_path TEXT,
+    receipt_json TEXT NOT NULL,
+    receipt_sha256 TEXT NOT NULL,
+    state TEXT NOT NULL,
+    diagnostic TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+)
+"""
+
+
+def _downgrade_wrapups_to_not_null(path, *, episode_id: str) -> None:
+    """Rebuild `episode_wrapups` the way a pre-relaxation store still has it.
+
+    Every test builds a fresh SQLite file and therefore gets the *current*
+    schema, which is exactly why the drift this reproduces reached a real
+    machine unseen.
+    """
+
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE episode_wrapups")
+    connection.execute(_LEGACY_WRAPUPS_NOT_NULL_DDL)
+    connection.execute(
+        """
+        INSERT INTO episode_wrapups (
+            episode_id, ending, partial, receipt_json, receipt_sha256, state,
+            created_at, updated_at
+        ) VALUES (?, 'completed', 0, '{}', 'digest', 'legacy_unavailable', 'then', 'then')
+        """,
+        (episode_id,),
+    )
+    connection.commit()
+    connection.close()
+
+
+def _wrapup_ending_is_not_null(path) -> bool:
+    connection = sqlite3.connect(path)
+    try:
+        return any(
+            row[1] == "ending" and row[3]
+            for row in connection.execute("PRAGMA table_info(episode_wrapups)")
+        )
+    finally:
+        connection.close()
+
+
+def test_a_store_predating_the_nullable_ending_is_migrated_on_open(tmp_path) -> None:
+    """A legacy Experiment exit can have no ending, and the column must allow it.
+
+    `CREATE TABLE IF NOT EXISTS` never alters a table that already exists, so
+    relaxing `ending` in the create path left every existing database refusing
+    the row. Opening the real store crashed with
+    `NOT NULL constraint failed: episode_wrapups.ending`.
+    """
+
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    _downgrade_wrapups_to_not_null(path, episode_id="legacy-episode")
+    assert _wrapup_ending_is_not_null(path)
+
+    reopened = AppStore(path)
+
+    assert not _wrapup_ending_is_not_null(path)
+    with reopened.connection() as connection:
+        retained = connection.execute(
+            "SELECT episode_id, ending, state FROM episode_wrapups"
+        ).fetchall()
+        assert [tuple(row) for row in retained] == [
+            ("legacy-episode", "completed", "legacy_unavailable")
+        ]
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'episode_wrapups_rebuilt'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_the_migrated_column_accepts_a_wrapup_that_has_no_ending(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    _downgrade_wrapups_to_not_null(path, episode_id="legacy-episode")
+    store = AppStore(path)
+
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO episode_wrapups (
+                episode_id, ending, partial, receipt_json, receipt_sha256, state,
+                created_at, updated_at
+            ) VALUES ('unclassifiable', NULL, 1, '{}', 'digest', 'legacy_unavailable', 'now', 'now')
+            """
+        )
+        stored = connection.execute(
+            "SELECT ending FROM episode_wrapups WHERE episode_id = 'unclassifiable'"
+        ).fetchone()
+    assert stored[0] is None
+
+
+def test_an_existing_row_does_not_excuse_the_missing_migration(tmp_path) -> None:
+    """`ON CONFLICT DO NOTHING` resolves the named uniqueness conflict only.
+
+    This is why the crash happened on a store whose wrapup rows were all already
+    present: the NOT NULL check fires before the conflict is resolved, so the
+    insert raises rather than becoming a no-op.
+    """
+
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    _downgrade_wrapups_to_not_null(path, episode_id="legacy-episode")
+
+    connection = sqlite3.connect(path)
+    with pytest.raises(sqlite3.IntegrityError, match="episode_wrapups.ending"):
+        connection.execute(
+            """
+            INSERT INTO episode_wrapups (
+                episode_id, ending, partial, receipt_json, receipt_sha256, state,
+                created_at, updated_at
+            ) VALUES ('legacy-episode', NULL, 1, '{}', 'digest', 'legacy_unavailable', 'n', 'n')
+            ON CONFLICT(episode_id) DO NOTHING
+            """
+        )
+    connection.close()
+
+
+def test_a_migrated_store_matches_a_fresh_one(tmp_path) -> None:
+    """Guards the drift itself: a relaxed create path needs a migration beside it."""
+
+    legacy_path = tmp_path / "legacy.sqlite3"
+    AppStore(legacy_path)
+    _downgrade_wrapups_to_not_null(legacy_path, episode_id="legacy-episode")
+    AppStore(legacy_path)
+    fresh_path = tmp_path / "fresh.sqlite3"
+    AppStore(fresh_path)
+
+    def columns(path):
+        connection = sqlite3.connect(path)
+        try:
+            return [
+                (row[1], row[2], row[3], row[5])
+                for row in connection.execute("PRAGMA table_info(episode_wrapups)")
+            ]
+        finally:
+            connection.close()
+
+    assert columns(legacy_path) == columns(fresh_path)
+
+
+def test_an_unclassifiable_legacy_exit_deliberately_has_no_ending() -> None:
+    """The shape behind the NULL: do not invent a meaning the data cannot prove.
+
+    A pre-migration Experiment that exited, but whose exit is neither a proven
+    completion nor a proven human pause, gets `ending=None` and says so in its
+    diagnostic. Recording it as `completed` or `failed` would write a claim about
+    somebody's research that nothing supports, so the column carries the absence
+    instead.
+    """
+
+    status, ending, wrapup_state, diagnostic, _ended_at = _legacy_experiment_lifecycle(
+        None,
+        used=1,
+        ceiling=4,
+        recoverable_task=False,
+        watcher_active=False,
+        exited=True,
+        exit_ending=None,
+        exit_diagnostic=None,
+    )
+
+    assert ending is None
+    assert status == "needs_action"
+    # Not `not_started`, so this is exactly the combination that writes a wrapup.
+    assert wrapup_state == "legacy_unavailable"
+    assert diagnostic == (
+        "This pre-migration Experiment exit cannot be classified from retained data."
+    )
+
+
+@pytest.mark.parametrize(
+    ("exit_ending", "expected"),
+    [("completed", "completed"), ("human_pause", "human_pause")],
+)
+def test_a_provable_legacy_exit_keeps_its_ending(exit_ending: str, expected: str) -> None:
+    _status, ending, wrapup_state, _diagnostic, _ended_at = _legacy_experiment_lifecycle(
+        None,
+        used=1,
+        ceiling=4,
+        recoverable_task=False,
+        watcher_active=False,
+        exited=True,
+        exit_ending=exit_ending,
+        exit_diagnostic=None,
+    )
+
+    assert ending == expected
+    assert wrapup_state == "legacy_unavailable"

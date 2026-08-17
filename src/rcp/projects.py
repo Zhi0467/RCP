@@ -34,8 +34,8 @@ from rcp.limits import (
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
-from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.service import ProjectService, ProjectSettingsRequest, RunRequest
+from rcp.runs.task_policy import task_graph_capable
+from rcp.service import ProjectService, ProjectSettingsRequest
 from rcp.sources import project_cache_roots
 from rcp.storage import (
     AgentTaskKind,
@@ -134,8 +134,15 @@ class ProjectCatalog:
         locator: str,
         *,
         identity_action: Literal["created", "adopted"] | None = None,
+        seat_member: str | None = None,
     ) -> ProjectRecord:
-        """Register one canonical project after its durable nameplate is settled."""
+        """Register one canonical project after its durable nameplate is settled.
+
+        ``seat_member`` is the acting person, who becomes the project's first
+        member. A team space has no other way to know who that is, so its routes
+        always supply it; a personal space has exactly one possible member and
+        resolves them here.
+        """
 
         with self._registration_lock:
             bootstrap = load_manifest(locator)
@@ -224,6 +231,7 @@ class ProjectCatalog:
                     )
                 )
             self._finish_alias_file_migrations(identity.project_id)
+            self._seat_first_member(stored.project_id, seat_member)
             return stored
 
     def register_degraded_read_only(
@@ -231,6 +239,7 @@ class ProjectCatalog:
         locator: str,
         *,
         materialization: MaterializationResult,
+        seat_member: str | None = None,
     ) -> ProjectRecord:
         """Catalog the last coherent state without claiming or repairing canonical history."""
 
@@ -286,7 +295,32 @@ class ProjectCatalog:
             self._stamp_snapshot_identity(snapshot, project_id)
             self.mark_snapshot_fresh(snapshot)
             self.write_cached_snapshot(project_id, snapshot)
+            self._seat_first_member(project_id, seat_member)
             return self.update_summary(project_id, snapshot)
+
+    def _seat_first_member(self, project_id: str, seat_member: str | None) -> None:
+        """Seat the acting person on a project that has no members yet.
+
+        Registration is idempotent — reopening an existing project comes back
+        through here — so this only ever seats the *first* member. Later members
+        arrive through invitations, and a project someone left must not silently
+        readmit them by being reopened.
+
+        With nobody acting — `rcp open` from a console, or server startup — a
+        personal space resolves its one possible member, and a team space seats
+        everyone. Seating nobody would be worse than seating everyone: the
+        project would be invisible to every member, and nobody could invite
+        themselves to it, so it could never be recovered.
+        """
+
+        if self.store.project_members(project_id):
+            return
+        if seat_member is not None:
+            self.store.seat_project_member(project_id, seat_member)
+            return
+        owner = self.store.local_owner
+        for user in [owner] if owner is not None else self.store.space_users():
+            self.store.seat_project_member(project_id, user.user_id)
 
     def require_archive_available(self, canonical_location: str) -> None:
         """Refuse to archive canonical state still owned by this catalog."""
@@ -374,6 +408,9 @@ class ProjectCatalog:
             require_attribution=True,
             agent_authority_resolver=(
                 self.store.agent_task_authority if project_id is not None else None
+            ),
+            project_membership_check=(
+                self.store.is_project_member if project_id is not None else None
             ),
         )
 
@@ -1309,14 +1346,7 @@ class ProjectDisplayCache:
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
-        graph_capable = (
-            isinstance(request, RunRequest)
-            and (
-                kind in {"seed", "refresh"}
-                or (kind in {"node_chat", "project_chat"} and request.mode == "work")
-            )
-        ) or (kind == "auto_research" and isinstance(request, AutoResearchRunRequest))
-        if not graph_capable:
+        if not task_graph_capable(kind, request):
             return
         try:
             service = self._catalog.loaded_service(project_id)

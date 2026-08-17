@@ -78,7 +78,7 @@ canonical blueprint. Building the first must not silently alter the second.
   either way.
 
 Graph-level scheduling across the research frontier is **no longer deferred**. It
-is decided as the bounded auto-research campaign in the blueprint's
+is decided as the bounded Auto-research episode in the blueprint's
 [Auto-research episode mode](research-control-panel-blueprint.md#auto-research-episode-mode)
 section, and it remains outside this question — the two features share only the
 word "control."
@@ -335,9 +335,9 @@ one caller.
 **Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
 
 The confirmed team-space design has no user-owned agent actors. Concrete tasks,
-workers, and campaigns are addressable execution records; the ordinary and
+workers, and episodes are addressable execution records; the ordinary and
 project-orchestrator profiles are the permission principals. Peer mail must
-therefore be designed from task/campaign lineage, project membership, recipient
+therefore be designed from task/episode lineage, project membership, recipient
 budget, scope, and human authorization—not an agent owner or actor directory.
 
 ### The question
@@ -353,9 +353,9 @@ canonical **graph** event that a graph-condition wake observes exactly, without
 hearsay.
 
 Team spaces change the calculus because several independently authorized root
-tasks and campaigns may coexist in one project. The unresolved cases are:
+tasks and episodes may coexist in one project. The unresolved cases are:
 
-- a task in one campaign needs a result from a task in another campaign;
+- a task in one episode needs a result from a task in another episode;
 - an ordinary task wants to address a worker it did not spawn;
 - a project member wants to transfer or share responsibility for a running seat;
   and
@@ -367,19 +367,19 @@ tasks and campaigns may coexist in one project. The unresolved cases are:
 The permission gymnastics, which are genuinely unsolved:
 
 1. **Which authorization pays for delivery?** Delivery spends an invocation
-   unit of the recipient. A task from campaign A must not consume campaign B's
-   budget merely by addressing one of its workers. The recipient campaign or
+   unit of the recipient. A task from episode A must not consume episode B's
+   budget merely by addressing one of its workers. The recipient episode or
    root authorization needs an explicit admission rule or opt-in.
 2. **What authority does a received message carry?** Nothing, by the hearsay
    rule. The recipient still acts under its own profile, task contract, scope,
    project membership, and root authorization. The retained thread must record
    the outside influence even though it grants no permission.
 3. **Which tasks are addressable?** A task cannot name an arbitrary id and gain
-   reach. The address set must be derived from permitted project and campaign
+   reach. The address set must be derived from permitted project and episode
    structure, active task state, and the sender's own scope.
-4. **Who consents?** Cross-campaign addressability may need consent from the
-   recipient campaign's root authorizer or a project-level policy. Project
-   membership alone does not authorize spending another campaign's budget.
+4. **Who consents?** Cross-episode addressability may need consent from the
+   recipient episode's root authorizer or a project-level policy. Project
+   membership alone does not authorize spending another episode's budget.
 5. **Topology.** Graph adjacency was considered as the natural bound on who may
    talk to whom — two seats may talk when their control nodes are adjacent,
    making the comms topology derived from research structure and auditable. It

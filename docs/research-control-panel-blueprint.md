@@ -1,6 +1,6 @@
 # Research Control Panel blueprint
 
-**Version:** 0.58
+**Version:** 0.64
 **Status:** canonical
 
 This is RCP's single design blueprint. It replaces the former v0.3-v0.5
@@ -16,6 +16,58 @@ raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
 
+- **0.64** — closed the crash, concurrency, and response-size boundaries of the
+  Auto-research control surface: unavailable keyed effects reconcile only their
+  original deterministic intent; Apply admission, canonical commit, and final
+  settlement deduplicate independently; committed queued children are
+  restart-dispatched without new budget; guarded Finish retains a complete
+  immutable receipt outside the compact command ledger; oversized Clear refuses
+  without partial acknowledgment; and desktop report links open a native preview.
+- **0.63** — made the Auto-research command client a complete in-turn control
+  surface: live Patch Apply with refreshed state, file-backed worker and
+  Experiment goals, one project-global graceful Experiment replacement, a
+  shared child-Experiment allowance of five times the Auto-research budget,
+  durable lifecycle notices with harvest/clear, exact Resume without an agent
+  Retry verb, and a pure guarded finish. Fixed the agent-facing response and
+  compatibility shapes, and required prompts to change atomically with the
+  commands they truthfully expose.
+- **0.62** — tightened Auto-research completion: a settled child, an open
+  Blocker, temporary resource contention, or a downstream human-started
+  Experiment is not by itself a reason to finish. While the remaining
+  prerequisite is resolvable with existing agent authority and tools, the
+  orchestrator must use its authorized budget to act, delegate, or arrange an
+  observable continuation; only an exact dependency on new human judgment,
+  credentials, approval, privileged action, or coordination permits a
+  human-authority pause.
+- **0.61** — made membership something that can change. A project invitation is
+  an in-product item carrying no credential, any member may send one, and
+  pending invitations appear on the project index. Leaving is your own act and
+  the last member cannot take it. Losing membership presses the existing Stop
+  fence rather than adding a second one, while credential revocation
+  deliberately fences nothing — an asymmetry now stated outright. This also
+  supplied the permission-that-changes that the two-gates contract had
+  previously been unable to demonstrate.
+- **0.60** — made project membership real. Joining a space no longer joins its
+  projects: each project holds its own membership of durable user ids, creation
+  seats the creator, and the boundary is checked both as a request-level
+  condition on every project-scoped route and again at Apply under the canonical
+  append lock. A non-member is answered exactly as an unknown project id is, and
+  the project list and cross-project Experiment board both filter. Membership
+  stays operational and never enters `.research/`, so replay is untouched. One
+  decision was added during implementation: a project is never left with no
+  members, because a memberless project is invisible to everyone and there is no
+  administrator rank to recover it. Granting membership to a second person
+  remains unbuilt.
+- **0.59** — absorbed two already-implemented contracts that had shipped without a
+  canonical section: team space enrollment, credentials, and browser sessions;
+  and the two permission gates with their closed action vocabulary and
+  constants-in-code profile ruling. Also corrections, not decisions: finished the
+  0.58 rename by replacing the remaining "campaign" concept wording and the stale
+  `campaign.status` reference with episode vocabulary, and replaced the claim
+  that team enrollment is disabled and unconnected with what the code does — a
+  team space gates on a login boundary and issues member invitations, while a
+  personal space keeps the reserved disabled seam. Project-level membership
+  remains designed and unbuilt.
 - **0.58** — made Auto-research and bounded Experiment control two modes of one
   persisted episode parent; gave every non-Stop ending one hidden, exact-session,
   visual HTML wrap-up with at most three automatic report turns; kept operational
@@ -219,9 +271,9 @@ never silently accepts scientific conclusions or treats mutable operational
 observations as canonical truth.
 
 RCP does schedule research work, and only under one bound: inside an
-auto-research campaign a human authorized, against an invocation budget that
-human set. The campaign may create and revise research framing within that
-scope. It may never widen its own authorization. Outside a live campaign RCP
+Auto-research episode a human authorized, against an invocation budget that
+human set. The episode may create and revise research framing within that
+scope. It may never widen its own authorization. Outside a live episode RCP
 still schedules nothing on its own.
 
 The expensive-to-reverse commitments are the graph ontology, the Patch log's
@@ -259,6 +311,90 @@ Every space also stores one immutable `personal | team` kind beside its id.
 Existing installations migrate to `personal`; creating a team space selects
 `team` explicitly. The kind is never guessed from process ownership, host,
 path, credentials, or user count, and restart or relocation cannot change it.
+
+### Team space enrollment and sessions
+
+A personal space has one durable local owner and no credential. A team space
+authenticates every human request, and this is how a person gets in.
+
+A team space is created deliberately and separately from serving one. The
+initialize command requires an explicit name and an interactive terminal, prints
+one bootstrap code exactly once, and neither takes the singleton lock nor serves.
+Serving a team space prints no credential at any time. A team space binds only to
+a loopback host, because a member credential must not cross plaintext HTTP;
+remote members reach it over an encrypted connection. That refusal is checked
+before singleton takeover, so a mistyped host leaves a healthy server running
+rather than stopping it and then refusing.
+
+The first member claims the space with the single-use bootstrap code. Every later
+member joins through an invitation any existing member creates. An invitation is
+short-lived, single-use, and visible only to its creator; the copyable block
+carries the non-secret space name and expiry beside the code, never places the
+code in a URL, and shows the code exactly once. Repeated wrong guesses lock that
+specific code rather than an address.
+
+Enrollment issues one permanent, individually revocable `rcp_`-prefixed token per
+member. RCP stores only an indexed SHA-256 hash of it and compares in constant
+time. The exchange endpoint's request body is the only place a raw token is ever
+accepted: it is never read from a URL or an ordinary API request, and it never
+enters JavaScript storage, prompts, receipts, diagnostics, or canonical history.
+The exchange returns a server-side browser session carried in a `__Host-`
+prefixed, HTTP-only, `Secure`, `SameSite=Lax` cookie that slides on use and
+expires after an idle window fixed in central configuration. Restarting the
+backend re-enrolls nobody.
+
+Rotation and revocation are each member's own: nobody can read, rotate, or revoke
+another member's credential, and neither action stops work that is already
+authorized. Running work finishes and lands under the `authorized_by` snapshot
+taken when it was dispatched. Stopping a person's work is a separate operational
+act, and removing a person is a machine operation requiring operating-system
+privilege rather than a product role.
+
+Every member has the same product authority. RCP defines no administrator rank;
+where real privilege is needed it borrows the host operating system's.
+
+Joining a space is not joining its projects. Each project has its own membership,
+holding durable `user_id`s and no display names, so a person is a member before
+they have chosen a name. Creating a project seats its creator. Membership is
+checked in two places: once as a request-level condition on every project-scoped
+route, and again at Apply, read live under the canonical append lock, because
+membership may be given up while a task runs. A non-member is answered exactly as
+an unknown project id is — the project is absent from their project list and from
+the cross-project Experiment board, and asking for it by its exact id returns the
+same "not found" as an id that never existed. A 403 would confirm the project
+exists.
+
+Membership is operational, not canonical: it lives in the app database, never in
+`.research/`, and replay neither reads nor requires it. It is authority inside
+RCP and not confidentiality on disk — canonical state is a git repository that
+agents read by path, so until team runs execute as the space's own account, a
+person with a shell on the machine can read any project's `.research`.
+
+A project is never left with no members. One opened from a console, or opened by
+the server before anybody enrolled, has no creator to seat, so it is claimed by
+everyone present at registration or by the first person to enrol afterwards —
+a memberless project would be invisible to everyone with no rank able to recover
+it. Projects that predate project membership are backfilled with every current
+space member exactly once, for the same reason. Once a project has any member,
+invitations govern it.
+
+An invitation is an authenticated in-product item addressed to somebody
+already enrolled in the space. It issues and rotates no credential and cannot
+be used to join the space, so it is a different thing from an enrollment code.
+Any member may invite any space member; there is no approval chain and no rank
+above member. Pending invitations appear on the project index, because Inbox
+lives inside the project shell and is unreachable before membership.
+
+Leaving is your own act. The last member cannot leave, because a memberless
+project would be invisible to everyone with no rank able to recover it —
+invite somebody first, or delete the project. Losing membership fences new
+work exactly the way Stop does: the turn running now finishes normally, no
+further watcher wake is claimed, and the fence is durable across a restart.
+
+Revoking a credential and losing membership are deliberately asymmetric.
+Revocation is about a credential and stops no already-authorized work, so
+rotating after a lost laptop cannot kill a week-long episode. Removal from a
+project is about that project, and does fence it.
 
 A project has a manifest, one global graph, a guarded project truth scope, and
 exactly one canonical state repository. The state repository may be local or
@@ -466,6 +602,49 @@ do not create or require a Proposal. Like other edits to judged node content,
 they reset accepted or contested standing to asserted. A resolved or superseded
 Blocker remains outside human attention; reopening it makes the asserted Blocker
 await a fresh judgment.
+
+### Permission is checked twice
+
+Starting work is itself an authority-bearing action, so checking permission only
+when a Patch lands is too late: by then the task has spent provider budget, read
+the project, and possibly written a repository or called an external service.
+Checking only at dispatch is also wrong, because the graph moves while a task
+runs. Both checks exist, they answer different questions, and neither stands in
+for the other.
+
+**At dispatch,** before any provider launches, RCP resolves the action against
+the authorizer and the agent profile. A refusal names the action it refused,
+launches nothing, spends no budget, and creates no scratch. A permitted dispatch
+writes a durable task record binding authorizer, project, profile, contract, and
+scope *before* execution begins.
+
+**At Apply,** RCP reloads current state, re-prepares its own bookkeeping, and
+reruns the semantic validator while holding the canonical append lock. A Patch
+authorized at dispatch can still be refused there — a human may have moved the
+graph out from under it. There is no expected-revision pin and no ancestor walk;
+graph movement alone is not a rejection, only current semantic invalidity is. The
+Apply decision and the canonical append are one serialized path.
+
+**A refusal is not a retraction.** Compute, repository writes, and external calls
+that already happened stand, and RCP says so rather than implying a rollback. The
+answer is not the Patch: a turn whose graph change is refused still returns what
+it said.
+
+**Replay checks no permission at all.** Once a Patch was admitted, a later change
+cannot reach back and invalidate it, so replay succeeds with no profile,
+membership, or permission records present. A task recorded before dispatch
+authority existed carries no binding, and imposes none on its continuations —
+an authorization that never happened cannot be invented afterwards.
+
+Authority is expressed as a closed vocabulary of named actions, in two separate
+lists with separate checks: graph actions keyed to the operations materialization
+applies, and orchestration commands. Granularity is one action per Patch
+operation, plus a named exception wherever a single field or target type changes
+who may act. **Both agent profiles are constants in code**, never configuration:
+changing what an agent may do is a code change with a scenario attached, so
+nobody can misconfigure their way into an agent that rewrites their beliefs. The
+action is derived from the operation and the declared human action, never guessed
+from the shape of a Patch.
 
 ### Protected-belief Proposals
 
@@ -1062,6 +1241,14 @@ creates no semantic `ExperimentAttempt`; the agent records and closes attempts
 only when that is useful scientific bookkeeping. Attempt status never gates an
 episode start, advances the counter, identifies a watcher, or resets an episode.
 
+An episode-start request may also carry a non-blank human message. RCP preserves
+that message exactly as the episode's initial goal; only a missing or blank
+message receives the fallback `Begin a bounded Experiment-loop episode for
+{node_id}.` This rule applies equally to the human API path and to an
+Auto-research-orchestrated start. The goal is subordinate task prose, not a
+replacement for the RCP-owned Experiment contract, and remains immutable across
+watcher wakes, exact Resume, and provider recovery.
+
 Provider-task Resume and Retry retain the episode id and invocation number of
 the interrupted or failed turn. Live Patch validation, in-session Patch
 correction, watcher-file correction, and a later repair of a rejected graph
@@ -1441,7 +1628,7 @@ dispositions are shown as timeline events, not scientific conclusions.
 Live-output delivery, durable output offsets, debounce/batching for output,
 repository leases, stale-record policy, and direct graph manipulation remain open
 in [`open-questions.md`](open-questions.md). Graph-wide scheduling is no longer
-among them; it is bounded by the campaign below.
+among them; it is bounded by the Auto-research episode mode below.
 
 ## Auto-research episode mode
 
@@ -1516,6 +1703,19 @@ spends from or appears in this operational pot. No operational exceptions is
 what makes orchestrator/worker ping-pong terminate by exhaustion rather than by
 good behavior.
 
+Call this Auto-research pot **B**. The same authorization derives one separate
+child-Experiment allowance **E = 5 × B**. E is one total attached to the
+Auto-research episode across every Experiment-loop episode the orchestrator
+starts, not a reservation and not a per-Experiment ceiling. Each actual child
+Experiment invocation atomically spends one unit of E and also counts against
+that child's own pinned ceiling. A sleeping episode reserves nothing; exact
+Resume of the same allocation spends
+nothing; invocation 1 of a graceful replacement spends a new unit. At E = 0 no
+new child Experiment invocation or watcher wake starts, but existing notices and
+history remain. A refused kickoff also reserves no replacement and does not Stop
+an existing viable episode merely to discover that its replacement cannot launch.
+Multiple Experiment nodes compete for this same total in commit order.
+
 At exhaustion, current turns finish, nothing new starts, the episode generates
 its visual report, then sits in **Needs action**. Reauthorization creates a new
 Auto-research episode at invocation one with a fresh native session; it never
@@ -1528,12 +1728,41 @@ There is no second budget, second stop, or second wake path.
 
 Normal completion is explicit. The orchestrator invokes one idempotent staged
 `finish` command; RCP never mistakes an actor sleeping on mail or a watcher, or a
-temporarily quiet episode, for completion.
+temporarily quiet episode, for completion. The orchestrator must not make the
+same mistake itself: settled children, an open Blocker, temporary resource
+contention, or a downstream human-started Experiment are not completion while
+the remaining prerequisite can be resolved with the episode's existing agent
+authority and tools. It uses the remaining budget to act directly, seat another
+executable worker, or arrange an observable continuation. It may pause for human
+authority only after naming the exact new human judgment, credential, approval,
+privileged action, or coordination with another person that progress requires.
+It never busy-polls or keeps a provider turn open merely to wait.
+
+`finish` is also a pure guarded state transition, not cleanup disguised as
+completion. In one transaction it refuses and returns every current blocker when
+there is a running or queued spawned Work task, an active or stopping child
+Experiment episode, a pending Experiment replacement, an undelivered lifecycle
+notice, or a durably accepted child admission not yet reflected in the child
+registry. Each blocker names its kind, id, and state and says which explicit
+command can settle it. Refusal stops there: it never cancels work, completes a
+stop, acknowledges a notice, or reconciles a child implicitly. Once no blocker
+remains, the existing finish fence wins atomically. A terminal failed child no
+longer blocks after its lifecycle notice has been delivered.
+
+Every keyed Finish decision writes one immutable full-result receipt in that same
+transaction, whether it refuses with blockers or commits the fence. The compact
+command ledger stores only the receipt identity, count, disposition, and digest;
+the outward response hydrates the complete blocker snapshot from the receipt.
+Repeating the same key therefore returns the same decision even if child state has
+since changed, while a new key evaluates the current state.
 
 Provider, network, rate-limit, and resumable native-session failures of the sole
-orchestrator remain recoverable through the ordinary bounded backoff,
-Resume/Retry, and exact-session paths. Only an unrecoverable orchestrator failure
-ends the episode. A worker failure remains visible work for the orchestrator to
+orchestrator remain recoverable through the ordinary bounded backoff and
+exact-session paths. Human recovery surfaces may retain their existing Retry,
+but the staged orchestrator command surface exposes only exact Resume: creating
+a replacement worker or episode is already the honest retry primitive. Only an
+unrecoverable orchestrator failure ends the episode. A worker failure remains
+visible work for the orchestrator to
 inspect and manage; it is never promoted into an episode verdict. A terminal
 orchestrator failure fences new admissions, retires episode watchers with the
 same durable Stop semantics, retains pending mail for the retrospective, and
@@ -1568,14 +1797,14 @@ The projection is fixed by structured state:
 
 The expanded detail always keeps its **Episode health** and **Recommended next
 step** views distinct. Pause and Stop are optional parent controls, not
-healthy-campaign recommendations, and each appears only when the current state
+healthy-episode recommendations, and each appears only when the current state
 declares it valid. Exact Resume or Retry appears only for actionable recovery;
 automatic recovery offers no duplicate manual Retry. Reauthorization appears at
 exhaustion, and the report control appears only when the terminal report exists.
 A final report error is text, never a recovery control. No recommendation names
 an unavailable action.
 
-### Mail
+### Mail and lifecycle notices
 
 `messages.json` is a third handoff file beside `patch.json` and `watch.json`,
 with the same fail-closed clearing and the same all-or-none validation.
@@ -1583,7 +1812,7 @@ with the same fail-closed clearing and the same all-or-none validation.
 Only the orchestrator addresses a worker; workers reply to the orchestrator. The
 human messages the orchestrator and never a worker directly, because talking to a
 worker behind its manager's back desynchronizes the orchestrator's model of its
-own campaign with no way for it to notice. Delivery reuses the wake machinery
+own episode with no way for it to notice. Delivery reuses the wake machinery
 under its own continuation cause and never the shell poller.
 
 Messages carry no graph authority — they are Markdown prose, and `patch.json`
@@ -1594,6 +1823,48 @@ on state that was never committed.
 There is no blocking primitive. Every agent is either running a turn or asleep
 with durable state; waiting is declarative, and coordination is
 continuation-passing between sleeping agents.
+
+Lifecycle notices are not agent mail. They are RCP-authored authority facts from
+one durable notification registry: a spawned worker settled or needs recovery;
+an Experiment episode needs attention, completed, exhausted, or failed; a graph
+condition became true; or a pending replacement advanced. Child admission and
+its parent routing record commit together. Every later source transition and its
+deduplicated notice also commit together, keyed by source event and attempt, so
+a process crash cannot turn an accepted child into an untracked one.
+
+Routing remains deliberately narrow. Worker settlement and recovery notices go
+to the orchestrator; orchestrator mail and control go to that worker; Experiment
+watchers continue their own bound Experiment episode; Experiment attention and
+terminal notices go to the orchestrator; graph-condition notices go to the
+orchestrator. An Auto-research orchestrator can never start another
+Auto-research episode, and this registry does not generalize star mail into peer
+mail.
+
+Nothing is injected into a live provider process, and no same-actor turn runs
+concurrently. A notice for a busy recipient queues for a post-settlement
+continuation. An already-running orchestrator may instead pull and acknowledge
+its inbox without spending another invocation. When B or E is exhausted the
+notice still persists and appears in status and the report, but it cannot create
+an unauthorized wake.
+
+A sleeping-orchestrator wake claims one bounded notice batch and stages it as a
+strict RCP-authored lifecycle input separate from `messages.json`; the
+continuation prompt labels that input as authority about lifecycle, not graph
+truth. Admission, claim, and delivery-operation binding are atomic. Failure
+recovers that same delivery instead of claiming the notices again. A worker reply
+and its settlement notice may share one root continuation and one B unit, but
+remain separate hearsay and authority inputs.
+
+The inbox command has exactly two idempotent modes. `--harvest` returns and
+acknowledges one server-bounded batch with bodies. `--clear` acknowledges every
+notice pending at the command's snapshot and returns compact ids and counts
+without the bodies. Both retain audit history, and either acknowledgment prevents
+later duplicate wake delivery. If even the complete compact Clear response cannot
+fit the command-response bound, Clear refuses before acknowledging anything. The
+orchestrator uses a new-key bounded Harvest to reduce the pending snapshot and then
+calls Clear with another new key; Clear never silently degrades to a partial prefix.
+Facts already delivered in a lifecycle wake are not pending inbox items and need
+no second acknowledgment.
 
 ### The staged command client
 
@@ -1607,9 +1878,124 @@ adding a second channel. Deliverables stay files — `patch.json` must survive
 interruption and be re-read by the recovery ladder, and a loop's `watch.json` is
 validated all-or-none where an empty declaration is meaningful.
 
+The orchestrator receives one exact command prefix and this closed CLI surface:
+
+- `validate <patch-path>` and `apply --key <key> patch.json`;
+- `status [--worker-id <worker-id> | --episode-id <episode-id>]`;
+- `spawn --key <key> --seat-node <node-id> --instruction-file <path>`;
+- `pause <worker-id> --key <key>`, `resume <worker-id> --key <key>`, and
+  `stop <worker-id> --key <key>`;
+- `message <body> [--recipient <worker-id>] --key <key>` and the existing
+  `watch-graph` form;
+- `episode --kick-off-experiment --key <key> --node <experiment-id>` with
+  `--goal-file <path>` and optional `--invocation-limit <positive-int>`;
+- `episode --stop <episode-id> --key <key>` and
+  `episode --resume <episode-id> --key <key>`;
+- `inbox --harvest --key <key>` or `inbox --clear --key <key>`; and
+- `finish --key <key>`.
+
+There is no staged Retry verb. `resume` means only the exact saved native
+session and stage, and is available for a failed worker or child episode when
+that binding is still usable. It consumes no new B or E unit because it resumes
+the same allocation. An unusable or session-limited binding returns
+`resume_unavailable` and names the replacement action: `spawn` for a worker or a
+fresh `episode --kick-off-experiment` for an Experiment. The existing human
+UI/API Retry paths remain outside this agent CLI.
+
+`spawn` always creates an ordinary node Work task seated on an Experiment or
+Blocker. Its instruction and an Experiment kickoff's goal are direct regular
+UTF-8 files in the orchestrator's exact workspace: non-blank, bounded, not a
+symlink, and not outside or below that directory. RCP snapshots their bytes and
+SHA-256 digest at command admission because the actor workspace is reused. The
+goal should be a concise objective; RCP still supplies the full Experiment-loop
+contract. No command option exposes provider, model, effort, execution host, or
+another profile choice: RCP resolves the complete human-configured node Work
+profile. Omitting `--invocation-limit` uses the node's configured next-episode
+ceiling; an explicit positive value pins that episode and may move it either
+direction. A value larger than the Auto-research authorization's total E is
+refused with that total and an instruction to lower it.
+An omitted node default above E is not refused; the shared allowance simply
+curtails actual invocations. An explicit value no greater than total E may also
+exceed the currently remaining E, with the same actual-spend curtailment.
+
+Exactly one live Experiment-loop episode may exist for an Experiment node across
+the whole project, regardless of whether a person or another Auto-research
+episode started it. A new orchestrator kickoff is a graceful replacement, never
+overlap or a hard kill: a coordinator one level above the existing Stop path
+persists the replacement intent and snapshotted goal, invokes that same Stop
+path, waits for settlement, and only then uses the existing fresh-start path. If
+the prior turn is still in flight, the command succeeds as
+`replacement_pending`; the lifecycle registry starts the replacement later.
+`episode --stop` stops an active episode through the existing path or cancels a
+reserved pending replacement.
+The human UI retains its existing disabled duplicate-start action. The
+orchestrator command must satisfy the same current Decision, Proposal, and
+Blocker gates, but an existing live episode selects replacement rather than the
+duplicate-start refusal. The coordinator reruns normal readiness immediately
+before fresh start; if graph movement made the Experiment ineligible, it emits a
+terminal replacement notice instead of bypassing the gate.
+
+Status, direct Stop, and exact Resume address only a worker or child episode
+registered to this Auto-research parent. The replacement coordinator is the one
+deliberate exception: as part of an authorized kickoff, it may gracefully stop
+the project-global current episode before registering the new child.
+
+`apply` snapshots the direct regular UTF-8 `patch.json` and its digest, then
+reuses the ordinary Work Apply path under the canonical append lock. It
+re-prepares bookkeeping and validates against live current state; there is no
+context-revision pin. Up to thirty-two distinct keyed Apply admissions, including
+ones whose effect later returns unavailable, may reach the effect boundary in one
+provider turn. The admission count is serialized, and a same-key replay consumes
+no additional place; a thirty-third distinct key is rejected before its file is
+read even under concurrent calls. Watchers are evaluated after each committed
+Apply. A successful or valid-empty Apply consumes `patch.json`; a semantic
+rejection leaves it for correction. A repeated key returns or safely reconciles
+the original snapshotted intent without rereading unrelated current bytes or
+reapplying a canonical commit. Any unconsumed `patch.json` still takes the
+existing end-of-turn settlement
+path, so old agents remain correct and no Patch can land twice. A successful
+response names the disposition, applied and live revisions, patch digest,
+bounded validation messages, and refreshed graph and research paths; the
+orchestrator rereads those paths before its next graph-dependent action.
+The canonical Patch keeps `source_operation_id` as the direct authorized
+orchestrator task and carries a separate RCP-stamped `source_effect_id` for this
+Apply, bound to the exact snapshotted Patch digest. The final unconsumed
+end-of-turn Patch receives its own deterministic effect identity as well. The
+append-lock path checks that effect id and digest before appending, so a crash
+after canonical commit but before the command exit can prove and return the one
+existing commit without treating an effect id as an agent task or duplicating a
+revision.
+
+Operational-command stdout is exactly one compact JSON response with stable
+`status`, `message`, and `result` roles. `ok` means a durable disposition,
+`invalid` means the request or current state can be corrected by the caller, and
+`unavailable` means the broker, transport, or infrastructure could not answer
+and is not a semantic correction signal. `message` is one plain-language
+sentence saying what happened; automation branches on `status` and structured
+result fields. Completed `ok` and `invalid` outcomes are immutable. A completed
+`unavailable` outcome is not an effect verdict: retrying the exact call with the
+same key rehydrates only its original request, immutable file snapshot, and
+planned identities, proves any durable commit first, and re-executes only a
+deterministic or monotonic idempotent remainder. It never substitutes current
+workspace bytes or a fresh child identity.
+Episode responses expose the one total Experiment allowance as total, used, and
+remaining, not provider/model/effort. Finish refusal returns the complete
+`blockers` list. Inbox responses return bounded notices or compact cleared ids
+and counts.
+
+The existing `validate` display remains its deliberately narrower compatibility
+shape—`status` as `valid`, `invalid`, or `unavailable` plus `messages`—because it
+is already shared by graph agents outside this orchestration surface.
+
+Task-result compatibility is additive. The existing top-level scalar
+`applied_revision` and singular `result.graph_update` continue to mean the latest
+graph disposition. They never change type. `result.graph_updates` is an ordered
+list of every accepted in-turn Apply disposition, allowing a new client to see the whole
+turn without breaking a current project that reads the scalar or singular form.
+
 Three properties make the client safe:
 
-1. **A per-invocation execution-host broker** bound to the campaign, task, and
+1. **A per-invocation execution-host broker** bound to the episode, task, and
    turn. The reusable actor stage, provider prompt, provider environment, and
    command-client arguments contain no bearer credential. The client connects
    to a Unix socket on the execution host; the broker reads the peer process id
@@ -1626,13 +2012,16 @@ Three properties make the client safe:
    container, sandbox, or VM and is not a claim this broker makes.
 2. **A caller-supplied idempotency key on every mutating command.** The hazard is
    RCP replaying the orchestrator's own turn after a crash, not the agent
-   retrying. With no record for a key, the effect happens and the key is
-   recorded; with a record, the existing result is returned and nothing is
-   created or restarted. Deduplication, never recovery — folding "restart it if
-   it looks dead" into `spawn` would hide a side effect behind a call the agent
-   believes is a no-op. The key comes from the caller because RCP cannot generate
-   a stable one across a retry in a fresh process, and the agent can, from its
-   own intent.
+   retrying. With no record for a key, RCP durably records the exact admitted
+   intent before its effect. A completed `ok` or `invalid` record replays exactly.
+   A completed `unavailable` record or a start without an exit can recover only
+   that same snapshotted intent and its deterministic effect identities: RCP
+   first proves an existing commit, then may repair only the still-missing
+   idempotent remainder. In particular, a committed queued child is dispatched
+   if no live process owns it, without creating another child or spending B or E
+   again. A different intent needs a different key. The key comes from the caller
+   because RCP cannot generate a stable one across a retry in a fresh process,
+   and the agent can, from its own intent.
 3. **Every invocation recorded in the task event stream, start and exit
    separately.** File handoffs are auditable for free because the scratch folder
    is retained; commands are not. Recording start separately is what makes an
@@ -1642,6 +2031,19 @@ Three properties make the client safe:
 
 Requirements 2 and 3 are one mechanism: the event stream that makes commands
 auditable is the record that answers whether a key already ran.
+
+The root initial and continuation prompts render the same exact command section,
+tell the orchestrator to write concise instruction and goal files, treat lifecycle
+notices as RCP facts, reread refreshed graph paths after Apply, use exact Resume
+instead of an invented Retry command, harvest or clear its inbox deliberately,
+and keep working until guarded finish succeeds or a true human-only boundary is
+named. Worker initial and continuation prompts remain narrower: they cannot
+spawn, start episodes, register a watcher, wake themselves, or acquire root
+authority; they finish available work and reply to the orchestrator. Patch and
+watcher correction prompts remain correction-only and never expose orchestration
+commands or invite repeated operational side effects. Prompt text and callable
+verbs land atomically: a shipped prompt never advertises a command the staged
+client and broker cannot execute.
 
 ### The Auto-research report guide
 
@@ -1715,12 +2117,30 @@ graceful takeover after recoverable work is paused.
   opens one anchored identity panel showing the mutable display name and exact,
   selectable, copyable, but non-editable space-scoped `user_id`; renaming uses
   the same identity prompt that guards an unnamed person's first attributed
-  write. Project Settings contains no second identity editor. The panel visibly
-  reserves **Join team space**, **Accept invitation**, and **Invite member**, but
-  those controls remain disabled and explicitly not connected until the whole
-  team authentication and membership contract is implemented. The seam never
-  collects or stores a credential, generates an invitation, starts a session,
-  or changes membership.
+  write. Project Settings contains no second identity editor.
+  In a **personal** space the panel visibly reserves **Join team space**,
+  **Accept invitation**, and **Invite member**, and those controls remain
+  disabled and explicitly not connected: a personal space cannot reach a team
+  space from this build, so that seam never collects or stores a credential,
+  starts a session, or changes membership.
+  A **team** space is different, and the enrollment half of it is built. Opening
+  one without a valid session shows a focused login page instead of the project
+  index; the member pastes their permanent token once into a secret field, and a
+  successful exchange clears it from the page and sets a server-side session
+  cookie. The signed-in panel then issues single-use invitations and lists the
+  ones that member created, showing the space name and expiry beside a code shown
+  exactly once. Project membership is enforced beneath this surface but adds
+  nothing to it: a project you are not on is simply absent from the index and
+  from the Experiment board, with no locked card and no explanation of something
+  you cannot see. An open project tab whose project stops being readable closes
+  itself and returns to the index. The contracts behind this surface are
+  [Team space enrollment and sessions](#team-space-enrollment-and-sessions),
+  driven by [S96](acceptance/S96-joining-a-team-space.md), and project membership,
+  driven by [S101](acceptance/S101-project-membership.md). A pending project
+  invitation appears on the index as a card carrying the project, its space, and
+  who invited you; Project Settings holds the member list, one **Invite member**
+  control, and **Leave project**, which is visibly unavailable and says why when
+  you are the only member ([S122](acceptance/S122-project-invitations.md)).
 - The project shell places one compact project-tab dock immediately to the right
   of its back/index control. The dock has one capped span: inactive tabs shrink
   proportionally as it fills, the active tab retains a wider share, and labels
@@ -1768,23 +2188,23 @@ graceful takeover after recoverable work is paused.
   Evidence in their semantic-stage columns after the deepest visible question.
   Other relations affect vertical ordering but never question depth.
 - **Runs** is the operational control surface for Seed/Refresh research
-  ingestion, bounded Experiments, Auto-research campaigns, and asserted open
+  ingestion, bounded Experiments, Auto-research episodes, and asserted open
   graph Blockers—not generic chat or coaching tasks. It carries no page title
   and is ordered by what matters now: **Running**, **Needs action**, then
   **Completed**, with the first matching state winning. Accepted and contested
   Blockers leave **Needs action** after Sync without being operationally
   resolved.
-  An Auto-research campaign appears as one parent row with task and worker state
+  An Auto-research episode appears as one parent row with task and worker state
   retained beneath it as supporting history. Its compact parent row and expanded
-  detail derive the one campaign health and recommendation defined above. The
-  expanded detail renders those as two distinct projected views: one **Campaign
+  detail derive the one episode health and recommendation defined above. The
+  expanded detail renders those as two distinct projected views: one **Episode
   health** and one separately labelled **Recommended next step**. The compact row
-  carries the same recommendation. Raw `campaign.status`, task status or phase,
+  carries the same recommendation. Raw `episode.status`, task status or phase,
   and worker status never compete as peer parent states. Healthy active work
   recommends **Let auto-research continue**; automatic recovery and wrap-up
   recommend waiting; actionable exact recovery recommends **Resume** or
   **Retry**, whichever is valid; exhaustion recommends reauthorization; and a
-  terminal campaign with its report recommends opening that report. Pause and
+  terminal episode with its report recommends opening that report. Pause and
   Stop remain optional controls shown only when valid, never recommendations for
   healthy work, and no recommendation names an unavailable action.
   An Experiment-loop task is the deliberate exception to the chat exclusion

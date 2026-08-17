@@ -16,7 +16,7 @@ from rcp.core.authority import (
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, build_revision_summaries
-from tests.helpers import refresh_patch, seed_patch
+from tests.helpers import refresh_patch, seated_on_every_project, seed_patch
 
 from .helpers import fabricated_authorizer
 
@@ -163,6 +163,7 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
             operation_id, authorizer
         ),
@@ -206,6 +207,7 @@ def test_opt_in_human_from_state_stamps_the_whole_transaction(manifest) -> None:
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
             operation_id, authorizer
         ),
@@ -248,6 +250,7 @@ def test_agent_candidate_and_append_use_resolved_direct_task_snapshot(manifest) 
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, requested: (
             _task_authority(requested, authorizer)
             if requested == operation_id
@@ -290,6 +293,7 @@ def test_episode_worker_keeps_ordinary_profile_and_episode_id(manifest) -> None:
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, _operation_id: authority,
     )
     raw = Patch(
@@ -327,6 +331,7 @@ def test_episode_orchestrator_patch_keeps_episode_id(manifest) -> None:
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, _operation_id: authority,
     )
 
@@ -367,6 +372,7 @@ def test_orchestrator_without_canonical_episode_id_is_refused(manifest) -> None:
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, _operation_id: authority,
     )
     raw = Patch(
@@ -398,6 +404,7 @@ def test_supplied_episode_id_must_match_canonical_task(manifest) -> None:
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, _operation_id: authority,
     )
     raw = Patch(
@@ -423,6 +430,7 @@ def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> N
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
             operation_id, canonical
         ),
@@ -491,6 +499,7 @@ def test_agent_attribution_failures_do_not_write_or_spend_revision(
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=resolver,
     )
 
@@ -560,7 +569,7 @@ def test_episode_id_is_inert_to_validation_and_apply_permission() -> None:
             repository_aliases=["repo-a"],
             default_run_truth_scope=["repo-a"],
         )
-        dispatch = require_apply(authority, patch)
+        dispatch = require_apply(authority, patch, is_project_member=seated_on_every_project)
         verdicts.append(
             json.dumps(
                 {
@@ -588,6 +597,7 @@ def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> 
         manifest,
         project_id=PROJECT_ID,
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=resolve,
     )
     history.append(_agent_patch("operation-1"))

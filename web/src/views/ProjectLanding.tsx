@@ -1,13 +1,20 @@
-import { MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
+import { Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ExperimentBoard } from "../components/ExperimentBoard";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
 import type { ProjectTab } from "../projectTabs";
-import type { ExperimentLoopIndexEntry, IdentityResponse, ProjectCard } from "../types";
+import type {
+  ExperimentLoopIndexEntry,
+  IdentityResponse,
+  ProjectCard,
+  ProjectInvitation,
+} from "../types";
 
 interface Props {
   projects: ProjectCard[];
+  invitations: ProjectInvitation[];
+  onAnswerInvitation: (invitationId: string, response: "accept" | "decline") => Promise<void>;
   experimentLoops: ExperimentLoopIndexEntry[];
   onOpen: (projectId: string) => void;
   onOpenExperiment: (projectId: string, experimentId: string) => void;
@@ -46,6 +53,8 @@ const COVER_LABELS: Record<CoverStyle, string> = {
 
 export function ProjectLanding({
   projects,
+  invitations,
+  onAnswerInvitation,
   experimentLoops,
   onOpen,
   onOpenExperiment,
@@ -144,6 +153,13 @@ export function ProjectLanding({
 
       <main className="landing-main">
         <section className="project-shelf" aria-label="RCP projects">
+          {invitations.map((invitation) => (
+            <ProjectInvitationCard
+              key={invitation.invitation_id}
+              invitation={invitation}
+              onAnswer={onAnswerInvitation}
+            />
+          ))}
           {projects.map((project, index) => {
             const unavailable = project.reachable === false;
             const cover = covers[project.id] || "wood";
@@ -299,6 +315,53 @@ export function ProjectLanding({
           </section>
         </div>
       )}
+    </div>
+  );
+}
+
+function ProjectInvitationCard({
+  invitation,
+  onAnswer,
+}: {
+  invitation: ProjectInvitation;
+  onAnswer: (invitationId: string, response: "accept" | "decline") => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<"accept" | "decline" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const answer = async (response: "accept" | "decline") => {
+    setBusy(response);
+    setError(null);
+    try {
+      await onAnswer(invitation.invitation_id, response);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+      setBusy(null);
+    }
+  };
+  const inviter = invitation.invited_by_name || invitation.invited_by;
+  return (
+    <div className="project-cover-shell project-invitation-shell">
+      <article className="project-cover project-invitation">
+        <span className="project-cover-spine" aria-hidden="true" />
+        <span className="project-cover-state">
+          <Mail size={12} />
+          Invitation
+        </span>
+        <strong>{invitation.project_name}</strong>
+        <span className="project-cover-meta">
+          {invitation.space_name ? `${invitation.space_name} · ` : ""}
+          {inviter}
+        </span>
+        {error ? <p className="project-invitation-error">{error}</p> : null}
+        <span className="project-invitation-actions">
+          <button type="button" disabled={busy !== null} onClick={() => answer("accept")}>
+            {busy === "accept" ? "Accepting…" : "Accept"}
+          </button>
+          <button type="button" disabled={busy !== null} onClick={() => answer("decline")}>
+            {busy === "decline" ? "Declining…" : "Decline"}
+          </button>
+        </span>
+      </article>
     </div>
   );
 }

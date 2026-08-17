@@ -2,18 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents.command_protocol import (
     MUTATING_COMMAND_VERBS,
+    ApplyArguments,
+    ApplyCommandRequest,
     CommandRequest,
     CommandResponse,
+    EpisodeArguments,
+    EpisodeCommandRequest,
+    EpisodeControlArguments,
+    ExperimentKickoffArguments,
     FinishCommandRequest,
+    InboxArguments,
+    InboxCommandRequest,
     MessageArguments,
     MessageCommandRequest,
     PauseCommandRequest,
@@ -27,13 +36,21 @@ from rcp.agents.command_protocol import (
     WatchGraphCommandRequest,
     command_requires_idempotency_key,
 )
-from rcp.limits import AGENT_COMMAND_EVENT_MAX_BYTES, AGENT_TASK_RECEIPT_MAX_BYTES
+from rcp.limits import (
+    AGENT_COMMAND_EVENT_MAX_BYTES,
+    AGENT_TASK_RECEIPT_MAX_BYTES,
+    AUTO_RESEARCH_APPLY_MAX_PER_TURN,
+    AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+    PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
+)
 from rcp.providers import ProviderId, ProviderSkillReference
 from rcp.skill_registry import SkillReference
 from rcp.storage import (
     AgentCommandInvocationRecord,
     AgentTaskRecord,
     AppStore,
+    AutoResearchChildAdmissionRecord,
+    AutoResearchCommandFileRecord,
     AutoResearchMessageRecord,
     EpisodeNotRunning,
     EpisodeRecord,
@@ -43,11 +60,15 @@ if TYPE_CHECKING:
     from rcp.runs.episode_wrapup import EpisodeWrapupSpec
 
 AutoResearchActorRole = Literal["orchestrator", "worker"]
-AutoResearchWakeCause = Literal["watcher", "graph_condition", "message"]
+AutoResearchWakeCause = Literal["watcher", "graph_condition", "message", "lifecycle"]
 AutoResearchWakeAdmission = Callable[
     [AgentTaskRecord, AutoResearchActorRole, AutoResearchWakeCause],
     AgentTaskRecord | None,
 ]
+AutoResearchCommandFileReader = Callable[[str, int], str]
+AutoResearchCommandFileConsumer = Callable[[str, str], bool]
+AutoResearchCommandStateRefresher = Callable[[], tuple[int, str, str]]
+
 
 class AutoResearchStartRequest(BaseModel):
     """Human-supplied and profile-resolved inputs for one new Auto-research episode."""
@@ -81,8 +102,8 @@ class AutoResearchRunRequest(BaseModel):
     """One operational provider invocation inside an Auto-research episode.
 
     ``role`` is actor attribution, not a wake category. Watcher, graph-condition,
-    and message delivery resume the same orchestrator or worker and keep that
-    actor's role while spending another unit from the auto_research pot.
+    message, and lifecycle delivery resume the same actor while spending another
+    unit from the auto_research pot. Lifecycle delivery is root-orchestrator only.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -124,6 +145,8 @@ class AutoResearchRunRequest(BaseModel):
             )
         if self.wake_cause is not None and self.session_id is None:
             raise ValueError("an Auto-research wake must resume its saved native session")
+        if self.wake_cause == "lifecycle" and self.role != "orchestrator":
+            raise ValueError("only the Auto-research orchestrator may receive lifecycle facts")
         if len(self.watcher_ids) != len(set(self.watcher_ids)):
             raise ValueError("an Auto-research wake cannot repeat watcher ids")
         if self.watcher_ids and self.wake_cause not in {"watcher", "graph_condition"}:
@@ -312,6 +335,61 @@ def auto_research_wrapup_spec(
         for event in events
         if event.event_kind == "command"
     ][-16:]
+    work_routes = store.auto_research_child_works(episode.episode_id)
+    child_work: list[dict[str, object]] = []
+    for route in work_routes[-16:]:
+        current = store.agent_task(route.current_operation_id)
+        child_work.append(
+            {
+                "worker_id": _receipt_text(route.worker_id, 160),
+                "control_node_id": _receipt_text(route.control_node_id, 240),
+                "current_operation_id": _receipt_text(route.current_operation_id, 160),
+                "status": current.status if current is not None else "missing",
+                "attempt": current.attempt if current is not None else None,
+                "stop_requested": route.stop_requested_at is not None,
+            }
+        )
+    experiment_routes = store.auto_research_child_experiments(episode.episode_id)
+    child_experiments: list[dict[str, object]] = []
+    for route in experiment_routes[-16:]:
+        child = store.episode(route.child_episode_id)
+        child_experiments.append(
+            {
+                "episode_id": _receipt_text(route.child_episode_id, 160),
+                "control_node_id": _receipt_text(route.control_node_id, 240),
+                "route_state": route.state,
+                "status": child.status if child is not None else route.state,
+                "ending": child.ending if child is not None else None,
+                "replaces_episode_id": _receipt_text(route.replaces_episode_id, 160),
+                "diagnostic": _receipt_text(route.terminal_diagnostic, 480),
+            }
+        )
+    lifecycle_notices = store.auto_research_lifecycle_notices(episode.episode_id)
+    lifecycle_counts = {"pending": 0, "delivered": 0, "acknowledged": 0}
+    for notice in lifecycle_notices:
+        lifecycle_counts[notice.state] += 1
+    lifecycle_facts = [
+        {
+            "notice_id": _receipt_text(notice.notice_id, 160),
+            "source_kind": _receipt_text(notice.source_kind, 80),
+            "source_id": _receipt_text(notice.source_id, 160),
+            "source_event": _receipt_text(notice.source_event, 80),
+            "source_attempt": notice.source_attempt,
+            "state": notice.state,
+            "payload": _receipt_text(
+                json.dumps(
+                    notice.payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                800,
+            ),
+        }
+        for notice in lifecycle_notices[-16:]
+    ]
+    experiment_allowance = store.auto_research_experiment_allowance(episode.episode_id)
+    pending_admissions = store.pending_auto_research_child_admissions(episode.episode_id)
     receipt: dict[str, object] = {
         "starting_instruction": _receipt_text(
             state.starting_instruction if state is not None else None,
@@ -329,11 +407,33 @@ def auto_research_wrapup_spec(
         "omitted_actor_count": max(0, len(actor_rows) - 16),
         "command_facts": command_facts,
         "graph_results": graph_results[-16:],
+        "experiment_allowance": experiment_allowance.model_dump(mode="json"),
+        "child_work": child_work,
+        "omitted_child_work_count": max(0, len(work_routes) - len(child_work)),
+        "child_experiments": child_experiments,
+        "omitted_child_experiment_count": max(0, len(experiment_routes) - len(child_experiments)),
+        "lifecycle": {
+            "counts": lifecycle_counts,
+            "facts": lifecycle_facts,
+            "omitted_fact_count": max(0, len(lifecycle_notices) - len(lifecycle_facts)),
+        },
+        "pending_child_admission_ids": [
+            _receipt_text(item.admission_id, 160) for item in pending_admissions[:16]
+        ],
+        "omitted_pending_child_admission_count": max(0, len(pending_admissions) - 16),
     }
     if _receipt_size(receipt) > AGENT_TASK_RECEIPT_MAX_BYTES:
         receipt["actors"] = list(actor_rows.values())[-8:]
         receipt["command_facts"] = command_facts[-8:]
         receipt["graph_results"] = graph_results[-8:]
+        receipt["child_work"] = child_work[-8:]
+        receipt["omitted_child_work_count"] = max(0, len(work_routes) - 8)
+        receipt["child_experiments"] = child_experiments[-8:]
+        receipt["omitted_child_experiment_count"] = max(0, len(experiment_routes) - 8)
+        lifecycle = receipt["lifecycle"]
+        assert isinstance(lifecycle, dict)
+        lifecycle["facts"] = lifecycle_facts[-8:]
+        lifecycle["omitted_fact_count"] = max(0, len(lifecycle_notices) - 8)
         receipt["starting_instruction"] = _receipt_text(
             state.starting_instruction if state is not None else None,
             480,
@@ -404,7 +504,7 @@ def pending_auto_research_mail(
     if recipient is None:
         raise KeyError(recipient_task_id)
     if recipient.episode_id != episode_id:
-        raise ValueError("auto_research mail recipient is outside the auto_research")
+        raise ValueError("The mail recipient is outside this Auto-research episode.")
     messages = store.pending_auto_research_messages(episode_id, recipient_task_id)
     return PendingAutoResearchMail(
         episode_id=episode_id,
@@ -431,7 +531,7 @@ class AutoResearchCommandEffectResult(BaseModel):
     @model_validator(mode="after")
     def unsuccessful_result_has_a_diagnostic(self) -> AutoResearchCommandEffectResult:
         if self.status != "ok" and not (self.message or "").strip():
-            raise ValueError("an unsuccessful auto_research command requires a diagnostic")
+            raise ValueError("An unsuccessful Auto-research command requires a diagnostic.")
         try:
             encoded = json.dumps(
                 {
@@ -445,9 +545,9 @@ class AutoResearchCommandEffectResult(BaseModel):
                 allow_nan=False,
             ).encode("utf-8")
         except (TypeError, ValueError) as exc:
-            raise ValueError("auto_research command result must be valid JSON") from exc
+            raise ValueError("The Auto-research command result must be valid JSON.") from exc
         if len(encoded) > AGENT_COMMAND_EVENT_MAX_BYTES:
-            raise ValueError("auto_research command result exceeds the event ledger limit")
+            raise ValueError("The Auto-research command result exceeds the event ledger limit.")
         return self
 
 
@@ -456,10 +556,25 @@ class AutoResearchCommandContext:
     episode: EpisodeRecord
     task: AgentTaskRecord
     request: AutoResearchRunRequest
+    command_file: AutoResearchCommandFile | None = None
+    consume_command_file: AutoResearchCommandFileConsumer | None = None
+    refresh_command_state: AutoResearchCommandStateRefresher | None = None
+
+
+@dataclass(frozen=True)
+class AutoResearchCommandFile:
+    kind: Literal["apply", "instruction", "goal"]
+    filename: str
+    text: str
+    sha256: str
 
 
 AutoResearchValidateCommand = Callable[
     [AutoResearchCommandContext, ValidateArguments],
+    AutoResearchCommandEffectResult,
+]
+AutoResearchApplyCommand = Callable[
+    [AutoResearchCommandContext, ApplyArguments, str],
     AutoResearchCommandEffectResult,
 ]
 AutoResearchStatusCommand = Callable[
@@ -474,6 +589,10 @@ AutoResearchWorkerCommand = Callable[
     [AutoResearchCommandContext, str],
     AutoResearchCommandEffectResult,
 ]
+AutoResearchWorkerResumeCommand = Callable[
+    [AutoResearchCommandContext, str, str],
+    AutoResearchCommandEffectResult,
+]
 AutoResearchMessageCommand = Callable[
     [AutoResearchCommandContext, MessageArguments, str],
     AutoResearchCommandEffectResult,
@@ -482,12 +601,54 @@ AutoResearchWatchGraphCommand = Callable[
     [AutoResearchCommandContext, WatchGraphArguments, str],
     AutoResearchCommandEffectResult,
 ]
-AutoResearchFinishCommand = Callable[[AutoResearchCommandContext], AutoResearchCommandEffectResult]
+AutoResearchFinishCommand = Callable[
+    [AutoResearchCommandContext, str], AutoResearchCommandEffectResult
+]
+AutoResearchEpisodeCommand = Callable[
+    [AutoResearchCommandContext, EpisodeArguments, str],
+    AutoResearchCommandEffectResult,
+]
+AutoResearchInboxCommand = Callable[
+    [AutoResearchCommandContext, InboxArguments, str],
+    AutoResearchCommandEffectResult,
+]
 AutoResearchUnknownCommandReconciler = Callable[
     [AutoResearchCommandContext, CommandRequest, str | None],
     AutoResearchCommandEffectResult | None,
 ]
 AutoResearchSeatNodeType = Callable[[str, str], str | None]
+AutoResearchWorkerLookup = Callable[
+    [AutoResearchCommandContext, str],
+    AgentTaskRecord,
+]
+AutoResearchSpawnVerifier = Callable[
+    [AutoResearchCommandContext, SpawnArguments, str],
+    AgentTaskRecord,
+]
+
+
+def _unsupported_apply(
+    _context: AutoResearchCommandContext,
+    _arguments: ApplyArguments,
+    _planned_apply_id: str,
+) -> AutoResearchCommandEffectResult:
+    raise AutoResearchCommandUnavailable("In-turn Apply is not available in this runtime.")
+
+
+def _unsupported_episode(
+    _context: AutoResearchCommandContext,
+    _arguments: EpisodeArguments,
+    _planned_episode_effect_id: str,
+) -> AutoResearchCommandEffectResult:
+    raise AutoResearchCommandUnavailable("Experiment episode control is not available.")
+
+
+def _unsupported_inbox(
+    _context: AutoResearchCommandContext,
+    _arguments: InboxArguments,
+    _planned_inbox_effect_id: str,
+) -> AutoResearchCommandEffectResult:
+    raise AutoResearchCommandUnavailable("The lifecycle inbox is not available.")
 
 
 @dataclass(frozen=True)
@@ -503,26 +664,72 @@ class AutoResearchCommandEffects:
     status: AutoResearchStatusCommand
     spawn: AutoResearchSpawnCommand
     pause: AutoResearchWorkerCommand
-    resume: AutoResearchWorkerCommand
+    resume: AutoResearchWorkerResumeCommand
     stop: AutoResearchWorkerCommand
     message: AutoResearchMessageCommand
     watch_graph: AutoResearchWatchGraphCommand
     finish: AutoResearchFinishCommand
     seat_node_type: AutoResearchSeatNodeType
     reconcile_unknown: AutoResearchUnknownCommandReconciler
+    apply: AutoResearchApplyCommand = _unsupported_apply
+    episode: AutoResearchEpisodeCommand = _unsupported_episode
+    inbox: AutoResearchInboxCommand = _unsupported_inbox
+    worker_lookup: AutoResearchWorkerLookup | None = None
+    verify_spawn: AutoResearchSpawnVerifier | None = None
+
+
+@dataclass
+class _AutoResearchApplyAdmissionLocks:
+    guard: threading.Lock = field(default_factory=threading.Lock)
+    by_operation: dict[str, threading.Lock] = field(default_factory=dict)
+
+    def for_operation(self, operation_id: str) -> threading.Lock:
+        with self.guard:
+            return self.by_operation.setdefault(operation_id, threading.Lock())
 
 
 class AutoResearchCommandDispatcher:
     """Audit, deduplicate, reconcile, and dispatch one staged client call."""
 
-    def __init__(self, store: AppStore, effects: AutoResearchCommandEffects) -> None:
+    def __init__(
+        self,
+        store: AppStore,
+        effects: AutoResearchCommandEffects,
+        *,
+        command_file_reader: AutoResearchCommandFileReader | None = None,
+        command_file_consumer: AutoResearchCommandFileConsumer | None = None,
+        command_state_refresher: AutoResearchCommandStateRefresher | None = None,
+        _apply_admission_locks: _AutoResearchApplyAdmissionLocks | None = None,
+    ) -> None:
         self.store = store
         self.effects = effects
+        self.command_file_reader = command_file_reader
+        self.command_file_consumer = command_file_consumer
+        self.command_state_refresher = command_state_refresher
+        self._apply_admission_locks = _apply_admission_locks or _AutoResearchApplyAdmissionLocks()
+
+    def with_command_files(
+        self,
+        *,
+        reader: AutoResearchCommandFileReader,
+        consumer: AutoResearchCommandFileConsumer,
+        refresher: AutoResearchCommandStateRefresher,
+    ) -> AutoResearchCommandDispatcher:
+        """Bind this turn's exact reusable stage to file-backed commands."""
+
+        return AutoResearchCommandDispatcher(
+            self.store,
+            self.effects,
+            command_file_reader=reader,
+            command_file_consumer=consumer,
+            command_state_refresher=refresher,
+            _apply_admission_locks=self._apply_admission_locks,
+        )
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
         context = self._context(operation_id)
         if request.mailbox_id == "":  # already schema-validated; keeps the binding explicit here
-            raise AutoResearchCommandInvalid("auto_research command mailbox is missing")
+            raise AutoResearchCommandInvalid("The Auto-research command mailbox is missing.")
 
         planned_worker_id = (
             _planned_worker_id(context.episode.episode_id, request.idempotency_key)
@@ -547,6 +754,51 @@ class AutoResearchCommandDispatcher:
             if isinstance(request, WatchGraphCommandRequest) and request.idempotency_key is not None
             else None
         )
+        planned_apply_id = (
+            _planned_effect_id(
+                context.episode.episode_id,
+                "apply",
+                request.idempotency_key,
+            )
+            if isinstance(request, ApplyCommandRequest) and request.idempotency_key is not None
+            else None
+        )
+        planned_resume_operation_id = (
+            _planned_effect_id(
+                context.episode.episode_id,
+                "resume",
+                request.idempotency_key,
+            )
+            if isinstance(request, ResumeCommandRequest) and request.idempotency_key is not None
+            else None
+        )
+        planned_episode_effect_id = (
+            _planned_effect_id(
+                context.episode.episode_id,
+                "episode",
+                request.idempotency_key,
+            )
+            if isinstance(request, EpisodeCommandRequest) and request.idempotency_key is not None
+            else None
+        )
+        planned_inbox_effect_id = (
+            _planned_effect_id(
+                context.episode.episode_id,
+                "inbox",
+                request.idempotency_key,
+            )
+            if isinstance(request, InboxCommandRequest) and request.idempotency_key is not None
+            else None
+        )
+        planned_finish_effect_id = (
+            _planned_effect_id(
+                context.episode.episode_id,
+                "finish",
+                request.idempotency_key,
+            )
+            if isinstance(request, FinishCommandRequest) and request.idempotency_key is not None
+            else None
+        )
         arguments = request.arguments.model_dump(mode="json")
         if request.verb == "validate":
             patch = request.arguments.patch
@@ -565,6 +817,16 @@ class AutoResearchCommandDispatcher:
             start_payload["planned_message_id"] = planned_message_id
         if planned_watcher_id is not None:
             start_payload["planned_watcher_id"] = planned_watcher_id
+        if planned_apply_id is not None:
+            start_payload["planned_apply_id"] = planned_apply_id
+        if planned_resume_operation_id is not None:
+            start_payload["planned_resume_operation_id"] = planned_resume_operation_id
+        if planned_episode_effect_id is not None:
+            start_payload["planned_episode_effect_id"] = planned_episode_effect_id
+        if planned_inbox_effect_id is not None:
+            start_payload["planned_inbox_effect_id"] = planned_inbox_effect_id
+        if planned_finish_effect_id is not None:
+            start_payload["planned_finish_effect_id"] = planned_finish_effect_id
         prior = (
             self.store.agent_command_by_key(
                 context.episode.episode_id,
@@ -578,37 +840,162 @@ class AutoResearchCommandDispatcher:
             attempt = self._start_retry_attempt(context, request, start_payload, prior)
             return self._dispatch_retry(context, request, prior, attempt)
 
-        command_id = self._unused_command_id(request.request_id)
+        keyed_apply = (
+            isinstance(request, ApplyCommandRequest) and request.idempotency_key is not None
+        )
+        admission_lock = (
+            self._apply_admission_locks.for_operation(operation_id) if keyed_apply else None
+        )
+        if admission_lock is not None:
+            admission_lock.acquire()
         try:
-            invocation = self.store.start_agent_command(
-                operation_id=operation_id,
-                command_id=command_id,
-                episode_id=context.episode.episode_id,
-                verb=request.verb,
-                idempotency_key=request.idempotency_key,
-                payload=start_payload,
-            )
-        except ValueError:
-            # Another client may have won the auto_research-wide key between the
-            # read above and this insert. Preserve that invocation as the
-            # effect record while giving this client call its own ledger pair.
-            raced = (
-                self.store.agent_command_by_key(
+            if keyed_apply:
+                locked_prior = self.store.agent_command_by_key(
                     context.episode.episode_id,
                     request.idempotency_key,
                 )
-                if request.idempotency_key is not None
+                if locked_prior is not None:
+                    admission_lock.release()
+                    admission_lock = None
+                    attempt = self._start_retry_attempt(
+                        context,
+                        request,
+                        start_payload,
+                        locked_prior,
+                    )
+                    return self._dispatch_retry(context, request, locked_prior, attempt)
+
+            command_file: AutoResearchCommandFile | None = None
+            command_file_error: AutoResearchCommandEffectResult | None = None
+            apply_limit_reached = keyed_apply and (
+                self.store.auto_research_apply_admission_count(operation_id)
+                >= AUTO_RESEARCH_APPLY_MAX_PER_TURN
+            )
+            if not apply_limit_reached:
+                try:
+                    command_file = self._snapshot_command_file(request)
+                except AutoResearchCommandInvalid as exc:
+                    command_file_error = AutoResearchCommandEffectResult(
+                        status="invalid",
+                        message=str(exc),
+                    )
+                except (AutoResearchCommandUnavailable, OSError) as exc:
+                    command_file_error = AutoResearchCommandEffectResult(
+                        status="unavailable",
+                        message=str(exc),
+                    )
+            if command_file is not None:
+                start_payload["command_file"] = {
+                    "filename": command_file.filename,
+                    "byte_length": len(command_file.text.encode("utf-8")),
+                    "sha256": command_file.sha256,
+                }
+
+            if (
+                command_file_error is not None
+                and command_file_error.status == "unavailable"
+                and request.idempotency_key is not None
+            ):
+                # The keyed intent does not exist until its immutable file bytes
+                # can be committed with the command start.  Keep the failed read
+                # visible as an unkeyed audit attempt, but leave the key and Apply
+                # admission slot free for an exact later call.  Invalid file
+                # content remains a canonical keyed result below.
+                command_id = self._unused_command_id(request.request_id)
+                audit_payload = {
+                    **start_payload,
+                    "attempted_idempotency_key": request.idempotency_key,
+                    "pre_admission_unavailable": True,
+                }
+                invocation = self.store.start_agent_command(
+                    operation_id=operation_id,
+                    command_id=command_id,
+                    episode_id=context.episode.episode_id,
+                    verb=request.verb,
+                    idempotency_key=None,
+                    payload=audit_payload,
+                )
+                return self._finish(
+                    invocation.command_id,
+                    request.request_id,
+                    command_file_error,
+                )
+
+            command_id = self._unused_command_id(request.request_id)
+            admitted_at = self.store.now()
+            file_snapshot = (
+                AutoResearchCommandFileRecord(
+                    command_id=command_id,
+                    episode_id=context.episode.episode_id,
+                    operation_id=operation_id,
+                    kind=command_file.kind,
+                    filename=command_file.filename,
+                    sha256=command_file.sha256,
+                    content=command_file.text,
+                    created_at=admitted_at,
+                )
+                if command_file is not None
                 else None
             )
-            if raced is None:
-                raise
-            attempt = self._start_retry_attempt(context, request, start_payload, raced)
-            return self._dispatch_retry(context, request, raced, attempt)
+            child_admission = self._child_admission(
+                context,
+                request,
+                planned_worker_id=planned_worker_id,
+                planned_episode_effect_id=planned_episode_effect_id,
+                created_at=admitted_at,
+                command_file_error=command_file_error,
+            )
+            try:
+                invocation = self.store.start_agent_command(
+                    operation_id=operation_id,
+                    command_id=command_id,
+                    episode_id=context.episode.episode_id,
+                    verb=request.verb,
+                    idempotency_key=request.idempotency_key,
+                    payload=start_payload,
+                    file_snapshot=file_snapshot,
+                    child_admission=child_admission,
+                    apply_admission_limit=(
+                        AUTO_RESEARCH_APPLY_MAX_PER_TURN if keyed_apply else None
+                    ),
+                )
+            except ValueError:
+                # Another client may have won the auto_research-wide key between the
+                # read above and this insert. Preserve that invocation as the
+                # effect record while giving this client call its own ledger pair.
+                raced = (
+                    self.store.agent_command_by_key(
+                        context.episode.episode_id,
+                        request.idempotency_key,
+                    )
+                    if request.idempotency_key is not None
+                    else None
+                )
+                if raced is None:
+                    raise
+                if admission_lock is not None:
+                    admission_lock.release()
+                    admission_lock = None
+                attempt = self._start_retry_attempt(context, request, start_payload, raced)
+                return self._dispatch_retry(context, request, raced, attempt)
+        finally:
+            if admission_lock is not None:
+                admission_lock.release()
         if invocation.command_id != command_id:
             # ``start_agent_command`` returns the winning keyed invocation on
             # a race without inserting this call. Record this call separately.
             attempt = self._start_retry_attempt(context, request, start_payload, invocation)
             return self._dispatch_retry(context, request, invocation, attempt)
+
+        if (
+            isinstance(request, ApplyCommandRequest)
+            and invocation.start_payload.get("apply_admitted") is False
+        ):
+            return self._finish(
+                invocation.command_id,
+                request.request_id,
+                _apply_admission_limit_outcome(),
+            )
 
         if command_requires_idempotency_key(request.verb) and request.idempotency_key is None:
             return self._finish(
@@ -620,13 +1007,25 @@ class AutoResearchCommandDispatcher:
                 ),
             )
 
+        if command_file_error is not None:
+            return self._finish(
+                invocation.command_id,
+                request.request_id,
+                command_file_error,
+            )
+
         try:
             outcome = self._execute(
-                context,
+                replace(context, command_file=command_file),
                 request,
                 planned_worker_id=planned_worker_id,
                 planned_message_id=planned_message_id,
                 planned_watcher_id=planned_watcher_id,
+                planned_apply_id=planned_apply_id,
+                planned_resume_operation_id=planned_resume_operation_id,
+                planned_episode_effect_id=planned_episode_effect_id,
+                planned_inbox_effect_id=planned_inbox_effect_id,
+                planned_finish_effect_id=planned_finish_effect_id,
             )
         except AutoResearchCommandInvalid as exc:
             outcome = AutoResearchCommandEffectResult(status="invalid", message=str(exc))
@@ -634,7 +1033,109 @@ class AutoResearchCommandDispatcher:
             outcome = AutoResearchCommandEffectResult(status="unavailable", message=str(exc))
         except (KeyError, ValueError) as exc:
             outcome = AutoResearchCommandEffectResult(status="invalid", message=str(exc))
+        if outcome.status == "invalid" and child_admission is not None:
+            self._cancel_known_child_admission(child_admission.admission_id)
         return self._finish(invocation.command_id, request.request_id, outcome)
+
+    def _child_admission(
+        self,
+        context: AutoResearchCommandContext,
+        request: CommandRequest,
+        *,
+        planned_worker_id: str | None,
+        planned_episode_effect_id: str | None,
+        created_at: str,
+        command_file_error: AutoResearchCommandEffectResult | None,
+    ) -> AutoResearchChildAdmissionRecord | None:
+        """Bind a fresh child intent to the command start and immutable file snapshot."""
+
+        if command_file_error is not None:
+            return None
+        if isinstance(request, SpawnCommandRequest):
+            if planned_worker_id is None:
+                return None
+            child_kind: Literal["work", "experiment"] = "work"
+            child_id = planned_worker_id
+        elif isinstance(request, EpisodeCommandRequest) and isinstance(
+            request.arguments,
+            ExperimentKickoffArguments,
+        ):
+            if planned_episode_effect_id is None:
+                return None
+            child_kind = "experiment"
+            child_id = planned_episode_effect_id
+        else:
+            return None
+        return AutoResearchChildAdmissionRecord(
+            admission_id=child_id,
+            episode_id=context.episode.episode_id,
+            project_id=context.task.project_id,
+            child_kind=child_kind,
+            child_id=child_id,
+            state="accepted",
+            created_at=created_at,
+            updated_at=created_at,
+        )
+
+    def _cancel_known_child_admission(self, admission_id: str) -> None:
+        admission = self.store.auto_research_child_admission(admission_id)
+        if admission is not None and admission.state == "accepted":
+            self.store.cancel_auto_research_child_admission(admission_id)
+
+    def _snapshot_command_file(
+        self,
+        request: CommandRequest,
+    ) -> AutoResearchCommandFile | None:
+        spec: tuple[Literal["apply", "instruction", "goal"], str, int, bool] | None = None
+        if isinstance(request, ApplyCommandRequest):
+            spec = (
+                "apply",
+                request.arguments.patch_file,
+                PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
+                False,
+            )
+        elif isinstance(request, SpawnCommandRequest):
+            spec = (
+                "instruction",
+                request.arguments.instruction_file,
+                AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+                True,
+            )
+        elif (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, ExperimentKickoffArguments)
+            and request.arguments.goal_file is not None
+        ):
+            spec = (
+                "goal",
+                request.arguments.goal_file,
+                AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+                True,
+            )
+        if spec is None:
+            return None
+        if self.command_file_reader is None:
+            raise AutoResearchCommandUnavailable(
+                "The exact Auto-research command workspace is unavailable."
+            )
+        kind, filename, max_bytes, require_nonblank = spec
+        try:
+            text = self.command_file_reader(filename, max_bytes)
+        except FileNotFoundError as exc:
+            raise AutoResearchCommandInvalid(
+                f"Command file {filename!r} does not exist in the orchestrator workspace."
+            ) from exc
+        except ValueError as exc:
+            raise AutoResearchCommandInvalid(str(exc)) from exc
+        if require_nonblank and not text.strip():
+            raise AutoResearchCommandInvalid(f"Command file {filename!r} must not be blank.")
+        encoded = text.encode("utf-8")
+        return AutoResearchCommandFile(
+            kind=kind,
+            filename=filename,
+            text=text,
+            sha256=hashlib.sha256(encoded).hexdigest(),
+        )
 
     def _start_retry_attempt(
         self,
@@ -672,9 +1173,14 @@ class AutoResearchCommandDispatcher:
             original_context = self._context(prior.operation_id)
             if original_context.episode.episode_id != retry_context.episode.episode_id:
                 raise AutoResearchCommandUnavailable(
-                    "The original command task no longer belongs to this auto_research."
+                    "The original command task no longer belongs to this Auto-research episode."
                 )
-        except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable, KeyError, ValueError) as exc:
+        except (
+            AutoResearchCommandInvalid,
+            AutoResearchCommandUnavailable,
+            KeyError,
+            ValueError,
+        ) as exc:
             return self._finish(
                 attempt.command_id,
                 request.request_id,
@@ -684,7 +1190,12 @@ class AutoResearchCommandDispatcher:
         try:
             original_actor = self._canonical_command_actor(original_context)
             retry_actor = self._canonical_command_actor(retry_context)
-        except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable, KeyError, ValueError) as exc:
+        except (
+            AutoResearchCommandInvalid,
+            AutoResearchCommandUnavailable,
+            KeyError,
+            ValueError,
+        ) as exc:
             return self._finish(
                 attempt.command_id,
                 request.request_id,
@@ -698,7 +1209,7 @@ class AutoResearchCommandDispatcher:
                     status="invalid",
                     message=(
                         "An idempotency key may be replayed only by the same canonical "
-                        "auto_research actor and role."
+                        "Auto-research actor and role."
                     ),
                 ),
             )
@@ -717,9 +1228,25 @@ class AutoResearchCommandDispatcher:
                 outcome = self._finish_original_unknown(prior.command_id, outcome)
             return self._finish(attempt.command_id, request.request_id, outcome)
 
-        if prior.exited_at is not None:
+        original_was_unknown = prior.exited_at is None
+        if (
+            isinstance(recorded_request, ApplyCommandRequest)
+            and prior.start_payload.get("apply_admitted") is False
+        ):
+            outcome = _apply_admission_limit_outcome()
+            if original_was_unknown:
+                outcome = self._finish_original_unknown(prior.command_id, outcome)
+            return self._finish(attempt.command_id, request.request_id, outcome)
+        if not original_was_unknown:
             try:
-                outcome = self._completed_retry_outcome(original_context, recorded_request, prior)
+                recorded = _effect_from_recorded_invocation(prior)
+                if recorded.status != "unavailable":
+                    outcome = self._completed_retry_outcome(
+                        original_context,
+                        recorded_request,
+                        prior,
+                    )
+                    return self._finish(attempt.command_id, request.request_id, outcome)
             except (
                 AutoResearchCommandInvalid,
                 AutoResearchCommandUnavailable,
@@ -727,31 +1254,100 @@ class AutoResearchCommandDispatcher:
                 ValueError,
             ) as exc:
                 outcome = AutoResearchCommandEffectResult(status="unavailable", message=str(exc))
-            return self._finish(attempt.command_id, request.request_id, outcome)
+                return self._finish(attempt.command_id, request.request_id, outcome)
 
         try:
+            original_context = replace(
+                original_context,
+                command_file=self._recorded_command_file(prior, recorded_request),
+            )
             reconciled = self._reconcile_unknown(
                 original_context,
                 recorded_request,
                 prior.start_payload,
             )
             if reconciled is None:
-                if not isinstance(recorded_request, SpawnCommandRequest):
+                if not self._may_reexecute_after_unproven_outcome(recorded_request):
                     raise AutoResearchCommandUnavailable(
                         "Interrupted command outcome is unknown and could not be proven; "
                         "it was not re-executed."
                     )
-                planned_worker_id = self._recorded_planned_worker_id(
-                    original_context,
-                    recorded_request,
-                    prior.start_payload,
+                planned_worker_id = (
+                    self._recorded_planned_worker_id(
+                        original_context,
+                        recorded_request,
+                        prior.start_payload,
+                    )
+                    if isinstance(recorded_request, SpawnCommandRequest)
+                    else None
                 )
                 reconciled = self._execute(
                     original_context,
                     recorded_request,
                     planned_worker_id=planned_worker_id,
-                    planned_message_id=None,
-                    planned_watcher_id=None,
+                    planned_message_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, MessageCommandRequest)
+                        else None
+                    ),
+                    planned_watcher_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, WatchGraphCommandRequest)
+                        else None
+                    ),
+                    planned_apply_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, ApplyCommandRequest)
+                        else None
+                    ),
+                    planned_resume_operation_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, ResumeCommandRequest)
+                        else None
+                    ),
+                    planned_episode_effect_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, EpisodeCommandRequest)
+                        else None
+                    ),
+                    planned_inbox_effect_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, InboxCommandRequest)
+                        else None
+                    ),
+                    planned_finish_effect_id=(
+                        self._recorded_planned_effect_id(
+                            original_context,
+                            recorded_request,
+                            prior.start_payload,
+                        )
+                        if isinstance(recorded_request, FinishCommandRequest)
+                        else None
+                    ),
                 )
             outcome = reconciled
         except AutoResearchCommandInvalid as exc:
@@ -759,8 +1355,67 @@ class AutoResearchCommandDispatcher:
         except (AutoResearchCommandUnavailable, OSError, KeyError, ValueError) as exc:
             outcome = AutoResearchCommandEffectResult(status="unavailable", message=str(exc))
 
-        outcome = self._finish_original_unknown(prior.command_id, outcome)
+        if original_was_unknown:
+            outcome = self._finish_original_unknown(prior.command_id, outcome)
         return self._finish(attempt.command_id, request.request_id, outcome)
+
+    @staticmethod
+    def _may_reexecute_after_unproven_outcome(request: CommandRequest) -> bool:
+        """Name effects whose deterministic identity or monotonicity makes retry safe."""
+
+        return isinstance(
+            request,
+            (
+                SpawnCommandRequest,
+                ApplyCommandRequest,
+                PauseCommandRequest,
+                ResumeCommandRequest,
+                StopCommandRequest,
+                FinishCommandRequest,
+                MessageCommandRequest,
+                WatchGraphCommandRequest,
+                InboxCommandRequest,
+            ),
+        ) or (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(
+                request.arguments,
+                (ExperimentKickoffArguments, EpisodeControlArguments),
+            )
+        )
+
+    def _recorded_command_file(
+        self,
+        prior: AgentCommandInvocationRecord,
+        request: CommandRequest,
+    ) -> AutoResearchCommandFile | None:
+        requires_file = isinstance(request, (ApplyCommandRequest, SpawnCommandRequest)) or (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, ExperimentKickoffArguments)
+            and request.arguments.goal_file is not None
+        )
+        stored = self.store.auto_research_command_file(prior.command_id)
+        if stored is None:
+            if requires_file:
+                raise AutoResearchCommandUnavailable(
+                    "The original command lost its immutable file snapshot."
+                )
+            return None
+        metadata = prior.start_payload.get("command_file")
+        if not isinstance(metadata, dict) or (
+            metadata.get("filename") != stored.filename
+            or metadata.get("sha256") != stored.sha256
+            or metadata.get("byte_length") != len(stored.content.encode("utf-8"))
+        ):
+            raise AutoResearchCommandUnavailable(
+                "The original command file snapshot does not match its audit record."
+            )
+        return AutoResearchCommandFile(
+            kind=stored.kind,
+            filename=stored.filename,
+            text=stored.content,
+            sha256=stored.sha256,
+        )
 
     @staticmethod
     def _recorded_request(
@@ -804,23 +1459,27 @@ class AutoResearchCommandDispatcher:
         recorded = _effect_from_recorded_invocation(prior)
         if not isinstance(request, SpawnCommandRequest):
             return recorded
+        if recorded.status != "ok":
+            return recorded
         planned_worker_id = self._recorded_planned_worker_id(
             context,
             request,
             prior.start_payload,
         )
+        context = replace(
+            context,
+            command_file=self._recorded_command_file(prior, request),
+        )
         worker = self.store.agent_task(planned_worker_id)
         if worker is not None:
             worker = self._verify_spawn_worker(context, request.arguments, planned_worker_id)
             return AutoResearchCommandEffectResult(
-                message="Existing auto_research worker returned for this spawn idempotency key.",
+                message="The existing Auto-research worker was returned for this Spawn key.",
                 result=_worker_command_result(worker, disposition="existing"),
             )
-        if recorded.status == "ok":
-            raise AutoResearchCommandUnavailable(
-                "Completed spawn has no durable canonical worker to return."
-            )
-        return recorded
+        raise AutoResearchCommandUnavailable(
+            "Completed spawn has no durable canonical worker to return."
+        )
 
     def _finish_original_unknown(
         self,
@@ -856,7 +1515,13 @@ class AutoResearchCommandDispatcher:
         if episode is None or episode.mode != "auto_research":
             raise KeyError(task.episode_id)
         request = AutoResearchRunRequest.model_validate(task.request)
-        return AutoResearchCommandContext(episode=episode, task=task, request=request)
+        return AutoResearchCommandContext(
+            episode=episode,
+            task=task,
+            request=request,
+            consume_command_file=self.command_file_consumer,
+            refresh_command_state=self.command_state_refresher,
+        )
 
     def _canonical_command_actor(
         self,
@@ -864,13 +1529,9 @@ class AutoResearchCommandDispatcher:
     ) -> tuple[str, str]:
         binding = self.store.auto_research_actor_binding(context.task.operation_id)
         role = self.store.auto_research_invocation_role(context.task.operation_id)
-        if (
-            role is None
-            or role != binding.role
-            or binding.episode_id != context.episode.episode_id
-        ):
+        if role is None or role != binding.role or binding.episode_id != context.episode.episode_id:
             raise AutoResearchCommandUnavailable(
-                "AutoResearch command task has no coherent canonical actor role."
+                "The Auto-research command task has no coherent canonical actor role."
             )
         return binding.actor_operation_id, role
 
@@ -894,7 +1555,7 @@ class AutoResearchCommandDispatcher:
                 return None
             worker = self._verify_spawn_worker(context, request.arguments, planned_worker_id)
             return AutoResearchCommandEffectResult(
-                message="Existing auto_research worker returned after interrupted spawn.",
+                message="The existing Auto-research worker was recovered after interrupted Spawn.",
                 result=_worker_command_result(worker, disposition="existing"),
             )
         planned_effect_id = self._recorded_planned_effect_id(
@@ -929,10 +1590,33 @@ class AutoResearchCommandDispatcher:
     ) -> str | None:
         if isinstance(request, MessageCommandRequest):
             field = "planned_message_id"
-            verb: Literal["message", "watch_graph"] = "message"
+            verb: Literal[
+                "apply",
+                "message",
+                "watch_graph",
+                "episode",
+                "inbox",
+                "resume",
+                "finish",
+            ] = "message"
         elif isinstance(request, WatchGraphCommandRequest):
             field = "planned_watcher_id"
             verb = "watch_graph"
+        elif isinstance(request, ApplyCommandRequest):
+            field = "planned_apply_id"
+            verb = "apply"
+        elif isinstance(request, ResumeCommandRequest):
+            field = "planned_resume_operation_id"
+            verb = "resume"
+        elif isinstance(request, EpisodeCommandRequest):
+            field = "planned_episode_effect_id"
+            verb = "episode"
+        elif isinstance(request, InboxCommandRequest):
+            field = "planned_inbox_effect_id"
+            verb = "inbox"
+        elif isinstance(request, FinishCommandRequest):
+            field = "planned_finish_effect_id"
+            verb = "finish"
         else:
             return None
         planned_effect_id = start_payload.get(field)
@@ -955,6 +1639,11 @@ class AutoResearchCommandDispatcher:
         planned_worker_id: str | None,
         planned_message_id: str | None,
         planned_watcher_id: str | None,
+        planned_apply_id: str | None,
+        planned_resume_operation_id: str | None,
+        planned_episode_effect_id: str | None,
+        planned_inbox_effect_id: str | None,
+        planned_finish_effect_id: str | None,
     ) -> AutoResearchCommandEffectResult:
         retrospective_worker_reply = request.verb == "message" and context.request.role == "worker"
         if request.verb in MUTATING_COMMAND_VERBS and not retrospective_worker_reply:
@@ -969,7 +1658,7 @@ class AutoResearchCommandDispatcher:
                 or episode.stop_requested_at is not None
             ):
                 raise AutoResearchCommandUnavailable(
-                    "The auto_research is no longer accepting mutating commands."
+                    "The Auto-research episode is no longer accepting mutating commands."
                 )
         if request.verb == "validate":
             return self.effects.validate(context, request.arguments)
@@ -981,26 +1670,35 @@ class AutoResearchCommandDispatcher:
             if context.request.role == "worker":
                 if recipient_task_id not in {None, context.episode.root_operation_id}:
                     raise AutoResearchCommandInvalid(
-                        "A auto_research worker may reply only to its orchestrator."
+                        "An Auto-research worker may reply only to its orchestrator."
                     )
                 return self.effects.message(context, request.arguments, planned_message_id)
             if context.request.role == "orchestrator":
                 if recipient_task_id is None:
                     raise AutoResearchCommandInvalid(
-                        "The auto_research orchestrator must name the worker it is messaging."
+                        "The Auto-research orchestrator must name the worker it is messaging."
                     )
                 worker = self._require_worker(context, recipient_task_id)
-                binding = self.store.auto_research_actor_binding(worker.operation_id)
-                if recipient_task_id != binding.actor_operation_id:
+                if (
+                    self.effects.worker_lookup is None
+                    and recipient_task_id
+                    != self.store.auto_research_actor_binding(
+                        worker.operation_id
+                    ).actor_operation_id
+                ):
                     raise AutoResearchCommandInvalid(
-                        "The auto_research orchestrator must address a worker by its stable worker id."
+                        "The Auto-research orchestrator must address a worker by its stable worker ID."
                     )
                 return self.effects.message(context, request.arguments, planned_message_id)
             raise AutoResearchCommandInvalid("Only an Auto-research actor can send messages.")
         if context.request.role != "orchestrator":
             raise AutoResearchCommandInvalid(
-                "Only the auto_research orchestrator may issue mutating staged commands."
+                "Only the Auto-research orchestrator may issue mutating staged commands."
             )
+        if request.verb == "apply":
+            assert isinstance(request, ApplyCommandRequest)
+            assert planned_apply_id is not None
+            return self.effects.apply(context, request.arguments, planned_apply_id)
         if request.verb == "spawn":
             assert planned_worker_id is not None
             node_type = self.effects.seat_node_type(
@@ -1009,7 +1707,7 @@ class AutoResearchCommandDispatcher:
             )
             if node_type is None or node_type.casefold() not in {"experiment", "blocker"}:
                 raise AutoResearchCommandInvalid(
-                    "AutoResearch workers may be seated only on Experiments and Blockers."
+                    "Auto-research workers may be seated only on Experiments and Blockers."
                 )
             outcome = self.effects.spawn(context, request.arguments, planned_worker_id)
             if outcome.status != "ok":
@@ -1026,8 +1724,13 @@ class AutoResearchCommandDispatcher:
             return self.effects.pause(context, request.arguments.worker_id)
         if request.verb == "resume":
             assert isinstance(request, ResumeCommandRequest)
+            assert planned_resume_operation_id is not None
             self._require_worker(context, request.arguments.worker_id)
-            return self.effects.resume(context, request.arguments.worker_id)
+            return self.effects.resume(
+                context,
+                request.arguments.worker_id,
+                planned_resume_operation_id,
+            )
         if request.verb == "stop":
             assert isinstance(request, StopCommandRequest)
             self._require_worker(context, request.arguments.worker_id)
@@ -1035,9 +1738,22 @@ class AutoResearchCommandDispatcher:
         if request.verb == "watch_graph":
             assert planned_watcher_id is not None
             return self.effects.watch_graph(context, request.arguments, planned_watcher_id)
+        if request.verb == "episode":
+            assert isinstance(request, EpisodeCommandRequest)
+            assert planned_episode_effect_id is not None
+            return self.effects.episode(
+                context,
+                request.arguments,
+                planned_episode_effect_id,
+            )
+        if request.verb == "inbox":
+            assert isinstance(request, InboxCommandRequest)
+            assert planned_inbox_effect_id is not None
+            return self.effects.inbox(context, request.arguments, planned_inbox_effect_id)
         if request.verb == "finish":
             assert isinstance(request, FinishCommandRequest)
-            return self.effects.finish(context)
+            assert planned_finish_effect_id is not None
+            return self.effects.finish(context, planned_finish_effect_id)
         raise AssertionError(f"unhandled auto_research command verb: {request.verb}")
 
     def _require_worker(
@@ -1045,12 +1761,18 @@ class AutoResearchCommandDispatcher:
         context: AutoResearchCommandContext,
         operation_id: str,
     ) -> AgentTaskRecord:
+        if self.effects.worker_lookup is not None:
+            return self.effects.worker_lookup(context, operation_id)
         worker = self.store.agent_task(operation_id)
         if worker is None or worker.episode_id != context.episode.episode_id:
-            raise AutoResearchCommandInvalid("Worker control target is outside this auto_research.")
+            raise AutoResearchCommandInvalid(
+                "The worker control target is outside this Auto-research episode."
+            )
         worker_request = AutoResearchRunRequest.model_validate(worker.request)
         if worker_request.role != "worker":
-            raise AutoResearchCommandInvalid("Worker control target is not a auto_research worker.")
+            raise AutoResearchCommandInvalid(
+                "The worker control target is not an Auto-research worker."
+            )
         return worker
 
     def _verify_spawn_worker(
@@ -1061,10 +1783,13 @@ class AutoResearchCommandDispatcher:
     ) -> AgentTaskRecord:
         """Mechanically prove the canonical worker row matches the spawn intent."""
 
+        if self.effects.verify_spawn is not None:
+            return self.effects.verify_spawn(context, arguments, planned_worker_id)
+
         worker = self.store.agent_task(planned_worker_id)
         if worker is None:
             raise AutoResearchCommandUnavailable(
-                "AutoResearch spawn returned without durably creating its planned worker."
+                "Auto-research Spawn returned without durably creating its planned worker."
             )
         if (
             worker.kind != "auto_research"
@@ -1073,27 +1798,25 @@ class AutoResearchCommandDispatcher:
             or worker.parent_operation_id != context.task.operation_id
         ):
             raise AutoResearchCommandUnavailable(
-                "AutoResearch spawn created a worker with incorrect auto_research parent lineage."
+                "Auto-research Spawn created a worker with incorrect parent lineage."
             )
         if self.store.auto_research_invocation_role(worker.operation_id) != "worker":
             raise AutoResearchCommandUnavailable(
-                "AutoResearch spawn did not record the canonical worker invocation role."
+                "Auto-research Spawn did not record the canonical worker invocation role."
             )
         try:
             worker_request = AutoResearchRunRequest.model_validate(worker.request)
         except ValueError as exc:
             raise AutoResearchCommandUnavailable(
-                "AutoResearch spawn created a worker with an invalid run request."
+                "Auto-research Spawn created a worker with an invalid run request."
             ) from exc
         if (
             worker_request.episode_id != context.episode.episode_id
             or worker_request.role != "worker"
             or worker_request.control_node_id != arguments.seat_node_id
-            or worker_request.instruction != arguments.instruction
         ):
             raise AutoResearchCommandUnavailable(
-                "AutoResearch spawn created a worker that does not match its recorded seat or "
-                "instruction."
+                "Auto-research Spawn created a worker that does not match its recorded seat."
             )
         return worker
 
@@ -1103,13 +1826,51 @@ class AutoResearchCommandDispatcher:
         response_request_id: str,
         outcome: AutoResearchCommandEffectResult,
     ) -> CommandResponse:
+        outward_result = self._outward_command_result(command_id, outcome)
         self._record_finish(command_id, outcome)
         return CommandResponse(
             request_id=response_request_id,
             status=outcome.status,
             message=outcome.message,
-            result=outcome.result,
+            result=outward_result,
         )
+
+    def _outward_command_result(
+        self,
+        command_id: str,
+        outcome: AutoResearchCommandEffectResult,
+    ) -> dict[str, object]:
+        """Hydrate unbounded protocol output without copying it into the event ledger."""
+
+        receipt_id = outcome.result.get("finish_receipt_id")
+        if receipt_id is None:
+            return outcome.result
+        if not isinstance(receipt_id, str):
+            raise AutoResearchCommandUnavailable("The guarded-Finish receipt identity is invalid.")
+        receipt = self.store.auto_research_finish_receipt(receipt_id)
+        invocation = self.store.agent_command(command_id)
+        if receipt is None or invocation is None or invocation.episode_id is None:
+            raise AutoResearchCommandUnavailable(
+                "The guarded-Finish receipt is unavailable for this command."
+            )
+        context = self._context(invocation.operation_id)
+        actor_operation_id, actor_role = self._canonical_command_actor(context)
+        expected_compact = {
+            "finish_receipt_id": receipt.effect_id,
+            "disposition": receipt.disposition,
+            "blocker_count": receipt.blocker_count,
+            "digest": receipt.result_sha256,
+        }
+        if (
+            actor_role != "orchestrator"
+            or receipt.episode_id != invocation.episode_id
+            or receipt.actor_operation_id != actor_operation_id
+            or outcome.result != expected_compact
+        ):
+            raise AutoResearchCommandUnavailable(
+                "The guarded-Finish receipt does not match this canonical command actor."
+            )
+        return receipt.result
 
     def _record_finish(
         self,
@@ -1138,9 +1899,28 @@ def _planned_worker_id(episode_id: str, idempotency_key: str | None) -> str:
     )
 
 
+def _apply_admission_limit_outcome() -> AutoResearchCommandEffectResult:
+    return AutoResearchCommandEffectResult(
+        status="invalid",
+        message=(
+            "This provider turn already reached its "
+            f"{AUTO_RESEARCH_APPLY_MAX_PER_TURN}-Apply limit; "
+            "use the refreshed result or finish this turn before applying again."
+        ),
+    )
+
+
 def _planned_effect_id(
     episode_id: str,
-    verb: Literal["message", "watch_graph"],
+    verb: Literal[
+        "apply",
+        "message",
+        "watch_graph",
+        "episode",
+        "inbox",
+        "resume",
+        "finish",
+    ],
     idempotency_key: str | None,
 ) -> str:
     if idempotency_key is None:
@@ -1171,7 +1951,9 @@ def _effect_from_recorded_invocation(
     status = invocation.status
     payload = invocation.exit_payload
     if status not in {"ok", "invalid", "unavailable"} or not isinstance(payload, dict):
-        raise AutoResearchCommandUnavailable("Recorded auto_research command exit is incomplete.")
+        raise AutoResearchCommandUnavailable(
+            "The recorded Auto-research command exit is incomplete."
+        )
     recorded_result = payload.get("result")
     result = (
         dict(recorded_result)
@@ -1181,7 +1963,7 @@ def _effect_from_recorded_invocation(
     diagnostic = payload.get("diagnostic")
     message = diagnostic if isinstance(diagnostic, str) else None
     if status != "ok" and message is None:
-        message = "Recorded auto_research command did not complete successfully."
+        message = "The recorded Auto-research command did not complete successfully."
     return AutoResearchCommandEffectResult(
         status=status,
         message=message,

@@ -23,7 +23,7 @@ other team scenario is unbuildable until it is.
 
 ## What already exists
 
-- `Store(path, space_kind="team")` in [storage.py](../../src/rcp/storage.py), with
+- `Store(path, space_kind="team")` in [storage/spaces.py](../../src/rcp/storage/spaces.py), with
   an immutable `personal | team` kind on `space_identity` — but **no CLI or API
   path creates a team space**, so today it is reachable only from tests.
 - `space_identity` holds `space_id` and `space_kind` and **no name**.
@@ -86,7 +86,7 @@ exists to prevent.
 
 ## Land these serially, first
 
-1. **The schema** in [storage.py](../../src/rcp/storage.py): a space name, plus
+1. **The schema** in [storage/spaces.py](../../src/rcp/storage/spaces.py): a space name, plus
    tables for bootstrap codes, invitations, member tokens, and sessions, with
    their atomic state transitions. Every new column goes in the
    `CREATE TABLE IF NOT EXISTS` **and** is indexed only in the migration block
@@ -116,7 +116,8 @@ Then fan out across service, web, and tests.
 
 ## Out of scope
 
-Project membership and invitations ([S101](../acceptance/S101-project-membership-and-invitations.md)),
+Project membership ([S101](../acceptance/S101-project-membership.md)) and its
+invitations ([S122](../acceptance/S122-project-invitations.md)),
 the desktop client and SSH transport, member removal and every other console
 operation, backups, project transfer, and the multi-space index. Also out: the
 Linux deployment itself — the server half is plain Python and is built and

@@ -1,6 +1,6 @@
 ---
 id: S114-see-your-results-without-leaving
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest + browser + ssh
 covered_by:
@@ -15,6 +15,11 @@ covered_by:
   - web/tests/resultViewContracts.test.mjs
   - web/tests/resultViews.test.mjs
 invariants: [1, 2, 6, 10e]
+last_checked: 2026-08-15 — the view stage, served bytes, Keep, revision, and
+  retry contracts pass in the backend and web suites. The sandboxed-frame drive
+  in Runs and the remote SSH half are undriven and stay that way by decision,
+  because the composer's view control is wired only to an Experiment run
+  detail's conversation and driving it needs a live Experiment loop.
 ---
 
 # See your results without leaving RCP

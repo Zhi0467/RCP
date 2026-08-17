@@ -20,7 +20,7 @@ from rcp.config import (
     write_machine_provider_paths,
     write_project_scope,
 )
-from rcp.core.authority import AgentTaskAuthority, require_apply
+from rcp.core.authority import AgentTaskAuthority, ProjectMembershipCheck, require_apply
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
@@ -132,6 +132,7 @@ class HistoryManager:
         project_id: str | None = None,
         require_attribution: bool = False,
         agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
+        project_membership_check: ProjectMembershipCheck | None = None,
     ) -> None:
         if expected_space_id is not None:
             parsed = uuid.UUID(expected_space_id)
@@ -151,6 +152,7 @@ class HistoryManager:
         self.project_id = project_id
         self.require_attribution = require_attribution
         self.agent_authority_resolver = agent_authority_resolver
+        self.project_membership_check = project_membership_check
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -566,9 +568,14 @@ class HistoryManager:
         operation_id = patch.source_operation_id
         if not operation_id or not operation_id.strip():
             raise ValueError("agent patches require a non-empty direct source_operation_id")
-        if self.project_id is None or self.agent_authority_resolver is None:
+        if (
+            self.project_id is None
+            or self.agent_authority_resolver is None
+            or self.project_membership_check is None
+        ):
             raise ValueError(
-                "agent attribution requires a canonical project-scoped agent_authority_resolver"
+                "agent attribution requires a canonical project-scoped agent_authority_resolver "
+                "and project_membership_check"
             )
         try:
             resolved = self.agent_authority_resolver(self.project_id, operation_id)
@@ -576,7 +583,7 @@ class HistoryManager:
             raise ValueError(f"unknown agent task {operation_id!r}") from exc
         if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
             raise ValueError("agent authority resolver returned another task or project")
-        dispatch = require_apply(resolved, patch)
+        dispatch = require_apply(resolved, patch, is_project_member=self.project_membership_check)
         if dispatch.profile == "orchestrator" and resolved.episode_id is None:
             raise ValueError("orchestrator agent tasks require a canonical episode_id")
         assert resolved.authorized_by is not None

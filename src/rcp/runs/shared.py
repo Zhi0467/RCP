@@ -478,6 +478,7 @@ async def _stream_agent_events(
     outcome: _ProviderOutcome,
     binary: str | None,
     invocation_gate: ProviderInvocationGate | None = None,
+    required_session_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Run one provider pass, recording its outcome and forwarding wire events.
 
@@ -532,6 +533,27 @@ async def _stream_agent_events(
             if event.event == "paused":
                 outcome.paused = True
             if event.event == "session" and event.session_id:
+                if required_session_id is not None and event.session_id != required_session_id:
+                    outcome.failed = True
+                    if execution is not None:
+                        execution.store.record_agent_task_receipt(
+                            execution.operation_id,
+                            "continuation_context_unavailable",
+                            {
+                                "reason": "native_session_mismatch",
+                                "retry_required": True,
+                            },
+                        )
+                    yield _sse(
+                        AgentEvent(
+                            event="error",
+                            text=(
+                                "The provider did not continue the exact saved native session. "
+                                "This continuation was stopped before accepting any result."
+                            ),
+                        )
+                    )
+                    return
                 outcome.session_id = event.session_id
                 if execution_host and execution is None:
                     continue

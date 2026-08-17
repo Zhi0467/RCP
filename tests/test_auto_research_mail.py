@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
-from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
+from rcp.runs.auto_research_delivery import (
+    deliver_pending_auto_research_mail,
+    record_auto_research_message,
+)
 from rcp.runs.auto_research_mail import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
     AutoResearchMailDelivery,
@@ -17,17 +26,59 @@ from rcp.runs.auto_research_mail import (
     parse_auto_research_mail_delivery,
     stage_auto_research_mail_delivery,
 )
+from rcp.runs.experiment_loop import experiment_watcher_output_name
+from rcp.runs.work import _stage_auto_research_child_work_mail, stream_work_run
+from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    AutoResearchChildWorkRecord,
     AutoResearchMessageRecord,
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
+    WatcherContinuation,
+    WatcherRecord,
 )
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
 
+from .helpers import (
+    append_fixture_patch,
+    create_named_app,
+    fabricated_authorizer,
+    seed_patch,
+    wait_for_task,
+)
+from .test_api import ScriptedLauncher, _experiment_fixture_patch
+
 _RUN_TRUTH_SCOPE = ["repo-a"]
+
+
+class _SessionSequenceLauncher(ScriptedLauncher):
+    def __init__(
+        self,
+        turns: list[dict[str, str]],
+        *,
+        sessions: list[str],
+        fail_on: set[int] | None = None,
+        message: str = "",
+    ) -> None:
+        super().__init__(turns, message=message)
+        self.sessions = sessions
+        self.fail_on = fail_on or set()
+        self.native_session_id = sessions[0]
+
+    async def stream(self, provider, prompt, **kwargs):
+        async for event in super().stream(provider, prompt, **kwargs):
+            call_index = self.calls - 1
+            if event.event == "session":
+                event = event.model_copy(
+                    update={"session_id": self.sessions[min(call_index, len(self.sessions) - 1)]}
+                )
+            if event.event == "done" and call_index in self.fail_on:
+                yield AgentEvent(event="error", text="network failed")
+                return
+            yield event
 
 
 def _auto_research_authority(episode_id: str, role: str) -> AgentDispatchAuthority:
@@ -169,7 +220,9 @@ def test_claimed_inbound_mail_is_staged_as_one_exact_hearsay_only_batch(tmp_path
 
     clear_turn_handoff_files(mailbox)
     stage_auto_research_mail_delivery(mailbox, delivery)
-    parsed = parse_auto_research_mail_delivery((workspace / "messages.json").read_text(encoding="utf-8"))
+    parsed = parse_auto_research_mail_delivery(
+        (workspace / "messages.json").read_text(encoding="utf-8")
+    )
 
     assert parsed == delivery
     assert parsed.graph_authority == "none"
@@ -184,6 +237,125 @@ def test_claimed_inbound_mail_is_staged_as_one_exact_hearsay_only_batch(tmp_path
     assert parsed.messages[1].authorized_by is None
     assert not (workspace / "patch.json").exists()
     assert not (workspace / "watch.json").exists()
+
+
+def test_ordinary_child_work_stages_and_reuses_only_its_exact_claimed_mail(tmp_path) -> None:
+    workspace = tmp_path / "ordinary-child-stage"
+    workspace.mkdir()
+    message = AutoResearchMessageRecord(
+        message_id="ordinary-child-message",
+        episode_id="auto_research",
+        sender_role="orchestrator",
+        sender_task_id="root",
+        recipient_task_id="worker",
+        control_node_id="exp/check",
+        body="Recheck the bounded observation.",
+        created_at="2026-08-16T00:00:00+00:00",
+        delivered_at="2026-08-16T00:01:00+00:00",
+        delivery_operation_id="child-mail-wake",
+    )
+    route = AutoResearchChildWorkRecord(
+        worker_id="worker",
+        episode_id="auto_research",
+        project_id="project",
+        control_node_id="exp/check",
+        root_operation_id="worker",
+        current_operation_id="child-mail-wake",
+        admitted_by_operation_id="root",
+        instruction="Check the result.",
+        instruction_sha256=hashlib.sha256(b"Check the result.").hexdigest(),
+        created_at="2026-08-16T00:00:00+00:00",
+        updated_at="2026-08-16T00:01:00+00:00",
+    )
+
+    class _Store:
+        @staticmethod
+        def auto_research_messages(_episode_id):
+            return [message]
+
+        @staticmethod
+        def agent_task(operation_id):
+            tasks = {
+                "child-mail-resume": SimpleNamespace(
+                    operation_id="child-mail-resume",
+                    parent_operation_id="child-mail-wake",
+                ),
+                "child-mail-wake": SimpleNamespace(
+                    operation_id="child-mail-wake",
+                    parent_operation_id="child-initial",
+                ),
+            }
+            return tasks.get(operation_id)
+
+        @staticmethod
+        def agent_task_continuation_cause(operation_id):
+            return {
+                "child-mail-resume": "resume",
+                "child-mail-wake": "message_wake",
+            }.get(operation_id)
+
+        @staticmethod
+        def auto_research_child_work_for_operation(_operation_id):
+            return route
+
+    execution = AgentTaskExecution(
+        operation_id="child-mail-wake",
+        store=_Store(),  # type: ignore[arg-type]
+        control=AgentProcessControl(),
+        continuation="message_wake",
+    )
+
+    assert (
+        _stage_auto_research_child_work_mail(
+            AgentTaskExecution(
+                operation_id="child-initial",
+                store=_Store(),  # type: ignore[arg-type]
+                control=AgentProcessControl(),
+                continuation="fresh",
+            ),
+            route.model_copy(update={"current_operation_id": "child-initial"}),
+            local_stage=workspace,
+            remote_stage=None,
+            continuation="fresh",
+        )
+        is None
+    )
+    assert not (workspace / "messages.json").exists()
+    first = _stage_auto_research_child_work_mail(
+        execution,
+        route,
+        local_stage=workspace,
+        remote_stage=None,
+        continuation="message_wake",
+    )
+    second = _stage_auto_research_child_work_mail(
+        execution,
+        route,
+        local_stage=workspace,
+        remote_stage=None,
+        continuation="message_wake",
+    )
+    resumed = _stage_auto_research_child_work_mail(
+        AgentTaskExecution(
+            operation_id="child-mail-resume",
+            store=_Store(),  # type: ignore[arg-type]
+            control=AgentProcessControl(),
+            continuation="resume",
+        ),
+        route.model_copy(update={"current_operation_id": "child-mail-resume"}),
+        local_stage=workspace,
+        remote_stage=None,
+        continuation="resume",
+    )
+
+    assert first == second == resumed == str(workspace / "messages.json")
+    retained = parse_auto_research_mail_delivery(
+        (workspace / "messages.json").read_text(encoding="utf-8")
+    )
+    assert retained.recipient_task_id == route.worker_id
+    assert retained.delivery_operation_id == execution.operation_id
+    assert retained.message_ids == [message.message_id]
+    assert retained.epistemic_status == "hearsay"
 
 
 def test_legacy_v1_human_mail_without_sender_snapshot_still_parses(tmp_path) -> None:
@@ -299,3 +471,357 @@ def test_claim_prefix_stops_at_the_shared_count_and_exact_wire_boundary(
         messages=messages,
     )
     assert [message.message_id for message in smaller] == ["message-0"]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_authority(
+    manifest,
+    tmp_path,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    launcher = _SessionSequenceLauncher(
+        [
+            {"watch.json": "child watcher output must not be parsed"},
+            {},
+            {},
+            {},
+        ],
+        sessions=["child-session", "forked-session", "resume-session", "resume-forked"],
+        fail_on={2},
+        message="The delegated check completed.",
+    )
+
+    async def stream(project_id, kind, request, execution):
+        if kind == "auto_research":
+            yield 'data: {"event":"session","session_id":"root-session"}\n\n'
+            yield 'data: {"event":"done"}\n\n'
+            return
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    background = BackgroundAgentTasks(store, stream)
+    episode, root = background.start_auto_research(
+        app.state.default_project_id,
+        AutoResearchStartRequest(
+            invocation_ceiling=5,
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+        ),
+        authorized_by=fabricated_authorizer(),
+        episode_id="ordinary-child-prompt-episode",
+        operation_id="ordinary-child-prompt-root",
+    )
+    root = wait_for_task(store, root.operation_id, expect="succeeded")
+    worker_id = "00000000-0000-4000-8000-000000000451"
+    instruction = "Check the focused hypothesis and report the bounded evidence."
+    child = background.start_auto_research_child_work(
+        episode.episode_id,
+        RunRequest(
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+            chat_scope="node",
+            node_id="hyp/replanning-restores-plasticity",
+            chat_id=worker_id,
+            message=instruction,
+            mode="work",
+            trigger="orchestrator",
+            patch_kind="work",
+        ),
+        admitted_by_operation_id=root.operation_id,
+        worker_id=worker_id,
+        instruction=instruction,
+        instruction_sha256=hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+    )
+    child = wait_for_task(store, child.operation_id, expect="succeeded")
+
+    initial_master_path = Path(launcher.prompts[0].splitlines()[1])
+    initial_master = initial_master_path.read_text(encoding="utf-8")
+    assert "## Auto-research child Work boundary" in initial_master
+    assert "only staged command capabilities" in initial_master
+    assert "Do not invoke `apply`, `status`, `spawn`" in initial_master
+    assert "Do not write `watch.json`" in initial_master
+    assert launcher.launch_kwargs[0]["invocation_gate"] is not None
+    assert not (launcher.workspaces[0] / "watch.json").exists()
+    assert any(
+        receipt.category == "auto_research_child_watcher_output_discarded"
+        for receipt in store.agent_task_receipts(child.operation_id)
+    )
+
+    message = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="orchestrator",
+        sender_task_id=root.operation_id,
+        authorized_by=None,
+        recipient_task_id=worker_id,
+        control_node_id="hyp/replanning-restores-plasticity",
+        body="Recheck after the graph update.",
+    )
+    wake_id = deliver_pending_auto_research_mail(
+        background,
+        episode_id=episode.episode_id,
+        recipient_task_id=worker_id,
+    )
+    assert wake_id is not None
+    wake = wait_for_task(store, wake_id, expect="failed")
+
+    continuation_contract_path = Path(launcher.prompts[1].splitlines()[1])
+    continuation_contract = continuation_contract_path.read_text(encoding="utf-8")
+    assert "same native provider session" in continuation_contract
+    assert "newly claimed agent mail is staged separately" in continuation_contract
+    assert "messages.json" in continuation_contract
+    assert "Do not invoke `apply`, `status`, `spawn`" in continuation_contract
+    assert launcher.resumed_sessions == [None, launcher.native_session_id]
+    assert launcher.launch_kwargs[1]["invocation_gate"] is not None
+    staged_mail = parse_auto_research_mail_delivery(
+        (launcher.workspaces[1] / "messages.json").read_text(encoding="utf-8")
+    )
+    assert staged_mail.delivery_operation_id == wake.operation_id
+    assert staged_mail.message_ids == [message.message_id]
+    assert not (launcher.workspaces[1] / "watch.json").exists()
+    assert store.agent_task(wake.operation_id).native_session_id == "child-session"  # type: ignore[union-attr]
+    assert any(
+        receipt.category == "continuation_context_unavailable"
+        and receipt.payload.get("reason") == "native_session_mismatch"
+        for receipt in store.agent_task_receipts(wake.operation_id)
+    )
+
+    resume_worker_id = "00000000-0000-4000-8000-000000000452"
+    resume_instruction = "Check a second focused hypothesis."
+    interrupted = background.start_auto_research_child_work(
+        episode.episode_id,
+        RunRequest(
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+            chat_scope="node",
+            node_id="hyp/replanning-restores-plasticity",
+            chat_id=resume_worker_id,
+            message=resume_instruction,
+            mode="work",
+            trigger="orchestrator",
+            patch_kind="work",
+        ),
+        admitted_by_operation_id=root.operation_id,
+        worker_id=resume_worker_id,
+        instruction=resume_instruction,
+        instruction_sha256=hashlib.sha256(resume_instruction.encode("utf-8")).hexdigest(),
+    )
+    interrupted = wait_for_task(store, interrupted.operation_id, expect="failed")
+    assert interrupted.native_session_id == "resume-session"
+
+    resumed = background.resume_auto_research_child_work(
+        episode.episode_id,
+        resume_worker_id,
+    )
+    assert resumed.disposition == "resumed"
+    assert resumed.task is not None
+    resumed_task = wait_for_task(store, resumed.task.operation_id, expect="failed")
+    assert resumed_task.native_session_id == "resume-session"
+    assert any(
+        receipt.category == "continuation_context_unavailable"
+        and receipt.payload.get("reason") == "native_session_mismatch"
+        for receipt in store.agent_task_receipts(resumed_task.operation_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watchers(
+    manifest,
+    tmp_path,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    experiment_id = "exp/bounded-loop"
+    loop_episode_id = "00000000-0000-4000-8000-000000000461"
+    loop_operation_id = "00000000-0000-4000-8000-000000000462"
+    loop_chat_id = "00000000-0000-4000-8000-000000000463"
+    watcher_id = "active-experiment-watcher"
+    graph_revision = service.history.state().revision
+    loop_request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="node",
+        node_id=experiment_id,
+        chat_id=loop_chat_id,
+        message="Begin the bounded Experiment loop.",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id=experiment_id,
+        control_revision=graph_revision,
+        control_episode_id=loop_episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    now = store.now()
+    store.create_experiment_episode_with_invocation(
+        AgentTaskRecord(
+            operation_id=loop_operation_id,
+            project_id=project_id,
+            episode_id=loop_episode_id,
+            kind="node_chat",
+            status="queued",
+            request=loop_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+            authorized_by=fabricated_authorizer(),
+        )
+    )
+    store.complete_agent_task(loop_operation_id, applied_revision=None, result={})
+    continuation = WatcherContinuation(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        patch_kind="experiment_loop",
+        control_node_id=experiment_id,
+        control_revision=graph_revision,
+        control_episode_id=loop_episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=2,
+    )
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id=watcher_id,
+                project_id=project_id,
+                origin_operation_id=loop_operation_id,
+                origin_task_kind="node_chat",
+                chat_id=loop_chat_id,
+                node_id=experiment_id,
+                episode_id=loop_episode_id,
+                continuation=continuation,
+                check_command="false",
+                log_path="/tmp/active-experiment-watcher.log",
+                cwd="/tmp",
+                created_at=store.now(),
+            )
+        ]
+    )
+    loop_stage = tmp_path / "loop-stage"
+    loop_stage.mkdir()
+    store.commit_experiment_episode_turn(
+        episode_id=loop_episode_id,
+        project_id=project_id,
+        control_node_id=experiment_id,
+        provider="codex",
+        execution_machine="laptop",
+        execution_host="",
+        native_session_id="loop-session",
+        stage_host=None,
+        stage_root=str(loop_stage),
+        chat_id=loop_chat_id,
+        operation_id=loop_operation_id,
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=[watcher_id],
+        context_baseline={},
+    )
+    assert [item.control_node_id for item in store.experiment_watcher_resources(project_id)] == [
+        experiment_id
+    ]
+
+    output_name = experiment_watcher_output_name(experiment_id)
+    launcher = ScriptedLauncher(
+        [
+            {
+                output_name: json.dumps(
+                    {
+                        "external": [
+                            {
+                                "stop_watcher_id": watcher_id,
+                                "reason": "Child Work must not have this authority.",
+                            }
+                        ],
+                        "graph": [],
+                    }
+                )
+            }
+        ],
+        message="The delegated Experiment check completed.",
+    )
+
+    async def stream(project_id, kind, request, execution):
+        if kind == "auto_research":
+            yield 'data: {"event":"session","session_id":"root-session"}\n\n'
+            yield 'data: {"event":"done"}\n\n'
+            return
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    background = BackgroundAgentTasks(store, stream)
+    episode, root = background.start_auto_research(
+        project_id,
+        AutoResearchStartRequest(
+            invocation_ceiling=5,
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+        ),
+        authorized_by=fabricated_authorizer(),
+        episode_id="ordinary-child-experiment-authority-episode",
+        operation_id="ordinary-child-experiment-authority-root",
+    )
+    root = wait_for_task(store, root.operation_id, expect="succeeded")
+    worker_id = "00000000-0000-4000-8000-000000000464"
+    instruction = "Inspect the focused Experiment without changing its watcher lifecycle."
+    child = background.start_auto_research_child_work(
+        episode.episode_id,
+        RunRequest(
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+            chat_scope="node",
+            node_id=experiment_id,
+            chat_id=worker_id,
+            message=instruction,
+            mode="work",
+            trigger="orchestrator",
+            patch_kind="work",
+        ),
+        admitted_by_operation_id=root.operation_id,
+        worker_id=worker_id,
+        instruction=instruction,
+        instruction_sha256=hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+    )
+    child = wait_for_task(store, child.operation_id, expect="succeeded")
+
+    master_path = Path(launcher.prompts[0].splitlines()[1])
+    master = master_path.read_text(encoding="utf-8")
+    assert output_name not in master
+    assert loop_episode_id not in master
+    assert not [name for name in launcher.input_snapshots[0] if "experiment-watchers" in name]
+    watcher = store.watcher(watcher_id)
+    assert watcher is not None and watcher.status == "active"
+    receipts = store.agent_task_receipts(child.operation_id)
+    rejection = next(
+        item for item in receipts if item.category == "experiment_watcher_maintenance_rejected"
+    )
+    assert "not staged" in str(rejection.payload["problem"])
+    assert not [item for item in receipts if item.category == "experiment_watchers_maintained"]
+    assert child.result is not None
+    assert child.result["messages"][-1] == "The delegated Experiment check completed."
+    assert service.history.state().revision == graph_revision

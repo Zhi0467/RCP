@@ -11,7 +11,10 @@ from rcp.runs.auto_research import (
     auto_research_wrapup_spec,
     settle_auto_research_stop,
 )
-from rcp.runs.auto_research_delivery import reconcile_pending_auto_research_mail
+from rcp.runs.auto_research_delivery import (
+    reconcile_pending_auto_research_lifecycle,
+    reconcile_pending_auto_research_mail,
+)
 from rcp.runs.auto_research_recovery import (
     reconcile_auto_research_task_settlement,
     reconcile_due_auto_research_recoveries,
@@ -140,20 +143,24 @@ class EpisodeReconciler:
             return
         if current.stop_requested_at is None and current.ending is None:
             try:
+                reconcile_pending_auto_research_lifecycle(
+                    self.background,
+                    episode_id=current.episode_id,
+                )
                 reconcile_pending_auto_research_mail(
                     self.background,
                     episode_id=current.episode_id,
                 )
             except Exception as exc:
                 self.logger.warning(
-                    "Could not deliver pending Auto-research mail after task %s: %s",
+                    "Could not deliver pending Auto-research lifecycle or mail after task %s: %s",
                     execution.operation_id,
                     exc,
                 )
                 with suppress(Exception):
                     self.store.record_agent_task_receipt(
                         execution.operation_id,
-                        "auto_research_mail_delivery_retry_failed",
+                        "auto_research_delivery_retry_failed",
                         {"exception_type": type(exc).__name__, "detail": str(exc)},
                         tier="diagnostic",
                     )

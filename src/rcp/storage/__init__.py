@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
 from rcp.storage.auto_research import AutoResearchStoreMixin
+from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
 from rcp.storage.base import AppStoreBase
 from rcp.storage.episodes import EpisodeStoreMixin
 from rcp.storage.experiments import ExperimentStoreMixin
@@ -28,6 +29,7 @@ class AppStore(
     ResultViewStoreMixin,
     EpisodeStoreMixin,
     AutoResearchStoreMixin,
+    AutoResearchChildrenStoreMixin,
     ExperimentStoreMixin,
     WatcherStoreMixin,
     AgentTaskStoreMixin,

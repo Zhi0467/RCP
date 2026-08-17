@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from pydantic import ValidationError
+
+from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.service import RunRequest
+
+_AUTO_RESEARCH_GRAPH_ROLES = frozenset({"orchestrator", "worker"})
+_CHAT_TASK_KINDS = frozenset({"node_chat", "project_chat"})
+_INGEST_TASK_KINDS = frozenset({"seed", "refresh"})
+
+
+def task_graph_capable(kind: str, request: object) -> bool:
+    """Return whether a persisted or live task request may produce a graph patch."""
+
+    if kind in _INGEST_TASK_KINDS:
+        return _run_request(request) is not None
+    if kind in _CHAT_TASK_KINDS:
+        run_request = _run_request(request)
+        return run_request is not None and run_request.mode == "work"
+    if kind == "auto_research":
+        auto_research_request = _auto_research_request(request)
+        return (
+            auto_research_request is not None
+            and auto_research_request.role in _AUTO_RESEARCH_GRAPH_ROLES
+        )
+    return False
+
+
+def task_experiment_episode_id(request: object) -> str | None:
+    """Return the bounded-experiment episode selected by a live Work request."""
+
+    if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
+        return request.control_episode_id or ""
+    return None
+
+
+def _run_request(request: object) -> RunRequest | None:
+    if isinstance(request, RunRequest):
+        return request
+    if not isinstance(request, dict):
+        return None
+    try:
+        return RunRequest.model_validate(request)
+    except ValidationError:
+        return None
+
+
+def _auto_research_request(request: object) -> AutoResearchRunRequest | None:
+    if isinstance(request, AutoResearchRunRequest):
+        return request
+    if not isinstance(request, dict):
+        return None
+    role = request.get("role")
+    if not isinstance(role, str) or role not in _AUTO_RESEARCH_GRAPH_ROLES:
+        return None
+    try:
+        return AutoResearchRunRequest.model_validate(request)
+    except ValidationError:
+        return None

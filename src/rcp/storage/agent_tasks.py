@@ -36,6 +36,7 @@ from rcp.limits import (
     AGENT_TASK_RECEIPT_RETENTION_COUNTS,
     AGENT_TASK_RESULT_MAX_BYTES,
     CHAT_ARTIFACT_MAX_COUNT,
+    GRAPH_UPDATE_HISTORY_MAX_COUNT,
     PATCH_OUTPUT_RETENTION_DAYS,
     RUN_TRACE_RETENTION_DAYS,
     WRITING_SESSION_RETENTION_DAYS,
@@ -108,6 +109,11 @@ from rcp.storage.models import (  # noqa: F401
     normalize_space_name,
     watcher_next_check_at,
 )
+
+# Ordered Apply history is a contiguous latest tail. The singular projection
+# retains the detailed latest result; history entries are concise so task JSON
+# remains below its existing 64 KiB storage boundary.
+_GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
 
 
 class AgentTaskStoreMixin:
@@ -204,6 +210,41 @@ class AgentTaskStoreMixin:
                 record.authorized_by.display_name if record.authorized_by is not None else None,
                 int(record.visible),
             ),
+        )
+
+    def _insert_agent_task_dispatch_intent_receipt(
+        self,
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str,
+    ) -> None:
+        """Persist a recovery's exact launch policy in its admission transaction."""
+
+        resumed_by_cause = {
+            "resume": True,
+            "retry": True,
+            "handoff": False,
+            "graph_repair": True,
+        }
+        if continuation_cause not in resumed_by_cause:
+            raise ValueError("An Experiment recovery has an invalid continuation cause.")
+        self._insert_agent_task_receipt(
+            connection,
+            record.operation_id,
+            "operation_created",
+            self._bounded_receipt_payload(
+                {
+                    "kind": record.kind,
+                    "attempt": record.attempt,
+                    "has_parent": True,
+                    "continuation_cause": continuation_cause,
+                    "resumed": resumed_by_cause[continuation_cause],
+                    "admission_committed": True,
+                }
+            ),
+            tier="summary",
+            created_at=record.created_at,
         )
 
     @classmethod
@@ -1475,7 +1516,69 @@ class AgentTaskStoreMixin:
         return encoded
 
     @staticmethod
-    def _bounded_result_json(result: dict[str, object] | None) -> str | None:
+    def _bounded_graph_update(
+        raw_graph_update: object,
+        *,
+        concise: bool = False,
+    ) -> dict[str, object] | None:
+        if isinstance(raw_graph_update, dict) and raw_graph_update.get("status") in {
+            "none",
+            "applied",
+            "rejected",
+        }:
+            raw_change_summary = raw_graph_update.get("change_summary")
+            raw_proposal_ids = raw_graph_update.get("proposal_ids")
+            raw_validation_messages = raw_graph_update.get("validation_messages")
+            change_count, change_length = (2, 200) if concise else (32, 1600)
+            proposal_count, proposal_length = (8, 100) if concise else (32, 400)
+            validation_count, validation_length = (2, 200) if concise else (8, 1600)
+            return {
+                "status": raw_graph_update["status"],
+                "applied_revision": (
+                    raw_graph_update.get("applied_revision")
+                    if isinstance(raw_graph_update.get("applied_revision"), int)
+                    and not isinstance(raw_graph_update.get("applied_revision"), bool)
+                    else None
+                ),
+                "change_summary": [
+                    item[:change_length]
+                    for item in (
+                        raw_change_summary[:change_count]
+                        if isinstance(raw_change_summary, list)
+                        else []
+                    )
+                    if isinstance(item, str)
+                ],
+                "proposal_ids": [
+                    item[:proposal_length]
+                    for item in (
+                        raw_proposal_ids[:proposal_count]
+                        if isinstance(raw_proposal_ids, list)
+                        else []
+                    )
+                    if isinstance(item, str)
+                ],
+                "validation_messages": [
+                    item[:validation_length]
+                    for item in (
+                        raw_validation_messages[:validation_count]
+                        if isinstance(raw_validation_messages, list)
+                        else []
+                    )
+                    if isinstance(item, str)
+                ],
+                "correction_rounds": (
+                    raw_graph_update.get("correction_rounds")
+                    if isinstance(raw_graph_update.get("correction_rounds"), int)
+                    and not isinstance(raw_graph_update.get("correction_rounds"), bool)
+                    else 0
+                ),
+                "repairable": raw_graph_update.get("repairable") is True,
+            }
+        return None
+
+    @classmethod
+    def _bounded_result_json(cls, result: dict[str, object] | None) -> str | None:
         if result is None:
             return None
         raw_artifacts = result.get("artifacts")
@@ -1490,54 +1593,86 @@ class AgentTaskStoreMixin:
         payload: dict[str, object] = {"messages": []}
         if artifacts:
             payload["artifacts"] = artifacts
-        raw_graph_update = result.get("graph_update")
-        if isinstance(raw_graph_update, dict) and raw_graph_update.get("status") in {
-            "none",
-            "applied",
-            "rejected",
-        }:
-            raw_change_summary = raw_graph_update.get("change_summary")
-            raw_proposal_ids = raw_graph_update.get("proposal_ids")
-            raw_validation_messages = raw_graph_update.get("validation_messages")
-            payload["graph_update"] = {
-                "status": raw_graph_update["status"],
-                "applied_revision": (
-                    raw_graph_update.get("applied_revision")
-                    if isinstance(raw_graph_update.get("applied_revision"), int)
-                    and not isinstance(raw_graph_update.get("applied_revision"), bool)
-                    else None
-                ),
-                "change_summary": [
-                    item[:1600]
-                    for item in (
-                        raw_change_summary[:32] if isinstance(raw_change_summary, list) else []
-                    )
-                    if isinstance(item, str)
-                ],
-                "proposal_ids": [
-                    item[:400]
-                    for item in (
-                        raw_proposal_ids[:32] if isinstance(raw_proposal_ids, list) else []
-                    )
-                    if isinstance(item, str)
-                ],
-                "validation_messages": [
-                    item[:1600]
-                    for item in (
-                        raw_validation_messages[:8]
-                        if isinstance(raw_validation_messages, list)
-                        else []
-                    )
-                    if isinstance(item, str)
-                ],
-                "correction_rounds": (
-                    raw_graph_update.get("correction_rounds")
-                    if isinstance(raw_graph_update.get("correction_rounds"), int)
-                    and not isinstance(raw_graph_update.get("correction_rounds"), bool)
-                    else 0
-                ),
-                "repairable": raw_graph_update.get("repairable") is True,
+
+        graph_update = cls._bounded_graph_update(result.get("graph_update"))
+        raw_graph_updates = result.get("graph_updates")
+        graph_updates: list[dict[str, object]] = []
+        latest_history_update: dict[str, object] | None = None
+        if isinstance(raw_graph_updates, list):
+            reverse_updates: list[dict[str, object]] = []
+            for raw_update in reversed(raw_graph_updates):
+                full_update = cls._bounded_graph_update(raw_update)
+                if full_update is None:
+                    continue
+                if latest_history_update is None:
+                    latest_history_update = full_update
+                concise_update = cls._bounded_graph_update(full_update, concise=True)
+                assert concise_update is not None
+                reverse_updates.append(concise_update)
+                if len(reverse_updates) == GRAPH_UPDATE_HISTORY_MAX_COUNT:
+                    break
+            graph_updates = list(reversed(reverse_updates))
+        if graph_update is None:
+            graph_update = latest_history_update
+        if graph_update is not None:
+            payload["graph_update"] = graph_update
+
+        def encoded_size() -> int:
+            return len(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+
+        result_limit = AGENT_TASK_RESULT_MAX_BYTES - 1
+        base_limit = (
+            result_limit - _GRAPH_UPDATE_HISTORY_RESERVE_BYTES if graph_updates else result_limit
+        )
+        while encoded_size() > base_limit:
+            trimmed = False
+            if graph_update is not None:
+                for field in ("change_summary", "proposal_ids", "validation_messages"):
+                    values = graph_update[field]
+                    assert isinstance(values, list)
+                    if values:
+                        values.pop()
+                        trimmed = True
+                        break
+            if not trimmed and artifacts:
+                artifacts.pop()
+                if not artifacts:
+                    payload.pop("artifacts", None)
+                trimmed = True
+            if not trimmed:
+                break
+
+        retained_updates: list[dict[str, object]] = []
+        for raw_update in reversed(graph_updates):
+            update = {
+                **raw_update,
+                "change_summary": list(raw_update["change_summary"]),
+                "proposal_ids": list(raw_update["proposal_ids"]),
+                "validation_messages": list(raw_update["validation_messages"]),
             }
+            candidate = [update, *retained_updates]
+            payload["graph_updates"] = candidate
+            while encoded_size() > result_limit:
+                trimmed = False
+                for field in ("change_summary", "proposal_ids", "validation_messages"):
+                    values = update[field]
+                    assert isinstance(values, list)
+                    if values:
+                        values.pop()
+                        trimmed = True
+                        break
+                if not trimmed:
+                    break
+            if encoded_size() > result_limit:
+                break
+            retained_updates = candidate
+        if retained_updates:
+            payload["graph_updates"] = retained_updates
+        else:
+            payload.pop("graph_updates", None)
+
         raw_messages = result.get("messages")
         messages = raw_messages if isinstance(raw_messages, list) else []
         bounded: list[str] = []
@@ -1554,7 +1689,7 @@ class AgentTaskStoreMixin:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            if len(encoded.encode("utf-8")) > AGENT_TASK_RESULT_MAX_BYTES:
+            if len(encoded.encode("utf-8")) > result_limit:
                 bounded.pop()
                 break
         payload["messages"] = bounded
@@ -1761,7 +1896,7 @@ class AgentTaskStoreMixin:
         )
         result_json = self._bounded_result_json(result) if result is not None else None
         with self.connection() as connection:
-            connection.execute(
+            changed = connection.execute(
                 """
                 UPDATE graph_runs
                 SET status = 'paused', updated_at = ?, finished_at = ?,
@@ -1770,7 +1905,7 @@ class AgentTaskStoreMixin:
                 WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
                 """,
                 (now, now, now, detail, result_json, operation_id),
-            )
+            ).rowcount
             self._insert_agent_task_event(
                 connection,
                 operation_id,
@@ -1786,6 +1921,14 @@ class AgentTaskStoreMixin:
                 tier="summary",
                 created_at=now,
             )
+            if changed == 1:
+                self._insert_auto_research_task_lifecycle_notice(
+                    connection,
+                    operation_id=operation_id,
+                    status="paused",
+                    created_at=now,
+                    diagnostic=detail,
+                )
 
     def complete_agent_task(
         self,
@@ -1797,6 +1940,13 @@ class AgentTaskStoreMixin:
         now = self.now()
         result_json = self._bounded_result_json(result)
         graph_update = result.get("graph_update")
+        if not isinstance(graph_update, dict):
+            graph_updates = result.get("graph_updates")
+            if isinstance(graph_updates, list):
+                graph_update = next(
+                    (item for item in reversed(graph_updates) if isinstance(item, dict)),
+                    None,
+                )
         graph_rejected = isinstance(graph_update, dict) and graph_update.get("status") == "rejected"
         status_message = (
             "Completed; graph update rejected." if graph_rejected else "Agent task completed."
@@ -1814,7 +1964,7 @@ class AgentTaskStoreMixin:
         if isinstance(graph_update, dict):
             payload["graph_update_status"] = str(graph_update.get("status") or "none")
         with self.connection() as connection:
-            connection.execute(
+            changed = connection.execute(
                 """
                 UPDATE graph_runs
                 SET status = 'succeeded', updated_at = ?, finished_at = ?,
@@ -1832,7 +1982,7 @@ class AgentTaskStoreMixin:
                     now,
                     operation_id,
                 ),
-            )
+            ).rowcount
             if not graph_rejected:
                 connection.execute(
                     "DELETE FROM graph_run_outputs WHERE operation_id = ?",
@@ -1853,6 +2003,13 @@ class AgentTaskStoreMixin:
                 tier="summary",
                 created_at=now,
             )
+            if changed == 1:
+                self._insert_auto_research_task_lifecycle_notice(
+                    connection,
+                    operation_id=operation_id,
+                    status="succeeded",
+                    created_at=now,
+                )
 
     def fail_agent_task(
         self,
@@ -1877,7 +2034,7 @@ class AgentTaskStoreMixin:
         )
         result_json = self._bounded_result_json(result) if result is not None else None
         with self.connection() as connection:
-            connection.execute(
+            changed = connection.execute(
                 """
                 UPDATE graph_runs
                 SET status = ?, updated_at = ?, finished_at = ?,
@@ -1886,31 +2043,116 @@ class AgentTaskStoreMixin:
                 WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
                 """,
                 (status, now, now, detail, detail, status, now, result_json, operation_id),
-            )
+            ).rowcount
+            if changed == 1:
+                self._insert_auto_research_task_lifecycle_notice(
+                    connection,
+                    operation_id=operation_id,
+                    status=status,
+                    created_at=now,
+                    diagnostic=detail,
+                )
 
-    def interrupt_active_agent_tasks(self) -> None:
+    def agent_task_dispatch_was_proven_not_started(self, operation_id: str) -> bool:
+        """Return whether a queued task has durable proof no worker thread began."""
+
+        with self.connection() as connection:
+            task = connection.execute(
+                "SELECT status FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if task is None or task["status"] != "queued":
+                return False
+            created = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'operation_created'
+                ORDER BY receipt_id ASC LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+            latest_attempt = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'operation_dispatch_attempt'
+                ORDER BY rowid DESC LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+            if created is None and latest_attempt is None:
+                return True
+            if latest_attempt is None:
+                payload = json.loads(created["payload_json"]) if created is not None else {}
+                return isinstance(payload, dict) and payload.get("admission_committed") is True
+            attempt_id = json.loads(latest_attempt["payload_json"]).get("dispatch_attempt_id")
+            latest_outcome = connection.execute(
+                """
+                SELECT category, payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category IN (
+                    'operation_dispatch_failed_before_start',
+                    'operation_dispatch_started'
+                )
+                ORDER BY rowid DESC LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+        if latest_outcome is None:
+            return False
+        return (
+            latest_outcome["category"] == "operation_dispatch_failed_before_start"
+            and json.loads(latest_outcome["payload_json"]).get("dispatch_attempt_id") == attempt_id
+        )
+
+    def interrupt_active_agent_tasks(
+        self,
+        *,
+        preserve_operation_ids: set[str] | None = None,
+    ) -> None:
         now = self.now()
         detail = (
             "RCP restarted before this operation finished. Resume from its saved session "
             "when available, or retry from the beginning."
         )
+        preserved = sorted(
+            operation_id
+            for operation_id in (preserve_operation_ids or set())
+            if self.agent_task_dispatch_was_proven_not_started(operation_id)
+        )
+        preserve_clause = ""
+        preserve_arguments: tuple[str, ...] = ()
+        if preserved:
+            placeholders = ",".join("?" for _ in preserved)
+            preserve_clause = f" AND operation_id NOT IN ({placeholders})"
+            preserve_arguments = tuple(preserved)
         interrupted: list[str] = []
         with self.connection() as connection:
             interrupted = [
-                row["operation_id"]
+                str(row["operation_id"])
                 for row in connection.execute(
-                    "SELECT operation_id FROM graph_runs WHERE status IN ('queued', 'running', 'pausing')"
+                    "SELECT operation_id FROM graph_runs "
+                    "WHERE status IN ('queued', 'running', 'pausing')"
+                    f"{preserve_clause}",
+                    preserve_arguments,
                 ).fetchall()
             ]
             connection.execute(
-                """
+                f"""
                 UPDATE graph_runs
                 SET status = 'interrupted', updated_at = ?, finished_at = ?,
                     status_message = ?, error = ?, phase = 'interrupted', last_activity_at = ?
                 WHERE status IN ('queued', 'running', 'pausing')
+                {preserve_clause}
                 """,
-                (now, now, detail, detail, now),
+                (now, now, detail, detail, now, *preserve_arguments),
             )
+            for operation_id in interrupted:
+                self._insert_auto_research_task_lifecycle_notice(
+                    connection,
+                    operation_id=operation_id,
+                    status="interrupted",
+                    created_at=now,
+                    diagnostic=detail,
+                )
         for operation_id in interrupted:
             self.record_agent_task_event(operation_id, detail, level="warning")
             self.record_agent_task_receipt(

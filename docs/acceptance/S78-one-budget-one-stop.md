@@ -77,8 +77,8 @@ doing?** and **what should I do next?** Its compact row and expanded detail deri
 the same single episode health and recommendation. The expanded detail renders
 them as two distinct projected views: exactly one **Episode health** and exactly
 one separately labelled **Recommended next step**. The compact row carries that
-same recommendation. Raw `campaign.status`, the current control task's status or
-phase, and worker status are not peer campaign-level answers. Task and worker
+same recommendation. Raw `episode.status`, the current control task's status or
+phase, and worker status are not peer episode-level answers. Task and worker
 rows retain their exact statuses and diagnostics as supporting history.
 
 | Durable condition | Episode health | Recommended next step | Available parent controls |
@@ -86,7 +86,7 @@ rows retain their exact statuses and diagnostics as supporting history.
 | Queued or starting | Starting | Wait for auto-research to start | Stop only when `can_stop` |
 | An episode turn is healthy and live | Active | Let auto-research continue | Pause and Stop only when each is valid |
 | Automatic recovery is pending | Recovering | Wait for automatic recovery | No duplicate manual Retry |
-| The current campaign control can Resume or Retry | Needs action | Use the valid Resume or Retry recovery | The matching valid recovery control |
+| The current episode control can Resume or Retry | Needs action | Use the valid Resume or Retry recovery | The matching valid recovery control |
 | Stop is settling | Stopping gracefully | Wait for current work to finish | No Stop control |
 | A non-Stop ending is wrapping up | Wrapping up visualization and report | Wait for wrap-up | No Stop control |
 | The invocation budget is exhausted | Needs action | Reauthorize auto-research | Reauthorize |

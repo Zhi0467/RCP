@@ -8,6 +8,7 @@ import shlex
 import shutil
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,8 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.auto_research_prompt import (
     auto_research_orchestrator_continuation_contract,
     auto_research_orchestrator_task_contract,
+    auto_research_worker_continuation_contract,
+    auto_research_worker_task_contract,
 )
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
@@ -37,6 +40,8 @@ from rcp.runs.auto_research import (
     request_auto_research_stop,
 )
 from rcp.runs.auto_research_delivery import record_auto_research_message
+from rcp.runs.auto_research_effects import auto_research_command_effects
+from rcp.runs.auto_research_lifecycle import parse_auto_research_lifecycle_delivery
 from rcp.runs.auto_research_mail import (
     auto_research_mail_delivery,
     parse_auto_research_mail_delivery,
@@ -44,23 +49,32 @@ from rcp.runs.auto_research_mail import (
 from rcp.runs.auto_research_stream import (
     _HANDOFFS_CLEARED_RECEIPT,
     _close_worker_mailbox,
+    _orchestrator_final_source_effect_id,
     _orchestrator_stage_name,
     _ValidateOnlyAutoResearchCommandDispatcher,
     _worker_stage_name,
     stream_auto_research_orchestrator_run,
     stream_auto_research_worker_run,
 )
-from rcp.runs.work import _validate_work_patch_live
-from rcp.service import ProjectService
+from rcp.runs.work import _apply_work_patch, _validate_work_patch_live
+from rcp.service import GraphUpdateResult, ProjectService
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    AutoResearchApplyResultRecord,
+    AutoResearchLifecycleNoticeRecord,
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
 )
+from rcp.transport.workspace_mailbox import RunStageMailbox
 
-from .helpers import agent_patch_json, fabricated_authorizer, wait_for_task
+from .helpers import (
+    agent_patch_json,
+    fabricated_authorizer,
+    seated_on_every_project,
+    wait_for_task,
+)
 
 
 def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty() -> None:
@@ -87,7 +101,13 @@ def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty(
     assert "their order does not matter" in contract
     assert "A wake spends one invocation" in contract
     assert "finish --key <key>" in contract
-    assert "Sleeping on a watcher or mail\n  is not completion" in contract
+    assert "Sleeping on a watcher or mail is not completion" in contract
+    assert "structured `result` as the authoritative\n  disposition" in contract
+    assert "Exit 0 / `ok` means RCP recorded a durable disposition" in contract
+    assert "A completed `unavailable` attempt is not an effect verdict" in contract
+    assert "it acknowledges nothing" in contract
+    assert "including\n  effects that return `unavailable`" in contract
+    assert "the refused key replays its exact snapshot" in contract
     # Every node type it may touch is defined, not just fenced.
     for node_type in (
         "ResearchQuestion",
@@ -98,6 +118,164 @@ def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty(
         "Blocker",
     ):
         assert f"- {node_type} \u2014" in contract
+
+
+def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:
+    staged_context = SimpleNamespace(
+        graph_revision=17,
+        graph_path="/stage/graph-r17.json",
+        research_md_path="/stage/research-r17.md",
+    )
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "_auto_research_context",
+        lambda *_args: staged_context,
+    )
+    service = SimpleNamespace(
+        history=SimpleNamespace(
+            state=lambda: (_ for _ in ()).throw(
+                AssertionError("the live revision must not be reread after staging")
+            )
+        )
+    )
+
+    refreshed = auto_research_stream_module._refreshed_orchestrator_state_paths(
+        service,
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+
+    assert refreshed == (17, "/stage/graph-r17.json", "/stage/research-r17.md")
+
+
+def test_root_prompts_expose_the_same_exact_callable_surface_and_lifecycle_boundary() -> None:
+    common = dict(
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        validator_command="/stage/rcp-agent validate",
+        command_client="/stage/rcp-agent",
+        lifecycle_path="/stage/lifecycle.json",
+    )
+    contracts = (
+        auto_research_orchestrator_task_contract(project_name="project", **common),
+        auto_research_orchestrator_continuation_contract(
+            original_contract_path="/stage/original.md",
+            mode="continuation",
+            **common,
+        ),
+    )
+    expected = [
+        "- `validate patch.json`",
+        "- `apply --key <key> patch.json`",
+        "- `status [--worker-id <worker-id> | --episode-id <episode-id>]`",
+        "- `spawn --key <key> --seat-node <node-id> --instruction-file <filename>`",
+        "- `pause --key <key> <worker-id>`",
+        "- `resume --key <key> <worker-id>`",
+        "- `stop --key <key> <worker-id>`",
+        "- `message --key <key> --recipient <worker-id> <body>`",
+        "- `watch-graph --key <key> --condition-json <json> --reason <text>`",
+        (
+            "- `episode --key <key> --kick-off-experiment --node <node-id> "
+            "[--goal-file <filename>] [--invocation-limit <positive-int>]`"
+        ),
+        "- `episode --key <key> --stop <episode-id>`",
+        "- `episode --key <key> --resume <episode-id>`",
+        "- `inbox --key <key> --harvest`",
+        "- `inbox --key <key> --clear`",
+        "- `finish --key <key>`",
+    ]
+
+    for contract in contracts:
+        command_block = contract.split("- Exact invocations, all prefixed by that command:\n", 1)[
+            1
+        ].split("  Each response is one JSON object.", 1)[0]
+        assert [line.strip() for line in command_block.splitlines()] == expected
+        assert "- RCP lifecycle facts: `/stage/lifecycle.json`" in contract
+        assert "authoritative only about the child task and\nepisode transitions" in contract
+        assert "There is no Retry command" in contract
+        assert "--provider" not in contract
+        assert "--model" not in contract
+        assert "--effort" not in contract
+        assert "--host" not in contract
+        assert "--instruction <text>" not in contract
+
+
+def test_auto_research_workers_cannot_orchestrate_or_wake_themselves() -> None:
+    common = dict(
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        validator_command="/stage/rcp-agent validate",
+        reply_command="/stage/rcp-agent reply --key reply-once",
+    )
+    contracts = (
+        auto_research_worker_task_contract(
+            project_name="project",
+            seat_node_type="Experiment",
+            seat_node_id="exp/worker",
+            seat_difficulty="Run the bounded check.",
+            instruction_path="/stage/instruction.md",
+            **common,
+        ),
+        auto_research_worker_continuation_contract(
+            original_contract_path="/stage/original.md",
+            mode="continuation",
+            **common,
+        ),
+    )
+
+    for contract in contracts:
+        normalized = " ".join(contract.split())
+        assert "start an episode" in normalized
+        assert "register a watcher" in normalized
+        assert "wake yourself" in normalized
+        assert "Staged command client:" not in contract
+
+
+def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_episode() -> None:
+    common = dict(
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        validator_command="/stage/rcp-agent validate",
+        command_client="/stage/rcp-agent",
+    )
+    contracts = (
+        auto_research_orchestrator_task_contract(project_name="project", **common),
+        auto_research_orchestrator_continuation_contract(
+            original_contract_path="/stage/original.md",
+            mode="continuation",
+            **common,
+        ),
+    )
+
+    for contract in contracts:
+        assert (
+            "Settled children are a prerequisite for finish, not a\n  reason to finish" in contract
+        )
+        assert "because a Blocker\n  remains" in contract
+        assert "temporary resource or capacity contention prevents immediate work" in contract
+        assert (
+            "without new human judgment, credentials,\n  approval, privileged action, or "
+            "coordination with another person" in contract
+        )
+        assert (
+            "Act directly, delegate\n  executable work, or arrange an observable continuation"
+            in contract
+        )
+        assert "Do not turn a self-service step into a recommended human next step" in contract
+        assert (
+            "complete all self-service diagnosis, preparation,\n  and prerequisites first"
+            in contract
+        )
+        assert "only at that true human-only\n  boundary" in contract
 
 
 def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
@@ -136,7 +314,6 @@ def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
             ],
         }
     )
-
     elevated = _validate_work_patch_live(
         service,
         candidate,
@@ -389,7 +566,7 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
             stop=unavailable,
             message=message,
             watch_graph=unavailable,
-            finish=lambda _context: AutoResearchCommandEffectResult(),
+            finish=lambda _context, _planned_effect_id: AutoResearchCommandEffectResult(),
             seat_node_type=lambda _project_id, _node_id: "blocker",
             reconcile_unknown=lambda _context, _request, _planned_effect_id: None,
         ),
@@ -478,6 +655,7 @@ def _enable_task_attribution(
     service.history.project_id = "project"
     service.history.require_attribution = True
     service.history.agent_authority_resolver = store.agent_task_authority
+    service.history.project_membership_check = seated_on_every_project
 
 
 def _orchestrator_state_patch(*nodes: dict[str, object]) -> Patch:
@@ -737,6 +915,7 @@ async def test_canonical_worker_binding_rejects_requested_role_mismatch(manifest
 async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply(
     manifest,
     tmp_path,
+    monkeypatch,
 ) -> None:
     service = _service(manifest, tmp_path)
     service.history.append(
@@ -760,8 +939,59 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
     )
     store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
     _enable_task_attribution(service, store)
+    execution = _execution(store, root)
+
+    def apply_patch(_context, patch_text, source_effect_id):
+        result, failure = _apply_work_patch(
+            service,
+            execution,
+            patch_text,
+            run_truth_scope=["repo-a"],
+            patch_kind="work",
+            profile="orchestrator",
+            source_operation_id=root.operation_id,
+            source_effect_id=source_effect_id,
+        )
+        if failure is not None:
+            return None, failure.message, failure.correctable
+        return result, None, False
+
+    def worker_request_factory(*_args):
+        raise AssertionError("this test does not spawn ordinary Work")
+
+    dispatcher = AutoResearchCommandDispatcher(
+        store,
+        auto_research_command_effects(
+            store=store,
+            background=SimpleNamespace(store=store),
+            validate=lambda *_args: AutoResearchCommandEffectResult(),
+            worker_request_factory=worker_request_factory,
+            graph_state=service.history.state,
+            execution_host="",
+            apply_patch=apply_patch,
+        ),
+    )
     command_results: list[dict[str, object]] = []
     observed: dict[str, object] = {}
+    original_consume = RunStageMailbox.remove_if_sha256
+    consume_attempts = 0
+
+    def transiently_unavailable_consume(
+        mailbox: RunStageMailbox,
+        name: str,
+        expected_sha256: str,
+    ) -> bool:
+        nonlocal consume_attempts
+        consume_attempts += 1
+        if consume_attempts == 1:
+            raise OSError("the stage is temporarily unavailable")
+        return original_consume(mailbox, name, expected_sha256)
+
+    monkeypatch.setattr(
+        RunStageMailbox,
+        "remove_if_sha256",
+        transiently_unavailable_consume,
+    )
     candidate = json.dumps(
         {
             "summary": "Chose the diagnostic budget and accepted its evidence.",
@@ -782,6 +1012,48 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             ],
         }
     )
+    second_candidate = json.dumps(
+        {
+            "summary": "Recorded a second in-turn observation.",
+            "repositories_read": ["repo-a"],
+            "change_summary": ["Added the second in-turn observation."],
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/in-turn-two",
+                            "type": "evidence",
+                            "title": "Second in-turn result",
+                            "observation": "The second Apply committed independently.",
+                            "origin": "internal_run",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    fallback_candidate = json.dumps(
+        {
+            "summary": "Recorded the final unconsumed observation.",
+            "repositories_read": ["repo-a"],
+            "change_summary": ["Added the end-of-turn fallback observation."],
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/final-fallback",
+                            "type": "evidence",
+                            "title": "Final fallback result",
+                            "observation": "The final Patch settled after two in-turn Applies.",
+                            "origin": "internal_run",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
     async def writer(contract_text: str, workspace: Path) -> None:
         assert "one project-owned auto-research orchestrator profile" in contract_text
@@ -797,6 +1069,45 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         assert process.returncode == 0, stderr.decode()
         command_results.append(json.loads(stdout))
         (workspace / "patch.json").write_text(candidate, encoding="utf-8")
+        process = await asyncio.create_subprocess_exec(
+            *shlex.split(prefix.group(1)),
+            "apply",
+            "--key",
+            "apply-diagnostic-budget",
+            str(workspace / "patch.json"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 2, stdout.decode() + stderr.decode()
+        command_results.append(json.loads(stdout))
+        assert (workspace / "patch.json").is_file()
+        process = await asyncio.create_subprocess_exec(
+            *shlex.split(prefix.group(1)),
+            "apply",
+            "--key",
+            "apply-diagnostic-budget",
+            str(workspace / "patch.json"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stdout.decode() + stderr.decode()
+        command_results.append(json.loads(stdout))
+        (workspace / "patch.json").write_text(second_candidate, encoding="utf-8")
+        process = await asyncio.create_subprocess_exec(
+            *shlex.split(prefix.group(1)),
+            "apply",
+            "--key",
+            "apply-second-observation",
+            str(workspace / "patch.json"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stdout.decode() + stderr.decode()
+        command_results.append(json.loads(stdout))
+        (workspace / "patch.json").write_text(fallback_candidate, encoding="utf-8")
 
     class Launcher(_WorkerLauncher):
         async def stream(self, provider, prompt, **kwargs):
@@ -811,25 +1122,333 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             Launcher(session_id="orchestrator-session", writer=writer),
             AutoResearchRunRequest.model_validate(root.request),
             tmp_path / "data",
-            _execution(store, root),
-            command_dispatcher=_dispatcher(store),
+            execution,
+            command_dispatcher=dispatcher,
         )
     )
 
     assert events[-1].event == "done", [(event.event, event.text) for event in events]
     assert observed == {"capability": "orchestrate", "session_id": None}
-    assert len(command_results) == 1
+    assert len(command_results) == 4
     assert command_results[0]["status"] == "ok"
-    assert command_results[0]["result"] == {}
+    assert command_results[0]["result"]["episode"]["episode_id"] == auto_research.episode_id
+    assert command_results[1]["status"] == "unavailable"
+    assert command_results[2]["status"] == "ok"
+    assert command_results[2]["result"]["disposition"] == "applied"
+    assert command_results[2]["result"]["patch_consumed"] is True
+    assert command_results[3]["status"] == "ok"
+    assert command_results[3]["result"]["disposition"] == "applied"
+    assert command_results[3]["result"]["patch_consumed"] is True
     state = service.history.state()
     assert state.nodes["dec/budget"].status == "decided"
     assert state.nodes["dec/budget"].selected_option == "large"
     assert state.nodes["ev/result"].standing == "accepted"
-    applied = service.history.load_patches()[-1]
-    assert applied.profile == "orchestrator"
-    assert applied.agent_action == "decision_choice"
-    assert applied.task_id == root.operation_id
-    assert applied.authorized_by == auto_research.authorized_by
+    assert "ev/in-turn-two" in state.nodes
+    assert "ev/final-fallback" in state.nodes
+    applied_patches = [
+        patch
+        for patch in service.history.load_patches()
+        if patch.source_operation_id == root.operation_id
+    ]
+    assert len(applied_patches) == 3
+    assert all(patch.profile == "orchestrator" for patch in applied_patches)
+    assert applied_patches[0].agent_action == "decision_choice"
+    assert all(patch.source_effect_id is not None for patch in applied_patches)
+    assert len({patch.source_effect_id for patch in applied_patches}) == 3
+    assert all(patch.source_effect_sha256 is not None for patch in applied_patches)
+    assert all(patch.task_id == root.operation_id for patch in applied_patches)
+    assert all(patch.authorized_by == auto_research.authorized_by for patch in applied_patches)
+    task_result = json.loads(next(event.text for event in events if event.event == "message"))
+    assert [item["applied_revision"] for item in task_result["graph_updates"]] == [3, 4, 5]
+
+    committed_revision = state.revision
+    replayed, failure = _apply_work_patch(
+        service,
+        execution,
+        candidate,
+        run_truth_scope=["repo-a"],
+        patch_kind="work",
+        profile="orchestrator",
+        source_operation_id=root.operation_id,
+        source_effect_id=applied_patches[0].source_effect_id,
+    )
+    assert failure is None
+    assert replayed is not None
+    assert replayed.applied_revision == applied_patches[0].revision
+    assert service.history.state().revision == committed_revision
+    assert (
+        len(
+            [
+                patch
+                for patch in service.history.load_patches()
+                if patch.source_effect_id == applied_patches[0].source_effect_id
+            ]
+        )
+        == 1
+    )
+    mismatched, mismatch_failure = _apply_work_patch(
+        service,
+        execution,
+        fallback_candidate,
+        run_truth_scope=["repo-a"],
+        patch_kind="work",
+        profile="orchestrator",
+        source_operation_id=root.operation_id,
+        source_effect_id=applied_patches[0].source_effect_id,
+    )
+    assert mismatched is None
+    assert mismatch_failure is not None
+    assert "different canonical Patch" in mismatch_failure.message
+    replayed_fallback, fallback_failure = _apply_work_patch(
+        service,
+        execution,
+        fallback_candidate,
+        run_truth_scope=["repo-a"],
+        patch_kind="work",
+        profile="orchestrator",
+        source_operation_id=root.operation_id,
+        source_effect_id=applied_patches[-1].source_effect_id,
+    )
+    assert fallback_failure is None
+    assert replayed_fallback is not None
+    assert replayed_fallback.applied_revision == committed_revision
+    assert service.history.state().revision == committed_revision
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_settlement_recovers_apply_committed_before_consume(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = _service(manifest, tmp_path)
+    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    _enable_task_attribution(service, store)
+    execution = _execution(store, root)
+
+    def apply_patch(_context, patch_text, source_effect_id):
+        result, failure = _apply_work_patch(
+            service,
+            execution,
+            patch_text,
+            run_truth_scope=["repo-a"],
+            patch_kind="work",
+            profile="orchestrator",
+            source_operation_id=root.operation_id,
+            source_effect_id=source_effect_id,
+        )
+        if failure is not None:
+            return None, failure.message, failure.correctable
+        return result, None, False
+
+    def worker_request_factory(*_args):
+        raise AssertionError("this test does not spawn ordinary Work")
+
+    dispatcher = AutoResearchCommandDispatcher(
+        store,
+        auto_research_command_effects(
+            store=store,
+            background=SimpleNamespace(store=store),
+            validate=lambda *_args: AutoResearchCommandEffectResult(),
+            worker_request_factory=worker_request_factory,
+            graph_state=service.history.state,
+            execution_host="",
+            apply_patch=apply_patch,
+        ),
+    )
+    candidate = json.dumps(
+        {
+            "summary": "Recorded the result whose Apply receipt was interrupted.",
+            "repositories_read": ["repo-a"],
+            "change_summary": ["Added the interrupted Apply result."],
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/interrupted-apply",
+                            "type": "evidence",
+                            "title": "Interrupted Apply",
+                            "observation": "The canonical commit preceded handoff consumption.",
+                            "origin": "internal_run",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    original_consume = RunStageMailbox.remove_if_sha256
+    consume_attempts = 0
+    retained_workspace: Path | None = None
+    command_result: dict[str, object] | None = None
+
+    def fail_first_consume(
+        mailbox: RunStageMailbox,
+        name: str,
+        expected_sha256: str,
+    ) -> bool:
+        nonlocal consume_attempts
+        consume_attempts += 1
+        if consume_attempts == 1:
+            raise OSError("the stage disappeared after the canonical commit")
+        return original_consume(mailbox, name, expected_sha256)
+
+    monkeypatch.setattr(RunStageMailbox, "remove_if_sha256", fail_first_consume)
+
+    async def writer(contract_text: str, workspace: Path) -> None:
+        nonlocal retained_workspace, command_result
+        retained_workspace = workspace
+        prefix = re.search(r"Command prefix(?: for this turn)?: `([^`]+)`", contract_text)
+        assert prefix is not None
+        (workspace / "patch.json").write_text(candidate, encoding="utf-8")
+        process = await asyncio.create_subprocess_exec(
+            *shlex.split(prefix.group(1)),
+            "apply",
+            "--key",
+            "apply-before-consume-failure",
+            str(workspace / "patch.json"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 2, stdout.decode() + stderr.decode()
+        command_result = json.loads(stdout)
+        assert (workspace / "patch.json").read_text(encoding="utf-8") == candidate
+
+    events = await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            _WorkerLauncher(session_id="orchestrator-session", writer=writer),
+            AutoResearchRunRequest.model_validate(root.request),
+            tmp_path / "data",
+            execution,
+            command_dispatcher=dispatcher,
+        )
+    )
+
+    assert events[-1].event == "done", [(event.event, event.text) for event in events]
+    assert command_result is not None
+    assert command_result["status"] == "unavailable"
+    assert consume_attempts == 2
+    assert retained_workspace is not None
+    assert not (retained_workspace / "patch.json").exists()
+    assert "ev/interrupted-apply" in service.history.state().nodes
+    applied_patches = [
+        patch
+        for patch in service.history.load_patches()
+        if patch.source_operation_id == root.operation_id
+    ]
+    assert len(applied_patches) == 1
+    task_result = json.loads(next(event.text for event in events if event.event == "message"))
+    assert task_result["applied_revision"] == applied_patches[0].revision
+    assert [item["applied_revision"] for item in task_result["graph_updates"]] == [
+        applied_patches[0].revision
+    ]
+    assert task_result["graph_update"]["applied_revision"] == applied_patches[0].revision
+    assert store.auto_research_apply_results(root.operation_id) == []
+    assert applied_patches[0].episode_id == auto_research.episode_id
+
+
+def test_orchestrator_final_settlement_refuses_ambiguous_apply_commits(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = _service(manifest, tmp_path)
+    store, _auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    digest = hashlib.sha256(b"same retained patch").hexdigest()
+    matches = [
+        SimpleNamespace(
+            admission="accepted",
+            kind="work",
+            source_operation_id=root.operation_id,
+            source_effect_sha256=digest,
+            source_effect_id="effect-one",
+        ),
+        SimpleNamespace(
+            admission="accepted",
+            kind="work",
+            source_operation_id=root.operation_id,
+            source_effect_sha256=digest,
+            source_effect_id="effect-two",
+        ),
+    ]
+    monkeypatch.setattr(service.history, "load_patches", lambda: matches)
+
+    with pytest.raises(ValueError, match="multiple canonical in-turn Apply commits"):
+        _orchestrator_final_source_effect_id(
+            service,
+            _execution(store, root),
+            patch_digest=digest,
+        )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_result_orders_applied_invalid_and_valid_empty_dispositions(
+    manifest,
+    tmp_path,
+) -> None:
+    service = _service(manifest, tmp_path)
+    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    updates = [
+        GraphUpdateResult(status="applied", applied_revision=7),
+        GraphUpdateResult(
+            status="rejected",
+            validation_messages=["The corrected node does not exist."],
+            repairable=True,
+        ),
+        GraphUpdateResult(status="none"),
+    ]
+    for index, update in enumerate(updates):
+        outcome = AutoResearchCommandEffectResult(
+            status="invalid" if update.status == "rejected" else "ok",
+            message=(
+                "The Patch is invalid."
+                if update.status == "rejected"
+                else "The Patch reached a durable disposition."
+            ),
+            result={
+                "disposition": (
+                    "applied"
+                    if update.status == "applied"
+                    else "invalid"
+                    if update.status == "rejected"
+                    else "valid_empty"
+                ),
+                "graph_update": update.model_dump(mode="json"),
+            },
+        )
+        store.save_auto_research_apply_result(
+            AutoResearchApplyResultRecord(
+                apply_id=f"apply-{index}",
+                episode_id=auto_research.episode_id,
+                operation_id=root.operation_id,
+                patch_sha256=hashlib.sha256(f"patch-{index}".encode()).hexdigest(),
+                result=outcome.model_dump(mode="json"),
+                created_at=f"2026-08-16T00:00:0{index}+00:00",
+            )
+        )
+
+    events = await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            _WorkerLauncher(session_id="orchestrator-session"),
+            AutoResearchRunRequest.model_validate(root.request),
+            tmp_path / "data",
+            _execution(store, root),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+
+    payload = json.loads(next(event.text for event in events if event.event == "message"))
+    assert [update["status"] for update in payload["graph_updates"]] == [
+        "applied",
+        "rejected",
+        "none",
+    ]
+    assert payload["graph_update"]["status"] == "none"
+    assert payload["applied_revision"] == 7
+    assert events[-1].event == "done"
 
 
 @pytest.mark.asyncio
@@ -1830,6 +2449,149 @@ async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path
     assert recovery_events[-1].event == "done"
 
 
+@pytest.mark.asyncio
+async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recovery(
+    manifest,
+    tmp_path,
+) -> None:
+    service = _service(manifest, tmp_path)
+    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    data_dir = tmp_path / "data"
+    fresh_events = await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            _WorkerLauncher(session_id="orchestrator-session"),
+            AutoResearchRunRequest.model_validate(root.request),
+            data_dir,
+            _execution(store, root),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    assert fresh_events[-1].event == "done"
+    stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
+    root = store.agent_task(root.operation_id)
+    assert root is not None
+    store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
+    root = store.agent_task(root.operation_id)
+    assert root is not None
+    assert root.native_session_id == "orchestrator-session"
+    assert root.stage_root == str(stage)
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="worker-settled",
+            episode_id=auto_research.episode_id,
+            source_kind="worker",
+            source_id="worker",
+            source_event="succeeded",
+            payload={"kind": "work", "status": "succeeded"},
+            created_at=store.now(),
+        )
+    )
+    message = record_auto_research_message(
+        store,
+        episode_id=auto_research.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=auto_research.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="This remains hearsay beside the lifecycle fact.",
+    )
+    request = AutoResearchRunRequest.model_validate(root.request).model_copy(
+        update={
+            "actor_operation_id": root.operation_id,
+            "session_id": root.native_session_id,
+            "instruction": None,
+            "wake_cause": "lifecycle",
+        }
+    )
+    now = store.now()
+    wake = store.create_auto_research_lifecycle_wake_task(
+        AgentTaskRecord(
+            operation_id="lifecycle-wake",
+            project_id=root.project_id,
+            episode_id=auto_research.episode_id,
+            kind="auto_research",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="lifecycle wake running",
+            parent_operation_id=root.operation_id,
+            native_session_id=root.native_session_id,
+            stage_host=root.stage_host,
+            stage_root=root.stage_root,
+            authorized_by=auto_research.authorized_by,
+            dispatch_authority=root.dispatch_authority,
+        ),
+        lifecycle_notice_ids=[notice.notice_id],
+        message_ids=[message.message_id],
+    )
+    assert wake is not None
+    store.record_agent_task_receipt(
+        wake.operation_id,
+        "operation_created",
+        {
+            "kind": "auto_research",
+            "attempt": 1,
+            "has_parent": True,
+            "continuation_cause": "lifecycle_wake",
+            "resumed": True,
+        },
+    )
+
+    def writer(_contract_text, workspace):
+        lifecycle = parse_auto_research_lifecycle_delivery(
+            (workspace / "lifecycle.json").read_text(encoding="utf-8")
+        )
+        mail = parse_auto_research_mail_delivery(
+            (workspace / "messages.json").read_text(encoding="utf-8")
+        )
+        assert lifecycle.delivery_operation_id == wake.operation_id
+        assert [item.notice_id for item in lifecycle.notices] == [notice.notice_id]
+        assert lifecycle.authority == "rcp_lifecycle"
+        assert lifecycle.graph_authority == "none"
+        assert mail.delivery_operation_id == wake.operation_id
+        assert mail.message_ids == [message.message_id]
+        assert mail.epistemic_status == "hearsay"
+
+    events = await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            _WorkerLauncher(session_id="orchestrator-session", writer=writer),
+            AutoResearchRunRequest.model_validate(wake.request),
+            data_dir,
+            _execution(store, wake, continuation="lifecycle_wake"),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    assert events[-1].event == "done"
+    retained_lifecycle = (stage / "lifecycle.json").read_text(encoding="utf-8")
+    retained_mail = (stage / "messages.json").read_text(encoding="utf-8")
+    store.fail_agent_task(wake.operation_id, "provider connection interrupted")
+    retry = _recovery_task(
+        store,
+        auto_research,
+        wake,
+        operation_id="lifecycle-wake-retry",
+    )
+
+    def recovery_writer(_contract_text, workspace):
+        assert (workspace / "lifecycle.json").read_text(encoding="utf-8") == (retained_lifecycle)
+        assert (workspace / "messages.json").read_text(encoding="utf-8") == retained_mail
+
+    recovery_events = await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            _WorkerLauncher(session_id="orchestrator-session", writer=recovery_writer),
+            AutoResearchRunRequest.model_validate(retry.request),
+            data_dir,
+            _execution(store, retry, continuation="retry"),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    assert recovery_events[-1].event == "done"
+
+
 @pytest.mark.parametrize(
     ("retained_kind", "error_match"),
     [
@@ -1864,7 +2626,9 @@ def test_retained_claimed_mail_is_validated_directly_before_recovery(
         assert auto_research_stream_module._stage_claimed_mail(execution, turn, stage) == str(
             retained_path
         )
-        assert parse_auto_research_mail_delivery(retained_path.read_text(encoding="utf-8")) == delivery
+        assert (
+            parse_auto_research_mail_delivery(retained_path.read_text(encoding="utf-8")) == delivery
+        )
     else:
         with pytest.raises(ValueError, match=error_match):
             auto_research_stream_module._stage_claimed_mail(execution, turn, stage)
@@ -1988,7 +2752,9 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
         )
     )
 
-    expected_digest = hashlib.sha256(b"auto_research-worker-reply\0auto_research\0worker").hexdigest()[:32]
+    expected_digest = hashlib.sha256(
+        b"auto_research-worker-reply\0auto_research\0worker"
+    ).hexdigest()[:32]
     assert replies == ["Recovered worker result"]
     assert command_outputs[0]["status"] == "ok"
     assert staged_turn_ids == [f"{retry.operation_id}:worker"]

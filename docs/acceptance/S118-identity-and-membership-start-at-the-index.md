@@ -23,7 +23,8 @@ invariants: [3]
 
 This scenario is human-confirmed. It relocates the implemented personal
 identity UI from S112 and reserves one coherent entry point for the future team
-enrollment and invitation contracts in S96 and S101. The visible team controls
+enrollment and invitation contracts in S96, S101, and S122. The visible team
+controls
 are an explicit, nonfunctional seam; this scenario does not authorize or
 simulate the still-pending team authentication backend.
 
@@ -91,24 +92,25 @@ The panel owns personal naming and renaming. It also shows disabled **Join team
 space**, **Accept invitation**, and **Invite member** controls below a persistent
 statement that team connections are not implemented. Those controls expose no
 credential fields, manufacture no invitation data, and perform no request. S96
-will replace this seam with enrollment and member-invitation behavior; S101 will
-later add separate project-invitation cards to the project shelf.
+replaced this seam inside a *team* space with real enrollment and member
+invitations on 2026-08-15; a personal space keeps the disabled seam, because it
+cannot reach a team space from this build. S122 added separate
+project-invitation cards to the project shelf on 2026-08-15.
 
 The `Choose a project` heading is removed. Project covers remain the first
 content on the page and the Experiment board remains below them. No identity
 editor remains in Project Settings, and no second account/settings page is
 introduced.
 
-The future invitation split remains deliberate: team enrollment and member
-invitations belong in the upper-right identity panel, while project invitations
-will appear as Accept/Decline cards in the project shelf once S101 is approved
-and implemented.
+The invitation split remains deliberate: team enrollment and member invitations
+belong in the upper-right identity panel, while project invitations appear as
+Accept/Decline cards in the project shelf.
 
 ## Boundary
 
 This scenario settles placement, vocabulary, continuity, and the honest UI
 boundary before team support exists. S96 still owns every team connection,
 credential, enrollment, invitation, secure-storage, expiry, replay-resistance,
-rate-limit, session, and revocation behavior. S101 still owns every
-project-invitation and project-membership behavior. No S118 control may imply
-that either contract is active.
+rate-limit, session, and revocation behavior. S101 owns project membership and
+S122 owns project invitations; both landed 2026-08-15. No S118 control may imply
+that a contract is active before its scenario is.

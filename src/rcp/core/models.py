@@ -508,6 +508,11 @@ class Patch(BaseModel):
     processed_cursors: dict[str, str] = Field(default_factory=dict)
     change_summary: list[str] = Field(default_factory=list)
     source_operation_id: str | None = None
+    # One task may perform several in-turn effects. RCP stamps this separate
+    # identity when an effect needs crash-safe canonical deduplication while
+    # ``source_operation_id`` remains the direct authorized task.
+    source_effect_id: str | None = Field(default=None, min_length=1)
+    source_effect_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     # Which human authority action produced this patch, when its operations
     # alone cannot say. A direct Decision choice and an ordinary node edit are
     # both one `update_nodes` on one node, but they carry different authority

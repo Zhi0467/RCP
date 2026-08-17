@@ -8179,6 +8179,7 @@ button.relation-map-node:hover {
   background: var(--mustard);
 }
 .skill-settings > header,
+.project-members > header,
 .boundary-settings > header {
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -8187,6 +8188,7 @@ button.relation-map-node:hover {
   grid-template-columns: 28px minmax(0, 1fr);
   padding: 18px 20px;
 }
+.project-members > header > span:first-child,
 .skill-settings > header > span:first-child,
 .boundary-settings > header > span:first-child {
   align-items: center;
@@ -8197,6 +8199,7 @@ button.relation-map-node:hover {
   justify-content: center;
   width: 28px;
 }
+.project-members h2,
 .skill-settings h2,
 .boundary-settings h2,
 .agent-defaults h2 {
@@ -10306,4 +10309,84 @@ button.relation-map-node:hover {
   .landing-main {
     padding-top: 34px;
   }
+}
+
+/* S122 — a pending project invitation, shelved beside the projects you have. */
+.project-invitation-shell {
+  --project-cover: var(--paper-2, #f3ece0);
+  --project-cover-ink: var(--walnut);
+}
+.project-invitation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--project-cover);
+  color: var(--project-cover-ink);
+  border: 1px dashed color-mix(in srgb, var(--walnut) 35%, transparent);
+  cursor: default;
+}
+.project-invitation-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+.project-invitation-actions button {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--project-cover-ink);
+  background: color-mix(in srgb, var(--walnut) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--walnut) 30%, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.project-invitation-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--walnut) 16%, transparent);
+}
+.project-invitation-actions button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+.project-invitation-error {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--oxblood);
+}
+
+/* S122 — project members, with no rank and no owner. */
+.project-member-list {
+  list-style: none;
+  margin: 0;
+  padding: 18px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.project-member-name {
+  font-size: 0.9rem;
+}
+.project-member-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 12px 20px 18px;
+  flex-wrap: wrap;
+}
+.project-member-actions select {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.4rem;
+}
+.project-member-leave {
+  margin-left: auto;
+}
+.project-member-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--oxblood);
+}
+.project-member-invited {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
 }

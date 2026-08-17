@@ -38,8 +38,15 @@ demonstration of independence — *permission changes while the task runs* —
 needs a permission that can change, which today means membership. So the
 independence is driven the other way: the **graph** moves under a patch that was
 authorized at dispatch, and Apply refuses it anyway. Same property, reachable
-now. When membership lands, the revocation drive is added here rather than
-re-derived.
+now.
+
+Membership landed on 2026-08-15 ([S101](S101-project-membership.md)), so the
+permission-that-changes now exists and is driven here as promised rather than
+re-derived. Losing project membership between dispatch and Apply refuses the
+patch at Apply, and the two remain deliberately asymmetric with credential
+revocation: revoking a token is about a credential and stops no
+already-authorized work, while losing membership fences the episode
+([S122](S122-project-invitations.md)).
 
 ## Setup
 
@@ -62,6 +69,9 @@ effect, returns an answer, and proposes a content change to that Hypothesis.
    holding the append lock.
 7. Read the answer, repository effect, graph, retained patch, and task result.
 8. Replay the project with an authority resolver that fails if called.
+9. Dispatch a second Work turn, and while it is held before Apply, remove its
+   authorizer's project membership. Release it.
+10. Separately, dispatch a turn and revoke that member's token while it runs.
 
 A Discuss turn that writes a stray `patch.json` is intentionally a different
 check: Discuss is authorized to launch, then its inactive Patch channel is
@@ -81,6 +91,8 @@ discarded. It does not stand in for a pre-launch refusal.
 - `a_refused_patch_is_not_described_as_retracted_work`
 - `the_answer_survives_a_refused_patch`
 - `replay_succeeds_with_no_profile_or_permission_records`
+- `membership_lost_between_dispatch_and_apply_is_refused_at_apply`
+- `revoking_a_token_mid_run_refuses_nothing_and_fences_nothing`
 
 ## Boundary
 
@@ -101,10 +113,10 @@ checked twice is unaffected — the continuation still resolves and gates its ow
 authority at dispatch, and re-checks it at Apply. Only the *equality* rule is
 skipped, and only where there is no earlier binding to be equal to.
 
-Deferred until team spaces exist, and added here rather than written fresh:
-revoking a member's access mid-run, the space binding on a dispatch, and the
-pairing of revocation with stopping that person's running work
-([S103](S103-server-operations-are-console-operations.md)).
+Still deferred until the console operations exist: the space binding on a
+dispatch, and removing another person from a project or the space entirely
+([S103](S103-server-operations-are-console-operations.md)). Leaving is your own
+act and lands in S122; removal is somebody else's.
 
 Deferred until the orchestrator exists: campaign and budget binding, spawned
 children recording their parent, the `orchestrate` contract, and the elevated

@@ -2,7 +2,7 @@
 id: S120-episodes-wrap-up-with-a-visual-report
 status: implemented
 tier: hermetic
-driver: pytest + browser
+driver: pytest + browser + desktop
 covered_by:
   - tests/test_episode_lifecycle_acceptance.py
   - tests/test_experiment_episode_ending.py
@@ -18,10 +18,11 @@ covered_by:
   - web/tests/experimentBoard.test.mjs
   - web/tests/experimentRunDetail.test.mjs
   - web/tests/projectHistory.test.mjs
-last_passed: 2026-08-14 — isolated acceptance-agent browser drive covered the
-  operational-only start dialog, current Experiment-index refresh, corrected
-  sandboxed SVG report, hidden task surface, and Stop-only no-report path; the
-  hermetic lifecycle suites cover both episode modes and restart/error endings
+  - web/src-tauri/src/windows.rs::tests::main_window_routes_same_origin_report_popups_to_a_preview_window
+last_checked: 2026-08-16 — the prior browser drive passed on 2026-08-14; the
+  native routing regression and rebuilt RCP Dev.app now cover the reported
+  same-origin Open report popup, while the real desktop click remains outstanding
+  because macOS was locked during this implementation session
 invariants: [4, 4b, 8, 10, 10e, 10g]
 ---
 
@@ -45,10 +46,12 @@ is internal wrap-up work, never another visible or metered invocation.
   or pauses for human authority through a Proposal, Decision, or Blocker, Runs
   shows **Wrapping up visualization and report** on the parent. No report task,
   attempt counter, correction control, or report invocation appears in Runs.
-- A successful wrap-up adds **Open report** to the parent. It opens one immutable
-  sandboxed HTML report in a new tab. The report skill is prompted to make the
-  report inherently visual, but RCP does not mechanically inspect its visual
-  form beyond the existing bounded safe-HTML validation.
+- A successful wrap-up adds **Open report** to the parent. In a browser it opens
+  one immutable sandboxed HTML report in a new tab. In the desktop app it opens
+  the same same-origin report in a secondary native preview window rather than
+  discarding the popup or navigating the main RCP window. The report skill is
+  prompted to make the report inherently visual, but RCP does not mechanically
+  inspect its visual form beyond the existing bounded safe-HTML validation.
 - Report generation has at most three hidden provider turns in the episode's
   exact native session and stage: the initial attempt and at most two automatic
   corrections or retries. The continuation receives only the ending, the
@@ -135,6 +138,7 @@ verdict.
 - `runs_exposes_no_report_task_attempt_counter_or_manual_recovery_control`
 - `wrapping_parent_says_wrapping_up_visualization_and_report`
 - `successful_wrapup_stores_and_opens_one_immutable_sandboxed_html_report`
+- `desktop_open_report_routes_the_same_origin_popup_to_a_native_preview_window`
 - `failed_report_generation_is_visible_but_never_blocks_episode_settlement`
 - `a_report_error_offers_no_retry_or_resume`
 - `new_episode_work_is_gated_only_while_hidden_wrapup_is_in_progress`

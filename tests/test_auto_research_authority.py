@@ -37,7 +37,7 @@ from rcp.core.models import (
 )
 from rcp.core.validation.patch import validate_patch
 
-from .helpers import fabricated_authorizer
+from .helpers import fabricated_authorizer, seated_on_every_project
 
 
 def _orchestrator_patch(*ops: dict, agent_action: str | None = None) -> Patch:
@@ -85,6 +85,7 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
                 dispatch_authority=authority,
             ),
             _orchestrator_patch(),
+            is_project_member=seated_on_every_project,
         )
         == authority
     )
@@ -95,7 +96,11 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
         dispatch_authority=authority,
     )
     with pytest.raises(ValueError, match="Patch profile does not match"):
-        require_apply(task, _orchestrator_patch().model_copy(update={"profile": "ordinary"}))
+        require_apply(
+            task,
+            _orchestrator_patch().model_copy(update={"profile": "ordinary"}),
+            is_project_member=seated_on_every_project,
+        )
 
     for profile, contract in (
         ("ordinary", "orchestrate"),

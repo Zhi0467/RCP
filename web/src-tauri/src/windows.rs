@@ -94,14 +94,39 @@ pub fn create_main(app: &AppHandle) -> Result<(), String> {
             }
         })
         .on_new_window(move |url, _features| {
-            if navigation::is_external_reference(&url) {
-                let _ = app_for_popup.opener().open_url(url.as_str(), None::<&str>);
-            }
+            open_main_popup(&app_for_popup, url);
             NewWindowResponse::Deny
         })
         .build()
         .map_err(|error| format!("could not create the RCP window: {error}"))?;
     Ok(())
+}
+
+fn open_main_popup(app: &AppHandle, url: Url) {
+    let current_base = app
+        .state::<BackendState>()
+        .status()
+        .ok()
+        .map(|status| status.base_url);
+    if let Some(base_url) = current_base {
+        if is_same_origin_popup(&url, &base_url) {
+            if let Err(error) = open_preview(app, url, base_url) {
+                eprintln!("[rcp] the preview window could not open: {error}");
+            }
+            return;
+        }
+    }
+    if navigation::is_external_reference(&url) {
+        let _ = app.opener().open_url(url.as_str(), None::<&str>);
+    }
+}
+
+/// Whether a popup targets RCP's own backend origin. The episode report is what
+/// prompted this, but the rule is deliberately about origin rather than that one
+/// path: any same-origin popup belongs in a preview window instead of being
+/// silently dropped. `open_preview` re-checks the origin before it builds.
+fn is_same_origin_popup(url: &Url, base_url: &str) -> bool {
+    url.scheme() != "about" && navigation::is_loopback_rcp_url(url, base_url, false)
 }
 
 pub fn prepare_show(app: &AppHandle, status: &DesktopStatus, reason: &str) -> Result<(), String> {
@@ -384,6 +409,24 @@ mod tests {
             initial_navigation(true, Some("http://127.0.0.1:8421")).unwrap(),
             InitialNavigation::AfterBackendReady(url("http://127.0.0.1:8421")),
         );
+    }
+
+    #[test]
+    fn main_window_routes_same_origin_report_popups_to_a_preview_window() {
+        let base = "http://127.0.0.1:18421";
+        let report =
+            url("http://127.0.0.1:18421/api/projects/project/episodes/episode/report/preview");
+        assert!(navigation::is_external_reference(&report));
+        assert!(is_same_origin_popup(&report, base));
+        assert!(!is_same_origin_popup(
+            &url("http://127.0.0.1:19421/api/report/preview"),
+            base,
+        ));
+        assert!(!is_same_origin_popup(
+            &url("https://example.com/report"),
+            base
+        ));
+        assert!(!is_same_origin_popup(&url("about:blank"), base));
     }
 
     #[test]

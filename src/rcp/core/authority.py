@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from hashlib import sha256
 from typing import Any, Literal, get_args
 
@@ -19,6 +20,11 @@ AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v1"
 
 AgentProfile = Literal["ordinary", "orchestrator"]
 DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
+
+#: Whether ``user_id`` is currently a member of ``project_id``. Membership is
+#: operational state in SQLite, so the graph core takes it as a callable rather
+#: than reaching for a store: replay never asks the question at all.
+ProjectMembershipCheck = Callable[[str, str], bool]
 
 
 class AgentDispatchScope(BaseModel):
@@ -212,8 +218,18 @@ def require_dispatch(authority: AgentDispatchAuthority) -> AgentDispatchAuthorit
     return authority
 
 
-def require_apply(authority: AgentTaskAuthority, patch: Patch) -> AgentDispatchAuthority:
-    """Require a live task binding to expose this exact graph Patch at Apply."""
+def require_apply(
+    authority: AgentTaskAuthority,
+    patch: Patch,
+    *,
+    is_project_member: ProjectMembershipCheck,
+) -> AgentDispatchAuthority:
+    """Require a live task binding to expose this exact graph Patch at Apply.
+
+    ``is_project_member`` is read live, under the canonical append lock, rather
+    than snapshotted at dispatch: membership may be given up while a task runs.
+    It is a required argument so no caller can reach Apply without it.
+    """
 
     dispatch = authority.dispatch_authority
     if dispatch is None:
@@ -225,6 +241,12 @@ def require_apply(authority: AgentTaskAuthority, patch: Patch) -> AgentDispatchA
         raise ValueError(
             f"Authority refused action 'apply': agent task {authority.operation_id!r} has no "
             "authorizer snapshot."
+        )
+    if not is_project_member(authority.project_id, authority.authorized_by.user_id):
+        raise ValueError(
+            f"Authority refused action 'apply': the authorizer of agent task "
+            f"{authority.operation_id!r} is not a member of project "
+            f"{authority.project_id!r}."
         )
     compatible = (
         dispatch.profile == "ordinary" and dispatch.task_contract in ORDINARY_AGENT_TASK_CONTRACTS

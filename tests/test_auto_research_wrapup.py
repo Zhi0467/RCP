@@ -110,9 +110,7 @@ def test_auto_research_request_contract_has_only_operational_roles_and_budget() 
     with pytest.raises(ValidationError, match="greater than or equal to 1"):
         AutoResearchStartRequest(invocation_ceiling=0)
     with pytest.raises(ValidationError, match="orchestrator|worker"):
-        AutoResearchRunRequest.model_validate(
-            {"episode_id": "episode", "role": "report"}
-        )
+        AutoResearchRunRequest.model_validate({"episode_id": "episode", "role": "report"})
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         AutoResearchRunRequest.model_validate(
             {"episode_id": "episode", "role": "orchestrator", "ending": "completed"}
@@ -189,14 +187,29 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
         "observed_input_tokens": 0,
         "observed_generated_tokens": 0,
     }
-    assert not {
-        "events",
-        "history",
-        "messages",
-        "research",
-        "tasks",
-        "transcript",
-    } & spec.receipt.keys()
+    assert spec.receipt["experiment_allowance"] == {
+        "total": 15,
+        "used": 0,
+        "remaining": 15,
+    }
+    assert spec.receipt["child_work"] == []
+    assert spec.receipt["child_experiments"] == []
+    assert spec.receipt["lifecycle"] == {
+        "counts": {"pending": 0, "delivered": 0, "acknowledged": 0},
+        "facts": [],
+        "omitted_fact_count": 0,
+    }
+    assert (
+        not {
+            "events",
+            "history",
+            "messages",
+            "research",
+            "tasks",
+            "transcript",
+        }
+        & spec.receipt.keys()
+    )
     assert len(json.dumps(spec.receipt).encode("utf-8")) < 32_000
     assert store.watcher(watcher.watcher_id).status == "stopped"  # type: ignore[union-attr]
 

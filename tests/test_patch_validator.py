@@ -101,7 +101,7 @@ async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_
         await server
         staged.cleanup()
         assert result.returncode == expected_code
-        assert f'"status": "{status}"' in result.stdout
+        assert json.loads(result.stdout)["status"] == status
 
     staged = stage_patch_validation_mailbox(
         local_stage=workspace,

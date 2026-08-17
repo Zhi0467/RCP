@@ -440,6 +440,8 @@ def prepare_agent_patch(
     kind: Literal["seed", "refresh", "work", "experiment_loop"],
     run_truth_scope: list[str],
     source_operation_id: str | None = None,
+    source_effect_id: str | None = None,
+    source_effect_sha256: str | None = None,
     profile: AgentProfile | None = None,
 ) -> Patch:
     """Wrap one semantic agent deliverable in RCP-owned canonical metadata."""
@@ -481,6 +483,8 @@ def prepare_agent_patch(
         change_summary=list(draft.change_summary),
         processed_cursors={},
         source_operation_id=source_operation_id,
+        source_effect_id=source_effect_id,
+        source_effect_sha256=source_effect_sha256,
         agent_action=(
             normalized.agent_action if isinstance(normalized, OrchestratorAgentPatch) else None
         ),

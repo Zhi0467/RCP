@@ -21,6 +21,7 @@ const {
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
   projectIdsForCacheHeartbeat,
+  projectIsStillReadable,
   projectTabStateForOpen,
   reconcileInactiveProjectTabState,
   singleFlightProjectCacheHeartbeat,
@@ -439,4 +440,32 @@ test("Sync reports stale withdrawals without claiming their proposed changes app
     "Synced revision 9. Stale proposals were withdrawn and their proposed changes were not applied: proposal/stale.",
   );
   assert.equal(humanSyncSuccessNotice(9, submitted.slice(0, 1), nextGraph), "Synced revision 9.");
+});
+
+test("a project still on the filtered index keeps its tab open", async () => {
+  const readable = await projectIsStillReadable(
+    async () => [{ id: "alpha" }, { id: "beta" }],
+    "alpha",
+  );
+
+  assert.equal(readable, true);
+});
+
+test("a project absent from the filtered index is no longer readable", async () => {
+  const requested = [];
+  const readable = await projectIsStillReadable(async (path) => {
+    requested.push(path);
+    return [{ id: "beta" }];
+  }, "alpha");
+
+  assert.equal(readable, false);
+  assert.deepEqual(requested, ["/api/projects"]);
+});
+
+test("an index that cannot be reached is not evidence that a project is gone", async () => {
+  const readable = await projectIsStillReadable(async () => {
+    throw new Error("offline");
+  }, "alpha");
+
+  assert.equal(readable, true);
 });

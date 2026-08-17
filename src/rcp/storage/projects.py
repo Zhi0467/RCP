@@ -473,6 +473,9 @@ class ProjectStoreMixin:
                 ).fetchall()
                 operation_count = len(operation_ids)
                 counts = {
+                    "project_members": connection.execute(
+                        "DELETE FROM project_members WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "paper_drafts": connection.execute(
                         "DELETE FROM paper_drafts WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -489,6 +492,52 @@ class ProjectStoreMixin:
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
                 }
+                connection.execute(
+                    """
+                    DELETE FROM auto_research_child_work_attempts
+                    WHERE worker_id IN (
+                        SELECT worker_id FROM auto_research_child_work WHERE project_id = ?
+                    )
+                    """,
+                    (project_id,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM auto_research_experiment_invocations
+                    WHERE auto_research_episode_id IN (
+                        SELECT episode_id FROM episodes WHERE project_id = ?
+                    )
+                    """,
+                    (project_id,),
+                )
+                for table in (
+                    "auto_research_command_files",
+                    "auto_research_apply_results",
+                    "auto_research_inbox_receipts",
+                    "auto_research_finish_receipts",
+                    "auto_research_lifecycle_notices",
+                ):
+                    connection.execute(
+                        f"""
+                        DELETE FROM {table}
+                        WHERE episode_id IN (
+                            SELECT episode_id FROM episodes WHERE project_id = ?
+                        )
+                        """,
+                        (project_id,),
+                    )
+                connection.execute(
+                    "DELETE FROM auto_research_child_admissions WHERE project_id = ?",
+                    (project_id,),
+                )
+                connection.execute(
+                    "DELETE FROM auto_research_child_experiments WHERE project_id = ?",
+                    (project_id,),
+                )
+                connection.execute(
+                    "DELETE FROM auto_research_child_work WHERE project_id = ?",
+                    (project_id,),
+                )
                 for table in (
                     "auto_research_recoveries",
                     "auto_research_messages",
@@ -704,5 +753,17 @@ class ProjectStoreMixin:
             )
             connection.execute(
                 "UPDATE watchers SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE auto_research_child_work SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE auto_research_child_experiments SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE auto_research_child_admissions SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )

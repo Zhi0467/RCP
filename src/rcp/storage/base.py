@@ -328,6 +328,44 @@ class AppStoreBase:
                 )
                 """
             )
+            # S101: projects registered before membership existed have nothing to
+            # seed from, so they are backfilled once — below, where ``projects``
+            # exists. Whether this table had to be created *is* the guard, so a
+            # later start cannot reapply it.
+            members_table_existed = (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_members'"
+                ).fetchone()
+                is not None
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_members (
+                    project_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    seated_at TEXT NOT NULL,
+                    seated_by TEXT,
+                    PRIMARY KEY (project_id, user_id)
+                )
+                """
+            )
+            # S122. Deliberately not the space-level `team_invitations` table: a
+            # project invitation issues no credential, so it carries no code
+            # hash, no expiry, and no failed-attempt lockout. It is an
+            # authenticated in-product item addressed to an existing member.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_invitations (
+                    invitation_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    invited_user_id TEXT NOT NULL,
+                    invited_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    response TEXT CHECK(response IN ('accepted', 'declined')),
+                    responded_at TEXT
+                )
+                """
+            )
             if not users_table_exists and stored_space_kind == "personal":
                 now = self.now()
                 owner = SpaceUserRecord(
@@ -742,6 +780,162 @@ class AppStoreBase:
                 );
                 CREATE INDEX IF NOT EXISTS auto_research_recoveries_due
                     ON auto_research_recoveries(status, next_attempt_at, created_at);
+                CREATE TABLE IF NOT EXISTS auto_research_child_work (
+                    worker_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    control_node_id TEXT NOT NULL,
+                    root_operation_id TEXT NOT NULL UNIQUE,
+                    current_operation_id TEXT NOT NULL UNIQUE,
+                    admitted_by_operation_id TEXT NOT NULL,
+                    instruction TEXT NOT NULL,
+                    instruction_sha256 TEXT NOT NULL,
+                    stop_requested_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(root_operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(current_operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(admitted_by_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_child_work_episode
+                    ON auto_research_child_work(episode_id, created_at, worker_id);
+                CREATE TABLE IF NOT EXISTS auto_research_child_work_attempts (
+                    operation_id TEXT PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
+                    allocation_operation_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(worker_id) REFERENCES auto_research_child_work(worker_id),
+                    FOREIGN KEY(allocation_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_child_work_attempts_worker
+                    ON auto_research_child_work_attempts(worker_id, created_at, operation_id);
+                CREATE TABLE IF NOT EXISTS auto_research_child_experiments (
+                    child_episode_id TEXT PRIMARY KEY,
+                    auto_research_episode_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    control_node_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(
+                        state IN ('pending', 'running', 'cancelled', 'terminal')
+                    ),
+                    replaces_episode_id TEXT,
+                    request_json TEXT NOT NULL,
+                    goal_sha256 TEXT,
+                    parent_operation_id TEXT NOT NULL,
+                    terminal_diagnostic TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(auto_research_episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(parent_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_child_experiments_parent
+                    ON auto_research_child_experiments(
+                        auto_research_episode_id, created_at, child_episode_id
+                    );
+                CREATE UNIQUE INDEX IF NOT EXISTS auto_research_pending_experiment_per_node
+                    ON auto_research_child_experiments(project_id, control_node_id)
+                    WHERE state = 'pending';
+                CREATE TABLE IF NOT EXISTS auto_research_experiment_invocations (
+                    operation_id TEXT PRIMARY KEY,
+                    auto_research_episode_id TEXT NOT NULL,
+                    child_episode_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id),
+                    FOREIGN KEY(auto_research_episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(child_episode_id)
+                        REFERENCES auto_research_child_experiments(child_episode_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_experiment_spend_parent
+                    ON auto_research_experiment_invocations(
+                        auto_research_episode_id, created_at, operation_id
+                    );
+                CREATE TABLE IF NOT EXISTS auto_research_child_admissions (
+                    admission_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    child_kind TEXT NOT NULL CHECK(child_kind IN ('work', 'experiment')),
+                    child_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('accepted', 'reflected', 'cancelled')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(episode_id, child_kind, child_id),
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_child_admissions_pending
+                    ON auto_research_child_admissions(episode_id, state, created_at, admission_id);
+                CREATE TABLE IF NOT EXISTS auto_research_lifecycle_notices (
+                    notice_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_event TEXT NOT NULL,
+                    source_attempt INTEGER NOT NULL DEFAULT 1 CHECK(source_attempt >= 1),
+                    state TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    delivery_operation_id TEXT,
+                    acknowledged_at TEXT,
+                    acknowledged_by TEXT,
+                    UNIQUE(episode_id, source_kind, source_id, source_event, source_attempt),
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(delivery_operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_lifecycle_pending
+                    ON auto_research_lifecycle_notices(
+                        episode_id, acknowledged_at, delivered_at, created_at, notice_id
+                    );
+                CREATE TABLE IF NOT EXISTS auto_research_inbox_receipts (
+                    effect_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    mode TEXT NOT NULL CHECK(mode IN ('harvest', 'clear')),
+                    result_json TEXT NOT NULL,
+                    acknowledged_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_inbox_receipts_episode
+                    ON auto_research_inbox_receipts(episode_id, created_at, effect_id);
+                CREATE TABLE IF NOT EXISTS auto_research_finish_receipts (
+                    effect_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    actor_operation_id TEXT NOT NULL,
+                    disposition TEXT NOT NULL CHECK(disposition IN ('blocked', 'completed')),
+                    blocker_count INTEGER NOT NULL CHECK(blocker_count >= 0),
+                    result_json TEXT NOT NULL,
+                    result_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_finish_receipts_episode
+                    ON auto_research_finish_receipts(episode_id, created_at, effect_id);
+                CREATE TABLE IF NOT EXISTS auto_research_apply_results (
+                    apply_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    patch_sha256 TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_apply_results_task
+                    ON auto_research_apply_results(operation_id, created_at, apply_id);
+                CREATE TABLE IF NOT EXISTS auto_research_command_files (
+                    command_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('apply', 'instruction', 'goal')),
+                    filename TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                    FOREIGN KEY(operation_id) REFERENCES graph_runs(operation_id)
+                );
+                CREATE INDEX IF NOT EXISTS auto_research_command_files_episode
+                    ON auto_research_command_files(episode_id, created_at, command_id);
                 CREATE TABLE IF NOT EXISTS episode_invocations (
                     episode_id TEXT NOT NULL,
                     operation_id TEXT NOT NULL UNIQUE,
@@ -853,6 +1047,19 @@ class AppStoreBase:
                 "visible",
                 "INTEGER NOT NULL DEFAULT 1",
             )
+            self._ensure_column(
+                connection,
+                "auto_research_child_work",
+                "admitted_by_operation_id",
+                "TEXT",
+            )
+            connection.execute(
+                """
+                UPDATE auto_research_child_work
+                SET admitted_by_operation_id = root_operation_id
+                WHERE admitted_by_operation_id IS NULL
+                """
+            )
             if has_legacy_campaigns:
                 self._ensure_column(connection, "campaigns", "authorized_space_id", "TEXT")
                 self._ensure_column(connection, "campaigns", "authorized_user_id", "TEXT")
@@ -930,6 +1137,21 @@ class AppStoreBase:
                 "CREATE INDEX IF NOT EXISTS team_sessions_user_expiry "
                 "ON team_sessions(user_id, expires_at)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS project_members_user "
+                "ON project_members(user_id, project_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS project_invitations_invitee "
+                "ON project_invitations(invited_user_id, created_at DESC, invitation_id)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS project_invitations_pending "
+                "ON project_invitations(project_id, invited_user_id) WHERE response IS NULL"
+            )
+            if not members_table_existed:
+                self._backfill_project_members(connection)
+            self._relax_episode_wrapup_ending(connection)
             connection.execute("DROP INDEX IF EXISTS graph_runs_campaign")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS graph_runs_episode "
@@ -1294,6 +1516,93 @@ class AppStoreBase:
                 columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 if name not in columns:
                     raise
+
+    @staticmethod
+    def _relax_episode_wrapup_ending(connection: sqlite3.Connection) -> None:
+        """Drop the obsolete NOT NULL on ``episode_wrapups.ending``.
+
+        An Experiment whose pre-migration exit cannot be classified from retained
+        data legitimately has **no** ending — refusing to invent one is the whole
+        point of that branch in ``_legacy_experiment_lifecycle``. The column was
+        relaxed to nullable in the create path, but `CREATE TABLE IF NOT EXISTS`
+        never alters a table that already exists, so every database created
+        before that change still refuses the row and crashes on open.
+
+        SQLite cannot drop a NOT NULL in place, so this rebuilds the table. It is
+        guarded on the constraint actually being present.
+
+        These are separate `execute` calls on purpose: `executescript` issues an
+        implicit COMMIT first, which would land every earlier migration in this
+        open transaction and break the all-or-nothing property of schema setup.
+        """
+
+        columns = {row[1]: row for row in connection.execute("PRAGMA table_info(episode_wrapups)")}
+        ending = columns.get("ending")
+        if ending is None or not ending[3]:
+            return
+        connection.execute(
+            """
+            CREATE TABLE episode_wrapups_rebuilt (
+                episode_id TEXT PRIMARY KEY,
+                ending TEXT,
+                partial INTEGER NOT NULL,
+                concluding_operation_id TEXT,
+                allocation_operation_id TEXT UNIQUE,
+                provider TEXT,
+                run_on TEXT,
+                execution_host TEXT,
+                native_session_id TEXT,
+                stage_host TEXT,
+                stage_root TEXT,
+                skill_id TEXT,
+                skill_version TEXT,
+                output_name TEXT,
+                output_path TEXT,
+                receipt_json TEXT NOT NULL,
+                receipt_sha256 TEXT NOT NULL,
+                state TEXT NOT NULL,
+                diagnostic TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT,
+                FOREIGN KEY(episode_id) REFERENCES episodes(episode_id),
+                FOREIGN KEY(concluding_operation_id) REFERENCES graph_runs(operation_id),
+                FOREIGN KEY(allocation_operation_id) REFERENCES graph_runs(operation_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO episode_wrapups_rebuilt SELECT
+                episode_id, ending, partial, concluding_operation_id,
+                allocation_operation_id, provider, run_on, execution_host,
+                native_session_id, stage_host, stage_root, skill_id, skill_version,
+                output_name, output_path, receipt_json, receipt_sha256, state,
+                diagnostic, created_at, updated_at, finished_at
+            FROM episode_wrapups
+            """
+        )
+        connection.execute("DROP TABLE episode_wrapups")
+        connection.execute("ALTER TABLE episode_wrapups_rebuilt RENAME TO episode_wrapups")
+
+    def _backfill_project_members(self, connection: sqlite3.Connection) -> None:
+        """Seat every current space member on every project registered before S101.
+
+        Nothing records who created those projects, so there is nothing narrower
+        to seed from. This is the one place the membership design fails open, and
+        it fails open exactly once: failing closed would lock a team out of its
+        own projects, and there is no administrator rank to undo that.
+        """
+
+        now = self.now()
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO project_members (project_id, user_id, seated_at, seated_by)
+            SELECT projects.project_id, space_users.user_id, ?, NULL
+            FROM projects CROSS JOIN space_users
+            """,
+            (now,),
+        )
 
     @staticmethod
     def now() -> str:

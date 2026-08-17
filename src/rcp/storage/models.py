@@ -90,6 +90,48 @@ class TeamInvitationRecord(BaseModel):
     locked_at: str | None = None
 
 
+class ProjectMemberRecord(BaseModel):
+    """One person's membership of one project.
+
+    Membership is operational authority inside RCP. It binds the durable
+    ``user_id`` and never a display name, so a member exists before they have
+    chosen one. It lives in SQLite and never in ``.research/``.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: str
+    user_id: str
+    seated_at: str
+    seated_by: str | None = None
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str) -> str:
+        try:
+            return _canonical_uuid4(value, label="user identity")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class ProjectInvitationRecord(BaseModel):
+    """One in-product invitation to join one project.
+
+    It carries no code, no expiry, and no lockout, because it grants no
+    credential — the person is already enrolled in the space.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    invitation_id: str
+    project_id: str
+    invited_user_id: str
+    invited_by: str
+    created_at: str
+    response: Literal["accepted", "declined"] | None = None
+    responded_at: str | None = None
+
+
 class ProjectRecord(BaseModel):
     project_id: str
     home_space_id: str | None = None
@@ -335,6 +377,19 @@ AutoResearchRole = Literal["orchestrator", "worker"]
 AutoResearchMessageRole = Literal["human", "orchestrator", "worker"]
 AutoResearchRecoveryStatus = Literal["pending", "admitted", "exhausted", "blocked"]
 AutoResearchRecoveryMode = Literal["exact", "clean", "blocked"]
+AutoResearchChildExperimentState = Literal["pending", "running", "cancelled", "terminal"]
+AutoResearchChildAdmissionState = Literal["accepted", "reflected", "cancelled"]
+AutoResearchLifecycleNoticeState = Literal["pending", "delivered", "acknowledged"]
+AutoResearchInboxReceiptMode = Literal["harvest", "clear"]
+AutoResearchFinishDisposition = Literal["blocked", "completed"]
+AutoResearchCommandFileKind = Literal["apply", "instruction", "goal"]
+AutoResearchFinishBlockerKind = Literal[
+    "spawned_work",
+    "experiment_episode",
+    "experiment_replacement",
+    "lifecycle_notice",
+    "child_admission",
+]
 
 EpisodeMode = Literal["auto_research", "experiment_loop"]
 EpisodeStatus = Literal[
@@ -558,6 +613,244 @@ class AutoResearchInvocationRecord(BaseModel):
     actor_operation_id: str
     control_node_id: str | None = None
     created_at: str
+
+
+class AutoResearchChildWorkRecord(BaseModel):
+    """One ordinary Work actor admitted and routed by an Auto-research parent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker_id: str
+    episode_id: str
+    project_id: str
+    control_node_id: str
+    root_operation_id: str
+    current_operation_id: str
+    admitted_by_operation_id: str
+    instruction: str = Field(min_length=1, max_length=16_000)
+    instruction_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    stop_requested_at: str | None = None
+    created_at: str
+    updated_at: str
+
+    @model_validator(mode="after")
+    def instruction_matches_digest(self) -> AutoResearchChildWorkRecord:
+        if not self.instruction.strip():
+            raise ValueError("an Auto-research child Work instruction must not be blank")
+        if hashlib.sha256(self.instruction.encode("utf-8")).hexdigest() != self.instruction_sha256:
+            raise ValueError("the child Work instruction does not match its digest")
+        return self
+
+
+class AutoResearchChildExperimentRecord(BaseModel):
+    """Parent routing and immutable launch intent for one child Experiment episode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    child_episode_id: str
+    auto_research_episode_id: str
+    project_id: str
+    control_node_id: str
+    state: AutoResearchChildExperimentState
+    replaces_episode_id: str | None = None
+    request: dict[str, object]
+    goal_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_operation_id: str
+    terminal_diagnostic: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class AutoResearchExperimentAllowance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = Field(ge=5)
+    used: int = Field(ge=0)
+    remaining: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def accounting_is_coherent(self) -> AutoResearchExperimentAllowance:
+        if self.used > self.total or self.remaining != self.total - self.used:
+            raise ValueError("the child Experiment allowance accounting is inconsistent")
+        return self
+
+
+class AutoResearchChildAdmissionRecord(BaseModel):
+    """A durable command admission awaiting or naming its reflected child route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    admission_id: str
+    episode_id: str
+    project_id: str
+    child_kind: Literal["work", "experiment"]
+    child_id: str
+    state: AutoResearchChildAdmissionState
+    created_at: str
+    updated_at: str
+
+
+class AutoResearchLifecycleNoticeRecord(BaseModel):
+    """An RCP-authored lifecycle fact, deliberately separate from agent mail."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    notice_id: str
+    episode_id: str
+    source_kind: str
+    source_id: str
+    source_event: str
+    source_attempt: int = Field(default=1, ge=1)
+    state: AutoResearchLifecycleNoticeState = "pending"
+    payload: dict[str, object]
+    created_at: str
+    delivered_at: str | None = None
+    delivery_operation_id: str | None = None
+    acknowledged_at: str | None = None
+    acknowledged_by: str | None = None
+
+    @model_validator(mode="after")
+    def delivery_state_is_coherent(self) -> AutoResearchLifecycleNoticeRecord:
+        if (self.delivered_at is None) != (self.delivery_operation_id is None):
+            raise ValueError("a lifecycle delivery requires both its time and operation")
+        if (self.acknowledged_at is None) != (self.acknowledged_by is None):
+            raise ValueError("a lifecycle acknowledgment requires both its time and actor")
+        expected = (
+            "acknowledged"
+            if self.acknowledged_at is not None
+            else "delivered"
+            if self.delivered_at is not None
+            else "pending"
+        )
+        if self.state != expected:
+            raise ValueError("the lifecycle notice state does not match its timestamps")
+        return self
+
+
+class AutoResearchInboxReceiptRecord(BaseModel):
+    """The exact lifecycle-notice snapshot acknowledged by one keyed inbox effect."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    effect_id: str
+    episode_id: str
+    mode: AutoResearchInboxReceiptMode
+    notice_ids: list[str]
+    count: int = Field(ge=0)
+    notices: list[AutoResearchLifecycleNoticeRecord] = Field(default_factory=list)
+    acknowledged_by: str
+    created_at: str
+
+    @model_validator(mode="after")
+    def result_matches_mode(self) -> AutoResearchInboxReceiptRecord:
+        if self.count != len(self.notice_ids) or len(set(self.notice_ids)) != self.count:
+            raise ValueError("an inbox receipt count must match its unique notice ids")
+        if self.mode == "clear" and self.notices:
+            raise ValueError("a clear receipt must not retain notice bodies")
+        if self.mode == "harvest" and [item.notice_id for item in self.notices] != self.notice_ids:
+            raise ValueError("a harvest receipt body must match its notice ids in order")
+        return self
+
+
+class AutoResearchFinishReceiptRecord(BaseModel):
+    """The complete immutable result of one keyed guarded-Finish decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    effect_id: str
+    episode_id: str
+    actor_operation_id: str = Field(min_length=1)
+    disposition: AutoResearchFinishDisposition
+    blocker_count: int = Field(ge=0)
+    result: dict[str, object]
+    result_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    created_at: str
+
+    @model_validator(mode="after")
+    def result_matches_decision(self) -> AutoResearchFinishReceiptRecord:
+        compact = json.dumps(
+            self.result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if hashlib.sha256(compact.encode("utf-8")).hexdigest() != self.result_sha256:
+            raise ValueError("the guarded-Finish result does not match its digest")
+        if self.result.get("episode_id") != self.episode_id:
+            raise ValueError("the guarded-Finish result belongs to another episode")
+        blockers = self.result.get("blockers")
+        if self.disposition == "blocked":
+            if set(self.result) != {"episode_id", "blockers"} or not isinstance(blockers, list):
+                raise ValueError("a blocked Finish receipt requires its complete blocker array")
+            parsed = [AutoResearchFinishBlocker.model_validate(item) for item in blockers]
+            if self.blocker_count == 0 or len(parsed) != self.blocker_count:
+                raise ValueError("a blocked Finish receipt count must match its blockers")
+        elif (
+            set(self.result) != {"episode_id", "status", "ending"}
+            or self.blocker_count != 0
+            or blockers is not None
+            or self.result.get("ending") != "completed"
+        ):
+            raise ValueError("a completed Finish receipt requires its fenced episode result")
+        return self
+
+
+class AutoResearchCommandFileRecord(BaseModel):
+    """Immutable text snapshotted before a keyed staged command takes effect."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str
+    episode_id: str
+    operation_id: str
+    kind: AutoResearchCommandFileKind
+    filename: str
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content: str
+    created_at: str
+
+    @field_validator("filename")
+    @classmethod
+    def filename_is_direct(cls, value: str) -> str:
+        if not value or value in {".", ".."} or "\x00" in value or Path(value).name != value:
+            raise ValueError("a staged command snapshot requires one direct filename")
+        return value
+
+    @model_validator(mode="after")
+    def content_matches_digest(self) -> AutoResearchCommandFileRecord:
+        if hashlib.sha256(self.content.encode("utf-8")).hexdigest() != self.sha256:
+            raise ValueError("the staged command snapshot does not match its digest")
+        return self
+
+
+class AutoResearchApplyResultRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    apply_id: str
+    episode_id: str
+    operation_id: str
+    patch_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    result: dict[str, object]
+    created_at: str
+
+
+class AutoResearchFinishBlocker(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: AutoResearchFinishBlockerKind
+    blocker_id: str
+    state: str
+    action: str
+
+
+class AutoResearchExperimentAllowanceReached(ValueError):
+    def __init__(self, allowance: AutoResearchExperimentAllowance) -> None:
+        self.allowance = allowance
+        super().__init__(
+            "the Auto-research child Experiment allowance is exhausted "
+            f"({allowance.used}/{allowance.total})"
+        )
 
 
 class AutoResearchRecoveryRecord(BaseModel):
@@ -1126,6 +1419,7 @@ def _discard_failed_team_initialization(path: Path, expected_space_id: str) -> N
 
 _PROJECT_ID_TABLES = (
     "projects",
+    "project_members",
     "paper_drafts",
     "writing_sessions",
     "chat_session_contexts",
@@ -1134,6 +1428,9 @@ _PROJECT_ID_TABLES = (
     "episodes",
     "agent_usage",
     "watchers",
+    "auto_research_child_work",
+    "auto_research_child_experiments",
+    "auto_research_child_admissions",
 )
 
 
@@ -1215,7 +1512,25 @@ __all__ = [
     "AgentUsageSnapshot",
     "AutoResearchActorBinding",
     "AutoResearchActorBusy",
+    "AutoResearchApplyResultRecord",
+    "AutoResearchChildAdmissionRecord",
+    "AutoResearchChildAdmissionState",
+    "AutoResearchChildExperimentRecord",
+    "AutoResearchChildExperimentState",
+    "AutoResearchChildWorkRecord",
+    "AutoResearchCommandFileKind",
+    "AutoResearchCommandFileRecord",
+    "AutoResearchExperimentAllowance",
+    "AutoResearchExperimentAllowanceReached",
+    "AutoResearchFinishBlocker",
+    "AutoResearchFinishBlockerKind",
+    "AutoResearchFinishDisposition",
+    "AutoResearchFinishReceiptRecord",
+    "AutoResearchInboxReceiptMode",
+    "AutoResearchInboxReceiptRecord",
     "AutoResearchInvocationRecord",
+    "AutoResearchLifecycleNoticeRecord",
+    "AutoResearchLifecycleNoticeState",
     "AutoResearchMessageRecord",
     "AutoResearchMessageRole",
     "AutoResearchRecoveryMode",
@@ -1245,6 +1560,8 @@ __all__ = [
     "GraphCondition",
     "GraphWatcherRecord",
     "NodeStatusGraphCondition",
+    "ProjectInvitationRecord",
+    "ProjectMemberRecord",
     "ProjectRecord",
     "ProjectStageRecord",
     "ProposalResolvedGraphCondition",

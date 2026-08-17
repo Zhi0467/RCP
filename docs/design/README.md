@@ -15,12 +15,16 @@ module:
 - [Team API compatibility](team-api-compatibility.md) — how the desktop client
   reaches a team backend.
 
-The design decisions in these files are confirmed, but they are not yet part of
-the canonical blueprint and do not authorize implementation by themselves. Per
-[`AGENTS.md`](../../AGENTS.md), each user-visible promise still needs a
-human-confirmed acceptance scenario. The resulting design change then edits
+The design decisions in these files are confirmed, but confirmation is not
+authorization. Per [`AGENTS.md`](../../AGENTS.md), each user-visible promise
+still needs a human-confirmed acceptance scenario; the resulting design change
+then edits
 [`research-control-panel-blueprint.md`](../research-control-panel-blueprint.md)
 in place and bumps its version before code lands.
+
+Two of these modules have had their implemented half absorbed into the blueprint
+— team enrollment and sessions, and the two permission gates. Everything else
+here is still design only, and reading it is not permission to build it.
 
 Each module keeps its own remaining design details beside the decisions they
 refine. They are not duplicated in the repository-wide open-question tracker.
@@ -60,21 +64,32 @@ would otherwise make them look like local choices.
 
 The promises above are being turned into scenarios in
 [`../acceptance/`](../acceptance/README.md). S97 and S99, plus their narrower
-S111–S112 prerequisites, were implemented and passed on 2026-08-11. The
-remaining team-space and campaign scenarios are still proposals and do not
-authorize implementation.
+S111–S112 prerequisites, were implemented and passed on 2026-08-11.
+[S96](../acceptance/S96-joining-a-team-space.md) — bootstrap, invitations,
+permanent tokens, browser sessions, rotation, and revocation — is implemented
+and covered by tests. S95 and S98–S105 remain proposals and do not authorize
+implementation.
 
 The closed action list settled on 2026-08-12 and lives in
 [Identity, permissions, and agent profiles](identity-permissions-and-agent-profiles.md#action-vocabulary).
-No permission check is enforced anywhere in the code yet.
 
-Two scenarios now authorize the first enforcement, both confirmed 2026-08-12 and
-both driven against machinery that exists today, without team membership:
+Two scenarios carry the first enforcement, both confirmed 2026-08-12 and both
+driven against machinery that exists today, without project membership:
 [S115](../acceptance/S115-beliefs-change-only-through-you.md) owns the
 protected-type rule and the widened Proposal vocabulary it requires, and
 [S100](../acceptance/S100-permission-is-checked-twice.md) owns the two gates.
-The protected-type rule binds **every agent** from the day it lands, not only
-campaign workers — decided by the human on 2026-08-12, so that there is one
-authority regime and the brake is exercised on real use before anything runs
-unattended. S101 remains an unconfirmed proposal, and the membership half of
-S100 is deferred into it.
+Both are implemented; the rule lives in
+[`core/authority.py`](../../src/rcp/core/authority.py). It binds **every agent**,
+not only episode workers — decided by the human on 2026-08-12, so that there is
+one authority regime and the brake is exercised on real use before anything runs
+unattended. The project-membership half of S100 is deferred into
+[S122](../acceptance/S122-project-invitations.md), which supplies the
+permission-that-changes S100 could not otherwise demonstrate.
+
+Project membership itself was confirmed and split on 2026-08-15:
+[S101](../acceptance/S101-project-membership.md) is the boundary and
+[S122](../acceptance/S122-project-invitations.md) is how membership is granted
+and given up. Both were implemented and passed on 2026-08-15, which closed
+boundary 8 and supplied S100 with the permission-that-changes it had deferred.
+The [slice handoff](../handoffs/handoff-2026-08-15-slice-project-membership.md)
+carries the decisions and the code facts behind them.

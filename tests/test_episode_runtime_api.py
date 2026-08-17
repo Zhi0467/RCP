@@ -161,7 +161,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
 
     async def failing_stream(_project_id, _kind, _request, _execution):
-        yield f'data: {AgentEvent(event="error", text="Host unreachable.").model_dump_json()}\n\n'
+        yield f"data: {AgentEvent(event='error', text='Host unreachable.').model_dump_json()}\n\n"
 
     tasks.stream = failing_stream
     client = TestClient(app)
@@ -269,10 +269,27 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     assert store.episode_budget_meter(episode_id).invocations_used == 1
 
 
-def test_worker_request_inherits_the_pinned_episode_profile() -> None:
+def test_worker_request_uses_the_current_human_node_work_profile(manifest, tmp_path) -> None:
+    profiles = {
+        name: manifest.agent_profile(name).model_copy(deep=True) for name in _EXECUTION_PROFILES
+    }
+    profiles["node_chat"] = profiles["node_chat"].model_copy(
+        update={"provider": "claude", "model": "current-worker", "reasoning": "low"}
+    )
+    profiles["orchestrator"] = profiles["orchestrator"].model_copy(
+        update={"provider": "codex", "model": "pinned-orchestrator", "reasoning": "high"}
+    )
+    write_agent_settings(
+        manifest,
+        list(manifest.agent.default_run_truth_scope),
+        profiles,
+    )
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
     episode_id = str(uuid.uuid4())
     operation_id = str(uuid.uuid4())
     project_id = str(uuid.uuid4())
+    worker_id = str(uuid.uuid4())
     now = "2026-08-12T00:00:00+00:00"
     request = AutoResearchRunRequest(
         episode_id=episode_id,
@@ -334,31 +351,27 @@ def test_worker_request_inherits_the_pinned_episode_profile() -> None:
     )
 
     worker = _auto_research_worker_request(
+        service,
         AutoResearchCommandContext(episode=episode, task=task, request=request),
-        SpawnArguments(seat_node_id="blocker-1", instruction="Resolve the blocker."),
+        SpawnArguments(seat_node_id="blocker-1", instruction_file="worker-task.md"),
+        "Resolve the blocker.",
+        worker_id,
     )
 
-    for field in (
-        "provider",
-        "model",
-        "reasoning",
-        "run_on",
-        "run_truth_scope",
-        "workflow_ids",
-        "skill_ids",
-        "invoked_workflow_ids",
-        "invoked_skill_ids",
-        "invoked_provider_skill_names",
-        "resolved_provider_skills",
-        "resolved_skill_packages",
-    ):
-        assert getattr(worker, field) == getattr(request, field)
-    assert worker.episode_id == episode_id
-    assert worker.role == "worker"
-    assert worker.control_node_id == "blocker-1"
-    assert worker.instruction == "Resolve the blocker."
-    assert worker.actor_operation_id is None
+    assert (worker.provider, worker.model, worker.reasoning) == (
+        "claude",
+        "current-worker",
+        "low",
+    )
+    assert worker.run_on == profiles["node_chat"].run_on
+    assert worker.run_truth_scope == list(manifest.agent.default_run_truth_scope)
+    assert worker.chat_id == worker_id
+    assert worker.chat_scope == "node"
+    assert worker.node_id == "blocker-1"
+    assert worker.message == "Resolve the blocker."
+    assert worker.mode == "work"
+    assert worker.trigger == "orchestrator"
+    assert worker.patch_kind == "work"
     assert worker.session_id is None
-    assert worker.wake_cause is None
     assert worker.watcher_ids == []
-    assert "campaign_id" not in worker.model_dump(mode="json")
+    assert worker.model != request.model

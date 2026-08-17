@@ -8,7 +8,7 @@ export type AgentTaskKind = AgentSurface | "auto_research";
 export type AgentTaskStatus =
   "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
 export type ConversationMode = "discuss" | "work";
-export type TaskTrigger = "human" | "experiment_run" | "watcher";
+export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
 export type GraphPatchKind = "work" | "experiment_loop";
 export type AgentCapability =
   "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_readonly";
@@ -899,6 +899,7 @@ export interface AgentTaskResult {
   messages?: string[];
   artifacts?: AgentArtifactDescriptor[];
   graph_update?: GraphUpdateResult;
+  graph_updates?: GraphUpdateResult[];
   [key: string]: unknown;
 }
 
@@ -1280,6 +1281,22 @@ export interface ProjectCard {
   last_refresh_at?: string | null;
   reachable?: boolean | null;
   error?: string | null;
+}
+
+export interface ProjectMember {
+  user_id: string;
+  display_name: string | null;
+  seated_at: string;
+}
+
+export interface ProjectInvitation {
+  invitation_id: string;
+  project_id: string;
+  project_name: string;
+  space_name: string | null;
+  invited_by: string;
+  invited_by_name: string | null;
+  created_at: string;
 }
 
 export interface SetupRepository {

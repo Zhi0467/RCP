@@ -75,6 +75,17 @@ def authorized_human(
     )
 
 
+def seated_on_every_project(_project_id: str, _user_id: str) -> bool:
+    """A membership check for histories built without a project catalog.
+
+    `HistoryManager` requires one whenever it can resolve agent authority, so a
+    test that fabricates its own resolver supplies this. Membership itself is
+    exercised in `test_project_membership.py` against a real store.
+    """
+
+    return True
+
+
 def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHuman:
     """A synthetic authorizer for stores that were never opened as an app."""
 

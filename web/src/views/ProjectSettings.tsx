@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, clearAllProjectCaches, clearProjectCaches } from "../api";
+import { ProjectMembers } from "../components/ProjectMembers";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
@@ -39,6 +40,7 @@ import type {
   CacheMetric,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
+  IdentityResponse,
   ProjectSnapshot,
   ProviderId,
   ProviderPathResolution,
@@ -49,6 +51,8 @@ import type {
 interface Props {
   apiBase: string;
   project: ProjectSnapshot;
+  identity: IdentityResponse | null;
+  onLeftProject: () => void;
   usage: AgentUsageSnapshot | null;
   onRefreshUsage: () => Promise<void>;
   cacheClearDisabled: boolean;
@@ -140,6 +144,8 @@ function stagedOrSaved(project: ProjectSnapshot) {
 export function ProjectSettings({
   apiBase,
   project,
+  identity,
+  onLeftProject,
   usage,
   onRefreshUsage,
   cacheClearDisabled,
@@ -480,6 +486,7 @@ export function ProjectSettings({
           </header>
         </section>
       )}
+      <ProjectMembers projectId={project.id} identity={identity} api={api} onLeft={onLeftProject} />
       <article className="settings-section boundary-settings">
         <header>
           <span>

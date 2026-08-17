@@ -42,6 +42,8 @@ const identity = {
 function landingProps(identityValue = identity) {
   return {
     projects: [],
+    invitations: [],
+    async onAnswerInvitation() {},
     experimentLoops: [],
     onOpen() {},
     onOpenExperiment() {},
@@ -147,3 +149,50 @@ function findElement(node, predicate) {
   }
   return null;
 }
+
+test("a pending project invitation is shelved beside the projects you have", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectLanding, {
+      ...landingProps(),
+      invitations: [
+        {
+          invitation_id: "invitation-1",
+          project_id: "project-1",
+          project_name: "Plasticity study",
+          space_name: "Lab space",
+          invited_by: "1e6a2f6c-2b6f-4d4a-9d0e-2f0f5a8b2c3d",
+          invited_by_name: "Ada Researcher",
+          created_at: "2026-08-15T00:00:00Z",
+        },
+      ],
+    }),
+  );
+
+  assert.match(html, /Plasticity study/);
+  assert.match(html, /Lab space/);
+  assert.match(html, /Ada Researcher/);
+  assert.match(html, />Accept</);
+  assert.match(html, />Decline</);
+});
+
+test("an invitation card carries no explanatory line under it", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectLanding, {
+      ...landingProps(),
+      invitations: [
+        {
+          invitation_id: "invitation-1",
+          project_id: "project-1",
+          project_name: "Plasticity study",
+          space_name: null,
+          invited_by: "someone",
+          invited_by_name: null,
+          created_at: "2026-08-15T00:00:00Z",
+        },
+      ],
+    }),
+  );
+
+  assert.doesNotMatch(html, /you have been invited/i);
+  assert.doesNotMatch(html, /accept to join/i);
+});

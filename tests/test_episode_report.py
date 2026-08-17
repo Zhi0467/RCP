@@ -237,9 +237,7 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
     report = store.episode_report("episode")
     assert report is not None
     assert report.html.startswith("<html>")
-    assert [attempt.status for attempt in store.episode_report_attempts("episode")] == [
-        "succeeded"
-    ]
+    assert [attempt.status for attempt in store.episode_report_attempts("episode")] == ["succeeded"]
 
 
 @pytest.mark.asyncio

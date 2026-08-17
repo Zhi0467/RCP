@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -12,7 +13,7 @@ from pathlib import Path
 from rcp.transport.run_stage import RemoteRunStage
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-TURN_HANDOFF_FILES = ("patch.json", "watch.json", "messages.json")
+TURN_HANDOFF_FILES = ("patch.json", "watch.json", "messages.json", "lifecycle.json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +112,58 @@ class RunStageMailbox:
         finally:
             os.close(directory)
 
+    def remove_if_sha256(self, name: str, expected_sha256: str) -> bool:
+        """Remove one direct regular file only if it is still the snapshotted file."""
+
+        name = _safe_name(name)
+        if len(expected_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_sha256
+        ):
+            raise ValueError("expected mailbox digest must be lowercase SHA-256")
+        if self.remote_stage is not None:
+            return self.remote_stage.remove_workspace_file_if_sha256(name, expected_sha256)
+
+        directory = _open_directory(self.workspace)
+        descriptor: int | None = None
+        quarantine = f".rcp-consume-{uuid.uuid4().hex}-{name}"
+        quarantined = False
+        try:
+            try:
+                before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError(f"mailbox entry is not a regular file: {name}")
+                os.rename(
+                    name,
+                    quarantine,
+                    src_dir_fd=directory,
+                    dst_dir_fd=directory,
+                )
+                quarantined = True
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(quarantine, flags, dir_fd=directory)
+            except FileNotFoundError:
+                return False
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ValueError(f"mailbox entry is not a regular file: {name}")
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, 1024 * 1024):
+                digest.update(chunk)
+            if digest.hexdigest() != expected_sha256:
+                _restore_quarantined_entry(directory, quarantine, name)
+                quarantined = False
+                return False
+            os.unlink(quarantine, dir_fd=directory)
+            quarantined = False
+            os.fsync(directory)
+            return True
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if quarantined:
+                with suppress(OSError):
+                    _restore_quarantined_entry(directory, quarantine, name)
+            os.close(directory)
+
     def stage_text_input(self, label: str, content: str) -> str:
         """Stage one new immutable source file and return its execution-host path.
 
@@ -157,6 +210,26 @@ def _safe_name(value: str) -> str:
     ):
         raise ValueError("mailbox file name contains unsupported characters")
     return value
+
+
+def _restore_quarantined_entry(directory: int, quarantine: str, name: str) -> None:
+    """Restore a consumed file without ever overwriting newer bytes."""
+
+    try:
+        os.link(
+            quarantine,
+            name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+            follow_symlinks=False,
+        )
+    except FileExistsError:
+        # A writer published a newer file while the snapshot was inspected. Keep
+        # the quarantined snapshot as a receipt rather than replacing either file.
+        os.fsync(directory)
+        return
+    os.unlink(quarantine, dir_fd=directory)
+    os.fsync(directory)
 
 
 def _open_directory(path: Path) -> int:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import json
 import os
 import shlex
@@ -18,9 +19,15 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import (
+    ApplyCommandRequest,
     CommandResponse,
+    EpisodeCommandRequest,
+    InboxCommandRequest,
+    SpawnCommandRequest,
+    StatusArguments,
     staged_command_broker_source,
     staged_command_client_source,
+    validate_command_request,
 )
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
@@ -205,12 +212,20 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
         await server
 
     assert validate_code == 0
-    assert json.loads(validate_output)["status"] == "valid"
+    assert validate_output == '{"status":"valid","messages":[]}\n'
     assert (ok_code, invalid_code, unavailable_code, finish_code) == (0, 1, 2, 0)
-    assert json.loads(ok_output)["status"] == "ok"
-    assert json.loads(invalid_output)["status"] == "invalid"
-    assert json.loads(unavailable_output)["status"] == "unavailable"
-    assert json.loads(finish_output)["status"] == "ok"
+    assert ok_output == '{"status":"ok","message":null,"result":{"observed":"status"}}\n'
+    assert json.loads(invalid_output) == {
+        "status": "invalid",
+        "message": "The requested result is invalid.",
+        "result": {"observed": "status"},
+    }
+    assert json.loads(unavailable_output) == {
+        "status": "unavailable",
+        "message": "The requested result is unavailable.",
+        "result": {"observed": "status"},
+    }
+    assert finish_output == ('{"status":"ok","message":null,"result":{"observed":"finish"}}\n')
     assert handled == ["validate", "status", "status", "status", "finish"]
     request_files = sorted(workspace.glob("*.request.json"))
     response_files = sorted(workspace.glob("*.response.json"))
@@ -240,6 +255,294 @@ async def test_staged_client_and_local_mailbox_preserve_protocol_shapes_and_exit
     expired_code, expired_output = await _run_client(staged, "status")
     assert expired_code == 2
     assert "broker is unavailable" in expired_output
+
+
+def _request_document(verb: str, arguments: dict, *, key: str | None = None) -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "mailbox_id": "a" * 32,
+            "request_id": "b" * 32,
+            "credential": "c" * 64,
+            "verb": verb,
+            "idempotency_key": key,
+            "arguments": arguments,
+        }
+    )
+
+
+def test_command_protocol_has_strict_file_target_and_action_request_shapes() -> None:
+    status = validate_command_request(
+        _request_document(
+            "status",
+            {"worker_id": None, "episode_id": "episode-1"},
+        )
+    )
+    assert status.arguments == StatusArguments(episode_id="episode-1")
+    with pytest.raises(ValueError, match="either a worker id or an episode id"):
+        StatusArguments(worker_id="worker-1", episode_id="episode-1")
+
+    applied = validate_command_request(
+        _request_document("apply", {"patch_file": "patch.json"}, key="apply-once")
+    )
+    assert isinstance(applied, ApplyCommandRequest)
+    assert applied.arguments.patch_file == "patch.json"
+    with pytest.raises(ValueError):
+        validate_command_request(
+            _request_document("apply", {"patch_file": "other.json"}, key="apply-once")
+        )
+
+    spawned = validate_command_request(
+        _request_document(
+            "spawn",
+            {"seat_node_id": "exp-1", "instruction_file": "worker-task.md"},
+            key="spawn-once",
+        )
+    )
+    assert isinstance(spawned, SpawnCommandRequest)
+    assert spawned.arguments.instruction_file == "worker-task.md"
+    with pytest.raises(ValueError):
+        validate_command_request(
+            _request_document(
+                "spawn",
+                {
+                    "seat_node_id": "exp-1",
+                    "instruction_file": "nested/worker-task.md",
+                },
+                key="spawn-once",
+            )
+        )
+
+    for arguments in (
+        {
+            "action": "kick_off_experiment",
+            "node_id": "exp-1",
+            "goal_file": "goal.md",
+            "invocation_limit": 2,
+        },
+        {"action": "stop", "episode_id": "episode-1"},
+        {"action": "resume", "episode_id": "episode-1"},
+    ):
+        request = validate_command_request(
+            _request_document("episode", arguments, key=f"episode-{arguments['action']}")
+        )
+        assert isinstance(request, EpisodeCommandRequest)
+        assert request.arguments.action == arguments["action"]
+    with pytest.raises(ValueError):
+        validate_command_request(
+            _request_document(
+                "episode",
+                {
+                    "action": "kick_off_experiment",
+                    "node_id": "exp-1",
+                    "goal_file": None,
+                    "invocation_limit": 0,
+                },
+                key="episode-start",
+            )
+        )
+
+    for action in ("harvest", "clear"):
+        request = validate_command_request(
+            _request_document("inbox", {"action": action}, key=f"inbox-{action}")
+        )
+        assert isinstance(request, InboxCommandRequest)
+        assert request.arguments.action == action
+    with pytest.raises(ValueError):
+        validate_command_request(
+            _request_document(
+                "inbox",
+                {"action": "harvest", "unexpected": True},
+                key="inbox-harvest",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    nested = workspace / "nested"
+    nested.mkdir()
+    (nested / "task.md").write_text("Nested task.\n", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("Outside task.\n", encoding="utf-8")
+    target = workspace / "target.md"
+    target.write_text("Target task.\n", encoding="utf-8")
+    symlink = workspace / "linked-task.md"
+    symlink.symlink_to(target)
+    blank = workspace / "blank.md"
+    blank.write_text(" \n\t", encoding="utf-8")
+    oversized = workspace / "oversized.md"
+    oversized.write_bytes(b"x" * (16 * 1024 + 1))
+    invalid_utf8 = workspace / "invalid-utf8.md"
+    invalid_utf8.write_bytes(b"\xff")
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+
+    try:
+        for path in (
+            nested / "task.md",
+            outside,
+            symlink,
+            blank,
+            oversized,
+            invalid_utf8,
+        ):
+            calls = (
+                (
+                    "spawn",
+                    "--key",
+                    f"spawn-{path.name}",
+                    "--seat-node",
+                    "exp-1",
+                    "--instruction-file",
+                    str(path),
+                ),
+                (
+                    "episode",
+                    "--kick-off-experiment",
+                    "--key",
+                    f"episode-{path.name}",
+                    "--node",
+                    "exp-1",
+                    "--goal-file",
+                    str(path),
+                ),
+            )
+            for call in calls:
+                code, output = await _run_client(staged, *call)
+                assert code == 1, (call, output)
+                response = json.loads(output)
+                assert response["status"] == "invalid"
+                assert isinstance(response["message"], str)
+                assert response["result"] == {}
+                assert set(response) == {"status", "message", "result"}
+        assert not list(workspace.glob("*.request.json"))
+    finally:
+        staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_apply_accepts_only_direct_utf8_workspace_patch_json(tmp_path) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    other = workspace / "other.json"
+    other.write_text('{"ops":[]}\n', encoding="utf-8")
+    nested = workspace / "nested"
+    nested.mkdir()
+    nested_patch = nested / "patch.json"
+    nested_patch.write_text('{"ops":[]}\n', encoding="utf-8")
+    symlink = workspace / "patch.json"
+    symlink.symlink_to(other)
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+
+    try:
+        for index, path in enumerate((other, nested_patch, symlink), start=1):
+            code, output = await _run_client(
+                staged,
+                "apply",
+                "--key",
+                f"apply-{index}",
+                str(path),
+            )
+            assert code == 1
+            assert json.loads(output)["status"] == "invalid"
+        assert not list(workspace.glob("*.request.json"))
+    finally:
+        staged.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("retry", "worker-1", "--key", "retry-once"),
+        (
+            "spawn",
+            "--key",
+            "spawn-once",
+            "--seat-node",
+            "exp-1",
+            "--instruction-file",
+            "task.md",
+            "--provider",
+            "codex",
+        ),
+        (
+            "episode",
+            "--kick-off-experiment",
+            "--key",
+            "episode-once",
+            "--node",
+            "exp-1",
+            "--model",
+            "gpt-5",
+        ),
+        (
+            "episode",
+            "--kick-off-experiment",
+            "--key",
+            "episode-once",
+            "--node",
+            "exp-1",
+            "--effort",
+            "high",
+        ),
+        (
+            "episode",
+            "--kick-off-experiment",
+            "--key",
+            "episode-once",
+            "--node",
+            "exp-1",
+            "--host",
+            "research.example",
+        ),
+        ("status", "--worker-id", "worker-1", "--episode-id", "episode-1"),
+    ],
+)
+async def test_closed_cli_rejects_retry_launch_profile_and_ambiguous_status(
+    tmp_path,
+    arguments,
+) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    (workspace / "task.md").write_text("Do the task.\n", encoding="utf-8")
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+
+    try:
+        code, output = await _run_client(staged, *arguments)
+        assert code == 1
+        response = json.loads(output)
+        assert response["status"] == "invalid"
+        assert isinstance(response["message"], str)
+        assert response["result"] == {}
+        assert set(response) == {"status", "message", "result"}
+        assert output.count("\n") == 1
+        assert not list(workspace.glob("*.request.json"))
+    finally:
+        staged.cleanup()
 
 
 @pytest.mark.asyncio
@@ -498,10 +801,44 @@ async def test_staged_client_rejects_oversized_patch_before_writing_request(tmp_
     code, output = await _run_client(staged, "validate", str(patch))
 
     assert code == 1
+    response = json.loads(output)
+    assert set(response) == {"status", "messages"}
+    assert response["status"] == "invalid"
+    assert len(response["messages"]) == 1
     assert (
         f"patch.json exceeds the {COMMAND_MAILBOX_MAX_REQUEST_BYTES}-byte command request limit"
         in output
     )
+    assert output.count("\n") == 1
+    assert not list(workspace.glob("*.request.json"))
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_staged_client_enforces_the_serialized_validator_request_limit(tmp_path) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    patch = workspace / "patch.json"
+    patch.write_text('"' * (COMMAND_MAILBOX_MAX_REQUEST_BYTES // 2), encoding="utf-8")
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+
+    code, output = await _run_client(staged, "validate", str(patch))
+
+    assert code == 1
+    assert json.loads(output) == {
+        "status": "invalid",
+        "messages": [
+            "RCP command is invalid: serialized command request exceeds the "
+            f"{COMMAND_MAILBOX_MAX_REQUEST_BYTES}-byte command request limit"
+        ],
+    }
     assert not list(workspace.glob("*.request.json"))
     staged.cleanup()
 
@@ -579,6 +916,81 @@ def test_turn_handoff_cleanup_includes_messages_and_fails_closed(tmp_path) -> No
     assert (workspace / "messages.json").is_dir()
 
 
+def test_mailbox_consumes_only_the_snapshotted_file(tmp_path) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
+    patch = workspace / "patch.json"
+    patch.write_text("first", encoding="utf-8")
+    first_digest = hashlib.sha256(b"first").hexdigest()
+
+    patch.write_text("second", encoding="utf-8")
+    assert mailbox.remove_if_sha256("patch.json", first_digest) is False
+    assert patch.read_text(encoding="utf-8") == "second"
+
+    second_digest = hashlib.sha256(b"second").hexdigest()
+    assert mailbox.remove_if_sha256("patch.json", second_digest) is True
+    assert not patch.exists()
+
+
+def test_mailbox_consume_never_unlinks_a_concurrent_replacement(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
+    patch = workspace / "patch.json"
+    patch.write_text("snapshotted", encoding="utf-8")
+    digest = hashlib.sha256(b"snapshotted").hexdigest()
+    real_unlink = os.unlink
+    replaced = False
+
+    def replace_before_unlink(path, *args, **kwargs):
+        nonlocal replaced
+        if not replaced and str(path).startswith(".rcp-consume-"):
+            replaced = True
+            patch.write_text("newer", encoding="utf-8")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr("rcp.transport.workspace_mailbox.os.unlink", replace_before_unlink)
+
+    assert mailbox.remove_if_sha256("patch.json", digest) is True
+    assert replaced is True
+    assert patch.read_text(encoding="utf-8") == "newer"
+
+
+def test_remote_mailbox_conditionally_consumes_or_restores_snapshot(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "rcp-run.test"
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    patch = workspace / "patch.json"
+    patch.write_text("snapshotted", encoding="utf-8")
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: subprocess.run(
+            arguments,
+            capture_output=True,
+            text=True,
+            check=False,
+        ),
+    )
+
+    assert (
+        stage.remove_workspace_file_if_sha256("patch.json", hashlib.sha256(b"other").hexdigest())
+        is False
+    )
+    assert patch.read_text(encoding="utf-8") == "snapshotted"
+
+    assert (
+        stage.remove_workspace_file_if_sha256(
+            "patch.json", hashlib.sha256(b"snapshotted").hexdigest()
+        )
+        is True
+    )
+    assert not patch.exists()
+
+
 @pytest.mark.asyncio
 async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path) -> None:
     """Sign the bytes the client wrote, not the model they validate into.
@@ -601,6 +1013,12 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
     )
     assert staged.invocation_gate is not None
     seen: list[tuple[str, dict]] = []
+    patch = workspace / "patch.json"
+    patch.write_text('{"ops":[]}\n', encoding="utf-8")
+    instruction = workspace / "worker-task.md"
+    instruction.write_text("Measure the remaining uncertainty.\n", encoding="utf-8")
+    goal = workspace / "experiment-goal.md"
+    goal.write_text("Test the bounded hypothesis.\n", encoding="utf-8")
 
     def handler(request, _identity):
         seen.append((request.verb, request.arguments.model_dump(mode="json")))
@@ -609,12 +1027,37 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
     # Deliberately not alphabetical: this is the ordering that used to be refused.
     condition = json.dumps({"node_id": "hyp-3", "status_in": ["supported", "refuted"]})
     calls = [
-        ("spawn", "--seat-node", "exp/run", "--instruction", "measure it", "--key", "k-spawn"),
+        ("apply", "--key", "k-apply", str(patch)),
+        (
+            "spawn",
+            "--seat-node",
+            "exp/run",
+            "--instruction-file",
+            str(instruction),
+            "--key",
+            "k-spawn",
+        ),
         ("pause", "worker-1", "--key", "k-pause"),
         ("resume", "worker-1", "--key", "k-resume"),
         ("stop", "worker-1", "--key", "k-stop"),
         ("message", "keep going", "--recipient", "worker-1", "--key", "k-message"),
         ("watch-graph", "--condition-json", condition, "--reason", "settle it", "--key", "k-watch"),
+        (
+            "episode",
+            "--kick-off-experiment",
+            "--node",
+            "exp/run",
+            "--goal-file",
+            str(goal),
+            "--invocation-limit",
+            "3",
+            "--key",
+            "k-episode-start",
+        ),
+        ("episode", "--stop", "episode-1", "--key", "k-episode-stop"),
+        ("episode", "--resume", "episode-1", "--key", "k-episode-resume"),
+        ("inbox", "--harvest", "--key", "k-inbox-harvest"),
+        ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
     ]
 
@@ -638,17 +1081,96 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             await server
 
     assert [verb for verb, _ in seen] == [
+        "apply",
         "spawn",
         "pause",
         "resume",
         "stop",
         "message",
         "watch_graph",
+        "episode",
+        "episode",
+        "episode",
+        "inbox",
+        "inbox",
         "finish",
     ]
+    applied = next(arguments for verb, arguments in seen if verb == "apply")
+    assert applied == {"patch_file": "patch.json"}
+    spawned = next(arguments for verb, arguments in seen if verb == "spawn")
+    assert spawned == {
+        "seat_node_id": "exp/run",
+        "instruction_file": "worker-task.md",
+    }
     watched = next(arguments for verb, arguments in seen if verb == "watch_graph")
     # RCP still normalizes for its own use; only the signature stops depending on it.
     assert watched["condition"]["status_in"] == ["refuted", "supported"]
+    episode_started = next(
+        arguments
+        for verb, arguments in seen
+        if verb == "episode" and arguments["action"] == "kick_off_experiment"
+    )
+    assert episode_started == {
+        "action": "kick_off_experiment",
+        "node_id": "exp/run",
+        "goal_file": "experiment-goal.md",
+        "invocation_limit": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_brokered_client_reads_one_complete_response_larger_than_64_kib(tmp_path) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    assert staged.invocation_gate is not None
+    blockers = [
+        {
+            "kind": "lifecycle_notice",
+            "blocker_id": f"notice-{index:04d}",
+            "state": "pending",
+            "action": "inbox --harvest --key <key> or inbox --clear --key <key>",
+        }
+        for index in range(500)
+    ]
+
+    def handler(request, _identity):
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message="Every blocker is returned.",
+            result={"episode_id": "episode", "blockers": blockers},
+        )
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            code, output = await _run_client(staged, "status")
+        finally:
+            stop.set()
+            await server
+
+    response = json.loads(output)
+    assert code == 1
+    assert len(output.encode("utf-8")) > 64 * 1024
+    assert response["result"]["blockers"] == blockers
+    assert output.count("\n") == 1
     staged.cleanup()
 
 

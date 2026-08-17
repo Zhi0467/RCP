@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
 from pathlib import Path
 from threading import Event
@@ -20,7 +21,7 @@ from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.watchers import WatcherBinding
 
-from .helpers import append_fixture_patch, authorized_human, seed_patch
+from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
 from .helpers import create_named_app as create_app
 
 EXPERIMENT_ID = "exp/bounded-loop"
@@ -393,6 +394,113 @@ def test_stop_is_idempotent(manifest, tmp_path) -> None:
     assert episode_after_second.stop_settled_at == episode_after_first.stop_settled_at
     assert loop.store.watcher("finished-unclaimed") == watcher_after_first
     assert loop.loop_task_ids() == tasks_after_first
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_continuation"),
+    [("running", "resume"), ("paused", "resume"), ("failed", "retry")],
+)
+def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
+    manifest,
+    tmp_path,
+    status,
+    expected_continuation,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode(status=status)
+    stage = tmp_path / f"restart-{status}-stage"
+    stage.mkdir()
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id=f"restart-{status}-session",
+        stage_root=str(stage),
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "loop-root",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode()).hexdigest(),
+    )
+    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    assert stopping is not None and stopping.stop_settled_at is None
+    observed = Event()
+    captured: dict[str, object] = {}
+
+    async def stream(_project_id, _kind, request, execution):
+        captured.update(request=request, continuation=execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="done"))
+
+    BackgroundAgentTasks(loop.store, stream)
+
+    assert observed.wait(timeout=2)
+    recoveries = [
+        task
+        for task in loop.store.episode_tasks(loop.episode_id)
+        if task.parent_operation_id == "loop-root"
+    ]
+    assert len(recoveries) == 1
+    recovered = wait_for_task(loop.store, recoveries[0].operation_id, expect="succeeded")
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert request.session_id == f"restart-{status}-session"
+    assert captured["continuation"] == expected_continuation
+    assert recovered.stage_root == str(stage)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        settled_episode = loop.store.episode(loop.episode_id)
+        if settled_episode is not None and settled_episode.status == "stopped":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("the recovered turn did not settle the durable Stop fence")
+    assert loop.store.episode(loop.episode_id).invocations_used == 1  # type: ignore[union-attr]
+    assert "experiment_stop_recovery" in {
+        receipt.category for receipt in loop.store.agent_task_receipts(recovered.operation_id)
+    }
+
+
+def test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertain(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode(status="running")
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id="remote-stop-session",
+        stage_host="worker.example",
+        stage_root="/remote/rcp-stage",
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "loop-root",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode()).hexdigest(),
+    )
+    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    assert stopping is not None and stopping.stop_settled_at is None
+    monkeypatch.setattr(
+        "rcp.background.RemoteRunStage.directory_exists",
+        lambda _stage, _path: None,
+    )
+
+    async def stream(*_args, **_kwargs):
+        raise AssertionError("transient remote uncertainty must not launch recovery")
+        yield  # pragma: no cover
+
+    BackgroundAgentTasks(loop.store, stream)
+
+    tasks = loop.store.episode_tasks(loop.episode_id)
+    assert [task.operation_id for task in tasks] == ["loop-root"]
+    episode = loop.store.episode(loop.episode_id)
+    assert episode is not None and episode.status == "stopping"
+    assert episode.stop_settled_at is None
 
 
 def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(

@@ -78,9 +78,9 @@ These boundaries are clean seams; parallel agents rarely collide across them.
 | Transport | `src/rcp/transport/` | SSH, canonical-state workspace, repo snapshots, remote run stage |
 | Sources | `src/rcp/sources/` | Claude/Codex JSONL discovery, indexing, slicing |
 | History | `src/rcp/history/` | append-only patch log, locking, materialized outputs |
-| Run orchestration | `src/rcp/runs/` | distinct Seed/Refresh, Work, Discuss, graph repair, and paper coach workflows; policy-neutral staging and event plumbing |
-| Service/API | `src/rcp/service.py`, `src/rcp/api/app.py`, `src/rcp/projects.py`, `src/rcp/background.py` | app construction, routes, project catalog, background task lifecycle |
-| Storage | `src/rcp/storage/` | one SQLite file; `AppStore` composed from topic mixins (spaces, projects, result_views, episodes, Auto-research, experiments, watchers, agent_tasks, rows) over `base` |
+| Run orchestration | `src/rcp/runs/` | distinct Seed/Refresh, Work, Discuss, graph repair, paper coach, Auto-research, Experiment-loop, episode wrap-up/report, and membership-fence workflows; policy-neutral staging and event plumbing |
+| Service/API | `src/rcp/service.py`, `src/rcp/api/` (`app.py`, `episodes.py`, `identity.py`), `src/rcp/projects.py`, `src/rcp/background.py` | app construction, routes, project catalog, background task lifecycle |
+| Storage | `src/rcp/storage/` | one SQLite file; `AppStore` composed from topic mixins (spaces — including project membership and invitations — projects, result_views, episodes, Auto-research, experiments, watchers, agent_tasks, rows) over `base` |
 | Paper | `src/rcp/paper/` | draft store, canonical introduction, writing sessions |
 | Setup | `src/rcp/setup.py`, `src/rcp/config.py` | manifest rendering, preflight, manifest schema |
 | Providers | `src/rcp/providers.py`, `web/src/providers.ts` | the provider registry: ids, labels, auth probe, model catalog, launch command |
@@ -851,7 +851,12 @@ longer apply.
 - `pre-commit run --all-files` means all *tracked* files. A green run over a
   change that adds new files proves nothing about them, and the human's commit
   is where the hooks finally see them and fail. When a change adds files, run
-  `git add -A` first, then the hooks.
+  `git add -A` first, then the hooks. Recurred 2026-08-17 on the S123/S124 slice,
+  where a second green check hid it: `ruff check src tests` walks directories and
+  so *does* see untracked files, while the pre-commit `ruff-format` hook does not.
+  All seven files the slice added were unformatted under a clean `ruff check` and
+  a clean `--all-files` run. `ruff format --check src tests packaging` is the
+  cheap direct proof; a green `ruff check` is not evidence about formatting.
 - A copied test helper drifts into three different answers. Ten copies of the
   same "wait for the task to settle" loop disagreed about which statuses are
   terminal — `not in {"queued","running"}` treated the transient `"pausing"` as
@@ -859,7 +864,8 @@ longer apply.
   omitting `"interrupted"`, so that copy could only ever time out on an
   interrupted task. Poll through `wait_for_task`/`wait_for_task_response` in
   [helpers.py](tests/helpers.py), which read `ACTIVE_AGENT_TASK_STATUSES` from
-  [storage.py](src/rcp/storage.py) rather than restating the set (2026-08-12).
+  [storage/models.py](src/rcp/storage/models.py) rather than restating the set
+  (2026-08-12).
 - The same tight-bound mistake resurfaced: the campaign lifecycle acceptance test kept
   its own hardcoded 20s wait while the shared bound is 60s, so it failed intermittently
   in full-suite runs and passed every time in isolation. Two sessions diagnosed it as a
@@ -868,12 +874,40 @@ longer apply.
 - Test timeouts are not tuning knobs. The copies above bounded the same wait at
   2, 4, 5, 60 seconds; the loop returns the moment the task is terminal, so a
   generous bound costs nothing on success while a tight one invents failures
-  under load. Use the shared `TASK_SETTLE_TIMEOUT`.
+  under load. Use the shared `TASK_SETTLE_TIMEOUT`. Third instance found
+  2026-08-15: `test_staged_command_client.py` hardcodes `timeout_seconds=2` in
+  nine places against helpers that poll on a 10s deadline, so it fails only in
+  full-suite runs — still open.
 - `--all-files` also **rewrites files you are not working on**. A docs-only pass
   reformatted `src/rcp/api/app.py` while another session was mid-edit on it
   (2026-08-09). When the working tree holds changes that are not yours, scope the
   run — `pre-commit run --files <paths>` — and stage only your own paths, then
   `git reset` to leave the human's index as you found it.
+- A test that bypasses the middleware cannot see the middleware refuse. Every
+  project-membership test used `trusted_principal_resolver`, which skips the team
+  JSON/origin checks entirely, so a green suite said nothing about a client
+  sending a bodyless mutation — and the first invitation UI shipped without a
+  body and got `415 team_json_required` from a real server. When a route is
+  reachable through a browser session, cover it through one
+  (2026-08-15).
+- `include_router` on this FastAPI leaves an opaque `_IncludedRouter` in
+  `app.routes` instead of merging routes into it, so a flat walk finds zero
+  project-scoped routes and any test asserting over them passes vacuously.
+  Descend through `original_router` (2026-08-15).
+- **Relaxing a constraint in the create path is not a migration.** `CREATE TABLE
+  IF NOT EXISTS` never alters an existing table, so changing
+  `episode_wrapups.ending` from `NOT NULL` to nullable fixed only fresh
+  databases — every existing one kept the constraint and crashed on open with
+  `NOT NULL constraint failed`. `ON CONFLICT … DO NOTHING` did not save it
+  either: that resolves the *named uniqueness* conflict, and NOT NULL is checked
+  first, so the insert raised even though the row already existed. Rebuild the
+  table in the migration block and assert a migrated store's `PRAGMA table_info`
+  equals a fresh one's (fixed 2026-08-15).
+- `connection.executescript` issues an implicit COMMIT before it runs. The
+  schema block holds one open `BEGIN IMMEDIATE` across every migration, so an
+  `executescript` in the middle of it silently commits the half-finished
+  migration and destroys the all-or-nothing property. Use separate
+  `connection.execute` calls inside that block (2026-08-15).
 - Every test builds a fresh SQLite file, so a green suite says nothing about
   migration. New watcher columns were declared in the `CREATE TABLE IF NOT
   EXISTS` *and* indexed in the same `executescript`, which on any existing

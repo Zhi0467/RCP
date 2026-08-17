@@ -64,7 +64,7 @@ stopped.
 
 The project index groups projects by space: the personal space first, then each
 saved team connection with its name and reachability. Pending project
-invitations appear here as cards ([S101](S101-project-membership-and-invitations.md)).
+invitations appear here as cards ([S122](S122-project-invitations.md)).
 
 Opening a team project reloads the window into that server's interface. The
 project shell's header names the active space. Returning to the index reloads

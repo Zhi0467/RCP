@@ -30,7 +30,7 @@ from rcp.runs.auto_research_stream import stream_auto_research_worker_run
 from rcp.service import ProjectService, ProposalDecisionRequest
 from rcp.storage import AppStore
 
-from .helpers import fabricated_authorizer
+from .helpers import fabricated_authorizer, seated_on_every_project
 from .test_auto_research_commands import _Effects, _setup_auto_research, _spawn_request
 from .test_auto_research_stream import (
     _dispatcher,
@@ -455,6 +455,7 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
     history.project_id = "project"
     history.require_attribution = True
     history.agent_authority_resolver = lambda _project_id, _operation_id: authority
+    history.project_membership_check = seated_on_every_project
 
     raised, result = history.append(_protected_proposals(authorizer))
     assert raised.profile == "orchestrator"
@@ -512,7 +513,13 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
 def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path: Path) -> None:
     store, episode, root = _setup_auto_research(tmp_path)
     effects = _Effects(store, episode, root)
-    dispatcher = AutoResearchCommandDispatcher(store, effects.bundle())
+    dispatcher = AutoResearchCommandDispatcher(
+        store,
+        effects.bundle(),
+        command_file_reader=lambda _filename, _max_bytes: (
+            "Inspect the seated node and return the concrete result."
+        ),
+    )
 
     for index, (node_type, node_id) in enumerate(
         (("decision", "dec/route"), ("research_question", "rq/existing")), start=1
@@ -536,7 +543,9 @@ def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path
         assert response.status == "ok"
         worker = store.agent_task(str(response.result["worker_id"]))
         assert worker is not None
-        assert worker.request["control_node_id"] == node_id
+        assert worker.kind == "node_chat"
+        assert worker.request["node_id"] == node_id
+        assert worker.request["control_node_id"] is None
         assert "scope" not in worker.request
 
     state = GraphState(

@@ -101,7 +101,7 @@ _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
 
 
 ConversationMode = Literal["discuss", "work"]
-TaskTrigger = Literal["human", "experiment_run", "watcher"]
+TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher"]
 GraphPatchKind = Literal["work", "experiment_loop"]
 
 

@@ -44,7 +44,7 @@ real measured view was 657 KB. Follow that shape.
 
 ## Land these serially, first
 
-1. **The `result_views` column** in [storage.py](../../src/rcp/storage.py). The
+1. **The `result_views` column** in [storage/result_views.py](../../src/rcp/storage/result_views.py). The
    table already records `content_sha256` and `size_bytes`; add the bytes beside
    them. A new column goes in the `CREATE TABLE IF NOT EXISTS` **and** is indexed
    only in the migration block below the `_ensure_column` calls — otherwise every
@@ -60,7 +60,7 @@ Then fan out.
 
 | Agent | Files | Owns |
 |---|---|---|
-| Storage | `src/rcp/storage.py` | column, migration, persistence, expiry deleting bytes with the record |
+| Storage | `src/rcp/storage/result_views.py` | column, migration, persistence, expiry deleting bytes with the record |
 | Runs | `src/rcp/runs/result_views.py`, `src/rcp/runs/work.py` | deleting the rollback subsystem, re-pointing the revision no-op check |
 | Transport | `src/rcp/transport/run_stage.py` | removing the remote rollback/restore counterparts |
 | Service | `src/rcp/api/app.py` | serving from the store; moving the active-revision query out |
@@ -89,7 +89,7 @@ counterpart. Keep the list/read operations, which still fail closed.
 
 `_has_active_result_view_revision` is a 25-line `json_extract` query living in
 [app.py](../../src/rcp/api/app.py). It is policy, and `app.py` is composition and
-routes. Move it to a named `storage.py` method with the same behavior — extract
+routes. Move it to a named `storage/result_views.py` method with the same behavior — extract
 unchanged, then leave it alone.
 
 ## Invariants you must not break

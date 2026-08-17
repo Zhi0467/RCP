@@ -33,12 +33,17 @@ def test_episode_report_contract_is_a_mode_neutral_minimal_resume_envelope() -> 
     assert f"expected receipt SHA-256: `{digest}`" in prompt
     assert "verify that its exact bytes have the expected SHA-256" in prompt
     assert "Use only the retained native-session context and the supplied compact receipt" in prompt
-    assert "Never seek,\nrestage, rebuild, or read a graph, research rendering, transcript" in prompt
+    assert (
+        "Never seek,\nrestage, rebuild, or read a graph, research rendering, transcript" in prompt
+    )
     assert "do not infer, recreate, or\nsubstitute its contents" in prompt
     assert "exact official `episode-report` SKILL.md" in prompt
     assert "adds no mode-specific format or second visual rubric" in prompt
     assert "Write only the exact HTML output" in prompt
-    assert "Patch, watcher, command,\n  Proposal, message, repository content, canonical state" in prompt
+    assert (
+        "Patch, watcher, command,\n  Proposal, message, repository content, canonical state"
+        in prompt
+    )
     assert "external scripts, images, fonts, fetches, forms, popups, or\ndownloads" in prompt
     assert "auto-research" not in prompt.casefold()
     assert "experiment loop" not in prompt.casefold()

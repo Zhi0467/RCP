@@ -129,6 +129,7 @@ import type {
   Health,
   PaperSnapshot,
   ProjectCard,
+  ProjectInvitation,
   ProjectSnapshot,
   TrustView,
   WatcherRecord,
@@ -255,6 +256,21 @@ export function AcceptanceAgentIndicator({
       <span>Acceptance mode · no real provider calls</span>
     </aside>
   );
+}
+
+export async function projectIsStillReadable(
+  fetchJson: <T>(path: string) => Promise<T>,
+  projectId: string,
+): Promise<boolean> {
+  // The project index is already filtered to what the caller may see, so its
+  // answer covers both a deleted project and one that is no longer ours.
+  // A failure to ask is not an answer: keep the tab.
+  try {
+    const cards = await fetchJson<ProjectCard[]>("/api/projects");
+    return cards.some((card) => card.id === projectId);
+  } catch {
+    return true;
+  }
 }
 
 export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): boolean {
@@ -459,6 +475,15 @@ export default function App() {
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
+  }, []);
+  const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
+  const refreshProjectInvitations = useCallback(async () => {
+    try {
+      setProjectInvitations(await api<ProjectInvitation[]>("/api/project-invitations"));
+    } catch {
+      // Invitations are additive to the index; failing to read them must not
+      // stop the projects you already have from rendering.
+    }
   }, []);
   const {
     projectId,
@@ -890,7 +915,23 @@ export default function App() {
     (requestedProjectId: string): Promise<void> =>
       runProjectHeartbeat(requestedProjectId, async () => {
         const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-        const observedRevision = await loadCanonicalRevision(api, base);
+        let observedRevision: number;
+        try {
+          observedRevision = await loadCanonicalRevision(api, base);
+        } catch (error) {
+          if (!(error instanceof ApiError && error.status === 404)) throw error;
+          // A 404 here is ambiguous: the display cache may merely be missing,
+          // or the project may have stopped being readable — deleted, or no
+          // longer ours. The filtered index answers which.
+          if (await projectIsStillReadable(api, requestedProjectId)) return;
+          // Close the tab *and* leave the view: closing alone would strand the
+          // reader on a project they can no longer load anything from.
+          closeProjectRoute(requestedProjectId);
+          removeProject(requestedProjectId);
+          forgetProjectViewport(requestedProjectId);
+          setNotice({ kind: "error", text: "This project is no longer available." });
+          return;
+        }
         const tabIsOpen = () => isProjectTabOpen(requestedProjectId);
         if (!tabIsOpen()) return;
         if (isActiveProject(requestedProjectId)) {
@@ -925,10 +966,13 @@ export default function App() {
       }),
     [
       cacheProjectState,
+      closeProjectRoute,
+      forgetProjectViewport,
       inactiveCachedProjectState,
       isActiveProject,
       isProjectTabOpen,
       reloadAuthoritativeProject,
+      removeProject,
       runProjectHeartbeat,
     ],
   );
@@ -1190,6 +1234,7 @@ export default function App() {
       return;
     }
     if (!projectId) {
+      void refreshProjectInvitations();
       loadProjectIndex()
         .catch((error) =>
           setNotice({
@@ -1977,6 +2022,17 @@ export default function App() {
     returnToProjectIndex();
   };
 
+  const answerProjectInvitation = async (invitationId: string, response: "accept" | "decline") => {
+    // A team space refuses a bodyless mutation: JSON-only is what stops a
+    // cross-site form forging one, so even an empty body must be JSON.
+    await api(`/api/project-invitations/${encodeURIComponent(invitationId)}/${response}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await refreshProjectInvitations();
+    await loadProjectIndex();
+  };
+
   const deleteProject = async (id: string) => {
     await api(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
     removeProject(id);
@@ -2214,6 +2270,8 @@ export default function App() {
       <>
         <ProjectLanding
           projects={projects}
+          invitations={projectInvitations}
+          onAnswerInvitation={answerProjectInvitation}
           experimentLoops={experimentLoops}
           onOpen={openProject}
           onOpenExperiment={openProject}
@@ -2765,6 +2823,13 @@ export default function App() {
             <ProjectSettings
               apiBase={apiBase}
               project={project}
+              identity={actorIdentity}
+              onLeftProject={() => {
+                closeProjectRoute(project.id);
+                removeProject(project.id);
+                forgetProjectViewport(project.id);
+                setNotice({ kind: "info", text: "You left this project." });
+              }}
               usage={usage}
               onRefreshUsage={refreshUsage}
               cacheClearDisabled={Boolean(activeTask)}

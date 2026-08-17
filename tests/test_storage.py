@@ -1501,6 +1501,10 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     store.upsert_project(_project("keep-me"))
     _task(store, "delete-me", "delete-run", "failed")
     _task(store, "keep-me", "keep-run", "failed")
+    owner = store.local_owner
+    assert owner is not None
+    store.seat_project_member("delete-me", owner.user_id)
+    store.seat_project_member("keep-me", owner.user_id)
 
     for operation_id in ("delete-run", "keep-run"):
         store.record_agent_task_event(operation_id, "event")
@@ -1555,6 +1559,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     counts = store.delete_project_records("delete-me")
 
     assert counts == {
+        "project_members": 1,
         "paper_drafts": 1,
         "writing_sessions": 1,
         "chat_session_contexts": 1,
@@ -1591,6 +1596,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
             assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
     assert store.project("delete-me") is None
     assert store.project("keep-me") is not None
+    assert store.project_members("delete-me") == []
+    assert [record.project_id for record in store.project_members("keep-me")] == ["keep-me"]
 
     reopened = AppStore(store.path)
     assert reopened.project("delete-me") is None
@@ -2458,6 +2465,65 @@ def test_agent_task_result_messages_are_bounded(tmp_path) -> None:
     assert isinstance(messages, list)
     assert len(json.dumps(record.result).encode("utf-8")) < 64 * 1024
     assert all(isinstance(message, str) and len(message) <= 16_000 for message in messages)
+
+
+def test_agent_task_result_keeps_a_bounded_latest_tail_of_graph_updates(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="graph-updates",
+            project_id="project",
+            kind="node_chat",
+            status="running",
+            request={"message": "Apply the updates."},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
+    updates = [
+        {
+            "status": "applied",
+            "applied_revision": revision,
+            "change_summary": [f"update-{revision}-" + "🔬" * 1600 for _ in range(2)],
+            "proposal_ids": [f"proposal-{revision}-" + "p" * 400 for _ in range(8)],
+            "validation_messages": ["🔬" * 1600 for _ in range(2)],
+            "correction_rounds": 0,
+            "repairable": False,
+        }
+        for revision in range(100)
+    ]
+    latest = {
+        "status": "applied",
+        "applied_revision": 101,
+        "change_summary": ["Applied the final end-of-turn Patch."],
+        "proposal_ids": [],
+        "validation_messages": [],
+        "correction_rounds": 0,
+        "repairable": False,
+    }
+
+    store.complete_agent_task(
+        "graph-updates",
+        applied_revision=101,
+        result={"messages": [], "graph_update": latest, "graph_updates": updates},
+    )
+
+    record = store.agent_task("graph-updates")
+    assert record is not None
+    assert record.applied_revision == 101
+    assert record.result is not None
+    assert record.result["graph_update"] == latest
+    retained = record.result["graph_updates"]
+    assert isinstance(retained, list)
+    revisions = [update["applied_revision"] for update in retained]
+    assert revisions == list(range(100 - len(revisions), 100))
+    assert 0 < len(revisions) <= 32
+    assert (
+        len(json.dumps(record.result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        < 64 * 1024
+    )
 
 
 def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_path) -> None:

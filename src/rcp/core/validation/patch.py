@@ -432,10 +432,14 @@ def _validate_identity_shape(ctx: OpContext) -> None:
             "Identity patches cannot carry coverage cursors.",
             ctx.revision,
         )
-    if patch.source_operation_id is not None:
+    if (
+        patch.source_operation_id is not None
+        or patch.source_effect_id is not None
+        or patch.source_effect_sha256 is not None
+    ):
         ctx.report.reject(
             "identity-has-operation-id",
-            "Identity patches cannot carry an operation id.",
+            "Identity patches cannot carry an operation or effect id.",
             ctx.revision,
         )
     if patch.human_action is not None:
@@ -468,6 +472,20 @@ def _validate_attribution_shape(ctx: OpContext) -> None:
     patch = ctx.patch
     if patch.kind == "identity":
         return
+    if (patch.source_effect_id is None) != (patch.source_effect_sha256 is None):
+        ctx.report.reject(
+            "invalid-source-effect",
+            "A source effect id and its exact Patch digest must be present together.",
+            ctx.revision,
+        )
+    if patch.source_effect_id is not None and (
+        patch.author != "agent" or not patch.source_operation_id
+    ):
+        ctx.report.reject(
+            "invalid-source-effect",
+            "A source effect id requires one direct agent task source operation.",
+            ctx.revision,
+        )
     has_attribution = (
         patch.authorized_by is not None or patch.profile is not None or patch.task_id is not None
     )

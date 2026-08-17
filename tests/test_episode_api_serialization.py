@@ -207,20 +207,26 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
 
 
 def test_episode_route_bodies_are_strict_and_normalize_only_text() -> None:
-    assert StartEpisodeBody.model_validate(
-        {
-            "mode": "auto_research",
-            "invocation_ceiling": 1,
-            "starting_instruction": "  Investigate this.  ",
-        }
-    ).starting_instruction == "Investigate this."
-    assert StartEpisodeBody.model_validate(
-        {
-            "mode": "auto_research",
-            "invocation_ceiling": 1,
-            "starting_instruction": "   ",
-        }
-    ).starting_instruction is None
+    assert (
+        StartEpisodeBody.model_validate(
+            {
+                "mode": "auto_research",
+                "invocation_ceiling": 1,
+                "starting_instruction": "  Investigate this.  ",
+            }
+        ).starting_instruction
+        == "Investigate this."
+    )
+    assert (
+        StartEpisodeBody.model_validate(
+            {
+                "mode": "auto_research",
+                "invocation_ceiling": 1,
+                "starting_instruction": "   ",
+            }
+        ).starting_instruction
+        is None
+    )
     assert EpisodeMessageBody.model_validate({"body": "  Status?  "}).body == "Status?"
     assert ReauthorizeEpisodeBody.model_validate({"invocation_ceiling": 1}).invocation_ceiling == 1
 

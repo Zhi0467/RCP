@@ -30,7 +30,7 @@ from rcp.storage import (
     EpisodeRecord,
     ProjectRecord,
 )
-from tests.helpers import seed_patch
+from tests.helpers import seated_on_every_project, seed_patch
 
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
@@ -419,7 +419,7 @@ def test_incomplete_contract_scope_refuses_dispatch_and_apply(
         dispatch_authority=authority,
     )
     with pytest.raises(ValueError, match=message):
-        require_apply(task, seed_patch())
+        require_apply(task, seed_patch(), is_project_member=seated_on_every_project)
 
 
 def test_refused_dispatch_creates_no_task_and_never_enters_stream(tmp_path: Path) -> None:
@@ -852,6 +852,7 @@ def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
         manifest,
         project_id="project-one",
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=store.agent_task_authority,
     )
     patch = seed_patch().model_copy(
@@ -888,6 +889,7 @@ def test_valid_work_apply_stamps_canonical_task_and_replay_needs_no_task_rows(
         manifest,
         project_id="project-one",
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=store.agent_task_authority,
     )
     patch = seed_patch().model_copy(
@@ -911,6 +913,7 @@ def test_valid_work_apply_stamps_canonical_task_and_replay_needs_no_task_rows(
         manifest,
         project_id="project-one",
         require_attribution=True,
+        project_membership_check=seated_on_every_project,
         agent_authority_resolver=resolver_must_not_run,
     )
     assert replay.state().revision == 1

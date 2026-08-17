@@ -731,6 +731,61 @@ finally:
                 result.stderr.strip() or f"could not remove remote {self.workspace / name}"
             )
 
+    def remove_workspace_file_if_sha256(self, name: str, expected_sha256: str) -> bool:
+        """Delete one direct regular file only while its bytes still match a snapshot."""
+
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        name = _plain_workspace_file_name(name)
+        if len(expected_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_sha256
+        ):
+            raise ValueError("expected workspace digest must be lowercase SHA-256")
+        script = """
+import hashlib,os,stat,sys,uuid
+root,name,expected=sys.argv[1],sys.argv[2],sys.argv[3]
+directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]; quarantine='.rcp-consume-'+uuid.uuid4().hex+'-'+name; quarantined=False
+def restore():
+    global quarantined
+    if not quarantined: return
+    try:
+        os.link(quarantine,name,src_dir_fd=workspace_fd,dst_dir_fd=workspace_fd,follow_symlinks=False)
+    except FileExistsError:
+        os.fsync(workspace_fd); return
+    os.unlink(quarantine,dir_fd=workspace_fd); os.fsync(workspace_fd); quarantined=False
+try:
+    root_fd=os.open(root,directory_flags); fds.append(root_fd)
+    workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
+    try: before=os.stat(name,dir_fd=workspace_fd,follow_symlinks=False)
+    except FileNotFoundError: raise SystemExit(45)
+    if not stat.S_ISREG(before.st_mode): raise SystemExit(46)
+    os.rename(name,quarantine,src_dir_fd=workspace_fd,dst_dir_fd=workspace_fd); quarantined=True
+    file_fd=os.open(quarantine,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0),dir_fd=workspace_fd)
+    fds.append(file_fd); digest=hashlib.sha256()
+    while True:
+        chunk=os.read(file_fd,1024*1024)
+        if not chunk: break
+        digest.update(chunk)
+    if digest.hexdigest()!=expected:
+        restore(); raise SystemExit(47)
+    os.unlink(quarantine,dir_fd=workspace_fd); quarantined=False; os.fsync(workspace_fd)
+finally:
+    if quarantined:
+        try: restore()
+        except OSError: pass
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh(["python3", "-c", script, str(self.root), name, expected_sha256])
+        if result.returncode == 0:
+            return True
+        if result.returncode in {45, 47}:
+            return False
+        raise StateUnavailable(
+            result.stderr.strip()
+            or f"could not conditionally remove remote {self.workspace / name}"
+        )
+
     def prepare_artifact_directory(self, scope_id: str, *, reuse: bool) -> PurePosixPath:
         """Create the exact output directory for one logical chat turn."""
         if self.root is None:

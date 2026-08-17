@@ -189,12 +189,8 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
             (created_at,),
         )
         connection.execute("ALTER TABLE graph_runs RENAME COLUMN episode_id TO campaign_id")
-        connection.execute(
-            "ALTER TABLE graph_run_events RENAME COLUMN episode_id TO campaign_id"
-        )
-        connection.execute(
-            "ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id"
-        )
+        connection.execute("ALTER TABLE graph_run_events RENAME COLUMN episode_id TO campaign_id")
+        connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
 
     migrated = AppStore(path)
     task = migrated.agent_task("auto-origin")
@@ -214,9 +210,12 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
     assert migrated.watcher("notification-watcher").episode_id == "auto-episode"
     assert migrated.watcher("origin-watcher").origin_task_kind == "auto_research"
     with migrated.connection() as connection:
-        assert connection.execute(
-            "SELECT task_kind FROM agent_usage WHERE usage_id = 'usage'"
-        ).fetchone()[0] == "auto_research"
+        assert (
+            connection.execute(
+                "SELECT task_kind FROM agent_usage WHERE usage_id = 'usage'"
+            ).fetchone()[0]
+            == "auto_research"
+        )
         for table, legacy_column in (
             ("graph_runs", "campaign_id"),
             ("graph_run_events", "campaign_id"),

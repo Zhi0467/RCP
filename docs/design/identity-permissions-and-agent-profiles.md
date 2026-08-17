@@ -1,7 +1,14 @@
 # Identity, permissions, and agent profiles
 
 **State:** confirmed working design from the 2026-08-08 and 2026-08-09 grilling
-sessions; pre-blueprint and pre-implementation.
+sessions. The protected-type rule and the two permission gates are implemented
+([`core/authority.py`](../../src/rcp/core/authority.py), driven by
+[S115](../acceptance/S115-beliefs-change-only-through-you.md) and
+[S100](../acceptance/S100-permission-is-checked-twice.md)) and canonical in the
+blueprint under
+[Permission is checked twice](../research-control-panel-blueprint.md#permission-is-checked-twice).
+Everything that depends on project membership is not. This document remains the
+fuller specification, including the action lists themselves.
 
 This module defines who authorizes work, which permission-bearing agent roles
 exist, and when RCP checks authority. Deployment and durable project ownership
@@ -532,30 +539,39 @@ acceptance passes. Those passes still need to specify:
 
 - the target and scope grammar, and the three open items left by the
   [action vocabulary](#action-vocabulary) pass;
-- the exact Proposal operation shapes for every permitted modification of an
-  existing ResearchQuestion or Hypothesis;
-- whether ordinary and orchestrator profiles are fixed, editable, or versioned;
-- the campaign, parent-task, and worker extension to the now-settled base Patch
-  attribution fields, plus the final immutable receipt schema;
-- the permission UI and campaign HTML report lifecycle; and
-- how future human or peer-agent messaging consumes budget and authorization.
+- the permission UI: how a denial and its provenance are shown, which is
+  boundary 10 below and the one part of this module nothing has built — proposed
+  as [S121](../acceptance/S121-a-refusal-explains-itself.md); and
+- how future human or peer-agent messaging consumes budget and authorization,
+  which is [Q9](../open-questions.md) rather than a detail of this module.
+
+Settled since this list was written, and no longer open here: the Proposal
+operation shapes for modifying an existing ResearchQuestion or Hypothesis, and
+the ruling that both profiles are constants in code, are in the
+[action vocabulary](#action-vocabulary) above and implemented. Episode lineage on
+the Patch envelope is decided and implemented as the single nullable
+`episode_id` under [S113](../acceptance/S113-campaign-attribution.md) — parent
+task and worker role stay in operational storage. The episode HTML report
+lifecycle is decided and implemented under
+[S120](../acceptance/S120-episodes-wrap-up-with-a-visual-report.md).
 
 These details remain with this module rather than as separate entries in the
 repository-wide open-question list.
 
-## Acceptance boundaries before implementation
+## Acceptance boundaries
 
-At minimum, separate human-confirmed scenarios must prove:
+At minimum, separate human-confirmed scenarios must prove these. Eight are
+proven; two are not, and each of those waits on machinery that does not exist.
 
-1. Unauthorized execution never starts.
-2. A now-unauthorized semantic change never applies.
-3. Completed operational effects are not described as retracted.
-4. Replay succeeds without identity or permission data.
-5. Ordinary and orchestrator profiles stay distinct.
-6. Every agent-produced Proposal waits for a human, and no agent approves one.
-7. Spawned workers use ordinary authority and retain their human/task lineage.
-8. A space member without project membership cannot read, dispatch, or Apply in
-   that project.
-9. Attribution written into canonical history stays truthful after the project
-   moves to another space.
-10. Denials and provenance are visible through a truthful UI.
+| | Boundary | Proven by |
+|---|---|---|
+| 1 | Unauthorized execution never starts. | [S100](../acceptance/S100-permission-is-checked-twice.md) |
+| 2 | A now-unauthorized semantic change never applies. | S100 |
+| 3 | Completed operational effects are not described as retracted. | S100 |
+| 4 | Replay succeeds without identity or permission data. | S100, [S113](../acceptance/S113-campaign-attribution.md) |
+| 5 | Ordinary and orchestrator profiles stay distinct. | [S77](../acceptance/S77-auto-research-stops-at-belief.md), [S78](../acceptance/S78-one-budget-one-stop.md) |
+| 6 | Every agent-produced Proposal waits for a human, and no agent approves one. | [S115](../acceptance/S115-beliefs-change-only-through-you.md), S77 |
+| 7 | Spawned workers use ordinary authority and retain their human/task lineage. | S113, S78 |
+| 8 | A space member without project membership cannot read, dispatch, or Apply in that project. | [S101](../acceptance/S101-project-membership.md) |
+| 9 | Attribution written into canonical history stays truthful after the project moves to another space. | **not proven** — needs transfer ([S98](../acceptance/S98-move-a-project-into-a-team-space.md)) |
+| 10 | Denials and provenance are visible through a truthful UI. | **not proven** — [S121](../acceptance/S121-a-refusal-explains-itself.md) confirmed 2026-08-15, not yet built |

@@ -80,14 +80,18 @@ def _wait_for_task_stage(store, operation_id: str, *, timeout: float = 10) -> Pa
     raise AssertionError(f"acceptance task did not persist its stage: {operation_id}")
 
 
-def _wait_for_role_task(store, episode_id: str, role: str, *, timeout: float = 10):
+def _wait_for_child_work(store, episode_id: str, *, timeout: float = 10):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        for task in store.auto_research_tasks(episode_id):
-            if store.auto_research_invocation_role(task.operation_id) == role:
-                return task
+        routes = store.auto_research_child_works(episode_id)
+        if routes:
+            assert len(routes) == 1
+            route = routes[0]
+            task = store.agent_task(route.current_operation_id)
+            if task is not None:
+                return route, task
         time.sleep(0.01)
-    raise AssertionError(f"acceptance episode did not admit its {role} task")
+    raise AssertionError("acceptance episode did not admit its ordinary child Work task")
 
 
 def _add_worker_seat(app, *, node_id: str, title: str, objective: str) -> None:
@@ -221,7 +225,17 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     tasks = store.auto_research_tasks(episode_id)
     roles = [store.auto_research_invocation_role(task.operation_id) for task in tasks]
     assert roles.count("orchestrator") == 2
-    assert roles.count("worker") == 1
+    assert roles.count("worker") == 0
+    child_routes = store.auto_research_child_works(episode_id)
+    assert len(child_routes) == 1
+    child = store.agent_task(child_routes[0].current_operation_id)
+    assert child is not None and child.kind == "node_chat" and child.status == "succeeded"
+    assert child.parent_operation_id is None
+    assert [item.operation_id for item in store.episode_invocations(episode_id)] == [
+        tasks[0].operation_id,
+        child.operation_id,
+        tasks[1].operation_id,
+    ]
     root = next(task for task in tasks if task.parent_operation_id is None)
     report_task = _assert_corrected_report(store, episode_id)
     assert report_task.native_session_id == root.native_session_id
@@ -265,7 +279,7 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
         root_stage = _wait_for_task_stage(store, root_operation_id)
         active_path = root_stage / ACCEPTANCE_EPISODE_INTERRUPT_ACTIVE_FILE
         _wait_for_path(active_path)
-        worker = _wait_for_role_task(store, episode_id, "worker")
+        worker_route, worker = _wait_for_child_work(store, episode_id)
         wait_for_task(store, worker.operation_id, expect="succeeded")
         root_before_restart = store.agent_task(root_operation_id)
         assert root_before_restart is not None
@@ -302,7 +316,12 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     tasks = restarted_store.auto_research_tasks(episode_id)
     roles = [restarted_store.auto_research_invocation_role(task.operation_id) for task in tasks]
     assert roles.count("orchestrator") == 2
-    assert roles.count("worker") == 1
+    assert roles.count("worker") == 0
+    child_routes = restarted_store.auto_research_child_works(episode_id)
+    assert len(child_routes) == 1
+    assert child_routes[0].worker_id == worker_route.worker_id
+    assert child_routes[0].root_operation_id == worker.operation_id
+    assert child_routes[0].current_operation_id == worker.operation_id
     budget = episode["budget"]
     assert isinstance(budget, dict)
     assert budget["invocations_used"] == 2
@@ -320,6 +339,10 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     spawn = restarted_store.agent_command_by_key(episode_id, "acceptance-interrupt-spawn")
     assert spawn is not None and spawn.status == "ok"
     assert spawn.operation_id == root_operation_id
+    assert spawn.exit_payload is not None
+    spawn_result = spawn.exit_payload.get("result")
+    assert isinstance(spawn_result, dict)
+    assert spawn_result["worker_id"] == worker_route.worker_id
     spawn_events = [
         event
         for event in restarted_store.agent_task_events(root_operation_id)
@@ -582,7 +605,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
         root_release_path = root_stage / ".rcp-acceptance-campaign-failure-release"
         _wait_for_path(root_active_path)
 
-        worker = _wait_for_role_task(store, episode_id, "worker")
+        worker_route, worker = _wait_for_child_work(store, episode_id)
         worker_stage = _wait_for_task_stage(store, worker.operation_id)
         worker_active_path = worker_stage / ".rcp-acceptance-campaign-worker-active"
         worker_release_path = worker_stage / ".rcp-acceptance-campaign-worker-release"
@@ -636,7 +659,15 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
                 ending="failed",
                 report_ready=False,
             )
-            assert wrapping["wrapup_state"] == "not_started"
+            assert wrapping["wrapup_state"] in {"not_started", "pending"}
+            pending_reports = [
+                task
+                for task in store.episode_tasks(episode_id, include_hidden=True)
+                if task.kind == "episode_report"
+            ]
+            assert len(pending_reports) <= 1
+            assert all(task.status == "queued" for task in pending_reports)
+            assert store.episode_report_attempts(episode_id) == []
             current_worker = store.agent_task(worker.operation_id)
             assert current_worker is not None and current_worker.status == "running"
             stopped_watcher = store.watcher(watcher.watcher_id)
@@ -704,7 +735,11 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
     tasks = store.auto_research_tasks(episode_id)
     roles = [store.auto_research_invocation_role(task.operation_id) for task in tasks]
     assert roles.count("orchestrator") == 1
-    assert roles.count("worker") == 1
+    assert roles.count("worker") == 0
+    child_routes = store.auto_research_child_works(episode_id)
+    assert child_routes == [worker_route]
+    settled_worker = store.agent_task(worker_route.current_operation_id)
+    assert settled_worker is not None and settled_worker.status == "succeeded"
     root = store.agent_task(root_operation_id)
     assert root is not None and root.status == "failed"
     report_task = _assert_corrected_report(store, episode_id)

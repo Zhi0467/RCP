@@ -1,19 +1,31 @@
 # Team authentication and membership
 
-**Status:** Confirmed working design; pre-blueprint and pre-implementation.
+**Status:** Confirmed working design, and now implemented. Both halves are
+canonical in the blueprint — authentication and enrollment under
+[Team space enrollment and sessions](../research-control-panel-blueprint.md#team-space-enrollment-and-sessions),
+and project membership in the same section. This document remains the fuller
+specification behind them.
 
-**Current UI seam (2026-08-12):** The project index now reserves the approved
-upper-right identity-panel placement for **Join team space**, **Accept
-invitation**, and **Invite member**. Until S96 and S101 are confirmed and this
-design is implemented end to end, those controls remain visibly unavailable.
-They do not collect SSH coordinates or codes, issue or persist tokens, create
-invitations, establish sessions, or mutate membership. This seam must be
-replaced by the secure path below; it is not a fallback authentication path.
+**What is built (2026-08-15):** `rcp space init --team`, the single-use
+bootstrap claim, member-created invitations, permanent `rcp_`-prefixed tokens,
+the `/api/team/*` exchange, logout, rotate and revoke routes, and the browser
+login boundary that gates a team space
+([S96](../acceptance/S96-joining-a-team-space.md)). Also project membership
+itself ([S101](../acceptance/S101-project-membership.md)) — seated on creation,
+enforced on every project-scoped route and again at Apply — and how it changes
+([S122](../acceptance/S122-project-invitations.md)): project invitations
+carrying no credential, accept and decline on the project index, leaving from
+Project Settings, the last-member refusal, and the Stop-style fence on losing
+membership.
 
-This document records the settled authentication, enrollment, and membership
-model for the first self-hosted team-space release. It is an internal design
-input. Before implementation, the canonical blueprint must be updated in place
-and the user-visible promises below must become confirmed acceptance scenarios.
+**What is not built:** the desktop **Add team space** form, SSH transport,
+operating-system credential storage, and removing *another* person, which is a
+console operation
+([S103](../acceptance/S103-server-operations-are-console-operations.md)).
+A *personal* space still shows the reserved **Join team space**,
+**Accept invitation**, and **Invite member** seam as visibly disabled: a personal
+space cannot reach a team space from inside this build. That seam is not a
+fallback authentication path.
 
 The durable deployment and authority boundary is specified in
 [Spaces and project homes](spaces-and-project-homes.md).

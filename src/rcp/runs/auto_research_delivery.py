@@ -6,10 +6,14 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import WatchGraphArguments
 from rcp.core.models import AuthorizedHuman, GraphState
+from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
+from rcp.runs.auto_research_lifecycle import auto_research_lifecycle_delivery
+from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
 from rcp.storage import (
     AppStore,
     AutoResearchActorBusy,
+    AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
     AutoResearchMessageRole,
     EpisodeInvocationCeilingReached,
@@ -83,6 +87,20 @@ def pending_auto_research_mail_recipients(
             if message.delivered_at is None
         }
         for recipient_task_id in sorted(recipient_ids):
+            pending = store.pending_auto_research_messages(
+                current_episode_id,
+                recipient_task_id,
+            )
+            if not _standalone_mail_prefix(store, pending):
+                continue
+            child = store.auto_research_child_work(recipient_task_id)
+            if child is not None:
+                if child.episode_id != current_episode_id:
+                    raise ValueError("auto_research mail recipient is outside the auto_research")
+                if child.worker_id != recipient_task_id:
+                    raise ValueError("ordinary child Work mail lost its stable worker identity")
+                recipients.add((current_episode_id, child.worker_id))
+                continue
             binding = store.auto_research_actor_binding(recipient_task_id)
             if binding.episode_id != current_episode_id:
                 raise ValueError("auto_research mail recipient is outside the auto_research")
@@ -99,7 +117,12 @@ def reconcile_pending_auto_research_mail(
 ) -> list[str]:
     """Retry the existing paid mail wake once for every pending canonical actor."""
 
-    started: list[str] = []
+    started = _reconcile_committed_auto_research_wakes(
+        background,
+        episode_id=episode_id,
+        wake_causes={"message"},
+        include_child_work=True,
+    )
     for current_episode_id, recipient_task_id in pending_auto_research_mail_recipients(
         background.store,
         episode_id=episode_id,
@@ -109,9 +132,261 @@ def reconcile_pending_auto_research_mail(
             episode_id=current_episode_id,
             recipient_task_id=recipient_task_id,
         )
-        if operation_id is not None:
+        if operation_id is not None and operation_id not in started:
             started.append(operation_id)
     return started
+
+
+def pending_auto_research_lifecycle_episodes(
+    store: AppStore,
+    *,
+    episode_id: str | None = None,
+) -> list[str]:
+    """Enumerate Auto-research parents with an undelivered lifecycle prefix."""
+
+    if episode_id is not None:
+        episodes = [store.episode(episode_id)]
+    else:
+        episodes = [
+            episode
+            for project in store.projects()
+            for episode in store.episodes(project.project_id)
+            if episode.mode == "auto_research"
+        ]
+    return sorted(
+        episode.episode_id
+        for episode in episodes
+        if episode is not None
+        and episode.mode == "auto_research"
+        and store.pending_auto_research_lifecycle_notices(
+            episode.episode_id,
+            limit=1,
+        )
+    )
+
+
+def reconcile_pending_auto_research_lifecycle(
+    background: BackgroundAgentTasks,
+    *,
+    episode_id: str | None = None,
+) -> list[str]:
+    """Retry committed watcher/lifecycle wakes, then claim pending lifecycle facts.
+
+    Call this before ordinary mail reconciliation so pending root mail can share
+    the same paid wake without being reclassified as lifecycle input.
+    """
+
+    started = _reconcile_committed_auto_research_wakes(
+        background,
+        episode_id=episode_id,
+        wake_causes={"watcher", "graph_condition", "lifecycle"},
+        include_child_work=False,
+    )
+    for current_episode_id in pending_auto_research_lifecycle_episodes(
+        background.store,
+        episode_id=episode_id,
+    ):
+        operation_id = deliver_pending_auto_research_lifecycle(
+            background,
+            episode_id=current_episode_id,
+        )
+        if operation_id is not None and operation_id not in started:
+            started.append(operation_id)
+    return started
+
+
+def _reconcile_committed_auto_research_wakes(
+    background: BackgroundAgentTasks,
+    *,
+    episode_id: str | None,
+    wake_causes: set[str],
+    include_child_work: bool,
+) -> list[str]:
+    """Dispatch already-paid queued wakes without reclaiming inputs or budget."""
+
+    store = background.store
+    proven_started = background.reconcile_committed_auto_research_dispatches()
+    if episode_id is not None:
+        episode_ids = [episode_id]
+    else:
+        episode_ids = sorted(
+            episode.episode_id
+            for project in store.projects()
+            for episode in store.episodes(project.project_id)
+            if episode.mode == "auto_research"
+        )
+    started: list[str] = []
+    for operation_id in proven_started:
+        task = store.agent_task(operation_id)
+        if task is None:
+            continue
+        if task.kind == "auto_research":
+            request = AutoResearchRunRequest.model_validate(task.request)
+            if request.wake_cause in wake_causes:
+                started.append(operation_id)
+        elif include_child_work and any(
+            message.delivery_operation_id == operation_id
+            for message in store.auto_research_messages(task.episode_id or "")
+        ):
+            started.append(operation_id)
+    for current_episode_id in episode_ids:
+        episode = store.episode(current_episode_id)
+        if episode is None or episode.mode != "auto_research":
+            continue
+        for task in store.auto_research_tasks(current_episode_id):
+            if task.status != "queued":
+                continue
+            request = AutoResearchRunRequest.model_validate(task.request)
+            if request.wake_cause not in wake_causes:
+                continue
+            background.ensure_auto_research_wake_spawned(
+                current_episode_id,
+                operation_id=task.operation_id,
+            )
+            started.append(task.operation_id)
+        if not include_child_work:
+            continue
+        delivered_operation_ids = {
+            message.delivery_operation_id
+            for message in store.auto_research_messages(current_episode_id)
+            if message.delivery_operation_id is not None
+        }
+        for route in store.auto_research_child_works(current_episode_id):
+            if route.current_operation_id not in delivered_operation_ids:
+                continue
+            task = store.agent_task(route.current_operation_id)
+            if task is None or task.status != "queued":
+                continue
+            background.ensure_auto_research_child_work_spawned(
+                current_episode_id,
+                route.worker_id,
+                operation_id=task.operation_id,
+                continuation="message_wake",
+            )
+            started.append(task.operation_id)
+    return list(dict.fromkeys(started))
+
+
+def deliver_pending_auto_research_lifecycle(
+    background: BackgroundAgentTasks,
+    *,
+    episode_id: str,
+) -> str | None:
+    """Atomically claim lifecycle facts and pending root mail into one B wake.
+
+    Lifecycle delivery is root-only. A busy or not-yet-checkpointed root, a
+    stopped parent, or an exhausted B allowance leaves both inputs unchanged.
+    """
+
+    store = background.store
+    episode = store.episode(episode_id)
+    if episode is None or episode.mode != "auto_research":
+        raise KeyError(episode_id)
+    root_operation_id = episode.root_operation_id
+    if root_operation_id is None:
+        return None
+    notices = store.pending_auto_research_lifecycle_notices(
+        episode_id,
+        limit=AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
+    )
+    if not notices:
+        return None
+    binding = store.auto_research_actor_binding(root_operation_id)
+    if (
+        binding.episode_id != episode_id
+        or binding.actor_operation_id != root_operation_id
+        or binding.role != "orchestrator"
+        or binding.control_node_id is not None
+    ):
+        raise ValueError("Auto-research lifecycle recipient is not the root orchestrator")
+    if not binding.native_session_id or not binding.stage_root:
+        return None
+    current = store.agent_task(binding.current_operation_id)
+    if current is None:
+        return None
+    pending_mail = background.pending_auto_research_mail(
+        episode_id=episode_id,
+        recipient_task_id=root_operation_id,
+    )
+    request = AutoResearchRunRequest.model_validate(current.request).model_copy(
+        update={
+            "actor_operation_id": root_operation_id,
+            "role": "orchestrator",
+            "control_node_id": None,
+            "session_id": binding.native_session_id,
+            "instruction": None,
+            "wake_cause": "lifecycle",
+            "watcher_ids": [],
+        }
+    )
+
+    def admit(record, role, cause):
+        if role != "orchestrator" or cause != "lifecycle":
+            raise ValueError("Lifecycle wake admission changed its root-only policy")
+        selected_notices = _lifecycle_claim_prefix(
+            episode_id=episode_id,
+            recipient_task_id=root_operation_id,
+            delivery_operation_id=record.operation_id,
+            delivered_at=record.created_at,
+            notices=notices,
+        )
+        if not selected_notices:
+            return None
+        selected_mail = auto_research_mail_claim_prefix(
+            episode_id=episode_id,
+            recipient_task_id=root_operation_id,
+            delivery_operation_id=record.operation_id,
+            delivered_at=record.created_at,
+            messages=pending_mail.messages,
+        )
+        return store.create_auto_research_lifecycle_wake_task(
+            record,
+            lifecycle_notice_ids=[notice.notice_id for notice in selected_notices],
+            message_ids=[message.message_id for message in selected_mail],
+        )
+
+    try:
+        task = background.start_auto_research_turn(
+            episode_id,
+            request,
+            parent_operation_id=binding.current_operation_id,
+            wake_admission=admit,
+        )
+    except (AutoResearchActorBusy, EpisodeInvocationCeilingReached, EpisodeNotRunning):
+        return None
+    return task.operation_id if task is not None else None
+
+
+def _lifecycle_claim_prefix(
+    *,
+    episode_id: str,
+    recipient_task_id: str,
+    delivery_operation_id: str,
+    delivered_at: str,
+    notices: list[AutoResearchLifecycleNoticeRecord],
+) -> list[AutoResearchLifecycleNoticeRecord]:
+    """Select the largest deterministic prefix accepted by the wire schema."""
+
+    selected: list[AutoResearchLifecycleNoticeRecord] = []
+    for notice in notices:
+        claimed = notice.model_copy(
+            update={
+                "state": "delivered",
+                "delivered_at": delivered_at,
+                "delivery_operation_id": delivery_operation_id,
+            }
+        )
+        try:
+            auto_research_lifecycle_delivery(
+                episode_id=episode_id,
+                recipient_task_id=recipient_task_id,
+                delivery_operation_id=delivery_operation_id,
+                notices=[*selected, claimed],
+            )
+        except ValueError:
+            break
+        selected.append(claimed)
+    return selected
 
 
 def deliver_pending_auto_research_mail(
@@ -130,8 +405,36 @@ def deliver_pending_auto_research_mail(
         episode_id=episode_id,
         recipient_task_id=recipient_task_id,
     )
-    if not delivery.messages:
+    eligible_messages = _standalone_mail_prefix(background.store, delivery.messages)
+    if not eligible_messages:
         return None
+    delivery = delivery.model_copy(update={"messages": eligible_messages})
+    child = background.store.auto_research_child_work(recipient_task_id)
+    if child is not None:
+        if child.episode_id != episode_id or child.worker_id != recipient_task_id:
+            raise ValueError("ordinary child Work mail recipient is outside the auto_research")
+        operation_id = str(uuid.uuid4())
+        created_at = background.store.now()
+        selected_messages = auto_research_mail_claim_prefix(
+            episode_id=episode_id,
+            recipient_task_id=child.worker_id,
+            delivery_operation_id=operation_id,
+            delivered_at=created_at,
+            messages=delivery.messages,
+        )
+        if not selected_messages:
+            return None
+        try:
+            task = background.start_auto_research_child_work_message_wake(
+                episode_id,
+                child.worker_id,
+                [message.message_id for message in selected_messages],
+                operation_id=operation_id,
+                created_at=created_at,
+            )
+        except (EpisodeInvocationCeilingReached, EpisodeNotRunning):
+            return None
+        return task.operation_id if task is not None else None
     binding = background.store.auto_research_actor_binding(recipient_task_id)
     if binding.episode_id != episode_id:
         raise ValueError("auto_research mail recipient is outside the auto_research")
@@ -161,6 +464,23 @@ def deliver_pending_auto_research_mail(
     except (AutoResearchActorBusy, EpisodeInvocationCeilingReached, EpisodeNotRunning):
         return None
     return task.operation_id if task is not None else None
+
+
+def _standalone_mail_prefix(
+    store: AppStore,
+    messages: list[AutoResearchMessageRecord],
+) -> list[AutoResearchMessageRecord]:
+    """Hold a child reply until its exact attempt settles and emits lifecycle."""
+
+    selected: list[AutoResearchMessageRecord] = []
+    for message in messages:
+        if message.sender_role == "worker" and message.sender_task_id is not None:
+            child = store.auto_research_child_work_for_operation(message.sender_task_id)
+            sender = store.agent_task(message.sender_task_id) if child is not None else None
+            if sender is not None and sender.status in {"queued", "running", "pausing"}:
+                break
+        selected.append(message)
+    return selected
 
 
 def arm_auto_research_graph_condition(
