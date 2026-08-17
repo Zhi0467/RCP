@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +29,40 @@ from rcp.storage import (
     EpisodeRecord,
     ProjectRecord,
 )
+from rcp.storage.auto_research_children import (
+    AutoResearchInboxHarvestTooLarge,
+    AutoResearchInboxNoticeUnacknowledgeable,
+)
+
+
+def _insert_unbounded_legacy_lifecycle_notice(
+    store: AppStore,
+    record: AutoResearchLifecycleNoticeRecord,
+) -> AutoResearchLifecycleNoticeRecord:
+    """Simulate a notice persisted before per-command response bounds existed."""
+
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO auto_research_lifecycle_notices (
+                notice_id, episode_id, source_kind, source_id, source_event,
+                source_attempt, state, payload_json, created_at, delivered_at,
+                delivery_operation_id, acknowledged_at, acknowledged_by
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL)
+            """,
+            (
+                record.notice_id,
+                record.episode_id,
+                record.source_kind,
+                record.source_id,
+                record.source_event,
+                record.source_attempt,
+                json.dumps(record.payload, sort_keys=True, separators=(",", ":")),
+                record.created_at,
+            ),
+        )
+    return record
 
 
 def _identity(store: AppStore) -> AuthorizedHuman:
@@ -1172,7 +1207,8 @@ def test_keyed_inbox_bounds_the_exact_prefix_before_acknowledging_it(tmp_path) -
             created_at=store.now(),
         )
     )
-    oversized = store.record_auto_research_lifecycle_notice(
+    oversized = _insert_unbounded_legacy_lifecycle_notice(
+        store,
         AutoResearchLifecycleNoticeRecord(
             notice_id="notice-oversized",
             episode_id=parent.episode_id,
@@ -1181,7 +1217,7 @@ def test_keyed_inbox_bounds_the_exact_prefix_before_acknowledging_it(tmp_path) -
             source_event="failed",
             payload={"diagnostic": "x" * 40_000},
             created_at=store.now(),
-        )
+        ),
     )
 
     receipt = store.process_auto_research_lifecycle_inbox(
@@ -1202,6 +1238,131 @@ def test_keyed_inbox_bounds_the_exact_prefix_before_acknowledging_it(tmp_path) -
     }
     assert stored[small.notice_id].state == "acknowledged"
     assert stored[oversized.notice_id].state == "pending"
+
+
+def test_keyed_inbox_refuses_an_oversized_first_harvest_without_a_receipt(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, _ = _auto_parent(store)
+    oversized = _insert_unbounded_legacy_lifecycle_notice(
+        store,
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="notice-oversized-first",
+            episode_id=parent.episode_id,
+            source_kind="worker",
+            source_id="worker-large",
+            source_event="failed",
+            payload={"diagnostic": "x" * 40_000},
+            created_at="2026-08-17T00:00:01+00:00",
+        ),
+    )
+    small = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="notice-small-second",
+            episode_id=parent.episode_id,
+            source_kind="worker",
+            source_id="worker-small",
+            source_event="settled",
+            payload={"status": "succeeded"},
+            created_at="2026-08-17T00:00:02+00:00",
+        )
+    )
+
+    with pytest.raises(AutoResearchInboxHarvestTooLarge, match="--clear"):
+        store.process_auto_research_lifecycle_inbox(
+            parent.episode_id,
+            effect_id="oversized-first-harvest",
+            mode="harvest",
+            acknowledged_by="orchestrator-turn",
+        )
+
+    assert store.auto_research_inbox_receipt("oversized-first-harvest") is None
+    assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == [
+        oversized,
+        small,
+    ]
+    assert all(
+        notice.acknowledged_at is None
+        for notice in store.auto_research_lifecycle_notices(parent.episode_id)
+    )
+
+
+def test_new_lifecycle_notices_truncate_diagnostics_to_remain_harvestable(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, _ = _auto_parent(store)
+
+    original = AutoResearchLifecycleNoticeRecord(
+        notice_id="bounded-new-notice",
+        episode_id=parent.episode_id,
+        source_kind="worker",
+        source_id="worker-large",
+        source_event="failed",
+        payload={"diagnostic": "x" * 40_000},
+        created_at=store.now(),
+    )
+    stored = store.record_auto_research_lifecycle_notice(original)
+
+    assert stored.payload == {
+        "diagnostic": "x" * 2_000,
+        "diagnostic_truncated": True,
+    }
+    assert store.record_auto_research_lifecycle_notice(original) == stored
+    receipt = store.process_auto_research_lifecycle_inbox(
+        parent.episode_id,
+        effect_id="bounded-new-harvest",
+        mode="harvest",
+        acknowledged_by="orchestrator-turn",
+    )
+    assert receipt.notice_ids == [stored.notice_id]
+    assert receipt.notices[0].payload == stored.payload
+
+
+def test_oversized_harvest_does_not_recommend_clear_when_the_full_clear_cannot_fit(
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, _ = _auto_parent(store)
+    _insert_unbounded_legacy_lifecycle_notice(
+        store,
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="000-oversized-body",
+            episode_id=parent.episode_id,
+            source_kind="worker",
+            source_id="worker-large",
+            source_event="failed",
+            payload={"diagnostic": "x" * 40_000},
+            created_at="2026-08-17T00:00:00+00:00",
+        ),
+    )
+    for index in range(36):
+        _insert_unbounded_legacy_lifecycle_notice(
+            store,
+            AutoResearchLifecycleNoticeRecord(
+                notice_id=f"{index + 1:03d}-" + ("n" * 1_024),
+                episode_id=parent.episode_id,
+                source_kind="worker",
+                source_id=f"worker-{index}",
+                source_event="settled",
+                payload={"status": "succeeded"},
+                created_at=f"2026-08-17T00:00:{index + 1:02d}+00:00",
+            ),
+        )
+
+    with pytest.raises(AutoResearchInboxNoticeUnacknowledgeable, match="complete Clear"):
+        store.process_auto_research_lifecycle_inbox(
+            parent.episode_id,
+            effect_id="harvest-and-clear-too-large",
+            mode="harvest",
+            acknowledged_by="orchestrator-turn",
+        )
+
+    assert store.auto_research_inbox_receipt("harvest-and-clear-too-large") is None
+    assert all(
+        notice.acknowledged_at is None
+        for notice in store.auto_research_lifecycle_notices(parent.episode_id)
+    )
 
 
 def test_lifecycle_wake_spends_once_and_atomically_claims_notice_and_root_mail(
@@ -1519,6 +1680,93 @@ def test_pending_experiment_replacement_terminal_outcomes_notify_atomically(tmp_
         (cancelled_route.child_episode_id, "cancelled"),
         (failed_route.child_episode_id, "failed"),
     ]
+
+
+def test_pending_experiment_replacement_activation_notifies_atomically(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store)
+    direct_task = _experiment_task(
+        store,
+        str(uuid.uuid4()),
+        parent.authorized_by,
+        node_id="exp/direct",
+    )
+    store.create_experiment_episode_with_invocation(
+        direct_task,
+        auto_research_route=_experiment_route(store, parent, root, direct_task),
+    )
+    assert store.auto_research_lifecycle_notices(parent.episode_id) == []
+
+    replacement_task = _experiment_task(
+        store,
+        str(uuid.uuid4()),
+        parent.authorized_by,
+        node_id="exp/replacement",
+    )
+    replacement_route = _experiment_route(
+        store,
+        parent,
+        root,
+        replacement_task,
+        state="pending",
+        replaces_episode_id="predecessor-episode",
+    )
+    store.reserve_auto_research_experiment_replacement(replacement_route)
+    original_insert = store._insert_auto_research_lifecycle_notice
+
+    def fail_advanced_notice(connection, notice):
+        if notice.source_kind == "experiment_replacement" and notice.source_event == "advanced":
+            raise RuntimeError("synthetic lifecycle failure")
+        return original_insert(connection, notice)
+
+    monkeypatch.setattr(store, "_insert_auto_research_lifecycle_notice", fail_advanced_notice)
+    with pytest.raises(RuntimeError, match="synthetic lifecycle failure"):
+        store.create_experiment_episode_with_invocation(
+            replacement_task,
+            auto_research_route=replacement_route.model_copy(update={"state": "running"}),
+        )
+
+    rolled_back = store.auto_research_child_experiment(replacement_task.episode_id)
+    assert rolled_back is not None and rolled_back.state == "pending"
+    assert store.episode(replacement_task.episode_id) is None
+    assert store.auto_research_lifecycle_notices(parent.episode_id) == []
+
+    monkeypatch.setattr(store, "_insert_auto_research_lifecycle_notice", original_insert)
+    store.create_experiment_episode_with_invocation(
+        replacement_task,
+        auto_research_route=replacement_route.model_copy(update={"state": "running"}),
+    )
+
+    notices = store.auto_research_lifecycle_notices(parent.episode_id)
+    assert len(notices) == 1
+    notice = notices[0]
+    assert (
+        notice.source_kind,
+        notice.source_id,
+        notice.source_event,
+        notice.source_attempt,
+    ) == (
+        "experiment_replacement",
+        replacement_task.episode_id,
+        "advanced",
+        1,
+    )
+    assert notice.payload == {
+        "episode_id": replacement_task.episode_id,
+        "status": "running",
+        "replaces_episode_id": "predecessor-episode",
+    }
+
+    with pytest.raises(ValueError, match="already in use"):
+        store.create_experiment_episode_with_invocation(
+            replacement_task,
+            auto_research_route=replacement_route.model_copy(update={"state": "running"}),
+        )
+    assert store.auto_research_lifecycle_notices(parent.episode_id) == [notice]
 
 
 def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) -> None:

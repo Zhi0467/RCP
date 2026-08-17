@@ -1,8 +1,11 @@
 import { Clock3, ExternalLink, X } from "lucide-react";
+import { useState } from "react";
 import { taskKindLabel, taskStatusLabel } from "../agentTasks";
 import type { AgentTask, RevisionSummary } from "../types";
+import { EpisodeReportLink } from "./EpisodeReportLink";
 
 interface Props {
+  projectId: string;
   summaries: RevisionSummary[];
   tasks: AgentTask[];
   loading: boolean;
@@ -17,6 +20,7 @@ type HistoryEntry =
   | { kind: "episode"; episodeId: string; summaries: RevisionSummary[] };
 
 export function ProjectHistoryDrawer({
+  projectId,
   summaries,
   tasks,
   loading,
@@ -83,6 +87,7 @@ export function ProjectHistoryDrawer({
                   {historyEntries.map((entry) =>
                     entry.kind === "episode" ? (
                       <EpisodeRevisionGroup
+                        projectId={projectId}
                         episodeId={entry.episodeId}
                         summaries={entry.summaries}
                         episodeReportHref={episodeReportHref}
@@ -108,14 +113,17 @@ export function ProjectHistoryDrawer({
 }
 
 function EpisodeRevisionGroup({
+  projectId,
   episodeId,
   summaries,
   episodeReportHref,
 }: {
+  projectId: string;
   episodeId: string;
   summaries: RevisionSummary[];
   episodeReportHref: Props["episodeReportHref"];
 }) {
+  const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const newest = summaries[0];
   const episode = newest.episode;
   const report = episode?.report;
@@ -139,18 +147,24 @@ function EpisodeRevisionGroup({
               {summaries.length} {summaries.length === 1 ? "revision" : "revisions"}
             </p>
           </div>
-          {report && (
-            <a
+          {report && episode && (
+            <EpisodeReportLink
               className="button compact secondary"
               href={episodeReportHref(episodeId)}
               aria-label={`Open the ${report.ending} episode report`}
-              target="_blank"
-              rel="noopener noreferrer"
+              projectId={projectId}
+              episodeId={episodeId}
+              onOpenError={setReportOpenError}
             >
               <ExternalLink size={12} /> Open report
-            </a>
+            </EpisodeReportLink>
           )}
         </header>
+        {reportOpenError && (
+          <div className="history-campaign-error" role="alert">
+            {reportOpenError}
+          </div>
+        )}
         <ol className="history-campaign-revisions">
           {summaries.map((summary) => (
             <RevisionItem summary={summary} key={summary.to_revision} />

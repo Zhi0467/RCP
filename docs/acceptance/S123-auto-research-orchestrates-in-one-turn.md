@@ -61,9 +61,10 @@ workspace and invoke the staged command client.
 3. Change `patch.json` and repeat the first Apply key. Confirm the recorded result
    returns without reading or applying the new bytes. Use a new key for the new
    intent and confirm both dispositions remain ordered in the task result.
-   Confirm unavailable attempts still count toward the 32-distinct-key turn
-   allowance, same-key recovery does not, and concurrent contenders for the last
-   place admit exactly one without reading the refused caller's file.
+   Confirm effect-level unavailable attempts after a readable snapshot still
+   count toward the 32-distinct-key turn allowance, same-key recovery does not,
+   and concurrent contenders for the last place admit exactly one without
+   reading the refused caller's file.
 4. Submit a semantically invalid Patch. Confirm `invalid` leaves `patch.json` in
    place for correction. Correct it and Apply with a new key. Then Apply a valid
    empty Work Patch and confirm it consumes the file without spending a graph

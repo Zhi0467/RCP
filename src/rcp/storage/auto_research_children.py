@@ -39,6 +39,14 @@ class AutoResearchInboxClearTooLarge(ValueError):
     """The all-or-nothing Clear snapshot cannot fit its command response."""
 
 
+class AutoResearchInboxHarvestTooLarge(ValueError):
+    """The oldest pending notice cannot fit in a Harvest response."""
+
+
+class AutoResearchInboxNoticeUnacknowledgeable(ValueError):
+    """Neither Harvest nor the all-or-nothing Clear response can fit."""
+
+
 def auto_research_inbox_projection(
     mode: Literal["harvest", "clear"],
     *,
@@ -123,6 +131,26 @@ def _auto_research_inbox_effect_fits(
     except (TypeError, ValueError):
         return False
     return max(len(exit_payload), len(response_payload)) <= AGENT_COMMAND_EVENT_MAX_BYTES
+
+
+def _bounded_auto_research_lifecycle_notice(
+    record: AutoResearchLifecycleNoticeRecord,
+) -> AutoResearchLifecycleNoticeRecord:
+    """Keep every new notice individually representable in a Harvest response."""
+
+    if _auto_research_inbox_effect_fits("harvest", [record]):
+        return record
+    diagnostic = record.payload.get("diagnostic")
+    if isinstance(diagnostic, str):
+        payload = {
+            **record.payload,
+            "diagnostic": diagnostic[:2_000],
+            "diagnostic_truncated": True,
+        }
+        bounded = record.model_copy(update={"payload": payload})
+        if _auto_research_inbox_effect_fits("harvest", [bounded]):
+            return bounded
+    raise ValueError("a lifecycle notice exceeds the durable command response limit")
 
 
 class AutoResearchChildrenStoreMixin:
@@ -1002,6 +1030,30 @@ class AutoResearchChildrenStoreMixin:
                 """,
                 (record.updated_at, record.child_episode_id),
             )
+            assert stored.replaces_episode_id is not None
+            self._insert_auto_research_lifecycle_notice(
+                connection,
+                AutoResearchLifecycleNoticeRecord(
+                    notice_id=self._auto_research_notice_id(
+                        record.auto_research_episode_id,
+                        "experiment_replacement",
+                        record.child_episode_id,
+                        "advanced",
+                        1,
+                    ),
+                    episode_id=record.auto_research_episode_id,
+                    source_kind="experiment_replacement",
+                    source_id=record.child_episode_id,
+                    source_event="advanced",
+                    source_attempt=1,
+                    payload={
+                        "episode_id": record.child_episode_id,
+                        "status": "running",
+                        "replaces_episode_id": stored.replaces_episode_id,
+                    },
+                    created_at=record.updated_at,
+                ),
+            )
         self._reflect_auto_research_child_admission(
             connection,
             admission_id=admission_id,
@@ -1028,7 +1080,6 @@ class AutoResearchChildrenStoreMixin:
         if record.state != "pending":
             raise ValueError("a new lifecycle notice must begin pending")
         self._load_auto_research_episode(connection, record.episode_id)
-        payload_json = json.dumps(record.payload, sort_keys=True, separators=(",", ":"))
         existing = connection.execute(
             """
             SELECT * FROM auto_research_lifecycle_notices
@@ -1045,9 +1096,18 @@ class AutoResearchChildrenStoreMixin:
         ).fetchone()
         if existing is not None:
             stored = self._lifecycle_notice_record(existing)
-            if stored.payload != record.payload:
-                raise ValueError("the lifecycle source event already has different facts")
-            return stored
+            if stored.payload == record.payload:
+                return stored
+            try:
+                bounded = _bounded_auto_research_lifecycle_notice(record)
+            except ValueError:
+                pass
+            else:
+                if stored.payload == bounded.payload:
+                    return stored
+            raise ValueError("the lifecycle source event already has different facts")
+        record = _bounded_auto_research_lifecycle_notice(record)
+        payload_json = json.dumps(record.payload, sort_keys=True, separators=(",", ":"))
         connection.execute(
             """
             INSERT INTO auto_research_lifecycle_notices (
@@ -1304,6 +1364,32 @@ class AutoResearchChildrenStoreMixin:
             ).fetchall()
         return [self._lifecycle_notice_record(row) for row in rows]
 
+    def pending_auto_research_lifecycle_episode_ids(
+        self,
+        episode_id: str | None = None,
+    ) -> list[str]:
+        """Return wake-eligible parents that have an undelivered lifecycle notice."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT episode.episode_id
+                FROM episodes AS episode
+                JOIN auto_research_lifecycle_notices AS notice
+                  ON notice.episode_id = episode.episode_id
+                WHERE episode.mode = 'auto_research'
+                  AND episode.status = 'running'
+                  AND episode.ending IS NULL
+                  AND episode.stop_requested_at IS NULL
+                  AND notice.delivered_at IS NULL
+                  AND notice.acknowledged_at IS NULL
+                  AND (? IS NULL OR episode.episode_id = ?)
+                ORDER BY episode.episode_id
+                """,
+                (episode_id, episode_id),
+            ).fetchall()
+        return [str(row["episode_id"]) for row in rows]
+
     def claim_auto_research_lifecycle_notices(
         self,
         episode_id: str,
@@ -1482,11 +1568,42 @@ class AutoResearchChildrenStoreMixin:
                 )
             rows = connection.execute(sql, parameters).fetchall()
             pending = [self._lifecycle_notice_record(row) for row in rows]
+            clear_fits = None
+            if mode == "harvest" and pending:
+                acknowledged_first = pending[0].model_copy(
+                    update={
+                        "state": "acknowledged",
+                        "acknowledged_at": now,
+                        "acknowledged_by": acknowledged_by,
+                    }
+                )
+                if not _auto_research_inbox_effect_fits("harvest", [acknowledged_first]):
+                    clear_rows = connection.execute(
+                        """
+                        SELECT * FROM auto_research_lifecycle_notices
+                        WHERE episode_id = ?
+                          AND delivered_at IS NULL AND acknowledged_at IS NULL
+                        ORDER BY created_at, notice_id
+                        """,
+                        (episode_id,),
+                    ).fetchall()
+                    clear_snapshot = [
+                        self._lifecycle_notice_record(row).model_copy(
+                            update={
+                                "state": "acknowledged",
+                                "acknowledged_at": now,
+                                "acknowledged_by": acknowledged_by,
+                            }
+                        )
+                        for row in clear_rows
+                    ]
+                    clear_fits = _auto_research_inbox_effect_fits("clear", clear_snapshot)
             notices = self._bounded_auto_research_inbox_snapshot(
                 pending,
                 mode=mode,
                 acknowledged_at=now,
                 acknowledged_by=acknowledged_by,
+                clear_fits=clear_fits,
             )
             self._acknowledge_lifecycle_rows(
                 connection,
@@ -1547,6 +1664,7 @@ class AutoResearchChildrenStoreMixin:
         mode: Literal["harvest", "clear"],
         acknowledged_at: str,
         acknowledged_by: str,
+        clear_fits: bool | None = None,
     ) -> list[AutoResearchLifecycleNoticeRecord]:
         """Choose the exact snapshot whose command response is durable.
 
@@ -1582,6 +1700,18 @@ class AutoResearchChildrenStoreMixin:
             if not _auto_research_inbox_effect_fits(mode, candidate):
                 break
             selected = candidate
+        if acknowledged and not selected:
+            if clear_fits is not True:
+                raise AutoResearchInboxNoticeUnacknowledgeable(
+                    "The oldest lifecycle notice cannot fit in Harvest, and the complete "
+                    "Clear response also exceeds the durable command response limit; no "
+                    "lifecycle notices were acknowledged."
+                )
+            raise AutoResearchInboxHarvestTooLarge(
+                "Harvest could not acknowledge the oldest lifecycle notice because its body "
+                "exceeds the durable command response limit; run inbox --key <new-key> "
+                "--clear to acknowledge it without returning the body."
+            )
         if not _auto_research_inbox_effect_fits(mode, selected):
             raise RuntimeError("the empty lifecycle inbox response exceeds its durable limit")
         return selected

@@ -1119,7 +1119,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_brokered_client_reads_one_complete_response_larger_than_64_kib(tmp_path) -> None:
+async def test_brokered_client_reads_one_complete_response_larger_than_four_mib(tmp_path) -> None:
     workspace = tmp_path / "stage"
     workspace.mkdir()
     staged = stage_command_mailbox(
@@ -1131,22 +1131,14 @@ async def test_brokered_client_reads_one_complete_response_larger_than_64_kib(tm
         timeout_seconds=10,
     )
     assert staged.invocation_gate is not None
-    blockers = [
-        {
-            "kind": "lifecycle_notice",
-            "blocker_id": f"notice-{index:04d}",
-            "state": "pending",
-            "action": "inbox --harvest --key <key> or inbox --clear --key <key>",
-        }
-        for index in range(500)
-    ]
+    complete_snapshot = "x" * (4 * 1024 * 1024)
 
     def handler(request, _identity):
         return CommandResponse(
             request_id=request.request_id,
             status="invalid",
             message="Every blocker is returned.",
-            result={"episode_id": "episode", "blockers": blockers},
+            result={"episode_id": "episode", "complete_snapshot": complete_snapshot},
         )
 
     stop = asyncio.Event()
@@ -1168,8 +1160,8 @@ async def test_brokered_client_reads_one_complete_response_larger_than_64_kib(tm
 
     response = json.loads(output)
     assert code == 1
-    assert len(output.encode("utf-8")) > 64 * 1024
-    assert response["result"]["blockers"] == blockers
+    assert len(output.encode("utf-8")) > 4 * 1024 * 1024
+    assert response["result"]["complete_snapshot"] == complete_snapshot
     assert output.count("\n") == 1
     staged.cleanup()
 

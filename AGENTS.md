@@ -850,13 +850,14 @@ longer apply.
 
 - `pre-commit run --all-files` means all *tracked* files. A green run over a
   change that adds new files proves nothing about them, and the human's commit
-  is where the hooks finally see them and fail. When a change adds files, run
-  `git add -A` first, then the hooks. Recurred 2026-08-17 on the S123/S124 slice,
-  where a second green check hid it: `ruff check src tests` walks directories and
-  so *does* see untracked files, while the pre-commit `ruff-format` hook does not.
-  All seven files the slice added were unformatted under a clean `ruff check` and
-  a clean `--all-files` run. `ruff format --check src tests packaging` is the
-  cheap direct proof; a green `ruff check` is not evidence about formatting.
+  is where the hooks finally see them and fail. Run `pre-commit run --files
+  <owned-paths>` for the exact new files without staging unrelated work. Recurred
+  2026-08-17 on the S123/S124 slice, where a second green check hid it: `ruff
+  check src tests` walks directories and so *does* see untracked files, while the
+  pre-commit `ruff-format` hook does not. All seven files the slice added were
+  unformatted under a clean `ruff check` and a clean `--all-files` run. `ruff
+  format --check src tests packaging` is the cheap direct proof; a green `ruff
+  check` is not evidence about formatting.
 - A copied test helper drifts into three different answers. Ten copies of the
   same "wait for the task to settle" loop disagreed about which statuses are
   terminal — `not in {"queued","running"}` treated the transient `"pausing"` as

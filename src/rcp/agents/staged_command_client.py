@@ -21,10 +21,10 @@ OK = 0
 INVALID = 1
 UNAVAILABLE = 2
 COMMAND_MAILBOX_MAX_REQUEST_BYTES = 16 * 1024 * 1024
-# A response is read to EOF because a harvest legitimately exceeds 64 KiB, but
-# "to EOF" is not "without a bound": RCP caps its own structured results well
-# under this, so anything larger is a broken peer, not a big answer.
-COMMAND_MAILBOX_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+# Read the trusted broker's single response through EOF. Guarded Finish hydrates
+# its complete durable blocker snapshot outside the compact event ledger, and no
+# finite response bound is proved by admission. The socket timeout still bounds a
+# peer that stalls before closing the newline-framed response.
 PROMPT_FILE_MAX_BYTES = 16 * 1024
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _TOKEN = re.compile(r"^[a-f0-9]{64}$")
@@ -478,13 +478,6 @@ def _run_brokered(namespace, broker, request_content, request_id):
             if not chunk:
                 break
             content.extend(chunk)
-            if len(content) > COMMAND_MAILBOX_MAX_RESPONSE_BYTES:
-                return _client_failure(
-                    namespace.verb,
-                    "unavailable",
-                    "RCP command broker returned more than the "
-                    f"{COMMAND_MAILBOX_MAX_RESPONSE_BYTES}-byte response limit.",
-                )
     except (OSError, TimeoutError) as exc:
         return _client_failure(
             namespace.verb,

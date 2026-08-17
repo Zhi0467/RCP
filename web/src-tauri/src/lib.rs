@@ -64,6 +64,7 @@ pub fn run() {
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
             commands::open_artifact_preview,
+            commands::open_episode_report_preview,
             commands::open_repository_file_preview,
             commands::download_artifact,
             commands::open_external,

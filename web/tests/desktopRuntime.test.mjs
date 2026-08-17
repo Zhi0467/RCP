@@ -9,6 +9,7 @@ import {
   establishBackendIdentity,
   identityMismatch,
   needsDesktopFolderAccessAcknowledgement,
+  openEpisodeReportFromLink,
   reverifyBackendIdentity,
   setDesktopWebviewZoom,
 } from "../src/desktopRuntime.ts";
@@ -191,5 +192,48 @@ test("webview zoom is a no-op outside the desktop runtime", async () => {
     await setDesktopWebviewZoom(1.2);
   } finally {
     if (originalWindow !== undefined) globalThis.window = originalWindow;
+  }
+});
+
+test("episode report links use the native preview only in the desktop shell", async () => {
+  const originalWindow = globalThis.window;
+  let prevented = 0;
+  const invocations = [];
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      return { opened: true };
+    },
+  };
+  globalThis.window = desktopWindow;
+  try {
+    assert.equal(
+      await openEpisodeReportFromLink(
+        { preventDefault: () => (prevented += 1) },
+        { projectId: "project one", episodeId: "episode/one" },
+      ),
+      true,
+    );
+    assert.equal(prevented, 1);
+    assert.deepEqual(invocations, [
+      {
+        command: "open_episode_report_preview",
+        args: { projectId: "project one", episodeId: "episode/one" },
+      },
+    ]);
+
+    delete globalThis.window;
+    assert.equal(
+      await openEpisodeReportFromLink(
+        { preventDefault: () => (prevented += 1) },
+        { projectId: "project one", episodeId: "episode/one" },
+      ),
+      false,
+    );
+    assert.equal(prevented, 1);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
   }
 });

@@ -142,27 +142,9 @@ def pending_auto_research_lifecycle_episodes(
     *,
     episode_id: str | None = None,
 ) -> list[str]:
-    """Enumerate Auto-research parents with an undelivered lifecycle prefix."""
+    """Enumerate wake-eligible Auto-research parents with pending lifecycle facts."""
 
-    if episode_id is not None:
-        episodes = [store.episode(episode_id)]
-    else:
-        episodes = [
-            episode
-            for project in store.projects()
-            for episode in store.episodes(project.project_id)
-            if episode.mode == "auto_research"
-        ]
-    return sorted(
-        episode.episode_id
-        for episode in episodes
-        if episode is not None
-        and episode.mode == "auto_research"
-        and store.pending_auto_research_lifecycle_notices(
-            episode.episode_id,
-            limit=1,
-        )
-    )
+    return store.pending_auto_research_lifecycle_episode_ids(episode_id)
 
 
 def reconcile_pending_auto_research_lifecycle(

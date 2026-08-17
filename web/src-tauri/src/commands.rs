@@ -118,6 +118,23 @@ pub async fn open_artifact_preview(
 }
 
 #[tauri::command]
+pub async fn open_episode_report_preview(
+    app: AppHandle,
+    state: State<'_, BackendState>,
+    project_id: String,
+    episode_id: String,
+) -> Result<OpenResult, String> {
+    let status = state.status()?;
+    let url = episode_report_preview_url(&status.base_url, &project_id, &episode_id)?;
+    if !navigation::is_loopback_rcp_url(&url, &status.base_url, false) {
+        return Err("episode report preview URL is outside the RCP backend".into());
+    }
+    backend::reverify_identity(&state, &status).await?;
+    windows::open_preview(&app, url, status.base_url)?;
+    Ok(OpenResult { opened: true })
+}
+
+#[tauri::command]
 pub async fn open_repository_file_preview(
     app: AppHandle,
     state: State<'_, BackendState>,
@@ -265,6 +282,20 @@ fn artifact_url(
     Ok(url)
 }
 
+fn episode_report_preview_url(
+    base_url: &str,
+    project_id: &str,
+    episode_id: &str,
+) -> Result<Url, String> {
+    let mut url = Url::parse(base_url).map_err(|error| format!("invalid backend URL: {error}"))?;
+    url.path_segments_mut()
+        .map_err(|_| "backend URL cannot contain path segments".to_string())?
+        .extend([
+            "api", "projects", project_id, "episodes", episode_id, "report", "preview",
+        ]);
+    Ok(url)
+}
+
 fn repository_file_preview_url(
     base_url: &str,
     project_id: &str,
@@ -354,6 +385,18 @@ mod tests {
             url.as_str(),
             "http://127.0.0.1:8421/api/projects/project%20id/repositories/files/preview?path=%2FUsers%2Fexample%2Forigin+repo%2Fsrc%2Fa+file.rs&line=27"
         );
+    }
+
+    #[test]
+    fn episode_report_preview_url_is_same_origin_and_encodes_identifiers() {
+        let base = "http://127.0.0.1:8421";
+        let url = episode_report_preview_url(base, "project id", "episode/id").unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:8421/api/projects/project%20id/episodes/episode%2Fid/report/preview"
+        );
+        assert!(navigation::is_loopback_rcp_url(&url, base, false));
     }
 
     #[test]

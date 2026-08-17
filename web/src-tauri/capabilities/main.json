@@ -4,10 +4,7 @@
   "description": "The RCP application window. Artifact preview windows intentionally do not match this capability.",
   "windows": ["main"],
   "remote": {
-    "urls": [
-      "http://127.0.0.1:*/*",
-      "http://localhost:*/*"
-    ]
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
   },
   "permissions": [
     "core:default",
@@ -18,6 +15,7 @@
     "allow-desktop-start-dictation",
     "allow-desktop-stop-dictation",
     "allow-open-artifact-preview",
+    "allow-open-episode-report-preview",
     "allow-open-repository-file-preview",
     "allow-download-artifact",
     "allow-open-external",

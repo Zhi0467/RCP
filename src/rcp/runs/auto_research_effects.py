@@ -61,6 +61,8 @@ from rcp.storage import (
 )
 from rcp.storage.auto_research_children import (
     AutoResearchInboxClearTooLarge,
+    AutoResearchInboxHarvestTooLarge,
+    AutoResearchInboxNoticeUnacknowledgeable,
     auto_research_inbox_projection,
 )
 
@@ -578,6 +580,25 @@ def auto_research_command_effects(
                 message=str(exc),
                 result={
                     "action": "clear",
+                    "disposition": "response_too_large",
+                },
+            )
+        except AutoResearchInboxHarvestTooLarge as exc:
+            return AutoResearchCommandEffectResult(
+                status="invalid",
+                message=str(exc),
+                result={
+                    "action": "harvest",
+                    "disposition": "notice_too_large",
+                    "replacement_command": "inbox --key <new-key> --clear",
+                },
+            )
+        except AutoResearchInboxNoticeUnacknowledgeable as exc:
+            return AutoResearchCommandEffectResult(
+                status="unavailable",
+                message=str(exc),
+                result={
+                    "action": "harvest",
                     "disposition": "response_too_large",
                 },
             )

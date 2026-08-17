@@ -599,9 +599,10 @@ def create_app(
         return node.type if node is not None else None
 
     # Reconciliation runs on the 5s watcher poll, so a stuck admission would log
-    # a dozen identical warnings a minute. Report each distinct reason once and
-    # again whenever it changes, which is the part an operator can act on.
-    reported_child_deferrals: set[tuple[str, str]] = set()
+    # a dozen identical warnings a minute. Keep only each active admission's last
+    # reason: log transitions (including A -> B -> A) and forget settled entries.
+    reported_child_deferrals: dict[str, tuple[str, str]] = {}
+    reported_child_deferrals_lock = threading.Lock()
 
     def reconcile_auto_research_children(episode_id: str | None = None):
         reconciliation = reconcile_pending_auto_research_child_admissions(
@@ -612,11 +613,35 @@ def create_app(
             seat_node_type=restart_child_seat_node_type,
             episode_id=episode_id,
         )
-        for deferral in reconciliation.deferrals:
-            signature = (deferral.admission_id, deferral.reason)
-            if signature in reported_child_deferrals:
-                continue
-            reported_child_deferrals.add(signature)
+        current_deferrals = {
+            deferral.admission_id: (deferral.episode_id, deferral.reason)
+            for deferral in reconciliation.deferrals
+        }
+        with reported_child_deferrals_lock:
+            if episode_id is None:
+                stale_ids = set(reported_child_deferrals) - set(current_deferrals)
+            else:
+                stale_ids = {
+                    admission_id
+                    for admission_id, (reported_episode_id, _reason) in (
+                        reported_child_deferrals.items()
+                    )
+                    if reported_episode_id == episode_id and admission_id not in current_deferrals
+                }
+            for admission_id in stale_ids:
+                reported_child_deferrals.pop(admission_id, None)
+            changed_deferrals = [
+                deferral
+                for deferral in reconciliation.deferrals
+                if reported_child_deferrals.get(deferral.admission_id)
+                != (deferral.episode_id, deferral.reason)
+            ]
+            for deferral in changed_deferrals:
+                reported_child_deferrals[deferral.admission_id] = (
+                    deferral.episode_id,
+                    deferral.reason,
+                )
+        for deferral in changed_deferrals:
             logger.warning(
                 "Auto-research child admission %s (%s) in episode %s is still unreflected "
                 "and blocks finish: %s",

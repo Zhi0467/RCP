@@ -914,6 +914,44 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
     ]
 
 
+def test_terminal_parent_keeps_pending_lifecycle_notice_without_repolling(tmp_path) -> None:
+    store = _store(tmp_path)
+    stage = tmp_path / "auto_research-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("execution-host", str(stage))
+        yield _sse(
+            AgentEvent(
+                event="session",
+                session_id=request.session_id or "orchestrator-session",
+            )
+        )
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    auto_research, _root = _start_auto_research(tasks)
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="terminal-parent-notice",
+            episode_id=auto_research.episode_id,
+            source_kind="worker",
+            source_id="worker-one",
+            source_event="succeeded",
+            payload={"kind": "work", "status": "succeeded"},
+            created_at=store.now(),
+        )
+    )
+
+    assert pending_auto_research_lifecycle_episodes(store) == [auto_research.episode_id]
+
+    store.fence_episode_ending(auto_research.episode_id, "completed")
+
+    assert pending_auto_research_lifecycle_episodes(store) == []
+    assert store.pending_auto_research_lifecycle_notices(auto_research.episode_id) == [notice]
+
+
 def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

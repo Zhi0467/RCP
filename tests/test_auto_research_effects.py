@@ -66,6 +66,36 @@ CREDENTIAL = "b" * 64
 _RUN_TRUTH_SCOPE = ["repo-a"]
 
 
+def _insert_unbounded_legacy_lifecycle_notice(
+    store: AppStore,
+    record: AutoResearchLifecycleNoticeRecord,
+) -> AutoResearchLifecycleNoticeRecord:
+    """Simulate a notice persisted before per-command response bounds existed."""
+
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO auto_research_lifecycle_notices (
+                notice_id, episode_id, source_kind, source_id, source_event,
+                source_attempt, state, payload_json, created_at, delivered_at,
+                delivery_operation_id, acknowledged_at, acknowledged_by
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL)
+            """,
+            (
+                record.notice_id,
+                record.episode_id,
+                record.source_kind,
+                record.source_id,
+                record.source_event,
+                record.source_attempt,
+                json.dumps(record.payload, sort_keys=True, separators=(",", ":")),
+                record.created_at,
+            ),
+        )
+    return record
+
+
 def _auto_research_authority(episode_id: str, role: str) -> AgentDispatchAuthority:
     return AgentDispatchAuthority(
         profile="orchestrator" if role == "orchestrator" else "ordinary",
@@ -1385,7 +1415,8 @@ def test_inbox_harvest_leaves_a_body_that_cannot_fit_the_command_response_pendin
     background = BackgroundAgentTasks(store, _successful_stream)
     effects = _effects(store, background)
     context = _context(store, auto_research, root)
-    oversized = store.record_auto_research_lifecycle_notice(
+    oversized = _insert_unbounded_legacy_lifecycle_notice(
+        store,
         AutoResearchLifecycleNoticeRecord(
             notice_id="oversized-lifecycle-body",
             episode_id=auto_research.episode_id,
@@ -1394,17 +1425,28 @@ def test_inbox_harvest_leaves_a_body_that_cannot_fit_the_command_response_pendin
             source_event="failed",
             payload={"diagnostic": "x" * 40_000},
             created_at=store.now(),
-        )
+        ),
     )
 
+    harvest_effect_id = str(uuid.uuid4())
     harvested = effects.inbox(
         context,
         InboxHarvestArguments(action="harvest"),
-        str(uuid.uuid4()),
+        harvest_effect_id,
     )
 
-    assert harvested.status == "ok"
-    assert harvested.result == {"action": "harvest", "count": 0, "notices": []}
+    assert harvested.status == "invalid"
+    assert harvested.message == (
+        "Harvest could not acknowledge the oldest lifecycle notice because its body exceeds "
+        "the durable command response limit; run inbox --key <new-key> --clear to acknowledge "
+        "it without returning the body."
+    )
+    assert harvested.result == {
+        "action": "harvest",
+        "disposition": "notice_too_large",
+        "replacement_command": "inbox --key <new-key> --clear",
+    }
+    assert store.auto_research_inbox_receipt(harvest_effect_id) is None
     assert store.pending_auto_research_lifecycle_notices(auto_research.episode_id) == [oversized]
 
     cleared = effects.inbox(

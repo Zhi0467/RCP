@@ -1,5 +1,5 @@
 import { ExternalLink, FlaskConical } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   type ExperimentLoopHealth,
   type ExperimentRun,
@@ -13,6 +13,7 @@ import {
   watcherLastObservedAt,
 } from "../runProjection";
 import type { WatcherRecord } from "../types";
+import { EpisodeReportLink } from "./EpisodeReportLink";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
   starting: "Starting",
@@ -116,6 +117,7 @@ export function ExperimentRunDetail({
   onCheckWatcher,
   episodeReportHref,
 }: Props) {
+  const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
   const operational = control?.operational ?? null;
   const session = operational?.session ?? null;
@@ -205,14 +207,15 @@ export function ExperimentRunDetail({
             </button>
           )}
           {episode?.report && episode.wrapup_state === "ready" && episode.status !== "stopped" && (
-            <a
+            <EpisodeReportLink
               className="button primary compact"
               href={episodeReportHref(episode.episode_id)}
-              target="_blank"
-              rel="noopener noreferrer"
+              projectId={episode.project_id}
+              episodeId={episode.episode_id}
+              onOpenError={setReportOpenError}
             >
               <ExternalLink size={12} aria-hidden="true" /> Open report
-            </a>
+            </EpisodeReportLink>
           )}
           <button
             type="button"
@@ -242,6 +245,12 @@ export function ExperimentRunDetail({
       {episode?.wrapup_state === "failed" && episode.status !== "stopped" && (
         <div className="campaign-run-error" role="alert">
           Report generation error: {episode.wrapup_error || "The report could not be generated."}
+        </div>
+      )}
+
+      {reportOpenError && (
+        <div className="campaign-run-error" role="alert">
+          {reportOpenError}
         </div>
       )}
 

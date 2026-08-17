@@ -147,6 +147,7 @@ test("Project history separates revision prose from the complete clickable Agent
     latestSummary,
   ];
   const props = {
+    projectId: "project",
     summaries,
     tasks,
     loading: false,
@@ -182,6 +183,7 @@ test("Project history separates revision prose from the complete clickable Agent
 test("Project history reports loading without hiding the already-loaded Agent tasks", () => {
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
+      projectId: "project",
       summaries: [],
       tasks: [task("active-task", "refresh", "running", 1)],
       loading: true,
@@ -206,6 +208,7 @@ test("Project history labels system, attributed, and legacy revisions without in
   };
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
+      projectId: "project",
       summaries: [
         {
           ...latestSummary,
@@ -362,6 +365,7 @@ test("Project history groups episode envelopes while preserving revision attribu
 
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
+      projectId: "project",
       summaries,
       tasks: [],
       loading: false,
@@ -406,6 +410,7 @@ test("Project history report control links to the decorated report's preview", (
 
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
+      projectId: "project",
       summaries: [
         {
           ...latestSummary,

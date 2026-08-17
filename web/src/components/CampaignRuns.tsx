@@ -23,6 +23,7 @@ import {
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
 import type { AgentTask, Episode, EpisodeMessage } from "../types";
+import { EpisodeReportLink } from "./EpisodeReportLink";
 
 interface Props {
   episodes: Episode[];
@@ -229,15 +230,16 @@ function EpisodeRow({
             </div>
             {episode.report && episode.wrapup_state === "ready" && (
               <div className="campaign-report-actions">
-                <a
+                <EpisodeReportLink
                   className={`button compact ${recommendation.kind === "open_report" ? "primary" : "secondary"}`}
                   href={episodeReportPreviewUrl(episode.project_id, episode.episode_id)}
                   aria-label={`Open ${episodeEndingLabel(episode.report.ending)} report from ${formatTimestamp(episode.report.created_at, true)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  projectId={episode.project_id}
+                  episodeId={episode.episode_id}
+                  onOpenError={setLocalError}
                 >
                   <ExternalLink size={12} /> Open report
-                </a>
+                </EpisodeReportLink>
               </div>
             )}
             {taskControl && (

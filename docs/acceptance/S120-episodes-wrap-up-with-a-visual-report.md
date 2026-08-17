@@ -15,14 +15,17 @@ covered_by:
   - tests/test_episode_reauthorization.py
   - tests/test_episode_runtime_api.py
   - web/tests/campaigns.test.mjs
+  - web/tests/episodeReportLink.test.mjs
   - web/tests/experimentBoard.test.mjs
   - web/tests/experimentRunDetail.test.mjs
   - web/tests/projectHistory.test.mjs
+  - web/src-tauri/src/commands.rs::tests::episode_report_preview_url_is_same_origin_and_encodes_identifiers
   - web/src-tauri/src/windows.rs::tests::main_window_routes_same_origin_report_popups_to_a_preview_window
-last_checked: 2026-08-16 — the prior browser drive passed on 2026-08-14; the
-  native routing regression and rebuilt RCP Dev.app now cover the reported
-  same-origin Open report popup, while the real desktop click remains outstanding
-  because macOS was locked during this implementation session
+last_passed: >-
+  2026-08-17 — after the prior provider/browser drive, the rebuilt RCP Dev.app
+  opened the completed vista follow up Auto-research report in a secondary native
+  artifact-preview window and left the main Runs window intact. The browser link,
+  desktop wiring, identity-checked native command, and Rust URL regressions pass.
 invariants: [4, 4b, 8, 10, 10e, 10g]
 ---
 

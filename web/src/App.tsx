@@ -3054,6 +3054,7 @@ export default function App() {
       )}
       {projectHistoryOpen && (
         <ProjectHistoryDrawer
+          projectId={project.id}
           summaries={historyRevisionSummaries}
           tasks={tasks}
           loading={historySummariesRevision !== graph.revision}
