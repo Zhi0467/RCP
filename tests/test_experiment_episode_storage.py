@@ -17,6 +17,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
+from rcp.watchers import WatcherBinding
 
 
 def _identity(store: AppStore) -> AuthorizedHuman:
@@ -264,6 +265,105 @@ def test_binding_and_ending_receipt_commit_or_roll_back_together(tmp_path: Path)
     state = store.experiment_episode(episode_id)
     assert state is not None and not state.session_bound
     assert store.experiment_episode_ending_signal(episode_id) is None
+
+
+def test_compound_handoff_rolls_back_watchers_before_episode_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, _ = _admit_root(store)
+    store.fail_agent_task("loop-root", "provider failed")
+    retry = _task(
+        store,
+        "loop-retry",
+        episode_id,
+        parent_operation_id="loop-root",
+        attempt=2,
+        session_id="native-session",
+        stage_root="/tmp/exact-experiment-stage",
+    )
+    store.create_experiment_recovery_task(retry)
+    continuation = _continuation(episode_id).model_copy(
+        update={
+            "patch_kind": "experiment_loop",
+            "control_node_id": "exp-one",
+            "control_episode_id": episode_id,
+            "control_invocation": 1,
+        }
+    )
+    binding = WatcherBinding(
+        project_id="project",
+        origin_operation_id="loop-root",
+        origin_task_kind="node_chat",
+        chat_id="episode-chat",
+        node_id="exp-one",
+        episode_id=episode_id,
+        continuation=continuation,
+    )
+    now = store.now()
+    watcher = WatcherRecord(
+        watcher_id="loop-watcher",
+        project_id="project",
+        origin_operation_id="loop-root",
+        origin_task_kind="node_chat",
+        chat_id="episode-chat",
+        node_id="exp-one",
+        episode_id=episode_id,
+        execution_host="",
+        check_command="true",
+        log_path="/tmp/loop-watcher.log",
+        cwd="/tmp",
+        continuation=continuation,
+        status="completed",
+        created_at=now,
+        completed_at=now,
+    )
+
+    original_commit = store._commit_experiment_episode_turn
+
+    def fail_after_watcher_insert(connection, **_kwargs: object) -> None:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM watchers WHERE watcher_id = 'loop-watcher'"
+            ).fetchone()
+            is not None
+        )
+        raise RuntimeError("simulated episode binding failure")
+
+    monkeypatch.setattr(store, "_commit_experiment_episode_turn", fail_after_watcher_insert)
+    with pytest.raises(RuntimeError, match="simulated episode binding failure"):
+        store.commit_experiment_episode_handoff(
+            [watcher],
+            binding=binding,
+            operation_id="loop-retry",
+            native_session_id="native-session",
+            stage_host=None,
+            stage_root="/tmp/exact-experiment-stage",
+            graph_result="no graph change",
+            context_baseline={"ontology": {"sha256": "abc"}},
+        )
+
+    assert store.watcher("loop-watcher") is None
+    state = store.experiment_episode(episode_id)
+    assert state is not None and not state.session_bound
+
+    monkeypatch.setattr(store, "_commit_experiment_episode_turn", original_commit)
+    stored_watchers, stored_episode = store.commit_experiment_episode_handoff(
+        [watcher],
+        binding=binding,
+        operation_id="loop-retry",
+        native_session_id="native-session",
+        stage_host=None,
+        stage_root="/tmp/exact-experiment-stage",
+        graph_result="no graph change",
+        context_baseline={"ontology": {"sha256": "abc"}},
+    )
+
+    assert [item.watcher_id for item in stored_watchers] == ["loop-watcher"]
+    assert stored_watchers[0].origin_operation_id == "loop-root"
+    assert stored_episode.session_bound
+    assert stored_episode.last_turn_operation_id == "loop-retry"
+    assert stored_episode.last_watcher_ids == ["loop-watcher"]
 
 
 def test_watcher_claim_spends_once_and_exhausts_only_after_task_settles(

@@ -1003,15 +1003,16 @@ class ExperimentStoreMixin:
                 "update."
             )
 
-    def persist_experiment_watchers_idempotently(
+    def _persist_experiment_watchers_idempotently(
         self,
+        connection: sqlite3.Connection,
         records: list[StoredWatcherRecord],
         *,
         stops: list[WatcherStopRequest] | None = None,
         binding: WatcherBinding | None = None,
         expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
-        """Persist one loop handoff atomically with the episode's graceful stop.
+        """Persist one loop handoff in the caller's transaction.
 
         Deterministic watcher ids make Retry and crash recovery safe. The same
         ``BEGIN IMMEDIATE`` boundary used by Stop loop ensures either the handoff
@@ -1054,77 +1055,96 @@ class ExperimentStoreMixin:
         if len(stop_ids) != len(set(stop_ids)):
             raise ValueError("Experiment watcher stop ids must be unique")
         watcher_ids = [record.watcher_id for record in records]
+        resource = self._admit_experiment_watcher_maintenance(connection, binding)
+        if resource is not None:
+            if expected_watcher_snapshot_token is None:
+                raise ValueError(
+                    "Experiment watcher maintenance requires its staged watcher snapshot."
+                )
+            if expected_watcher_snapshot_token != resource.watcher_snapshot_token:
+                raise WatcherClaimConflict(
+                    "Experiment watcher state changed after it was staged; inspect the "
+                    "current resource before maintaining it."
+                )
+        episode = self._experiment_episode_row(connection, episode_id)
+        if episode is not None and (
+            episode["project_id"] != (records[0].project_id if records else binding.project_id)
+            or episode["control_node_id"] != continuation.control_node_id
+            or self._experiment_episode_record(episode).graph_target != binding.graph_target
+        ):
+            raise ValueError("This watcher handoff belongs to a different Experiment episode.")
+        if stop_requests:
+            assert binding is not None
+            self._validate_and_apply_agent_watcher_stops(
+                connection,
+                binding,
+                stop_requests,
+                episode,
+            )
+        stopped = episode is not None and episode["stop_requested_at"] is not None
+        existing_rows = []
+        if watcher_ids:
+            placeholders = ",".join("?" for _ in watcher_ids)
+            existing_rows = connection.execute(
+                f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+                watcher_ids,
+            ).fetchall()
+        existing_by_id = {
+            str(row["watcher_id"]): self._watcher_record(row) for row in existing_rows
+        }
+        for desired in records:
+            existing = existing_by_id.get(desired.watcher_id)
+            if existing is not None:
+                self._validate_idempotent_watcher(existing, desired)
+                if stopped and (existing.status != "stopped" or not existing.notified):
+                    self._stop_watcher_for_loop(connection, desired.watcher_id)
+                continue
+            persisted = (
+                desired.model_copy(
+                    update={
+                        "status": "stopped",
+                        "notified": True,
+                        "next_check_at": None,
+                        "stopped_by": "loop",
+                        "stopped_at": self.now(),
+                    }
+                )
+                if stopped
+                else desired
+            )
+            self._insert_watcher(connection, persisted)
+        stored_rows = []
+        if watcher_ids:
+            placeholders = ",".join("?" for _ in watcher_ids)
+            stored_rows = connection.execute(
+                f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
+                watcher_ids,
+            ).fetchall()
+        stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
+        return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    def persist_experiment_watchers_idempotently(
+        self,
+        records: list[StoredWatcherRecord],
+        *,
+        stops: list[WatcherStopRequest] | None = None,
+        binding: WatcherBinding | None = None,
+        expected_watcher_snapshot_token: str | None = None,
+    ) -> list[StoredWatcherRecord]:
+        """Persist one loop handoff atomically with the episode's graceful stop."""
+
+        if not records and not stops:
+            return []
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            resource = self._admit_experiment_watcher_maintenance(connection, binding)
-            if resource is not None:
-                if expected_watcher_snapshot_token is None:
-                    raise ValueError(
-                        "Experiment watcher maintenance requires its staged watcher snapshot."
-                    )
-                if expected_watcher_snapshot_token != resource.watcher_snapshot_token:
-                    raise WatcherClaimConflict(
-                        "Experiment watcher state changed after it was staged; inspect the "
-                        "current resource before maintaining it."
-                    )
-            episode = self._experiment_episode_row(connection, episode_id)
-            if episode is not None and (
-                episode["project_id"] != (records[0].project_id if records else binding.project_id)
-                or episode["control_node_id"] != continuation.control_node_id
-                or self._experiment_episode_record(episode).graph_target != binding.graph_target
-            ):
-                raise ValueError("This watcher handoff belongs to a different Experiment episode.")
-            if stop_requests:
-                assert binding is not None
-                self._validate_and_apply_agent_watcher_stops(
-                    connection,
-                    binding,
-                    stop_requests,
-                    episode,
-                )
-            stopped = episode is not None and episode["stop_requested_at"] is not None
-            existing_rows = []
-            if watcher_ids:
-                placeholders = ",".join("?" for _ in watcher_ids)
-                existing_rows = connection.execute(
-                    f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
-                    watcher_ids,
-                ).fetchall()
-            existing_by_id = {
-                str(row["watcher_id"]): self._watcher_record(row) for row in existing_rows
-            }
-            for desired in records:
-                existing = existing_by_id.get(desired.watcher_id)
-                if existing is not None:
-                    self._validate_idempotent_watcher(existing, desired)
-                    if stopped and (existing.status != "stopped" or not existing.notified):
-                        self._stop_watcher_for_loop(connection, desired.watcher_id)
-                    continue
-                persisted = (
-                    desired.model_copy(
-                        update={
-                            "status": "stopped",
-                            "notified": True,
-                            "next_check_at": None,
-                            "stopped_by": "loop",
-                            "stopped_at": self.now(),
-                        }
-                    )
-                    if stopped
-                    else desired
-                )
-                self._insert_watcher(connection, persisted)
-            stored_rows = []
-            if watcher_ids:
-                placeholders = ",".join("?" for _ in watcher_ids)
-                stored_rows = connection.execute(
-                    f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
-                    watcher_ids,
-                ).fetchall()
-            stored_by_id = {
-                str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows
-            }
-        return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+            stored = self._persist_experiment_watchers_idempotently(
+                connection,
+                records,
+                stops=stops,
+                binding=binding,
+                expected_watcher_snapshot_token=expected_watcher_snapshot_token,
+            )
+        return stored
 
     def validate_experiment_agent_watcher_stops(
         self,
@@ -1685,8 +1705,9 @@ class ExperimentStoreMixin:
             return None
         return self.experiment_episode(ordered[position])
 
-    def commit_experiment_episode_turn(
+    def _commit_experiment_episode_turn(
         self,
+        connection: sqlite3.Connection,
         *,
         episode_id: str,
         project_id: str,
@@ -1706,7 +1727,7 @@ class ExperimentStoreMixin:
         ending_signal: dict[str, object] | None = None,
         replace_binding: bool = False,
         replacement_provenance: dict[str, object] | None = None,
-    ) -> ExperimentEpisodeRecord:
+    ) -> None:
         """Bind this episode to the session a later automatic wake resumes.
 
         Only a mechanically successful joint handoff commits, so a wake never
@@ -1748,120 +1769,237 @@ class ExperimentStoreMixin:
             if len(ending_payload_json.encode("utf-8")) > AGENT_TASK_RECEIPT_MAX_BYTES:
                 raise ValueError("The compact Experiment ending receipt exceeds its storage limit.")
         now = self.now()
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            existing = self._experiment_episode_row(connection, episode_id)
-            if (
-                existing is None
-                or existing["project_id"] != project_id
-                or existing["control_node_id"] != control_node_id
-            ):
-                raise ValueError("This episode id belongs to a different Experiment.")
-            turn = connection.execute(
+        existing = self._experiment_episode_row(connection, episode_id)
+        if (
+            existing is None
+            or existing["project_id"] != project_id
+            or existing["control_node_id"] != control_node_id
+        ):
+            raise ValueError("This episode id belongs to a different Experiment.")
+        turn = connection.execute(
+            """
+            SELECT project_id, episode_id, request_json
+            FROM graph_runs WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        turn_request = json.loads(turn["request_json"]) if turn is not None else None
+        if (
+            turn is None
+            or turn["project_id"] != project_id
+            or turn["episode_id"] != episode_id
+            or not isinstance(turn_request, dict)
+            or turn_request.get("control_node_id") != control_node_id
+            or turn_request.get("control_invocation") != invocation
+        ):
+            raise ValueError("The accepted handoff does not match its exact Experiment task.")
+        if existing["native_session_id"] is not None:
+            fixed = {
+                "execution_machine": execution_machine,
+                "execution_host": execution_host,
+                "chat_id": chat_id,
+            }
+            fixed_conflicts = sorted(
+                field for field, value in fixed.items() if (existing[field] or "") != value
+            )
+            if fixed_conflicts:
+                raise ValueError(
+                    "An Experiment episode recovery cannot change its pinned identity: "
+                    + ", ".join(fixed_conflicts)
+                )
+            binding = {
+                "provider": provider,
+                "native_session_id": native_session_id,
+                "stage_host": stage_host or "",
+                "stage_root": stage_root,
+            }
+            binding_conflicts = sorted(
+                field for field, value in binding.items() if (existing[field] or "") != value
+            )
+            if binding_conflicts and not replace_binding:
+                raise ValueError(
+                    "An Experiment episode cannot change its native-session binding: "
+                    + ", ".join(binding_conflicts)
+                )
+        connection.execute(
+            """
+            UPDATE experiment_episode_state
+            SET provider = ?, execution_machine = ?, execution_host = ?,
+                native_session_id = ?, stage_host = ?, stage_root = ?, chat_id = ?,
+                last_turn_operation_id = ?, last_turn_invocation = ?,
+                last_graph_result = ?, last_watcher_ids_json = ?,
+                context_baseline_json = ?, session_diagnostic = NULL, updated_at = ?
+            WHERE episode_id = ?
+            """,
+            (
+                provider,
+                execution_machine,
+                execution_host,
+                native_session_id,
+                stage_host,
+                stage_root,
+                chat_id,
+                operation_id,
+                invocation,
+                graph_result,
+                json.dumps(list(watcher_ids), separators=(",", ":")),
+                json.dumps(context_baseline, sort_keys=True, separators=(",", ":")),
+                now,
+                episode_id,
+            ),
+        )
+        if replace_binding and replacement_payload_json is not None:
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "experiment_episode_binding_replaced",
+                replacement_payload_json,
+                tier="summary",
+                created_at=now,
+            )
+        if ending_payload_json is not None:
+            committed_ending = connection.execute(
                 """
-                SELECT project_id, episode_id, request_json
-                FROM graph_runs WHERE operation_id = ?
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'experiment_loop_exit'
+                ORDER BY receipt_id DESC LIMIT 1
                 """,
                 (operation_id,),
             ).fetchone()
-            turn_request = json.loads(turn["request_json"]) if turn is not None else None
-            if (
-                turn is None
-                or turn["project_id"] != project_id
-                or turn["episode_id"] != episode_id
-                or not isinstance(turn_request, dict)
-                or turn_request.get("control_node_id") != control_node_id
-                or turn_request.get("control_invocation") != invocation
-            ):
-                raise ValueError("The accepted handoff does not match its exact Experiment task.")
-            if existing["native_session_id"] is not None:
-                fixed = {
-                    "execution_machine": execution_machine,
-                    "execution_host": execution_host,
-                    "chat_id": chat_id,
-                }
-                fixed_conflicts = sorted(
-                    field for field, value in fixed.items() if (existing[field] or "") != value
-                )
-                if fixed_conflicts:
-                    raise ValueError(
-                        "An Experiment episode recovery cannot change its pinned identity: "
-                        + ", ".join(fixed_conflicts)
-                    )
-                binding = {
-                    "provider": provider,
-                    "native_session_id": native_session_id,
-                    "stage_host": stage_host or "",
-                    "stage_root": stage_root,
-                }
-                binding_conflicts = sorted(
-                    field for field, value in binding.items() if (existing[field] or "") != value
-                )
-                if binding_conflicts and not replace_binding:
-                    raise ValueError(
-                        "An Experiment episode cannot change its native-session binding: "
-                        + ", ".join(binding_conflicts)
-                    )
-            connection.execute(
-                """
-                UPDATE experiment_episode_state
-                SET provider = ?, execution_machine = ?, execution_host = ?,
-                    native_session_id = ?, stage_host = ?, stage_root = ?, chat_id = ?,
-                    last_turn_operation_id = ?, last_turn_invocation = ?,
-                    last_graph_result = ?, last_watcher_ids_json = ?,
-                    context_baseline_json = ?, session_diagnostic = NULL, updated_at = ?
-                WHERE episode_id = ?
-                """,
-                (
-                    provider,
-                    execution_machine,
-                    execution_host,
-                    native_session_id,
-                    stage_host,
-                    stage_root,
-                    chat_id,
-                    operation_id,
-                    invocation,
-                    graph_result,
-                    json.dumps(list(watcher_ids), separators=(",", ":")),
-                    json.dumps(context_baseline, sort_keys=True, separators=(",", ":")),
-                    now,
-                    episode_id,
-                ),
-            )
-            if replace_binding and replacement_payload_json is not None:
+            if committed_ending is not None:
+                if committed_ending["payload_json"] != ending_payload_json:
+                    raise ValueError("The Experiment task already has another ending receipt.")
+            else:
                 self._insert_agent_task_receipt(
                     connection,
                     operation_id,
-                    "experiment_episode_binding_replaced",
-                    replacement_payload_json,
+                    "experiment_loop_exit",
+                    ending_payload_json,
                     tier="summary",
                     created_at=now,
                 )
-            if ending_payload_json is not None:
-                committed_ending = connection.execute(
-                    """
-                    SELECT payload_json FROM graph_run_receipts
-                    WHERE operation_id = ? AND category = 'experiment_loop_exit'
-                    ORDER BY receipt_id DESC LIMIT 1
-                    """,
-                    (operation_id,),
-                ).fetchone()
-                if committed_ending is not None:
-                    if committed_ending["payload_json"] != ending_payload_json:
-                        raise ValueError("The Experiment task already has another ending receipt.")
-                else:
-                    self._insert_agent_task_receipt(
-                        connection,
-                        operation_id,
-                        "experiment_loop_exit",
-                        ending_payload_json,
-                        tier="summary",
-                        created_at=now,
-                    )
+
+    def commit_experiment_episode_turn(
+        self,
+        *,
+        episode_id: str,
+        project_id: str,
+        control_node_id: str,
+        provider: str,
+        execution_machine: str,
+        execution_host: str,
+        native_session_id: str,
+        stage_host: str | None,
+        stage_root: str,
+        chat_id: str,
+        operation_id: str,
+        invocation: int,
+        graph_result: str,
+        watcher_ids: list[str],
+        context_baseline: dict[str, object],
+        ending_signal: dict[str, object] | None = None,
+        replace_binding: bool = False,
+        replacement_provenance: dict[str, object] | None = None,
+    ) -> ExperimentEpisodeRecord:
+        """Bind this episode to the session a later automatic wake resumes."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._commit_experiment_episode_turn(
+                connection,
+                episode_id=episode_id,
+                project_id=project_id,
+                control_node_id=control_node_id,
+                provider=provider,
+                execution_machine=execution_machine,
+                execution_host=execution_host,
+                native_session_id=native_session_id,
+                stage_host=stage_host,
+                stage_root=stage_root,
+                chat_id=chat_id,
+                operation_id=operation_id,
+                invocation=invocation,
+                graph_result=graph_result,
+                watcher_ids=watcher_ids,
+                context_baseline=context_baseline,
+                ending_signal=ending_signal,
+                replace_binding=replace_binding,
+                replacement_provenance=replacement_provenance,
+            )
         stored = self.experiment_episode(episode_id)
         assert stored is not None
         return stored
+
+    def commit_experiment_episode_handoff(
+        self,
+        records: list[StoredWatcherRecord],
+        *,
+        binding: WatcherBinding,
+        operation_id: str,
+        native_session_id: str,
+        stage_host: str | None,
+        stage_root: str,
+        graph_result: str,
+        context_baseline: dict[str, object],
+        stops: list[WatcherStopRequest] | None = None,
+        expected_watcher_snapshot_token: str | None = None,
+        ending_signal: dict[str, object] | None = None,
+        replace_binding: bool = False,
+        replacement_provenance: dict[str, object] | None = None,
+    ) -> tuple[list[StoredWatcherRecord], ExperimentEpisodeRecord]:
+        """Atomically persist loop watchers and commit their episode handoff.
+
+        ``binding.origin_operation_id`` remains the watcher identity root. The
+        separate ``operation_id`` is the current completed task whose session
+        and episode turn are being committed.
+        """
+
+        continuation = binding.continuation
+        episode_id = continuation.control_episode_id
+        control_node_id = continuation.control_node_id
+        invocation = continuation.control_invocation
+        if (
+            continuation.patch_kind != "experiment_loop"
+            or not episode_id
+            or not control_node_id
+            or invocation is None
+        ):
+            raise ValueError("An Experiment handoff requires its complete loop continuation.")
+        if binding.episode_id is not None and binding.episode_id != episode_id:
+            raise ValueError("An Experiment handoff binding changed its episode identity.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            stored_watchers = self._persist_experiment_watchers_idempotently(
+                connection,
+                records,
+                stops=stops,
+                binding=binding,
+                expected_watcher_snapshot_token=expected_watcher_snapshot_token,
+            )
+            self._commit_experiment_episode_turn(
+                connection,
+                episode_id=episode_id,
+                project_id=binding.project_id,
+                control_node_id=control_node_id,
+                provider=continuation.provider,
+                execution_machine=continuation.run_on,
+                execution_host=binding.execution_host,
+                native_session_id=native_session_id,
+                stage_host=stage_host,
+                stage_root=stage_root,
+                chat_id=binding.chat_id,
+                operation_id=operation_id,
+                invocation=invocation,
+                graph_result=graph_result,
+                watcher_ids=[item.watcher_id for item in stored_watchers],
+                context_baseline=context_baseline,
+                ending_signal=ending_signal,
+                replace_binding=replace_binding,
+                replacement_provenance=replacement_provenance,
+            )
+        stored_episode = self.experiment_episode(episode_id)
+        assert stored_episode is not None
+        return stored_watchers, stored_episode
 
     def record_experiment_episode_diagnostic(
         self,
