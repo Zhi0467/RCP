@@ -49,6 +49,7 @@ from rcp.api.episodes import (
     serialize_episode,
     serialize_episodes,
 )
+from rcp.api.history import router as history_router
 from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess, TrustedPrincipalResolver
 from rcp.api.paper import router as paper_router
 from rcp.artifacts import (
@@ -85,11 +86,7 @@ from rcp.core.models import (
     normalize_display_name,
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.core.transitions import (
-    ProjectTransitionProjection,
-    current_project_projection,
-    transition_trigger_manifest,
-)
+from rcp.core.transitions import ProjectTransitionProjection, current_project_projection
 from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -1967,36 +1964,6 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return result
 
-    @projects_router.get("/api/projects/{project_id}/history")
-    def history(project_id: str, from_revision: int = 1, to_revision: int | None = None):
-        service = _project_service(catalog, project_id)
-        return service.history.slice(from_revision, to_revision)
-
-    @projects_router.get("/api/projects/{project_id}/history/summaries")
-    def history_summaries(
-        project_id: str,
-        from_revision: int = 1,
-        to_revision: int | None = None,
-    ):
-        service = _project_service(catalog, project_id)
-        summaries = service.history.revision_summaries(from_revision, to_revision)
-        episode_ids = {
-            episode_id
-            for summary in summaries
-            if isinstance(episode_id := summary.get("episode_id"), str)
-        }
-        episodes = {
-            episode_id: _history_episode_decoration(store, project_id, episode_id)
-            for episode_id in episode_ids
-        }
-        return [
-            {
-                **summary,
-                "episode": episodes.get(summary.get("episode_id")),
-            }
-            for summary in summaries
-        ]
-
     @projects_router.get("/api/projects/{project_id}/sources")
     def sources(project_id: str, refresh: bool = False):
         service = _project_service(catalog, project_id)
@@ -2057,11 +2024,6 @@ def create_app(
             raise
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @projects_router.get("/api/projects/{project_id}/transition-manifest")
-    def graph_transition_manifest(project_id: str):
-        _project_service(catalog, project_id)
-        return transition_trigger_manifest().model_dump(mode="json")
 
     @projects_router.post("/api/projects/{project_id}/sync/preview")
     def preview_graph_sync(project_id: str, body: GraphSyncRequest, request: Request):
@@ -3164,6 +3126,7 @@ def create_app(
 
     app.include_router(projects_router)
     app.include_router(chats_router)
+    app.include_router(history_router)
     app.include_router(paper_router)
 
     web_dist = web_dist_path()
@@ -3467,32 +3430,6 @@ def _experiment_control_node_id(
     if not isinstance(node_id, str) or not node_id:
         raise ValueError("A bounded experiment-loop task must name its control node.")
     return node_id
-
-
-def _history_episode_decoration(
-    store: AppStore,
-    project_id: str,
-    episode_id: str,
-) -> dict[str, object] | None:
-    episode = store.episode(episode_id)
-    if episode is None or episode.project_id != project_id:
-        return None
-    report = None if episode.ending == "stopped" else store.episode_report(episode_id)
-    return {
-        "mode": episode.mode,
-        "status": episode.status,
-        "ending": episode.ending,
-        "wrapup_state": episode.wrapup_state,
-        "report": (
-            {
-                "report_id": report.report_id,
-                "ending": report.ending,
-                "created_at": report.created_at,
-            }
-            if report is not None
-            else None
-        ),
-    }
 
 
 def _episode_for_http(
