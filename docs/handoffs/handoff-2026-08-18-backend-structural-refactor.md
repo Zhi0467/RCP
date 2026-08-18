@@ -5,9 +5,10 @@
   committed. Phase 3 found four qualifying harmful partial-write windows; two
   Auto-research endings, graph-repair admission, and the final cross-store
   Experiment-loop recovery are committed. Phase 5's paper, chat, history,
-  generic-watcher, result-view, Sync, task, Experiment, and episode routers are
-  committed. Phase 6's result-view task owner is committed and verified; the
-  remaining detailed Phases 5–7 re-review remains the work order.
+  generic-watcher, result-view, Sync, task, Experiment, episode, and team routers
+  are committed. Phase 6's result-view and Experiment watcher-maintenance task
+  owners are committed and verified; the remaining detailed Phases 5–7 re-review
+  remains the work order.
 - **Originally confirmed:** 2026-08-18. **Phases 0–4 re-review opened and
   closed:** 2026-08-18. **Phases 5–7 re-review closed:** 2026-08-19.
 - **Every grouping in this document was checked against the code**, not inferred
@@ -54,7 +55,9 @@ does not silently amend it.
 | 2026-08-19 | 5 / tasks    | All nine task handlers and eleven route entries move together into `api/tasks.py`: dispatch, list/detail, Pause, Resume, Retry, graph repair, and GET/HEAD artifact preview/download. `ApiServices` exposes the exact existing `BackgroundAgentTasks` and `ExperimentAdmission` objects as required narrow dependencies; Start/Resume/Retry continue sharing the original result-view Keep locks, and attachment claim/release, visibility, authority, recovery refusals, CSP, and HTTP error mappings are unchanged. The two pure profile/skill resolution helpers used by both task routes and Auto-research worker composition move once into `api/task_requests.py`, so neither new module imports `api.app` and no policy is duplicated. This slice deliberately does not implement Phase 7's episode-lineage recovery dispatch. The task list/detail test and non-blocking preview/download boundary test move to `test_api_tasks.py`; the broader artifact lifecycle remains with its cross-module chat/run coverage. | Committed as `e58a9d2`; 108 main-agent focused tests, the full backend suite, Ruff, the exact-new-file hooks, and the all-files hooks are green. |
 | 2026-08-19 | 5 / Experiment | Experiment Run, retired bulk watcher Stop, and graceful Stop loop move together into `api/experiments.py`, with the greedy `.../watchers/stop` route still registered before `{node_id:path}/stop`. The same module owns the exact bound-episode Stop helper used by both the Experiment route and the still-unmoved episode Stop route; its store and catalog are explicit inputs, and both callers retain the original re-entrant per-project lock. The four store-aware runtime/control projection functions move once into `api/experiment_controls.py` rather than duplicating them or making pure graph `rcp.control` storage-aware. The project-safe HTTP episode lookup moves to its existing `api/episodes.py` owner. No `ApiServices` field, lock, fallback, dynamic state mirror, or product behavior was added; main/branch target identity, pending-watcher claim, Stop settlement, and error mappings are unchanged. Existing dedicated Experiment Stop/index tests already own these routes, so no artificial test move was made. | Committed as `61a8575`; 96 main-agent focused tests, the full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
 | 2026-08-19 | 5 / episodes | All eight episode handlers and nine route entries move together into `api/episode_routes.py`: list, start, exact Stop, branch merge, reauthorize, mail list/send, and GET/HEAD report preview. The five branch reservation/projection helpers move once into `api/episode_branches.py` with explicit store/catalog inputs; `app.py` binds only the two callbacks still used by composition and recovery. The route module reuses the exact existing background engine, identity boundary, per-project Experiment lock, and Experiment Stop helper. Branch identity, merge eligibility, writable-state checks, durable-mail-before-best-effort-delivery, report visibility, membership, and HTTP mappings are unchanged; no `ApiServices` field, fallback, or second lock was added. | Committed as `a1f9f2f`; the main-agent episode/result-view focused set, full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
+| 2026-08-19 | 5 / team | The ten global identity/team handlers and their four strict request models move into `api/team.py`. The module depends only on the existing `AppStore` and `IdentityAccess` objects through narrow typed dependencies; no service field or second identity path was added. The unauthenticated body-limit middleware and `TeamAuthenticationError` mapping remain in app composition. Enrollment, session cookie exchange/logout, per-member invitations, credential rotation/revocation, space rename, personal-space 404 behavior, and validation normalization are unchanged. | Committed as `b262a38`; the main-agent focused set, full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
 | 2026-08-19 | 6 / result views | The existing result-view stage primitives and the exact ten-definition Work lifecycle cluster move together into `runs/tasks/result_views.py`; the old `runs/result_views.py` is removed with no compatibility shim. `work.py` imports only the seven lifecycle names it calls, while Discuss imports the two policy-neutral retention primitives. The moved ASTs and call direction are unchanged, no surface discriminator or fallback was introduced, and direct tests now patch the semantic owner. The detailed pre-move inbound/outbound ledger is retained below. | Committed as `5e8d991`; focused suites, full backend, Ruff, exact-new-file hooks, and all-files hooks are green. |
+| 2026-08-19 | 6 / watcher maintenance | The verified two-definition Experiment watcher-maintenance cluster moves into `runs/tasks/experiment_watcher_maintenance.py`. Its only Work-local outbound dependency, `_retry_deliverable_is_unchanged`, is policy-neutral and already serves ordinary Work plus Auto-research stream, so it moves once to `runs/shared.py`; every caller imports that owner directly. The maintenance module imports existing staging/launch/validation/persistence leaves and never imports `runs.work`. No mode flag, callback layer, fallback, circular dependency, or compatibility re-export remains. | Committed as `258b9de`; the exact call ledger is retained below, and focused suites, full backend, Ruff, exact-new-file hooks, and all-files hooks are green. |
 
 ## Phases 0–4 re-review ledger
 
@@ -1213,6 +1216,32 @@ the ten definitions move as one owner while `work.py` retains only orchestration
 call sites. The old module had no non-test compatibility caller after Work,
 Discuss, and direct result-view tests changed imports, so it was deleted rather
 than shimmed.
+
+#### Implemented Experiment watcher-maintenance call ledger
+
+The pre-move ledger had three relevant definitions:
+
+- `_experiment_maintenance_binding` was called only by
+  `_process_experiment_watcher_maintenance`. It called the durable task lookup,
+  constructed `WatcherBinding`, and preserved the same three fail-loud actor,
+  task-kind, and conversation checks.
+- `_process_experiment_watcher_maintenance` was called by `_apply_work_turn` and
+  the direct Experiment watcher-I/O tests. Inside the moved cluster it called
+  `_experiment_maintenance_binding` and `_retry_deliverable_is_unchanged`.
+  Every other edge is an existing imported leaf: staged watcher discovery,
+  correction contract/staging, provider launch, watcher parsing and validation,
+  idempotent persistence, and durable receipts/events.
+- `_retry_deliverable_is_unchanged` was also called by the ordinary Work initial
+  Patch/watch readers and Auto-research stream. It has no cluster dependency: it
+  computes the current SHA-256, records the exact diagnostic comparison receipt,
+  and returns whether an unchanged survivor must be ignored. That caller set is
+  why the unchanged body moved to `runs/shared.py`; importing it through
+  `runs.work` would have left a hidden compatibility dependency, while importing
+  `runs.work` from the new maintenance owner would have created a cycle.
+
+After the move, `work.py` imports only the maintenance processor from the new
+owner. Work and Auto-research stream both import the retry comparison directly
+from `runs.shared`; the new owner imports no symbol from `runs.work`.
 
 The Auto-research child core is these fourteen definitions. This independently
 recorded ledger replaces the unsupported original 14-definition cluster claim;
