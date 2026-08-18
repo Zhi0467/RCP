@@ -37,9 +37,9 @@ from rcp.runs.auto_research_recovery import (
     record_structural_failure,
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
-from rcp.runs.episode_report import EpisodeReportRunRequest
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.task_policy import task_graph_capable
+from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import (
     CoachRequest,
     GraphUpdateResult,

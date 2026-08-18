@@ -13,8 +13,8 @@ from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
-from rcp.runs.episode_report import EpisodeReportRunRequest
 from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,

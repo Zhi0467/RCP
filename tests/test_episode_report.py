@@ -12,7 +12,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.write_scope import registered_repository_roots
 from rcp.background import AgentTaskExecution
 from rcp.runs.episode_reconcile import EpisodeReconciler
-from rcp.runs.episode_report import EpisodeReportRunRequest, stream_episode_report_run
+from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.skill_registry import official_registry
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, EpisodeWrapupRecord, ProjectRecord
 from rcp.storage.episodes import compact_episode_receipt

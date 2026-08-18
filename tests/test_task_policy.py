@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.episode_report import EpisodeReportRunRequest
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest
 
 

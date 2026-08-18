@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from rcp.runs.episode_report import EpisodeReportRunRequest
+from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.skill_registry import official_registry
 from rcp.storage import (
     AgentTaskRecord,
