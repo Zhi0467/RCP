@@ -52,6 +52,7 @@ from rcp.api.history import router as history_router
 from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess, TrustedPrincipalResolver
 from rcp.api.paper import router as paper_router
 from rcp.api.result_views import router as result_views_router
+from rcp.api.sync import router as sync_router
 from rcp.api.watchers import router as watchers_router
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
@@ -86,8 +87,7 @@ from rcp.core.models import (
     normalize_display_name,
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.core.transitions import current_project_projection
-from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
+from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -154,8 +154,6 @@ from rcp.runs.work import _apply_work_patch, _validate_work_patch_live, stream_w
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     CoachRequest,
-    GraphSyncRequest,
-    NodeEditConflict,
     ProjectService,
     ProjectSettingsRequest,
     RunRequest,
@@ -997,6 +995,9 @@ def create_app(
         attachment_store=attachment_store,
         watcher_poller=watcher_poller,
         result_view_keep_locks=result_view_keep_lock,
+        project_display_cache=project_display_cache,
+        watcher_delivery=watcher_delivery,
+        experiment_operation_lock=experiment_operation_lock,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1916,98 +1917,6 @@ def create_app(
     def sources(project_id: str, refresh: bool = False):
         service = _project_service(catalog, project_id)
         return service.index_snapshot(refresh=refresh).model_dump(mode="json")
-
-    @projects_router.post("/api/projects/{project_id}/sync")
-    def sync_graph(project_id: str, body: GraphSyncRequest, request: Request):
-        authorized_by = require_patch_capable_identity(request)
-        service = _project_service(catalog, project_id)
-        try:
-            if body.removed_node_ids:
-                with experiment_operation_lock(project_id):
-                    transition = service.sync_graph_transition(
-                        body,
-                        active_control_node_ids=store.active_experiment_control_ids(
-                            project_id,
-                            graph_target=GraphTargetRef(),
-                        ),
-                        authorized_by=authorized_by,
-                    )
-            else:
-                transition = service.sync_graph_transition(
-                    body,
-                    active_control_node_ids=store.active_experiment_control_ids(
-                        project_id,
-                        graph_target=GraphTargetRef(),
-                    ),
-                    authorized_by=authorized_by,
-                )
-            if transition is None:
-                current = service.history.current_materialization()
-                head = service.history.head_ref(current)
-                projection = current_project_projection(
-                    current.state,
-                    transition_id=head.transition_id,
-                    target=head.target,
-                )
-            else:
-                projection = transition.projection
-            state = projection.graph
-            evaluate_graph_wake_boundary(project_id, state, source="human Sync")
-            payload = state.model_dump(mode="json")
-            payload.update(
-                project_display_cache.transition_payload(
-                    project_id,
-                    projection,
-                    reconcile_operational=True,
-                )
-            )
-            return payload
-        except KeyError as exc:
-            raise HTTPException(
-                status_code=404, detail=f"Missing graph object: {exc.args[0]}"
-            ) from exc
-        except NodeEditConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except PatchRejected:
-            raise
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @projects_router.post("/api/projects/{project_id}/sync/preview")
-    def preview_graph_sync(project_id: str, body: GraphSyncRequest, request: Request):
-        authorized_by = require_patch_capable_identity(request)
-        service = _project_service(catalog, project_id)
-        try:
-            prepared = service.preview_sync_graph(
-                body,
-                active_control_node_ids=store.active_experiment_control_ids(
-                    project_id,
-                    graph_target=GraphTargetRef(),
-                ),
-                authorized_by=authorized_by,
-            )
-            assert prepared.patch.transition is not None
-            return {
-                "projection": project_display_cache.transition_payload(
-                    project_id,
-                    prepared.projection,
-                    reconcile_operational=False,
-                ),
-                "transition": prepared.patch.transition.model_dump(mode="json"),
-            }
-        except KeyError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Missing graph object: {exc.args[0]}",
-            ) from exc
-        except RevisionConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except NodeEditConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except PatchRejected:
-            raise
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @projects_router.delete("/api/projects/{project_id}/caches")
     def clear_rebuildable_caches(project_id: str):
@@ -2948,6 +2857,7 @@ def create_app(
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(result_views_router)
+    app.include_router(sync_router)
     app.include_router(watchers_router)
 
     web_dist = web_dist_path()
