@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp import __version__
@@ -52,12 +52,13 @@ from rcp.api.episodes import (
 from rcp.api.experiment_controls import _experiment_control_from_runtime
 from rcp.api.experiments import router as experiments_router
 from rcp.api.history import router as history_router
-from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess, TrustedPrincipalResolver
+from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.paper import router as paper_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.api.tasks import router as tasks_router
+from rcp.api.team import router as team_router
 from rcp.api.watchers import router as watchers_router
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
@@ -68,17 +69,13 @@ from rcp.background import (
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.models import (
-    DISPLAY_NAME_MAX_LENGTH,
     Experiment,
     GraphState,
-    normalize_display_name,
 )
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
-    TEAM_ENROLLMENT_CODE_MAX_LENGTH,
-    TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
@@ -143,7 +140,6 @@ from rcp.sources import (
     legacy_shared_cache_roots,
 )
 from rcp.storage import (
-    SPACE_NAME_MAX_LENGTH,
     AgentTaskKind,
     AgentUsageSnapshot,
     AppStore,
@@ -152,7 +148,6 @@ from rcp.storage import (
     GraphWatcherRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
-    normalize_space_name,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import (
@@ -228,46 +223,6 @@ class ProjectInviteRequest(BaseModel):
     user_id: str
 
 
-class SpaceIdentityUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    display_name: str = Field(max_length=DISPLAY_NAME_MAX_LENGTH)
-
-    @field_validator("display_name", mode="before")
-    @classmethod
-    def normalize_display_name(cls, value: str) -> str:
-        return normalize_display_name(value)
-
-
-class TeamEnrollmentRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    code: str = Field(min_length=1, max_length=TEAM_ENROLLMENT_CODE_MAX_LENGTH)
-    display_name: str = Field(max_length=DISPLAY_NAME_MAX_LENGTH)
-
-    @field_validator("display_name", mode="before")
-    @classmethod
-    def normalize_display_name(cls, value: str) -> str:
-        return normalize_display_name(value)
-
-
-class TeamSessionExchangeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    token: str = Field(min_length=1, max_length=TEAM_MEMBER_TOKEN_MAX_LENGTH)
-
-
-class TeamSpaceUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    name: str = Field(max_length=SPACE_NAME_MAX_LENGTH)
-
-    @field_validator("name", mode="before")
-    @classmethod
-    def normalize_name(cls, value: str) -> str:
-        return normalize_space_name(value)
-
-
 class _LazyProjectService:
     """Compatibility handle that opens the default project only when inspected."""
 
@@ -314,13 +269,9 @@ def create_app(
         space_kind=space_kind,
         trusted_principal_resolver=trusted_principal_resolver,
     )
-    require_team_space = identity_access.require_team_space
     set_team_session_cookie = identity_access.set_team_session_cookie
-    clear_team_session_cookie = identity_access.clear_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
-    authenticating_team_session = identity_access.authenticating_team_session
     acting_user = identity_access.acting_user
-    identity_payload = identity_access.identity_payload
     launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
@@ -1178,102 +1129,6 @@ def create_app(
             payload["project"] = default_project_name
         return payload
 
-    @app.get("/api/identity")
-    def get_identity(request: Request) -> dict[str, object]:
-        return identity_payload(acting_user(request))
-
-    @app.patch("/api/identity")
-    def update_identity(
-        request: Request,
-        body: SpaceIdentityUpdateRequest,
-    ) -> dict[str, object]:
-        current = acting_user(request)
-        try:
-            renamed = store.rename_space_user(current.user_id, body.display_name)
-        except KeyError as exc:  # pragma: no cover - resolved and renamed in one local store
-            raise HTTPException(
-                status_code=403, detail="Acting identity is no longer valid."
-            ) from exc
-        return identity_payload(renamed)
-
-    @app.post("/api/team/enroll")
-    def enroll_team_member(body: TeamEnrollmentRequest) -> dict[str, object]:
-        require_team_space()
-        member, token = store.enroll_team_member(body.code, body.display_name)
-        return {"identity": identity_payload(member), "token": token}
-
-    @app.post("/api/team/session/exchange")
-    def exchange_team_session(
-        body: TeamSessionExchangeRequest,
-        response: Response,
-    ) -> dict[str, object]:
-        require_team_space()
-        session, member = store.create_team_session(body.token)
-        set_team_session_cookie(response, session)
-        return identity_payload(member)
-
-    @app.post("/api/team/session/logout")
-    def logout_team_session(request: Request, response: Response) -> dict[str, bool]:
-        require_team_space()
-        acting_user(request)
-        store.delete_team_session(request.cookies.get(TEAM_SESSION_COOKIE))
-        clear_team_session_cookie(response)
-        return {"ok": True}
-
-    @app.get("/api/team/invitations")
-    def team_invitations(request: Request) -> list[dict[str, object]]:
-        require_team_space()
-        member = acting_user(request)
-        return [
-            invitation.model_dump(mode="json")
-            for invitation in store.team_invitations(member.user_id)
-        ]
-
-    @app.post("/api/team/invitations")
-    def create_team_invitation(request: Request) -> dict[str, object]:
-        require_team_space()
-        member = acting_user(request)
-        invitation, code = store.create_team_invitation(member.user_id)
-        space_name = store.space_name
-        if space_name is None:  # pragma: no cover - named team initialization is required
-            raise HTTPException(status_code=500, detail="Team space name is missing.")
-        return {
-            "invitation": invitation.model_dump(mode="json"),
-            "code": code,
-            "space_name": space_name,
-        }
-
-    @app.post("/api/team/credential/rotate")
-    def rotate_team_credential(request: Request, response: Response) -> dict[str, str]:
-        require_team_space()
-        member = acting_user(request)
-        token = store.rotate_team_token(
-            member.user_id,
-            authenticating_session=authenticating_team_session(request),
-        )
-        clear_team_session_cookie(response)
-        return {"token": token}
-
-    @app.post("/api/team/credential/revoke")
-    def revoke_team_credential(request: Request, response: Response) -> dict[str, bool]:
-        require_team_space()
-        member = acting_user(request)
-        store.revoke_team_token(
-            member.user_id,
-            authenticating_session=authenticating_team_session(request),
-        )
-        clear_team_session_cookie(response)
-        return {"ok": True}
-
-    @app.patch("/api/team/space")
-    def update_team_space(
-        request: Request,
-        body: TeamSpaceUpdateRequest,
-    ) -> dict[str, str]:
-        require_team_space()
-        acting_user(request)
-        return {"space_name": store.rename_space(body.name)}
-
     # S101. Every project-scoped route hangs off this one router, so membership
     # is declared once instead of remembered 36 times. A route added outside it
     # is caught by test_project_membership's route enumeration, not by review.
@@ -1801,6 +1656,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {**package.catalog_entry(), "body": body}
 
+    app.include_router(team_router)
     app.include_router(projects_router)
     app.include_router(episode_router)
     app.include_router(experiments_router)
