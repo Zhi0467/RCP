@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import stat
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from rcp.artifacts import validate_artifact_bytes
+from rcp.artifacts import validate_artifact_bytes, validate_result_view_id
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.state import StateUnavailable
@@ -25,12 +24,12 @@ class ResultViewSnapshot:
 
 def result_view_slot_path(stage: Path, view_id: str) -> Path:
     """Reconstruct the stable local path without consulting a turn artifact scope."""
-    return stage / "views" / _result_view_id(view_id)
+    return stage / "views" / validate_result_view_id(view_id)
 
 
 def prepare_local_result_view_slot(stage: Path, view_id: str, *, reuse: bool) -> Path:
     """Create or reopen one exact result-view slot and roll stage retention forward."""
-    view_id = _result_view_id(view_id)
+    view_id = validate_result_view_id(view_id)
     root_fd = _open_stage_root(stage)
     fds = [root_fd]
     try:
@@ -230,12 +229,6 @@ def require_result_view_changed(before: ResultViewSnapshot, after: ResultViewSna
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
-def _result_view_id(value: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{24}", value) is None:
-        raise ValueError("result view id must be exactly 24 lowercase hexadecimal characters")
-    return value
-
-
 def _plain_name(name: str) -> str:
     if not name or name in {".", ".."} or "/" in name or "\x00" in name:
         raise ValueError("result view file name must be a plain base name")
@@ -252,7 +245,7 @@ def _open_stage_root(stage: Path) -> int:
 
 
 def _open_local_result_view_slot(stage: Path, view_id: str) -> tuple[list[int], int]:
-    view_id = _result_view_id(view_id)
+    view_id = validate_result_view_id(view_id)
     root_fd = _open_stage_root(stage)
     fds = [root_fd]
     try:

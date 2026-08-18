@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import secrets
 import stat
 from html.parser import HTMLParser
@@ -58,6 +59,12 @@ class ResultViewDescriptor(BaseModel):
     kept_filename: str | None = None
     kept_at: str | None = None
     can_revise: bool
+
+
+def validate_result_view_id(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{24}", value) is None:
+        raise ValueError("result view id must be exactly 24 lowercase hexadecimal characters")
+    return value
 
 
 def artifact_id(scope_id: str, name: str) -> str:

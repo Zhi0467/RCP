@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
+from rcp.artifacts import validate_result_view_id
 from rcp.limits import REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS, RUN_STAGE_RETENTION_DAYS
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import StateUnavailable
@@ -1000,7 +1001,7 @@ finally:
         """Create or reopen one stable result-view slot in this conversation stage."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
-        view_id = _result_view_id(view_id)
+        view_id = validate_result_view_id(view_id)
         target = self.workspace / "views" / view_id
         script = """
 import os,sys
@@ -1064,7 +1065,7 @@ finally:
         """Inspect at most two entries, enough to prove the one-file contract."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
-        view_id = _result_view_id(view_id)
+        view_id = validate_result_view_id(view_id)
         script = """
 import json,os,stat,sys
 root,view_id=sys.argv[1:3]
@@ -1126,7 +1127,7 @@ finally:
         """Read one bounded direct regular result-view file without following links."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
-        view_id = _result_view_id(view_id)
+        view_id = validate_result_view_id(view_id)
         name = _plain_workspace_file_name(name)
         if max_bytes < 0:
             raise ValueError("result view byte limit must be non-negative")
@@ -1267,12 +1268,6 @@ def _safe_workspace_file_name(name: str) -> str:
     if len(name) > 255 or re.fullmatch(r"[A-Za-z0-9._-]+", name) is None:
         raise ValueError("workspace file name contains unsupported characters")
     return name
-
-
-def _result_view_id(value: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{24}", value) is None:
-        raise ValueError("result view id must be exactly 24 lowercase hexadecimal characters")
-    return value
 
 
 def _safe_root(value: str) -> bool:
