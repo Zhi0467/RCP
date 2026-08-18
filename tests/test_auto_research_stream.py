@@ -59,7 +59,7 @@ from rcp.runs.auto_research_stream import (
     stream_auto_research_orchestrator_run,
     stream_auto_research_worker_run,
 )
-from rcp.runs.work import _apply_work_patch, _validate_work_patch_live
+from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import GraphUpdateResult, ProjectService
 from rcp.storage import (
     AgentTaskRecord,

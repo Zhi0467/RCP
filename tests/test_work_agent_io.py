@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-import rcp.runs.work as work_module
+import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
-from rcp.runs.work import _WorkValidatorMailboxLifecycle, stream_work_run
+from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
 
 from .helpers import (

@@ -19,7 +19,7 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.work import _apply_work_patch, _validate_work_patch_live
+from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from tests.helpers import agent_patch_json, refresh_patch, seed_patch

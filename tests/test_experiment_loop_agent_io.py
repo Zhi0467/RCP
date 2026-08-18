@@ -25,7 +25,7 @@ from rcp.runs.shared import _parent_task_contract_path
 from rcp.runs.tasks.experiment_watcher_maintenance import (
     _process_experiment_watcher_maintenance,
 )
-from rcp.runs.work import (
+from rcp.runs.tasks.work import (
     _apply_work_patch,
     _required_work_continuation_session_id,
     stream_work_run,

@@ -78,7 +78,7 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
-from rcp.runs.work import (
+from rcp.runs.tasks.work import (
     _apply_work_patch,
     _bounded_graph_messages,
     _CorrectionPatchRead,

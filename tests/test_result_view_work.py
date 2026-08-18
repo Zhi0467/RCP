@@ -11,7 +11,7 @@ import pytest
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman, Patch
-from rcp.runs.work import stream_work_run
+from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 
@@ -594,7 +594,7 @@ async def test_background_stream_close_leaves_stored_bytes_unchanged(
         session_id=session_id,
     )
     if terminal_event == "post_provider_error":
-        import rcp.runs.work as work_module
+        import rcp.runs.tasks.work as work_module
 
         def fail_after_provider(*_args, **_kwargs) -> None:
             raise RuntimeError("post-provider lifecycle failure")
@@ -1035,7 +1035,7 @@ async def test_accepted_create_recovery_continues_without_reauthoring_result_vie
         if continuation == "resume":
             # Isolate result-view settlement from the independent prompt-baseline replay seam.
             recovery_patch.setattr(
-                "rcp.runs.work._commit_chat_prompt_state",
+                "rcp.runs.tasks.work._commit_chat_prompt_state",
                 lambda *_args, **_kwargs: None,
             )
         events = await _events(
@@ -1168,7 +1168,7 @@ async def test_accepted_revision_recovery_continues_without_reauthoring_result_v
         if continuation == "resume":
             # Isolate result-view settlement from the independent prompt-baseline replay seam.
             recovery_patch.setattr(
-                "rcp.runs.work._commit_chat_prompt_state",
+                "rcp.runs.tasks.work._commit_chat_prompt_state",
                 lambda *_args, **_kwargs: None,
             )
         events = await _events(

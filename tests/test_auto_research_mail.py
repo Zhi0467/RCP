@@ -28,7 +28,7 @@ from rcp.runs.auto_research_mail import (
     stage_auto_research_mail_delivery,
 )
 from rcp.runs.experiment_loop import experiment_watcher_output_name
-from rcp.runs.work import _stage_auto_research_child_work_mail, stream_work_run
+from rcp.runs.tasks.work import _stage_auto_research_child_work_mail, stream_work_run
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,

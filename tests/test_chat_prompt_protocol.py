@@ -12,7 +12,7 @@ from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.background import AgentTaskExecution
 from rcp.providers import ProviderSkillReference
 from rcp.runs.discuss import stream_discuss_run
-from rcp.runs.work import stream_work_run
+from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore

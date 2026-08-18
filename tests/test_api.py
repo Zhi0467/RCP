@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import rcp.projects as projects_module
-import rcp.runs.work as work_module
+import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactory, ProviderReadiness
 from rcp.agents.context import RepositoryPointer
 from rcp.api.app import (
@@ -55,7 +55,7 @@ from rcp.runs.shared import (
     _sse,
     _sweep_stale_stages,
 )
-from rcp.runs.work import stream_work_run
+from rcp.runs.tasks.work import stream_work_run
 from rcp.server_runtime import ServerMetadata
 from rcp.service import (
     CoachRequest,
