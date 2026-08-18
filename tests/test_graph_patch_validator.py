@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-import rcp.runs.graph as graph_run
+import rcp.runs.tasks.graph as graph_run
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
-from rcp.runs.graph import stream_graph_run
 from rcp.runs.patch_validator import VALIDATOR_CLIENT_SOURCE
+from rcp.runs.tasks.graph import stream_graph_run
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
 from tests.helpers import agent_patch_json, seed_patch

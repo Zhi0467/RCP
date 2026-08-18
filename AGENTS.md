@@ -402,7 +402,7 @@ guarantees — surface the conflict instead of working around it.
    persisted before validation runs, and the folder is deleted only after the
    patch applies — otherwise it ages out on a retention window. Recovery is
    automatic (the ladder in
-   [`stream_graph_run`](src/rcp/runs/graph.py)): rescan the folder for the patch,
+   [`stream_graph_run`](src/rcp/runs/tasks/graph.py)): rescan the folder for the patch,
    then hand validation errors back to the same live session for at most two
    scratch-only rounds. This is the Seed/Refresh generic patch-correction path;
    Work instead uses same-access `work_patch_correction`. A graph-level rejection

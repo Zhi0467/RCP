@@ -7,10 +7,10 @@ from pathlib import Path, PurePosixPath
 import pytest
 from fastapi.testclient import TestClient
 
-import rcp.runs.graph as graph_run
+import rcp.runs.tasks.graph as graph_run
 from rcp.agents import AgentEvent
 from rcp.runs.experiment_loop import experiment_loop_semantic_ending
-from rcp.runs.graph import (
+from rcp.runs.tasks.graph import (
     _agent_read_dirs,
     _record_context_receipt,
     _stage_graph_context,

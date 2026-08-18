@@ -40,12 +40,6 @@ from rcp.runs.chat import (
     _project_write_scope,
 )
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
-from rcp.runs.graph import (
-    _record_context_reuse,
-    _record_progress_handoff,
-    _stage_graph_context,
-    stream_graph_run,
-)
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
@@ -54,6 +48,12 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
+from rcp.runs.tasks.graph import (
+    _record_context_reuse,
+    _record_progress_handoff,
+    _stage_graph_context,
+    stream_graph_run,
+)
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import (
     CoachRequest,
@@ -2214,7 +2214,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             self.root = None
             return True
 
-    monkeypatch.setattr("rcp.runs.graph.RemoteRunStage", FakeRemoteStage)
+    monkeypatch.setattr("rcp.runs.tasks.graph.RemoteRunStage", FakeRemoteStage)
     request = RunRequest(
         provider="codex",
         run_truth_scope=["repo-a"],

@@ -11,7 +11,6 @@ import pytest
 from rcp.history import HistoryManager
 from rcp.limits import PATCH_SELF_CHECK_MAX_COUNT
 from rcp.paper import PaperService
-from rcp.runs.graph import _validate_graph_patch_live
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -19,6 +18,7 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.tasks.graph import _validate_graph_patch_live
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import ProjectService
 from rcp.storage import AppStore
