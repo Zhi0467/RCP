@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from rcp.api.app import create_app
+from rcp.api.dependencies import ApiServices, require_project_membership
 from rcp.core.authority import require_apply, require_dispatch
 from rcp.history import HistoryManager
 from rcp.projects import ProjectCatalog
@@ -97,6 +99,30 @@ def _routes_missing_membership(app: FastAPI) -> list[str]:
         if not attached:
             missing.append(f"{sorted(route.methods)} {route.path}")
     return missing
+
+
+def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
+    services = app.state.services
+
+    assert isinstance(services, ApiServices)
+    assert tuple(field.name for field in fields(services)) == (
+        "store",
+        "catalog",
+        "identity_access",
+    )
+    assert services.store is app.state.background_tasks.store
+    assert services.catalog is app.state.catalog
+    assert services.identity_access is not None
+    assert not hasattr(services, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        services.store = services.store
+
+    assert app.state.project_membership_dependency is require_project_membership
+    assert require_project_membership.__module__ == "rcp.api.dependencies"
+    assert require_project_membership.__closure__ is None
 
 
 # --- seeding -----------------------------------------------------------------

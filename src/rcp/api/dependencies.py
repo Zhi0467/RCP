@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from fastapi import HTTPException, Request
+
+from rcp.api.identity import IdentityAccess
+from rcp.projects import ProjectCatalog
+from rcp.storage import AppStore
+
+
+@dataclass(frozen=True, slots=True)
+class ApiServices:
+    """Composition-only runtime services exposed to API dependencies."""
+
+    store: AppStore
+    catalog: ProjectCatalog
+    identity_access: IdentityAccess
+
+
+def _api_services(request: Request) -> ApiServices:
+    services = getattr(request.app.state, "services", None)
+    if not isinstance(services, ApiServices):
+        raise RuntimeError("API services have not been configured.")
+    return services
+
+
+def get_store(request: Request) -> AppStore:
+    return _api_services(request).store
+
+
+def get_catalog(request: Request) -> ProjectCatalog:
+    return _api_services(request).catalog
+
+
+def get_identity_access(request: Request) -> IdentityAccess:
+    return _api_services(request).identity_access
+
+
+def require_project_membership(project_id: str, request: Request) -> str:
+    canonical = get_catalog(request).resolve_project_id(project_id)
+    member = get_identity_access(request).acting_user(request)
+    if not get_store(request).is_project_member(canonical, member.user_id):
+        # A refusal is indistinguishable from an unknown project. A 403 would
+        # confirm the project exists, which is the one thing a non-member must
+        # not learn.
+        raise HTTPException(status_code=404, detail="Project not found")
+    return canonical
+
+
+__all__ = [
+    "ApiServices",
+    "get_catalog",
+    "get_identity_access",
+    "get_store",
+    "require_project_membership",
+]

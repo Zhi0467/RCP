@@ -34,6 +34,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.api.dependencies import ApiServices, require_project_membership
 from rcp.api.episodes import (
     EpisodeMessageBody,
     EpisodeResponse,
@@ -371,6 +372,11 @@ def create_app(
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+    services = ApiServices(
+        store=store,
+        catalog=catalog,
+        identity_access=identity_access,
+    )
 
     def ensure_auto_research_graph_target(episode: EpisodeRecord) -> None:
         if (
@@ -1217,6 +1223,7 @@ def create_app(
                 remove_server_metadata(app_data, instance_id=identity.instance_id)
 
     app = FastAPI(title="RCP", version=__version__, lifespan=lifespan)
+    app.state.services = services
     app.state.catalog = catalog
     app.state.provider_skills = provider_skills
     app.state.setup = setup
@@ -1511,15 +1518,6 @@ def create_app(
     # S101. Every project-scoped route hangs off this one router, so membership
     # is declared once instead of remembered 36 times. A route added outside it
     # is caught by test_project_membership's route enumeration, not by review.
-    def require_project_membership(project_id: str, request: Request) -> str:
-        canonical = catalog.resolve_project_id(project_id)
-        if not store.is_project_member(canonical, acting_user(request).user_id):
-            # A refusal is indistinguishable from an unknown project. A 403
-            # would confirm the project exists, which is the one thing a
-            # non-member must not learn.
-            raise HTTPException(status_code=404, detail="Project not found")
-        return canonical
-
     projects_router = APIRouter(dependencies=[Depends(require_project_membership)])
     # Exposed so the route-enumeration test can prove membership is attached,
     # rather than trusting that every project route was declared in one place.
