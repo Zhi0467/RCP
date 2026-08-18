@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 import pytest
+from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -502,6 +503,56 @@ def test_project_snapshot_and_resolution_use_last_good_provider_skills(manifest,
         service.resolve_skill_request(
             request.model_copy(update={"invoked_provider_skill_names": ["missing-native"]})
         )
+
+
+def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    draft = service.project_snapshot()
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        json.dumps(draft)
+    with pytest.raises(ValueError, match="__dict__"):
+        jsonable_encoder(draft)
+
+    client = TestClient(app)
+    generation = app.state.catalog.reserve_cached_snapshot_generation(project_id)
+    assert app.state.catalog.commit_cached_snapshot(
+        project_id,
+        draft,
+        generation=generation,
+        patch_log_head=service.history.workspace.cached_patch_log_head(),
+    )
+    raw_saved = app.state.catalog.cached_snapshot(project_id)
+    assert raw_saved is not None
+    assert "experiment_control" not in raw_saved
+
+    saved = client.get(f"/api/projects/{project_id}/cached")
+    assert saved.status_code == 200
+    assert set(saved.json()["experiment_control"]) == {"exp/bounded-loop"}
+
+    app.state.catalog._cached_snapshot_path(project_id).unlink()
+    current = client.get(f"/api/projects/{project_id}")
+    assert current.status_code == 200
+    assert set(current.json()["experiment_control"]) == {"exp/bounded-loop"}
+
+    body = {
+        "default_run_truth_scope": current.json()["default_run_truth_scope"],
+        "agent_profiles": {
+            surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+            for surface, profile in current.json()["agent_profiles"].items()
+        },
+    }
+    settings = client.put(f"/api/projects/{project_id}/settings", json=body)
+    assert settings.status_code == 200
+    assert set(settings.json()["experiment_control"]) == {"exp/bounded-loop"}
+    raw_after_settings = app.state.catalog.cached_snapshot(project_id)
+    assert raw_after_settings is not None
+    assert "experiment_control" not in raw_after_settings
 
 
 def test_remote_stage_sweep_starts_after_health_is_available(
@@ -1073,6 +1124,7 @@ def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, mon
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
     append_fixture_patch(app.state.service, seed_patch())
+    append_fixture_patch(app.state.service, _experiment_fixture_patch())
     entered = threading.Event()
     release = threading.Event()
     probe_calls = 0
@@ -1125,8 +1177,9 @@ def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, mon
     assert probe_calls == 1
     assert refresh_calls == 1
     assert refreshed is not None
-    assert refreshed["revision"] == 2
+    assert refreshed["revision"] == 3
     assert refreshed["snapshot_freshness"] == "fresh"
+    assert set(refreshed["experiment_control"]) == {"exp/bounded-loop"}
 
 
 def test_local_patch_head_refreshes_cache_without_joining_the_write_path(
@@ -2107,6 +2160,8 @@ def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:
 
 def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    append_fixture_patch(app.state.service, _experiment_fixture_patch())
     client = TestClient(app)
     project_id = app.state.default_project_id
     calls: list[str | None] = []
@@ -2142,6 +2197,7 @@ def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -
     assert response.json()["project"]["machines"][0]["provider_paths"]["codex"] == (
         "/opt/new-agent/codex"
     )
+    assert set(response.json()["project"]["experiment_control"]) == {"exp/bounded-loop"}
     assert load_manifest(manifest.path).machine_map["laptop"].provider_paths["codex"] == (
         "/opt/new-agent/codex"
     )

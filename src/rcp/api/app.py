@@ -548,7 +548,6 @@ def create_app(
         logger=logger,
     )
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
-    attach_experiment_control = project_display_cache.attach_experiment_control
     schedule_project_reconciliation = project_display_cache.schedule_project_reconciliation
 
     def project_transition_payload(
@@ -562,7 +561,10 @@ def create_app(
         payload = projection.model_dump(mode="json")
         control_snapshot: dict[str, object] = {"graph": payload["graph"]}
         if reconcile_operational:
-            attach_experiment_control(project_id, control_snapshot)
+            control_snapshot = project_display_cache.complete_transition_control(
+                project_id,
+                control_snapshot,
+            )
         else:
             state = projection.graph
             experiment_ids = [
@@ -1786,19 +1788,18 @@ def create_app(
 
     @projects_router.get("/api/projects/{project_id}")
     async def project(project_id: str) -> dict[str, object]:
-        cached = catalog.cached_snapshot(project_id)
+        cached = project_display_cache.cached_project_snapshot(project_id)
         if cached is not None:
-            attach_experiment_control(project_id, cached)
             return cached
         try:
             generation = catalog.reserve_cached_snapshot_generation(project_id)
-            service, snapshot = await asyncio.to_thread(catalog.open_snapshot, project_id)
+            service, snapshot = await asyncio.to_thread(
+                project_display_cache.open_snapshot, project_id
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
         except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        snapshot["id"] = project_id
-        attach_experiment_control(project_id, snapshot)
         try:
             committed = catalog.commit_cached_snapshot(
                 project_id,
@@ -1812,9 +1813,8 @@ def create_app(
             logger.warning("Could not update display snapshot for %s: %s", project_id, exc)
         else:
             if not committed:
-                latest = catalog.cached_snapshot(project_id)
+                latest = project_display_cache.cached_project_snapshot(project_id)
                 if latest is not None:
-                    attach_experiment_control(project_id, latest)
                     return latest
         return snapshot
 
@@ -1870,15 +1870,14 @@ def create_app(
 
     @projects_router.get("/api/projects/{project_id}/cached")
     def cached_project(project_id: str) -> dict[str, object]:
-        snapshot = catalog.cached_snapshot(project_id)
+        snapshot = project_display_cache.cached_project_snapshot(project_id)
         if snapshot is None:
             raise HTTPException(status_code=404, detail="Cached project snapshot not found")
-        attach_experiment_control(project_id, snapshot)
         return snapshot
 
     @projects_router.get("/api/projects/{project_id}/cached/revision")
     async def cached_project_revision(project_id: str) -> dict[str, object]:
-        snapshot = catalog.cached_snapshot(project_id)
+        snapshot = project_display_cache.cached_project_snapshot(project_id)
         if snapshot is None:
             raise HTTPException(status_code=404, detail="Cached project snapshot not found")
         schedule_project_reconciliation(project_id)
@@ -1944,13 +1943,11 @@ def create_app(
         body: ProjectSettingsRequest,
     ) -> dict[str, object]:
         try:
-            snapshot = catalog.update_settings(project_id, body)
+            snapshot = project_display_cache.update_settings(project_id, body)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        snapshot["id"] = project_id
-        attach_experiment_control(project_id, snapshot)
         return snapshot
 
     @projects_router.post(
@@ -1963,15 +1960,15 @@ def create_app(
     ) -> dict[str, object]:
         try:
             profile_for(provider)
-            result = catalog.resolve_provider_path(project_id, machine_alias, provider)
+            result = project_display_cache.resolve_provider_path(
+                project_id,
+                machine_alias,
+                provider,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        project = result.get("project")
-        if isinstance(project, dict):
-            project["id"] = project_id
-            attach_experiment_control(project_id, project)
         return result
 
     @projects_router.get("/api/projects/{project_id}/history")

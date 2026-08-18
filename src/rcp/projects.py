@@ -37,7 +37,7 @@ from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
 from rcp.runs.task_policy import task_graph_capable
-from rcp.service import ProjectService, ProjectSettingsRequest
+from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
 from rcp.sources import project_cache_roots
 from rcp.storage import (
     AgentTaskKind,
@@ -90,6 +90,16 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "cache_metrics",
     "validation_messages",
 }
+
+ProjectSnapshot = dict[str, object] | _ProjectSnapshotDraft
+
+
+def _snapshot_payload(snapshot: ProjectSnapshot) -> dict[str, object]:
+    if isinstance(snapshot, _ProjectSnapshotDraft):
+        return snapshot._as_dict()
+    if isinstance(snapshot, dict):
+        return snapshot
+    raise TypeError("project snapshot must be an internal draft or dictionary")
 
 
 class ProjectDeletionResult(BaseModel):
@@ -294,7 +304,7 @@ class ProjectCatalog:
                 provider_skills=self.provider_skills,
                 repository_inventory=self.repository_ownership_inventory,
             )
-            snapshot = service.project_snapshot(state=materialization.state)
+            snapshot = _snapshot_payload(service.project_snapshot(state=materialization.state))
             self._stamp_snapshot_identity(snapshot, project_id)
             self.mark_snapshot_fresh(snapshot)
             self.write_cached_snapshot(project_id, snapshot)
@@ -632,16 +642,19 @@ class ProjectCatalog:
         service, _ = self._service_or_open(project_id)
         return service
 
-    def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
+    def open_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
         project_id = self._canonical_project_id(project_id)
         service, initialized_state = self._service_or_open(project_id)
         project_id = self._canonical_project_id(project_id)
-        snapshot = service.project_snapshot(state=initialized_state)
+        snapshot = _snapshot_payload(service.project_snapshot(state=initialized_state))
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
-        return service, snapshot
+        return service, _ProjectSnapshotDraft(snapshot)
 
-    def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
+    def reconcile_snapshot(
+        self,
+        project_id: str,
+    ) -> tuple[ProjectService, _ProjectSnapshotDraft]:
         """Refresh canonical state and build one fresh display-snapshot candidate."""
 
         project_id = self._canonical_project_id(project_id)
@@ -652,10 +665,10 @@ class ProjectCatalog:
             if service.history.workspace.remote and not refreshed:
                 raise StateUnavailable("Remote canonical state has no readable manifest.")
             initialized_state = service.history.materialize(write_outputs=False).state
-        snapshot = service.project_snapshot(state=initialized_state)
+        snapshot = _snapshot_payload(service.project_snapshot(state=initialized_state))
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
-        return service, snapshot
+        return service, _ProjectSnapshotDraft(snapshot)
 
     def probe_remote_patch_log_head(
         self,
@@ -893,9 +906,10 @@ class ProjectCatalog:
     def write_cached_snapshot(
         self,
         project_id: str,
-        snapshot: dict[str, object],
+        snapshot: ProjectSnapshot,
     ) -> None:
         project_id = self._canonical_project_id(project_id)
+        snapshot = _snapshot_payload(snapshot)
         self._stamp_snapshot_identity(snapshot, project_id)
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
@@ -910,7 +924,7 @@ class ProjectCatalog:
     def commit_cached_snapshot(
         self,
         project_id: str,
-        snapshot: dict[str, object],
+        snapshot: ProjectSnapshot,
         *,
         generation: int,
         patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
@@ -918,6 +932,7 @@ class ProjectCatalog:
         """Commit a display snapshot unless a newer project view already won."""
 
         project_id = self._canonical_project_id(project_id)
+        snapshot = _snapshot_payload(snapshot)
         self._stamp_snapshot_identity(snapshot, project_id)
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
@@ -1227,9 +1242,10 @@ class ProjectCatalog:
     def update_summary(
         self,
         project_id: str,
-        snapshot: dict[str, object],
+        snapshot: ProjectSnapshot,
     ) -> ProjectRecord:
         project_id = self._canonical_project_id(project_id)
+        snapshot = _snapshot_payload(snapshot)
         with self._services_lock:
             if project_id in self._deleting or self.store.project(project_id) is None:
                 raise KeyError(project_id)
@@ -1263,14 +1279,14 @@ class ProjectCatalog:
         self,
         project_id: str,
         request: ProjectSettingsRequest,
-    ) -> dict[str, object]:
+    ) -> _ProjectSnapshotDraft:
         project_id = self._canonical_project_id(project_id)
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
         service.update_settings(request)
         self._persist_bootstrap_locator(project_id, service)
-        snapshot = service.project_snapshot()
+        snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         self.commit_cached_snapshot(
@@ -1279,7 +1295,7 @@ class ProjectCatalog:
             generation=generation,
             patch_log_head=service.history.workspace.cached_patch_log_head(),
         )
-        return snapshot
+        return _ProjectSnapshotDraft(snapshot)
 
     def resolve_provider_path(
         self,
@@ -1293,7 +1309,7 @@ class ProjectCatalog:
         project_id = self._canonical_project_id(project_id)
         readiness = service.resolve_provider_path(machine_alias, provider)
         self._persist_bootstrap_locator(project_id, service)
-        snapshot = service.project_snapshot()
+        snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         self.commit_cached_snapshot(
@@ -1307,7 +1323,7 @@ class ProjectCatalog:
             "provider": provider,
             "binary_path": readiness.binary_path,
             "readiness": readiness.model_dump(mode="json"),
-            "project": snapshot,
+            "project": _ProjectSnapshotDraft(snapshot),
         }
 
     def _persist_bootstrap_locator(
@@ -1367,6 +1383,65 @@ class ProjectDisplayCache:
     def reconciliation_tasks(self) -> dict[str, asyncio.Task[None]]:
         return self._reconciliation_tasks
 
+    def complete_snapshot(
+        self,
+        project_id: str,
+        snapshot: ProjectSnapshot,
+        *,
+        fresh: bool = False,
+    ) -> dict[str, object]:
+        """Complete one internal draft or saved snapshot for public display."""
+
+        payload = _snapshot_payload(snapshot)
+        self._catalog._stamp_snapshot_identity(payload, project_id)
+        if fresh:
+            self._catalog.mark_snapshot_fresh(payload)
+        self._complete_live_control(project_id, payload)
+        return payload
+
+    def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
+        service, draft = self._catalog.open_snapshot(project_id)
+        return service, self.complete_snapshot(project_id, draft)
+
+    def cached_project_snapshot(self, project_id: str) -> dict[str, object] | None:
+        snapshot = self._catalog.cached_snapshot(project_id)
+        if snapshot is None:
+            return None
+        return self.complete_snapshot(project_id, snapshot)
+
+    def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
+        service, draft = self._catalog.reconcile_snapshot(project_id)
+        return service, self.complete_snapshot(project_id, draft)
+
+    def update_settings(
+        self,
+        project_id: str,
+        request: ProjectSettingsRequest,
+    ) -> dict[str, object]:
+        return self.complete_snapshot(
+            project_id,
+            self._catalog.update_settings(project_id, request),
+        )
+
+    def resolve_provider_path(
+        self,
+        project_id: str,
+        machine_alias: str,
+        provider: ProviderId,
+    ) -> dict[str, object]:
+        result = self._catalog.resolve_provider_path(project_id, machine_alias, provider)
+        result["project"] = self.complete_snapshot(project_id, result["project"])
+        return result
+
+    def complete_transition_control(
+        self,
+        project_id: str,
+        snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        payload = dict(snapshot)
+        self._complete_live_control(project_id, payload)
+        return payload
+
     def refresh_cached_project_after_stream(
         self,
         project_id: str,
@@ -1391,10 +1466,11 @@ class ProjectDisplayCache:
                 raise ValueError("The existing project display snapshot is invalid.")
             state = service.history.materialize(write_outputs=False).state
             paper = PaperSnapshot.model_validate(cached["paper"])
-            snapshot = service.project_snapshot(state=state, paper=paper)
-            snapshot["id"] = project_id
-            self._catalog.mark_snapshot_fresh(snapshot)
-            self.attach_experiment_control(project_id, snapshot)
+            snapshot = self.complete_snapshot(
+                project_id,
+                service.project_snapshot(state=state, paper=paper),
+                fresh=True,
+            )
             self._catalog.commit_cached_snapshot(
                 project_id,
                 snapshot,
@@ -1422,17 +1498,15 @@ class ProjectDisplayCache:
                     receipt_exc,
                 )
 
-    def attach_experiment_control(
+    def _complete_live_control(
         self,
         project_id: str,
         snapshot: dict[str, object],
     ) -> None:
-        """Replace the graph-only control map with live operational state.
+        """Add current operational Experiment state to one display snapshot.
 
-        ``ProjectService`` has no task store, so every snapshot it builds carries a
-        default operational block. Any route that hands a snapshot to the client
-        must overwrite it here, or a Settings save would blank the Experiment
-        lifecycle the human is watching in Runs.
+        ``ProjectService`` has no task store, so graph-only snapshots deliberately
+        omit this field. The display boundary is the only place that restores it.
         """
 
         state = GraphState.model_validate(snapshot["graph"])
@@ -1518,10 +1592,9 @@ class ProjectDisplayCache:
                 project_id,
             )
             service, snapshot = await asyncio.to_thread(
-                self._catalog.reconcile_snapshot,
+                self.reconcile_snapshot,
                 project_id,
             )
-            self.attach_experiment_control(project_id, snapshot)
             await asyncio.to_thread(
                 self._catalog.commit_cached_snapshot,
                 project_id,

@@ -110,6 +110,24 @@ _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
 )
 
 
+class _ProjectSnapshotDraft:
+    """Opaque graph-only project snapshot data for the display boundary."""
+
+    __slots__ = ("_payload",)
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def __getitem__(self, key: str) -> object:
+        return self._payload[key]
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self._payload[key] = value
+
+    def _as_dict(self) -> dict[str, object]:
+        return dict(self._payload)
+
+
 ConversationMode = Literal["discuss", "work"]
 TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher"]
 GraphPatchKind = Literal["work", "experiment_loop"]
@@ -909,7 +927,7 @@ class ProjectService:
         *,
         state: GraphState | None = None,
         paper: PaperSnapshot | None = None,
-    ) -> dict[str, object]:
+    ) -> _ProjectSnapshotDraft:
         if state is None:
             state = self.history.state()
         if paper is None:
@@ -931,56 +949,54 @@ class ProjectService:
             surface: self.manifest.agent_profile(surface).model_dump(mode="json")
             for surface in _SETTINGS_SURFACES
         }
-        experiment_control = {
-            node.id: derive_experiment_control_state(state, node.id).model_dump(mode="json")
-            for node in state.nodes.values()
-            if node.type == "experiment"
-        }
-        return {
-            "name": self.manifest.name,
-            "revision": state.revision,
-            "state_repository": self.manifest.state.repository,
-            "canonical_state": self.history.workspace.status().model_dump(mode="json"),
-            "run_on": refresh_profile.run_on,
-            "project_truth_scope": state.project_truth_scope,
-            "default_run_truth_scope": self.manifest.agent.default_run_truth_scope,
-            "default_auto_research_invocation_ceiling": (
-                self.manifest.agent.default_auto_research_invocation_ceiling
-            ),
-            "repositories": [repository.model_dump() for repository in self.manifest.repositories],
-            "machines": [machine.model_dump() for machine in self.manifest.machines],
-            "primary_question": primary,
-            "last_refresh_at": state.last_refresh_at,
-            "experiment_control": experiment_control,
-            "counts": {
-                "pending_proposals": len(pending),
-                "decisions_awaiting_choice": len(decisions_awaiting_choice),
-                "open_blockers": len(blockers),
-                "asserted": sum(
-                    node.standing == Standing.ASSERTED for node in state.nodes.values()
+        return _ProjectSnapshotDraft(
+            {
+                "name": self.manifest.name,
+                "revision": state.revision,
+                "state_repository": self.manifest.state.repository,
+                "canonical_state": self.history.workspace.status().model_dump(mode="json"),
+                "run_on": refresh_profile.run_on,
+                "project_truth_scope": state.project_truth_scope,
+                "default_run_truth_scope": self.manifest.agent.default_run_truth_scope,
+                "default_auto_research_invocation_ceiling": (
+                    self.manifest.agent.default_auto_research_invocation_ceiling
                 ),
-                "accepted": sum(
-                    node.standing == Standing.ACCEPTED for node in state.nodes.values()
-                ),
-                "contested": sum(
-                    node.standing == Standing.CONTESTED for node in state.nodes.values()
-                ),
-            },
-            "coverage": state.coverage.model_dump(mode="json"),
-            "graph": state.model_dump(mode="json"),
-            "paper": paper.model_dump(mode="json"),
-            "paper_coach": self.manifest.coach.model_dump(mode="json"),
-            "agent_profiles": profiles,
-            "skill_catalog": official_registry().catalog(),
-            "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
-            "provider_readiness": {},
-            "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
-            "providers": {},
-            "cache_metrics": self.indexer.cache_metrics().model_dump(mode="json"),
-            "validation_messages": [
-                item.model_dump(mode="json") for item in state.validation_messages
-            ],
-        }
+                "repositories": [
+                    repository.model_dump() for repository in self.manifest.repositories
+                ],
+                "machines": [machine.model_dump() for machine in self.manifest.machines],
+                "primary_question": primary,
+                "last_refresh_at": state.last_refresh_at,
+                "counts": {
+                    "pending_proposals": len(pending),
+                    "decisions_awaiting_choice": len(decisions_awaiting_choice),
+                    "open_blockers": len(blockers),
+                    "asserted": sum(
+                        node.standing == Standing.ASSERTED for node in state.nodes.values()
+                    ),
+                    "accepted": sum(
+                        node.standing == Standing.ACCEPTED for node in state.nodes.values()
+                    ),
+                    "contested": sum(
+                        node.standing == Standing.CONTESTED for node in state.nodes.values()
+                    ),
+                },
+                "coverage": state.coverage.model_dump(mode="json"),
+                "graph": state.model_dump(mode="json"),
+                "paper": paper.model_dump(mode="json"),
+                "paper_coach": self.manifest.coach.model_dump(mode="json"),
+                "agent_profiles": profiles,
+                "skill_catalog": official_registry().catalog(),
+                "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
+                "provider_readiness": {},
+                "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
+                "providers": {},
+                "cache_metrics": self.indexer.cache_metrics().model_dump(mode="json"),
+                "validation_messages": [
+                    item.model_dump(mode="json") for item in state.validation_messages
+                ],
+            }
+        )
 
     def readiness_snapshot(self, *, refresh: bool = False) -> dict[str, object]:
         snapshot = self.readiness_for(self.manifest, self.launcher, refresh=refresh)
