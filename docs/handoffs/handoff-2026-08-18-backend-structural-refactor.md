@@ -7,8 +7,8 @@
   Experiment-loop recovery are committed. Phase 5's paper, chat, history,
   generic-watcher, result-view, Sync, task, Experiment, episode, team, and index
   routers are committed. Phase 6's result-view and Experiment watcher-maintenance task
-  owners are committed and verified; the remaining detailed Phases 5–7 re-review
-  remains the work order.
+  owners and the byte-identical Work package rehome are committed and verified;
+  the remaining detailed Phases 5–7 re-review remains the work order.
 - **Originally confirmed:** 2026-08-18. **Phases 0–4 re-review opened and
   closed:** 2026-08-18. **Phases 5–7 re-review closed:** 2026-08-19.
 - **Every grouping in this document was checked against the code**, not inferred
@@ -59,6 +59,7 @@ does not silently amend it.
 | 2026-08-19 | 5 / index | The twelve index/global handlers move into `api/index.py` with two explicit routers: eleven truly global entries and the project-delete entry on the shared membership gate. The S122 invitation list/answer exception remains outside project membership because its recipient is not yet a member. `ApiServices` gains only the already-constructed `AgentLauncher` and `ProjectSetupManager`, exposed through narrow required dependencies; branch summaries receive store/catalog explicitly, and global cache clearing derives the same application-data root from `catalog.data_dir`. The moved project request model and two cache-snapshot helpers have no remaining caller in `app.py`. No optional dependency, fallback path, second setup/launcher instance, or route contract changed. | Committed as `02187b3`; the main-agent index/project/identity focused set, full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
 | 2026-08-19 | 6 / result views | The existing result-view stage primitives and the exact ten-definition Work lifecycle cluster move together into `runs/tasks/result_views.py`; the old `runs/result_views.py` is removed with no compatibility shim. `work.py` imports only the seven lifecycle names it calls, while Discuss imports the two policy-neutral retention primitives. The moved ASTs and call direction are unchanged, no surface discriminator or fallback was introduced, and direct tests now patch the semantic owner. The detailed pre-move inbound/outbound ledger is retained below. | Committed as `5e8d991`; focused suites, full backend, Ruff, exact-new-file hooks, and all-files hooks are green. |
 | 2026-08-19 | 6 / watcher maintenance | The verified two-definition Experiment watcher-maintenance cluster moves into `runs/tasks/experiment_watcher_maintenance.py`. Its only Work-local outbound dependency, `_retry_deliverable_is_unchanged`, is policy-neutral and already serves ordinary Work plus Auto-research stream, so it moves once to `runs/shared.py`; every caller imports that owner directly. The maintenance module imports existing staging/launch/validation/persistence leaves and never imports `runs.work`. No mode flag, callback layer, fallback, circular dependency, or compatibility re-export remains. | Committed as `258b9de`; the exact call ledger is retained below, and focused suites, full backend, Ruff, exact-new-file hooks, and all-files hooks are green. |
+| 2026-08-19 | 6 / Work package | Before extracting child or Experiment policy, the remaining Work module moves byte-for-byte from `runs/work.py` to `runs/tasks/work.py`. Its 4,518-line SHA-256 remains `8ed53926863b5380590b7d125fd3ab0e28adea8952c7eb0d83e1be697ca4d472`; all seventeen production, test, and monkeypatch references now name the semantic package owner. The old path is absent and there is no compatibility shim or package re-export. This is deliberately a mechanical dependency-direction slice: later child and Experiment owners may import a small explicit set of Work mechanics, while Work must not import those policy owners back. | Committed as `e8b9b74`; the full affected Work/chat/result-view/Auto-research/Experiment/API set, full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
 
 ## Phases 0–4 re-review ledger
 
@@ -1083,7 +1084,7 @@ One group per commit, tests included.
 
 ### The problem
 
-`runs/work.py` is 5,207 lines with **88 module-level class/function definitions
+At the audited baseline, `runs/work.py` was 5,207 lines with **88 module-level class/function definitions
 plus one private alias**. Only two class/function definitions are public: the
 `WorkTurn` dataclass and `stream_work_run`. The other 87 named definitions are
 private.
@@ -1092,6 +1093,11 @@ Nothing is trapped inside an enclosing scope, so Phase 6 has no Phase 5-style
 closure conversion. It is still not a blind text move: Experiment-loop and
 Auto-research-child branches are embedded in otherwise shared Work functions and
 must become explicit task entry points without creating a mode-switching runtime.
+
+Implementation first rehomed the shrinking module byte-for-byte to
+`runs/tasks/work.py`. That move did not claim any policy separation by itself;
+it established the package direction needed for the following owner slices and
+left no old-path shim that could hide a reverse dependency.
 
 ### The clusters, measured
 
