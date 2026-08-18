@@ -19,6 +19,9 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
+const { branchExperimentPollingKey, parseProjectHash } =
+  await server.ssrLoadModule("/src/experimentBoard.ts");
+const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
 
 after(() => server.close());
@@ -44,6 +47,107 @@ test("only a real page reload discards the initial project route", () => {
   assert.equal(initialProjectHash(deepLink, "back_forward"), deepLink);
   assert.equal(initialProjectHash(deepLink, undefined), deepLink);
   assert.equal(initialProjectHash(deepLink, "reload"), "");
+});
+
+test("leaving Runs and returning preserves the exact branch Experiment identity", () => {
+  const route = {
+    experiment_id: "experiment/shared",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+    },
+    { kind: "route", experimentId: route.experiment_id, experimentRoute: route },
+  );
+  const away = reduceExperimentSelection(selected, { kind: "view_changed" });
+  const returned = reduceExperimentSelection(away, { kind: "view_changed" });
+
+  assert.strictEqual(away, selected);
+  assert.strictEqual(returned, selected);
+  assert.equal(
+    branchExperimentPollingKey("project-one", returned.selectedExperimentRoute),
+    '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
+  );
+});
+
+test("tab restoration retains the branch target instead of resolving the node id on main", () => {
+  const route = {
+    experiment_id: "experiment/shared",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const restored = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: "experiment/main",
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+    },
+    {
+      kind: "restore",
+      experimentId: route.experiment_id,
+      focusExperimentId: null,
+      experimentRoute: route,
+    },
+  );
+
+  assert.deepEqual(restored, {
+    selectedExperimentRunId: route.experiment_id,
+    focusExperimentRunId: null,
+    selectedExperimentRoute: route,
+  });
+  assert.notStrictEqual(restored.selectedExperimentRoute, route);
+  assert.equal(
+    branchExperimentPollingKey("project-one", restored.selectedExperimentRoute),
+    '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
+  );
+});
+
+test("an explicit malformed Runs route clears a cached exact branch selection", () => {
+  const cachedRoute = {
+    experiment_id: "experiment/shared",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const cached = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+    },
+    {
+      kind: "restore",
+      experimentId: cachedRoute.experiment_id,
+      focusExperimentId: null,
+      experimentRoute: cachedRoute,
+    },
+  );
+  const explicitMalformedRoute = parseProjectHash(
+    "#/projects/project-one?view=runs&experiment=experiment%2Fshared&episode=child-episode&target=branch",
+  );
+  const restored = explicitMalformedRoute.projectViewSpecified
+    ? reduceExperimentSelection(cached, {
+        kind: "route",
+        experimentId: explicitMalformedRoute.experimentId,
+        experimentRoute: explicitMalformedRoute.experimentRoute,
+      })
+    : cached;
+
+  assert.equal(explicitMalformedRoute.view, "execution");
+  assert.equal(explicitMalformedRoute.experimentId, null);
+  assert.equal(explicitMalformedRoute.experimentRoute, null);
+  assert.deepEqual(restored, {
+    selectedExperimentRunId: null,
+    focusExperimentRunId: null,
+    selectedExperimentRoute: null,
+  });
+  assert.equal(parseProjectHash("#/projects/project-one").projectViewSpecified, false);
 });
 
 test("DAG viewport refs are stable and isolated by project", () => {

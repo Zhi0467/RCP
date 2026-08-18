@@ -69,12 +69,21 @@ from rcp.control import (
 )
 from rcp.core.models import (
     DISPLAY_NAME_MAX_LENGTH,
+    BranchMergeReceipt,
     Experiment,
     ExperimentDecisionPin,
+    GraphBranchMetadata,
+    GraphBranchSummary,
     GraphState,
     normalize_display_name,
 )
-from rcp.history import PatchRejected, ReplayHalted
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.transitions import (
+    ProjectTransitionProjection,
+    current_project_projection,
+    transition_trigger_manifest,
+)
+from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -118,6 +127,8 @@ from rcp.runs.auto_research_stream import (
     stream_auto_research_orchestrator_run,
     stream_auto_research_worker_run,
 )
+from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.branch_merge_task import stream_branch_merge_task
 from rcp.runs.chat import _logical_chat_turn_operation_id
 from rcp.runs.coach import _resolved_coach_request, stream_coach
 from rcp.runs.discuss import stream_discuss_run
@@ -136,6 +147,7 @@ from rcp.runs.graph import stream_graph_run
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
@@ -158,6 +170,7 @@ from rcp.sources import (
     legacy_shared_cache_roots,
 )
 from rcp.storage import (
+    ACTIVE_AGENT_TASK_STATUSES,
     SPACE_NAME_MAX_LENGTH,
     AgentTaskKind,
     AgentUsageSnapshot,
@@ -180,7 +193,6 @@ from rcp.watchers import (
     WatcherDelivery,
     WatcherPoller,
     WatcherRetryWorker,
-    evaluate_graph_watchers,
     ready_graph_watcher_groups,
 )
 from rcp.web_assets import web_dist_path
@@ -359,6 +371,168 @@ def create_app(
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+
+    def ensure_auto_research_graph_target(episode: EpisodeRecord) -> None:
+        if (
+            episode.mode != "auto_research"
+            or episode.graph_target.kind != "branch"
+            or episode.graph_target.branch_id != episode.episode_id
+            or episode.graph_base_head is None
+            or episode.authorized_by is None
+        ):
+            raise ValueError("Auto-research reservation lost its exact graph branch identity.")
+        service = _project_service(catalog, episode.project_id)
+        service.history.create_auto_research_branch(
+            GraphBranchMetadata(
+                branch_id=episode.episode_id,
+                episode_id=episode.episode_id,
+                project_id=episode.project_id,
+                base_head=episode.graph_base_head,
+                head=GraphHeadRef(
+                    target=episode.graph_target,
+                    revision=episode.graph_base_head.revision,
+                    transition_id=episode.graph_base_head.transition_id,
+                ),
+                created_at=episode.created_at,
+                authorized_by=episode.authorized_by,
+            )
+        )
+
+    def graph_branch_summaries(
+        episodes: list[EpisodeRecord],
+    ) -> dict[str, GraphBranchSummary]:
+        grouped: dict[str, list[EpisodeRecord]] = {}
+        for episode in episodes:
+            if (
+                episode.mode != "auto_research"
+                or episode.graph_target.kind != "branch"
+                or episode.graph_target.branch_id != episode.episode_id
+            ):
+                raise ValueError("only an Auto-research branch has a graph branch summary")
+            grouped.setdefault(episode.project_id, []).append(episode)
+
+        summaries: dict[str, GraphBranchSummary] = {}
+        for project_id, project_episodes in grouped.items():
+            service = _project_service(catalog, project_id)
+            snapshots = service.history.branch_read_snapshots(
+                [
+                    (episode.episode_id, episode.episode_id, episode.project_id)
+                    for episode in project_episodes
+                ]
+            )
+            for episode in project_episodes:
+                snapshot = snapshots[episode.episode_id]
+                summaries[episode.episode_id] = (
+                    missing_graph_branch_summary(episode)
+                    if snapshot is None
+                    else graph_branch_summary_from_snapshot(
+                        episode,
+                        snapshot.metadata,
+                        list(snapshot.receipts),
+                    )
+                )
+        return summaries
+
+    def missing_graph_branch_summary(episode: EpisodeRecord) -> GraphBranchSummary:
+        if episode.status not in {"queued", "failed"} or episode.graph_base_head is None:
+            raise KeyError(episode.episode_id)
+        root = (
+            store.agent_task(episode.root_operation_id)
+            if episode.root_operation_id is not None
+            else None
+        )
+        return GraphBranchSummary(
+            branch_id=episode.episode_id,
+            episode_id=episode.episode_id,
+            base_head=episode.graph_base_head,
+            head=GraphHeadRef(
+                target=episode.graph_target,
+                revision=episode.graph_base_head.revision,
+                transition_id=episode.graph_base_head.transition_id,
+            ),
+            merge_eligible=False,
+            merge_state="failed" if episode.status == "failed" else "unmerged",
+            merge_diagnostic=(
+                root.error
+                if root is not None and root.error
+                else episode.ending_diagnostic
+                if episode.status == "failed"
+                else "Establishing the episode graph branch before provider launch."
+            ),
+        )
+
+    def graph_branch_summary_from_snapshot(
+        episode: EpisodeRecord,
+        metadata: GraphBranchMetadata,
+        receipts: list[BranchMergeReceipt],
+    ) -> GraphBranchSummary:
+        current_receipt = next(
+            (item for item in reversed(receipts) if item.provenance.branch_head == metadata.head),
+            None,
+        )
+        merge_tasks = [
+            item
+            for item in store.episode_tasks(episode.episode_id)
+            if item.kind == "branch_merge"
+            and item.project_id == episode.project_id
+            and item.graph_target == episode.graph_target
+        ]
+        active_task = next(
+            (item for item in reversed(merge_tasks) if item.status in ACTIVE_AGENT_TASK_STATUSES),
+            None,
+        )
+        latest_task = merge_tasks[-1] if merge_tasks else None
+        active_branch_writers = [
+            item
+            for item in store.graph_target_tasks(
+                episode.project_id,
+                episode.graph_target,
+                include_hidden=True,
+            )
+            if item.kind != "branch_merge"
+            and item.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
+            and task_graph_capable(item.kind, item.request)
+        ]
+        if active_task is not None:
+            merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"] = (
+                "running"
+            )
+        elif current_receipt is not None:
+            merge_state = "merged"
+        elif latest_task is not None and latest_task.status in {"paused", "interrupted"}:
+            merge_state = "needs_action"
+        elif latest_task is not None and latest_task.status == "failed":
+            merge_state = "failed"
+        else:
+            merge_state = "unmerged"
+        diagnostic = (
+            (latest_task.error or latest_task.status_message)
+            if merge_state in {"needs_action", "failed"} and latest_task is not None
+            else None
+        )
+        merge_eligible = (
+            episode.ending is not None
+            and metadata.head.revision > metadata.base_head.revision
+            and store.auto_research_is_quiescent(episode.episode_id)
+            and active_task is None
+            and not active_branch_writers
+            and current_receipt is None
+        )
+        return GraphBranchSummary(
+            branch_id=metadata.branch_id,
+            episode_id=metadata.episode_id,
+            base_head=metadata.base_head,
+            head=metadata.head,
+            merge_eligible=merge_eligible,
+            merge_state=merge_state,
+            latest_successful_merge=receipts[-1] if receipts else None,
+            active_merge_task_id=(active_task.operation_id if active_task is not None else None),
+            merge_diagnostic=diagnostic,
+        )
+
+    def graph_branch_summary(episode: EpisodeRecord) -> GraphBranchSummary:
+        return graph_branch_summaries([episode])[episode.episode_id]
+
     project_display_cache = ProjectDisplayCache(
         store,
         catalog,
@@ -366,6 +540,7 @@ def create_app(
             store,
             project_id,
             episode,
+            branch_summary=graph_branch_summary,
         ).model_dump(mode="json"),
         project_experiment_control=lambda state, experiment_id, runtime: (
             _experiment_control_from_runtime(state, experiment_id, runtime).model_dump(mode="json")
@@ -375,6 +550,55 @@ def create_app(
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
     attach_experiment_control = project_display_cache.attach_experiment_control
     schedule_project_reconciliation = project_display_cache.schedule_project_reconciliation
+
+    def project_transition_payload(
+        project_id: str,
+        projection: ProjectTransitionProjection,
+        *,
+        reconcile_operational: bool,
+    ) -> dict[str, object]:
+        """Combine one graph/head projection with the matching live run controls."""
+
+        payload = projection.model_dump(mode="json")
+        control_snapshot: dict[str, object] = {"graph": payload["graph"]}
+        if reconcile_operational:
+            attach_experiment_control(project_id, control_snapshot)
+        else:
+            state = projection.graph
+            experiment_ids = [
+                node.id for node in state.nodes.values() if isinstance(node, Experiment)
+            ]
+            runtimes = store.experiment_loop_runtimes(
+                project_id,
+                experiment_ids,
+                graph_target=GraphTargetRef(),
+            )
+            controls: dict[str, object] = {}
+            for experiment_id in experiment_ids:
+                runtime = runtimes[experiment_id]
+                control = _experiment_control_from_runtime(
+                    state,
+                    experiment_id,
+                    runtime,
+                ).model_dump(mode="json")
+                episode = (
+                    store.episode(runtime.episode_id) if runtime.episode_id is not None else None
+                )
+                control["episode"] = (
+                    serialize_episode(
+                        store,
+                        project_id,
+                        episode,
+                        branch_summary=graph_branch_summary,
+                    ).model_dump(mode="json")
+                    if episode is not None and episode.mode == "experiment_loop"
+                    else None
+                )
+                controls[experiment_id] = control
+            control_snapshot["experiment_control"] = controls
+        payload["experiment_control"] = control_snapshot["experiment_control"]
+        return payload
+
     setup = ProjectSetupManager(app_data, catalog, launcher)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
     default_record = (
@@ -403,6 +627,34 @@ def create_app(
         execution: AgentTaskExecution,
     ) -> AsyncIterator[str]:
         service = _project_service(catalog, project_id)
+        task = store.agent_task(execution.operation_id)
+        if task is None or task.project_id != project_id:
+            raise ValueError("The agent stream lost its durable project task.")
+        if task.graph_target.kind == "branch" and kind != "branch_merge":
+            service = service.for_graph_target(
+                task.graph_target,
+                expected_episode_id=task.graph_target.branch_id,
+            )
+        if kind == "branch_merge":
+            if not isinstance(request, BranchMergeRunRequest):
+                raise TypeError("A branch merge task requires its pinned merge request.")
+            episode = store.episode(request.episode_id)
+            if episode is None or episode.project_id != project_id:
+                raise ValueError("The branch merge task lost its Auto-research episode.")
+            async with aclosing(
+                stream_branch_merge_task(
+                    service,
+                    launcher,
+                    request,
+                    app_data,
+                    episode=episode,
+                    task=task,
+                    execution=execution,
+                )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            return
         if kind == "paper_coach":
             assert isinstance(request, CoachRequest)
             async with aclosing(
@@ -500,11 +752,13 @@ def create_app(
                 on_graph_applied=lambda: evaluate_graph_wake_boundary(
                     project_id,
                     None,
+                    graph_target=task.graph_target,
                     source="Auto-research in-turn Apply",
                 ),
                 on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
                     ready_project_id,
                     None,
+                    graph_target=task.graph_target,
                     source="Auto-research graph condition",
                 ),
                 experiment_coordinator=auto_research_experiment_coordinator,
@@ -576,7 +830,13 @@ def create_app(
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
         background_tasks,
-        project_service=lambda project_id: _project_service(catalog, project_id),
+        project_service=lambda project_id, episode_id: _project_service(
+            catalog,
+            project_id,
+        ).for_graph_target(
+            _episode_for_http(store, catalog, project_id, episode_id).graph_target,
+            expected_episode_id=episode_id,
+        ),
         operation_lock=experiment_operation_lock,
     )
 
@@ -586,16 +846,33 @@ def create_app(
         instruction: str,
         worker_id: str,
     ) -> RunRequest:
+        service = _project_service(catalog, context.task.project_id).for_graph_target(
+            context.episode.graph_target,
+            expected_episode_id=context.episode.episode_id,
+        )
         return _auto_research_worker_request(
-            _project_service(catalog, context.task.project_id),
+            service,
             context,
             arguments,
             instruction,
             worker_id,
         )
 
-    def restart_child_seat_node_type(project_id: str, node_id: str) -> str | None:
-        node = _project_service(catalog, project_id).history.state().nodes.get(node_id)
+    def restart_child_seat_node_type(
+        project_id: str,
+        episode_id: str,
+        node_id: str,
+    ) -> str | None:
+        episode = store.episode(episode_id)
+        if episode is None or episode.project_id != project_id:
+            raise ValueError("Auto-research child admission lost its branch episode.")
+        service = _project_service(catalog, project_id).for_graph_target(
+            episode.graph_target,
+            expected_episode_id=(
+                episode.graph_target.branch_id if episode.graph_target.kind == "branch" else None
+            ),
+        )
+        node = service.history.state().nodes.get(node_id)
         return node.type if node is not None else None
 
     # Reconciliation runs on the 5s watcher poll, so a stuck admission would log
@@ -663,6 +940,12 @@ def create_app(
         store,
         retry=graph_watcher_retry,
         project_service=lambda project_id: _project_service(catalog, project_id),
+        graph_project_service=lambda project_id, target: _project_service(
+            catalog, project_id
+        ).for_graph_target(
+            target,
+            expected_episode_id=(target.branch_id if target.kind == "branch" else None),
+        ),
         generic_request=_generic_watcher_delivery_request,
         experiment_operation_lock=experiment_operation_lock,
         experiment_admission=experiment_admission,
@@ -680,11 +963,7 @@ def create_app(
         task_graph_capable=task_graph_capable,
         task_experiment_episode_id=task_experiment_episode_id,
         reconcile_experiment_episode=episode_reconciler.reconcile_experiment_episode,
-        evaluate_graph=lambda candidate_store, project_id, state: evaluate_graph_watchers(
-            candidate_store,
-            project_id,
-            state,
-        ),
+        reconcile_graph_boundaries=reconcile_accepted_graph_boundaries,
         ready_graph_groups=lambda candidate_store, project_id: ready_graph_watcher_groups(
             candidate_store,
             project_id,
@@ -832,6 +1111,10 @@ def create_app(
         try:
             background_tasks.accept_watcher_notifications()
             store.prune_operational_storage()
+            await asyncio.to_thread(
+                background_tasks.reconcile_reserved_auto_research_roots,
+                ensure_auto_research_graph_target,
+            )
             await asyncio.to_thread(background_tasks.reconcile_committed_auto_research_dispatches)
             child_reconciliation = await asyncio.to_thread(
                 reconcile_auto_research_children,
@@ -1250,13 +1533,57 @@ def create_app(
         request: Request,
         mode: Literal["experiment_loop"] = Query(...),
     ) -> list[dict[str, object]]:
-        # This board reads node titles out of every project's cached graph, so
-        # an unfiltered answer would publish research and not just names.
+        # An unfiltered answer would publish research and not just project names.
+        # Start from durable loop parents rather than graph nodes: a branch may
+        # create an Experiment that does not exist on main at all.
         visible = store.member_project_ids(acting_user(request).user_id)
         entries: list[dict[str, object]] = []
         for record in store.projects():
             if record.project_id not in visible:
                 continue
+            runtimes = store.project_experiment_loop_runtimes(record.project_id)
+            if not runtimes:
+                continue
+            settle_ids = [
+                experiment_id
+                for experiment_id, runtime in runtimes.items()
+                if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
+            ]
+            for experiment_id in settle_ids:
+                runtime = runtimes[experiment_id]
+                episode = (
+                    store.episode(runtime.episode_id) if runtime.episode_id is not None else None
+                )
+                if episode is not None:
+                    store.settle_experiment_loop_stop(
+                        record.project_id,
+                        experiment_id,
+                        episode_id=episode.episode_id,
+                        graph_target=episode.graph_target,
+                    )
+            if settle_ids:
+                runtimes.update(store.experiment_loop_runtimes(record.project_id, settle_ids))
+
+            current: list[tuple[EpisodeRecord, ExperimentLoopRuntime]] = []
+            for control_node_id, runtime in runtimes.items():
+                if runtime.episode_id is None:
+                    continue
+                episode = store.episode(runtime.episode_id)
+                if (
+                    episode is None
+                    or episode.project_id != record.project_id
+                    or episode.mode != mode
+                    or episode.control_node_id != control_node_id
+                ):
+                    raise ValueError(
+                        "Experiment runtime does not identify its exact durable episode."
+                    )
+                current.append((episode, runtime))
+            current.sort(
+                key=lambda item: (item[0].created_at, item[0].episode_id),
+                reverse=True,
+            )
+
             cache_status, cached = catalog.cached_snapshot_status(record.project_id)
             if cache_status == "invalid" or (
                 cache_status == "missing" and record.revision is not None
@@ -1265,53 +1592,91 @@ def create_app(
                     status_code=503,
                     detail=f"Cached project snapshot is unavailable for {record.project_id}.",
                 )
-            state = _cached_graph_state(cached)
-            if state is None:
-                continue
             reachable = _cached_project_reachable(cached)
             if record.reachable is False:
                 reachable = False
 
-            experiments = [node for node in state.nodes.values() if isinstance(node, Experiment)]
-            experiment_ids = [node.id for node in experiments]
-            runtimes = store.experiment_loop_runtimes(record.project_id, experiment_ids)
-            settle_ids = [
-                experiment_id
-                for experiment_id, runtime in runtimes.items()
-                if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
-            ]
-            for experiment_id in settle_ids:
-                store.settle_experiment_loop_stop(record.project_id, experiment_id)
-            if settle_ids:
-                runtimes.update(store.experiment_loop_runtimes(record.project_id, settle_ids))
-            for node in experiments:
-                runtime = runtimes[node.id]
-                if runtime.episode_id is None:
-                    continue
-                episode = store.episode(runtime.episode_id)
-                if episode is None or episode.mode != mode:
-                    continue
-                serialized_episode = serialize_episode(
-                    store,
-                    record.project_id,
-                    episode,
-                ).model_dump(mode="json")
-                control = _experiment_control_from_runtime(
-                    state,
-                    node.id,
-                    runtime,
-                ).model_dump(mode="json")
-                control["episode"] = serialized_episode
-                entries.append(
-                    {
-                        "project_id": record.project_id,
-                        "project_name": record.name,
-                        "project_reachable": reachable,
-                        "node": node.model_dump(mode="json"),
-                        "control": control,
-                        "episode": serialized_episode,
-                    }
-                )
+            grouped: dict[str, list[tuple[EpisodeRecord, ExperimentLoopRuntime]]] = {}
+            for episode, runtime in current:
+                grouped.setdefault(episode.graph_target.key, []).append((episode, runtime))
+
+            main_service: ProjectService | None = None
+            for group in grouped.values():
+                target = group[0][0].graph_target
+                graph_head: GraphHeadRef | None
+                if target.kind == "main":
+                    # ProjectDisplayCache is deliberately a main-only display snapshot.
+                    # Preserve its graph/runtime publication fence for ordinary loops;
+                    # branch state is always read through its exact history service.
+                    state = _cached_graph_state(cached)
+                    if state is None:
+                        continue
+                    graph_head = None
+                else:
+                    if main_service is None:
+                        main_service = _project_service(catalog, record.project_id)
+                    try:
+                        target_service = (
+                            main_service
+                            if target.kind == "main"
+                            else main_service.for_graph_target(
+                                target,
+                                expected_episode_id=target.branch_id,
+                            )
+                        )
+                        materialization = target_service.history.current_materialization()
+                        state = materialization.state
+                        graph_head = target_service.history.head_ref(materialization)
+                    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+                        raise HTTPException(status_code=503, detail=str(exc)) from exc
+                    if graph_head.target != target:
+                        raise ValueError(
+                            "Experiment graph projection returned a different target head."
+                        )
+
+                for episode, runtime in group:
+                    node_id = episode.control_node_id
+                    assert node_id is not None
+                    node = state.nodes.get(node_id)
+                    if not isinstance(node, Experiment):
+                        continue
+                    route = store.auto_research_child_experiment(episode.episode_id)
+                    parent_episode_id = (
+                        route.auto_research_episode_id if route is not None else None
+                    )
+                    if target.kind == "branch" and parent_episode_id != target.branch_id:
+                        raise ValueError(
+                            "Branch-target Experiment lost its Auto-research parent identity."
+                        )
+                    serialized_episode = serialize_episode(
+                        store,
+                        record.project_id,
+                        episode,
+                        branch_summary=graph_branch_summary,
+                    ).model_dump(mode="json")
+                    control = _experiment_control_from_runtime(
+                        state,
+                        node.id,
+                        runtime,
+                    ).model_dump(mode="json")
+                    control["episode"] = serialized_episode
+                    entries.append(
+                        {
+                            "project_id": record.project_id,
+                            "project_name": record.name,
+                            "project_reachable": reachable,
+                            "graph_target": target.model_dump(mode="json"),
+                            "graph_head": (
+                                graph_head.model_dump(mode="json")
+                                if graph_head is not None
+                                else None
+                            ),
+                            "parent_episode_id": parent_episode_id,
+                            "node": node.model_dump(mode="json"),
+                            "control": control,
+                            "episode": serialized_episode,
+                        }
+                    )
         return entries
 
     @app.get("/api/space/users")
@@ -1651,25 +2016,93 @@ def create_app(
         try:
             if body.removed_node_ids:
                 with experiment_operation_lock(project_id):
-                    state = service.sync_graph(
+                    transition = service.sync_graph_transition(
                         body,
-                        active_control_node_ids=store.active_experiment_control_ids(project_id),
+                        active_control_node_ids=store.active_experiment_control_ids(
+                            project_id,
+                            graph_target=GraphTargetRef(),
+                        ),
                         authorized_by=authorized_by,
                     )
             else:
-                state = service.sync_graph(
+                transition = service.sync_graph_transition(
                     body,
-                    active_control_node_ids=store.active_experiment_control_ids(project_id),
+                    active_control_node_ids=store.active_experiment_control_ids(
+                        project_id,
+                        graph_target=GraphTargetRef(),
+                    ),
                     authorized_by=authorized_by,
                 )
+            if transition is None:
+                current = service.history.current_materialization()
+                head = service.history.head_ref(current)
+                projection = current_project_projection(
+                    current.state,
+                    transition_id=head.transition_id,
+                    target=head.target,
+                )
+            else:
+                projection = transition.projection
+            state = projection.graph
             evaluate_graph_wake_boundary(project_id, state, source="human Sync")
-            return state.model_dump(mode="json")
+            payload = state.model_dump(mode="json")
+            payload.update(
+                project_transition_payload(
+                    project_id,
+                    projection,
+                    reconcile_operational=True,
+                )
+            )
+            return payload
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail=f"Missing graph object: {exc.args[0]}"
             ) from exc
         except NodeEditConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PatchRejected:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @projects_router.get("/api/projects/{project_id}/transition-manifest")
+    def graph_transition_manifest(project_id: str):
+        _project_service(catalog, project_id)
+        return transition_trigger_manifest().model_dump(mode="json")
+
+    @projects_router.post("/api/projects/{project_id}/sync/preview")
+    def preview_graph_sync(project_id: str, body: GraphSyncRequest, request: Request):
+        authorized_by = require_patch_capable_identity(request)
+        service = _project_service(catalog, project_id)
+        try:
+            prepared = service.preview_sync_graph(
+                body,
+                active_control_node_ids=store.active_experiment_control_ids(
+                    project_id,
+                    graph_target=GraphTargetRef(),
+                ),
+                authorized_by=authorized_by,
+            )
+            assert prepared.patch.transition is not None
+            return {
+                "projection": project_transition_payload(
+                    project_id,
+                    prepared.projection,
+                    reconcile_operational=False,
+                ),
+                "transition": prepared.patch.transition.model_dump(mode="json"),
+            }
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Missing graph object: {exc.args[0]}",
+            ) from exc
+        except RevisionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except NodeEditConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PatchRejected:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1779,10 +2212,10 @@ def create_app(
         body: dict[str, object],
         http_request: Request,
     ) -> dict[str, object]:
-        if kind in {"auto_research", "episode_report"}:
+        if kind in {"auto_research", "branch_merge", "episode_report"}:
             raise HTTPException(
                 status_code=405,
-                detail="Use the project episode endpoint to start Auto-research.",
+                detail="Use the project episode endpoint for Auto-research and branch merge.",
             )
         authorized_by = require_patch_capable_identity(http_request)
         service = _project_service(catalog, project_id)
@@ -1889,7 +2322,13 @@ def create_app(
                 node = state.nodes.get(node_id)
                 if not isinstance(node, Experiment):
                     raise HTTPException(status_code=404, detail="Experiment not found")
-                runtime, control = _experiment_control(store, project_id, state, node_id)
+                runtime, control = _experiment_control(
+                    store,
+                    project_id,
+                    state,
+                    node_id,
+                    graph_target=GraphTargetRef(),
+                )
                 if not control.ready:
                     raise HTTPException(status_code=409, detail=" ".join(control.reasons))
                 supplied = RunRequest.model_validate(body)
@@ -1902,7 +2341,11 @@ def create_app(
                 pending_group = (
                     None
                     if runtime.stop_requested and runtime.stop_settled
-                    else store.completed_experiment_watcher_group(project_id, node_id)
+                    else store.completed_experiment_watcher_group(
+                        project_id,
+                        node_id,
+                        graph_target=GraphTargetRef(),
+                    )
                 )
                 if pending_group is not None:
                     experiment_request = experiment_watcher_delivery_request(
@@ -2017,11 +2460,82 @@ def create_app(
             detail="This control was retired. Use Stop loop for the current Experiment episode.",
         )
 
+    def stop_bound_experiment_episode(
+        project_id: str,
+        episode: EpisodeRecord,
+    ) -> ExperimentControlState:
+        """Stop one exact current loop against the graph target it actually controls."""
+
+        node_id = episode.control_node_id
+        if episode.mode != "experiment_loop" or node_id is None:
+            raise HTTPException(status_code=409, detail="This is not an Experiment-loop episode.")
+        main_service = _project_service(catalog, project_id)
+        try:
+            target_service = (
+                main_service
+                if episode.graph_target.kind == "main"
+                else main_service.for_graph_target(
+                    episode.graph_target,
+                    expected_episode_id=episode.graph_target.branch_id,
+                )
+            )
+            materialization = target_service.history.current_materialization()
+            state = materialization.state
+            head = target_service.history.head_ref(materialization)
+        except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if head.target != episode.graph_target:
+            raise HTTPException(
+                status_code=409,
+                detail="The Experiment episode no longer resolves to its exact graph target.",
+            )
+        if not isinstance(state.nodes.get(node_id), Experiment):
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        if episode.graph_target.kind == "branch":
+            route = store.auto_research_child_experiment(episode.episode_id)
+            if route is None or route.auto_research_episode_id != episode.graph_target.branch_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The branch Experiment lost its Auto-research parent binding.",
+                )
+        runtime = store.experiment_loop_runtime_for_target(
+            project_id,
+            node_id,
+            episode.graph_target,
+        )
+        if runtime.episode_id != episode.episode_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Only the current exact Experiment episode can be stopped.",
+            )
+        try:
+            store.request_experiment_loop_stop(
+                project_id,
+                node_id,
+                episode_id=episode.episode_id,
+                graph_target=episode.graph_target,
+            )
+        except EpisodeNotRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        _, control = _experiment_control_for_target(
+            store,
+            project_id,
+            state,
+            node_id,
+            graph_target=episode.graph_target,
+        )
+        return control
+
     # Registered after `.../watchers/stop`: `{node_id:path}` is greedy, so this
     # route would otherwise swallow that one with a node id ending in
     # "/watchers".
     @projects_router.post("/api/projects/{project_id}/experiments/{node_id:path}/stop")
-    def stop_experiment_loop(project_id: str, node_id: str) -> dict[str, object]:
+    def stop_experiment_loop(
+        project_id: str,
+        node_id: str,
+        request: Request,
+        episode_id: str | None = Query(default=None),
+    ) -> dict[str, object]:
         """Finish the current turn, then disable automatic continuation.
 
         The stop is durable before this returns, so no unclaimed watcher can win
@@ -2030,13 +2544,31 @@ def create_app(
         again changes nothing.
         """
 
-        service = _project_service(catalog, project_id)
+        require_patch_capable_identity(request)
         with experiment_operation_lock(project_id):
-            state = service.history.state()
-            if not isinstance(state.nodes.get(node_id), Experiment):
-                raise HTTPException(status_code=404, detail="Experiment not found")
-            store.request_experiment_loop_stop(project_id, node_id)
-            _, control = _experiment_control(store, project_id, state, node_id)
+            if episode_id is None:
+                runtime = store.experiment_loop_runtime(
+                    project_id,
+                    node_id,
+                )
+                episode = (
+                    store.episode(runtime.episode_id) if runtime.episode_id is not None else None
+                )
+                if episode is None or episode.project_id != project_id:
+                    raise HTTPException(status_code=404, detail="Experiment episode not found")
+                if episode.graph_target != GraphTargetRef():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "This Experiment runs on an episode graph branch; select its exact "
+                            "episode before stopping the loop."
+                        ),
+                    )
+            else:
+                episode = _episode_for_http(store, catalog, project_id, episode_id)
+                if episode.control_node_id != node_id:
+                    raise HTTPException(status_code=404, detail="Experiment episode not found")
+            control = stop_bound_experiment_episode(project_id, episode)
         return control.model_dump(mode="json")
 
     @projects_router.get(
@@ -2078,7 +2610,12 @@ def create_app(
         mode: Literal["auto_research", "experiment_loop"] | None = None,
     ) -> list[EpisodeResponse]:
         _require_registered_project(catalog, project_id)
-        return serialize_episodes(store, project_id, mode=mode)
+        return serialize_episodes(
+            store,
+            project_id,
+            mode=mode,
+            branch_summaries=graph_branch_summaries,
+        )
 
     @projects_router.post(
         "/api/projects/{project_id}/episodes",
@@ -2095,12 +2632,20 @@ def create_app(
         try:
             start_request = _resolved_auto_research_start_request(service, body)
             service.history.require_writable()
+            graph_base_head = service.history.head_ref()
             episode, _ = background_tasks.start_auto_research(
                 project_id,
                 start_request,
                 authorized_by=authorized_by,
+                graph_base_head=graph_base_head,
+                ensure_graph_target=ensure_auto_research_graph_target,
             )
-            return serialize_episode(store, project_id, episode)
+            return serialize_episode(
+                store,
+                project_id,
+                episode,
+                branch_summary=graph_branch_summary,
+            )
         except ValueError as exc:
             live = any(
                 episode.mode == "auto_research"
@@ -2121,20 +2666,70 @@ def create_app(
     ) -> EpisodeResponse:
         require_patch_capable_identity(request)
         episode = _episode_for_http(store, catalog, project_id, episode_id)
-        if episode.mode != "auto_research":
-            raise HTTPException(
-                status_code=409,
-                detail="Use Stop loop for an Experiment-loop episode.",
-            )
-        try:
-            background_tasks.stop_auto_research(episode.episode_id)
-            settle_auto_research_stop(store, episode.episode_id)
-        except EpisodeNotRunning as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if episode.mode == "auto_research":
+            try:
+                background_tasks.stop_auto_research(episode.episode_id)
+                settle_auto_research_stop(store, episode.episode_id)
+            except EpisodeNotRunning as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        elif episode.mode == "experiment_loop":
+            with experiment_operation_lock(project_id):
+                stop_bound_experiment_episode(project_id, episode)
+        else:
+            raise HTTPException(status_code=409, detail="This episode cannot be stopped.")
         current = store.episode(episode.episode_id)
         if current is None:
             raise RuntimeError("The stopped episode could not be reloaded.")
-        return serialize_episode(store, project_id, current)
+        return serialize_episode(
+            store,
+            project_id,
+            current,
+            branch_summary=graph_branch_summary,
+        )
+
+    @projects_router.post(
+        "/api/projects/{project_id}/episodes/{episode_id}/merge",
+        response_model=EpisodeResponse,
+        status_code=202,
+    )
+    def merge_episode_branch(
+        project_id: str,
+        episode_id: str,
+        request: Request,
+    ) -> EpisodeResponse:
+        authorized_by = require_patch_capable_identity(request)
+        episode = _episode_for_http(store, catalog, project_id, episode_id)
+        if episode.mode != "auto_research" or episode.graph_target.kind != "branch":
+            raise HTTPException(
+                status_code=409,
+                detail="Only an Auto-research graph branch can merge to main.",
+            )
+        service = _project_service(catalog, project_id)
+        try:
+            summary = graph_branch_summary(episode)
+            if not summary.merge_eligible:
+                raise ValueError(
+                    "This graph branch is active, unchanged, already merged, or otherwise "
+                    "not merge eligible."
+                )
+            service.history.require_writable()
+            merge_request = _resolved_branch_merge_request(service, episode.episode_id)
+            background_tasks.start_branch_merge(
+                project_id,
+                merge_request,
+                authorized_by=authorized_by,
+            )
+            current = store.episode(episode.episode_id)
+            if current is None:
+                raise RuntimeError("The branch merge episode could not be reloaded.")
+            return serialize_episode(
+                store,
+                project_id,
+                current,
+                branch_summary=graph_branch_summary,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @projects_router.post(
         "/api/projects/{project_id}/episodes/{episode_id}/reauthorize",
@@ -2173,14 +2768,22 @@ def create_app(
                     starting_instruction=state.starting_instruction,
                 ),
             )
+            graph_base_head = service.history.head_ref()
             fresh, _ = background_tasks.start_auto_research(
                 project_id,
                 start_request,
                 authorized_by=authorized_by,
+                graph_base_head=graph_base_head,
+                ensure_graph_target=ensure_auto_research_graph_target,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return serialize_episode(store, project_id, fresh)
+        return serialize_episode(
+            store,
+            project_id,
+            fresh,
+            branch_summary=graph_branch_summary,
+        )
 
     @projects_router.get(
         "/api/projects/{project_id}/episodes/{episode_id}/messages",
@@ -2487,6 +3090,11 @@ def create_app(
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id or not previous.visible:
             raise HTTPException(status_code=404, detail="Agent task not found")
+        if previous.kind == "branch_merge":
+            raise HTTPException(
+                status_code=409,
+                detail="Dispatch a new Merge to main task from the episode detail.",
+            )
         authorized_by = require_patch_capable_identity(request)
         service = _project_service(catalog, project_id)
         result_view_resume_lock: threading.Lock | None = None
@@ -2533,6 +3141,11 @@ def create_app(
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id or not previous.visible:
             raise HTTPException(status_code=404, detail="Agent task not found")
+        if previous.kind == "branch_merge":
+            raise HTTPException(
+                status_code=409,
+                detail="Dispatch a new Merge to main task from the episode detail.",
+            )
         authorized_by = (
             require_patch_capable_identity(request)
             if task_graph_capable(previous.kind, previous.request)
@@ -2560,6 +3173,11 @@ def create_app(
         previous = store.agent_task(operation_id)
         if previous is None or previous.project_id != project_id or not previous.visible:
             raise HTTPException(status_code=404, detail="Agent task not found")
+        if previous.kind == "branch_merge":
+            raise HTTPException(
+                status_code=409,
+                detail="Dispatch a new Merge to main task from the episode detail.",
+            )
         authorized_by = require_patch_capable_identity(request)
         service = _project_service(catalog, project_id)
         result_view_retry_lock: threading.Lock | None = None
@@ -2831,6 +3449,8 @@ def _experiment_control(
     project_id: str,
     state: GraphState,
     experiment_id: str,
+    *,
+    graph_target: GraphTargetRef,
 ) -> tuple[ExperimentLoopRuntime, ExperimentControlState]:
     """Derive one Experiment's operational and semantic control state together.
 
@@ -2838,10 +3458,53 @@ def _experiment_control(
     handoff settles identically after a restart without anyone replaying it.
     """
 
-    runtime = store.experiment_loop_runtime(project_id, experiment_id)
+    runtime = store.experiment_loop_runtime(
+        project_id,
+        experiment_id,
+        graph_target=graph_target,
+    )
     if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active:
-        store.settle_experiment_loop_stop(project_id, experiment_id)
-        runtime = store.experiment_loop_runtime(project_id, experiment_id)
+        store.settle_experiment_loop_stop(
+            project_id,
+            experiment_id,
+            episode_id=runtime.episode_id,
+            graph_target=graph_target,
+        )
+        runtime = store.experiment_loop_runtime(
+            project_id,
+            experiment_id,
+            graph_target=graph_target,
+        )
+    return runtime, _experiment_control_from_runtime(state, experiment_id, runtime)
+
+
+def _experiment_control_for_target(
+    store: AppStore,
+    project_id: str,
+    state: GraphState,
+    experiment_id: str,
+    *,
+    graph_target: GraphTargetRef,
+) -> tuple[ExperimentLoopRuntime, ExperimentControlState]:
+    """Derive and reconcile one exact target-bound operational runtime."""
+
+    runtime = store.experiment_loop_runtime_for_target(
+        project_id,
+        experiment_id,
+        graph_target,
+    )
+    if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active:
+        store.settle_experiment_loop_stop(
+            project_id,
+            experiment_id,
+            episode_id=runtime.episode_id,
+            graph_target=graph_target,
+        )
+        runtime = store.experiment_loop_runtime_for_target(
+            project_id,
+            experiment_id,
+            graph_target,
+        )
     return runtime, _experiment_control_from_runtime(state, experiment_id, runtime)
 
 
@@ -2977,6 +3640,25 @@ def _resolved_auto_research_start_request(
     if not isinstance(resolved, AutoResearchStartRequest):
         raise TypeError("Auto-research skill resolution changed the start request type.")
     return resolved
+
+
+def _resolved_branch_merge_request(
+    service: ProjectService,
+    episode_id: str,
+) -> BranchMergeRunRequest:
+    profile = service.resolve_agent_profile("orchestrator")
+    return BranchMergeRunRequest(
+        episode_id=episode_id,
+        provider=profile.provider,
+        model=profile.model,
+        reasoning=profile.reasoning,
+        run_on=profile.run_on,
+        run_truth_scope=sorted(set(service.manifest.agent.default_run_truth_scope)),
+        chat_scope="project",
+        mode="work",
+        trigger="human",
+        patch_kind="work",
+    )
 
 
 def _auto_research_worker_request(

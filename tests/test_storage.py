@@ -1084,7 +1084,11 @@ def test_experiment_runtime_batch_matches_scalar_for_active_stopped_and_empty(
         project_id,
         ["exp/active", "exp/stopped", "exp/empty"],
     )
+    project_runtimes = store.project_experiment_loop_runtimes(project_id)
 
+    assert set(project_runtimes) == {"exp/active", "exp/stopped"}
+    assert project_runtimes["exp/active"] == runtimes["exp/active"]
+    assert project_runtimes["exp/stopped"] == runtimes["exp/stopped"]
     assert runtimes["exp/active"] == store.experiment_loop_runtime(project_id, "exp/active")
     assert runtimes["exp/stopped"] == store.experiment_loop_runtime(project_id, "exp/stopped")
     assert (
@@ -1132,6 +1136,10 @@ def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
 
     assert set(runtimes) == set(control_node_ids)
     assert one_experiment_selects == all_experiment_selects == 5
+
+    store.select_count = 0
+    assert set(store.project_experiment_loop_runtimes(project_id)) == set(control_node_ids)
+    assert store.select_count == 5
 
     store.select_count = 0
     assert store.active_experiment_control_ids(project_id) == set(control_node_ids)
@@ -1564,6 +1572,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "writing_sessions": 1,
         "chat_session_contexts": 1,
         "watchers": 0,
+        "graph_watcher_reconciliation": 0,
         "experiment_episode_state": 0,
         "result_views": 0,
         "auto_research_recoveries": 0,

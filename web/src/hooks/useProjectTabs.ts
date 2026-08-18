@@ -10,7 +10,7 @@ import {
 import type { ExperimentLoopIndexEntry, ProjectCard, ProjectSnapshot } from "../types";
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
-const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
+export const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
 export const PROJECT_TAB_CACHE_LIMIT = 8;
 export const OPEN_PROJECT_HEARTBEAT_INTERVAL_MS = 3_000;
 export const ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS = 1_000;
@@ -150,6 +150,11 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const replaceProjects = useCallback((nextProjects: ProjectCard[]) => {
     setProjects(nextProjects);
   }, []);
+  const refreshExperimentLoops = useCallback(async () => {
+    const nextEntries = await loadExperimentEpisodes();
+    setExperimentLoops(nextEntries);
+    return nextEntries;
+  }, []);
   const loadProjectIndex = useCallback(async () => {
     setProjects(await api<ProjectCard[]>("/api/projects"));
   }, []);
@@ -187,11 +192,11 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     [experimentLoops, project, projects],
   );
   const commitProjectOpen = useCallback(
-    (id: string, experimentId: string | null = null) => {
+    (id: string, experimentRoute: string | null = null) => {
       setTabs(openProjectTab(openProjectTabsRef.current, tabForProject(id)));
       setSetupOpen(false);
-      window.location.hash = experimentId
-        ? experimentBoardHref(id, experimentId).slice(1)
+      window.location.hash = experimentRoute
+        ? experimentBoardHref(id, experimentRoute).slice(1)
         : `/projects/${encodeURIComponent(id)}`;
     },
     [setTabs, tabForProject],
@@ -330,7 +335,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [projectIndexReady, projectId, setupOpen]);
+  }, [projectIndexReady, projectId, reportError, setupOpen]);
 
   return {
     projectId,
@@ -346,6 +351,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     updateProject,
     replaceProjects,
     loadProjectIndex,
+    refreshExperimentLoops,
     applyHashRoute,
     clearProjectRoute,
     openSetup,

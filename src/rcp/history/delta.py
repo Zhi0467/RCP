@@ -9,6 +9,27 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.core.materialize import MaterializationResult, apply_valid_patch
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, Standing
+from rcp.core.operations import (
+    CreateAmbiguitiesOperation,
+    CreateEdgesOperation,
+    CreateNodesOperation,
+    CreateProposalsOperation,
+    GraphOperation,
+    MergeNodesOperation,
+    NewEdge,
+    RemoveEdgesOperation,
+    RemoveNodesOperation,
+    ResolveAmbiguitiesOperation,
+    ResolveProposalsOperation,
+    SetCoverageOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    SupersedeNodesOperation,
+    UpdateNodesOperation,
+    UpsertGlossaryOperation,
+    WithdrawProposalsOperation,
+)
 from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
 
 _MAX_TITLE_CHARS = 240
@@ -35,6 +56,9 @@ _OPERATION_LABELS = {
     "set_project_truth_scope": "updated the project truth scope",
     "set_ontology": "updated the project ontology",
 }
+_EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
+    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
+)
 
 
 class RevisionSummary(BaseModel):
@@ -102,6 +126,7 @@ def render_revision_summary(
         sentences = [item for item in sentences if item]
         if not sentences:
             sentences = _operation_fallbacks(patch, previous_state, state, labels)
+        sentences.extend(_edge_assessment_sentences(patch, previous_state, state, labels))
         sentences.extend(_proposal_consequence_sentences(patch, state, labels, sentences))
         sentences = _unique_sentences(_plain_history_text(item, labels) for item in sentences)
         if not sentences:
@@ -295,19 +320,14 @@ def _standing_transition_entries(
     entries: list[RefreshDeltaEntry] = []
     for patch in patches:
         for operation in patch.ops:
-            name = operation.get("op")
-            if name == "create_nodes":
-                for raw in _dict_items(operation.get("nodes")):
-                    node_id = str(raw.get("id", ""))
-                    if node_id:
-                        standings[node_id] = Standing(raw.get("standing", "asserted"))
+            if isinstance(operation, CreateNodesOperation):
+                for node in operation.nodes:
+                    standings[node.id] = node.standing
                 continue
-            if name == "set_standing":
-                node_id = str(operation.get("node_id", ""))
-                if not node_id:
-                    continue
+            if isinstance(operation, SetStandingOperation):
+                node_id = operation.node_id
                 before = standings.get(node_id, Standing.ASSERTED)
-                after = Standing(str(operation.get("standing")))
+                after = Standing(operation.standing)
                 if before != after:
                     entries.append(_standing_entry(state, patch, node_id, before, after))
                 standings[node_id] = after
@@ -323,22 +343,11 @@ def _standing_transition_entries(
     return entries
 
 
-def _nodes_reset_by_operation(operation: dict[str, object]) -> list[str]:
-    name = operation.get("op")
-    if name == "update_nodes":
-        return [
-            str(raw.get("id", "")) for raw in _dict_items(operation.get("nodes")) if raw.get("id")
-        ]
-    if name == "supersede_nodes":
-        return [
-            str(raw.get("id", "")) for raw in _dict_items(operation.get("nodes")) if raw.get("id")
-        ]
-    if name == "merge_nodes":
-        return [
-            str(raw.get("duplicate", ""))
-            for raw in _dict_items(operation.get("merges"))
-            if raw.get("duplicate")
-        ]
+def _nodes_reset_by_operation(operation: GraphOperation) -> list[str]:
+    if isinstance(operation, (UpdateNodesOperation, SupersedeNodesOperation)):
+        return [item.id for item in operation.nodes]
+    if isinstance(operation, MergeNodesOperation):
+        return [item.duplicate for item in operation.merges]
     return []
 
 
@@ -370,29 +379,26 @@ def _recent_entries(
     entries: list[RefreshDeltaEntry] = []
     for patch in patches:
         for operation in patch.ops:
-            name = operation.get("op")
-            if name == "update_nodes" and patch.kind == "approval":
-                for update in operation.get("nodes", []):
+            if isinstance(operation, UpdateNodesOperation) and patch.kind == "approval":
+                for update in operation.nodes:
                     # Direct literal prose edits carry the optimistic concurrency
                     # guard. Proposal replay operations do not and are routed by
                     # their proposal-decision entry instead.
-                    if "base_updated_rev" not in update:
+                    if "base_updated_rev" not in update.model_fields_set:
                         continue
                     entries.append(
                         _node_entry(
                             state,
                             patch,
                             "human_prose_edit",
-                            str(update.get("id", "")),
-                            _field_names(update.get("changes")),
+                            update.id,
+                            _field_names(update.changes),
                         )
                     )
-            elif name == "resolve_proposals":
-                for resolution in operation.get("resolutions", []):
-                    decision = resolution.get("status")
-                    if decision not in {"approved", "rejected", "withdrawn"}:
-                        continue
-                    proposal_id = str(resolution.get("id", ""))
+            elif isinstance(operation, ResolveProposalsOperation):
+                for resolution in operation.resolutions:
+                    decision = resolution.status
+                    proposal_id = resolution.id
                     proposal = state.proposals.get(proposal_id)
                     entries.append(
                         RefreshDeltaEntry(
@@ -404,14 +410,18 @@ def _recent_entries(
                             author=patch.author,
                             field_names=sorted(
                                 {"status"}
-                                | ({"rejection_reason"} if "reason" in resolution else set())
+                                | (
+                                    {"rejection_reason"}
+                                    if "reason" in resolution.model_fields_set
+                                    else set()
+                                )
                             ),
                             decision=decision,
                         )
                     )
-            elif name == "withdraw_proposals":
-                for withdrawal in operation.get("proposals", []):
-                    proposal_id = str(withdrawal.get("id", ""))
+            elif isinstance(operation, WithdrawProposalsOperation):
+                for withdrawal in operation.proposals:
+                    proposal_id = withdrawal.id
                     proposal = state.proposals.get(proposal_id)
                     entries.append(
                         RefreshDeltaEntry(
@@ -423,20 +433,22 @@ def _recent_entries(
                             author=patch.author,
                             field_names=sorted(
                                 {"status"}
-                                | ({"resolution_reason"} if "reason" in withdrawal else set())
+                                | (
+                                    {"resolution_reason"}
+                                    if "reason" in withdrawal.model_fields_set
+                                    else set()
+                                )
                             ),
                             decision="withdrawn",
                         )
                     )
-            elif name == "resolve_ambiguities" and patch.author == "human":
-                for resolution in operation.get("resolutions", []):
-                    decision = resolution.get("status")
-                    if decision not in {"resolved", "dismissed"}:
-                        continue
+            elif isinstance(operation, ResolveAmbiguitiesOperation) and patch.author == "human":
+                for resolution in operation.resolutions:
+                    decision = resolution.status
                     entries.append(
                         RefreshDeltaEntry(
                             category="ambiguity_decision",
-                            target_id=str(resolution.get("id", "")),
+                            target_id=resolution.id,
                             target_type="ambiguity",
                             revision=patch.revision,
                             author=patch.author,
@@ -444,7 +456,7 @@ def _recent_entries(
                             decision=decision,
                         )
                     )
-            elif name == "remove_nodes":
+            elif isinstance(operation, RemoveNodesOperation):
                 entries.extend(
                     RefreshDeltaEntry(
                         category="node_removal",
@@ -454,9 +466,9 @@ def _recent_entries(
                         author=patch.author,
                         field_names=["removed"],
                     )
-                    for node_id in _string_items(operation.get("node_ids"))
+                    for node_id in operation.node_ids
                 )
-            if patch.kind in {"chat", "work"} and name != "remove_nodes":
+            if patch.kind in {"chat", "work"} and not isinstance(operation, RemoveNodesOperation):
                 entries.extend(_chat_entries(patch, operation, state))
     return sorted(
         entries,
@@ -472,49 +484,41 @@ def _recent_entries(
 
 def _chat_entries(
     patch: Patch,
-    operation: dict[str, object],
+    operation: GraphOperation,
     state: GraphState,
 ) -> list[RefreshDeltaEntry]:
-    name = str(operation.get("op", ""))
     targets: list[tuple[str, str, str, list[str]]] = []
-    if name == "create_nodes":
-        for raw in _dict_items(operation.get("nodes")):
+    if isinstance(operation, CreateNodesOperation):
+        for node in operation.nodes:
             targets.append(
                 (
-                    str(raw.get("id", "")),
-                    str(raw.get("type", "node")),
-                    str(raw.get("title", "")),
-                    _field_names(raw),
+                    node.id,
+                    node.type,
+                    node.title,
+                    _field_names(node),
                 )
             )
-    elif name == "update_nodes":
-        for update in _dict_items(operation.get("nodes")):
-            node_id = str(update.get("id", ""))
+    elif isinstance(operation, UpdateNodesOperation):
+        for update in operation.nodes:
+            node_id = update.id
             node = state.nodes.get(node_id)
             targets.append(
                 (
                     node_id,
                     node.type if node else "node",
                     node.title if node else "",
-                    _field_names(update.get("changes")),
+                    _field_names(update.changes),
                 )
             )
-    elif name == "create_edges":
-        for raw in _dict_items(operation.get("edges")):
-            edge_id = str(
-                raw.get("id")
-                or f"{raw.get('source', '')}::{raw.get('relation', '')}::{raw.get('target', '')}"
-            )
-            targets.append((edge_id, "edge", str(raw.get("relation", "")), _field_names(raw)))
-    elif name == "remove_edges":
-        targets.extend(
-            (str(edge_id), "edge", "", ["removed"])
-            for edge_id in _string_items(operation.get("edge_ids"))
-        )
-    elif name in {"supersede_nodes", "merge_nodes"}:
-        key = "nodes" if name == "supersede_nodes" else "merges"
-        for raw in _dict_items(operation.get(key)):
-            node_id = str(raw.get("id") or raw.get("duplicate") or "")
+    elif isinstance(operation, CreateEdgesOperation):
+        for edge in operation.edges:
+            edge_id = edge.id or f"{edge.source}::{edge.relation}::{edge.target}"
+            targets.append((edge_id, "edge", edge.relation, _field_names(edge)))
+    elif isinstance(operation, RemoveEdgesOperation):
+        targets.extend((edge_id, "edge", "", ["removed"]) for edge_id in operation.edge_ids)
+    elif isinstance(operation, SupersedeNodesOperation):
+        for item in operation.nodes:
+            node_id = item.id
             node = state.nodes.get(node_id)
             targets.append(
                 (
@@ -524,37 +528,48 @@ def _chat_entries(
                     ["status"],
                 )
             )
-    elif name == "create_ambiguities":
+    elif isinstance(operation, MergeNodesOperation):
+        for item in operation.merges:
+            node_id = item.duplicate
+            node = state.nodes.get(node_id)
+            targets.append(
+                (
+                    node_id,
+                    node.type if node else "node",
+                    node.title if node else "",
+                    ["status"],
+                )
+            )
+    elif isinstance(operation, CreateAmbiguitiesOperation):
         targets.extend(
-            (str(raw.get("id", "")), "ambiguity", "", _field_names(raw))
-            for raw in _dict_items(operation.get("ambiguities"))
+            (ambiguity.id, "ambiguity", "", _field_names(ambiguity))
+            for ambiguity in operation.ambiguities
         )
-    elif name == "resolve_ambiguities":
+    elif isinstance(operation, ResolveAmbiguitiesOperation):
         targets.extend(
-            (str(raw.get("id", "")), "ambiguity", "", ["status"])
-            for raw in _dict_items(operation.get("resolutions"))
+            (resolution.id, "ambiguity", "", ["status"]) for resolution in operation.resolutions
         )
-    elif name == "create_proposals":
+    elif isinstance(operation, CreateProposalsOperation):
         targets.extend(
             (
-                str(raw.get("id", "")),
+                proposal.id,
                 "proposal",
-                str(raw.get("title", "")),
-                _field_names(raw),
+                proposal.title,
+                _field_names(proposal),
             )
-            for raw in _dict_items(operation.get("proposals"))
+            for proposal in operation.proposals
         )
-    elif name == "upsert_glossary":
+    elif isinstance(operation, UpsertGlossaryOperation):
         targets.extend(
             (
-                str(raw.get("term", "")),
+                term.term,
                 "glossary_term",
-                str(raw.get("term", "")),
-                _field_names(raw),
+                term.term,
+                _field_names(term),
             )
-            for raw in _dict_items(operation.get("terms"))
+            for term in operation.terms
         )
-    elif name == "set_project_truth_scope":
+    elif isinstance(operation, SetProjectTruthScopeOperation):
         targets.append(("project_truth_scope", "project", "", ["truth_scope"]))
 
     return [
@@ -595,22 +610,10 @@ def _node_entry(
     )
 
 
-def _dict_items(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _string_items(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
-
-
-def _field_names(value: object) -> list[str]:
-    if not isinstance(value, dict):
-        return []
-    return sorted(str(key) for key in value)
+def _field_names(value: BaseModel | dict[str, object]) -> list[str]:
+    if isinstance(value, BaseModel):
+        return sorted(value.model_fields_set)
+    return sorted(value)
 
 
 def _entry_identity(entry: RefreshDeltaEntry) -> tuple[str, int, str]:
@@ -683,24 +686,22 @@ def _operation_fallbacks(
 ) -> list[str]:
     sentences: list[str] = []
     for operation in patch.ops:
-        name = operation.get("op")
-        if name == "create_nodes":
-            for node in _dict_items(operation.get("nodes")):
-                title = _object_label(str(node.get("id", "")), labels, str(node.get("title", "")))
-                noun = str(node.get("extension_type") or node.get("type") or "research concept")
+        if isinstance(operation, CreateNodesOperation):
+            for node in operation.nodes:
+                title = _object_label(node.id, labels, node.title)
+                noun = node.extension_type or node.type
                 sentences.append(f"Recorded a {noun.replace('_', ' ')}: {_quoted(title)}.")
-        elif name == "update_nodes":
+        elif isinstance(operation, UpdateNodesOperation):
             sentences.extend(
-                f"Updated {_quoted(_object_label(str(item.get('id', '')), labels))}."
-                for item in _dict_items(operation.get("nodes"))
+                f"Updated {_quoted(_object_label(item.id, labels))}." for item in operation.nodes
             )
-        elif name == "create_edges":
-            for edge in _dict_items(operation.get("edges")):
-                source = _object_label(str(edge.get("source", "")), labels)
-                target = _object_label(str(edge.get("target", "")), labels)
+        elif isinstance(operation, CreateEdgesOperation):
+            for edge in operation.edges:
+                source = _object_label(edge.source, labels)
+                target = _object_label(edge.target, labels)
                 sentences.append(f"Connected {_quoted(source)} with {_quoted(target)}.")
-        elif name == "remove_edges":
-            for edge_id in _string_items(operation.get("edge_ids")):
+        elif isinstance(operation, RemoveEdgesOperation):
+            for edge_id in operation.edge_ids:
                 edge = previous_state.edges.get(edge_id) or state.edges.get(edge_id)
                 if edge is None:
                     sentences.append("Removed a graph relationship.")
@@ -710,68 +711,137 @@ def _operation_fallbacks(
                     f"{_quoted(_object_label(edge.source, labels))} and "
                     f"{_quoted(_object_label(edge.target, labels))}."
                 )
-        elif name == "remove_nodes":
+        elif isinstance(operation, RemoveNodesOperation):
             sentences.extend(
                 f"Removed {_quoted(_object_label(node_id, labels))}."
-                for node_id in _string_items(operation.get("node_ids"))
+                for node_id in operation.node_ids
             )
-        elif name == "supersede_nodes":
-            for item in _dict_items(operation.get("nodes")):
-                current = _quoted(_object_label(str(item.get("id", "")), labels))
-                replacement_id = str(item.get("superseded_by", ""))
+        elif isinstance(operation, SupersedeNodesOperation):
+            for item in operation.nodes:
+                current = _quoted(_object_label(item.id, labels))
+                replacement_id = item.superseded_by
                 if replacement_id:
                     replacement = _quoted(_object_label(replacement_id, labels))
                     sentences.append(f"Superseded {current} with {replacement}.")
                 else:
                     sentences.append(f"Superseded {current}.")
-        elif name == "merge_nodes":
-            for item in _dict_items(operation.get("merges")):
-                duplicate = _quoted(_object_label(str(item.get("duplicate", "")), labels))
-                canonical = _quoted(_object_label(str(item.get("canonical", "")), labels))
+        elif isinstance(operation, MergeNodesOperation):
+            for item in operation.merges:
+                duplicate = _quoted(_object_label(item.duplicate, labels))
+                canonical = _quoted(_object_label(item.canonical, labels))
                 sentences.append(f"Merged {duplicate} into {canonical}.")
-        elif name == "create_ambiguities":
-            for item in _dict_items(operation.get("ambiguities")):
-                label = _object_label(
-                    str(item.get("id", "")), labels, str(item.get("question", ""))
-                )
+        elif isinstance(operation, CreateAmbiguitiesOperation):
+            for item in operation.ambiguities:
+                label = _object_label(item.id, labels, item.question)
                 sentences.append(f"Recorded an open question: {_quoted(label)}.")
-        elif name == "resolve_ambiguities":
-            for item in _dict_items(operation.get("resolutions")):
-                label = _quoted(_object_label(str(item.get("id", "")), labels))
-                verb = "Resolved" if item.get("status") == "resolved" else "Dismissed"
+        elif isinstance(operation, ResolveAmbiguitiesOperation):
+            for item in operation.resolutions:
+                label = _quoted(_object_label(item.id, labels))
+                verb = "Resolved" if item.status == "resolved" else "Dismissed"
                 sentences.append(f"{verb} the open question {label}.")
-        elif name == "create_proposals":
-            for item in _dict_items(operation.get("proposals")):
-                label = _object_label(str(item.get("id", "")), labels, str(item.get("title", "")))
+        elif isinstance(operation, CreateProposalsOperation):
+            for item in operation.proposals:
+                label = _object_label(item.id, labels, item.title)
                 sentences.append(f"Recorded a proposal: {_quoted(label)}.")
-        elif name == "resolve_proposals":
-            for item in _dict_items(operation.get("resolutions")):
-                label = _quoted(_object_label(str(item.get("id", "")), labels))
-                status = str(item.get("status", "resolved")).replace("_", " ").title()
+        elif isinstance(operation, ResolveProposalsOperation):
+            for item in operation.resolutions:
+                label = _quoted(_object_label(item.id, labels))
+                status = item.status.replace("_", " ").title()
                 sentences.append(f"{status} proposal {label}.")
-        elif name == "withdraw_proposals":
-            for item in _dict_items(operation.get("proposals")):
-                label = _quoted(_object_label(str(item.get("id", "")), labels))
+        elif isinstance(operation, WithdrawProposalsOperation):
+            for item in operation.proposals:
+                label = _quoted(_object_label(item.id, labels))
                 sentences.append(f"Withdrew proposal {label}.")
-        elif name == "upsert_glossary":
+        elif isinstance(operation, UpsertGlossaryOperation):
             sentences.extend(
-                f"Updated the glossary entry {_quoted(str(item.get('term', '')).strip())}."
-                for item in _dict_items(operation.get("terms"))
-                if str(item.get("term", "")).strip()
+                f"Updated the glossary entry {_quoted(item.term.strip())}."
+                for item in operation.terms
+                if item.term.strip()
             )
-        elif name == "set_coverage":
+        elif isinstance(operation, SetCoverageOperation):
             sentences.append("Updated source coverage.")
-        elif name == "set_standing":
-            label = _quoted(_object_label(str(operation.get("node_id", "")), labels))
-            standing = str(operation.get("standing", "asserted"))
-            sentences.append(f"Marked {label} {standing}.")
-        elif name == "set_project_truth_scope":
+        elif isinstance(operation, SetStandingOperation):
+            label = _quoted(_object_label(operation.node_id, labels))
+            sentences.append(f"Marked {label} {operation.standing}.")
+        elif isinstance(operation, SetProjectTruthScopeOperation):
             sentences.append("Updated the project truth scope.")
-        elif name == "set_ontology":
+        elif isinstance(operation, SetOntologyOperation):
             sentences.append("Updated the project ontology.")
         else:
             sentences.append("Updated the research graph.")
     return sentences
+
+
+def _edge_assessment_sentences(
+    patch: Patch,
+    previous_state: GraphState,
+    state: GraphState,
+    labels: dict[str, str],
+) -> list[str]:
+    rendered: list[str] = []
+    for operation in patch.ops:
+        if not isinstance(operation, CreateEdgesOperation):
+            continue
+        for edge in operation.edges:
+            sentence = _edge_assessment_sentence(
+                edge,
+                previous_state,
+                state,
+                source=_object_label(edge.source, labels),
+                target=_object_label(edge.target, labels),
+            )
+            if sentence is not None:
+                rendered.append(sentence)
+    return rendered
+
+
+def _edge_assessment_sentence(
+    edge: NewEdge,
+    previous_state: GraphState,
+    state: GraphState,
+    *,
+    source: str,
+    target: str,
+) -> str | None:
+    source_node = state.nodes.get(edge.source) or previous_state.nodes.get(edge.source)
+    target_node = state.nodes.get(edge.target) or previous_state.nodes.get(edge.target)
+    is_evidence_hypothesis = (
+        edge.relation in _EVIDENCE_HYPOTHESIS_RELATIONS
+        and source_node is not None
+        and source_node.type == "evidence"
+        and target_node is not None
+        and target_node.type == "hypothesis"
+    )
+    assessment = edge.assessment
+    if assessment is None:
+        if not is_evidence_hypothesis:
+            return None
+        return (
+            f"The {edge.relation} relation from {_quoted(source)} to {_quoted(target)} was "
+            "recorded as an unassessed legacy relation."
+        )
+
+    details = [
+        f"{assessment.relevance} relevance",
+        f"{assessment.weight} weight",
+    ]
+    if assessment.scope is not None:
+        details.append(f"scope {_quoted(assessment.scope)}")
+    if assessment.qualifications:
+        qualifications = "; ".join(_quoted(item) for item in assessment.qualifications)
+        details.append(f"qualifications {qualifications}")
+    return (
+        f"The {edge.relation} relation from {_quoted(source)} to {_quoted(target)} was assessed "
+        f"with {_reader_list(details)}."
+    )
+
+
+def _reader_list(items: list[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
 
 
 def _proposal_consequence_sentences(
@@ -782,16 +852,11 @@ def _proposal_consequence_sentences(
 ) -> list[str]:
     proposal_ids: list[str] = []
     for operation in patch.ops:
-        name = operation.get("op")
-        if name == "create_proposals":
+        if isinstance(operation, CreateProposalsOperation):
+            proposal_ids.extend(item.id for item in operation.proposals)
+        elif isinstance(operation, ResolveProposalsOperation):
             proposal_ids.extend(
-                str(item.get("id", "")) for item in _dict_items(operation.get("proposals"))
-            )
-        elif name == "resolve_proposals":
-            proposal_ids.extend(
-                str(item.get("id", ""))
-                for item in _dict_items(operation.get("resolutions"))
-                if item.get("status") == "approved"
+                item.id for item in operation.resolutions if item.status == "approved"
             )
 
     rendered: list[str] = []

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ from rcp.core.models import (
     Patch,
     Proposal,
 )
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import _record_patch_applied_receipt
 from rcp.service import RunRequest
@@ -1128,10 +1130,18 @@ def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
     app.state.background_tasks.shutdown()
 
 
+@pytest.mark.parametrize(
+    "transient_failure",
+    [
+        StateUnavailable("canonical remote is temporarily unavailable"),
+        sqlite3.OperationalError("database is locked"),
+    ],
+)
 def test_transient_reconciliation_failure_retries_without_a_new_revision(
     manifest,
     tmp_path,
     monkeypatch,
+    transient_failure,
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -1176,7 +1186,7 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
         nonlocal replay_calls
         replay_calls += 1
         if replay_calls == 1:
-            raise StateUnavailable("canonical remote is temporarily unavailable")
+            raise transient_failure
         return original_replay()
 
     deliveries: list[list[str]] = []
@@ -1482,7 +1492,67 @@ def test_reversed_task_settlement_uses_canonical_boundary_order(
     app.state.background_tasks.shutdown()
 
 
-def test_graph_evaluation_failure_still_retries_durable_ready_deliveries(
+def test_repeated_task_settlement_skips_transition_traces_before_durable_cursor(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    store.create_watchers(
+        [
+            _graph_record(
+                "durable-cursor",
+                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
+            ).model_copy(update={"project_id": project_id, "armed_revision": 0})
+        ]
+    )
+    boundaries = [_state(revision=revision) for revision in (1, 2, 3)]
+    monkeypatch.setattr(
+        app.state.service.history,
+        "accepted_boundary_states",
+        lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
+    )
+    traced_revisions: list[int] = []
+
+    def observe_trace(revision: int):
+        traced_revisions.append(revision)
+        return None
+
+    monkeypatch.setattr(
+        app.state.service.history,
+        "transition_trace_at_revision",
+        observe_trace,
+    )
+    callback = app.state.background_tasks.on_task_settled
+    assert callback is not None
+    execution = AgentTaskExecution(
+        operation_id="durable-cursor-signal",
+        store=store,
+        control=AgentProcessControl(),
+        applied_revision=3,
+        applied_graph_state=boundaries[-1],
+    )
+    request = RunRequest(
+        chat_scope="node",
+        chat_id="chat",
+        node_id="exp/one",
+        mode="work",
+    )
+
+    callback(project_id, "node_chat", request, execution)
+    callback(project_id, "node_chat", request, execution)
+
+    assert traced_revisions == [1, 2, 3, 3]
+    consumed = store.graph_watcher_reconciliation_head(project_id, GraphTargetRef())
+    assert consumed is not None and consumed.revision == 3
+    assert consumed.transition_id is None
+    app.state.background_tasks.shutdown()
+
+
+def test_task_settlement_retries_durable_ready_deliveries_without_active_conditions(
     manifest,
     tmp_path,
     monkeypatch,
@@ -1492,14 +1562,10 @@ def test_graph_evaluation_failure_still_retries_durable_ready_deliveries(
     assert project_id is not None
     retries: list[str] = []
 
-    def fail_evaluation(*_args, **_kwargs):
-        raise RuntimeError("evaluation failed")
-
     def capture_ready_retry(_store, candidate_project_id):
         retries.append(candidate_project_id)
         return []
 
-    monkeypatch.setattr("rcp.api.app.evaluate_graph_watchers", fail_evaluation)
     monkeypatch.setattr("rcp.api.app.ready_graph_watcher_groups", capture_ready_retry)
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None

@@ -14,16 +14,25 @@ const nodes = [
   { id: "contested", type: "hypothesis", standing: "contested" },
   { id: "asserted", type: "decision", standing: "asserted" },
   { id: "evidence", type: "evidence", standing: "asserted" },
+  { id: "open-blocker", type: "blocker", status: "open", standing: "asserted" },
+  { id: "resolved-blocker", type: "blocker", status: "resolved", standing: "asserted" },
 ];
 
 test("working graph keeps accepted, asserted, and contested research visible", () => {
   assert.deepEqual(
     projectNodes(nodes, "working").map((node) => node.id),
-    ["accepted", "contested", "asserted", "evidence"],
+    ["accepted", "contested", "asserted", "evidence", "open-blocker"],
   );
   assert.deepEqual(
     projectNodes(nodes, "accepted").map((node) => node.id),
     ["accepted"],
+  );
+});
+
+test("active flow hides resolved Blockers while an explicit history projection retains them", () => {
+  assert.deepEqual(
+    projectNodes(nodes, "working", { includeResolvedBlockers: true }).map((node) => node.id),
+    ["accepted", "contested", "asserted", "evidence", "open-blocker", "resolved-blocker"],
   );
 });
 
@@ -52,7 +61,7 @@ test("relation focus temporarily projects every node and marks one-hop neighbors
   const projection = buildDagProjection(graph, "accepted", "contested");
   assert.deepEqual(
     projection.nodes.map((node) => node.id),
-    ["accepted", "contested", "asserted", "evidence"],
+    ["accepted", "contested", "asserted", "evidence", "open-blocker", "resolved-blocker"],
   );
 
   const focused = relationFocus("contested", projection.edges);

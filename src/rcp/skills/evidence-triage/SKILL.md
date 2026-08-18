@@ -3,7 +3,7 @@ id: evidence-triage
 kind: skill
 label: Evidence triage
 version: 3.0.0
-description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, strength, validity, claim boundaries, and action handoffs to Decisions or Blockers.
+description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, methodological role, validity, claim-relative assessments, and action handoffs to Decisions or Blockers.
 dependencies:
 ---
 
@@ -36,21 +36,40 @@ Experiment summary instead of creating Evidence.
 
 - Set `origin` explicitly: `internal_run`, `external_publication`, `external_instance`, `analytic`,
   or `unknown` only when provenance truly cannot be classified.
-- Set `strength` to `diagnostic`, `preliminary`, `supporting`, or `confirmatory` according to the
-  exact claim the Evidence bears on. A smoke test can be confirmatory about apparatus readiness and
-  still say nothing about a scientific Hypothesis.
+- Set methodological `role` to `result` for an ordinary empirical, analytic, or external
+  observation. Use `diagnostic` when the observation primarily localizes, disambiguates, or debugs
+  a phenomenon. Role says what kind of observation this is, not how strongly it bears on a claim.
+  Never author the retired node-global `strength` or replay-only `legacy_strength` fields.
 - Set `validity` to `valid`, `qualified`, `invalid`, or `superseded`. Use `qualified` when the
   interpretation contains a material boundary such as “only,” “pending,” or “still required.”
+
+## Assess each Hypothesis relation
+
+For every new Evidence-to-Hypothesis `supports`, `weakens`, `refutes`, `inconclusive`, or
+Evidence-sourced `contradicts` edge, write one claim-relative `assessment`:
+
+- `relevance`: `direct`, `indirect`, or `contextual`;
+- `weight`: `limited`, `moderate`, or `strong`;
+- optional `scope`: the bounded population, regime, condition, subclaim, or setting covered; and
+- `qualifications`: concrete limitations or caveats, with an empty list only when none apply.
+
+The relation states direction; do not repeat support or opposition inside the assessment. The same
+Evidence may have different relevance, weight, scope, and qualifications for different Hypotheses.
+Historical unassessed relations remain readable, but never use that compatibility to omit an
+assessment from a new applicable edge. Do not attach an Evidence assessment to a
+Hypothesis-to-Hypothesis `contradicts` edge or any action, seam, meta, or custom relation.
 
 ## Preserve action semantics and authority
 
 - Use `informs` when Evidence bears on a Decision. The edge does not select an option or close the
-  Decision; record the human selection separately through the authorized path.
+  Decision; record the human selection separately through the authorized path. It carries no
+  Evidence-to-Hypothesis assessment.
 - Use `addresses` when Evidence bears on whether a Blocker is cleared, preserved, or narrowed. The
-  edge does not itself change Blocker status; the lifecycle record carries that consequence.
+  edge does not itself change Blocker status; the lifecycle record carries that consequence. It
+  carries no Evidence-to-Hypothesis assessment.
 - Use `supports`, `weakens`, `refutes`, `inconclusive`, or `contradicts` only when the Evidence
-  directly bears on a Hypothesis. Do not use a smoke or calibration result on downstream science
-  merely because it enables the main run.
+  bears on a Hypothesis, and calibrate its claim-relative assessment honestly. Do not use a smoke
+  or calibration result on downstream science merely because it enables the main run.
 - Keep Experiment `produces` Evidence separate from the Evidence handoff to a Decision or Blocker.
 
 ## Check claim boundaries and citations
@@ -62,5 +81,5 @@ Read every `source_refs[].excerpt`. Confirm that it contains the claimed observa
 merely coming from the same conversation. If one excerpt could support several unrelated Evidence
 nodes, it probably supports none of them. Cite the exact source or primary artifact.
 
-Read [worked examples](references/worked-examples.md) when calibrating action Evidence, preliminary
-snapshots, or citation quality.
+Read [worked examples](references/worked-examples.md) when calibrating action Evidence,
+claim-relative assessments, qualified snapshots, or citation quality.

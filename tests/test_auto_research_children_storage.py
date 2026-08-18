@@ -10,6 +10,7 @@ import pytest
 
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 from rcp.storage import (
     AgentTaskRecord,
@@ -97,10 +98,14 @@ def _auto_parent(
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
     now = store.now()
     authorizer = _identity(store)
+    episode_id = str(uuid.uuid4())
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
     episode = EpisodeRecord(
-        episode_id=str(uuid.uuid4()),
+        episode_id=episode_id,
         project_id="project",
         mode="auto_research",
+        graph_target=graph_target,
+        graph_base_head=GraphHeadRef(revision=0),
         status="queued",
         invocation_ceiling=ceiling,
         authorized_by=authorizer,
@@ -112,6 +117,7 @@ def _auto_parent(
         operation_id=root_id,
         project_id="project",
         episode_id=episode.episode_id,
+        graph_target=graph_target,
         kind="auto_research",
         status="queued",
         request={
@@ -134,7 +140,7 @@ def _auto_parent(
             ),
         ),
     )
-    return store.create_auto_research_episode_with_root_task(
+    stored_episode, stored_root = store.create_auto_research_episode_with_root_task(
         episode,
         AutoResearchStateRecord(
             episode_id=episode.episode_id,
@@ -144,6 +150,9 @@ def _auto_parent(
         ),
         root,
     )
+    assert stored_episode.graph_target == stored_root.graph_target == graph_target
+    assert stored_episode.graph_base_head == GraphHeadRef(revision=0)
+    return stored_episode, stored_root
 
 
 def _work_pair(
@@ -162,6 +171,7 @@ def _work_pair(
         operation_id=operation_id,
         project_id=episode.project_id,
         episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
         kind="node_chat",
         status="queued",
         request={
@@ -217,10 +227,20 @@ def _experiment_task(
     stage_root: str | None = None,
 ) -> AgentTaskRecord:
     now = store.now()
+    existing_episode = store.episode(episode_id)
+    if existing_episode is None:
+        auto_parents = [
+            episode for episode in store.episodes("project") if episode.mode == "auto_research"
+        ]
+        assert len(auto_parents) == 1
+        graph_target = auto_parents[0].graph_target
+    else:
+        graph_target = existing_episode.graph_target
     return AgentTaskRecord(
         operation_id=operation_id or str(uuid.uuid4()),
         project_id="project",
         episode_id=episode_id,
+        graph_target=graph_target,
         kind="node_chat",
         status="queued",
         request={

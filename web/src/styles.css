@@ -4198,34 +4198,6 @@ button.relation-map-node:hover {
 .experiment-stop-watchers {
   margin-top: 10px;
 }
-.experiment-attempts {
-  display: grid;
-  gap: 6px;
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-}
-.experiment-attempts li {
-  align-items: center;
-  border-left: 2px solid var(--line);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 11px;
-  gap: 8px;
-  padding-left: 8px;
-}
-.experiment-attempts li.open {
-  border-left-color: var(--amber);
-}
-.experiment-attempt-status {
-  font-variant: small-caps;
-  letter-spacing: 0.04em;
-  opacity: 0.75;
-}
-.experiment-attempt-pins {
-  font-family: var(--mono-family, monospace);
-  opacity: 0.7;
-}
 .experiment-decision-drift {
   color: var(--amber);
   display: grid;
@@ -9984,6 +9956,128 @@ button.relation-map-node:hover {
   font-weight: 650;
   line-height: 1.35;
 }
+.campaign-graph-branch {
+  --branch-tone: var(--cobalt);
+  background: color-mix(in srgb, var(--branch-tone) 5%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--branch-tone) 26%, var(--line));
+  border-left: 3px solid var(--branch-tone);
+  display: grid;
+  gap: 10px;
+  margin-bottom: 15px;
+  padding: 11px 12px 12px;
+}
+.campaign-graph-branch.running {
+  --branch-tone: var(--teal);
+}
+.campaign-graph-branch.merged {
+  --branch-tone: var(--green);
+}
+.campaign-graph-branch.needs_action {
+  --branch-tone: var(--amber);
+}
+.campaign-graph-branch.failed {
+  --branch-tone: var(--red);
+}
+.campaign-graph-branch > header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.campaign-branch-identity,
+.campaign-branch-identity > span,
+.campaign-branch-identity > strong {
+  display: block;
+}
+.campaign-branch-identity > strong {
+  font: 650 11px var(--mono);
+  margin-top: 3px;
+}
+.campaign-graph-branch .status-pill.branch-unmerged {
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+}
+.campaign-graph-branch .status-pill.branch-running {
+  background: var(--green-soft);
+  color: var(--teal);
+}
+.campaign-graph-branch .status-pill.branch-merged {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.campaign-graph-branch .status-pill.branch-needs_action {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.campaign-graph-branch .status-pill.branch-failed {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.campaign-branch-heads {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 30px minmax(0, 1fr);
+}
+.campaign-branch-head {
+  align-items: baseline;
+  display: grid;
+  gap: 2px 7px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+.campaign-branch-head > span {
+  color: var(--muted);
+  font-size: 9px;
+  grid-column: 1 / -1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.campaign-branch-head > strong {
+  color: var(--ink);
+  font: 700 12px var(--mono);
+}
+.campaign-branch-head > code {
+  color: var(--ink-soft);
+  font: 9px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.campaign-branch-head-path {
+  border-top: 1px solid var(--branch-tone);
+  display: block;
+  position: relative;
+}
+.campaign-branch-head-path::after {
+  border-right: 1px solid var(--branch-tone);
+  border-top: 1px solid var(--branch-tone);
+  content: "";
+  height: 5px;
+  position: absolute;
+  right: 0;
+  top: -3px;
+  transform: rotate(45deg);
+  width: 5px;
+}
+.campaign-branch-heads > .campaign-branch-head:nth-child(4) {
+  border-top: 1px solid var(--line);
+  grid-column: 1 / -1;
+  padding-top: 8px;
+}
+.campaign-branch-diagnostic {
+  font-size: 10px;
+  line-height: 1.4;
+}
+.campaign-branch-diagnostic.needs_action {
+  color: var(--amber);
+}
+.campaign-branch-diagnostic.failed {
+  color: var(--red);
+}
+.campaign-branch-merge {
+  justify-self: end;
+}
 .campaign-report-actions {
   display: flex;
   flex: 1;
@@ -10237,6 +10331,20 @@ button.relation-map-node:hover {
   }
   .campaign-run-recommendation {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .campaign-branch-heads {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .campaign-branch-head-path {
+    display: none;
+  }
+  .campaign-branch-heads > .campaign-branch-head:nth-child(4) {
+    grid-column: 1;
+  }
+  .campaign-branch-merge {
+    justify-self: stretch;
+    width: 100%;
   }
   .campaign-task {
     margin-left: 0;

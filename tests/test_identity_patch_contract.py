@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from rcp.agents.schema import AgentPatch
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity
+from rcp.core.operations import CoverageUpdate, SetCoverageOperation
 from rcp.core.validation import validate_patch
 
 PROJECT_ID = "123e4567-e89b-42d3-a456-426614174000"
@@ -57,7 +58,11 @@ def test_system_identity_revision_is_valid_without_graph_scope(action: str, mode
 @pytest.mark.parametrize(
     ("field", "value", "code"),
     [
-        ("ops", [{"op": "set_coverage", "coverage": {}}], "identity-has-operations"),
+        (
+            "ops",
+            [SetCoverageOperation(op="set_coverage", coverage=CoverageUpdate())],
+            "identity-has-operations",
+        ),
         ("run_truth_scope", ["repo"], "identity-has-run-scope"),
         ("repositories_read", ["repo"], "identity-has-run-scope"),
         ("processed_cursors", {"session": "cursor"}, "identity-has-cursors"),

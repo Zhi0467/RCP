@@ -16,12 +16,15 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_watcher_maintenance_correction_contract,
 )
 from rcp.agents.prompts import PromptFactory
+from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.authority import (
     AGENT_GRAPH_AUTHORITY_POLICY_DIGEST,
     AGENT_GRAPH_AUTHORITY_POLICY_VERSION,
     render_agent_graph_authority_contract,
 )
 from rcp.core.models import GraphState
+from rcp.core.operations import CoverageUpdate, SetCoverageOperation
+from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import ProviderSkillReference
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
@@ -565,7 +568,7 @@ def test_work_contract_requires_a_semantic_patch_with_rcp_owned_bookkeeping() ->
     compact = " ".join(contract.split())
     assert "only graph-change channel RCP reads" in compact
     assert "Bash, Python, network access, SSH, and any other available tool" in compact
-    assert "RCP imposes no tool or repository allowlist on Work" in compact
+    assert "RCP imposes no tool allowlist on Work" in compact
     assert "host=`gpu.example` path=`/srv/repo-b`" in contract
     assert "Never create, edit, move, or delete `.research`" in contract
     assert "Patch absence is a normal successful Work result" in contract
@@ -668,6 +671,7 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
         return SimpleNamespace(
             watcher_id=watcher_id,
             origin_operation_id="older-operation",
+            graph_target=GraphTargetRef(),
             execution_host="",
             check_command="test -f complete",
             log_path=f"/tmp/{watcher_id}.log",
@@ -710,7 +714,7 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
     class Store:
         def agent_task(self, operation_id):
             assert operation_id == "wake-operation"
-            return SimpleNamespace(project_id="project")
+            return SimpleNamespace(project_id="project", graph_target=GraphTargetRef())
 
         def watchers(self, project_id):
             assert project_id == "project"
@@ -1144,10 +1148,110 @@ def test_work_patch_legality_reuses_the_non_ingest_boundary_with_work_wording() 
         update={"kind": "work", "processed_cursors": {"session": "record"}}
     )
     coverage_patch = seed_patch().model_copy(
-        update={"kind": "work", "ops": [{"op": "set_coverage", "coverage": {}}]}
+        update={
+            "kind": "work",
+            "ops": [SetCoverageOperation(op="set_coverage", coverage=CoverageUpdate())],
+        }
     )
 
     with pytest.raises(ValueError, match="A Work patch must not claim processed_cursors"):
         validate_work_patch(cursor_patch)
     with pytest.raises(ValueError, match="A Work patch must not set coverage"):
         validate_work_patch(coverage_patch)
+
+
+def _work_write_scope() -> ProjectWriteScope:
+    return ProjectWriteScope.create(
+        project_id="project-1",
+        execution_machine="laptop",
+        execution_host="",
+        capability="work_auto",
+        stage_root="/stage",
+        workspace_root="/stage",
+        repositories=[WritableRepositoryRoot(alias="repo-a", machine="laptop", path="/repo-a")],
+        protected_write_paths=["/repo-a/.research", "/state/.research"],
+    )
+
+
+def _work_contract(**overrides: object) -> str:
+    arguments: dict[str, object] = {
+        "project_name": "Example",
+        "ontology_path": "/state/graph.json#ontology",
+        "ontology_extensions": True,
+        "graph_path": "/state/graph.json",
+        "research_path": "/state/research.md",
+        "focused_node_id": "hyp/example",
+        "repositories": [
+            {"alias": "repo-a", "host": "", "path": "/repo-a"},
+            {"alias": "repo-b", "host": "gpu.example", "path": "/srv/repo-b"},
+        ],
+        "introduction_path": None,
+        "human_request_path": "/stage/inputs/human-request.txt",
+        "patch_path": "/stage/patch.json",
+        "artifact_path": "/stage/artifacts",
+        "output_schema_path": "/stage/inputs/patch-schema.json",
+        "validator_command": "python /stage/validate_patch.py --token work-token",
+    }
+    arguments.update(overrides)
+    return PromptFactory.work_task_contract(**arguments)  # type: ignore[arg-type]
+
+
+def test_work_launch_contract_names_the_roots_the_provider_actually_enforces() -> None:
+    contract = _work_contract(write_scope=_work_write_scope())
+
+    compact = " ".join(contract.split())
+    assert "Enforced write boundary on the machine this turn runs on:" in contract
+    assert "- writable, this task's own scratch: `/stage`" in contract
+    assert "- writable, repository `repo-a`: `/repo-a`" in contract
+    assert "- denied inside the roots above: `/repo-a/.research`" in contract
+    assert "- denied inside the roots above: `/state/.research`" in contract
+    assert "Every other path on this machine is readable but not writable" in compact
+    # The repository on another host is context, never a promise of local write authority.
+    assert "host=`gpu.example` path=`/srv/repo-b`" in contract
+    assert "writable, repository `repo-b`" not in contract
+    # The claim the provider layer contradicts must not come back.
+    assert "no tool or repository allowlist" not in compact
+    assert "not a filesystem permission boundary" not in compact
+
+
+def test_work_contract_inside_a_chat_session_defers_the_boundary_to_each_turn() -> None:
+    embedded = _work_contract(embedded=True)
+
+    compact = " ".join(embedded.split())
+    # A master context is sent once and outlives any single write-scope resolution, so it
+    # points at the per-turn block rather than freezing roots that can move between turns.
+    assert "Enforced write boundary on the machine this turn runs on:" not in embedded
+    assert "Your writable roots are enforced per turn, not per conversation" in compact
+    assert "no tool or repository allowlist" not in compact
+
+
+def test_only_a_work_turn_envelope_carries_a_write_boundary() -> None:
+    scope = _work_write_scope()
+    work_turn = PromptFactory.work_turn_prompt(
+        artifact_path="/stage/turns/t1/artifacts",
+        human_message="Run the sweep.",
+        write_scope=scope,
+    )
+
+    assert "Enforced write boundary on the machine this turn runs on:" in work_turn
+    assert "- writable, repository `repo-a`: `/repo-a`" in work_turn
+    assert work_turn.endswith("Run the sweep.")
+
+    discuss_turn = PromptFactory.discuss_turn_prompt(
+        artifact_path="/stage/turns/t1/artifacts",
+        human_message="What do we know?",
+    )
+    assert "Enforced write boundary" not in discuss_turn
+
+    with pytest.raises(ValueError, match="only to a Work turn"):
+        PromptFactory._chat_turn_prompt(
+            marker="Discuss",
+            artifact_path="/stage/turns/t1/artifacts",
+            human_message="What do we know?",
+            master_context_path=None,
+            context_delta=None,
+            invoked_skill_pointers=None,
+            invoked_provider_skills=None,
+            attachments=None,
+            write_scope=scope,
+        )

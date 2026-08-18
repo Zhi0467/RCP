@@ -3,13 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.experiment_loop_prompt import experiment_loop_wake_message
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
@@ -31,6 +34,7 @@ from rcp.storage import (
     AppStore,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
+    ExperimentWatcherResourceRecord,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
     WatcherContinuation,
@@ -41,6 +45,19 @@ from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/native-wake"
+
+
+def _empty_project_write_scope(workspace: Path, project_id: str) -> ProjectWriteScope:
+    return ProjectWriteScope.create(
+        project_id=project_id,
+        execution_machine="laptop",
+        execution_host="",
+        capability="work_auto",
+        stage_root=str(workspace),
+        workspace_root=str(workspace),
+        repositories=[],
+        protected_write_paths=[],
+    )
 
 
 def test_experiment_watcher_wake_keeps_packages_available_without_reinvoking_them(
@@ -1582,6 +1599,118 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
     assert [item["watcher_id"] for item in state] == ["resource-active"]
 
 
+@pytest.mark.parametrize("task_target_kind", ["main", "branch"])
+@pytest.mark.asyncio
+async def test_chat_watcher_resource_staging_is_exact_target_and_file_names_do_not_collide(
+    tmp_path: Path,
+    task_target_kind: str,
+) -> None:
+    branch = GraphTargetRef(kind="branch", branch_id="branch-resource-owner")
+    task_target = GraphTargetRef() if task_target_kind == "main" else branch
+    other_target = branch if task_target_kind == "main" else GraphTargetRef()
+    project_id = "project-target-resource"
+
+    def watcher(target: GraphTargetRef, suffix: str) -> WatcherRecord:
+        episode_id = f"episode-{suffix}"
+        return WatcherRecord(
+            watcher_id=f"watcher-{suffix}",
+            project_id=project_id,
+            origin_operation_id=f"root-{suffix}",
+            origin_task_kind="node_chat",
+            graph_target=target,
+            chat_id=f"chat-{suffix}",
+            node_id=_EXPERIMENT_ID,
+            episode_id=episode_id,
+            execution_host="",
+            check_command="false",
+            log_path=f"/tmp/{suffix}.log",
+            cwd="/tmp",
+            continuation=WatcherContinuation(
+                provider="codex",
+                run_on="laptop",
+                patch_kind="experiment_loop",
+                control_node_id=_EXPERIMENT_ID,
+                control_revision=2,
+                control_episode_id=episode_id,
+                control_invocation=1,
+                control_invocation_ceiling=3,
+            ),
+            status="active",
+            created_at="2026-08-17T00:00:00+00:00",
+        )
+
+    main_watcher = watcher(GraphTargetRef(), "main")
+    branch_watcher = watcher(branch, "branch")
+    resources = [
+        ExperimentWatcherResourceRecord(
+            project_id=project_id,
+            control_node_id=_EXPERIMENT_ID,
+            episode_id=record.episode_id or "",
+            graph_target=record.graph_target,
+            execution_host="",
+            wake_task_kind="node_chat",
+            wake_chat_id=record.chat_id,
+            continuation=record.continuation,
+            watcher_snapshot_token=f"snapshot-{record.graph_target.key}",
+        )
+        for record in (main_watcher, branch_watcher)
+    ]
+    requested_targets: list[GraphTargetRef | None] = []
+
+    class Store:
+        def agent_task(self, operation_id: str) -> SimpleNamespace:
+            assert operation_id == "target-resource-chat"
+            return SimpleNamespace(project_id=project_id, graph_target=task_target)
+
+        def watchers(self, requested_project_id: str) -> list[WatcherRecord]:
+            assert requested_project_id == project_id
+            return [main_watcher, branch_watcher]
+
+        def experiment_watcher_resources(
+            self,
+            requested_project_id: str,
+            *,
+            graph_target: GraphTargetRef | None = None,
+        ) -> list[ExperimentWatcherResourceRecord]:
+            assert requested_project_id == project_id
+            requested_targets.append(graph_target)
+            return [item for item in resources if item.graph_target == graph_target]
+
+    execution = SimpleNamespace(operation_id="target-resource-chat", store=Store())
+    request = RunRequest(
+        chat_scope="node",
+        chat_id="target-resource-chat",
+        node_id=_EXPERIMENT_ID,
+        message="Inspect only this graph target's observers.",
+        mode="discuss",
+    )
+    stage = tmp_path / f"stage-{task_target_kind}"
+    workspace = stage / "workspace"
+    workspace.mkdir(parents=True)
+
+    staged = await stage_chat_experiment_watcher_resources(
+        request,
+        execution,
+        stage,
+        None,
+        workspace=workspace,
+        token=f"target-resource-{task_target_kind}",
+        clear_stale=True,
+    )
+
+    assert requested_targets == [task_target, task_target]
+    assert len(staged) == 1
+    assert staged[0].resource.graph_target == task_target
+    target_name = experiment_watcher_output_name(_EXPERIMENT_ID, task_target)
+    other_name = experiment_watcher_output_name(_EXPERIMENT_ID, other_target)
+    assert target_name != other_name
+    assert staged[0].watch_path == str(workspace / target_name)
+    state = json.loads(Path(staged[0].watcher_state_path).read_text(encoding="utf-8"))
+    assert [item["watcher_id"] for item in state] == [
+        "watcher-main" if task_target.kind == "main" else "watcher-branch"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "unstaged-resource.sqlite3")
@@ -1614,6 +1743,7 @@ async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_pat
         native_session_id="maintenance-session",
         read_dirs=[],
         write_dirs=[],
+        write_scope=_empty_project_write_scope(workspace, project_id),
         execution_host="",
         provider_binary=None,
         retry_output_digests={},
@@ -1686,6 +1816,7 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
         native_session_id="maintenance-session",
         read_dirs=[],
         write_dirs=[],
+        write_scope=_empty_project_write_scope(workspace, project_id),
         execution_host="",
         provider_binary=None,
         retry_output_digests={survivor.name: predecessor_digest},

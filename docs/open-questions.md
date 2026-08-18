@@ -1,12 +1,13 @@
 # Open questions
 
-Design questions that are **raised and evidenced but not decided**. This file is
-deliberately not the blueprint: the blueprint records decisions, `docs/acceptance/`
-records promises, and this file records what is still genuinely undecided.
+Design questions that are **raised and evidenced but not decided**. Current
+product authority lives in [`design.md`](design.md) and [`specs/`](specs/);
+[`acceptance/`](acceptance/README.md) records selected observable promises. This
+file is deliberately non-normative.
 
-An entry stays here until it is either decided — at which point the canonical
-blueprint is updated in place and the entry is deleted here — or ruled out. Keep
-the evidence with the entry, so the next person does not re-derive it.
+An entry stays here until it is decided and incorporated into the applicable
+current specification, or ruled out. Keep the evidence with the entry so the
+next person does not re-derive it.
 
 ---
 
@@ -29,7 +30,7 @@ editing, or deletion path.
 
 **Status:** open. Raised 2026-08-01. V1 boundary decided; output-streaming and
 other v2 details are not.
-**Governing section:** [Experiment control and watchers](research-control-panel-blueprint.md#experiment-control-and-watchers).
+**Governing section:** [Watcher resources](specs/conversations-episodes-and-watchers.md#watcher-resources).
 
 ### Decided boundary
 
@@ -65,7 +66,8 @@ already treats human corrections as literal edits rather than agent requests.
 
 Keep it separate from Experiment belief acceptance. Direct manipulation is UI
 authority; belief acceptance is the settled Proposal path described in the
-canonical blueprint. Building the first must not silently alter the second.
+[authority specification](specs/authority-and-proposals.md). Building the first
+must not silently alter the second.
 
 ### Secondary v2 lifecycle questions
 
@@ -77,19 +79,19 @@ canonical blueprint. Building the first must not silently alter the second.
   the v1 advisory active-loop marker enough? Human authority must remain explicit
   either way.
 
-Graph-level scheduling across the research frontier is **no longer deferred**. It
-is decided as the bounded Auto-research episode in the blueprint's
-[Auto-research episode mode](research-control-panel-blueprint.md#auto-research-episode-mode)
-section, and it remains outside this question — the two features share only the
-word "control."
+Graph-level scheduling across the research frontier is **no longer deferred**.
+It is the bounded [Auto-research episode](specs/auto-research-and-branch-merge.md#episode-scope-budget-and-authority)
+and remains outside this question—the two features share only the word
+"control."
 
 ---
 
 ## Q5 — Should graph-writing agents be required to run an executable scanner?
 
 **Status:** open. Raised 2026-08-03. No decision.
-**Governing scenarios:** [S59](acceptance/S59-staged-graph-audit-skills.md) and
-[S64](acceptance/S64-project-skill-workflow-selection.md).
+**Governing scenario:** [S59](acceptance/S59-staged-graph-audit-skills.md).
+The implemented package boundary is in
+[Official skills and workflows](specs/providers-and-containment.md#official-skills-and-workflows).
 
 Settings-owned package selection, immutable staging, compact context pointers,
 and package receipts already ship under S64. What remains undecided is whether
@@ -114,8 +116,8 @@ question is decided.
 
 **Status:** open, and much narrower than when raised. The parent question —
 whether RCP shows the researcher their own data, and in what shape — was decided
-2026-08-12 and now lives in the blueprint under
-[Result views](research-control-panel-blueprint.md#result-views), driven by
+2026-08-12 and now lives under
+[Result views](specs/paper-artifacts-and-result-views.md#result-views), driven by
 [S114](acceptance/S114-see-your-results-without-leaving.md).
 **Related:** [Q7](#q7--which-domains-can-rcp-serve-and-where-must-it-link-instead-of-host)
 decides *for whom* this is worth building.
@@ -162,9 +164,8 @@ Do not build an action bar into a view before S114 has been used on real work.
 ## Q7 — Which domains can RCP serve, and where must it link instead of host?
 
 **Status:** open. Raised 2026-08-06. No decision.
-**Related:** the shape boundary this predicate leans on is now decided and lives
-in the blueprint under
-[Result views](research-control-panel-blueprint.md#result-views);
+**Related:** the shape boundary this predicate leans on is now decided under
+[Result views](specs/paper-artifacts-and-result-views.md#result-views);
 [Q6](#q6--may-a-result-view-emit-a-research-action) is what remains open there.
 
 ### The question
@@ -234,10 +235,10 @@ videos fall on the array side.
 
 ### What blocks a decision
 
-1. **Is this a blueprint fact or a roadmap fact?** The predicate is testable and
-   governs feature scope, which argues for the blueprint. But it also reads as
-   positioning, and the blueprint is a design specification. Where it belongs is
-   undecided.
+1. **Is this a design fact or a roadmap fact?** The predicate is testable and
+   governs feature scope, which argues for the design. But it also reads as
+   positioning, and the design hierarchy specifies implemented behavior. Where
+   it belongs is undecided.
 2. **Does the ontology survive the adjacent domains?** Node types are
    `research_question`, `hypothesis`, `experiment`, `evidence`, `decision`,
    `blocker`. Whether a specification-curve study or a benchmark comparison maps
@@ -245,7 +246,7 @@ videos fall on the array side.
    either kind. If it does not, "adjacent" is doing more work than it can bear.
 3. **Does the predicate hold at the seams?** A CSE project that produces a PDE
    solution field, or an interpretability project that wants a trace view, sits on
-   both sides at once. The blueprint's shape table answers this per shape;
+   both sides at once. The archived design snapshot's shape table answered this per shape;
    whether that is sufficient in a real mixed project is untested.
 
 ### Do not do in the meantime
@@ -264,8 +265,8 @@ videos fall on the array side.
 ## Q8 — Should RCP hold live provider sessions so a running turn can be interrupted?
 
 **Status:** open. Raised 2026-08-07. Deliberately deferred, not ruled out.
-**Governing section:** [Background tasks, concurrency, and provider readiness](research-control-panel-blueprint.md#background-tasks-concurrency-and-provider-readiness).
-**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
+**Governing section:** [Durable task lifecycle](specs/providers-and-containment.md#durable-task-lifecycle).
+**Related work:** [orchestrator handoff](archive/handoffs/handoff-2026-08-07-orchestrator.md).
 
 ### The question
 
@@ -309,7 +310,7 @@ apart.
 ### The use case, if it is ever built
 
 Live messaging is not for coordination — turn-based handoff serves that fine,
-and the [graph-condition wake](handoffs/handoff-2026-08-07-graph-condition-wake.md)
+and the [graph-condition wake](archive/handoffs/handoff-2026-08-07-graph-condition-wake.md)
 covers the responsive cases through canonical state. It is for **interruption**:
 "stop, wrong approach," "the cluster died," "I changed the framing." Mail cannot
 do that, because it arrives at the next wake, and for a long turn that is an
@@ -331,8 +332,8 @@ one caller.
 ## Q9 — How does peer-to-peer agent mail work once RCP is multiplayer?
 
 **Status:** open. Raised 2026-08-07. Deferred until team spaces and orchestration land.
-**Governing section:** [Watch delivery](research-control-panel-blueprint.md#watch-delivery).
-**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
+**Governing section:** [Watcher resources](specs/conversations-episodes-and-watchers.md#watcher-resources).
+**Related work:** [orchestrator handoff](archive/handoffs/handoff-2026-08-07-orchestrator.md).
 
 The confirmed team-space design has no user-owned agent actors. Concrete tasks,
 workers, and episodes are addressable execution records; the ordinary and

@@ -44,8 +44,8 @@ Confirmed with the human on 2026-07-31.
 
 - **Ownership is one comparison.** When the app starts a sidecar it records that
   instance's id. At Quit it asks `/api/health` for the current `instance_id` and
-  stops the backend only if they match — reusing the field
-  [S28](S28-one-backend-two-entrances.md) already added. Match means it is still
+  stops the backend only if they match — reusing the shared backend identity
+  field. Match means it is still
   my child; mismatch means the thing I started is gone and something else is
   answering. This is automatically correct across reattachment paths, including
   ones nobody anticipated.

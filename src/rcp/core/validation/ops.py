@@ -18,6 +18,7 @@ from rcp.core.models import (
     RELATION_SPEC,
     Decision,
     Edge,
+    Evidence,
     Experiment,
     GraphState,
     Hypothesis,
@@ -26,13 +27,41 @@ from rcp.core.models import (
 from rcp.core.ontology import (
     custom_relation,
     edge_matches_relation,
-    parse_ontology_operation,
     validate_ontology_change,
+    validate_ontology_structure,
+)
+from rcp.core.operations import (
+    BeliefCause,
+    CreateAmbiguitiesOperation,
+    CreateEdgesOperation,
+    CreateNodesOperation,
+    CreateProposalsOperation,
+    DecisionCause,
+    EvidenceEdgeCause,
+    HumanEditCause,
+    MergeNodesOperation,
+    ProposalContentChangeOperation,
+    ProposalMergeOperation,
+    ProposalProtectedRelationOperation,
+    ProposalRemovalOperation,
+    ProposalResolutionCause,
+    ProposalStatusChangeOperation,
+    ProposalSupersedeOperation,
+    RemoveEdgesOperation,
+    RemoveNodesOperation,
+    ResolveAmbiguitiesOperation,
+    ResolveProposalsOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    SupersedeNodesOperation,
+    UpdateNodesOperation,
+    WithdrawProposalsOperation,
+    strict_project_node,
 )
 from rcp.core.validation.constants import IMMUTABLE_NODE_UPDATE_FIELDS, NODE_ADAPTER
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.nodes import (
-    created_node_id,
     older,
     oldest_source_ref,
     requires_proposal,
@@ -43,16 +72,19 @@ from rcp.core.validation.nodes import (
 )
 from rcp.core.validation.proposals import decision_transition_error, validate_proposal
 
+EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
+    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
+)
+LEGACY_COMPATIBILITY_UPDATE_FIELDS = frozenset(
+    {"legacy_strength", "current_summary_stale", "next_action_stale"}
+)
 
-def validate_create_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
+
+def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     oldest = None
-    for raw in op.get("nodes", []):
-        node_id = raw.get("id") if isinstance(raw, dict) else None
-        if (
-            ctx.mode == "admission"
-            and isinstance(node_id, str)
-            and node_id in ctx.initial_state.nodes
-        ):
+    for node in op.nodes:
+        node_id = node.id
+        if ctx.mode == "admission" and node_id in ctx.initial_state.nodes:
             ctx.report.reject(
                 "initial-node-id-replacement",
                 f"Node {node_id!r} existed before this Patch and cannot be recreated; use "
@@ -60,29 +92,73 @@ def validate_create_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
                 ctx.revision,
                 related_node_ids=[node_id],
             )
+        raw = node.model_dump(mode="python", exclude_unset=True)
         validate_new_node(ctx.state, ctx.patch, raw, ctx.report)
         oldest = older(oldest, oldest_source_ref(raw, ctx.patch, ctx.report))
     return oldest
 
 
-def author_create_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
-    for raw in op.get("nodes", []):
+def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
+    for node in op.nodes:
+        if isinstance(node, Experiment) and node.status == "unspecified":
+            ctx.report.reject(
+                "live-legacy-experiment-phase",
+                f"New Experiment {node.id!r} cannot author compatibility-only phase 'unspecified'.",
+                ctx.revision,
+                related_node_ids=[node.id],
+            )
+        if isinstance(node, Evidence) and "legacy_strength" in node.model_fields_set:
+            ctx.report.reject(
+                "live-legacy-evidence-strength",
+                f"New Evidence {node.id!r} cannot set compatibility-only legacy_strength.",
+                ctx.revision,
+                related_node_ids=[node.id],
+            )
+        raw = node.model_dump(mode="python", exclude_unset=True)
         validate_new_node_authoring(ctx.state, ctx.patch, raw, ctx.report)
     return None
 
 
-def validate_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
     oldest = None
-    for update in op.get("nodes", []):
-        node_id = update.get("id")
+    for update in op.nodes:
+        node_id = update.id
         node = ctx.state.nodes.get(node_id)
         if node is None:
             ctx.report.reject(
                 "unknown-node", f"Cannot update missing node {node_id!r}.", ctx.revision
             )
             continue
-        changes = update.get("changes", {})
-        immutable = sorted(set(changes) & IMMUTABLE_NODE_UPDATE_FIELDS)
+        changes = update.changes
+        live_legacy_phase = (
+            ctx.mode == "admission"
+            and isinstance(node, Experiment)
+            and changes.get("status") == "unspecified"
+        )
+        if live_legacy_phase:
+            ctx.report.reject(
+                "live-legacy-experiment-phase",
+                f"Update to Experiment {node.id!r} cannot author compatibility-only phase "
+                "'unspecified'.",
+                ctx.revision,
+                related_node_ids=[node.id],
+            )
+        live_legacy_strength = (
+            ctx.mode == "admission" and isinstance(node, Evidence) and "legacy_strength" in changes
+        )
+        if live_legacy_strength:
+            ctx.report.reject(
+                "live-legacy-evidence-strength",
+                f"Update to Evidence {node.id!r} cannot set compatibility-only legacy_strength.",
+                ctx.revision,
+                related_node_ids=[node.id],
+            )
+        immutable_fields = set(changes) & IMMUTABLE_NODE_UPDATE_FIELDS
+        if ctx.mode == "replay" and ctx.patch.schema_generation == 1:
+            immutable_fields -= LEGACY_COMPATIBILITY_UPDATE_FIELDS
+        elif live_legacy_strength:
+            immutable_fields.discard("legacy_strength")
+        immutable = sorted(immutable_fields)
         if immutable:
             ctx.report.reject(
                 "immutable-node-field",
@@ -90,10 +166,15 @@ def validate_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
                 ctx.revision,
             )
             continue
+        if live_legacy_strength or live_legacy_phase:
+            continue
         candidate = node.model_dump(mode="python")
         candidate.update(changes)
         try:
-            NODE_ADAPTER.validate_python(candidate)
+            if ctx.mode == "replay" and ctx.patch.schema_generation == 1:
+                NODE_ADAPTER.validate_python(candidate)
+            else:
+                strict_project_node(candidate)
         except ValidationError as exc:
             ctx.report.reject(
                 "invalid-node-update",
@@ -149,7 +230,6 @@ def validate_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
         if (
             ctx.mode == "admission"
             and isinstance(node, Decision)
-            and isinstance(changes, dict)
             and (error := decision_transition_error(node, changes))
         ):
             ctx.report.reject(
@@ -167,16 +247,18 @@ def validate_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
     return oldest
 
 
-def author_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
-    for update in op.get("nodes", []):
-        node = ctx.state.nodes.get(update.get("id"))
-        changes = update.get("changes", {})
-        if node is None or not isinstance(changes, dict):
+def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
+    for update in op.nodes:
+        node = ctx.state.nodes.get(update.id)
+        changes = update.changes
+        if node is None:
             continue
         is_direct_human_edit = (
             ctx.patch.kind == "approval"
             and ctx.reference_patch is None
-            and not any(op.get("op") == "resolve_proposals" for op in ctx.patch.ops)
+            and not any(
+                isinstance(operation, ResolveProposalsOperation) for operation in ctx.patch.ops
+            )
         )
         if not is_direct_human_edit:
             validate_updated_node_authoring(node, changes, ctx.report, ctx.revision)
@@ -193,45 +275,89 @@ def author_update_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
             and "status" in changes
             and changes["status"] != node.status
         ):
-            _validate_belief_cause(ctx, node.id, update.get("cause"))
+            _validate_belief_cause(ctx, node.id, update.cause)
     return None
 
 
-def depends_update_nodes(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
-    updates = [update for update in op.get("nodes", []) if isinstance(update, dict)]
-    config_keys = [
-        "ontology"
-        for update in updates
-        if isinstance(update.get("changes"), dict) and "extension_fields" in update["changes"]
-    ]
-    return [update.get("id") for update in updates], config_keys
+def depends_update_nodes(
+    op: UpdateNodesOperation | ProposalContentChangeOperation | ProposalStatusChangeOperation,
+    state: GraphState,
+) -> tuple[list[Any], list[str]]:
+    updates = op.nodes
+    config_keys = ["ontology" for update in updates if "extension_fields" in update.changes]
+    return [update.id for update in updates], config_keys
 
 
-def validate_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
     created_nodes = [
-        raw
+        node.model_dump(mode="python", exclude_unset=True)
         for patch_op in ctx.patch.ops
-        if patch_op.get("op") == "create_nodes"
-        for raw in patch_op.get("nodes", [])
+        if isinstance(patch_op, CreateNodesOperation)
+        for node in patch_op.nodes
     ]
     seen_edge_ids = set(ctx.state.edges)
-    for edge in op.get("edges", []):
-        source_id = edge.get("source")
-        target_id = edge.get("target")
-        if source_id not in ctx.state.nodes and not created_node_id(ctx.patch, source_id):
+    for edge in op.edges:
+        source_id = edge.source
+        target_id = edge.target
+        if source_id not in ctx.state.nodes and not _created_node_id(ctx, source_id):
             ctx.report.reject(
                 "unknown-edge-source",
                 f"Unknown edge source {source_id!r}.",
                 ctx.revision,
             )
-        if target_id not in ctx.state.nodes and not created_node_id(ctx.patch, target_id):
+        if target_id not in ctx.state.nodes and not _created_node_id(ctx, target_id):
             ctx.report.reject(
                 "unknown-edge-target",
                 f"Unknown edge target {target_id!r}.",
                 ctx.revision,
             )
-        data = dict(edge)
-        relation = data.get("relation")
+        data = edge.model_dump(mode="python", exclude_unset=True)
+        relation = edge.relation
+        source_type = _node_type(ctx, source_id)
+        target_type = _node_type(ctx, target_id)
+        assessment_applies = (
+            relation in EVIDENCE_HYPOTHESIS_RELATIONS
+            and source_type == "evidence"
+            and target_type == "hypothesis"
+        )
+        edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
+        evidence_relation_endpoints_apply = target_type == "hypothesis" and (
+            source_type == "evidence" or (relation == "contradicts" and source_type == "hypothesis")
+        )
+        if (
+            ctx.mode == "admission"
+            and relation in EVIDENCE_HYPOTHESIS_RELATIONS
+            and source_type is not None
+            and target_type is not None
+            and not evidence_relation_endpoints_apply
+        ):
+            ctx.report.reject(
+                "invalid-evidence-relation-endpoints",
+                f"Relation {relation!r} requires Evidence -> Hypothesis"
+                + (" or Hypothesis -> Hypothesis" if relation == "contradicts" else "")
+                + f" endpoints, not {source_type} -> {target_type}.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
+        if edge.assessment is not None and not assessment_applies:
+            ctx.report.reject(
+                "inapplicable-evidence-assessment",
+                f"Edge {edge_id!r} may carry an assessment only when Evidence bears on a "
+                "Hypothesis through supports, weakens, refutes, inconclusive, or contradicts.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
+        elif ctx.mode == "admission" and assessment_applies and edge.assessment is None:
+            ctx.report.reject(
+                "missing-evidence-assessment",
+                f"New Evidence-to-Hypothesis edge {edge_id!r} requires a claim-relative "
+                "assessment.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
         custom = custom_relation(ctx.state.ontology, relation)
         if relation not in RELATION_SPEC:
             if custom is None:
@@ -239,9 +365,7 @@ def validate_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
                     "invalid-edge",
                     f"Edge {data.get('id')!r} uses unknown relation {relation!r}.",
                     ctx.revision,
-                    related_node_ids=[
-                        node_id for node_id in (source_id, target_id) if isinstance(node_id, str)
-                    ],
+                    related_node_ids=[source_id, target_id],
                 )
                 continue
             else:
@@ -258,11 +382,7 @@ def validate_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
                         f"Relation {custom.name!r} does not allow the semantic endpoint types "
                         f"for {source_id!r} -> {target_id!r}.",
                         ctx.revision,
-                        related_node_ids=[
-                            node_id
-                            for node_id in (source_id, target_id)
-                            if isinstance(node_id, str)
-                        ],
+                        related_node_ids=[source_id, target_id],
                     )
         if "id" not in data and source_id is not None and target_id is not None:
             data["id"] = f"{source_id}::{data.get('relation')}::{target_id}"
@@ -284,17 +404,15 @@ def validate_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
                 "invalid-edge",
                 f"Edge {data.get('id')!r} is invalid: {exc.errors()[0]['msg']}.",
                 ctx.revision,
-                related_node_ids=[
-                    node_id for node_id in (source_id, target_id) if isinstance(node_id, str)
-                ],
+                related_node_ids=[source_id, target_id],
                 related_edge_ids=[data["id"]] if isinstance(data.get("id"), str) else [],
             )
     return None
 
 
-def author_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
-    for raw in op.get("edges", []):
-        relation = raw.get("relation")
+def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
+    for edge in op.edges:
+        relation = edge.relation
         custom = custom_relation(ctx.state.ontology, relation)
         if custom is not None and custom.deprecated:
             ctx.report.reject(
@@ -305,8 +423,8 @@ def author_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
         spec = RELATION_SPEC.get(relation)
         if spec is None:
             continue
-        source_id = raw.get("source")
-        target_id = raw.get("target")
+        source_id = edge.source
+        target_id = edge.target
         source_type = _node_type(ctx, source_id)
         target_type = _node_type(ctx, target_id)
         if source_type is None or target_type is None:
@@ -315,7 +433,7 @@ def author_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
         same_type_mismatch = spec.same_type and source_type != target_type
         if not type_mismatch and not same_type_mismatch:
             continue
-        edge_id = raw.get("id") or f"{source_id}::{relation}::{target_id}"
+        edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
         allowed_sources = ", ".join(sorted(spec.source_types))
         allowed_targets = ", ".join(sorted(spec.target_types))
         same_type = "; source and target must have the same type" if spec.same_type else ""
@@ -331,29 +449,20 @@ def author_create_edges(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def depends_create_edges(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
+def depends_create_edges(
+    op: CreateEdgesOperation | ProposalProtectedRelationOperation,
+    state: GraphState,
+) -> tuple[list[Any], list[str]]:
     candidates: list[Any] = []
-    for edge in op.get("edges", []):
-        candidates.append(edge.get("source"))
-        candidates.append(edge.get("target"))
+    for edge in op.edges or []:
+        candidates.append(edge.source)
+        candidates.append(edge.target)
     return candidates, []
 
 
-def validate_remove_edges(op: dict[str, Any], ctx: OpContext) -> Any:
-    if set(op) not in ({"op", "edge_ids"}, {"op", "intent", "edge_ids"}):
-        ctx.report.reject(
-            "invalid-remove-edges-operation",
-            "A remove_edges operation may contain only 'op', optional Proposal 'intent', and "
-            "'edge_ids'.",
-            ctx.revision,
-        )
-        return None
-    edge_ids = op.get("edge_ids")
-    if (
-        not isinstance(edge_ids, list)
-        or not edge_ids
-        or any(not isinstance(edge_id, str) or not edge_id for edge_id in edge_ids)
-    ):
+def validate_remove_edges(op: RemoveEdgesOperation, ctx: OpContext) -> Any:
+    edge_ids = op.edge_ids
+    if not edge_ids or any(not edge_id for edge_id in edge_ids):
         ctx.report.reject(
             "invalid-remove-edges-operation",
             "A remove_edges operation requires at least one non-empty edge id.",
@@ -370,9 +479,12 @@ def validate_remove_edges(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def depends_remove_edges(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
+def depends_remove_edges(
+    op: RemoveEdgesOperation | ProposalProtectedRelationOperation,
+    state: GraphState,
+) -> tuple[list[Any], list[str]]:
     candidates: list[Any] = []
-    for edge_id in op.get("edge_ids", []):
+    for edge_id in op.edge_ids or []:
         edge = state.edges.get(edge_id)
         if edge is not None:
             candidates.append(edge.source)
@@ -380,21 +492,9 @@ def depends_remove_edges(op: dict[str, Any], state: GraphState) -> tuple[list[An
     return candidates, []
 
 
-def validate_remove_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
-    if set(op) not in ({"op", "node_ids"}, {"op", "intent", "node_ids"}):
-        ctx.report.reject(
-            "invalid-remove-nodes-operation",
-            "A remove_nodes operation may contain only 'op', optional Proposal 'intent', and "
-            "'node_ids'.",
-            ctx.revision,
-        )
-        return None
-    node_ids = op.get("node_ids")
-    if (
-        not isinstance(node_ids, list)
-        or not node_ids
-        or any(not isinstance(node_id, str) or not node_id for node_id in node_ids)
-    ):
+def validate_remove_nodes(op: RemoveNodesOperation, ctx: OpContext) -> Any:
+    node_ids = op.node_ids
+    if not node_ids or any(not node_id for node_id in node_ids):
         ctx.report.reject(
             "invalid-remove-nodes-operation",
             "A remove_nodes operation requires at least one non-empty node id.",
@@ -411,7 +511,7 @@ def validate_remove_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
 
     is_proposal_approval = ctx.patch.kind == "approval" and (
         ctx.reference_patch is not None
-        or any(operation.get("op") == "resolve_proposals" for operation in ctx.patch.ops)
+        or any(isinstance(operation, ResolveProposalsOperation) for operation in ctx.patch.ops)
     )
     for node_id in node_ids:
         node = ctx.state.nodes.get(node_id)
@@ -451,13 +551,16 @@ def validate_remove_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def depends_remove_nodes(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
-    return list(op.get("node_ids", [])), []
+def depends_remove_nodes(
+    op: RemoveNodesOperation | ProposalRemovalOperation,
+    state: GraphState,
+) -> tuple[list[Any], list[str]]:
+    return list(op.node_ids), []
 
 
-def validate_supersede_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
-    for item in op.get("nodes", []):
-        node_id = item.get("id")
+def validate_supersede_nodes(op: SupersedeNodesOperation, ctx: OpContext) -> Any:
+    for item in op.nodes:
+        node_id = item.id
         node = ctx.state.nodes.get(node_id)
         if node is None:
             ctx.report.reject(
@@ -465,11 +568,11 @@ def validate_supersede_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
                 f"Cannot supersede missing node {node_id!r}.",
                 ctx.revision,
             )
-        target_id = item.get("superseded_by")
+        target_id = item.superseded_by
         if (
             target_id
             and target_id not in ctx.state.nodes
-            and not created_node_id(ctx.patch, target_id)
+            and not _created_node_id(ctx, target_id)
             and _node_type(ctx, target_id) is None
         ):
             ctx.report.reject(
@@ -487,18 +590,21 @@ def validate_supersede_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def depends_supersede_nodes(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
+def depends_supersede_nodes(
+    op: SupersedeNodesOperation | ProposalSupersedeOperation,
+    state: GraphState,
+) -> tuple[list[Any], list[str]]:
     candidates: list[Any] = []
-    for item in op.get("nodes", []):
-        candidates.append(item.get("id"))
-        candidates.append(item.get("superseded_by"))
+    for item in op.nodes:
+        candidates.append(item.id)
+        candidates.append(item.superseded_by)
     return candidates, []
 
 
-def validate_merge_nodes(op: dict[str, Any], ctx: OpContext) -> Any:
-    for item in op.get("merges", []):
-        duplicate_id = item.get("duplicate")
-        canonical_id = item.get("canonical")
+def validate_merge_nodes(op: MergeNodesOperation, ctx: OpContext) -> Any:
+    for item in op.merges:
+        duplicate_id = item.duplicate
+        canonical_id = item.canonical
         duplicate = ctx.state.nodes.get(duplicate_id)
         canonical = ctx.state.nodes.get(canonical_id)
         if duplicate is None:
@@ -561,33 +667,36 @@ def _validate_generated_relation_endpoints(
         )
 
 
-def depends_merge_nodes(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
+def depends_merge_nodes(
+    op: MergeNodesOperation | ProposalMergeOperation,
+    state: GraphState,
+) -> tuple[list[Any], list[str]]:
     candidates: list[Any] = []
-    for item in op.get("merges", []):
-        candidates.append(item.get("duplicate"))
-        candidates.append(item.get("canonical"))
+    for item in op.merges:
+        candidates.append(item.duplicate)
+        candidates.append(item.canonical)
     return candidates, []
 
 
 def depends_create_ambiguities(
-    op: dict[str, Any], state: GraphState
+    op: CreateAmbiguitiesOperation, state: GraphState
 ) -> tuple[list[Any], list[str]]:
     candidates: list[Any] = []
-    for ambiguity in op.get("ambiguities", []):
-        candidates.extend(ambiguity.get("related_node_ids", []))
+    for ambiguity in op.ambiguities:
+        candidates.extend(ambiguity.related_node_ids)
     return candidates, []
 
 
-def validate_resolve_ambiguities(op: dict[str, Any], ctx: OpContext) -> Any:
-    for resolution in op.get("resolutions", []):
-        ambiguity_id = resolution.get("id")
+def validate_resolve_ambiguities(op: ResolveAmbiguitiesOperation, ctx: OpContext) -> Any:
+    for resolution in op.resolutions:
+        ambiguity_id = resolution.id
         if ambiguity_id not in ctx.state.ambiguities:
             ctx.report.reject(
                 "unknown-ambiguity",
                 f"Cannot resolve missing ambiguity {ambiguity_id!r}.",
                 ctx.revision,
             )
-        if resolution.get("status") not in {"resolved", "dismissed"}:
+        if resolution.status not in {"resolved", "dismissed"}:
             ctx.report.reject(
                 "invalid-ambiguity-resolution",
                 "Ambiguities may only be resolved or dismissed.",
@@ -597,31 +706,30 @@ def validate_resolve_ambiguities(op: dict[str, Any], ctx: OpContext) -> Any:
 
 
 def depends_resolve_ambiguities(
-    op: dict[str, Any], state: GraphState
+    op: ResolveAmbiguitiesOperation, state: GraphState
 ) -> tuple[list[Any], list[str]]:
     candidates: list[Any] = []
-    for resolution in op.get("resolutions", []):
-        ambiguity = state.ambiguities.get(resolution.get("id"))
+    for resolution in op.resolutions:
+        ambiguity = state.ambiguities.get(resolution.id)
         if ambiguity is not None:
             candidates.extend(ambiguity.related_node_ids)
     return candidates, []
 
 
-def validate_create_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_create_proposals(op: CreateProposalsOperation, ctx: OpContext) -> Any:
     seen_ids: set[str] = set()
-    for raw in op.get("proposals", []):
-        proposal_id = raw.get("id") if isinstance(raw, dict) else None
-        if ctx.mode == "admission" and isinstance(proposal_id, str) and proposal_id in seen_ids:
+    for proposal in op.proposals:
+        proposal_id = proposal.id
+        if ctx.mode == "admission" and proposal_id in seen_ids:
             ctx.report.reject(
                 "duplicate-proposal-id",
                 f"Proposal {proposal_id!r} appears more than once in one create_proposals "
                 "operation.",
                 ctx.revision,
             )
-        if isinstance(proposal_id, str):
-            seen_ids.add(proposal_id)
+        seen_ids.add(proposal_id)
         validate_proposal(
-            raw,
+            proposal,
             ctx.state,
             ctx.report,
             ctx.revision,
@@ -635,10 +743,10 @@ def validate_create_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def author_create_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
-    for raw in op.get("proposals", []):
+def author_create_proposals(op: CreateProposalsOperation, ctx: OpContext) -> Any:
+    for proposal in op.proposals:
         validate_proposal(
-            raw,
+            proposal,
             ctx.state,
             ctx.report,
             ctx.revision,
@@ -654,15 +762,15 @@ def author_create_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def validate_resolve_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_resolve_proposals(op: ResolveProposalsOperation, ctx: OpContext) -> Any:
     if ctx.mode == "admission" and ctx.patch.kind != "approval":
         ctx.report.reject(
             "agent-resolved-proposal",
             "Only a human approval patch may resolve or withdraw a Proposal.",
             ctx.revision,
         )
-    for resolution in op.get("resolutions", []):
-        proposal_id = resolution.get("id")
+    for resolution in op.resolutions:
+        proposal_id = resolution.id
         proposal = ctx.state.proposals.get(proposal_id)
         if proposal is None:
             ctx.report.reject(
@@ -679,15 +787,15 @@ def validate_resolve_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def validate_withdraw_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_withdraw_proposals(op: WithdrawProposalsOperation, ctx: OpContext) -> Any:
     if ctx.patch.author != "agent" or ctx.patch.kind == "approval":
         ctx.report.reject(
             "human-only-proposal-withdrawal",
             "Only an agent patch may withdraw a Proposal.",
             ctx.revision,
         )
-    for withdrawal in op.get("proposals", []):
-        proposal_id = withdrawal.get("id")
+    for withdrawal in op.proposals:
+        proposal_id = withdrawal.id
         proposal = ctx.state.proposals.get(proposal_id)
         if proposal is None:
             ctx.report.reject(
@@ -704,17 +812,17 @@ def validate_withdraw_proposals(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def validate_set_standing(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_set_standing(op: SetStandingOperation, ctx: OpContext) -> Any:
     if ctx.mode == "admission" and not permits(ctx.patch, "set_standing"):
         ctx.report.reject(
             "agent-set-standing",
             "This Patch producer may not set standing.",
             ctx.revision,
         )
-    node_id = op.get("node_id")
+    node_id = op.node_id
     if node_id not in ctx.state.nodes:
         ctx.report.reject("unknown-node", f"Cannot review missing node {node_id!r}.", ctx.revision)
-    if op.get("standing") not in {"asserted", "accepted", "contested"}:
+    if op.standing not in {"asserted", "accepted", "contested"}:
         ctx.report.reject(
             "invalid-standing",
             "Standing may be set to asserted, accepted, or contested.",
@@ -723,19 +831,19 @@ def validate_set_standing(op: dict[str, Any], ctx: OpContext) -> Any:
     return None
 
 
-def validate_set_project_truth_scope(op: dict[str, Any], ctx: OpContext) -> Any:
+def validate_set_project_truth_scope(op: SetProjectTruthScopeOperation, ctx: OpContext) -> Any:
     if ctx.patch.kind != "approval":
         ctx.report.reject(
             "agent-set-project-scope",
             "Project truth-scope membership requires human approval.",
             ctx.revision,
         )
-    proposed = set(op.get("truth_scope", []))
-    descriptor = op.get("repository")
-    if descriptor:
-        alias = descriptor.get("alias")
-        machine = descriptor.get("machine")
-        if not alias or not machine or not descriptor.get("path"):
+    proposed = set(op.truth_scope)
+    descriptor = op.repository
+    if descriptor is not None:
+        alias = descriptor.alias
+        machine = descriptor.machine
+        if not alias or not machine or not descriptor.path:
             ctx.report.reject(
                 "incomplete-repository",
                 "A new repository descriptor needs alias, machine, and path.",
@@ -775,31 +883,38 @@ def validate_set_project_truth_scope(op: dict[str, Any], ctx: OpContext) -> Any:
 
 
 def depends_set_project_truth_scope(
-    op: dict[str, Any], state: GraphState
+    op: SetProjectTruthScopeOperation, state: GraphState
 ) -> tuple[list[Any], list[str]]:
     return [], ["project_truth_scope"]
 
 
-def validate_set_ontology(op: dict[str, Any], ctx: OpContext) -> Any:
-    ontology = parse_ontology_operation(op, ctx.report, ctx.revision)
+def validate_set_ontology(op: SetOntologyOperation, ctx: OpContext) -> Any:
+    ontology = op.ontology
+    validate_ontology_structure(ontology, ctx.report, ctx.revision)
     if ctx.patch.kind != "approval":
         ctx.report.reject(
             "agent-set-ontology",
             "Only the human Settings and Sync paths may change ontology.",
             ctx.revision,
         )
-    if ontology is not None and ctx.mode == "admission":
+    if ctx.mode == "admission":
         validate_ontology_change(ctx.state, ontology, ctx.report, ctx.revision)
     return None
 
 
-def depends_set_ontology(op: dict[str, Any], state: GraphState) -> tuple[list[Any], list[str]]:
+def depends_set_ontology(
+    op: SetOntologyOperation, state: GraphState
+) -> tuple[list[Any], list[str]]:
     return [], ["ontology"]
 
 
-def _validate_belief_cause(ctx: OpContext, hypothesis_id: str, raw: Any) -> None:
+def _validate_belief_cause(
+    ctx: OpContext,
+    hypothesis_id: str,
+    cause: BeliefCause | None,
+) -> None:
     related = [hypothesis_id]
-    if not isinstance(raw, dict):
+    if cause is None:
         ctx.report.reject(
             "missing-belief-cause",
             f"Changing Hypothesis {hypothesis_id!r} status requires a cause object.",
@@ -807,30 +922,7 @@ def _validate_belief_cause(ctx: OpContext, hypothesis_id: str, raw: Any) -> None
             related_node_ids=related,
         )
         return
-    kind = raw.get("kind")
-    expected_keys = {"kind"} if kind == "human_edit" else {"kind", "ref_id"}
-    if kind not in {"evidence_edge", "decision", "proposal_resolution", "human_edit"}:
-        ctx.report.reject(
-            "invalid-belief-cause",
-            f"Hypothesis {hypothesis_id!r} has unknown belief cause kind {kind!r}.",
-            ctx.revision,
-            related_node_ids=related,
-        )
-        return
-    if set(raw) != expected_keys or (
-        "ref_id" in expected_keys and not isinstance(raw.get("ref_id"), str)
-    ):
-        required = "kind only" if kind == "human_edit" else "exactly kind and string ref_id"
-        ctx.report.reject(
-            "invalid-belief-cause",
-            f"Belief cause {kind!r} for {hypothesis_id!r} requires {required}.",
-            ctx.revision,
-            related_node_ids=related,
-        )
-        return
-
-    ref_id = raw.get("ref_id")
-    if kind == "human_edit":
+    if isinstance(cause, HumanEditCause):
         if ctx.patch.kind != "approval" or ctx.patch.author != "human":
             ctx.report.reject(
                 "invalid-belief-cause",
@@ -839,7 +931,8 @@ def _validate_belief_cause(ctx: OpContext, hypothesis_id: str, raw: Any) -> None
                 related_node_ids=related,
             )
         return
-    if kind == "decision":
+    if isinstance(cause, DecisionCause):
+        ref_id = cause.ref_id
         node_type = _node_type(ctx, ref_id)
         if node_type != "decision":
             ctx.report.reject(
@@ -849,12 +942,13 @@ def _validate_belief_cause(ctx: OpContext, hypothesis_id: str, raw: Any) -> None
                 related_node_ids=[hypothesis_id, ref_id],
             )
         return
-    if kind == "proposal_resolution":
+    if isinstance(cause, ProposalResolutionCause):
+        ref_id = cause.ref_id
         resolved = {
-            item.get("id")
-            for op in ctx.patch.ops
-            if op.get("op") == "resolve_proposals"
-            for item in op.get("resolutions", [])
+            item.id
+            for operation in ctx.patch.ops
+            if isinstance(operation, ResolveProposalsOperation)
+            for item in operation.resolutions
         }
         if ref_id not in resolved:
             ctx.report.reject(
@@ -865,6 +959,15 @@ def _validate_belief_cause(ctx: OpContext, hypothesis_id: str, raw: Any) -> None
             )
         return
 
+    if not isinstance(cause, EvidenceEdgeCause):
+        ctx.report.reject(
+            "invalid-belief-cause",
+            f"Hypothesis {hypothesis_id!r} has unknown belief cause kind {cause.kind!r}.",
+            ctx.revision,
+            related_node_ids=related,
+        )
+        return
+    ref_id = cause.ref_id
     edge = _edge_in_context(ctx, ref_id)
     if (
         edge is None
@@ -888,13 +991,12 @@ def _node_type(ctx: OpContext, node_id: Any) -> str | None:
     for patch in (ctx.patch, ctx.reference_patch):
         if patch is None:
             continue
-        for op in patch.ops:
-            if op.get("op") != "create_nodes":
+        for operation in patch.ops:
+            if not isinstance(operation, CreateNodesOperation):
                 continue
-            for raw in op.get("nodes", []):
-                if raw.get("id") == node_id:
-                    node_type = raw.get("type")
-                    return node_type if isinstance(node_type, str) else None
+            for node in operation.nodes:
+                if node.id == node_id:
+                    return node.type
     return None
 
 
@@ -905,19 +1007,26 @@ def _edge_in_context(ctx: OpContext, edge_id: Any) -> Edge | None:
     for patch in (ctx.patch, ctx.reference_patch):
         if patch is None:
             continue
-        for op in patch.ops:
-            if op.get("op") != "create_edges":
+        for operation in patch.ops:
+            if not isinstance(operation, CreateEdgesOperation):
                 continue
-            for raw in op.get("edges", []):
-                candidate_id = raw.get("id") or (
-                    f"{raw.get('source')}::{raw.get('relation')}::{raw.get('target')}"
-                )
+            for edge in operation.edges:
+                candidate_id = edge.id or (f"{edge.source}::{edge.relation}::{edge.target}")
                 if candidate_id != edge_id:
                     continue
-                data = dict(raw)
+                data = edge.model_dump(mode="python", exclude_unset=True)
                 data["id"] = candidate_id
                 try:
                     return Edge.model_validate(data)
                 except ValidationError:
                     return None
     return None
+
+
+def _created_node_id(ctx: OpContext, node_id: Any) -> bool:
+    return any(
+        node.id == node_id
+        for operation in ctx.patch.ops
+        if isinstance(operation, CreateNodesOperation)
+        for node in operation.nodes
+    )

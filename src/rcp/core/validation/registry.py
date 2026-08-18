@@ -8,9 +8,17 @@ so the two cannot drift apart about which operations exist.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 
 from rcp.core.models import GraphState
+from rcp.core.operations import (
+    DecisionCause,
+    EvidenceEdgeCause,
+    ProposalContentChangeOperation,
+    ProposalOperation,
+    ProposalProtectedRelationOperation,
+    ProposalRemovalOperation,
+    ProposalStatusChangeOperation,
+)
 from rcp.core.validation.context import OpRule
 from rcp.core.validation.ops import (
     author_create_edges,
@@ -104,7 +112,7 @@ OP_RULES: dict[str, OpRule] = {
 
 
 def proposal_dependencies(
-    state: GraphState, ops: Iterable[dict[str, Any]]
+    state: GraphState, ops: Iterable[ProposalOperation]
 ) -> tuple[list[str], list[str], list[str]]:
     """Derive the graph objects and config whose exact state a proposal depends on."""
     node_ids: set[str] = set()
@@ -112,8 +120,8 @@ def proposal_dependencies(
     config_keys: set[str] = set()
 
     for op in ops:
-        name = op.get("op")
-        rule = OP_RULES.get(name) if isinstance(name, str) else None
+        name = op.op
+        rule = OP_RULES.get(name)
         if rule is None or rule.dependencies is None:
             continue
         candidates, keys = rule.dependencies(op, state)
@@ -122,27 +130,21 @@ def proposal_dependencies(
                 node_ids.add(node_id)
         config_keys.update(keys)
 
-        if name == "remove_edges":
-            edge_ids.update(
-                edge_id for edge_id in op.get("edge_ids", []) if isinstance(edge_id, str)
-            )
-        if name == "remove_nodes":
-            target_ids = {node_id for node_id in op.get("node_ids", []) if isinstance(node_id, str)}
+        if isinstance(op, ProposalProtectedRelationOperation) and op.op == "remove_edges":
+            edge_ids.update(op.edge_ids or [])
+        if isinstance(op, ProposalRemovalOperation):
+            target_ids = set(op.node_ids)
             edge_ids.update(
                 edge.id
                 for edge in state.edges.values()
                 if edge.source in target_ids or edge.target in target_ids
             )
-        if name == "update_nodes":
-            for update in op.get("nodes", []):
-                if not isinstance(update, dict):
-                    continue
-                cause = update.get("cause")
-                if not isinstance(cause, dict) or not isinstance(cause.get("ref_id"), str):
-                    continue
-                if cause.get("kind") == "evidence_edge":
-                    edge_ids.add(cause["ref_id"])
-                elif cause.get("kind") == "decision":
-                    node_ids.add(cause["ref_id"])
+        if isinstance(op, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+            for update in op.nodes:
+                cause = update.cause
+                if isinstance(cause, EvidenceEdgeCause):
+                    edge_ids.add(cause.ref_id)
+                elif isinstance(cause, DecisionCause):
+                    node_ids.add(cause.ref_id)
 
     return sorted(node_ids), sorted(edge_ids), sorted(config_keys)

@@ -32,6 +32,7 @@ from rcp.agents.command_protocol import (
 )
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 from rcp.runs.auto_research import (
     AutoResearchCommandDispatcher,
@@ -92,6 +93,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
         display_name="AutoResearch owner",
     )
     now = store.now()
+    graph_target = GraphTargetRef(kind="branch", branch_id="auto_research")
     root_request = AutoResearchRunRequest(
         episode_id="auto_research",
         role="orchestrator",
@@ -103,6 +105,8 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
             episode_id="auto_research",
             project_id="project",
             mode="auto_research",
+            graph_target=graph_target,
+            graph_base_head=GraphHeadRef(revision=0),
             status="queued",
             invocation_ceiling=8,
             authorized_by=authorizer,
@@ -119,6 +123,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
             operation_id="root",
             project_id="project",
             episode_id="auto_research",
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=root_request.model_dump(mode="json"),
@@ -158,6 +163,7 @@ def _worker(
             operation_id=operation_id,
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -191,6 +197,7 @@ def _orchestrator_turn(
             operation_id=operation_id,
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="succeeded",
             request=request.model_dump(mode="json"),
@@ -493,6 +500,7 @@ def _routed_worker(
             operation_id=worker_id,
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="node_chat",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -2372,6 +2380,7 @@ def test_orchestrator_message_requires_the_stable_worker_actor_id_before_effect_
             operation_id="worker-continuation",
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="queued",
             request=worker_request.model_dump(mode="json"),
@@ -2451,6 +2460,7 @@ def test_spawn_verifies_worker_role_exact_seat_and_parent_before_reporting_succe
                 operation_id=planned_worker_id,
                 project_id=auto_research.project_id,
                 episode_id=auto_research.episode_id,
+                graph_target=auto_research.graph_target,
                 kind="auto_research",
                 status="queued",
                 request=request.model_dump(mode="json"),
@@ -2491,6 +2501,7 @@ def test_deduplicated_client_attempt_is_audited_on_the_current_task(tmp_path) ->
             operation_id="later-orchestrator-turn",
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="succeeded",
             request=AutoResearchRunRequest(

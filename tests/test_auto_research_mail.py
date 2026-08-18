@@ -13,6 +13,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
@@ -111,11 +112,14 @@ def _claimed_delivery(tmp_path):
         display_name="AutoResearch owner",
     )
     now = store.now()
+    graph_target = GraphTargetRef(kind="branch", branch_id="auto_research")
     auto_research, root = store.create_auto_research_episode_with_root_task(
         EpisodeRecord(
             episode_id="auto_research",
             project_id="project",
             mode="auto_research",
+            graph_target=graph_target,
+            graph_base_head=GraphHeadRef(revision=0),
             status="queued",
             invocation_ceiling=5,
             authorized_by=authorizer,
@@ -132,6 +136,7 @@ def _claimed_delivery(tmp_path):
             operation_id="root",
             project_id="project",
             episode_id="auto_research",
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=AutoResearchRunRequest(
@@ -150,11 +155,14 @@ def _claimed_delivery(tmp_path):
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     root = store.agent_task(root.operation_id)
     assert root is not None
+    assert auto_research.graph_target == root.graph_target == graph_target
+    assert auto_research.graph_base_head == GraphHeadRef(revision=0)
     worker = store.create_auto_research_agent_task(
         AgentTaskRecord(
             operation_id="worker",
             project_id="project",
             episode_id="auto_research",
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=AutoResearchRunRequest(
@@ -173,6 +181,7 @@ def _claimed_delivery(tmp_path):
         ),
         role="worker",
     )
+    assert worker.graph_target == graph_target
     store.complete_agent_task(worker.operation_id, applied_revision=None, result={})
     messages = [
         AutoResearchMessageRecord(
@@ -518,6 +527,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="ordinary-child-prompt-episode",
         operation_id="ordinary-child-prompt-root",
     )
@@ -544,6 +555,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         instruction_sha256=hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
     )
     child = wait_for_task(store, child.operation_id, expect="succeeded")
+    assert child.graph_target == episode.graph_target == root.graph_target
 
     initial_master_path = Path(launcher.prompts[0].splitlines()[1])
     initial_master = initial_master_path.read_text(encoding="utf-8")
@@ -782,6 +794,8 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="ordinary-child-experiment-authority-episode",
         operation_id="ordinary-child-experiment-authority-root",
     )
@@ -808,6 +822,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
         instruction_sha256=hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
     )
     child = wait_for_task(store, child.operation_id, expect="succeeded")
+    assert child.graph_target == episode.graph_target == root.graph_target
 
     master_path = Path(launcher.prompts[0].splitlines()[1])
     master = master_path.read_text(encoding="utf-8")

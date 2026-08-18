@@ -506,6 +506,7 @@ async def stream_discuss_run(
                     session_id=request.session_id,
                     read_dirs=read_dirs,
                     write_dirs=[],
+                    write_scope=None,
                     execution_host=execution_host,
                     execution=execution,
                     remote_stage=remote_stage,

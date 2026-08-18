@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.storage.models import (  # noqa: F401
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
@@ -93,6 +94,7 @@ class ExperimentStoreMixin:
         return connection.execute(
             """
             SELECT state.*, episode.project_id, episode.control_node_id,
+                   episode.graph_target_json,
                    episode.stop_requested_at, episode.stop_settled_at
             FROM experiment_episode_state AS state
             JOIN episodes AS episode ON episode.episode_id = state.episode_id
@@ -112,9 +114,21 @@ class ExperimentStoreMixin:
         """Atomically create the Experiment parent, mode child, and invocation 1."""
 
         ids = list(watcher_ids or [])
+        parent_episode = (
+            self.episode(auto_research_route.auto_research_episode_id)
+            if auto_research_route is not None
+            else None
+        )
+        if auto_research_route is not None and (
+            parent_episode is None
+            or parent_episode.mode != "auto_research"
+            or record.graph_target != parent_episode.graph_target
+        ):
+            raise ValueError("an Auto-research child Experiment changed its parent graph target")
         episode = self._new_experiment_episode(
             record,
             auto_research_route=auto_research_route,
+            graph_base_head=(parent_episode.graph_base_head if parent_episode else None),
         )
         self._validate_new_episode(episode)
         self._validate_experiment_watcher_ids(record, ids)
@@ -218,7 +232,12 @@ class ExperimentStoreMixin:
                 if episode_row is None:
                     raise KeyError(episode_id)
                 episode = self._episode_record(episode_row)
-                if episode.mode != "experiment_loop" or episode.project_id != record.project_id:
+                if (
+                    episode.mode != "experiment_loop"
+                    or episode.project_id != record.project_id
+                    or episode.control_node_id != record.request.get("control_node_id")
+                    or episode.graph_target != record.graph_target
+                ):
                     raise ValueError("The watcher wake belongs to another episode.")
                 if (
                     episode.status != "running"
@@ -316,7 +335,12 @@ class ExperimentStoreMixin:
             if episode_row is None:
                 raise KeyError(record.episode_id)
             episode = self._episode_record(episode_row)
-            if episode.mode != "experiment_loop" or episode.project_id != record.project_id:
+            if (
+                episode.mode != "experiment_loop"
+                or episode.project_id != record.project_id
+                or episode.graph_target != record.graph_target
+                or episode.control_node_id != record.request.get("control_node_id")
+            ):
                 raise ValueError("The recovery task belongs to another episode.")
             route = connection.execute(
                 """
@@ -366,6 +390,7 @@ class ExperimentStoreMixin:
         record: AgentTaskRecord,
         *,
         auto_research_route: AutoResearchChildExperimentRecord | None = None,
+        graph_base_head: GraphHeadRef | None = None,
     ) -> EpisodeRecord:
         request = record.request
         episode_id = request.get("control_episode_id")
@@ -395,6 +420,8 @@ class ExperimentStoreMixin:
             project_id=record.project_id,
             mode="experiment_loop",
             control_node_id=control_node_id,
+            graph_target=record.graph_target,
+            graph_base_head=graph_base_head,
             status="queued",
             invocation_ceiling=ceiling,
             authorized_by=record.authorized_by,
@@ -448,9 +475,12 @@ class ExperimentStoreMixin:
         self._validate_watcher_notification_members(connection, watchers)
         if {item.project_id for item in watchers} != {record.project_id}:
             raise ValueError("watchers and Experiment task belong to different projects")
+        if {item.graph_target.key for item in watchers} != {record.graph_target.key}:
+            raise ValueError("watchers and Experiment task belong to different graph targets")
         bindings = {
             (
                 item.node_id,
+                item.graph_target.key,
                 item.execution_host,
                 self._automatic_watcher_delivery_policy(item.continuation),
             )
@@ -504,6 +534,8 @@ class ExperimentStoreMixin:
         if state_row is None:
             raise ValueError("The Experiment watcher wake has no episode state.")
         state = self._experiment_episode_record(state_row)
+        if state.graph_target != record.graph_target:
+            raise ValueError("The Experiment watcher wake changed its exact graph target.")
         newest = connection.execute(
             """
             SELECT kind, request_json FROM graph_runs
@@ -961,6 +993,7 @@ class ExperimentStoreMixin:
                     record.project_id != binding.project_id
                     or record.origin_operation_id != binding.origin_operation_id
                     or record.origin_task_kind != binding.origin_task_kind
+                    or record.graph_target != binding.graph_target
                     or record.chat_id != binding.chat_id
                     or record.node_id != binding.node_id
                     or record.execution_host != binding.execution_host
@@ -991,6 +1024,7 @@ class ExperimentStoreMixin:
             if episode is not None and (
                 episode["project_id"] != (records[0].project_id if records else binding.project_id)
                 or episode["control_node_id"] != continuation.control_node_id
+                or self._experiment_episode_record(episode).graph_target != binding.graph_target
             ):
                 raise ValueError("This watcher handoff belongs to a different Experiment episode.")
             if stop_requests:
@@ -1071,13 +1105,15 @@ class ExperimentStoreMixin:
         project_id: str,
         *,
         control_node_ids: set[str] | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> list[ExperimentWatcherResourceRecord]:
         """Return live Experiment resources visible within one already-resolved scope."""
 
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT DISTINCT json_extract(request_json, '$.control_node_id') AS control_node_id
+                SELECT DISTINCT json_extract(request_json, '$.control_node_id') AS control_node_id,
+                                graph_target_json
                 FROM graph_runs
                 WHERE project_id = ? AND parent_operation_id IS NULL
                   AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
@@ -1091,16 +1127,20 @@ class ExperimentStoreMixin:
                     continue
                 if control_node_ids is not None and control_node_id not in control_node_ids:
                     continue
+                target = GraphTargetRef.model_validate_json(row["graph_target_json"])
+                if graph_target is not None and target != graph_target:
+                    continue
                 try:
                     resource = self._current_experiment_watcher_resource(
                         connection,
                         project_id,
                         control_node_id,
+                        graph_target=target,
                     )
                 except ValueError:
                     continue
                 resources.append(resource)
-        return sorted(resources, key=lambda item: item.control_node_id)
+        return sorted(resources, key=lambda item: (item.control_node_id, item.graph_target.key))
 
     def admit_experiment_watcher_maintenance(
         self,
@@ -1122,7 +1162,8 @@ class ExperimentStoreMixin:
         binding: WatcherBinding,
     ) -> ExperimentWatcherResourceRecord | None:
         task_row = connection.execute(
-            "SELECT project_id, kind, request_json FROM graph_runs WHERE operation_id = ?",
+            "SELECT project_id, kind, request_json, graph_target_json "
+            "FROM graph_runs WHERE operation_id = ?",
             (binding.origin_operation_id,),
         ).fetchone()
         if task_row is None:
@@ -1131,6 +1172,11 @@ class ExperimentStoreMixin:
         if task_row["project_id"] != binding.project_id:
             raise ValueError(
                 "Experiment watcher maintenance permission denied: project scope does not match."
+            )
+        actor_graph_target = GraphTargetRef.model_validate_json(task_row["graph_target_json"])
+        if actor_graph_target != binding.graph_target:
+            raise ValueError(
+                "Experiment watcher maintenance permission denied: graph target does not match."
             )
         if request.get("mode") != "work" or task_row["kind"] not in {
             "node_chat",
@@ -1172,6 +1218,7 @@ class ExperimentStoreMixin:
             if episode_row is not None and (
                 episode_row["project_id"] != binding.project_id
                 or episode_row["control_node_id"] != control_node_id
+                or self._experiment_episode_record(episode_row).graph_target != binding.graph_target
             ):
                 raise ValueError("Experiment watcher maintenance targets a different episode.")
             return None
@@ -1190,6 +1237,7 @@ class ExperimentStoreMixin:
             binding.project_id,
             control_node_id,
             expected_episode_id=episode_id,
+            graph_target=binding.graph_target,
         )
         if binding.execution_host != resource.execution_host:
             raise ValueError("Experiment watcher maintenance must use the episode execution host.")
@@ -1206,17 +1254,21 @@ class ExperimentStoreMixin:
         control_node_id: str,
         *,
         expected_episode_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> ExperimentWatcherResourceRecord:
+        target = graph_target or GraphTargetRef()
         root_row = connection.execute(
             """
-            SELECT kind, request_json FROM graph_runs
+            SELECT kind, request_json, graph_target_json FROM graph_runs
             WHERE project_id = ? AND parent_operation_id IS NULL
               AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
               AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(graph_target_json, '$.kind') = ?
+              AND json_extract(graph_target_json, '$.branch_id') IS ?
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
-            (project_id, control_node_id),
+            (project_id, control_node_id, target.kind, target.branch_id),
         ).fetchone()
         if root_row is None:
             raise ValueError("Experiment watcher maintenance requires a current live episode.")
@@ -1237,6 +1289,7 @@ class ExperimentStoreMixin:
         if (
             episode.project_id != project_id
             or episode.control_node_id != control_node_id
+            or episode.graph_target != target
             or not episode.session_bound
         ):
             raise ValueError(
@@ -1301,6 +1354,7 @@ class ExperimentStoreMixin:
             project_id=project_id,
             control_node_id=control_node_id,
             episode_id=episode_id,
+            graph_target=target,
             execution_host=episode.execution_host,
             wake_task_kind=wake_task_kind,
             wake_chat_id=episode.chat_id,
@@ -1309,6 +1363,7 @@ class ExperimentStoreMixin:
                 connection,
                 project_id,
                 control_node_id,
+                target,
             ),
         )
 
@@ -1317,6 +1372,7 @@ class ExperimentStoreMixin:
         connection: sqlite3.Connection,
         project_id: str,
         control_node_id: str,
+        graph_target: GraphTargetRef,
     ) -> str:
         """Fingerprint the node's observer membership, and nothing else.
 
@@ -1339,10 +1395,12 @@ class ExperimentStoreMixin:
             """
             SELECT watcher_id FROM watchers
             WHERE project_id = ? AND node_id = ?
+              AND json_extract(graph_target_json, '$.kind') = ?
+              AND json_extract(graph_target_json, '$.branch_id') IS ?
               AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
             ORDER BY watcher_id
             """,
-            (project_id, control_node_id),
+            (project_id, control_node_id, graph_target.kind, graph_target.branch_id),
         ).fetchall()
         snapshot = json.dumps(
             [str(row["watcher_id"]) for row in rows],
@@ -1552,14 +1610,25 @@ class ExperimentStoreMixin:
         """
 
         with self.connection() as connection:
+            current = connection.execute(
+                """
+                SELECT graph_target_json FROM episodes
+                WHERE episode_id = ? AND project_id = ? AND mode = 'experiment_loop'
+                  AND control_node_id = ?
+                """,
+                (episode_id, project_id, control_node_id),
+            ).fetchone()
+            if current is None:
+                return None
             rows = connection.execute(
                 """
                 SELECT episode_id FROM episodes
                 WHERE project_id = ? AND mode = 'experiment_loop'
                   AND control_node_id = ?
+                  AND graph_target_json = ?
                 ORDER BY created_at DESC, episode_id DESC
                 """,
-                (project_id, control_node_id),
+                (project_id, control_node_id, current["graph_target_json"]),
             ).fetchall()
         ordered = [str(row["episode_id"]) for row in rows]
         if episode_id not in ordered:
@@ -1777,42 +1846,70 @@ class ExperimentStoreMixin:
         self,
         project_id: str,
         control_node_id: str,
+        *,
+        episode_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> ExperimentEpisodeRecord | None:
-        """Persist a durable stop for the newest episode before any new claim can win.
+        """Persist a durable stop for one resolved episode before a new claim can win.
 
         The intent is written under the same write lock a watcher claim takes, so
         a claim that committed first becomes the current turn and anything later
-        finds the loop already stopped.
+        finds the loop already stopped. Omitting exact identity preserves the
+        legacy newest-episode selection, while callers that already resolved an
+        episode must pass it so a different target cannot win between validation
+        and mutation.
         """
 
         with self.connection() as connection:
-            episode_id = self._newest_experiment_episode_id(connection, project_id, control_node_id)
-        if episode_id is None:
+            selected = self._experiment_episode_for_stop(
+                connection,
+                project_id,
+                control_node_id,
+                episode_id=episode_id,
+                graph_target=graph_target,
+            )
+        if selected is None:
             return None
-        self.request_episode_stop(episode_id)
-        return self.settle_experiment_loop_stop(project_id, control_node_id)
+        selected_episode_id, selected_target = selected
+        self.request_episode_stop(selected_episode_id)
+        return self.settle_experiment_loop_stop(
+            project_id,
+            control_node_id,
+            episode_id=selected_episode_id,
+            graph_target=selected_target,
+        )
 
     def settle_experiment_loop_stop(
         self,
         project_id: str,
         control_node_id: str,
+        *,
+        episode_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> ExperimentEpisodeRecord | None:
         """Reconcile a persisted stop once its authorized turn is no longer live."""
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            episode_id = self._newest_experiment_episode_id(connection, project_id, control_node_id)
-            if episode_id is None:
+            selected = self._experiment_episode_for_stop(
+                connection,
+                project_id,
+                control_node_id,
+                episode_id=episode_id,
+                graph_target=graph_target,
+            )
+            if selected is None:
                 return None
+            selected_episode_id, _selected_target = selected
             quiescent = self._settle_experiment_loop_stop(
                 connection,
                 project_id,
                 control_node_id,
-                episode_id,
+                selected_episode_id,
             )
         if quiescent:
-            self.mark_episode_stop_skipped(episode_id)
-        return self.experiment_episode(episode_id)
+            self.mark_episode_stop_skipped(selected_episode_id)
+        return self.experiment_episode(selected_episode_id)
 
     def _settle_experiment_loop_stop(
         self,
@@ -1831,7 +1928,12 @@ class ExperimentStoreMixin:
         """
 
         requested = self._experiment_episode_row(connection, episode_id)
-        if requested is None or requested["stop_requested_at"] is None:
+        if (
+            requested is None
+            or requested["project_id"] != project_id
+            or requested["control_node_id"] != control_node_id
+            or requested["stop_requested_at"] is None
+        ):
             return False
         # A superseded attempt does not count: only the newest attempt of each
         # invocation is the turn the human can still act on, which is exactly what
@@ -1966,7 +2068,7 @@ class ExperimentStoreMixin:
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT episode_id, project_id, control_node_id
+                SELECT episode_id, project_id, control_node_id, graph_target_json
                 FROM episodes
                 WHERE mode = 'experiment_loop'
                   AND stop_requested_at IS NOT NULL AND stop_settled_at IS NULL
@@ -1979,6 +2081,8 @@ class ExperimentStoreMixin:
             self.settle_experiment_loop_stop(
                 str(row["project_id"]),
                 str(row["control_node_id"]),
+                episode_id=str(row["episode_id"]),
+                graph_target=GraphTargetRef.model_validate_json(row["graph_target_json"]),
             )
             after = self.episode(str(row["episode_id"]))
             if before is not None and before.stop_settled_at is None and after is not None:
@@ -2034,53 +2138,157 @@ class ExperimentStoreMixin:
         return [self._agent_task_record(row) for row in rows]
 
     @staticmethod
-    def _newest_experiment_episode_id(
+    def _experiment_episode_for_stop(
         connection: sqlite3.Connection,
         project_id: str,
         control_node_id: str,
-    ) -> str | None:
+        *,
+        episode_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
+    ) -> tuple[str, GraphTargetRef] | None:
         row = connection.execute(
             """
-            SELECT episode_id FROM episodes
+            SELECT episode_id, graph_target_json FROM episodes
             WHERE project_id = ? AND mode = 'experiment_loop' AND control_node_id = ?
+              AND (? IS NULL OR episode_id = ?)
+              AND (
+                  ? = 0
+                  OR (
+                      json_extract(graph_target_json, '$.kind') = ?
+                      AND json_extract(graph_target_json, '$.branch_id') IS ?
+                  )
+              )
             ORDER BY created_at DESC, episode_id DESC
             LIMIT 1
             """,
-            (project_id, control_node_id),
+            (
+                project_id,
+                control_node_id,
+                episode_id,
+                episode_id,
+                int(graph_target is not None),
+                graph_target.kind if graph_target is not None else "main",
+                graph_target.branch_id if graph_target is not None else None,
+            ),
         ).fetchone()
         if row is None or not isinstance(row["episode_id"], str):
             return None
-        return row["episode_id"]
+        return row["episode_id"], GraphTargetRef.model_validate_json(row["graph_target_json"])
 
     def experiment_loop_runtime(
         self,
         project_id: str,
         control_node_id: str,
+        *,
+        graph_target: GraphTargetRef | None = None,
     ) -> ExperimentLoopRuntime:
-        """Derive the newest episode from root invocations and its watcher ledger."""
+        """Project the globally newest episode, optionally only on one target.
 
-        return self.experiment_loop_runtimes(project_id, [control_node_id])[control_node_id]
+        This is the display/cache contract: when a newer same-node episode lives
+        on another target it returns an empty runtime instead of reviving older
+        operational state. Target-bound operations use
+        :meth:`experiment_loop_runtime_for_target` instead.
+        """
+
+        return self.experiment_loop_runtimes(
+            project_id,
+            [control_node_id],
+            graph_target=graph_target,
+        )[control_node_id]
+
+    def experiment_loop_runtime_for_target(
+        self,
+        project_id: str,
+        control_node_id: str,
+        graph_target: GraphTargetRef,
+    ) -> ExperimentLoopRuntime:
+        """Derive the newest episode on one exact target for operational authority."""
+
+        projected = self._project_experiment_loop_runtimes(
+            project_id,
+            {control_node_id},
+            graph_target=graph_target,
+        )
+        return projected.get(control_node_id, ExperimentLoopRuntime())
 
     def experiment_loop_runtimes(
         self,
         project_id: str,
         control_node_ids: Iterable[str],
+        *,
+        graph_target: GraphTargetRef | None = None,
     ) -> dict[str, ExperimentLoopRuntime]:
-        """Derive several Experiment runtimes from one project-scoped projection."""
+        """Derive current runtimes, optionally only when newest belongs to one target."""
 
         requested = tuple(dict.fromkeys(control_node_ids))
         if not requested:
             return {}
-        projected = self._project_experiment_loop_runtimes(project_id, set(requested))
+        requested_set = set(requested)
+        if graph_target is None:
+            projected = self._project_experiment_loop_runtimes(project_id, requested_set)
+        else:
+            newest_targets = self._newest_experiment_targets(project_id, requested_set)
+            visible = {
+                control_node_id
+                for control_node_id, target in newest_targets.items()
+                if target == graph_target
+            }
+            projected = (
+                self._project_experiment_loop_runtimes(
+                    project_id,
+                    visible,
+                    graph_target=graph_target,
+                )
+                if visible
+                else {}
+            )
         return {
             control_node_id: projected.get(control_node_id, ExperimentLoopRuntime())
             for control_node_id in requested
         }
 
+    def _newest_experiment_targets(
+        self,
+        project_id: str,
+        requested: set[str] | None,
+    ) -> dict[str, GraphTargetRef]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT control_node_id, graph_target_json
+                FROM episodes
+                WHERE project_id = ? AND mode = 'experiment_loop'
+                ORDER BY created_at DESC, episode_id DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        newest: dict[str, GraphTargetRef] = {}
+        for row in rows:
+            control_node_id = row["control_node_id"]
+            if not isinstance(control_node_id, str) or not control_node_id:
+                continue
+            if requested is not None and control_node_id not in requested:
+                continue
+            newest.setdefault(
+                control_node_id,
+                GraphTargetRef.model_validate_json(row["graph_target_json"]),
+            )
+        return newest
+
+    def project_experiment_loop_runtimes(
+        self,
+        project_id: str,
+    ) -> dict[str, ExperimentLoopRuntime]:
+        """Derive every current Experiment runtime without paging episode history."""
+
+        return self._project_experiment_loop_runtimes(project_id, None)
+
     def _project_experiment_loop_runtimes(
         self,
         project_id: str,
         requested: set[str] | None,
+        *,
+        graph_target: GraphTargetRef | None = None,
     ) -> dict[str, ExperimentLoopRuntime]:
         """Load the generic parents plus mode ledgers and group them in memory."""
 
@@ -2122,6 +2330,7 @@ class ExperimentStoreMixin:
             episode_rows = connection.execute(
                 """
                 SELECT state.*, episode.project_id, episode.control_node_id,
+                       episode.graph_target_json,
                        episode.stop_requested_at, episode.stop_settled_at
                 FROM experiment_episode_state AS state
                 JOIN episodes AS episode ON episode.episode_id = state.episode_id
@@ -2167,10 +2376,12 @@ class ExperimentStoreMixin:
         episodes = {
             str(row["episode_id"]): self._experiment_episode_record(row) for row in episode_rows
         }
-        parents_by_control: dict[str, EpisodeRecord] = {}
+        parents_by_control: dict[str, EpisodeRecord | None] = {}
         for row in parent_rows:
             parent = self._episode_record(row)
             assert parent.control_node_id is not None
+            if graph_target is not None and parent.graph_target != graph_target:
+                continue
             parents_by_control.setdefault(parent.control_node_id, parent)
         control_node_ids = (
             set(tasks_by_control) | set(watchers_by_control) | set(parents_by_control)
@@ -2374,9 +2585,10 @@ class ExperimentStoreMixin:
 
         continuation = record.continuation
         control_node_id = root_request.get("control_node_id")
-        episode_matches = episode is None or (
+        episode_matches = episode is not None and (
             record.project_id == episode.project_id
             and episode.control_node_id == control_node_id
+            and record.graph_target == episode.graph_target
             and record.execution_host == episode.execution_host
         )
         return (
@@ -2442,21 +2654,34 @@ class ExperimentStoreMixin:
             episode,
         )
 
-    def active_experiment_control_ids(self, project_id: str) -> set[str]:
-        """Return Experiments whose newest operational episode is still live."""
+    def active_experiment_control_ids(
+        self,
+        project_id: str,
+        *,
+        graph_target: GraphTargetRef | None = None,
+    ) -> set[str]:
+        """Return live controls, optionally only when the newest episode owns one target."""
 
-        return {
-            control_node_id
-            for control_node_id, runtime in self._project_experiment_loop_runtimes(
-                project_id, None
-            ).items()
-            if runtime.active
-        }
+        projected = self._project_experiment_loop_runtimes(
+            project_id,
+            None,
+            graph_target=graph_target,
+        )
+        if graph_target is not None:
+            newest_targets = self._newest_experiment_targets(project_id, None)
+            projected = {
+                control_node_id: runtime
+                for control_node_id, runtime in projected.items()
+                if newest_targets.get(control_node_id) == graph_target
+            }
+        return {control_node_id for control_node_id, runtime in projected.items() if runtime.active}
 
     def completed_experiment_watcher_group(
         self,
         project_id: str,
         control_node_id: str,
+        *,
+        graph_target: GraphTargetRef | None = None,
     ) -> list[StoredWatcherRecord] | None:
         """Return the oldest frozen group a human may reauthorize.
 
@@ -2464,6 +2689,7 @@ class ExperimentStoreMixin:
         watcher configuration, including model, reasoning, and package pointers.
         """
 
+        target = graph_target or GraphTargetRef()
         with self.connection() as connection:
             units = self._ready_watcher_delivery_units(connection)
         groups: dict[tuple[object, ...], list[StoredWatcherRecord]] = {}
@@ -2471,12 +2697,14 @@ class ExperimentStoreMixin:
             first = unit[0]
             if (
                 first.project_id != project_id
+                or first.graph_target != target
                 or first.continuation.patch_kind != "experiment_loop"
                 or first.continuation.control_node_id != control_node_id
             ):
                 continue
             key = (
                 first.node_id,
+                first.graph_target.key,
                 first.execution_host,
                 self._automatic_watcher_delivery_policy(first.continuation),
             )

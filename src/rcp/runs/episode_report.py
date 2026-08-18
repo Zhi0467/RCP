@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.episode_report_prompt import episode_report_task_contract
+from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import validate_artifact_bytes
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId
@@ -109,6 +110,25 @@ async def stream_episode_report_run(
         output_name, report_output_path = _exact_report_output(turn.wrapup, stage)
         mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
         capability = _report_capability(execution, turn.wrapup)
+        write_scope = resolve_project_write_scope(
+            manifest=service.manifest,
+            project_id=turn.task.project_id,
+            execution_machine=turn.request.run_on,
+            capability=capability,
+            stage_root=(
+                str(stage.remote.root)
+                if stage.remote is not None and stage.remote.root is not None
+                else str(stage.workspace)
+            ),
+            workspace_root=str(stage.workspace),
+            admitted_aliases=[],
+            repository_pointers=[],
+            remote_stage=stage.remote,
+            app_data_dir=None,
+            repository_inventory=service.repository_ownership_inventory(
+                project_id=turn.task.project_id
+            ),
+        )
         attempt = execution.store.current_episode_report_attempt(turn.episode.episode_id)
         if attempt is not None and attempt.status == "running":
             recovered = _reconcile_running_attempt(execution, turn, attempt, mailbox, output_name)
@@ -178,6 +198,7 @@ async def stream_episode_report_run(
                 contract_path=contract_path,
                 remote=bool(stage.execution_host),
                 resumed=True,
+                write_scope=write_scope,
                 continuation="episode_report",
                 extra={
                     "surface": "episode_report",
@@ -206,7 +227,8 @@ async def stream_episode_report_run(
                         workspace=stage.workspace,
                         session_id=turn.wrapup.native_session_id,
                         read_dirs=[inputs_path],
-                        write_dirs=[stage.workspace],
+                        write_dirs=[],
+                        write_scope=write_scope,
                         execution_host=stage.execution_host,
                         execution=execution,
                         remote_stage=stage.remote,

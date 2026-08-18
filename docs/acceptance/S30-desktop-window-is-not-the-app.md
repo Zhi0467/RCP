@@ -44,14 +44,14 @@ Confirmed with the human on 2026-07-31.
   stays in the Dock with no window, which is the macOS convention.
 - **The Dock icon** reopens and focuses the existing window.
 - **A second launch** focuses the existing instance rather than racing it to the
-  lock. This is the cheapest place to close the launch race in
-  [S28](S28-one-backend-two-entrances.md), so it is a correctness control as much
-  as a convenience one.
+  lock. This closes the shell/backend launch race, so it is a correctness control
+  as much as a convenience one.
 - **Window-show does exactly three things**: re-verify the backend's instance id
-  (S28), refetch the task list, and let [S22](S22-fast-project-open.md)'s
-  existing display-snapshot-then-reconcile path handle project state. Not a full
+  refetch the task list, and let the
+  [atomic snapshot path](../specs/api-web-and-desktop-projections.md#atomic-client-project-snapshots)
+  handle project state. Not a full
   authoritative replay — focusing a window must never cost an SSH round trip,
-  which is the whole point of S22.
+  which is the point of snapshot-then-reconcile.
 - **Quit** is the only control that stops anything, and it is
   [S31](S31-quit-stops-what-it-started.md).
 

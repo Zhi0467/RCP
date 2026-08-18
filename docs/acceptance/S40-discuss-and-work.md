@@ -9,8 +9,8 @@ covered_by:
   - tests/test_api.py::test_exhausted_work_patch_correction_preserves_successful_answer
   - tests/test_api.py::test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate
   - tests/test_api.py::test_background_work_rejection_succeeds_and_manual_repair_is_idempotent
-  - tests/test_launcher.py::test_codex_work_bypasses_approvals_and_sandbox
-  - tests/test_launcher.py::test_claude_work_bypasses_permissions
+  - tests/test_launcher.py::test_codex_work_uses_exact_project_permission_profile
+  - tests/test_launcher.py::test_claude_work_uses_exact_sandbox_and_tool_allowlists
   - tests/test_agent_schema.py::test_agent_output_schema_omits_nested_rcp_bookkeeping
   - tests/test_staged_graph_validation.py
   - web/tests/chatWorkspace.test.mjs::conversation mode controls have stable storage keys and Shift+Tab semantics
@@ -29,11 +29,11 @@ last_passed: 2026-08-02 — the 2026-08-01 live provider drive verified immutabl
 
 Every node conversation and project conversation has two per-turn modes.
 **Discuss** reads and reasons without changing project files or canonical graph
-state. **Work** has unrestricted repository, command, network, and tooling access
-and may optionally reflect what happened into the research graph. The exact
-run-scope repositories still define what RCP puts in context; they are not a
-Work permission allowlist. Changing mode keeps the same conversation and
-provider session.
+state. **Work** has unattended operational tools, network access, and write
+access to the exact task stage and admitted project repositories; it may
+optionally reflect what happened into the research graph. Context scope and the
+provider-enforced write scope are distinct resolved contracts. Changing mode
+keeps the same conversation and provider session.
 
 Work is one non-interactive agent run. Its answer, operational side effects,
 preview artifacts, and optional graph update are independent outcomes. A graph
@@ -83,12 +83,12 @@ Confirmed by the human on 2026-08-01.
   badge, and the last composer choice remains the default for the next turn.
 - Repeat the mode switch from a non-Experiment node and from project chat.
 - Pause and resume a Work turn after changing the composer to Discuss. Resume
-  retains the interrupted turn's Work mode, unrestricted permission envelope,
+  retains the interrupted turn's Work mode, exact project write scope,
   contextual run scope, native session, and saved stage.
-- Inspect an operation outside Discuss authority and the Work prohibition on
-  direct canonical `.research` writes. RCP never opens an approval dialog.
-  Discuss remains bounded; Work's `.research` boundary is explicitly recorded
-  as prompt-enforced for both providers.
+- Inspect an operation outside Discuss authority and attempt writes outside
+  Work's exact project scope, including direct canonical `.research`. RCP never
+  opens an approval dialog. Discuss remains bounded, and each provider refuses
+  the out-of-scope write through its native unattended containment profile.
 
 The transcript and reading surface stay neutral paper/sheet. Plum and forest are
 semantic accents on the mode control, composer binding, send focus, and compact
@@ -115,12 +115,12 @@ state change. There is no helper subtitle beneath it.
 - Discuss and Work receive no indexed conversation pointers, provider roots, or
   prior chat transcript input. Canonical chat history is written only for the
   Chats UI after the turn completes.
-- Work receives writable scratch, network access, and unrestricted tooling and
-  repository access. Codex bypasses approvals and sandboxing; Claude uses
-  `bypassPermissions`. The direct canonical `.research` prohibition is a known
-  accepted Work prompt contract for both providers, not an OS-enforced boundary.
-  Off-machine repositories remain contextual host/path pointers and RCP never
-  copies them.
+- Work receives writable scratch, network access, operational tools, and write
+  access to the exact admitted project roots. Codex uses its native project
+  permission profile; Claude uses unattended `dontAsk` with an RCP-authored
+  strict settings allow-list. Canonical `.research` and cross-project, parent,
+  app-data, and broad roots remain outside both profiles. Off-machine
+  repositories remain contextual host/path pointers and RCP never copies them.
 - A missing or valid empty Work patch spends no revision. A valid non-empty
   semantic Work patch is prepared with RCP-owned patch, Proposal, revision,
   scope, and lifecycle bookkeeping, then revalidated against current state and
@@ -131,9 +131,10 @@ state change. There is no helper subtitle beneath it.
   `Proposal`.
 - Work cannot move ingest cursors or coverage.
 - Work graph and watcher corrections reuse the native Work session and the same
-  unrestricted Work permissions. Only the correction instruction changes; neither
-  may re-run project commands or completed external actions, and both stop after the
-  configured correction limit. Seed/Refresh generic patch correction remains scratch-only.
+  exact project write scope. Only the correction instruction changes; neither
+  may re-run project commands or completed external actions, and both stop after
+  the configured correction limit. Seed/Refresh generic patch correction remains
+  scratch-only.
 - The RCP-staged Python client exchanges request/response files through
   the writable Work workspace. RCP polls locally or through its existing SSH
   run-stage transport, validates against live current state in process, bounds
@@ -149,16 +150,16 @@ state change. There is no helper subtitle beneath it.
 - The final result independently records `graph_update.status` as `none`,
   `applied`, or `rejected`, plus applied revision, proposal ids, bounded
   validation messages, and correction rounds.
-- Codex Work and its graph and watcher corrections use
-  `--dangerously-bypass-approvals-and-sandbox`; Claude Work and those corrections
-  use `--permission-mode bypassPermissions`. Discuss,
+- Codex Work and its graph and watcher corrections retain the same exact native
+  project permission profile; Claude Work and those corrections retain the same
+  unattended `dontAsk` mode and strict settings allow-list. Discuss,
   Seed/Refresh and their generic scratch-only patch correction, paper coaching,
   and preview sandbox rules remain unchanged.
 - No console error, failed network request, or server traceback appears during
   the browser drive.
 
 Deliberately not possible: a persistent “may change graph” checkbox, an RCP
-approval event or modal, a hidden Work repository allowlist, a universal patch
+approval event or modal, a client- or prompt-selected Work write root, a universal patch
 proposal, a second graph-write channel, RCP repository copying, trusting an
 earlier self-check at Apply, or an automatic Work rerun after a graph-only
 failure.

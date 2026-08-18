@@ -5,14 +5,17 @@ tier: hermetic
 driver: browser
 covered_by:
   - tests/test_api.py
+  - tests/test_transition_api.py
+  - tests/test_transition_control_projection.py
   - web/tests/attentionRunsOntology.test.mjs
   - web/tests/decisionChoice.test.mjs
-  - browser 2026-08-08
+  - web/tests/transitionPresentation.test.mjs
 invariants: [3, 10]
 reported_by: human, 2026-08-03
-last_passed: 2026-08-08 — isolated acceptance-agent browser drive covered all
-  attention counts, Decision staging and Sync, Blocker judgment and lifecycle,
-  Runs, project History, and a terminal task inspector with no console or server errors
+last_passed: 2026-08-18 — served browser transition drive resolved and reset a
+  Blocker through backend preview and Sync, confirmed same-head graph/control,
+  stale guidance, and clean browser console/server log; earlier attention and
+  task-surface behavior remains covered by browser and regression checks
 ---
 
 # Attention and run surfaces tell one truthful story
@@ -63,7 +66,11 @@ ETA.
    leave human attention without changing their independent operational status.
 7. Resolve one judged Blocker and Sync, then reopen it and Sync. Confirm the
    lifecycle edit resets its standing to `asserted`; the resolved Blocker stays
-   outside attention and the reopened one returns.
+   outside attention and the reopened one returns. While staged, confirm the
+   backend preview already shows the rule-complete final state. After Sync,
+   confirm the Blocker remains in canonical detail/history but disappears from
+   the active Research flow, no longer gates its Experiment, and any affected
+   summary or next action is explicitly stale rather than shown as current.
 8. Open Runs, then project History, then inspect a terminal task.
 
 ## Assert
@@ -89,6 +96,10 @@ ETA.
 - The Blocker editor offers Open, Resolved, and Superseded. Human and agent
   lifecycle edits reset accepted or contested standing to asserted. Resolved and
   superseded Blockers remain outside attention; reopening one returns it.
+- A resolving Sync commits one transition or nothing. Its returned graph,
+  Experiment control, guidance validity, and head identify the same revision.
+  The resolved Blocker and relations remain canonical, while active views omit
+  it, only `open` gates, and stale guidance is never presented as current.
 - Runs includes Seed and Refresh tasks, experiments, and asserted open Blockers,
   but excludes node chat, project chat, and paper-coach tasks. Excluded tasks
   remain reachable in project History and the Agent task inspector.

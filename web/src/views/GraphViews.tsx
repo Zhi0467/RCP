@@ -59,10 +59,12 @@ import {
   experimentHealthTone,
 } from "../components/ExperimentRunDetail";
 import { NewCustomNode } from "../components/NewCustomNode";
+import { projectExperimentExecution, type ExperimentRouteIdentity } from "../experimentBoard";
 import type {
   AgentTask,
   Edge,
   ExperimentControlState,
+  ExperimentLoopIndexEntry,
   GraphNode,
   GraphState,
   TrustView,
@@ -761,6 +763,8 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   experimentControl: Record<string, ExperimentControlState>;
+  exactExperimentRoute?: ExperimentRouteIdentity | null;
+  exactExperimentEntry?: ExperimentLoopIndexEntry | null;
   dismissedTaskIds: ReadonlySet<string>;
   selectedExperimentId: string | null;
   focusExperimentId: string | null;
@@ -776,7 +780,7 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   onSelectExperiment: (nodeId: string | null) => void;
   onDetailFocused: () => void;
   onRunExperiment: (node: GraphNode) => void;
-  onStopExperiment: (nodeId: string) => void;
+  onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
@@ -790,6 +794,8 @@ export function ExecutionView({
   tasks,
   watchers,
   experimentControl,
+  exactExperimentRoute = null,
+  exactExperimentEntry = null,
   dismissedTaskIds,
   selectedExperimentId,
   focusExperimentId,
@@ -812,14 +818,22 @@ export function ExecutionView({
   episodeReportHref,
 }: ExecutionProps) {
   const selectedDetailRef = useRef<HTMLDivElement>(null);
-  const projection = buildRunProjection({
-    nodes: Object.values(graph.nodes).flatMap((node) => {
-      if (node.type !== "blocker") return [node];
-      return attentionBlockerIds.has(node.id) ? [{ ...node, status: "open" }] : [];
-    }),
+  const exactProjection = projectExperimentExecution(
+    Object.values(graph.nodes),
     tasks,
     watchers,
     experimentControl,
+    exactExperimentRoute,
+    exactExperimentEntry,
+  );
+  const projection = buildRunProjection({
+    nodes: exactProjection.nodes.flatMap((node) => {
+      if (node.type !== "blocker") return [node];
+      return attentionBlockerIds.has(node.id) ? [{ ...node, status: "open" }] : [];
+    }),
+    tasks: exactProjection.tasks,
+    watchers: exactProjection.watchers,
+    experimentControl: exactProjection.experimentControl,
     dismissedTaskIds,
   });
   const sections = [
@@ -859,6 +873,7 @@ export function ExecutionView({
                       watcherCheckBusyId={watcherCheckBusyId}
                       taskActionId={taskActionId}
                       experimentConversation={selectedExperimentConversation}
+                      exactBranchEntry={exactProjection.exactBranchEntry}
                       providerLabels={providerLabels}
                       mutationsDisabled={
                         mutationsDisabled ||
@@ -898,6 +913,7 @@ function RunEntryRow({
   watcherCheckBusyId,
   taskActionId,
   experimentConversation,
+  exactBranchEntry,
   providerLabels,
   mutationsDisabled,
   onInspectTask,
@@ -919,6 +935,7 @@ function RunEntryRow({
   watcherCheckBusyId: string | null;
   taskActionId: string | null;
   experimentConversation?: ReactNode;
+  exactBranchEntry: ExperimentLoopIndexEntry | null;
   providerLabels: Record<string, string>;
   mutationsDisabled: boolean;
   onInspectTask: (operationId: string) => void;
@@ -926,7 +943,7 @@ function RunEntryRow({
   onSelectNode: (node: GraphNode) => void;
   onSelectExperiment: (nodeId: string | null) => void;
   onRunExperiment: (node: GraphNode) => void;
-  onStopExperiment: (nodeId: string) => void;
+  onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
@@ -957,6 +974,10 @@ function RunEntryRow({
 
   const { experiment } = entry;
   const selected = selectedExperimentId === experiment.node.id;
+  const isExactBranchExperiment = exactBranchEntry?.node.id === experiment.node.id;
+  const exactBranchEpisodeId = isExactBranchExperiment
+    ? (exactBranchEntry.episode?.episode_id ?? exactBranchEntry.control.episode_id)
+    : null;
   const detailId = `experiment-run-detail-${encodeURIComponent(experiment.node.id)}`;
   const tone = experimentHealthTone(experiment.health);
   return (
@@ -1004,8 +1025,11 @@ function RunEntryRow({
             watcherCheckBusyId={watcherCheckBusyId}
             providerLabel={experimentProviderLabel(experiment, providerLabels)}
             conversation={experimentConversation}
+            allowStart={!isExactBranchExperiment}
             onRun={() => onRunExperiment(experiment.node)}
-            onStopLoop={() => onStopExperiment(experiment.node.id)}
+            onStopLoop={() =>
+              onStopExperiment(experiment.node.id, exactBranchEpisodeId ?? undefined)
+            }
             onCheckWatcher={onCheckExperimentWatcher}
             onRecover={(action) => {
               if (experiment.currentTask) onRecoverExperiment(experiment.currentTask, action);
@@ -1201,6 +1225,7 @@ function agentTaskName(task: AgentTask): string {
     project_chat: "Project chat",
     paper_coach: "Writing coach",
     auto_research: "Auto-research",
+    branch_merge: "Branch merge",
   }[task.kind];
 }
 

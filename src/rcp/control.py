@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +11,13 @@ from rcp.core.models import (
     ExperimentDecisionPin,
     GraphState,
     Proposal,
+)
+from rcp.core.operations import (
+    ProposalContentChangeOperation,
+    ProposalMergeOperation,
+    ProposalOperation,
+    ProposalStatusChangeOperation,
+    ProposalSupersedeOperation,
 )
 
 
@@ -86,6 +92,55 @@ class ExperimentControlState(BaseModel):
     governing_decisions: list[ExperimentDecisionPin] = Field(default_factory=list)
     decision_drift: list[DecisionDrift] = Field(default_factory=list)
     operational: ExperimentOperationalState = Field(default_factory=ExperimentOperationalState)
+
+
+class ExperimentGraphControl(BaseModel):
+    """The graph-only part of Experiment control for one canonical state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool
+    reasons: list[str] = Field(default_factory=list)
+
+
+class GoverningDecisionDependency(BaseModel):
+    """Decision fields consumed by Experiment control and authored guidance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: str
+    status: str | None = None
+    selected_option: str | None = None
+    pending_proposal: bool = False
+
+
+class BlockerDependency(BaseModel):
+    """A Blocker relation and status consumed by Experiment control."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blocker_id: str
+    status: str | None = None
+
+
+class ExperimentControlDependencies(BaseModel):
+    """Stable graph dependencies shared by control and guidance invalidation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gate_reasons: list[str] = Field(default_factory=list)
+    governing_decisions: list[GoverningDecisionDependency] = Field(default_factory=list)
+    blockers: list[BlockerDependency] = Field(default_factory=list)
+
+
+class ActiveFlowProjection(BaseModel):
+    """Identifiers visible in the current flow without changing canonical truth."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    revision: int = Field(ge=0)
+    node_ids: list[str] = Field(default_factory=list)
+    edge_ids: list[str] = Field(default_factory=list)
 
 
 class ExperimentInvocationAdmission(BaseModel):
@@ -165,7 +220,8 @@ def derive_experiment_control_state(
     if not isinstance(node, Experiment):
         raise ValueError(f"Node {experiment_id!r} is not an Experiment.")
 
-    reasons = experiment_graph_precondition_reasons(state, experiment_id)
+    graph_control = experiment_graph_control(state, experiment_id)
+    reasons = list(graph_control.reasons)
     governing = governing_decision_bundle(state, experiment_id)
 
     active = experiment_id in set(active_control_node_ids)
@@ -237,6 +293,91 @@ def experiment_graph_precondition_reasons(state: GraphState, experiment_id: str)
     return reasons
 
 
+def experiment_graph_control(state: GraphState, experiment_id: str) -> ExperimentGraphControl:
+    """Project graph-derived readiness, independent of intrinsic Experiment phase.
+
+    In particular, the compatibility-only ``unspecified`` phase has no control
+    meaning. Open graph gates alone determine whether this projection is ready.
+    """
+
+    reasons = experiment_graph_precondition_reasons(state, experiment_id)
+    return ExperimentGraphControl(ready=not reasons, reasons=reasons)
+
+
+def experiment_control_dependencies(
+    state: GraphState,
+    experiment_id: str,
+) -> ExperimentControlDependencies:
+    """Return the exact graph facts control consumes for an Experiment.
+
+    Guidance invalidation can add causal Evidence dependencies to this shared
+    control projection without maintaining a second definition of graph gates.
+    Selected governing choices are included even when both choices leave the
+    Experiment ready, because authored guidance may depend on the chosen option.
+    """
+
+    reasons = experiment_graph_precondition_reasons(state, experiment_id)
+    decisions: list[GoverningDecisionDependency] = []
+    for decision_id in _related_targets(state, experiment_id, "governed_by"):
+        node = state.nodes.get(decision_id)
+        decision = node if isinstance(node, Decision) else None
+        decisions.append(
+            GoverningDecisionDependency(
+                decision_id=decision_id,
+                status=decision.status if decision is not None else None,
+                selected_option=decision.selected_option if decision is not None else None,
+                pending_proposal=_has_pending_proposal(state, decision_id),
+            )
+        )
+    blockers: list[BlockerDependency] = []
+    for blocker_id in _related_targets(state, experiment_id, "blocked_by"):
+        node = state.nodes.get(blocker_id)
+        blocker = node if isinstance(node, Blocker) else None
+        blockers.append(
+            BlockerDependency(
+                blocker_id=blocker_id,
+                status=blocker.status if blocker is not None else None,
+            )
+        )
+    return ExperimentControlDependencies(
+        gate_reasons=reasons,
+        governing_decisions=decisions,
+        blockers=blockers,
+    )
+
+
+def is_active_flow_node(node: object, *, include_resolved_blockers: bool = False) -> bool:
+    """Whether a canonical node belongs in the current-flow projection."""
+
+    return not (
+        isinstance(node, Blocker) and node.status == "resolved" and not include_resolved_blockers
+    )
+
+
+def active_flow_projection(
+    state: GraphState,
+    *,
+    include_resolved_blockers: bool = False,
+) -> ActiveFlowProjection:
+    """Project active node/edge ids while retaining every canonical object."""
+
+    node_ids = sorted(
+        node_id
+        for node_id, node in state.nodes.items()
+        if is_active_flow_node(node, include_resolved_blockers=include_resolved_blockers)
+    )
+    visible = set(node_ids)
+    return ActiveFlowProjection(
+        revision=state.revision,
+        node_ids=node_ids,
+        edge_ids=sorted(
+            edge_id
+            for edge_id, edge in state.edges.items()
+            if edge.source in visible and edge.target in visible
+        ),
+    )
+
+
 def admit_experiment_watcher_invocation(
     state: GraphState,
     experiment_id: str,
@@ -301,23 +442,16 @@ def _proposal_changes(proposal: Proposal, decision_id: str) -> bool:
     return any(decision_id in _op_target_ids(op) for op in proposal.ops)
 
 
-def _op_target_ids(op: dict[str, Any]) -> set[str]:
-    name = op.get("op")
+def _op_target_ids(op: ProposalOperation) -> set[str]:
     targets: set[str] = set()
-    if name in {"create_nodes", "update_nodes", "supersede_nodes"}:
-        for item in op.get("nodes", []):
-            if isinstance(item, dict):
-                targets.update(
-                    value
-                    for value in (item.get("id"), item.get("superseded_by"))
-                    if isinstance(value, str)
-                )
-    elif name == "merge_nodes":
-        for item in op.get("merges", []):
-            if isinstance(item, dict):
-                targets.update(
-                    value
-                    for value in (item.get("duplicate"), item.get("canonical"))
-                    if isinstance(value, str)
-                )
+    if isinstance(op, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+        targets.update(item.id for item in op.nodes)
+    elif isinstance(op, ProposalSupersedeOperation):
+        for item in op.nodes:
+            targets.add(item.id)
+            if item.superseded_by is not None:
+                targets.add(item.superseded_by)
+    elif isinstance(op, ProposalMergeOperation):
+        for item in op.merges:
+            targets.update((item.duplicate, item.canonical))
     return targets

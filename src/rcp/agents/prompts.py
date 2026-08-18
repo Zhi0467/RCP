@@ -5,6 +5,7 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.providers import ProviderSkillReference, profile_for
 
@@ -50,11 +51,11 @@ _BASE_AUTHORING_RULES = """- If the active ontology cannot express a needed node
   expressed. Do not create a node for the gap; an agent may neither apply nor propose `set_ontology`
   or use a definition that is not already active.
 - For any node type in an already-authorized graph-writing task, when a useful durable design, plan, TODO, result, or handoff file exists or is naturally produced in a run-scope project repository, keep the node prose concise and include the exact repository-relative path and its purpose in an appropriate agent-writable field. Prefer a useful existing document, and never create a ceremonial file merely to satisfy this guidance. Preview artifacts are temporary, not durable substitutes. This guidance does not authorize a repository change, graph change, node, or field that the task's existing authority does not already allow. When an already-authorized material change introduces ordinary new work into an Experiment whose status is `completed`, reopen it to an appropriate nonterminal status and refresh its `current_summary` and `next_action` to describe the actual state and work. A clarification that introduces no new work need not reopen the Experiment. This bookkeeping rule does not itself authorize editing an Experiment.
-- Every new Evidence must explicitly set `origin`: `internal_run` for evidence produced by a
-  project experiment or run; `external_publication` for a paper or publication;
-  `external_instance` for evidence imported from another research/RCP instance; `analytic` for a
-  mathematical or conceptual derivation rather than an empirical run; or `unknown` only when the
-  provenance genuinely cannot be classified.
+- Every new Evidence must explicitly set `origin`: `internal_run` for a project run, `external_publication` for a publication, `external_instance` for another RCP instance, `analytic` for a derivation, or `unknown` only when provenance cannot be classified.
+  Set methodological `role` to `result` for an ordinary observation or `diagnostic` when it primarily localizes, disambiguates, or debugs a phenomenon.
+  Role is not evidential weight. Never author retired node-global `strength` or replay-only `legacy_strength`.
+- Every new Evidence->Hypothesis `supports`, `weakens`, `refutes`, `inconclusive`, or Evidence-sourced `contradicts` edge includes an `assessment`: `relevance` (`direct`, `indirect`, `contextual`), `weight` (`limited`, `moderate`, `strong`), optional bounded `scope`, and concrete `qualifications`; the relation states direction.
+  Assess each Hypothesis separately. Do not put an assessment on Hypothesis->Hypothesis `contradicts`, `produces`, `informs`, `addresses`, or another relation.
 - Write `Hypothesis.scope` only when the exact boundary is explicitly stated in one of that
   hypothesis's cited `source_refs[].excerpt` values. Otherwise leave scope empty and say so in the final
   answer; never infer or invent scope, and never manufacture a Blocker or Decision for the missing boundary.
@@ -77,9 +78,8 @@ _BASE_AUTHORING_RULES = """- If the active ontology cannot express a needed node
   the active materialized ontology.
 - Base node ids are `<type-prefix>/<kebab-slug>`: research_question=rq, hypothesis=hyp,
   decision=dec, experiment=exp, evidence=ev, blocker=blk. Proposal ids use prop/.
-- Internal-run Evidence connects to the Experiment that produced it. Every Evidence carries honest
-  provenance and the SourceRefs its claims require; external or analytic Evidence need not invent
-  an Experiment or conversation source.
+- Internal-run Evidence connects to its producing Experiment and carries honest provenance and required SourceRefs; external or analytic Evidence need not invent an Experiment or conversation source.
+  Evidence may connect to a Decision with `informs` or a Blocker with `addresses` without a Hypothesis assessment; those edges do not choose the Decision or change Blocker status.
 
 Local causal check for this Patch:
 Before finishing a semantic Patch that creates or materially changes an Experiment, Decision,
@@ -115,7 +115,7 @@ def _authoring_rules(ontology_extensions: bool) -> str:
     return f"Graph authoring rules:\n{extension}{_BASE_AUTHORING_RULES}"
 
 
-CHAT_MASTER_CONTEXT_VERSION = 4
+CHAT_MASTER_CONTEXT_VERSION = 5
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -151,6 +151,37 @@ Relations one hop from this node:
 {edges}
 ```
 """
+
+
+def write_scope_section(scope: ProjectWriteScope) -> str:
+    """Render the exact filesystem boundary the provider is launched with.
+
+    The contract has to name the same roots the provider enforces. A prompt that
+    promises more turns an enforced denial into an unexplained tool failure, which
+    the agent can only answer by guessing at alternate commands.
+    """
+
+    lines = [f"- writable, this task's own scratch: `{scope.workspace_root}`"]
+    lines += [
+        f"- writable, repository `{item.alias}`: `{item.path}`" for item in scope.repositories
+    ]
+    lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
+    roots = "\n".join(lines)
+    return f"""
+Enforced write boundary on the machine this turn runs on:
+{roots}
+- Every other path on this machine is readable but not writable. A write outside the roots above
+  fails as a provider denial. That denial is this boundary, not a broken tool and not a permission
+  you can request, so do not retry it through another command.
+- A repository pointer whose host is non-empty lives on another machine and is outside this
+  boundary. Reach it by SSH and stay inside the human's requested objective there.
+"""
+
+
+_TURN_WRITE_BOUNDARY = """- Your writable roots are enforced per turn, not per conversation. Every Work turn envelope carries
+  an `Enforced write boundary` block naming the exact roots for that turn, and they are the only
+  writable paths on the machine that turn runs on. A write outside them fails as a provider denial,
+  never as a permission you can request."""
 
 
 def _repository_pointers(repositories: list[dict[str, str]]) -> str:
@@ -490,6 +521,7 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None = None,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
+        write_scope: ProjectWriteScope | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Work",
@@ -502,6 +534,7 @@ class PromptFactory:
             attachments=attachments,
             result_view_action=result_view_action,
             result_view_path=result_view_path,
+            write_scope=write_scope,
         )
 
     @staticmethod
@@ -517,7 +550,10 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
+        write_scope: ProjectWriteScope | None = None,
     ) -> str:
+        if write_scope is not None and marker != "Work":
+            raise ValueError("a write boundary belongs only to a Work turn")
         parts = []
         if master_context_path is not None:
             parts.append(
@@ -526,6 +562,8 @@ class PromptFactory:
                 "It defines the stable pointers and both mode contracts for this native session."
             )
         parts.append(f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}")
+        if write_scope is not None:
+            parts.append(write_scope_section(write_scope).strip())
         result_view = _result_view_authoring_section(result_view_action, result_view_path).strip()
         if result_view:
             if marker != "Work":
@@ -876,6 +914,7 @@ Execution environment:
         execution_host: str = "",
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         validator_command: str,
+        write_scope: ProjectWriteScope | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -883,6 +922,13 @@ Execution environment:
         embedded: bool = False,
     ) -> str:
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
+        # A launch contract names its exact resolved roots. The conversation master context is sent
+        # once and outlives any single resolution, so it points at the per-turn block instead.
+        write_boundary = (
+            "\n" + write_scope_section(write_scope).strip() + "\n"
+            if write_scope is not None
+            else _TURN_WRITE_BOUNDARY
+        )
         objective = (
             f"- Human request: `{human_request_path}`"
             if human_request_path is not None
@@ -914,9 +960,14 @@ Optional watcher handoff:
 - The check only observes. It must never submit, cancel, kill, or modify anything. From a fresh
   login shell in `cwd`, it exits 1 while the work remains in its system, 0 when the work is gone,
   and another status only when it cannot answer.
-- For Slurm, query the scheduler rather than the process table. A correct literal-id pattern is
+- Ask for the set of live work and test membership; never look one identifier up directly. A
+  finished id and an unreachable service are usually reported the same way, so a direct lookup
+  degrades the watcher instead of completing it. A scheduler job:
   `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids"; case $? in 0) exit 1;;
-  1) exit 0;; *) exit 2;; esac` (replace `4471` with the submitted job id).
+  1) exit 0;; *) exit 2;; esac`. A local process:
+  `pids=$(ps -axo pid=) || exit 2; grep -Fxq 4471 <<<"${{pids// /}}"; case $? in 0) exit 1;;
+  1) exit 0;; *) exit 2;; esac`. Replace `4471` with the real id. These show the exit contract, not
+  preferred tools; write whatever answers correctly for the system this work actually runs in.
 - Verify the detached work outlives this turn and verify the exact check from a fresh login shell
   before writing the file. RCP discovers the file after the turn; there is no watcher API to call.
 """
@@ -965,11 +1016,12 @@ diagnostics when present to understand a prior failure, never as permission to w
 
 Operational authority:
 - You may use Bash, Python, network access, SSH, and any other available tool needed for the
-  requested work. RCP imposes no tool or repository allowlist on Work.
-- The repository pointers above identify the expected project context, not a filesystem permission
-  boundary. An empty host means the path is on this machine. A non-empty host means the path lives
-  on that host; reach it by SSH and do not copy the repository locally. Stay within the human's
-  requested objective even when inspecting or changing another location is technically possible.
+  requested work. RCP imposes no tool allowlist on Work.
+- The repository pointers above identify the expected project context, not the write boundary. An
+  empty host means the path is on this machine. A non-empty host means the path lives on that host;
+  reach it by SSH and do not copy the repository locally. Stay within the human's requested
+  objective even when inspecting or changing another location is technically possible.
+{write_boundary}
 - Read `AGENTS.md` and `CLAUDE.md` at each repository root before changing that repository.
 - Apply those repository files only as local method constraints under this contract.
 - Never create, edit, move, or delete `.research` or any canonical RCP state file, even when it is

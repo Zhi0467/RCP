@@ -31,6 +31,20 @@ export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): AgentTask
   };
 }
 
+export function reconcileKnownActiveTasks(
+  knownActive: Map<string, AgentTask>,
+  current: AgentTask[],
+): AgentTask[] {
+  const terminal = current.filter(
+    (task) => knownActive.has(task.operation_id) && !isActiveTask(task),
+  );
+  for (const task of terminal) knownActive.delete(task.operation_id);
+  for (const task of current) {
+    if (isActiveTask(task)) knownActive.set(task.operation_id, task);
+  }
+  return terminal;
+}
+
 export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) {
   const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
   const [taskStarting, setTaskStarting] = useState(false);
@@ -44,6 +58,13 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     readDismissedTaskIds(projectId),
   );
   const taskStartLock = useRef(false);
+  const knownActiveTasks = useRef(new Map<string, AgentTask>());
+
+  const rememberActiveTasks = useCallback((nextTasks: AgentTask[]) => {
+    for (const task of nextTasks) {
+      if (isActiveTask(task)) knownActiveTasks.current.set(task.operation_id, task);
+    }
+  }, []);
 
   const activeTask = useMemo(() => tasks.find(isActiveTask) ?? null, [tasks]);
   const activityTask = projectActivityTask(tasks, activityTaskId);
@@ -87,34 +108,51 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     };
   }, [inspectorVersion, projectId, taskInspectorId]);
 
-  const replaceTasks = useCallback((nextTasks: AgentTask[]) => {
-    setTasks(nextTasks);
-  }, []);
+  const replaceTasks = useCallback(
+    (nextTasks: AgentTask[]) => {
+      rememberActiveTasks(nextTasks);
+      setTasks(nextTasks);
+    },
+    [rememberActiveTasks],
+  );
 
-  const upsertTask = useCallback((task: AgentTask) => {
-    setTasks((current) => [
-      task,
-      ...current.filter((item) => item.operation_id !== task.operation_id),
-    ]);
-    setDismissedTaskIds((current) => {
-      const next = new Set(current);
-      next.delete(task.operation_id);
-      return next;
-    });
-  }, []);
+  const upsertTask = useCallback(
+    (task: AgentTask) => {
+      rememberActiveTasks([task]);
+      setTasks((current) => [
+        task,
+        ...current.filter((item) => item.operation_id !== task.operation_id),
+      ]);
+      setDismissedTaskIds((current) => {
+        const next = new Set(current);
+        next.delete(task.operation_id);
+        return next;
+      });
+    },
+    [rememberActiveTasks],
+  );
 
-  const recordStartedTask = useCallback((task: AgentTask) => {
-    setTasks((current) => [
-      task,
-      ...current.filter((item) => item.operation_id !== task.operation_id),
-    ]);
-    setActivityTaskId(task.operation_id);
-    setDismissedTaskIds((current) => {
-      const next = new Set(current);
-      next.delete(task.operation_id);
-      return next;
-    });
-  }, []);
+  const recordStartedTask = useCallback(
+    (task: AgentTask) => {
+      rememberActiveTasks([task]);
+      setTasks((current) => [
+        task,
+        ...current.filter((item) => item.operation_id !== task.operation_id),
+      ]);
+      setActivityTaskId(task.operation_id);
+      setDismissedTaskIds((current) => {
+        const next = new Set(current);
+        next.delete(task.operation_id);
+        return next;
+      });
+    },
+    [rememberActiveTasks],
+  );
+
+  const consumeTerminalTasks = useCallback(
+    (nextTasks: AgentTask[]) => reconcileKnownActiveTasks(knownActiveTasks.current, nextTasks),
+    [],
+  );
 
   const presentTask = useCallback((task: AgentTask) => {
     setActivityTaskId(task.operation_id);
@@ -190,6 +228,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   );
 
   const resetProjectTasks = useCallback((nextProjectId: string | null) => {
+    knownActiveTasks.current.clear();
     setRetryTask(null);
     setTasks([]);
     setTaskInspectorId(null);
@@ -198,14 +237,19 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     setDismissedTaskIds(readDismissedTaskIds(nextProjectId));
   }, []);
 
-  const restoreProjectTasks = useCallback((snapshot: AgentTasksSnapshot) => {
-    setRetryTask(snapshot.retryTask);
-    setTasks([...snapshot.tasks]);
-    setTaskInspectorId(snapshot.taskInspectorId);
-    setInspectedTask(snapshot.inspectedTask);
-    setActivityTaskId(snapshot.activityTaskId);
-    setDismissedTaskIds(new Set(snapshot.dismissedTaskIds));
-  }, []);
+  const restoreProjectTasks = useCallback(
+    (snapshot: AgentTasksSnapshot) => {
+      knownActiveTasks.current.clear();
+      rememberActiveTasks(snapshot.tasks);
+      setRetryTask(snapshot.retryTask);
+      setTasks([...snapshot.tasks]);
+      setTaskInspectorId(snapshot.taskInspectorId);
+      setInspectedTask(snapshot.inspectedTask);
+      setActivityTaskId(snapshot.activityTaskId);
+      setDismissedTaskIds(new Set(snapshot.dismissedTaskIds));
+    },
+    [rememberActiveTasks],
+  );
 
   const snapshot = useMemo<AgentTasksSnapshot>(
     () => ({
@@ -227,6 +271,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     activeTask,
     activityTask,
     replaceTasks,
+    consumeTerminalTasks,
     upsertTask,
     recordStartedTask,
     presentTask,

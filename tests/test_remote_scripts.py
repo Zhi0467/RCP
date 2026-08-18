@@ -107,12 +107,23 @@ class TestReadKeptView:
 
 
 class TestArchiveResearch:
+    branch_id = "11111111-1111-4111-8111-111111111111"
+    merge_id = "a" * 64
+
     def _research(self, tmp_path: Path) -> Path:
         root = tmp_path / ".research"
         (root / "patches").mkdir(parents=True)
         (root / "manifest.toml").write_text("name = 'demo'\n")
         (root / "patches" / "000001.json").write_text("{}")
         return root
+
+    def _branch(self, root: Path) -> Path:
+        branch = root / "branches" / self.branch_id
+        (branch / "patches").mkdir(parents=True)
+        (branch / "merges").mkdir()
+        (branch / "branch.json").write_text("{}")
+        (branch / "graph.json").write_text('{"derived":true}')
+        return branch
 
     def test_archives_the_directory(self, tmp_path: Path) -> None:
         root = self._research(tmp_path)
@@ -162,6 +173,82 @@ class TestArchiveResearch:
 
         assert result.returncode == 0
         assert not root.exists()
+
+    @pytest.mark.parametrize(
+        "late_relative",
+        [Path("patches/000001.json"), Path("merges") / f"{'a' * 64}.json"],
+        ids=["branch-patch", "branch-merge-receipt"],
+    )
+    def test_late_branch_truth_invalidates_the_fingerprint(
+        self,
+        tmp_path: Path,
+        late_relative: Path,
+    ) -> None:
+        root = self._research(tmp_path)
+        branch = self._branch(root)
+        from rcp.transport.remote_archive_research import retained_history_fingerprint
+
+        fingerprint = retained_history_fingerprint(root)
+        (branch / late_relative).write_text("late branch truth")
+
+        result = run_script(
+            "remote_archive_research.py", str(root), "20260814T120000000000Z", fingerprint
+        )
+
+        assert result.returncode == 3
+        assert root.is_dir()
+
+    @pytest.mark.parametrize(
+        "unsafe_kind",
+        [
+            "branch-symlink",
+            "malformed-branch",
+            "patch-parent-symlink",
+            "patch-symlink",
+            "patch-directory",
+            "bad-name",
+        ],
+    )
+    def test_unsafe_branch_history_is_refused(
+        self,
+        tmp_path: Path,
+        unsafe_kind: str,
+    ) -> None:
+        root = self._research(tmp_path)
+        if unsafe_kind in {"branch-symlink", "malformed-branch"}:
+            branches = root / "branches"
+            branches.mkdir()
+            if unsafe_kind == "branch-symlink":
+                target = tmp_path / "branch-target"
+                target.mkdir()
+                (branches / self.branch_id).symlink_to(target, target_is_directory=True)
+            else:
+                (branches / "NOT-A-CANONICAL-UUID").mkdir()
+        else:
+            branch = self._branch(root)
+            if unsafe_kind == "patch-parent-symlink":
+                (branch / "patches").rmdir()
+                target = tmp_path / "patches-target"
+                target.mkdir()
+                (branch / "patches").symlink_to(target, target_is_directory=True)
+            elif unsafe_kind == "patch-symlink":
+                target = tmp_path / "outside-patch"
+                target.write_text("outside")
+                (branch / "patches" / "000001.json").symlink_to(target)
+            elif unsafe_kind == "patch-directory":
+                (branch / "patches" / "000001.json").mkdir()
+            else:
+                (branch / "merges" / f"{'A' * 64}.json").write_text("{}")
+
+        result = run_script(
+            "remote_archive_research.py",
+            str(root),
+            "20260814T120000000000Z",
+            "0" * 64,
+        )
+
+        assert result.returncode == 1
+        assert root.is_dir()
 
 
 class TestLockHolder:

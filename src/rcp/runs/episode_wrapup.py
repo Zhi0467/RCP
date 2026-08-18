@@ -161,6 +161,7 @@ def begin_episode_report_wrapup(
         operation_id=operation_id,
         project_id=episode.project_id,
         episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
         kind="episode_report",
         status="queued",
         request=request.model_dump(mode="json"),

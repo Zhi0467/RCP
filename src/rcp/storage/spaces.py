@@ -816,6 +816,8 @@ class SpaceStoreMixin:
 
         if not members or any(item.group_id is None for item in members):
             return None
+        if len({item.graph_target.key for item in members}) != 1:
+            return None
         if any(item.status == "stopped" and item.stopped_by != "agent" for item in members):
             return None
         deliverable = [

@@ -11,6 +11,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.episode_report import EpisodeReportRunRequest
 from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
@@ -156,13 +157,19 @@ def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_p
         "project",
         _auto_start(starting_instruction="  Begin with the disputed claim.  "),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-episode",
         operation_id="auto-root",
     )
     root = wait_for_task(store, root.operation_id, expect="succeeded")
 
     assert episode.mode == "auto_research"
+    assert episode.graph_target.kind == "branch"
+    assert episode.graph_target.branch_id == episode.episode_id
+    assert episode.graph_base_head == GraphHeadRef(revision=0)
     assert root.kind == "auto_research"
+    assert root.graph_target == episode.graph_target
     assert root.episode_id == episode.episode_id
     assert root.request["episode_id"] == episode.episode_id
     assert root.request["instruction"] == "Begin with the disputed claim."
@@ -170,6 +177,44 @@ def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_p
     assert isinstance(tasks._request_from_record(root), AutoResearchRunRequest)
     assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
     assert store.episode_tasks(episode.episode_id) == [root]
+
+
+def test_reserved_auto_research_root_reconciles_branch_before_provider_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+
+    async def forbidden_stream(*_args, **_kwargs):
+        raise AssertionError("the reservation must not launch before branch reconciliation")
+        yield  # pragma: no cover
+
+    tasks = BackgroundAgentTasks(store, forbidden_stream)
+    episode, root, _request = tasks.reserve_auto_research(
+        "project",
+        _auto_start(),
+        authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        episode_id="reserved-auto-episode",
+        operation_id="reserved-auto-root",
+    )
+    assert store.agent_task(root.operation_id).status == "queued"  # type: ignore[union-attr]
+
+    restarted = BackgroundAgentTasks(store, forbidden_stream)
+    order: list[str] = []
+
+    def held_spawn(record, _request, **_kwargs):
+        order.append("spawn")
+        return record
+
+    monkeypatch.setattr(restarted, "_spawn_record", held_spawn)
+    started = restarted.reconcile_reserved_auto_research_roots(
+        lambda reserved: order.append(f"branch:{reserved.episode_id}")
+    )
+
+    assert started == [root.operation_id]
+    assert order == [f"branch:{episode.episode_id}", "spawn"]
+    assert store.agent_task(root.operation_id).status == "queued"  # type: ignore[union-attr]
 
 
 def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path: Path) -> None:
@@ -185,6 +230,8 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-work",
         operation_id="auto-child-work-root",
     )
@@ -210,6 +257,7 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
     assert route.current_operation_id == child.operation_id == worker_id
     assert route.instruction == instruction
     assert current.kind == "node_chat"
+    assert current.graph_target == episode.graph_target
     assert current.request["mode"] == "work"
     assert current.request["trigger"] == "orchestrator"
     assert current.dispatch_authority is not None
@@ -245,6 +293,8 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-dispatch-claim",
         operation_id="auto-child-dispatch-root",
     )
@@ -303,6 +353,8 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-fresh-restart",
         operation_id="auto-child-fresh-restart-root",
     )
@@ -361,6 +413,8 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-resume-restart",
         operation_id="auto-child-resume-restart-root",
     )
@@ -439,6 +493,8 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_p
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-mail",
         operation_id="auto-child-mail-root",
     )
@@ -517,6 +573,8 @@ def test_failed_spawned_child_exact_resume_reuses_checkpoint_and_b_allocation(
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-resume",
         operation_id="auto-child-resume-root",
     )
@@ -572,6 +630,8 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-remote-resume",
         operation_id="auto-child-remote-resume-root",
     )
@@ -636,6 +696,8 @@ def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-unavailable",
         operation_id="auto-child-unavailable-root",
     )
@@ -680,6 +742,8 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-control",
         operation_id="auto-child-control-root",
     )
@@ -745,6 +809,8 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-experiment-parent",
         operation_id="auto-child-experiment-root",
     )
@@ -768,6 +834,11 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
 
     failed = background.start_auto_research_child_experiment(route, request)
     wait_for_task(store, failed.operation_id, expect="failed")
+    child_episode = store.episode(child_episode_id)
+    assert child_episode is not None
+    assert child_episode.graph_target == parent.graph_target
+    assert child_episode.graph_base_head == parent.graph_base_head
+    assert failed.graph_target == parent.graph_target
     allowance = store.auto_research_experiment_allowance(parent.episode_id)
     assert allowance.used == 1
 
@@ -781,6 +852,7 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
     resumed_task = wait_for_task(store, outcome.task.operation_id, expect="succeeded")
 
     assert resumed_task.parent_operation_id == failed.operation_id
+    assert resumed_task.graph_target == parent.graph_target
     assert resumed_task.native_session_id == "child-experiment-session"
     assert resumed[0].session_id == "child-experiment-session"
     assert store.auto_research_experiment_allowance(parent.episode_id).used == 1
@@ -803,6 +875,8 @@ def test_restart_dispatches_committed_fresh_child_experiment_without_respending_
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-experiment-fresh-restart",
         operation_id="auto-child-experiment-fresh-restart-root",
     )
@@ -880,6 +954,8 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-experiment-resume-restart",
         operation_id="auto-child-experiment-resume-restart-root",
     )
@@ -982,6 +1058,8 @@ def test_restart_redispatches_committed_child_experiment_graph_repair_exactly_on
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-experiment-graph-repair-restart",
         operation_id="auto-child-experiment-graph-repair-restart-root",
     )
@@ -1068,6 +1146,8 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-remote-experiment-parent",
         operation_id="auto-child-remote-experiment-root",
     )
@@ -1204,6 +1284,8 @@ def test_auto_research_clean_orchestrator_retry_keeps_paid_allocation(tmp_path: 
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-episode",
         operation_id="auto-root",
     )
@@ -1236,6 +1318,8 @@ def test_auto_research_stop_skips_report_generation(tmp_path: Path) -> None:
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-episode",
         operation_id="auto-root",
     )
@@ -1269,6 +1353,8 @@ def test_over_ceiling_admission_does_not_fence_an_active_paid_turn(tmp_path: Pat
         "project",
         _auto_start(invocation_ceiling=1),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-episode",
         operation_id="auto-root",
     )
@@ -1476,6 +1562,8 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         "project",
         _auto_start(),
         authorized_by=authorizer,
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto-child-experiment-watcher-restart",
         operation_id="auto-child-experiment-watcher-restart-root",
     )
@@ -1523,6 +1611,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         chat_id=child_request.chat_id,
         node_id="exp/child",
         episode_id=child_id,
+        graph_target=parent.graph_target,
         execution_host="",
         check_command="true",
         log_path="/tmp/child-experiment-completed-watcher.log",
@@ -1585,8 +1674,9 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
 
     claimed_after = store.watcher(watcher.watcher_id)
     assert completed.native_session_id == "child-watcher-session"
+    assert completed.graph_target == parent.graph_target
+    assert claimed_after is not None and claimed_after.graph_target == parent.graph_target
     assert watcher_executions == ["watcher_wake"]
-    assert claimed_after is not None
     assert claimed_after.notification_operation_id == operation_id
     assert store.auto_research_experiment_allowance(parent.episode_id) == allowance_before
     assert store.episode_budget_meter(child_id) == meter_before

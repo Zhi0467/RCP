@@ -7,9 +7,20 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 DISPLAY_NAME_MAX_LENGTH = 120
+EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH = 500
+EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH = 300
+EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS = 12
 
 
 def normalize_display_name(value: str) -> str:
@@ -144,13 +155,15 @@ class Experiment(BaseNode):
         "running",
         "analyzing",
         "completed",
-        "blocked",
+        "unspecified",
         "abandoned",
         "superseded",
     ] = "proposed"
     attempts: list[ExperimentAttempt] = Field(default_factory=list)
     current_summary: str = ""
     next_action: str | None = None
+    current_summary_stale: bool = False
+    next_action_stale: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -166,7 +179,10 @@ class Evidence(BaseNode):
     type: Literal["evidence"]
     observation: str
     interpretation: str = ""
-    strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] = "preliminary"
+    role: Literal["result", "diagnostic"] = "result"
+    legacy_strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] | None = (
+        None
+    )
     validity: Literal["valid", "qualified", "invalid", "superseded"] = "valid"
     origin: Literal[
         "internal_run", "external_publication", "external_instance", "analytic", "unknown"
@@ -339,6 +355,52 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
 }
 
 
+class EvidenceAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relevance: Literal["direct", "indirect", "contextual"]
+    weight: Literal["limited", "moderate", "strong"]
+    scope: str | None = Field(default=None, max_length=EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH)
+    qualifications: list[
+        Annotated[
+            str,
+            Field(min_length=1, max_length=EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH),
+        ]
+    ] = Field(default_factory=list, max_length=EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS)
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def normalize_scope(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("assessment scope must not be blank")
+        return normalized
+
+    @field_validator("qualifications", mode="before")
+    @classmethod
+    def normalize_qualifications(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        normalized: list[Any] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                normalized.append(item)
+                continue
+            qualification = item.strip()
+            if not qualification:
+                raise ValueError("assessment qualifications must not be blank")
+            if qualification in seen:
+                raise ValueError("assessment qualifications must not contain duplicates")
+            seen.add(qualification)
+            normalized.append(qualification)
+        return normalized
+
+
 class Edge(BaseModel):
     # Layer is backend-owned; a supplied one is always discarded. What lands here
     # is the relation's *declared* layer. Materialization then narrows it to the
@@ -352,6 +414,7 @@ class Edge(BaseModel):
     relation: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
     layer: RelationLayer
     explanation: str = ""
+    assessment: EvidenceAssessment | None = None
     created_rev: int = 0
 
     @model_validator(mode="before")
@@ -374,14 +437,16 @@ class GatedCard(BaseModel):
 
 
 class Proposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     title: str
     card: GatedCard
-    ops: list[dict[str, Any]]
+    ops: list[ProposalOperation]
     related_node_ids: list[str] = Field(default_factory=list)
     related_edge_ids: list[str] = Field(default_factory=list)
     related_config_keys: list[str] = Field(default_factory=list)
-    base_rev: int
+    base_rev: int = 0
     status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
     created_by: Literal["agent", "human"] = "agent"
     created_by_operation_id: str | None = None
@@ -391,6 +456,24 @@ class Proposal(BaseModel):
     resolved_by_operation_id: str | None = None
     resolution_reason: str | None = None
     rejection_reason: str | None = None
+
+    @field_serializer("ops")
+    def serialize_ops(
+        self,
+        operations: list[ProposalOperation] | list[dict[str, Any]],
+        info: SerializationInfo,
+    ) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        for operation in operations:
+            item = (
+                operation.model_dump(mode=info.mode, exclude_unset=True)
+                if isinstance(operation, BaseModel)
+                else dict(operation)
+            )
+            if str(item.get("intent", "")).startswith("legacy_"):
+                item.pop("intent")
+            serialized.append(item)
+        return serialized
 
 
 class Ambiguity(BaseModel):
@@ -427,6 +510,10 @@ class ValidationMessage(BaseModel):
     patch_revision: int | None = None
     related_node_ids: list[str] = Field(default_factory=list)
     related_edge_ids: list[str] = Field(default_factory=list)
+    operation_index: int | None = Field(default=None, ge=0)
+    rule_id: str | None = None
+    cause_chain: list[dict[str, Any]] = Field(default_factory=list)
+    failed_invariant: str | None = None
 
 
 class BeliefTransition(BaseModel):
@@ -461,6 +548,16 @@ class GraphState(BaseModel):
     replay_failure: ReplayFailure | None = None
     last_refresh_at: datetime | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def adapt_persisted_snapshot(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        # Local import keeps the domain-model/operation dependency acyclic.
+        from rcp.core.operations import adapt_persisted_graph_state_document
+
+        return adapt_persisted_graph_state_document(value)
+
 
 def _canonical_uuid4(value: str) -> str:
     try:
@@ -493,7 +590,141 @@ class AuthorizedHuman(BaseModel):
     _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
 
 
+class GraphBranchMetadata(BaseModel):
+    """Canonical identity and current head for one episode-owned graph branch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_generation: Literal[1] = 1
+    branch_id: str
+    episode_id: str
+    project_id: str = Field(min_length=1)
+    kind: Literal["auto_research"] = "auto_research"
+    base_head: GraphHeadRef
+    head: GraphHeadRef
+    created_at: datetime = Field(default_factory=utc_now)
+    authorized_by: AuthorizedHuman
+
+    _validate_uuid4 = field_validator("branch_id", "episode_id")(_canonical_uuid4)
+
+    @model_validator(mode="after")
+    def identity_and_heads_are_coherent(self) -> GraphBranchMetadata:
+        if self.branch_id != self.episode_id:
+            raise ValueError("an Auto-research graph branch must use its episode UUID")
+        if self.base_head.target.kind != "main":
+            raise ValueError("a graph branch base must name a main head")
+        if self.head.target.kind != "branch" or self.head.target.branch_id != self.branch_id:
+            raise ValueError("a graph branch head must name its exact branch")
+        if self.head.revision < self.base_head.revision:
+            raise ValueError("a graph branch head cannot precede its immutable main base")
+        if (
+            self.head.revision == self.base_head.revision
+            and self.head.transition_id != self.base_head.transition_id
+        ):
+            raise ValueError(
+                "a new graph branch head must preserve its exact main transition identity"
+            )
+        return self
+
+
+class BranchMergeProvenance(BaseModel):
+    """Strict source/rebase identity stamped on one main-target merge Patch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_generation: Literal[1] = 1
+    merge_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    branch_id: str
+    episode_id: str
+    branch_base_head: GraphHeadRef
+    branch_head: GraphHeadRef
+    rebased_main_head: GraphHeadRef
+    merge_task_id: str = Field(min_length=1)
+
+    _validate_uuid4 = field_validator("branch_id", "episode_id")(_canonical_uuid4)
+
+    @model_validator(mode="after")
+    def source_and_rebase_heads_are_coherent(self) -> BranchMergeProvenance:
+        if self.branch_id != self.episode_id:
+            raise ValueError("branch merge provenance must use the episode branch UUID")
+        if self.branch_base_head.target.kind != "main":
+            raise ValueError("branch merge provenance requires a main branch base")
+        if (
+            self.branch_head.target.kind != "branch"
+            or self.branch_head.target.branch_id != self.branch_id
+        ):
+            raise ValueError("branch merge provenance names a different branch head")
+        if self.branch_head.revision < self.branch_base_head.revision:
+            raise ValueError("branch merge provenance has a head before its base")
+        if self.rebased_main_head.target.kind != "main":
+            raise ValueError("branch merge provenance must rebase onto main")
+        if self.rebased_main_head.revision < self.branch_base_head.revision:
+            raise ValueError("branch merge provenance cannot rebase before its branch base")
+        return self
+
+
+class BranchMergeReceipt(BaseModel):
+    """Append-only acknowledgement that one branch head reached main exactly once."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_generation: Literal[1] = 1
+    outcome: Literal["committed", "no_change"]
+    provenance: BranchMergeProvenance
+    result_main_head: GraphHeadRef
+    authorized_by: AuthorizedHuman
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def committed_head_is_coherent(self) -> BranchMergeReceipt:
+        if self.result_main_head.target.kind != "main":
+            raise ValueError("a branch merge receipt must name a resulting main head")
+        if self.outcome == "committed":
+            if self.result_main_head.transition_id is None:
+                raise ValueError("a committed branch merge requires its transition identity")
+            if self.result_main_head.revision != self.provenance.rebased_main_head.revision + 1:
+                raise ValueError("a committed branch merge must advance main exactly once")
+        elif self.result_main_head != self.provenance.rebased_main_head:
+            raise ValueError("a no-change branch merge must retain the exact rebased main head")
+        return self
+
+
+class GraphBranchSummary(BaseModel):
+    """Strict episode/API projection; the browser never reconstructs branch state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    branch_id: str
+    episode_id: str
+    base_head: GraphHeadRef
+    head: GraphHeadRef
+    merge_eligible: bool
+    merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"]
+    latest_successful_merge: BranchMergeReceipt | None = None
+    active_merge_task_id: str | None = Field(default=None, min_length=1)
+    merge_diagnostic: str | None = None
+
+    _validate_uuid4 = field_validator("branch_id", "episode_id")(_canonical_uuid4)
+
+    @model_validator(mode="after")
+    def merge_projection_is_coherent(self) -> GraphBranchSummary:
+        if self.branch_id != self.episode_id:
+            raise ValueError("branch summary identity does not match its episode")
+        if self.base_head.target.kind != "main":
+            raise ValueError("branch summary base must name main")
+        if self.head.target.kind != "branch" or self.head.target.branch_id != self.branch_id:
+            raise ValueError("branch summary head must name its exact branch")
+        if (self.merge_state == "running") != (self.active_merge_task_id is not None):
+            raise ValueError("only a running branch merge may name an active merge task")
+        if self.merge_state == "merged" and self.latest_successful_merge is None:
+            raise ValueError("a merged branch summary requires its successful receipt")
+        if self.merge_eligible and self.merge_state == "running":
+            raise ValueError("a branch with an active merge task is not merge eligible")
+        return self
+
+
 class Patch(BaseModel):
+    schema_generation: Literal[1, 2] = 2
     revision: int = 0
     kind: Literal["seed", "refresh", "chat", "work", "experiment_loop", "approval", "identity"]
     # ``author`` retains its historical human/agent role semantics. Identity
@@ -502,7 +733,7 @@ class Patch(BaseModel):
     producer: Literal["agent", "human", "system"]
     created_at: datetime = Field(default_factory=utc_now)
     summary: str
-    ops: list[dict[str, Any]]
+    ops: list[GraphOperation]
     run_truth_scope: list[str] = Field(default_factory=list)
     repositories_read: list[str] = Field(default_factory=list)
     processed_cursors: dict[str, str] = Field(default_factory=dict)
@@ -533,6 +764,21 @@ class Patch(BaseModel):
     profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = Field(default=None, min_length=1)
     episode_id: str | None = Field(default=None, min_length=1)
+    branch_merge: BranchMergeProvenance | None = None
+    transition: TransitionTrace | None = None
+
+    @field_serializer("ops")
+    def serialize_ops(
+        self,
+        operations: list[GraphOperation] | list[dict[str, Any]],
+        info: SerializationInfo,
+    ) -> list[dict[str, Any]]:
+        return [
+            operation.model_dump(mode=info.mode, exclude_unset=True)
+            if isinstance(operation, BaseModel)
+            else operation
+            for operation in operations
+        ]
 
     @model_validator(mode="before")
     @classmethod
@@ -548,3 +794,63 @@ class Patch(BaseModel):
         migrated = dict(value)
         migrated["producer"] = migrated["author"]
         return migrated
+
+    @model_validator(mode="after")
+    def reject_legacy_proposal_intents_in_current_generation(self) -> Patch:
+        if self.schema_generation == 1:
+            return self
+        for operation in self.ops:
+            if operation.op != "create_proposals":
+                continue
+            for proposal in operation.proposals:
+                if any(item.intent.startswith("legacy_") for item in proposal.ops):
+                    raise ValueError(
+                        "legacy Proposal operation shapes are accepted only through persisted "
+                        "schema-generation 1 decoding"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def branch_merge_attribution_is_complete(self) -> Patch:
+        provenance = self.branch_merge
+        if provenance is None:
+            return self
+        if (
+            self.kind != "work"
+            or self.author != "agent"
+            or self.producer != "agent"
+            or self.profile != "orchestrator"
+            or self.authorized_by is None
+        ):
+            raise ValueError("a branch merge must be an attributed orchestrator Work Patch")
+        if self.task_id != provenance.merge_task_id:
+            raise ValueError("branch merge provenance does not match its direct task")
+        if self.episode_id != provenance.episode_id:
+            raise ValueError("branch merge provenance does not match its episode")
+        if self.transition is not None and self.transition.pre_head != provenance.rebased_main_head:
+            raise ValueError("branch merge transition does not start from its rebased main head")
+        return self
+
+
+# The operation contract depends on the domain payloads above, while Patch and
+# Proposal expose the operation unions. Importing after the models are declared
+# keeps that dependency one-way at runtime and lets Pydantic resolve the two
+# forward references explicitly.
+from rcp.core.operations import GraphOperation, ProposalOperation  # noqa: E402
+from rcp.core.transition_models import GraphHeadRef, TransitionTrace  # noqa: E402
+
+Proposal.model_rebuild(_types_namespace={"ProposalOperation": ProposalOperation})
+Patch.model_rebuild(
+    _types_namespace={
+        "GraphOperation": GraphOperation,
+        "TransitionTrace": TransitionTrace,
+        "GraphHeadRef": GraphHeadRef,
+    }
+)
+GraphBranchMetadata.model_rebuild(_types_namespace={"GraphHeadRef": GraphHeadRef})
+BranchMergeProvenance.model_rebuild(_types_namespace={"GraphHeadRef": GraphHeadRef})
+BranchMergeReceipt.model_rebuild(_types_namespace={"GraphHeadRef": GraphHeadRef})
+GraphBranchSummary.model_rebuild(_types_namespace={"GraphHeadRef": GraphHeadRef})
+GraphState.model_rebuild(
+    _types_namespace={"EvidenceAssessment": EvidenceAssessment, "Proposal": Proposal}
+)

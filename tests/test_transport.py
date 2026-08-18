@@ -44,6 +44,18 @@ from rcp.transport.state import (
 
 from .helpers import seed_patch
 
+_ARCHIVE_BRANCH_ID = "11111111-1111-4111-8111-111111111111"
+_ARCHIVE_MERGE_ID = "a" * 64
+
+
+def _retained_branch(root: Path) -> Path:
+    branch = root / "branches" / _ARCHIVE_BRANCH_ID
+    (branch / "patches").mkdir(parents=True)
+    (branch / "merges").mkdir()
+    (branch / "branch.json").write_text('{"branch_id":"fixture"}\n', encoding="utf-8")
+    (branch / "graph.json").write_text('{"derived":true}\n', encoding="utf-8")
+    return branch
+
 
 class RecordingWorkspace(StateWorkspace):
     def __init__(self, root: Path) -> None:
@@ -229,7 +241,7 @@ def test_shared_snapshot_lock_keeps_refresh_behind_single_patch_publication(
     assert reader.materialize(write_outputs=False).state.revision == 2
 
 
-def test_shared_snapshot_lock_keeps_batch_append_out_of_refresh_and_replay(
+def test_shared_snapshot_lock_keeps_atomic_transition_out_of_refresh_and_replay(
     manifest, monkeypatch
 ) -> None:
     HistoryManager(manifest).append(seed_patch())
@@ -248,7 +260,7 @@ def test_shared_snapshot_lock_keeps_batch_append_out_of_refresh_and_replay(
     replay_entered = threading.Barrier(2)
     replay_release = threading.Barrier(2)
     writer_lock_probe: list[bool] = []
-    published_batches: list[str] = []
+    published_transitions: list[str] = []
 
     def paused_refresh() -> bool:
         refresh_entered.wait(timeout=5)
@@ -271,12 +283,12 @@ def test_shared_snapshot_lock_keeps_batch_append_out_of_refresh_and_replay(
         writer_continue.wait(timeout=5)
         return writer.append_batch([_accept_question_patch()], expected_revision=1)
 
-    def record_batch_publish(_relative_paths, batch_directory) -> None:
-        published_batches.append(Path(batch_directory).as_posix())
+    def record_transition_publish(_relative_paths, patch_path) -> None:
+        published_transitions.append(Path(patch_path).as_posix())
 
     monkeypatch.setattr(reader_workspace, "_refresh_snapshot", paused_refresh)
     monkeypatch.setattr(reader, "_replay", paused_replay)
-    monkeypatch.setattr(writer_workspace, "publish_committed_batch", record_batch_publish)
+    monkeypatch.setattr(writer_workspace, "publish_committed_patch", record_transition_publish)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         read_future = pool.submit(reader.current_materialization)
@@ -286,19 +298,18 @@ def test_shared_snapshot_lock_keeps_batch_append_out_of_refresh_and_replay(
         writer_continue.wait(timeout=5)
         refresh_release.wait(timeout=5)
         replay_entered.wait(timeout=5)
-        batch_existed_during_replay = any((root / "patches").glob("batch-*"))
+        transition_existed_during_replay = (root / "patches" / "000002.json").exists()
         replay_release.wait(timeout=5)
 
         read_result = read_future.result(timeout=5)
         prepared, appended_result = append_future.result(timeout=5)
 
     assert writer_lock_probe == [False]
-    assert batch_existed_during_replay is False
+    assert transition_existed_during_replay is False
     assert read_result.state.revision == 1
     assert [patch.revision for patch in prepared] == [2]
     assert appended_result.state.revision == 2
-    assert len(published_batches) == 1
-    assert published_batches[0].startswith("patches/batch-000002-000002-")
+    assert published_transitions == ["patches/000002.json"]
 
 
 def test_local_graph_run_waits_then_acquires_and_reports_once(tmp_path) -> None:
@@ -433,6 +444,88 @@ def test_local_archive_rechecks_reviewed_history_under_append_lock(tmp_path) -> 
 
     assert patch.read_text(encoding="utf-8") == "changed patch\n"
     assert list(tmp_path.glob(".research.archive-*")) == []
+
+
+@pytest.mark.parametrize(
+    "late_relative",
+    [Path("patches/000001.json"), Path("merges") / f"{_ARCHIVE_MERGE_ID}.json"],
+    ids=["branch-patch", "branch-merge-receipt"],
+)
+def test_local_archive_token_detects_late_branch_truth(
+    tmp_path: Path,
+    late_relative: Path,
+) -> None:
+    root = tmp_path / ".research"
+    root.mkdir()
+    (root / "manifest.toml").write_text("name = 'reviewed'\n", encoding="utf-8")
+    branch = _retained_branch(root)
+    workspace = LocalStateWorkspace(root, str(root))
+    reviewed = workspace.retained_history_fingerprint()
+
+    (branch / late_relative).write_text("late branch truth\n", encoding="utf-8")
+
+    with pytest.raises(StateUnavailable, match="changed since you reviewed it"):
+        workspace.archive_research(expected_history_fingerprint=reviewed)
+    assert root.is_dir()
+
+
+def test_branch_derived_outputs_do_not_change_the_archive_token(tmp_path: Path) -> None:
+    from rcp.transport.remote_archive_research import retained_history_fingerprint
+
+    root = tmp_path / ".research"
+    root.mkdir()
+    (root / "manifest.toml").write_text("name = 'reviewed'\n", encoding="utf-8")
+    branch = _retained_branch(root)
+    workspace = LocalStateWorkspace(root, str(root))
+    reviewed = workspace.retained_history_fingerprint()
+    assert retained_history_fingerprint(root) == reviewed
+
+    (branch / "graph.json").write_text('{"derived":false}\n', encoding="utf-8")
+    (branch / "research.md").write_text("rebuilt projection\n", encoding="utf-8")
+
+    assert workspace.retained_history_fingerprint() == reviewed
+    assert retained_history_fingerprint(root) == reviewed
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    [
+        "branch-symlink",
+        "malformed-branch",
+        "patch-parent-file",
+        "patch-leaf-directory",
+        "malformed-receipt",
+    ],
+)
+def test_local_archive_token_refuses_unsafe_branch_history(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    root = tmp_path / ".research"
+    root.mkdir()
+    (root / "manifest.toml").write_text("name = 'reviewed'\n", encoding="utf-8")
+    if unsafe_kind in {"branch-symlink", "malformed-branch"}:
+        branches = root / "branches"
+        branches.mkdir()
+        if unsafe_kind == "branch-symlink":
+            target = tmp_path / "branch-target"
+            target.mkdir()
+            (branches / _ARCHIVE_BRANCH_ID).symlink_to(target, target_is_directory=True)
+        else:
+            (branches / "NOT-A-CANONICAL-UUID").mkdir()
+    else:
+        branch = _retained_branch(root)
+        if unsafe_kind == "patch-parent-file":
+            (branch / "patches").rmdir()
+            (branch / "patches").write_text("not a directory\n", encoding="utf-8")
+        elif unsafe_kind == "patch-leaf-directory":
+            (branch / "patches" / "000001.json").mkdir()
+        else:
+            (branch / "merges" / f"{'A' * 64}.json").write_text("{}\n", encoding="utf-8")
+
+    workspace = LocalStateWorkspace(root, str(root))
+    with pytest.raises(StateUnavailable):
+        workspace.retained_history_fingerprint()
 
 
 def test_local_archive_rename_failure_leaves_complete_original_intact(
@@ -936,6 +1029,48 @@ def test_remote_archive_rechecks_reviewed_history_while_refresh_lock_is_held(
     assert list(remote_repository.glob(".research.archive-*")) == []
 
 
+@pytest.mark.parametrize(
+    "late_relative",
+    [Path("patches/000001.json"), Path("merges") / f"{_ARCHIVE_MERGE_ID}.json"],
+    ids=["branch-patch", "branch-merge-receipt"],
+)
+def test_remote_archive_token_detects_late_branch_truth(
+    tmp_path: Path,
+    monkeypatch,
+    late_relative: Path,
+) -> None:
+    remote_repository = tmp_path / "remote" / "project"
+    remote_root = remote_repository / ".research"
+    remote_root.mkdir(parents=True)
+    (remote_root / "manifest.toml").write_text("name = 'remote'\n", encoding="utf-8")
+    remote_branch = _retained_branch(remote_root)
+    mirror = tmp_path / "cache" / ".research"
+    shutil.copytree(remote_root, mirror)
+    workspace = SSHStateWorkspace(mirror, "research.example", str(remote_repository))
+    reviewed = workspace.retained_history_fingerprint()
+    (remote_branch / late_relative).write_text("late remote branch truth\n", encoding="utf-8")
+
+    @contextmanager
+    def fake_remote_lock(path, **_kwargs):
+        yield RunLockLease(str(path))
+
+    def run_remote_command_locally(arguments, **_kwargs):
+        return subprocess.run(
+            [sys.executable, *arguments[1:]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(workspace, "_ssh", run_remote_command_locally)
+
+    with pytest.raises(StateUnavailable, match="changed since you reviewed it"):
+        workspace.archive_research(expected_history_fingerprint=reviewed)
+    assert remote_root.is_dir()
+    assert mirror.is_dir()
+
+
 def test_confirmed_absent_remote_discards_stale_mirror_before_fresh_initialization(
     tmp_path,
     monkeypatch,
@@ -1121,14 +1256,15 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     ssh_calls.clear()
     rsync_calls.clear()
     with workspace.transaction():
+        assert workspace.refresh() is True
         workspace.publish(["graph.json"])
 
-    assert ssh_calls.count(["test", "-f", "/srv/project/.research/manifest.toml"]) == 1
+    assert ssh_calls.count(["test", "-f", "/srv/project/.research/manifest.toml"]) == 2
     assert lock_calls == [
         "/srv/project/.research/.refresh.lock",
         "/srv/project/.research/.refresh.lock",
     ]
-    assert len([call for call in rsync_calls if "--delete" in call]) == 1
+    assert len([call for call in rsync_calls if "--delete" in call]) == 2
     assert len([call for call in rsync_calls if "-aR" in call]) == 1
     assert len(commands) == 1
     assert commands[0]["paths"] == ["graph.json"]
@@ -1585,16 +1721,16 @@ def test_rejected_remote_single_patch_remains_in_committed_history(manifest) -> 
     assert workspace.committed_patches[-1] == "patches/000002.json"
 
 
-def test_failed_remote_batch_publish_rolls_the_local_mirror_back(manifest) -> None:
+def test_failed_remote_transition_publish_rolls_the_local_mirror_back(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
     history = HistoryManager(manifest, workspace)
     history.append(seed_patch())
     graph_before = (manifest.research_dir / "graph.json").read_bytes()
 
-    def fail_publish(_relative_paths, _batch_directory):
+    def fail_publish(_relative_paths, _patch_path):
         raise StateUnavailable("remote commit failed")
 
-    workspace.publish_committed_batch = fail_publish
+    workspace.publish_committed_patch = fail_publish
 
     with pytest.raises(StateUnavailable, match="remote commit failed"):
         history.append_batch(
@@ -1618,19 +1754,19 @@ def test_failed_remote_batch_publish_rolls_the_local_mirror_back(manifest) -> No
     assert [patch.revision for patch in history.load_patches()] == [1]
     assert history.state().revision == 1
     assert (manifest.research_dir / "graph.json").read_bytes() == graph_before
-    assert not list((manifest.research_dir / "patches").glob("batch-*"))
-    assert list((manifest.research_dir / "patches").glob(".unconfirmed-batch-*"))
+    assert not (manifest.research_dir / "patches" / "000002.json").exists()
+    assert list((manifest.research_dir / "patches").glob(".unconfirmed-000002.json-*"))
 
 
-def test_confirmed_remote_batch_commit_is_not_rolled_back(manifest) -> None:
+def test_confirmed_remote_transition_commit_is_not_rolled_back(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
     history = HistoryManager(manifest, workspace)
     history.append(seed_patch())
 
-    def fail_after_commit(_relative_paths, _batch_directory):
+    def fail_after_commit(_relative_paths, _patch_path):
         raise BatchPublishFailed("derived output repair failed", commit_status="present")
 
-    workspace.publish_committed_batch = fail_after_commit
+    workspace.publish_committed_patch = fail_after_commit
 
     history.append_batch(
         [

@@ -139,7 +139,7 @@ test("chat history exposes one explicit end-of-list page control", () => {
   assert.doesNotMatch(complete, /Load more/);
 });
 
-test("experiment detail shows the exact gate and keeps ordinary Ask available", () => {
+test("experiment detail hides attempt history, shows the exact gate, and keeps Ask available", () => {
   const node = {
     id: "experiment/demo",
     type: "experiment",
@@ -226,8 +226,9 @@ test("experiment detail shows the exact gate and keeps ordinary Ask available", 
   assert.match(html, /Decision decision\/data is still open\./);
   assert.match(html, /decision\/resource moved to 8xA100 after this episode was pinned to 4xA100/);
   assert.match(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
-  // Semantic attempts remain visible history but never own loop control.
-  assert.match(html, /Train the ablation/);
+  // Semantic attempt history belongs in Runs detail, not the node drawer.
+  assert.doesNotMatch(html, /Train the ablation/);
+  assert.doesNotMatch(html, /aria-label="Attempts"/);
   assert.doesNotMatch(html, /Stop attempt/);
   assert.doesNotMatch(html, /Stop watcher/);
   assert.match(html, /Ask about this node/);
@@ -358,7 +359,7 @@ test("an invocation-limited episode offers a new episode for its pending watcher
   }
   assert.match(html, /Paused at limit/);
   assert.match(html, /0 remaining/);
-  assert.match(html, /Interpret the pending run/);
+  assert.doesNotMatch(html, /Interpret the pending run/);
   assert.match(html, /<button[^>]*>.*Start new episode<\/button>/s);
   assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.doesNotMatch(html, /Stop watcher/);

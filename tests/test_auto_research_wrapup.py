@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchStartRequest,
@@ -57,10 +58,13 @@ def _episode(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
         user_id=str(uuid.uuid4()),
         display_name="Researcher",
     )
+    graph_target = GraphTargetRef(kind="branch", branch_id="episode")
     episode = EpisodeRecord(
         episode_id="episode",
         project_id="project",
         mode="auto_research",
+        graph_target=graph_target,
+        graph_base_head=GraphHeadRef(revision=0),
         status="queued",
         invocation_ceiling=3,
         authorized_by=authorized_by,
@@ -81,6 +85,7 @@ def _episode(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
         operation_id="root",
         project_id=episode.project_id,
         episode_id=episode.episode_id,
+        graph_target=graph_target,
         kind="auto_research",
         status="queued",
         request=request.model_dump(mode="json"),
@@ -137,6 +142,7 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
             operation_id="root-retry",
             project_id=episode.project_id,
             episode_id=episode.episode_id,
+            graph_target=episode.graph_target,
             kind="auto_research",
             status="succeeded",
             request=request.model_dump(mode="json"),
@@ -158,6 +164,7 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
                 project_id=episode.project_id,
                 origin_operation_id=recovery.operation_id,
                 origin_task_kind="auto_research",
+                graph_target=episode.graph_target,
                 chat_id=episode.episode_id,
                 episode_id=episode.episode_id,
                 continuation=WatcherContinuation(

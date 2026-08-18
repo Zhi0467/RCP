@@ -17,7 +17,14 @@ import os
 import re
 import stat
 import sys
+import uuid
 from pathlib import Path
+
+BRANCH_PATCH_PATTERN = re.compile(r"[0-9]{6}[.]json")
+BRANCH_MERGE_PATTERN = re.compile(r"[a-f0-9]{64}[.]json")
+BRANCH_DERIVED_NAMES = frozenset(
+    {"graph.json", "research.md", "glossary.json", "proposals.json", "coverage.json"}
+)
 
 
 def require_regular_file(path: Path) -> None:
@@ -29,7 +36,17 @@ def require_regular_file(path: Path) -> None:
         raise ValueError(f"retained history input is not a regular file: {path}")
 
 
+def require_regular_directory(path: Path, label: str) -> None:
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError as exc:
+        raise ValueError(str(exc)) from exc
+    if not stat.S_ISDIR(mode):
+        raise ValueError(f"{label} is not a regular directory: {path}")
+
+
 def retained_history_paths(root: Path) -> list[Path]:
+    require_regular_directory(root, "retained research path")
     manifest = root / "manifest.toml"
     require_regular_file(manifest)
     paths = [manifest]
@@ -52,11 +69,53 @@ def retained_history_paths(root: Path) -> list[Path]:
                     if re.fullmatch(r"[0-9]{6}[.]json", patch.name):
                         require_regular_file(patch)
                         paths.append(patch)
+
+    branches = root / "branches"
+    if os.path.lexists(branches):
+        require_regular_directory(branches, "retained graph branches path")
+        for branch in sorted(branches.iterdir(), key=lambda path: path.name):
+            try:
+                branch_id = uuid.UUID(branch.name)
+            except ValueError as exc:
+                raise ValueError(
+                    f"retained graph branch has a malformed canonical name: {branch}"
+                ) from exc
+            if str(branch_id) != branch.name or branch_id.version != 4:
+                raise ValueError(f"retained graph branch has a malformed canonical name: {branch}")
+            require_regular_directory(branch, "retained graph branch path")
+            entries = {child.name: child for child in branch.iterdir()}
+            allowed = {"branch.json", "patches", "merges", *BRANCH_DERIVED_NAMES}
+            malformed = sorted(entries.keys() - allowed)
+            if malformed:
+                raise ValueError(
+                    "retained graph branch contains a malformed canonical entry: "
+                    f"{entries[malformed[0]]}"
+                )
+
+            metadata = branch / "branch.json"
+            require_regular_file(metadata)
+            paths.append(metadata)
+            for name in BRANCH_DERIVED_NAMES:
+                derived = entries.get(name)
+                if derived is not None:
+                    require_regular_file(derived)
+
+            for directory_name, pattern, label in (
+                ("patches", BRANCH_PATCH_PATTERN, "retained graph branch patch path"),
+                ("merges", BRANCH_MERGE_PATTERN, "retained graph branch merge path"),
+            ):
+                directory = branch / directory_name
+                require_regular_directory(directory, label)
+                for child in directory.iterdir():
+                    if pattern.fullmatch(child.name) is None:
+                        raise ValueError(f"{label} has a malformed canonical name: {child}")
+                    require_regular_file(child)
+                    paths.append(child)
     return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
 
 
 def retained_history_fingerprint(root: Path) -> str:
-    digest = hashlib.sha256(b"rcp-retained-history-v1\0")
+    digest = hashlib.sha256(b"rcp-retained-history-v2\0")
     for path in retained_history_paths(root):
         relative = path.relative_to(root).as_posix().encode()
         content = path.read_bytes()

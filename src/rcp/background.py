@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Literal
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.core.authority import AgentDispatchAuthority, require_dispatch
+from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope, require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import CHAT_ARTIFACT_MAX_COUNT, GRAPH_UPDATE_HISTORY_MAX_COUNT
 from rcp.providers import classify_terminal_error
 from rcp.runs.auto_research import (
@@ -34,6 +36,7 @@ from rcp.runs.auto_research_recovery import (
     AutoResearchOrchestratorTerminalFailure,
     record_structural_failure,
 )
+from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episode_report import EpisodeReportRunRequest
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.task_policy import task_graph_capable
@@ -45,6 +48,7 @@ from rcp.service import (
 )
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
+    ACTIVE_AGENT_TASK_STATUSES,
     AgentTaskKind,
     AgentTaskRecord,
     AppStore,
@@ -57,7 +61,13 @@ from rcp.storage import (
 )
 from rcp.transport import RemoteRunStage
 
-AgentTaskRequest = RunRequest | CoachRequest | AutoResearchRunRequest | EpisodeReportRunRequest
+AgentTaskRequest = (
+    RunRequest
+    | CoachRequest
+    | AutoResearchRunRequest
+    | BranchMergeRunRequest
+    | EpisodeReportRunRequest
+)
 DispatchAuthorityResolver = Callable[
     [AgentTaskKind, AgentTaskRequest],
     AgentDispatchAuthority | None,
@@ -127,6 +137,7 @@ class AgentTaskExecution:
     control: AgentProcessControl
     stage_host: str | None = None
     stage_root: str | None = None
+    write_scope_fingerprint: str | None = None
     continuation: AgentTaskContinuation = "fresh"
     retry_feedback: tuple[str, ...] = ()
     applied_revision: int | None = None
@@ -151,6 +162,20 @@ class AgentTaskExecution:
             {"remote": bool(host), "stage_available": bool(root)},
             tier="diagnostic",
         )
+
+    def bind_write_scope(self, scope: ProjectWriteScope) -> None:
+        if self.stage_root is None:
+            raise ValueError(
+                "agent task must checkpoint its exact stage before write-scope binding"
+            )
+        self.store.bind_agent_task_write_scope(
+            self.operation_id,
+            project_id=scope.project_id,
+            stage_host=self.stage_host or "",
+            stage_root=scope.stage_root,
+            fingerprint=scope.fingerprint,
+        )
+        self.write_scope_fingerprint = scope.fingerprint
 
 
 AgentTaskStream = Callable[
@@ -255,8 +280,12 @@ class BackgroundAgentTasks:
         self._watcher_delivery_lock = threading.Lock()
         self._accepting_watcher_deliveries = True
         preserved_dispatches = self._proven_committed_auto_research_dispatches()
+        reserved_roots = self._proven_reserved_auto_research_roots()
         self.store.interrupt_active_agent_tasks(
-            preserve_operation_ids={item.operation_id for item in preserved_dispatches}
+            preserve_operation_ids={
+                *[item.operation_id for item in preserved_dispatches],
+                *[task.operation_id for _episode, task, _request in reserved_roots],
+            }
         )
         self._restart_stopping_experiment_recoveries()
         self.store.settle_ready_experiment_loop_stops()
@@ -276,6 +305,11 @@ class BackgroundAgentTasks:
         if kind == "auto_research":
             raise ValueError(
                 "Use start_auto_research so its episode and root are created atomically."
+            )
+        if kind == "branch_merge":
+            raise ValueError(
+                "Use start_branch_merge so its ended episode and exact branch are checked "
+                "atomically."
             )
         if kind == "episode_report":
             raise ValueError(
@@ -325,20 +359,130 @@ class BackgroundAgentTasks:
             stage_root=stage_root,
         )
 
+    def start_branch_merge(
+        self,
+        project_id: str,
+        request: BranchMergeRunRequest,
+        *,
+        authorized_by: AuthorizedHuman,
+        operation_id: str | None = None,
+    ) -> AgentTaskRecord:
+        """Dispatch one graph-only merge without reopening or spending the episode."""
+
+        self._validate_request_type("branch_merge", request)
+        episode = self.store.episode(request.episode_id)
+        if (
+            episode is None
+            or episode.project_id != project_id
+            or episode.mode != "auto_research"
+            or episode.graph_target.kind != "branch"
+            or episode.graph_target.branch_id != episode.episode_id
+        ):
+            raise ValueError("branch merge requires its exact Auto-research episode branch")
+        if episode.ending is None or not self.store.auto_research_is_quiescent(episode.episode_id):
+            raise ValueError("the Auto-research branch is not ended and quiescent")
+        active_branch_writers = [
+            item
+            for item in self.store.graph_target_tasks(
+                project_id,
+                episode.graph_target,
+                include_hidden=True,
+            )
+            if item.kind != "branch_merge"
+            and item.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
+            and task_graph_capable(item.kind, item.request)
+        ]
+        if active_branch_writers:
+            raise ValueError("the Auto-research branch still has an active graph writer")
+        if not authorized_by.display_name.strip():
+            raise ValueError("branch merge requires a named human authorizer snapshot")
+
+        operation_id = operation_id or str(uuid.uuid4())
+        authority = self._resolved_dispatch_authority(
+            "branch_merge",
+            request,
+            project_id=project_id,
+            operation_id=operation_id,
+        )
+        assert authority is not None
+        request_data = request.model_dump(mode="json")
+        estimate, samples = self.store.agent_task_estimate(
+            project_id,
+            "branch_merge",
+            request_data,
+        )
+        now = self.store.now()
+        record = AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            episode_id=episode.episode_id,
+            graph_target=episode.graph_target,
+            kind="branch_merge",
+            status="queued",
+            request=request_data,
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting for the graph branch merge agent to start.",
+            estimate_seconds=estimate,
+            estimate_samples=samples,
+            phase="queued",
+            last_activity_at=now,
+            authorized_by=authorized_by,
+            dispatch_authority=authority,
+        )
+        stored = self.store.create_branch_merge_task(record)
+        return self._spawn_record(stored, request, continuation="fresh")
+
     def start_auto_research(
         self,
         project_id: str,
         request: AutoResearchStartRequest,
         *,
         authorized_by: AuthorizedHuman,
+        graph_base_head: GraphHeadRef,
+        ensure_graph_target: Callable[[EpisodeRecord], None],
         episode_id: str | None = None,
         operation_id: str | None = None,
     ) -> tuple[EpisodeRecord, AgentTaskRecord]:
-        """Create one fresh Auto-research episode and spend its first invocation."""
+        """Reserve SQLite identity, establish its branch, then spend the first invocation."""
+
+        episode, task, run_request = self.reserve_auto_research(
+            project_id,
+            request,
+            authorized_by=authorized_by,
+            graph_base_head=graph_base_head,
+            episode_id=episode_id,
+            operation_id=operation_id,
+        )
+        try:
+            ensure_graph_target(episode)
+        except Exception as exc:
+            self._fail_reserved_auto_research_root(episode, task, exc)
+            raise
+        episode = self.store.activate_auto_research_reservation(
+            episode.episode_id,
+            task.operation_id,
+        )
+        return episode, self._spawn_record(task, run_request, continuation="fresh")
+
+    def reserve_auto_research(
+        self,
+        project_id: str,
+        request: AutoResearchStartRequest,
+        *,
+        authorized_by: AuthorizedHuman,
+        graph_base_head: GraphHeadRef,
+        episode_id: str | None = None,
+        operation_id: str | None = None,
+    ) -> tuple[EpisodeRecord, AgentTaskRecord, AutoResearchRunRequest]:
+        """Atomically reserve one episode/root before any canonical branch publication."""
 
         if not authorized_by.display_name.strip():
             raise ValueError("Auto-research requires a named human authorizer snapshot.")
         episode_id = episode_id or str(uuid.uuid4())
+        if graph_base_head.target.kind != "main":
+            raise ValueError("Auto-research must branch from an exact main graph head.")
+        graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
         operation_id = operation_id or str(uuid.uuid4())
         run_request = auto_research_root_request(request, episode_id=episode_id).model_copy(
             update={"actor_operation_id": operation_id}
@@ -361,6 +505,8 @@ class BackgroundAgentTasks:
             episode_id=episode_id,
             project_id=project_id,
             mode="auto_research",
+            graph_target=graph_target,
+            graph_base_head=graph_base_head,
             status="queued",
             invocation_ceiling=request.invocation_ceiling,
             authorized_by=authorized_by,
@@ -371,6 +517,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             project_id=project_id,
             episode_id=episode_id,
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=request_data,
@@ -393,11 +540,92 @@ class BackgroundAgentTasks:
                 updated_at=now,
             ),
             task,
+            activate=False,
         )
-        return stored_episode, self._spawn_record(
-            stored_task,
-            run_request,
-            continuation="fresh",
+        return stored_episode, stored_task, run_request
+
+    def reconcile_reserved_auto_research_roots(
+        self,
+        ensure_graph_target: Callable[[EpisodeRecord], None],
+    ) -> list[str]:
+        """Finish branch creation and launch roots reserved before a process interruption."""
+
+        started: list[str] = []
+        for episode, task, request in self._proven_reserved_auto_research_roots():
+            try:
+                ensure_graph_target(episode)
+            except Exception as exc:
+                self._fail_reserved_auto_research_root(episode, task, exc)
+                continue
+            self.store.activate_auto_research_reservation(
+                episode.episode_id,
+                task.operation_id,
+            )
+            self._spawn_record(task, request, continuation="fresh")
+            started.append(task.operation_id)
+        return started
+
+    def _proven_reserved_auto_research_roots(
+        self,
+    ) -> list[tuple[EpisodeRecord, AgentTaskRecord, AutoResearchRunRequest]]:
+        reserved: list[tuple[EpisodeRecord, AgentTaskRecord, AutoResearchRunRequest]] = []
+        for project in self.store.projects():
+            for episode in self.store.episodes(project.project_id):
+                if (
+                    episode.mode != "auto_research"
+                    or episode.root_operation_id is None
+                    or episode.status not in {"queued", "running"}
+                ):
+                    continue
+                task = self.store.agent_task(episode.root_operation_id)
+                if (
+                    task is None
+                    or task.kind != "auto_research"
+                    or task.episode_id != episode.episode_id
+                    or task.project_id != episode.project_id
+                    or task.graph_target != episode.graph_target
+                    or task.parent_operation_id is not None
+                    or task.status != "queued"
+                    or not self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
+                ):
+                    continue
+                try:
+                    request = AutoResearchRunRequest.model_validate(task.request)
+                except ValueError:
+                    continue
+                if (
+                    request.episode_id != episode.episode_id
+                    or request.role != "orchestrator"
+                    or request.actor_operation_id != task.operation_id
+                    or request.wake_cause is not None
+                ):
+                    continue
+                reserved.append((episode, task, request))
+        return reserved
+
+    def _fail_reserved_auto_research_root(
+        self,
+        episode: EpisodeRecord,
+        task: AgentTaskRecord,
+        error: Exception,
+    ) -> None:
+        diagnostic = (
+            "Auto-research could not establish its exact graph branch before provider launch: "
+            f"{error}"
+        )
+        self.store.fail_agent_task(task.operation_id, diagnostic)
+        from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+
+        begin_episode_report_wrapup(
+            self.store,
+            EpisodeWrapupSpec(
+                episode_id=episode.episode_id,
+                ending="failed",
+                partial=True,
+                continuation_operation_id=task.operation_id,
+                receipt={"reason": "graph_branch_unavailable_before_launch"},
+                diagnostic=diagnostic,
+            ),
         )
 
     def start_auto_research_turn(
@@ -842,6 +1070,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             project_id=episode.project_id,
             episode_id=episode_id,
+            graph_target=episode.graph_target,
             kind="node_chat",
             status="queued",
             request=request_data,
@@ -1002,6 +1231,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             project_id=current.project_id,
             episode_id=episode_id,
+            graph_target=episode.graph_target,
             kind="node_chat",
             status="queued",
             request=request_data,
@@ -1129,6 +1359,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             project_id=previous.project_id,
             episode_id=episode_id,
+            graph_target=episode.graph_target,
             kind="node_chat",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -1259,6 +1490,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             project_id=route.project_id,
             episode_id=route.child_episode_id,
+            graph_target=parent.graph_target,
             kind="node_chat",
             status="queued",
             request=request_data,
@@ -1630,6 +1862,20 @@ class BackgroundAgentTasks:
         if not authorized_by.display_name.strip():
             raise ValueError("A watcher notification requires a named human authorizer snapshot.")
 
+        source_watchers = [self.store.watcher(watcher_id) for watcher_id in watcher_ids]
+        if any(item is None for item in source_watchers):
+            raise ValueError("A watcher notification requires every durable watcher record.")
+        resolved_watchers = [item for item in source_watchers if item is not None]
+        graph_targets = {item.graph_target.key: item.graph_target for item in resolved_watchers}
+        if len(graph_targets) != 1:
+            raise ValueError("A watcher notification cannot cross graph targets.")
+        graph_target = next(iter(graph_targets.values()))
+        branch_episode_ids = {
+            item.episode_id for item in resolved_watchers if item.episode_id is not None
+        }
+        if graph_target.kind == "branch" and len(branch_episode_ids) != 1:
+            raise ValueError("A branch watcher notification requires one exact episode lineage.")
+
         experiment_reauthorization = (
             request.trigger == "experiment_run"
             and request.patch_kind == "experiment_loop"
@@ -1647,12 +1893,14 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "An Experiment watcher wake requires its episode's session and exact stage."
             )
+        episode: EpisodeRecord | None = None
         if experiment_wake:
             episode = self.store.episode(request.control_episode_id or "")
             if (
                 episode is None
                 or episode.mode != "experiment_loop"
                 or episode.project_id != project_id
+                or episode.graph_target != graph_target
             ):
                 raise ValueError("The Experiment watcher wake lost its episode parent.")
             if episode.authorized_by is None:
@@ -1675,7 +1923,10 @@ class BackgroundAgentTasks:
             project_id=project_id,
             episode_id=request.control_episode_id
             if experiment_wake or experiment_reauthorization
+            else next(iter(branch_episode_ids))
+            if graph_target.kind == "branch"
             else None,
+            graph_target=graph_target,
             kind=kind,
             status="queued",
             request=request_data,
@@ -2217,6 +2468,8 @@ class BackgroundAgentTasks:
                     self.store.settle_experiment_loop_stop(
                         previous.project_id,
                         original.control_node_id,
+                        episode_id=episode.episode_id,
+                        graph_target=episode.graph_target,
                     )
             raise ValueError(detail)
         estimate, samples = self.store.agent_task_estimate(
@@ -2362,6 +2615,15 @@ class BackgroundAgentTasks:
             or self.store.auto_research_state(episode_id) is None
         ):
             raise KeyError(episode_id)
+        if (
+            episode.graph_target.kind != "branch"
+            or episode.graph_target.branch_id != episode.episode_id
+            or episode.graph_base_head is None
+            or episode.graph_base_head.target.kind != "main"
+        ):
+            raise ValueError(
+                "The Auto-research episode has no exact canonical graph-branch binding."
+            )
         return episode
 
     def _auto_research_parent_episode(self, episode_id: str) -> EpisodeRecord:
@@ -2372,6 +2634,15 @@ class BackgroundAgentTasks:
             or self.store.auto_research_state(episode_id) is None
         ):
             raise KeyError(episode_id)
+        if (
+            episode.graph_target.kind != "branch"
+            or episode.graph_target.branch_id != episode.episode_id
+            or episode.graph_base_head is None
+            or episode.graph_base_head.target.kind != "main"
+        ):
+            raise ValueError(
+                "The Auto-research episode has no exact canonical graph-branch binding."
+            )
         if episode.authorized_by is None:
             raise ValueError("The Auto-research episode lost its human authorizer snapshot.")
         return episode
@@ -2880,11 +3151,15 @@ class BackgroundAgentTasks:
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
     ) -> AgentTaskRecord | None:
         episode: EpisodeRecord | None = None
+        task_graph_target = parent.graph_target if parent is not None else GraphTargetRef()
+        if isinstance(request, BranchMergeRunRequest):
+            raise TypeError("BranchMergeRunRequest requires start_branch_merge.")
         if isinstance(request, AutoResearchRunRequest):
             if kind != "auto_research":
                 raise TypeError("AutoResearchRunRequest requires auto_research task kind.")
             episode = self._auto_research_for_request(request.episode_id, request)
             authorized_by = episode.authorized_by
+            task_graph_target = episode.graph_target
         elif isinstance(request, EpisodeReportRunRequest):
             raise TypeError("EpisodeReportRunRequest requires an existing hidden allocation.")
         elif isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
@@ -2897,6 +3172,7 @@ class BackgroundAgentTasks:
                 ):
                     raise ValueError("The Experiment task changed its episode parent scope.")
                 authorized_by = stored_episode.authorized_by
+                task_graph_target = stored_episode.graph_target
             elif parent is not None or request.trigger != "experiment_run":
                 raise ValueError("The Experiment continuation lost its episode parent.")
         elif auto_research_mail_delivery is not None or auto_research_wake_admission is not None:
@@ -2937,6 +3213,7 @@ class BackgroundAgentTasks:
                 if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop"
                 else None
             ),
+            graph_target=task_graph_target,
             kind=kind,
             status="queued",
             request=request.model_dump(mode="json"),
@@ -3044,7 +3321,20 @@ class BackgroundAgentTasks:
         operation_id: str | None = None,
         continuation: AgentTaskContinuation = "fresh",
     ) -> AgentDispatchAuthority | None:
-        authority = self.dispatch_authority_resolver(kind, request)
+        if kind == "branch_merge":
+            if not isinstance(request, BranchMergeRunRequest):
+                raise TypeError("branch_merge dispatch requires a BranchMergeRunRequest")
+            authority = AgentDispatchAuthority(
+                profile="orchestrator",
+                task_contract="orchestrate",
+                scope=AgentDispatchScope(
+                    run_truth_scope=list(request.run_truth_scope or ()),
+                    episode_id=request.episode_id,
+                    patch_kind="work",
+                ),
+            )
+        else:
+            authority = self.dispatch_authority_resolver(kind, request)
         if kind == "episode_report":
             if not isinstance(request, EpisodeReportRunRequest):
                 raise TypeError("episode_report dispatch requires an EpisodeReportRunRequest")
@@ -3349,6 +3639,7 @@ class BackgroundAgentTasks:
                 control=control,
                 stage_host=record.stage_host,
                 stage_root=record.stage_root,
+                write_scope_fingerprint=record.write_scope_fingerprint,
                 continuation=continuation,
             )
             try:
@@ -3363,6 +3654,7 @@ class BackgroundAgentTasks:
             control=control,
             stage_host=record.stage_host,
             stage_root=record.stage_root,
+            write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=continuation,
             retry_feedback=(
                 self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
@@ -3704,7 +3996,9 @@ class BackgroundAgentTasks:
                         tier="trace",
                     )
         return AgentTaskOutcome(
-            applied_revision=applied_revision,
+            applied_revision=(
+                applied_revision if applied_revision is not None else execution.applied_revision
+            ),
             messages=messages,
             artifacts=artifacts,
             graph_update=graph_update,
@@ -3832,6 +4126,8 @@ class BackgroundAgentTasks:
             self.store.settle_experiment_loop_stop(
                 record.project_id,
                 original.control_node_id,
+                episode_id=episode.episode_id,
+                graph_target=episode.graph_target,
             )
         raise ValueError(problem)
 
@@ -3848,6 +4144,8 @@ class BackgroundAgentTasks:
             return CoachRequest.model_validate(record.request)
         if record.kind == "auto_research":
             return AutoResearchRunRequest.model_validate(record.request)
+        if record.kind == "branch_merge":
+            return BranchMergeRunRequest.model_validate(record.request)
         if record.kind == "episode_report":
             return EpisodeReportRunRequest.model_validate(record.request)
         return RunRequest.model_validate(record.request)
@@ -3858,11 +4156,16 @@ class BackgroundAgentTasks:
             raise TypeError("paper_coach requires a CoachRequest")
         if kind == "auto_research" and not isinstance(request, AutoResearchRunRequest):
             raise TypeError("auto_research requires an AutoResearchRunRequest")
+        if kind == "branch_merge" and not isinstance(request, BranchMergeRunRequest):
+            raise TypeError("branch_merge requires a BranchMergeRunRequest")
         if kind == "episode_report" and not isinstance(request, EpisodeReportRunRequest):
             raise TypeError("episode_report requires an EpisodeReportRunRequest")
-        if kind not in {"paper_coach", "auto_research", "episode_report"} and not isinstance(
-            request, RunRequest
-        ):
+        if kind not in {
+            "paper_coach",
+            "auto_research",
+            "branch_merge",
+            "episode_report",
+        } and not isinstance(request, RunRequest):
             raise TypeError(f"{kind} requires a RunRequest")
 
     def _forget_control(self, operation_id: str) -> None:

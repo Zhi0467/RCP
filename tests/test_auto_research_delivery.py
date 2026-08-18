@@ -11,6 +11,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest, WatchGraphArguments
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Blocker, GraphState
+from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
@@ -76,9 +77,15 @@ def _start_auto_research(
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto_research",
         operation_id="root",
     )
+    assert auto_research.graph_target.kind == "branch"
+    assert auto_research.graph_target.branch_id == auto_research.episode_id
+    assert auto_research.graph_base_head == GraphHeadRef(revision=0)
+    assert root.graph_target == auto_research.graph_target
     return auto_research, wait_for_task(tasks.store, root.operation_id, expect="succeeded")
 
 
@@ -118,6 +125,7 @@ def _arm_completed_graph_condition(
     assert watcher.status == "completed"
     assert watcher.origin_task_kind == "auto_research"
     assert watcher.origin_operation_id == origin.operation_id
+    assert watcher.graph_target == auto_research.graph_target
     assert watcher.chat_id == origin.operation_id
     assert watcher.notified is False
     return watcher
@@ -261,6 +269,7 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
     assert wake.request["control_node_id"] is None
     assert wake.request["wake_cause"] == "graph_condition"
     assert wake.request["watcher_ids"] == [watcher.watcher_id]
+    assert wake.graph_target == auto_research.graph_target
     assert wake.native_session_id == root.native_session_id == "orchestrator-session"
     assert wake.stage_host == root.stage_host == "execution-host"
     assert wake.stage_root == root.stage_root == str(stage)

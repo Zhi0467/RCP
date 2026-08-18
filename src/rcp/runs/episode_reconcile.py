@@ -25,7 +25,7 @@ from rcp.runs.experiment_loop import (
     experiment_loop_wrapup_spec,
 )
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
+from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore, EpisodeRecord
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -45,6 +45,14 @@ class EpisodeReconciler:
         self.background = background
         self.logger = logger
 
+    def _has_unsettled_visible_episode_task(self, episode_id: str) -> bool:
+        """Whether already-admitted visible work still owns an unfinished turn."""
+
+        return any(
+            task.visible and task.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
+            for task in self.store.episode_tasks(episode_id, include_hidden=True)
+        )
+
     def reconcile_auto_research_wrapup(
         self,
         signal: AutoResearchEndingSignal,
@@ -54,7 +62,9 @@ class EpisodeReconciler:
     ) -> bool:
         """Admit the shared hidden report only after Auto-research is quiescent."""
 
-        if not self.store.auto_research_is_quiescent(signal.episode_id):
+        if self._has_unsettled_visible_episode_task(
+            signal.episode_id
+        ) or not self.store.auto_research_is_quiescent(signal.episode_id):
             return False
         try:
             admission = begin_episode_report_wrapup(
@@ -99,6 +109,34 @@ class EpisodeReconciler:
             return
         if episode.stop_requested_at is not None:
             settle_auto_research_stop(self.store, episode_id)
+            return
+        if episode.wrapup_state in {"ready", "failed", "skipped", "legacy_unavailable"}:
+            return
+        if episode.wrapup_state in {"pending", "running"}:
+            if self._has_unsettled_visible_episode_task(episode_id):
+                return
+            try:
+                self.background.start_episode_report(episode_id)
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not restart episode report for %s after %s: %s",
+                    episode_id,
+                    source,
+                    exc,
+                )
+                if operation_id is not None:
+                    with suppress(Exception):
+                        self.store.record_agent_task_receipt(
+                            operation_id,
+                            "episode_report_reconciliation_failed",
+                            {
+                                "episode_id": episode_id,
+                                "source": source,
+                                "exception_type": type(exc).__name__,
+                                "detail": str(exc),
+                            },
+                            tier="diagnostic",
+                        )
             return
         if signal is None and episode.ending is None:
             if (
@@ -199,6 +237,8 @@ class EpisodeReconciler:
                 self.store.settle_experiment_loop_stop(
                     episode.project_id,
                     episode.control_node_id,
+                    episode_id=episode.episode_id,
+                    graph_target=episode.graph_target,
                 )
             return
         if episode.wrapup_state in {"ready", "failed", "skipped", "legacy_unavailable"}:

@@ -14,7 +14,6 @@ from rcp.core.models import (
     GlossaryTerm,
     GraphState,
     Hypothesis,
-    OntologyState,
     Patch,
     ProjectNode,
     Proposal,
@@ -22,6 +21,28 @@ from rcp.core.models import (
     Standing,
 )
 from rcp.core.ontology import custom_relation, edge_layer
+from rcp.core.operations import (
+    BeliefCause,
+    CreateAmbiguitiesOperation,
+    CreateEdgesOperation,
+    CreateNodesOperation,
+    CreateProposalsOperation,
+    GraphOperation,
+    MergeNodesOperation,
+    RemoveEdgesOperation,
+    RemoveNodesOperation,
+    ResolveAmbiguitiesOperation,
+    ResolveProposalsOperation,
+    SetCoverageOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    SupersedeNodesOperation,
+    UpdateNodesOperation,
+    UpsertGlossaryOperation,
+    WithdrawProposalsOperation,
+    strict_project_node,
+)
 from rcp.core.validation import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     ValidationReport,
@@ -68,8 +89,15 @@ def materialize_patches(
             report = ValidationReport()
             report.messages.extend(patch.admission_messages)
             reports[patch.revision] = report
-            state.revision = max(state.revision, patch.revision)
-            state.validation_messages.extend(patch.admission_messages)
+            state = state.model_copy(
+                update={
+                    "revision": max(state.revision, patch.revision),
+                    "validation_messages": [
+                        *state.validation_messages,
+                        *patch.admission_messages,
+                    ],
+                }
+            )
             continue
 
         report = validate_patch(
@@ -86,12 +114,16 @@ def materialize_patches(
         reports[patch.revision] = report
         if report.rejected:
             failure = next(item for item in report.messages if item.level == "reject")
-            state.replay_status = "degraded"
-            state.replay_failure = ReplayFailure(
-                revision=patch.revision,
-                created_at=patch.created_at,
-                code=failure.code,
-                message=failure.message,
+            state = state.model_copy(
+                update={
+                    "replay_status": "degraded",
+                    "replay_failure": ReplayFailure(
+                        revision=patch.revision,
+                        created_at=patch.created_at,
+                        code=failure.code,
+                        message=failure.message,
+                    ),
+                }
             )
             break
         previous_state = state
@@ -105,18 +137,29 @@ def materialize_patches(
                 f"Patch operations could not be applied atomically: {exc}.",
                 patch.revision,
             )
-            state.replay_status = "degraded"
-            state.replay_failure = ReplayFailure(
-                revision=patch.revision,
-                created_at=patch.created_at,
-                code="malformed-operation",
-                message=f"Patch operations could not be applied atomically: {exc}.",
+            state = state.model_copy(
+                update={
+                    "replay_status": "degraded",
+                    "replay_failure": ReplayFailure(
+                        revision=patch.revision,
+                        created_at=patch.created_at,
+                        code="malformed-operation",
+                        message=f"Patch operations could not be applied atomically: {exc}.",
+                    ),
+                }
             )
             break
         state = candidate
         descriptors.extend(candidate_descriptors)
         processed_cursors.update(patch.processed_cursors)
-        state.validation_messages.extend(patch.admission_messages)
+        state = state.model_copy(
+            update={
+                "validation_messages": [
+                    *state.validation_messages,
+                    *patch.admission_messages,
+                ]
+            }
+        )
         if accepted_patch_observer is not None:
             accepted_patch_observer(previous_state, patch, state)
 
@@ -138,7 +181,7 @@ def apply_valid_patch(state: GraphState, patch: Patch) -> GraphState:
 def apply_valid_operation(
     state: GraphState,
     patch: Patch,
-    operation: dict[str, Any],
+    operation: GraphOperation,
 ) -> GraphState:
     """Stage one already-validated operation without advancing the graph revision."""
 
@@ -148,62 +191,81 @@ def apply_valid_operation(
     return updated
 
 
+def apply_transition_generated_operation(
+    state: GraphState,
+    patch: Patch,
+    operation: GraphOperation,
+) -> GraphState:
+    """Stage one manager-owned system-field action during transition closure."""
+
+    updated = _fork_state(state)
+    _apply_patch(
+        updated,
+        patch.model_copy(update={"ops": [operation]}),
+        [],
+        system_field_operation_indexes={0},
+    )
+    updated.revision = state.revision
+    return updated
+
+
 def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
     """Replace RCP-owned Proposal metadata using the graph being appended to."""
 
-    operations = [dict(operation) for operation in patch.ops]
-    for operation in operations:
-        if operation.get("op") != "create_proposals":
+    operations: list[GraphOperation] = []
+    for operation in patch.ops:
+        if not isinstance(operation, CreateProposalsOperation):
+            operations.append(operation)
             continue
-        proposals: list[dict[str, Any]] = []
-        for raw in operation.get("proposals", []):
-            proposal = dict(raw)
+        proposals: list[Proposal] = []
+        for proposal in operation.proposals:
             related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
-                state, proposal.get("ops", [])
+                state, proposal.ops
             )
-            proposal.update(
-                {
-                    "related_node_ids": related_node_ids,
-                    "related_edge_ids": related_edge_ids,
-                    "related_config_keys": related_config_keys,
-                    "base_rev": state.revision,
-                    "status": "pending",
-                    "created_by": "human" if patch.author == "human" else "agent",
-                    "created_by_operation_id": patch.source_operation_id,
-                    "raised_rev": 0,
-                    "resolved_rev": None,
-                    "resolved_by": None,
-                    "resolved_by_operation_id": None,
-                    "resolution_reason": None,
-                    "rejection_reason": None,
-                }
+            proposals.append(
+                proposal.model_copy(
+                    update={
+                        "related_node_ids": related_node_ids,
+                        "related_edge_ids": related_edge_ids,
+                        "related_config_keys": related_config_keys,
+                        "base_rev": state.revision,
+                        "status": "pending",
+                        "created_by": "human" if patch.author == "human" else "agent",
+                        "created_by_operation_id": patch.source_operation_id,
+                        "raised_rev": 0,
+                        "resolved_rev": None,
+                        "resolved_by": None,
+                        "resolved_by_operation_id": None,
+                        "resolution_reason": None,
+                        "rejection_reason": None,
+                    }
+                )
             )
-            proposals.append(proposal)
-        operation["proposals"] = proposals
+        operations.append(operation.model_copy(update={"proposals": proposals}))
     return patch.model_copy(update={"ops": operations})
 
 
 def finalize_patch_bookkeeping(patch: Patch, staged_state: GraphState) -> Patch:
     """Persist Proposal dependencies exactly as staged operations observed them."""
 
-    operations = [dict(operation) for operation in patch.ops]
-    for operation in operations:
-        if operation.get("op") != "create_proposals":
+    operations: list[GraphOperation] = []
+    for operation in patch.ops:
+        if not isinstance(operation, CreateProposalsOperation):
+            operations.append(operation)
             continue
-        proposals: list[dict[str, Any]] = []
-        for raw in operation.get("proposals", []):
-            proposal = dict(raw)
-            staged = staged_state.proposals.get(proposal.get("id"))
+        proposals: list[Proposal] = []
+        for proposal in operation.proposals:
+            staged = staged_state.proposals.get(proposal.id)
             if staged is not None:
-                proposal.update(
-                    {
+                proposal = proposal.model_copy(
+                    update={
                         "related_node_ids": list(staged.related_node_ids),
                         "related_edge_ids": list(staged.related_edge_ids),
                         "related_config_keys": list(staged.related_config_keys),
                     }
                 )
             proposals.append(proposal)
-        operation["proposals"] = proposals
+        operations.append(operation.model_copy(update={"proposals": proposals}))
     return patch.model_copy(update={"ops": operations})
 
 
@@ -235,25 +297,46 @@ def _fork_state(state: GraphState) -> GraphState:
 
 
 def _apply_patch(
-    state: GraphState, patch: Patch, repository_descriptors: list[dict[str, str]]
+    state: GraphState,
+    patch: Patch,
+    repository_descriptors: list[dict[str, str]],
+    *,
+    system_field_operation_indexes: set[int] | None = None,
 ) -> None:
     revision = patch.revision
     created_edge_ids: list[str] = []
-    for op in patch.ops:
-        name = op["op"]
-        if name == "create_nodes":
-            for raw in op.get("nodes", []):
-                data = dict(raw)
+    generated_operation_indexes = set(system_field_operation_indexes or ())
+    generated_operation_indexes.update(
+        {item.operation_index for item in patch.transition.generated_actions}
+        if patch.transition is not None
+        else set()
+    )
+    for operation_index, op in enumerate(patch.ops):
+        if isinstance(op, CreateNodesOperation):
+            for raw in op.nodes:
+                data = raw.model_dump(mode="python", exclude_unset=True)
                 data["created_rev"] = revision
                 data["updated_rev"] = revision
                 data["standing"] = data.get("standing", "asserted")
                 node = NODE_ADAPTER.validate_python(data)
                 state.nodes[node.id] = node
-        elif name == "update_nodes":
-            for update in op.get("nodes", []):
-                node = state.nodes[update["id"]]
-                changes = update.get("changes", {})
-                immutable = sorted(set(changes) & IMMUTABLE_NODE_UPDATE_FIELDS)
+        elif isinstance(op, UpdateNodesOperation):
+            for update in op.nodes:
+                node = state.nodes[update.id]
+                changes = update.changes
+                immutable_fields = IMMUTABLE_NODE_UPDATE_FIELDS
+                if patch.schema_generation == 1:
+                    immutable_fields = immutable_fields - {
+                        "legacy_strength",
+                        "current_summary_stale",
+                        "next_action_stale",
+                    }
+                elif operation_index in generated_operation_indexes:
+                    immutable_fields = immutable_fields - {
+                        "current_summary_stale",
+                        "next_action_stale",
+                    }
+                immutable = sorted(set(changes) & immutable_fields)
                 if immutable:
                     raise ValueError(
                         f"node updates cannot change system fields: {', '.join(immutable)}"
@@ -262,20 +345,24 @@ def _apply_patch(
                 data.update(changes)
                 data["updated_rev"] = revision
                 data["standing"] = node.standing if patch.kind == "approval" else "asserted"
-                updated = NODE_ADAPTER.validate_python(data)
+                updated = (
+                    NODE_ADAPTER.validate_python(data)
+                    if patch.schema_generation == 1
+                    else strict_project_node(data)
+                )
                 _record_belief_transition(
                     state,
                     node,
                     updated,
                     revision,
-                    update.get("cause"),
+                    update.cause,
                 )
                 state.nodes[node.id] = updated
-        elif name == "create_edges":
-            for raw in op.get("edges", []):
-                data = dict(raw)
+        elif isinstance(op, CreateEdgesOperation):
+            for raw in op.edges:
+                data = raw.model_dump(mode="python", exclude_unset=True)
                 data.setdefault("id", f"{data['source']}::{data['relation']}::{data['target']}")
-                if relation := custom_relation(state.ontology, data.get("relation")):
+                if relation := custom_relation(state.ontology, raw.relation):
                     data["layer"] = relation.layer
                 data["created_rev"] = revision
                 edge = Edge.model_validate(data)
@@ -284,11 +371,11 @@ def _apply_patch(
                     edge = edge.model_copy(update={"layer": derived})
                 state.edges[edge.id] = edge
                 created_edge_ids.append(edge.id)
-        elif name == "remove_edges":
-            for edge_id in op.get("edge_ids", []):
+        elif isinstance(op, RemoveEdgesOperation):
+            for edge_id in op.edge_ids:
                 state.edges.pop(edge_id, None)
-        elif name == "remove_nodes":
-            node_ids = set(op.get("node_ids", []))
+        elif isinstance(op, RemoveNodesOperation):
+            node_ids = set(op.node_ids)
             state.nodes = {
                 node_id: node for node_id, node in state.nodes.items() if node_id not in node_ids
             }
@@ -297,12 +384,12 @@ def _apply_patch(
                 for edge_id, edge in state.edges.items()
                 if edge.source not in node_ids and edge.target not in node_ids
             }
-        elif name == "supersede_nodes":
-            for item in op.get("nodes", []):
-                previous = state.nodes[item["id"]]
+        elif isinstance(op, SupersedeNodesOperation):
+            for item in op.nodes:
+                previous = state.nodes[item.id]
                 _set_node_status(
                     state,
-                    item["id"],
+                    item.id,
                     "superseded",
                     revision,
                     preserve_standing=patch.kind == "approval",
@@ -310,25 +397,25 @@ def _apply_patch(
                 _record_belief_transition(
                     state,
                     previous,
-                    state.nodes[item["id"]],
+                    state.nodes[item.id],
                     revision,
-                    item.get("cause"),
+                    item.cause,
                 )
-                target = item.get("superseded_by")
+                target = item.superseded_by
                 if target:
                     edge = Edge(
-                        id=f"{item['id']}::supersedes::{target}",
-                        source=item["id"],
+                        id=f"{item.id}::supersedes::{target}",
+                        source=item.id,
                         target=target,
                         relation="supersedes",
-                        explanation=item.get("explanation", ""),
+                        explanation=item.explanation,
                         created_rev=revision,
                     )
                     state.edges[edge.id] = edge
-        elif name == "merge_nodes":
-            for item in op.get("merges", []):
-                duplicate = item["duplicate"]
-                canonical = item["canonical"]
+        elif isinstance(op, MergeNodesOperation):
+            for item in op.merges:
+                duplicate = item.duplicate
+                canonical = item.canonical
                 previous = state.nodes[duplicate]
                 _set_node_status(
                     state,
@@ -342,91 +429,97 @@ def _apply_patch(
                     previous,
                     state.nodes[duplicate],
                     revision,
-                    item.get("cause"),
+                    item.cause,
                 )
                 edge = Edge(
                     id=f"{duplicate}::duplicate_of::{canonical}",
                     source=duplicate,
                     target=canonical,
                     relation="duplicate_of",
-                    explanation=item.get("explanation", ""),
+                    explanation=item.explanation,
                     created_rev=revision,
                 )
                 state.edges[edge.id] = edge
-        elif name == "create_ambiguities":
-            for raw in op.get("ambiguities", []):
-                data = dict(raw)
+        elif isinstance(op, CreateAmbiguitiesOperation):
+            for raw in op.ambiguities:
+                data = raw.model_dump(mode="python", exclude_unset=True)
                 data["raised_rev"] = revision
                 ambiguity = Ambiguity.model_validate(data)
                 state.ambiguities[ambiguity.id] = ambiguity
-        elif name == "resolve_ambiguities":
-            for resolution in op.get("resolutions", []):
-                ambiguity = state.ambiguities[resolution["id"]]
+        elif isinstance(op, ResolveAmbiguitiesOperation):
+            for resolution in op.resolutions:
+                ambiguity = state.ambiguities[resolution.id]
                 state.ambiguities[ambiguity.id] = ambiguity.model_copy(
-                    update={"status": resolution["status"]}
+                    update={"status": resolution.status}
                 )
-        elif name == "create_proposals":
-            for raw in op.get("proposals", []):
-                data = dict(raw)
+        elif isinstance(op, CreateProposalsOperation):
+            for raw in op.proposals:
                 related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
-                    state, data.get("ops", [])
+                    state, raw.ops
                 )
-                data["base_rev"] = state.revision
-                data["related_node_ids"] = related_node_ids
-                data["related_edge_ids"] = related_edge_ids
-                data["related_config_keys"] = related_config_keys
-                data.setdefault("created_by", "human" if patch.author == "human" else "agent")
-                data.setdefault("created_by_operation_id", patch.source_operation_id)
-                data["raised_rev"] = revision
-                proposal = Proposal.model_validate(data)
+                proposal = raw.model_copy(
+                    update={
+                        "base_rev": state.revision,
+                        "related_node_ids": related_node_ids,
+                        "related_edge_ids": related_edge_ids,
+                        "related_config_keys": related_config_keys,
+                        "created_by": raw.created_by
+                        if "created_by" in raw.model_fields_set
+                        else ("human" if patch.author == "human" else "agent"),
+                        "created_by_operation_id": raw.created_by_operation_id
+                        if "created_by_operation_id" in raw.model_fields_set
+                        else patch.source_operation_id,
+                        "raised_rev": revision,
+                    }
+                )
                 state.proposals[proposal.id] = proposal
-        elif name == "resolve_proposals":
-            for resolution in op.get("resolutions", []):
-                proposal = state.proposals[resolution["id"]]
+        elif isinstance(op, ResolveProposalsOperation):
+            for resolution in op.resolutions:
+                proposal = state.proposals[resolution.id]
                 state.proposals[proposal.id] = proposal.model_copy(
                     update={
-                        "status": resolution["status"],
+                        "status": resolution.status,
                         "resolved_rev": revision,
                         "resolved_by": "human" if patch.author == "human" else "agent",
                         "resolved_by_operation_id": patch.source_operation_id,
-                        "resolution_reason": resolution.get("reason"),
-                        "rejection_reason": resolution.get("reason"),
+                        "resolution_reason": resolution.reason,
+                        "rejection_reason": resolution.reason,
                     }
                 )
-        elif name == "withdraw_proposals":
-            for withdrawal in op.get("proposals", []):
-                proposal = state.proposals[withdrawal["id"]]
+        elif isinstance(op, WithdrawProposalsOperation):
+            for withdrawal in op.proposals:
+                proposal = state.proposals[withdrawal.id]
                 state.proposals[proposal.id] = proposal.model_copy(
                     update={
                         "status": "withdrawn",
                         "resolved_rev": revision,
                         "resolved_by": "agent",
                         "resolved_by_operation_id": patch.source_operation_id,
-                        "resolution_reason": withdrawal.get("reason"),
+                        "resolution_reason": withdrawal.reason,
                     }
                 )
-        elif name == "upsert_glossary":
-            for raw in op.get("terms", []):
-                data = dict(raw)
+        elif isinstance(op, UpsertGlossaryOperation):
+            for raw in op.terms:
+                data = raw.model_dump(mode="python", exclude_unset=True)
                 data["updated_rev"] = revision
                 term = GlossaryTerm.model_validate(data)
                 state.glossary[term.term] = term
-        elif name == "set_coverage":
+        elif isinstance(op, SetCoverageOperation):
             previous = state.coverage
             data = previous.model_dump(mode="python")
-            data.update(op.get("coverage", {}))
+            data.update(op.coverage.model_dump(mode="python", exclude_unset=True))
             data["repositories_seen"] = sorted(set(data.get("repositories_seen", [])))
             data["repositories_never_seen"] = sorted(set(data.get("repositories_never_seen", [])))
             data["sessions_read"] = sorted(set(data.get("sessions_read", [])))
             data["sessions_skipped"] = sorted(set(data.get("sessions_skipped", [])))
             state.coverage = CoverageBoundary.model_validate(data)
-        elif name == "set_standing":
-            node = state.nodes[op["node_id"]]
+        elif isinstance(op, SetStandingOperation):
+            node = state.nodes[op.node_id]
             state.nodes[node.id] = node.model_copy(
-                update={"standing": Standing(op["standing"]), "updated_rev": revision}
+                update={"standing": Standing(op.standing), "updated_rev": revision}
             )
-        elif name == "set_project_truth_scope":
-            new_scope = set(op.get("truth_scope", []))
+        elif isinstance(op, SetProjectTruthScopeOperation):
+            new_scope = set(op.truth_scope)
             state.project_truth_scope = sorted(new_scope)
             state.config_revisions["project_truth_scope"] = revision
             seen = set(state.coverage.repositories_seen)
@@ -436,10 +529,12 @@ def _apply_patch(
             state.coverage = state.coverage.model_copy(
                 update={"repositories_never_seen": sorted(never_seen)}
             )
-            if descriptor := op.get("repository"):
-                repository_descriptors.append(dict(descriptor))
-        elif name == "set_ontology":
-            state.ontology = OntologyState.model_validate(op["ontology"])
+            if op.repository is not None:
+                repository_descriptors.append(
+                    op.repository.model_dump(mode="python", exclude_unset=True)
+                )
+        elif isinstance(op, SetOntologyOperation):
+            state.ontology = op.ontology
             state.config_revisions["ontology"] = revision
 
     # A legal edge may forward-reference a node created later in this patch.
@@ -479,13 +574,13 @@ def _record_belief_transition(
     previous: ProjectNode,
     updated: ProjectNode,
     revision: int,
-    cause: Any,
+    cause: BeliefCause | None,
 ) -> None:
     if (
         not isinstance(previous, Hypothesis)
         or not isinstance(updated, Hypothesis)
         or previous.status == updated.status
-        or not isinstance(cause, dict)
+        or cause is None
     ):
         return
     state.belief_transitions.append(
@@ -494,6 +589,6 @@ def _record_belief_transition(
             from_status=previous.status,
             to_status=updated.status,
             revision=revision,
-            cause=dict(cause),
+            cause=cause.model_dump(mode="python", exclude_unset=True),
         )
     )

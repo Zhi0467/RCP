@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rcp.config import (
     AgentExecutionProfile,
@@ -29,8 +30,25 @@ from rcp.core.materialize import (
     materialize_patches,
     prepare_patch_bookkeeping,
 )
-from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity, ReplayFailure
+from rcp.core.models import (
+    AuthorizedHuman,
+    BranchMergeReceipt,
+    GraphBranchMetadata,
+    GraphState,
+    Patch,
+    ProjectIdentity,
+    ReplayFailure,
+)
+from rcp.core.operations import SetProjectTruthScopeOperation, adapt_persisted_patch_document
 from rcp.core.research_md import render_research_md
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef, TransitionTrace
+from rcp.core.transitions import (
+    GraphTransitionManager,
+    PreparedTransition,
+    TransitionConflict,
+    accepted_transition_head_chain_failure,
+    project_transition_projection,
+)
 from rcp.core.validation import ValidationReport, validate_patch
 from rcp.history.delta import (
     RefreshDelta,
@@ -47,9 +65,36 @@ from rcp.transport import (
     StateWorkspace,
 )
 
+if TYPE_CHECKING:
+    from rcp.history.branches import BranchHistoryManager, BranchReadSnapshot
+
 
 class RevisionConflict(ValueError):
     """A patch was written against a graph revision that is no longer current."""
+
+
+class BranchMergeAlreadyCommitted(RuntimeError):
+    """The same stable branch head already has an accepted main merge."""
+
+    def __init__(self, patch: Patch, materialization: MaterializationResult) -> None:
+        self.patch = patch
+        self.materialization = materialization
+        assert patch.branch_merge is not None
+        super().__init__(
+            "graph branch merge "
+            f"{patch.branch_merge.merge_id} already committed at revision {patch.revision}"
+        )
+
+
+class BranchMergeAlreadyResolved(RuntimeError):
+    """The source branch head already has a canonical no-change receipt."""
+
+    def __init__(self, receipt: BranchMergeReceipt) -> None:
+        self.receipt = receipt
+        super().__init__(
+            "graph branch merge "
+            f"{receipt.provenance.merge_id} already resolved without a main Patch"
+        )
 
 
 class ReplayHalted(RuntimeError):
@@ -153,6 +198,7 @@ class HistoryManager:
         self.require_attribution = require_attribution
         self.agent_authority_resolver = agent_authority_resolver
         self.project_membership_check = project_membership_check
+        self._branch_materialization_repairs: set[str] = set()
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -241,13 +287,7 @@ class HistoryManager:
 
         document = json.loads(payload)
         if isinstance(document, dict):
-            has_campaign_id = "campaign_id" in document
-            has_episode_id = "episode_id" in document
-            if has_campaign_id and has_episode_id:
-                raise ValueError("persisted Patch cannot contain both campaign_id and episode_id")
-            if has_campaign_id:
-                document = dict(document)
-                document["episode_id"] = document.pop("campaign_id")
+            document = adapt_persisted_patch_document(document)
         return Patch.model_validate(document)
 
     def project_identity(
@@ -319,6 +359,107 @@ class HistoryManager:
 
     def state(self) -> GraphState:
         return self.current_materialization().state
+
+    @property
+    def graph_target(self) -> GraphTargetRef:
+        return GraphTargetRef()
+
+    def head_ref(self, materialization: MaterializationResult | None = None) -> GraphHeadRef:
+        """Return the exact current main head, including transition-chain identity."""
+
+        result = materialization or self.current_materialization()
+        if result.state.replay_status != "complete":
+            raise ReplayHalted(result.state)
+        failure = accepted_transition_head_chain_failure(
+            result.patches,
+            target=self.graph_target,
+            initial_transition_id=None,
+        )
+        if failure is not None:
+            raise ValueError(failure.message)
+        transition_id: str | None = None
+        for patch in result.patches:
+            if patch.admission != "accepted" or patch.transition is None:
+                continue
+            transition_id = patch.transition.transition_id
+        return GraphHeadRef(
+            target=self.graph_target,
+            revision=result.state.revision,
+            transition_id=transition_id,
+        )
+
+    def create_auto_research_branch(
+        self,
+        metadata: GraphBranchMetadata,
+    ) -> BranchHistoryManager:
+        """Create one episode branch at the exact current accepted main head."""
+
+        from rcp.history.branches import create_auto_research_branch
+
+        return create_auto_research_branch(self, metadata)
+
+    def branch(
+        self,
+        branch_id: str,
+        *,
+        expected_episode_id: str | None = None,
+        expected_project_id: str | None = None,
+    ) -> BranchHistoryManager:
+        """Open and verify one canonical episode branch."""
+
+        from rcp.history.branches import open_branch
+
+        return open_branch(
+            self,
+            branch_id,
+            expected_episode_id=expected_episode_id,
+            expected_project_id=expected_project_id,
+        )
+
+    def branch_metadata(
+        self,
+        branch_id: str,
+        *,
+        expected_episode_id: str | None = None,
+        expected_project_id: str | None = None,
+    ) -> GraphBranchMetadata:
+        return self.branch(
+            branch_id,
+            expected_episode_id=expected_episode_id,
+            expected_project_id=expected_project_id,
+        ).branch_metadata()
+
+    def branch_read_snapshots(
+        self,
+        identities: list[tuple[str, str, str]],
+    ) -> dict[str, BranchReadSnapshot | None]:
+        """Read several episode branches from one refreshed, read-only snapshot."""
+
+        from rcp.history.branches import read_branch_snapshots
+
+        return read_branch_snapshots(self, identities)
+
+    def _require_branch_materialization_repair(self, branch_id: str) -> None:
+        self._branch_materialization_repairs.add(branch_id)
+
+    def _branch_materialization_repair_required(self, branch_id: str) -> bool:
+        return branch_id in self._branch_materialization_repairs
+
+    def _complete_branch_materialization_repair(self, branch_id: str) -> None:
+        self._branch_materialization_repairs.discard(branch_id)
+
+    def merge_receipts(self, branch_id: str) -> list[BranchMergeReceipt]:
+        return self.branch(branch_id).merge_receipts()
+
+    def write_merge_receipt(self, receipt: BranchMergeReceipt) -> BranchMergeReceipt:
+        return self.branch(receipt.provenance.branch_id).write_merge_receipt(receipt)
+
+    def reconcile_branch_merge_receipt(
+        self,
+        branch_id: str,
+        merge_id: str,
+    ) -> BranchMergeReceipt | None:
+        return self.branch(branch_id).reconcile_merge_receipt(merge_id)
 
     def current_materialization(self) -> MaterializationResult:
         """Replay current canonical history once and return state plus reports."""
@@ -395,6 +536,23 @@ class HistoryManager:
         if self.workspace.materialization_repair_required:
             self._repair_materializations_locked()
             current = self.materialize(write_outputs=False)
+        if patch.branch_merge is not None:
+            matching_merges = [
+                existing
+                for existing in current.patches
+                if existing.admission == "accepted"
+                and existing.branch_merge is not None
+                and existing.branch_merge.merge_id == patch.branch_merge.merge_id
+            ]
+            if len(matching_merges) > 1:
+                raise ValueError("main history contains duplicate branch merge provenance")
+            if matching_merges:
+                raise BranchMergeAlreadyCommitted(matching_merges[0], current)
+            from rcp.history.branches import existing_receipt_for_main_append
+
+            receipt = existing_receipt_for_main_append(self, current, patch.branch_merge)
+            if receipt is not None:
+                raise BranchMergeAlreadyResolved(receipt)
         if expected_revision is not None and current.state.revision != expected_revision:
             raise RevisionConflict(
                 f"the graph moved from revision {expected_revision} to "
@@ -472,6 +630,80 @@ class HistoryManager:
             )
             return prepared, report, current.state
 
+    def preview_batch_from_state(
+        self,
+        build_patches: Callable[[GraphState], list[Patch]],
+        *,
+        expected_revision: int,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> PreparedTransition:
+        """Prepare a complete non-canonical transition without appending history."""
+
+        with self.workspace.transaction(), self._append_lock():
+            self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            self._require_writable_home_locked(current)
+            if current.state.revision != expected_revision:
+                raise RevisionConflict(
+                    f"the graph moved from revision {expected_revision} to "
+                    f"{current.state.revision} while this draft was being previewed"
+                )
+            patches = build_patches(current.state)
+            if not patches:
+                raise ValueError("the staged draft has no semantic graph change to preview")
+            patch, report, candidate = self._prepare_transition_locked(
+                current,
+                patches,
+                self._next_revision(),
+                authorized_by=authorized_by,
+            )
+            if report.rejected or candidate is None:
+                raise PatchRejected(report)
+            assert patch.transition is not None
+            return PreparedTransition(
+                patch=patch,
+                projection=project_transition_projection(
+                    candidate,
+                    patch.transition,
+                    canonical=False,
+                ),
+            )
+
+    def transition_events_after(self, revision: int) -> list[dict[str, object]]:
+        """Read canonical transition events after a consumer watermark."""
+
+        result = self.current_materialization()
+        events: list[dict[str, object]] = []
+        for patch in result.patches:
+            if patch.revision <= revision or patch.admission != "accepted":
+                continue
+            if patch.transition is None:
+                continue
+            head = {
+                "target": patch.transition.pre_head.target.model_dump(mode="json"),
+                "revision": patch.revision,
+                "transition_id": patch.transition.transition_id,
+            }
+            for event in patch.transition.lifecycle_events:
+                events.append(
+                    {
+                        "head": head,
+                        "event": event.model_dump(mode="json"),
+                    }
+                )
+        return events
+
+    def transition_trace_at_revision(self, revision: int) -> TransitionTrace | None:
+        """Read one accepted transition trace without replaying rule code."""
+
+        for path in self._patch_paths():
+            if int(path.stem) != revision:
+                continue
+            patch = self._decode_persisted_patch(path.read_text(encoding="utf-8"))
+            return patch.transition if patch.admission == "accepted" else None
+        return None
+
     def _validate_candidate_locked(
         self,
         current: MaterializationResult,
@@ -480,57 +712,146 @@ class HistoryManager:
         *,
         authorized_by: AuthorizedHuman | None = None,
     ) -> tuple[Patch, ValidationReport, GraphState | None]:
-        patch = self._stamp_attribution_for_admission(patch, authorized_by=authorized_by)
-        patch = patch.model_copy(update={"revision": revision})
-        patch = prepare_patch_bookkeeping(current.state, patch)
-        report = validate_patch(
-            current.state,
-            patch,
-            current.state.project_truth_scope,
-            repository_aliases=self.manifest.repository_map,
-            machine_aliases=self.manifest.machine_map,
-            default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-            state_repository=self.manifest.state.repository,
+        if patch.kind == "identity" and not patch.ops:
+            identity_patch = self._stamp_attribution_for_admission(
+                patch,
+                authorized_by=authorized_by,
+                apply_target=self.graph_target,
+            ).model_copy(update={"revision": revision})
+            report = validate_patch(
+                current.state,
+                identity_patch,
+                current.state.project_truth_scope,
+                repository_aliases=self.manifest.repository_map,
+                machine_aliases=self.manifest.machine_map,
+                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
+                state_repository=self.manifest.state.repository,
+            )
+            candidate = (
+                apply_valid_patch(current.state, identity_patch) if not report.rejected else None
+            )
+            return identity_patch, report, candidate
+        prepared, report, state = self._prepare_transition_locked(
+            current,
+            [patch],
+            revision,
+            authorized_by=authorized_by,
         )
-        preflight_state: GraphState | None = None
-        if not report.rejected:
+        return prepared, report, state
+
+    def _prepare_transition_locked(
+        self,
+        current: MaterializationResult,
+        raw_patches: list[Patch],
+        revision: int,
+        *,
+        authorized_by: AuthorizedHuman | None,
+        pre_head: GraphHeadRef | None = None,
+        apply_target: GraphTargetRef | None = None,
+    ) -> tuple[Patch, ValidationReport, GraphState | None]:
+        """Validate initiating groups, then prepare one expanded transition Patch."""
+
+        target = apply_target or self.graph_target
+        if pre_head is not None and pre_head.target != target:
+            raise ValueError("transition pre-head does not match its Apply graph target")
+        aggregate = ValidationReport()
+        staged = current.state
+        prepared_sources: list[Patch] = []
+        for raw_patch in raw_patches:
+            patch = self._stamp_attribution_for_admission(
+                raw_patch,
+                authorized_by=authorized_by,
+                apply_target=target,
+            ).model_copy(update={"revision": revision})
+            validation_state = staged.model_copy(update={"revision": current.state.revision})
+            patch = prepare_patch_bookkeeping(validation_state, patch)
+            report = validate_patch(
+                validation_state,
+                patch,
+                validation_state.project_truth_scope,
+                repository_aliases=self.manifest.repository_map,
+                machine_aliases=self.manifest.machine_map,
+                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
+                state_repository=self.manifest.state.repository,
+            )
+            aggregate.messages.extend(report.messages)
+            if report.rejected:
+                return patch, aggregate, None
             try:
-                preflight_state = apply_valid_patch(current.state, patch)
+                candidate = apply_valid_patch(validation_state, patch)
             except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                report.reject(
+                aggregate.reject(
                     "malformed-operation",
                     f"Patch operations could not be applied atomically: {exc}.",
                     revision,
                 )
-        if (
-            preflight_state is not None
-            and preflight_state.project_truth_scope != current.state.project_truth_scope
-        ):
-            descriptor = next(
+                return patch, aggregate, None
+            if candidate.project_truth_scope != validation_state.project_truth_scope:
+                descriptor = next(
+                    (
+                        op.repository.model_dump(mode="python")
+                        for op in patch.ops
+                        if isinstance(op, SetProjectTruthScopeOperation)
+                        and op.repository is not None
+                    ),
+                    None,
+                )
+                try:
+                    validate_project_scope_update(
+                        self.manifest,
+                        candidate.project_truth_scope,
+                        descriptor,
+                    )
+                except ValueError as exc:
+                    aggregate.reject("invalid-project-scope", str(exc), revision)
+                    return patch, aggregate, None
+            patch = finalize_patch_bookkeeping(patch, candidate)
+            prepared_sources.append(patch)
+            staged = candidate.model_copy(update={"revision": current.state.revision})
+
+        if pre_head is None:
+            previous_transition_id = next(
                 (
-                    op.get("repository")
-                    for op in patch.ops
-                    if op.get("op") == "set_project_truth_scope" and op.get("repository")
+                    item.transition.transition_id
+                    for item in reversed(current.patches)
+                    if item.admission == "accepted" and item.transition is not None
                 ),
                 None,
             )
-            try:
-                validate_project_scope_update(
-                    self.manifest,
-                    preflight_state.project_truth_scope,
-                    descriptor,
+            pre_head = GraphHeadRef(
+                revision=current.state.revision,
+                transition_id=previous_transition_id,
+            )
+        try:
+            prepared = GraphTransitionManager().prepare_validated(
+                current.state,
+                prepared_sources,
+                pre_head=pre_head,
+            )
+        except TransitionConflict as exc:
+            for detail in exc.details:
+                aggregate.reject(
+                    "transition-conflict",
+                    detail.message,
+                    revision,
+                    related_node_ids=detail.affected_ids,
+                    operation_index=detail.operation_index,
+                    rule_id=detail.rule_id,
+                    cause_chain=[item.model_dump(mode="json") for item in detail.cause_chain],
+                    failed_invariant=detail.invariant,
                 )
-            except ValueError as exc:
-                report.reject("invalid-project-scope", str(exc), revision)
-        if preflight_state is not None and not report.rejected:
-            patch = finalize_patch_bookkeeping(patch, preflight_state)
-        return patch, report, preflight_state
+            return prepared_sources[0], aggregate, None
+        transition_patch = prepared.patch.model_copy(
+            update={"admission_messages": list(aggregate.messages)}
+        )
+        return transition_patch, aggregate, prepared.projection.graph
 
     def _stamp_attribution_for_admission(
         self,
         patch: Patch,
         *,
         authorized_by: AuthorizedHuman | None,
+        apply_target: GraphTargetRef,
     ) -> Patch:
         if not self.require_attribution:
             return patch
@@ -583,6 +904,11 @@ class HistoryManager:
             raise ValueError(f"unknown agent task {operation_id!r}") from exc
         if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
             raise ValueError("agent authority resolver returned another task or project")
+        if resolved.apply_target != apply_target:
+            raise ValueError(
+                f"agent task {operation_id!r} is authorized to Apply to "
+                f"{resolved.apply_target.key}, not {apply_target.key}"
+            )
         dispatch = require_apply(resolved, patch, is_project_member=self.project_membership_check)
         if dispatch.profile == "orchestrator" and resolved.episode_id is None:
             raise ValueError("orchestrator agent tasks require a canonical episode_id")
@@ -612,6 +938,60 @@ class HistoryManager:
         if not snapshot.display_name.strip():
             raise ValueError("authorized_by must name the authorizing human")
         return snapshot
+
+    def _require_no_change_merge_authority(self, receipt: BranchMergeReceipt) -> None:
+        """Apply the live task and membership gate before admitting a no-change receipt."""
+
+        if not self.require_attribution:
+            return
+        operation_id = receipt.provenance.merge_task_id
+        if (
+            self.project_id is None
+            or self.agent_authority_resolver is None
+            or self.project_membership_check is None
+        ):
+            raise ValueError(
+                "branch merge receipt attribution requires a canonical project-scoped "
+                "agent_authority_resolver and project_membership_check"
+            )
+        try:
+            resolved = self.agent_authority_resolver(self.project_id, operation_id)
+        except KeyError as exc:
+            raise ValueError(f"unknown agent task {operation_id!r}") from exc
+        if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
+            raise ValueError("agent authority resolver returned another task or project")
+        if resolved.apply_target != GraphTargetRef():
+            raise ValueError("a branch merge receipt requires main-target Apply authority")
+        dispatch = resolved.dispatch_authority
+        if dispatch is None:
+            raise ValueError("branch merge receipt task has no dispatch authority binding")
+        probe = Patch(
+            kind="work",
+            author="agent",
+            producer="agent",
+            summary="Validate no-change branch merge receipt authority.",
+            source_operation_id=operation_id,
+            run_truth_scope=list(dispatch.scope.run_truth_scope),
+            repositories_read=[],
+            profile="orchestrator",
+            task_id=operation_id,
+            episode_id=receipt.provenance.episode_id,
+            authorized_by=receipt.authorized_by,
+            ops=[],
+        )
+        bound = require_apply(
+            resolved,
+            probe,
+            is_project_member=self.project_membership_check,
+        )
+        if bound.profile != "orchestrator":
+            raise ValueError("a branch merge receipt requires orchestrator authority")
+        if resolved.episode_id != receipt.provenance.episode_id:
+            raise ValueError("branch merge receipt episode does not match its task authority")
+        if resolved.authorized_by is None:
+            raise ValueError("branch merge receipt task has no authorizer snapshot")
+        if self._canonical_authorizer(resolved.authorized_by) != receipt.authorized_by:
+            raise ValueError("branch merge receipt authorizer does not match its task authority")
 
     def update_agent_settings(
         self,
@@ -697,98 +1077,48 @@ class HistoryManager:
             patches = build_patches(current.state)
             if not patches:
                 return [], current
-            state = current.state
-            next_revision = self._next_revision()
-            prepared: list[Patch] = []
-            for offset, raw_patch in enumerate(patches):
-                patch = self._stamp_attribution_for_admission(
-                    raw_patch,
-                    authorized_by=authorized_by,
-                )
-                patch = patch.model_copy(update={"revision": next_revision + offset})
-                patch = prepare_patch_bookkeeping(state, patch)
-                report = validate_patch(
-                    state,
-                    patch,
-                    state.project_truth_scope,
-                    repository_aliases=self.manifest.repository_map,
-                    machine_aliases=self.manifest.machine_map,
-                    default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-                    state_repository=self.manifest.state.repository,
-                )
-                if report.rejected:
-                    raise PatchRejected(report)
-                try:
-                    candidate = apply_valid_patch(state, patch)
-                except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                    report.reject(
-                        "malformed-operation",
-                        f"Patch operations could not be applied atomically: {exc}.",
-                        patch.revision,
-                    )
-                    raise PatchRejected(report) from exc
-                patch = finalize_patch_bookkeeping(patch, candidate)
-                patch = patch.model_copy(
-                    update={
-                        "admission": "accepted",
-                        "admission_messages": list(report.messages),
-                    }
-                )
-                state = candidate
-                prepared.append(patch)
-
-            batch_name = (
-                f"batch-{prepared[0].revision:06d}-{prepared[-1].revision:06d}-{uuid.uuid4().hex}"
+            revision = self._next_revision()
+            prepared, report, _candidate = self._prepare_transition_locked(
+                current,
+                patches,
+                revision,
+                authorized_by=authorized_by,
             )
-            staging = self.patches_dir / f".{batch_name}"
-            committed = self.patches_dir / batch_name
+            if report.rejected:
+                raise PatchRejected(report)
+            prepared = prepared.model_copy(
+                update={
+                    "admission": "accepted",
+                    "admission_messages": list(report.messages),
+                }
+            )
+            target = self.patches_dir / f"{revision:06d}.json"
             manifest_path = self.root / "manifest.toml"
             manifest_before = manifest_path.read_text(encoding="utf-8")
-            staging.mkdir(mode=0o700)
-            pending_paths: list[Path] = []
-            batch_committed = False
+            self._atomic_text(target, prepared.model_dump_json(indent=2) + "\n")
+            result = self.materialize(write_outputs=True)
+            scope_changed = self._synchronize_manifest_scope(result, prepared)
+            paths = [
+                target.relative_to(self.root),
+                *self._materialized_paths(include_manifest=True),
+            ]
             try:
-                for patch in prepared:
-                    target = staging / f"{patch.revision:06d}.json"
-                    self._atomic_text(
-                        target,
-                        patch.model_dump_json(indent=2) + "\n",
-                    )
-                    pending_paths.append(target)
-                result = self.materialize(
-                    write_outputs=False,
-                    pending_patch_paths=pending_paths,
+                self.workspace.publish_committed_patch(
+                    paths,
+                    target.relative_to(self.root),
                 )
-                os.replace(staging, committed)
-                self._fsync_directory(self.patches_dir)
-                batch_committed = True
-                self._write_materialized_outputs(result)
-                scope_changed = False
-                for patch in prepared:
-                    if self._synchronize_manifest_scope(result, patch):
-                        scope_changed = True
-                targets = [(committed / path.name).relative_to(self.root) for path in pending_paths]
-                paths = [*targets, *self._materialized_paths(include_manifest=True)]
-                try:
-                    self.workspace.publish_committed_batch(
-                        paths,
-                        committed.relative_to(self.root),
-                    )
-                except Exception as exc:
-                    if not self.workspace.remote:
-                        raise
-                    if not self._reconcile_remote_publish_failure(
-                        exc,
-                        committed,
-                        scope_changed=scope_changed,
-                        manifest_before=manifest_before,
-                    ):
-                        raise
-                self._remember_accepted_revision(result)
-                return prepared, result
-            finally:
-                if not batch_committed:
-                    shutil.rmtree(staging, ignore_errors=True)
+            except Exception as exc:
+                if not self.workspace.remote:
+                    raise
+                if not self._reconcile_remote_publish_failure(
+                    exc,
+                    target,
+                    scope_changed=scope_changed,
+                    manifest_before=manifest_before,
+                ):
+                    raise
+            self._remember_accepted_revision(result)
+            return [prepared], result
 
     def materialize(
         self,
@@ -813,10 +1143,18 @@ class HistoryManager:
     def accepted_boundary_states(self) -> tuple[MaterializationResult, list[GraphState]]:
         """Replay canonical history and retain each accepted state in revision order."""
 
-        boundaries: list[GraphState] = []
+        result, boundaries = self.accepted_patch_boundaries()
+        return result, [state for _previous, _patch, state in boundaries]
 
-        def collect(_previous: GraphState, _patch: Patch, state: GraphState) -> None:
-            boundaries.append(state)
+    def accepted_patch_boundaries(
+        self,
+    ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
+        """Replay canonical history with each accepted Patch and its exact pre/post state."""
+
+        boundaries: list[tuple[GraphState, Patch, GraphState]] = []
+
+        def collect(previous: GraphState, patch: Patch, state: GraphState) -> None:
+            boundaries.append((previous, patch, state))
 
         with self._process_lock:
             # Graph-condition transitions require a proven current canonical
@@ -934,7 +1272,19 @@ class HistoryManager:
             )
         else:
             initial_truth_scope = self.manifest.project.truth_scope
-        replayable_patches = [] if scope_failure is not None else patches
+        chain_failure = accepted_transition_head_chain_failure(
+            patches,
+            target=self.graph_target,
+            initial_transition_id=None,
+        )
+        chain_prefix = patches
+        if chain_failure is not None:
+            chain_prefix = []
+            for patch in patches:
+                if patch.revision == chain_failure.revision:
+                    break
+                chain_prefix.append(patch)
+        replayable_patches = [] if scope_failure is not None else chain_prefix
         result = materialize_patches(
             replayable_patches,
             initial_truth_scope=list(initial_truth_scope),
@@ -944,7 +1294,12 @@ class HistoryManager:
             state_repository=self.manifest.state.repository,
             accepted_patch_observer=accepted_patch_observer,
         )
-        failure = scope_failure or structural_failure
+        structural_or_chain_failure = min(
+            (item for item in (structural_failure, chain_failure) if item is not None),
+            key=lambda item: item.revision,
+            default=None,
+        )
+        failure = scope_failure or structural_or_chain_failure
         if failure is not None and result.state.replay_status == "complete":
             result.state = result.state.model_copy(
                 update={
@@ -1101,9 +1456,9 @@ class HistoryManager:
             return False
         descriptor = next(
             (
-                op.get("repository")
+                op.repository.model_dump(mode="python")
                 for op in patch.ops
-                if op.get("op") == "set_project_truth_scope" and op.get("repository")
+                if isinstance(op, SetProjectTruthScopeOperation) and op.repository is not None
             ),
             None,
         )
@@ -1122,11 +1477,15 @@ class HistoryManager:
         descriptor = None
         for patch in reversed(result.patches):
             operation = next(
-                (op for op in reversed(patch.ops) if op.get("op") == "set_project_truth_scope"),
+                (op for op in reversed(patch.ops) if isinstance(op, SetProjectTruthScopeOperation)),
                 None,
             )
             if operation is not None:
-                descriptor = operation.get("repository")
+                descriptor = (
+                    operation.repository.model_dump(mode="python")
+                    if operation.repository is not None
+                    else None
+                )
                 break
         self.manifest = write_project_scope(
             self.manifest,

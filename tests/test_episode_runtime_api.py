@@ -9,6 +9,7 @@ from rcp.agents.command_protocol import SpawnArguments
 from rcp.api.app import _auto_research_worker_request
 from rcp.config import write_agent_settings
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 
@@ -325,11 +326,14 @@ def test_worker_request_uses_the_current_human_node_work_profile(manifest, tmp_p
         user_id=str(uuid.uuid4()),
         display_name="Researcher",
     )
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
     episode = EpisodeRecord(
         episode_id=episode_id,
         project_id=project_id,
         root_operation_id=operation_id,
         mode="auto_research",
+        graph_target=graph_target,
+        graph_base_head=GraphHeadRef(revision=0),
         status="running",
         invocation_ceiling=5,
         invocations_used=1,
@@ -341,6 +345,7 @@ def test_worker_request_uses_the_current_human_node_work_profile(manifest, tmp_p
         operation_id=operation_id,
         project_id=project_id,
         episode_id=episode_id,
+        graph_target=graph_target,
         kind="auto_research",
         status="running",
         request=request.model_dump(mode="json"),

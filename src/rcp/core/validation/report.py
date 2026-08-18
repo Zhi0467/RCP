@@ -23,6 +23,10 @@ class ValidationReport:
         *,
         related_node_ids: list[str] | None = None,
         related_edge_ids: list[str] | None = None,
+        operation_index: int | None = None,
+        rule_id: str | None = None,
+        cause_chain: list[dict[str, object]] | None = None,
+        failed_invariant: str | None = None,
     ) -> None:
         self.messages.append(
             ValidationMessage(
@@ -32,6 +36,10 @@ class ValidationReport:
                 patch_revision=revision,
                 related_node_ids=related_node_ids or [],
                 related_edge_ids=related_edge_ids or [],
+                operation_index=operation_index,
+                rule_id=rule_id,
+                cause_chain=cause_chain or [],
+                failed_invariant=failed_invariant,
             )
         )
 

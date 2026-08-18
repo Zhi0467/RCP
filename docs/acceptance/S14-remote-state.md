@@ -49,7 +49,8 @@ Setup: a state repo and a code repo at `~/rcp-s14/` on
 
 `remote_commit_outcome_classified`, `absent_commit_rolled_back_the_mirror`, and
 `unknown_commit_quarantined` were never gaps. The three outcomes are specified
-in the blueprint's append-only history contract and implemented in
+in the [canonical publication contract](../specs/graph-history-and-transitions.md#canonical-publication)
+and implemented in
 [`_reconcile_remote_publish_failure`](../../src/rcp/history/manager.py), and
 four tests in `tests/test_transport.py` already inject each commit status and
 assert the rollback, the quarantine, and the repair flag:

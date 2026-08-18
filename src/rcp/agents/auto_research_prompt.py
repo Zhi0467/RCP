@@ -53,8 +53,9 @@ _NODE_ONTOLOGY = """Node types in this graph:
   expected outcomes, interpretation rules, and completion criteria. Status is one of proposed,
   designing, implementing, debugging, running, analyzing, completed, blocked, abandoned,
   superseded.
-- Evidence — one observation and your interpretation of it, with a strength (diagnostic,
-  preliminary, supporting, confirmatory) and a validity (valid, qualified, invalid, superseded).
+- Evidence — one observation and your interpretation of it, with a methodological role (`result`
+  or `diagnostic`) and a validity (valid, qualified, invalid, superseded). Role is not evidential
+  weight; never author node-global `strength` or replay-only `legacy_strength`.
 - Decision — a choice the project must make, with options and at most one selected option. Status
   is one of open, ready, decided, revisit, superseded.
 - Blocker — something stopping progress, with the condition that would resolve it. Status is one of
@@ -62,6 +63,14 @@ _NODE_ONTOLOGY = """Node types in this graph:
 
 ResearchQuestions and Hypotheses are the project's beliefs. That is why changing an existing one
 needs human judgment while the other four types do not.
+
+Every new Evidence-to-Hypothesis `supports`, `weakens`, `refutes`, `inconclusive`, or
+Evidence-sourced `contradicts` edge includes a claim-relative `assessment`. The relation states
+direction. The assessment states `relevance` (`direct`, `indirect`, or `contextual`), `weight`
+(`limited`, `moderate`, or `strong`), optional `scope`, and concrete `qualifications`. Assess the
+same Evidence separately for each Hypothesis. Do not attach this assessment to
+Hypothesis-to-Hypothesis `contradicts`, Experiment `produces`, Evidence-to-Decision `informs`,
+Evidence-to-Blocker `addresses`, or another relation.
 """
 
 

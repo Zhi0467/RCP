@@ -8,20 +8,34 @@ export interface RelationFocus {
   edgeIds: Set<string>;
 }
 
-export function projectNodes(nodes: GraphNode[], trustView: TrustView): GraphNode[] {
-  if (trustView === "review") return nodes;
-  if (trustView === "accepted") return nodes.filter((node) => node.standing === "accepted");
-  return nodes;
+export interface ActiveFlowProjectionOptions {
+  includeResolvedBlockers?: boolean;
+}
+
+export function projectNodes(
+  nodes: GraphNode[],
+  trustView: TrustView,
+  options: ActiveFlowProjectionOptions = {},
+): GraphNode[] {
+  const trusted =
+    trustView === "review"
+      ? nodes
+      : trustView === "accepted"
+        ? nodes.filter((node) => node.standing === "accepted")
+        : nodes;
+  if (options.includeResolvedBlockers) return trusted;
+  return trusted.filter((node) => node.type !== "blocker" || node.status !== "resolved");
 }
 
 export function buildDagProjection(
   graph: GraphState,
   trustView: TrustView,
   relationFocusNodeId?: string | null,
+  options: ActiveFlowProjectionOptions = {},
 ) {
   const nodes = relationFocusNodeId
     ? Object.values(graph.nodes)
-    : projectNodes(Object.values(graph.nodes), trustView);
+    : projectNodes(Object.values(graph.nodes), trustView, options);
   const visible = new Set(nodes.map((node) => node.id));
   const edges = Object.values(graph.edges).filter(
     (edge) => visible.has(edge.source) && visible.has(edge.target),

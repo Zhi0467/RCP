@@ -1,3 +1,4 @@
+from rcp.history.branches import BranchHistoryManager
 from rcp.history.delta import (
     RefreshDelta,
     RefreshDeltaEntry,
@@ -7,6 +8,8 @@ from rcp.history.delta import (
     render_revision_summary,
 )
 from rcp.history.manager import (
+    BranchMergeAlreadyCommitted,
+    BranchMergeAlreadyResolved,
     HistoryManager,
     PatchRejected,
     ProjectIdentityConflict,
@@ -15,7 +18,10 @@ from rcp.history.manager import (
 )
 
 __all__ = [
+    "BranchMergeAlreadyCommitted",
+    "BranchMergeAlreadyResolved",
     "HistoryManager",
+    "BranchHistoryManager",
     "PatchRejected",
     "ProjectIdentityConflict",
     "ReplayHalted",

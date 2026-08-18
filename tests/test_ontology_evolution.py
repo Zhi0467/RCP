@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
 from rcp.agents import PromptFactory
 from rcp.core.materialize import apply_valid_patch, materialize_patches
 from rcp.core.models import Ambiguity, Experiment, GraphState, OntologyState, Patch
+from rcp.core.operations import ProposalOperation
 from rcp.core.validation import proposal_dependencies, validate_patch
 from tests.helpers import refresh_patch, seed_patch
 
@@ -431,8 +435,13 @@ def test_new_required_field_cannot_strand_existing_nodes() -> None:
 
 
 def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejected() -> None:
-    ontology_op = {"op": "set_ontology", "ontology": _ontology()}
-    assert proposal_dependencies(GraphState(), [ontology_op]) == ([], [], ["ontology"])
+    ontology_op = {
+        "op": "set_ontology",
+        "intent": "legacy_ontology_change",
+        "ontology": _ontology(),
+    }
+    typed_ontology_op = TypeAdapter(ProposalOperation).validate_python(ontology_op)
+    assert proposal_dependencies(GraphState(), [typed_ontology_op]) == ([], [], ["ontology"])
     proposal = {
         "id": "prop/add-training-run",
         "title": "Add TrainingRun",
@@ -446,7 +455,16 @@ def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejecte
         "related_config_keys": ["ontology"],
         "base_rev": 0,
     }
-    patch = _agent(1, [{"op": "create_proposals", "proposals": [proposal]}])
+    patch = Patch(
+        schema_generation=1,
+        revision=1,
+        kind="refresh",
+        author="agent",
+        summary="Historical agent ontology proposal.",
+        run_truth_scope=["repo"],
+        repositories_read=["repo"],
+        ops=[{"op": "create_proposals", "proposals": [proposal]}],
+    )
     state = GraphState(project_truth_scope=["repo"])
     admission = validate_patch(state, patch, ["repo"])
     replay = validate_patch(state, patch, ["repo"], mode="replay")
@@ -460,7 +478,7 @@ def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejecte
     approval = _approval(
         2,
         [
-            ontology_op,
+            {"op": "set_ontology", "ontology": _ontology()},
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": "prop/add-training-run", "status": "approved"}],
@@ -474,8 +492,8 @@ def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejecte
 
 def test_set_ontology_rejects_unknown_operation_keys() -> None:
     op = {"op": "set_ontology", "ontology": _ontology(), "base_types": "replace"}
-    report = validate_patch(GraphState(), _approval(1, [op]), [])
-    assert "invalid-ontology-operation" in _codes(report)
+    with pytest.raises(ValidationError, match="base_types"):
+        _approval(1, [op])
 
 
 def _work_contract(*, ontology_extensions: bool) -> str:
@@ -521,7 +539,7 @@ def test_base_authoring_rules_appear_regardless_of_ontology_state() -> None:
         assert "`addresses` Evidence->Blocker" in contract
         assert "Every new Evidence must explicitly set `origin`" in contract
         assert "Every Experiment connects to a Hypothesis or Decision" not in contract
-        assert "Internal-run Evidence connects to the Experiment that produced it" in contract
+        assert "Internal-run Evidence connects to its producing Experiment" in contract
         assert "an agent may neither apply nor propose `set_ontology`" in contract
 
 

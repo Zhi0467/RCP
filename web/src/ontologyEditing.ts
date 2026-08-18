@@ -225,7 +225,7 @@ export function makeCustomNode(
     },
     evidence: {
       interpretation: "",
-      strength: "preliminary",
+      role: "result",
       validity: "valid",
       origin: origin ?? "unknown",
       artifact_refs: [],

@@ -37,6 +37,7 @@ import {
   api,
   ApiError,
   loadProjectReadiness,
+  mergeEpisodeToMain,
   reauthorizeEpisode,
   sendEpisodeMessage,
   startEpisode,
@@ -52,7 +53,28 @@ import {
 } from "./desktopRuntime";
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
-import { parseProjectHash } from "./experimentBoard";
+import {
+  branchExperimentPollingKey,
+  experimentIndexEntryForRoute,
+  experimentStopPath,
+  parseProjectHash,
+  projectExperimentExecution,
+  type ProjectHashRoute,
+} from "./experimentBoard";
+import {
+  decodeTransitionTriggerManifest,
+  emptyProjectTransitionCoordinator,
+  reduceProjectTransitionCoordinator,
+  reduceProjectTransitionProjection,
+  transitionHeadsEqual,
+  transitionPreviewRouting,
+  transitionSnapshotRefusal,
+  transitionSyncCompletionDisposition,
+  type ProjectTransitionProjection,
+  type StagedTransitionEdit,
+  type TransitionSyncFence,
+  type TransitionPreviewRouting,
+} from "./projectTransition";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
 import { episodeReportPreviewUrl } from "./campaigns";
 import {
@@ -77,7 +99,11 @@ import {
   validationNoticeId,
   type ProjectHistorySnapshot,
 } from "./hooks/useProjectHistory";
-import { startProjectCachePolling, useProjectTabs } from "./hooks/useProjectTabs";
+import {
+  EXPERIMENT_BOARD_POLL_DELAY_MS,
+  startProjectCachePolling,
+  useProjectTabs,
+} from "./hooks/useProjectTabs";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
@@ -123,7 +149,9 @@ import type {
   AgentTaskRequest,
   AgentUsageSnapshot,
   AppView,
+  Episode,
   ExperimentControlState,
+  GraphHeadRef,
   GraphNode,
   GraphState,
   Health,
@@ -131,6 +159,9 @@ import type {
   ProjectCard,
   ProjectInvitation,
   ProjectSnapshot,
+  ProjectTransitionResponse,
+  TransitionPreviewResponse,
+  TransitionTriggerManifest,
   TrustView,
   WatcherRecord,
 } from "./types";
@@ -274,7 +305,27 @@ export async function projectIsStillReadable(
 }
 
 export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): boolean {
-  return Boolean(task.applied_revision) || task.request.patch_kind === "experiment_loop";
+  return (
+    task.kind === "branch_merge" ||
+    Boolean(task.applied_revision) ||
+    task.request.patch_kind === "experiment_loop"
+  );
+}
+
+export function terminalTasksSince(previous: AgentTask[], current: AgentTask[]): AgentTask[] {
+  const previouslyActive = new Set(previous.filter(isActiveTask).map((task) => task.operation_id));
+  return current.filter((task) => previouslyActive.has(task.operation_id) && !isActiveTask(task));
+}
+
+export function activeBranchMergeTask(episode: Episode): AgentTask | null {
+  const operationId = episode.graph_branch?.active_merge_task_id;
+  if (!operationId) return null;
+  return (
+    episode.tasks.find(
+      (task) =>
+        task.operation_id === operationId && task.kind === "branch_merge" && isActiveTask(task),
+    ) ?? null
+  );
 }
 
 export function shouldShowCoverageBoundaryWarning(
@@ -336,6 +387,20 @@ const RESULT_VIEW_TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupt
 
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
 
+type BrowserTransitionProjection = ProjectTransitionProjection<
+  GraphState,
+  Record<string, ExperimentControlState>
+>;
+
+type TransitionManifestState =
+  | {
+      status: "loading";
+      project_id: string | null;
+      manifest: TransitionTriggerManifest | null;
+    }
+  | { status: "valid"; project_id: string; manifest: TransitionTriggerManifest }
+  | { status: "invalid"; project_id: string; manifest: null };
+
 interface CachedProjectTabState
   extends ProjectHistorySnapshot, AgentTasksSnapshot, ChatStateSnapshot, GraphSelectionTabSnapshot {
   project: ProjectSnapshot;
@@ -344,6 +409,77 @@ interface CachedProjectTabState
   draftReconciliationDiscardedProposalIds?: string[];
   usage: AgentUsageSnapshot | null;
   watchers: WatcherRecord[];
+  transitionHead?: GraphHeadRef;
+  transitionRulesetTag?: string | null;
+  transitionManifest?: TransitionTriggerManifest | null;
+  draftTransitionProjection?: BrowserTransitionProjection | null;
+  draftPreviewConflict?: string | null;
+}
+
+export function canonicalGraphHead(
+  revision: number,
+  transitionId: string | null = null,
+): GraphHeadRef {
+  return { target: { kind: "main" }, revision, transition_id: transitionId };
+}
+
+export function attentionGraphForProjection(
+  canonicalGraph: GraphState,
+  projection: BrowserTransitionProjection | null,
+): GraphState {
+  return projection?.graph ?? canonicalGraph;
+}
+
+export function humanDraftTransitionRouting(
+  draft: HumanDraft,
+  graph: GraphState,
+  manifest: TransitionTriggerManifest | null,
+  rulesetTag: string | null,
+): TransitionPreviewRouting {
+  const request = toHumanSyncRequest(draft, graph);
+  const edits: StagedTransitionEdit[] = request.nodes.map((item) => ({
+    operation: "update_nodes",
+    node_types: graph.nodes[item.node_id] ? [graph.nodes[item.node_id].type] : undefined,
+    node_fields: [
+      ...Object.keys(item.changes),
+      ...(item.standing ? ["standing"] : []),
+      ...(item.cancel_attempt_ids?.length ? ["attempts"] : []),
+    ],
+    relations: [],
+  }));
+  if (request.custom_nodes.length > 0) {
+    edits.push({
+      operation: "create_nodes",
+      node_types: request.custom_nodes.map((node) => node.type),
+      node_fields: [],
+      relations: [],
+    });
+  }
+  if (request.ontology) {
+    edits.push({ operation: "set_ontology", node_types: [], node_fields: [], relations: [] });
+  }
+  const changesExperimentControl =
+    request.nodes.some(
+      (item) =>
+        graph.nodes[item.node_id]?.type === "experiment" &&
+        Object.hasOwn(item.changes, "invocation_ceiling"),
+    ) || request.custom_nodes.some((node) => node.type === "experiment");
+  // Removal expands to incident relation changes, and a Proposal decision may expand to any
+  // Proposal operation. Experiment ceiling updates and new Experiments also change the coherent
+  // control projection even though the current manifest does not list them. The browser does not
+  // infer any outcomes; absent tags route all of these shapes to preview conservatively.
+  if (
+    request.removed_node_ids.length > 0 ||
+    request.proposals.length > 0 ||
+    changesExperimentControl
+  ) {
+    edits.push({});
+  }
+  for (const edit of edits) {
+    const routing = transitionPreviewRouting(manifest, rulesetTag, edit);
+    if (routing.route === "backend_preview") return routing;
+  }
+  return { route: "local_draft", reason: "no_manifest_trigger" };
 }
 
 export function cachedSnapshotCanReplace(
@@ -383,6 +519,12 @@ export function reconcileInactiveProjectTabState(
     floatingChat:
       state.floatingChat && presented.nodes[state.floatingChat.nodeId] ? state.floatingChat : null,
     humanDraft: retainedDraft,
+    transitionHead:
+      state.transitionHead?.revision === decodedSnapshot.graph.revision
+        ? state.transitionHead
+        : canonicalGraphHead(decodedSnapshot.graph.revision),
+    draftTransitionProjection: null,
+    draftPreviewConflict: null,
     draftReconciliationDiscardedProposalIds: [
       ...new Set([
         ...(state.draftReconciliationDiscardedProposalIds ?? []),
@@ -499,6 +641,7 @@ export default function App() {
     updateProject,
     replaceProjects,
     loadProjectIndex,
+    refreshExperimentLoops,
     applyHashRoute,
     clearProjectRoute,
     openSetup,
@@ -529,7 +672,19 @@ export default function App() {
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
   const [humanDraft, setHumanDraft] = useState<HumanDraft | null>(null);
-  const [syncingDraft, setSyncingDraft] = useState(false);
+  const [syncingProjectIds, setSyncingProjectIds] = useState<Set<string>>(() => new Set());
+  const [transitionHead, setTransitionHead] = useState<GraphHeadRef>(() => canonicalGraphHead(0));
+  const [transitionRulesetTag, setTransitionRulesetTag] = useState<string | null>(null);
+  const [transitionManifestState, setTransitionManifestState] = useState<TransitionManifestState>({
+    status: "loading",
+    project_id: null,
+    manifest: null,
+  });
+  const [transitionManifestRefresh, setTransitionManifestRefresh] = useState(0);
+  const [draftTransitionProjection, setDraftTransitionProjection] =
+    useState<BrowserTransitionProjection | null>(null);
+  const [draftPreviewConflict, setDraftPreviewConflict] = useState<string | null>(null);
+  const [draftPreviewPending, setDraftPreviewPending] = useState(false);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const {
@@ -543,6 +698,7 @@ export default function App() {
     detailFocusTokens,
     selectedExperimentRunId,
     focusExperimentRunId,
+    selectedExperimentRoute,
     experimentStopId,
     watcherCheckId,
     dockedNodeIds,
@@ -576,10 +732,49 @@ export default function App() {
   } = useGraphSelection({
     initialView: initialRoute.project.view,
     initialExperimentId: initialRoute.project.experimentId,
+    initialExperimentRoute: initialRoute.project.experimentRoute,
     projectId,
     loadedProjectId: project?.id ?? null,
     loading,
   });
+  const selectedIndexedExperiment = experimentIndexEntryForRoute(
+    experimentLoops,
+    projectId,
+    selectedExperimentRoute,
+  );
+  const selectedExperimentUsesBranch = selectedExperimentRoute?.graph_target.kind === "branch";
+  const selectedBranchExperiment = selectedExperimentUsesBranch ? selectedIndexedExperiment : null;
+  const selectedBranchRouteKey = branchExperimentPollingKey(projectId, selectedExperimentRoute);
+  useEffect(() => {
+    if (!projectId || !selectedBranchRouteKey) return;
+    let stopped = false;
+    let timer = 0;
+    const schedule = () => {
+      timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+    };
+    const poll = async () => {
+      if (stopped) return;
+      if (document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
+      try {
+        await refreshExperimentLoops();
+      } catch (error) {
+        if (!stopped) {
+          reportErrorNotice(
+            `Experiment board could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      if (!stopped) schedule();
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [projectId, refreshExperimentLoops, reportErrorNotice, selectedBranchRouteKey]);
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
@@ -591,8 +786,35 @@ export default function App() {
   const readinessRequestedProjectIds = useRef(new Set<string>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
+  const transitionCoordinatorRef = useRef(emptyProjectTransitionCoordinator());
+  const transitionSyncRequestSequence = useRef(0);
+  const transitionRulesetTagRef = useRef<string | null>(null);
+  const transitionManifestExpectedRulesetTagRef = useRef<string | null>(null);
   renderedRevisionRef.current = graph.revision;
+  transitionRulesetTagRef.current = transitionRulesetTag;
+  transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+    transitionCoordinatorRef.current,
+    { kind: "activate", project_id: projectId },
+  );
+  if (
+    projectId &&
+    project?.id === projectId &&
+    graph.revision === transitionHead.revision &&
+    transitionHead.target.kind === "main"
+  ) {
+    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+      transitionCoordinatorRef.current,
+      { kind: "observe_head", project_id: projectId, head: transitionHead },
+    );
+  }
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  const syncingDraft = projectId ? syncingProjectIds.has(projectId) : false;
+  const transitionManifest =
+    transitionManifestState.status === "valid" &&
+    transitionManifestState.project_id === projectId &&
+    (!transitionRulesetTag || transitionManifestState.manifest.ruleset_tag === transitionRulesetTag)
+      ? transitionManifestState.manifest
+      : null;
   const {
     snapshot: agentTasksSnapshot,
     taskStarting,
@@ -601,6 +823,7 @@ export default function App() {
     activeTask,
     activityTask,
     replaceTasks,
+    consumeTerminalTasks,
     upsertTask,
     recordStartedTask,
     presentTask: presentAgentTask,
@@ -617,7 +840,9 @@ export default function App() {
   const { retryTask, tasks, taskInspectorId, inspectedTask, dismissedTaskIds } = agentTasksSnapshot;
   const selectedExperimentChatId =
     view === "execution" && selectedExperimentRunId
-      ? (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
+      ? selectedExperimentUsesBranch
+        ? (selectedBranchExperiment?.control.operational.chat_id ?? null)
+        : (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
       : null;
   const resolveVisibleChatTranscriptIds = useCallback(
     (selectedId: string | null, floatingId: string | null) =>
@@ -732,6 +957,7 @@ export default function App() {
         detailFocusTokens,
         selectedExperimentRunId,
         focusExperimentRunId,
+        selectedExperimentRoute,
         dockedNodeIds,
         ...chatStateSnapshot,
         dagRelationFocusId,
@@ -740,6 +966,14 @@ export default function App() {
         ...projectHistorySnapshot,
         usage,
         watchers,
+        transitionHead,
+        transitionRulesetTag,
+        transitionManifest:
+          transitionManifestState.project_id === projectId
+            ? transitionManifestState.manifest
+            : null,
+        draftTransitionProjection,
+        draftPreviewConflict,
       }
     : null;
 
@@ -770,10 +1004,19 @@ export default function App() {
   }, [notice]);
 
   const restoreProjectTabState = useCallback(
-    (id: string, state: CachedProjectTabState, requestedView?: AppView) => {
+    (id: string, state: CachedProjectTabState, requestedRoute?: ProjectHashRoute) => {
       const nextGraph = state.project.graph;
       const presented = applyHumanDraft(nextGraph, state.humanDraft);
       const discardedProposalIds = state.draftReconciliationDiscardedProposalIds ?? [];
+      const restoredHead = state.transitionHead ?? canonicalGraphHead(nextGraph.revision);
+      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+        transitionCoordinatorRef.current,
+        { kind: "activate", project_id: id },
+      );
+      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+        transitionCoordinatorRef.current,
+        { kind: "observe_head", project_id: id, head: restoredHead },
+      );
       cacheProjectState(
         id,
         discardedProposalIds.length > 0
@@ -784,11 +1027,21 @@ export default function App() {
       authoritativeProjectId.current = id;
       replaceProject(state.project);
       restoreProjectHeader(state.projectHeaderCollapsed);
-      restoreProjectSelection(id, state.project, presented.nodes, state, requestedView);
+      restoreProjectSelection(id, state.project, presented.nodes, state, requestedRoute);
       restoreProjectChats(state, presented.nodes);
       restoreProjectTasks(state);
       setHumanDraft(state.humanDraft);
-      setSyncingDraft(false);
+      setTransitionHead(restoredHead);
+      setTransitionRulesetTag(state.transitionRulesetTag ?? null);
+      transitionManifestExpectedRulesetTagRef.current = null;
+      setTransitionManifestState({
+        status: "loading",
+        project_id: id,
+        manifest: state.transitionManifest ?? null,
+      });
+      setDraftTransitionProjection(state.draftTransitionProjection ?? null);
+      setDraftPreviewConflict(state.draftPreviewConflict ?? null);
+      setDraftPreviewPending(false);
       restoreProjectHistory(state);
       setUsage(state.usage);
       setWatchers([...state.watchers]);
@@ -816,7 +1069,30 @@ export default function App() {
         !cachedSnapshotCanReplace(getActiveProjectId(), renderedRevisionRef.current, decodedProject)
       )
         return;
+      const previousRevision = renderedRevisionRef.current;
       renderedRevisionRef.current = nextGraph.revision;
+      const observedHead = transitionCoordinatorRef.current.canonical_heads[decodedProject.id];
+      const nextHead =
+        observedHead?.target.kind === "main" && observedHead.revision === nextGraph.revision
+          ? observedHead
+          : canonicalGraphHead(nextGraph.revision);
+      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+        transitionCoordinatorRef.current,
+        { kind: "observe_head", project_id: decodedProject.id, head: nextHead },
+      );
+      setTransitionHead(nextHead);
+      if (authoritative && nextGraph.revision !== previousRevision) {
+        transitionManifestExpectedRulesetTagRef.current = null;
+        setTransitionManifestState((current) => ({
+          status: "loading",
+          project_id: decodedProject.id,
+          manifest: current.project_id === decodedProject.id ? current.manifest : null,
+        }));
+        setTransitionManifestRefresh((current) => current + 1);
+      }
+      setDraftTransitionProjection(null);
+      setDraftPreviewConflict(null);
+      setDraftPreviewPending(false);
       updateProject((current) =>
         preserveReadiness ? preserveProjectReadiness(decodedProject, current) : decodedProject,
       );
@@ -892,6 +1168,53 @@ export default function App() {
     [applyProjectSnapshot, isActiveProject, projectId, refreshChatSummaries],
   );
   reloadRef.current = reload;
+
+  useEffect(() => {
+    if (!projectId || !apiBase) return;
+    const requestedProjectId = projectId;
+    let cancelled = false;
+    setTransitionManifestState((current) => ({
+      status: "loading",
+      project_id: requestedProjectId,
+      manifest: current.project_id === requestedProjectId ? current.manifest : null,
+    }));
+    void api<unknown>(`${apiBase}/transition-manifest`)
+      .then((payload) => {
+        if (cancelled || !isActiveProject(requestedProjectId)) return;
+        const manifest = decodeTransitionTriggerManifest(
+          payload,
+          transitionManifestExpectedRulesetTagRef.current,
+        );
+        if (!manifest) {
+          setTransitionManifestState({
+            status: "invalid",
+            project_id: requestedProjectId,
+            manifest: null,
+          });
+          return;
+        }
+        setTransitionManifestState({
+          status: "valid",
+          project_id: requestedProjectId,
+          manifest,
+        });
+        transitionManifestExpectedRulesetTagRef.current = null;
+        setTransitionRulesetTag(manifest.ruleset_tag);
+      })
+      .catch(() => {
+        // A missing manifest is an intentional fail-safe state: staged edits use backend preview.
+        if (!cancelled && isActiveProject(requestedProjectId)) {
+          setTransitionManifestState({
+            status: "invalid",
+            project_id: requestedProjectId,
+            manifest: null,
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, isActiveProject, projectId, transitionManifestRefresh]);
 
   const reloadAuthoritativeProject = useCallback(
     (requestedProjectId?: string | null) => {
@@ -1191,7 +1514,7 @@ export default function App() {
         rememberProjectState(activeId);
       }
       applyHashRoute(route.projectId, isSetupRoute());
-      applyRouteSelection(route.view, route.experimentId);
+      applyRouteSelection(route.view, route.experimentId, route.experimentRoute);
     };
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
@@ -1208,7 +1531,7 @@ export default function App() {
       restoreProjectTabState(
         projectId,
         retained,
-        routeMatchesProject && requestedRoute.experimentId ? requestedRoute.view : undefined,
+        routeMatchesProject && requestedRoute.projectViewSpecified ? requestedRoute : undefined,
       );
     } else {
       setLoading(true);
@@ -1219,6 +1542,7 @@ export default function App() {
       resetProjectSelection(
         routeMatchesProject ? requestedRoute.view : "overview",
         routeMatchesProject ? requestedRoute.experimentId : null,
+        routeMatchesProject ? requestedRoute.experimentRoute : null,
       );
       resetProjectChats();
       resetProjectTasks(projectId);
@@ -1227,7 +1551,13 @@ export default function App() {
       setWatchers([]);
       resetProjectHeader(projectId);
       setHumanDraft(null);
-      setSyncingDraft(false);
+      setTransitionHead(canonicalGraphHead(0));
+      setTransitionRulesetTag(null);
+      transitionManifestExpectedRulesetTagRef.current = null;
+      setTransitionManifestState({ status: "loading", project_id: projectId, manifest: null });
+      setDraftTransitionProjection(null);
+      setDraftPreviewConflict(null);
+      setDraftPreviewPending(false);
     }
     if (setupOpen) {
       setLoading(false);
@@ -1342,9 +1672,13 @@ export default function App() {
     () => watchers.some((watcher) => !watcher.notified),
     [watchers],
   );
+  const mutationsDisabled = graphMutationsDisabled(graph);
+  const presentedTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
+  const presentedExperimentControl =
+    presentedTransitionProjection?.experiment_control ?? project?.experiment_control ?? {};
   const experimentControlForNode = (node: GraphNode): ExperimentControlState | null => {
     if (!project || node.type !== "experiment") return null;
-    const control = project.experiment_control?.[node.id];
+    const control = presentedExperimentControl[node.id];
     if (!control) return null;
     const operationActive = tasks.some(
       (task) =>
@@ -1360,11 +1694,11 @@ export default function App() {
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
   );
-  const mutationsDisabled = graphMutationsDisabled(graph);
   const presentedGraph = useMemo(
-    () => (mutationsDisabled ? graph : applyHumanDraft(graph, humanDraft)),
-    [graph, humanDraft, mutationsDisabled],
+    () => attentionGraphForProjection(graph, presentedTransitionProjection),
+    [graph, presentedTransitionProjection],
   );
+  const attentionGraph = presentedGraph;
   const glossaryIndex = useMemo(
     () => buildGlossaryIndex(presentedGraph.glossary),
     [presentedGraph.glossary, presentedGraph.revision],
@@ -1410,7 +1744,206 @@ export default function App() {
   const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
   const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
   const ontologyDraftIsStale = humanDraftOntologyIsStale(humanDraft, graph);
+  const normalizedPreviewDraft = useMemo(
+    () => (humanDraft ? normalizeHumanDraft(humanDraft, graph) : null),
+    [graph, humanDraft],
+  );
+  const draftPreviewRouting = useMemo(
+    () =>
+      normalizedPreviewDraft
+        ? humanDraftTransitionRouting(
+            normalizedPreviewDraft,
+            graph,
+            transitionManifest,
+            transitionRulesetTag,
+          )
+        : ({ route: "local_draft", reason: "no_manifest_trigger" } as const),
+    [graph, normalizedPreviewDraft, transitionManifest, transitionRulesetTag],
+  );
+
+  useLayoutEffect(() => {
+    if (mutationsDisabled || !humanDraft) {
+      setDraftTransitionProjection(null);
+      setDraftPreviewConflict(null);
+      setDraftPreviewPending(false);
+      return;
+    }
+    if (committableDraftCount === 0 || ontologyDraftIsStale) {
+      setDraftPreviewConflict(
+        ontologyDraftIsStale
+          ? "The staged ontology is based on an older canonical revision. Restage or reset it before previewing or Sync."
+          : "The remaining staged node edits are behind canonical state. Reconcile or reset them before previewing or Sync.",
+      );
+      setDraftPreviewPending(false);
+      return;
+    }
+    if (draftPreviewRouting.route === "local_draft") {
+      setDraftTransitionProjection(
+        localDraftTransitionProjection(
+          applyHumanDraft(graph, humanDraft),
+          project?.experiment_control ?? {},
+          transitionHead,
+          transitionRulesetTag,
+        ),
+      );
+      setDraftPreviewConflict(null);
+      setDraftPreviewPending(false);
+      return;
+    }
+    setDraftPreviewConflict(null);
+    setDraftPreviewPending(true);
+  }, [
+    committableDraftCount,
+    draftPreviewRouting.route,
+    graph,
+    humanDraft,
+    mutationsDisabled,
+    ontologyDraftIsStale,
+    project?.experiment_control,
+    transitionHead,
+    transitionRulesetTag,
+  ]);
+
+  useEffect(() => {
+    if (
+      !apiBase ||
+      !projectId ||
+      !project ||
+      projectReconciliation !== "authoritative" ||
+      !normalizedPreviewDraft ||
+      committableDraftCount === 0 ||
+      ontologyDraftIsStale ||
+      mutationsDisabled ||
+      draftPreviewRouting.route !== "backend_preview"
+    )
+      return;
+    const requestedProjectId = projectId;
+    const request = toHumanSyncRequest(normalizedPreviewDraft, graph);
+    let cancelled = false;
+    void api<TransitionPreviewResponse>(`${apiBase}/sync/preview`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    })
+      .then((response) => {
+        if (cancelled || !isActiveProject(requestedProjectId)) return;
+        const projection: ProjectTransitionResponse = {
+          ...response.projection,
+          graph: decodeGraphState(response.projection.graph),
+        };
+        const previewBaseHead = projection.base_head;
+        if (!previewBaseHead) {
+          setDraftPreviewConflict("Staged transition preview omitted its canonical base head.");
+          setDraftPreviewPending(false);
+          return;
+        }
+        const traceMismatch = previewTraceMismatch(response, projection);
+        if (traceMismatch) {
+          setDraftPreviewConflict(traceMismatch);
+          setDraftPreviewPending(false);
+          return;
+        }
+        const currentProjection: ProjectTransitionProjection<
+          GraphState,
+          Record<string, ExperimentControlState>
+        > = {
+          head: transitionHead,
+          graph,
+          experiment_control: project.experiment_control,
+          ruleset_tag: transitionRulesetTag,
+          transition_id: transitionHead.transition_id,
+          canonical: true,
+        };
+        const structuralRefusal = transitionSnapshotRefusal(currentProjection, {
+          kind: "preview",
+          snapshot: projection,
+          expected_base_head: transitionHead,
+          manifest_ruleset_tag: null,
+        });
+        if (structuralRefusal) {
+          setDraftPreviewConflict(`Staged transition preview was refused: ${structuralRefusal}.`);
+          setDraftPreviewPending(false);
+          return;
+        }
+        if (
+          (transitionRulesetTag && transitionRulesetTag !== projection.ruleset_tag) ||
+          (transitionManifest && transitionManifest.ruleset_tag !== projection.ruleset_tag)
+        ) {
+          transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+            transitionCoordinatorRef.current,
+            { kind: "observe_head", project_id: requestedProjectId, head: previewBaseHead },
+          );
+          setTransitionHead(previewBaseHead);
+          setTransitionRulesetTag(projection.ruleset_tag);
+          transitionManifestExpectedRulesetTagRef.current = projection.ruleset_tag;
+          setTransitionManifestState({
+            status: "loading",
+            project_id: requestedProjectId,
+            manifest: transitionManifest,
+          });
+          setTransitionManifestRefresh((current) => current + 1);
+          setDraftPreviewConflict(null);
+          setDraftPreviewPending(true);
+          return;
+        }
+        const matchingManifestTag =
+          transitionManifest?.ruleset_tag === transitionRulesetTag
+            ? transitionManifest.ruleset_tag
+            : null;
+        const refusal = transitionSnapshotRefusal(currentProjection, {
+          kind: "preview",
+          snapshot: projection,
+          expected_base_head: transitionHead,
+          manifest_ruleset_tag: matchingManifestTag,
+        });
+        if (refusal) {
+          setDraftPreviewConflict(`Staged transition preview was refused: ${refusal}.`);
+          setDraftPreviewPending(false);
+          return;
+        }
+        const next = reduceProjectTransitionProjection(currentProjection, {
+          kind: "preview",
+          snapshot: projection,
+          expected_base_head: transitionHead,
+          manifest_ruleset_tag: matchingManifestTag,
+        });
+        setDraftTransitionProjection(next);
+        transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+          transitionCoordinatorRef.current,
+          { kind: "observe_head", project_id: requestedProjectId, head: previewBaseHead },
+        );
+        setTransitionHead((current) =>
+          transitionHeadsEqual(current, previewBaseHead) ? current : previewBaseHead,
+        );
+        setTransitionRulesetTag(next.ruleset_tag);
+        setDraftPreviewConflict(null);
+        setDraftPreviewPending(false);
+      })
+      .catch((error) => {
+        if (cancelled || !isActiveProject(requestedProjectId)) return;
+        setDraftPreviewConflict(error instanceof Error ? error.message : String(error));
+        setDraftPreviewPending(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    apiBase,
+    committableDraftCount,
+    draftPreviewRouting.route,
+    graph,
+    isActiveProject,
+    mutationsDisabled,
+    normalizedPreviewDraft,
+    ontologyDraftIsStale,
+    project,
+    projectId,
+    projectReconciliation,
+    transitionHead,
+    transitionManifest,
+    transitionRulesetTag,
+  ]);
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
+  const hasActiveTasks = tasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
     setTextScale((current) => changeTextScale(current, action));
@@ -1461,7 +1994,7 @@ export default function App() {
   }, [selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
-    if (!projectId || !activeTask) return;
+    if (!projectId || !hasActiveTasks) return;
     let stopped = false;
     let timer = 0;
     let consecutiveFailures = 0;
@@ -1488,14 +2021,14 @@ export default function App() {
       const recoveredAfterFailure = consecutiveFailures > 0;
       consecutiveFailures = 0;
       if (recoveredAfterFailure) void reverifyIdentity("active-task-poll-recovered");
-      const current = next.find((task) => task.operation_id === activeTask.operation_id);
-      if (current && !isActiveTask(current)) {
+      const terminalTasks = consumeTerminalTasks(next);
+      if (terminalTasks.length > 0) {
         void api<AgentUsageSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/usage`).then(
           (nextUsage) => {
             if (!stopped && isActiveProject(projectId)) setUsage(nextUsage);
           },
         );
-        if (terminalTaskNeedsAuthoritativeProjectReload(current)) {
+        if (terminalTasks.some(terminalTaskNeedsAuthoritativeProjectReload)) {
           try {
             await reloadAuthoritativeProject();
           } catch (error) {
@@ -1506,7 +2039,9 @@ export default function App() {
               });
             }
           }
-        } else if (current.kind === "node_chat" || current.kind === "project_chat") {
+        } else if (
+          terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
+        ) {
           try {
             const nextWatchers = await api<WatcherRecord[]>(
               `/api/projects/${encodeURIComponent(projectId)}/watchers`,
@@ -1521,18 +2056,16 @@ export default function App() {
             }
           }
         }
-        if (!stopped) replaceTasks(next);
-        return;
       }
       replaceTasks(next);
-      schedule(1000);
+      if (next.some(isActiveTask)) schedule(1000);
     };
     schedule(500);
     return () => {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [activeTask, projectId, reloadAuthoritativeProject]);
+  }, [consumeTerminalTasks, hasActiveTasks, projectId, reloadAuthoritativeProject]);
 
   useEffect(() => {
     if (!projectId || !watchersAwaitingDelivery) return;
@@ -1575,16 +2108,16 @@ export default function App() {
   }, [applyProjectSnapshot, projectId, refreshChatSummaries, watchersAwaitingDelivery]);
 
   const pendingProposals = useMemo(
-    () => Object.values(graph.proposals).filter((item) => item.status === "pending"),
-    [graph],
+    () => Object.values(attentionGraph.proposals).filter((item) => item.status === "pending"),
+    [attentionGraph.proposals],
   );
   const attentionDecisions = useMemo(
-    () => decisionsAwaitingChoice(Object.values(graph.nodes), presentedGraph.nodes),
-    [graph.nodes, presentedGraph.nodes],
+    () => decisionsAwaitingChoice(Object.values(attentionGraph.nodes), presentedGraph.nodes),
+    [attentionGraph.nodes, presentedGraph.nodes],
   );
   const openBlockers = useMemo(
-    () => humanAttentionBlockers(Object.values(graph.nodes), presentedGraph.nodes),
-    [graph.nodes, presentedGraph.nodes],
+    () => humanAttentionBlockers(Object.values(attentionGraph.nodes), presentedGraph.nodes),
+    [attentionGraph.nodes, presentedGraph.nodes],
   );
   const attentionBlockerIds = useMemo(
     () => new Set(openBlockers.map((node) => node.id)),
@@ -1603,6 +2136,16 @@ export default function App() {
 
   const updateHumanDraft = (update: (draft: HumanDraft) => HumanDraft) => {
     if (!projectId || mutationsDisabled) return;
+    const nextDraftGeneration =
+      (transitionCoordinatorRef.current.draft_generations[projectId] ?? 0) + 1;
+    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+      transitionCoordinatorRef.current,
+      {
+        kind: "observe_draft_generation",
+        project_id: projectId,
+        generation: nextDraftGeneration,
+      },
+    );
     setNotice(null);
     setHumanDraft((current) => {
       const next = update(current ?? emptyHumanDraft(graph.revision));
@@ -1622,6 +2165,16 @@ export default function App() {
 
   const resetHumanDraft = () => {
     if (!projectId) return;
+    const nextDraftGeneration =
+      (transitionCoordinatorRef.current.draft_generations[projectId] ?? 0) + 1;
+    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+      transitionCoordinatorRef.current,
+      {
+        kind: "observe_draft_generation",
+        project_id: projectId,
+        generation: nextDraftGeneration,
+      },
+    );
     try {
       localStorage.removeItem(humanDraftStorageKey(projectId));
     } catch (error) {
@@ -1631,45 +2184,188 @@ export default function App() {
   };
 
   const syncHumanDraft = async () => {
-    if (!projectId || !humanDraft || syncingDraft || ontologyDraftIsStale || mutationsDisabled)
+    if (
+      !projectId ||
+      !project ||
+      projectReconciliation !== "authoritative" ||
+      !humanDraft ||
+      syncingDraft ||
+      draftPreviewPending ||
+      draftPreviewConflict ||
+      ontologyDraftIsStale ||
+      mutationsDisabled
+    )
       return;
+    if (transitionCoordinatorRef.current.sync_requests[projectId]) return;
+    const requestedProjectId = projectId;
+    const expectedGraph = graph;
+    const expectedProject = project;
+    const expectedHead = transitionHead;
     const normalized = normalizeHumanDraft(humanDraft, graph);
     if (humanDraftCommittableCount(normalized, graph) === 0) return;
     const request = toHumanSyncRequest(normalized, graph);
-    setSyncingDraft(true);
+    const fence: TransitionSyncFence = {
+      project_id: requestedProjectId,
+      request_id: ++transitionSyncRequestSequence.current,
+      expected_head: expectedHead,
+      draft_generation: transitionCoordinatorRef.current.draft_generations[requestedProjectId] ?? 0,
+    };
+    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+      transitionCoordinatorRef.current,
+      { kind: "sync_started", fence },
+    );
+    setSyncingProjectIds((current) => new Set(current).add(requestedProjectId));
     setNotice(null);
+    let committedResponseReceived = false;
+    const reconcileRequestedProject = async () => {
+      if (isActiveProject(requestedProjectId)) {
+        await reloadAuthoritativeProject(requestedProjectId);
+      } else {
+        await heartbeatProjectCache(requestedProjectId);
+      }
+    };
     try {
-      const nextGraph = decodeGraphState(
-        await api<GraphState>(`${apiBase}/sync`, {
-          method: "POST",
-          body: JSON.stringify(request),
-        }),
+      const response = await api<ProjectTransitionResponse>(`${apiBase}/sync`, {
+        method: "POST",
+        body: JSON.stringify(request),
+      });
+      committedResponseReceived = true;
+      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+        transitionCoordinatorRef.current,
+        { kind: "activate", project_id: getActiveProjectId() },
       );
-      const retained = retainBehindDraftAfterSync(normalized, graph, nextGraph);
+      const disposition = transitionSyncCompletionDisposition(
+        transitionCoordinatorRef.current,
+        fence,
+      );
+      if (disposition !== "apply" || renderedRevisionRef.current !== fence.expected_head.revision) {
+        try {
+          await reconcileRequestedProject();
+          if (isActiveProject(requestedProjectId)) {
+            setNotice({ kind: "info", text: "Sync committed and canonical state was refreshed." });
+          }
+        } catch (error) {
+          if (isActiveProject(requestedProjectId)) {
+            setNotice({
+              kind: "error",
+              text: `Sync committed, but canonical state could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          }
+        }
+        return;
+      }
+      const projection: ProjectTransitionResponse = {
+        ...response,
+        graph: decodeGraphState(response.graph),
+      };
+      if (projection.head.revision !== expectedHead.revision + 1) {
+        throw new Error("Committed transition response did not advance exactly one revision.");
+      }
+      const currentProjection: ProjectTransitionProjection<
+        GraphState,
+        Record<string, ExperimentControlState>
+      > = {
+        head: expectedHead,
+        graph: expectedGraph,
+        experiment_control: expectedProject.experiment_control,
+        ruleset_tag: transitionRulesetTag,
+        transition_id: expectedHead.transition_id,
+        canonical: true,
+      };
+      const refusal = transitionSnapshotRefusal(currentProjection, {
+        kind: "canonical",
+        snapshot: projection,
+      });
+      if (refusal) throw new Error(`Committed transition response was refused: ${refusal}.`);
+      const committed = reduceProjectTransitionProjection(currentProjection, {
+        kind: "canonical",
+        snapshot: projection,
+      }) as ProjectTransitionResponse;
+      const nextGraph = committed.graph;
+      const retained = retainBehindDraftAfterSync(normalized, expectedGraph, nextGraph);
       setHumanDraft(retained);
       try {
-        persistProjectHumanDraft(localStorage, projectId, retained);
+        persistProjectHumanDraft(localStorage, requestedProjectId, retained);
       } catch (error) {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
+      renderedRevisionRef.current = nextGraph.revision;
+      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+        transitionCoordinatorRef.current,
+        { kind: "observe_head", project_id: requestedProjectId, head: committed.head },
+      );
+      setTransitionHead(committed.head);
+      setTransitionRulesetTag(committed.ruleset_tag);
+      if (
+        (transitionRulesetTagRef.current &&
+          transitionRulesetTagRef.current !== committed.ruleset_tag) ||
+        (transitionManifest && transitionManifest.ruleset_tag !== committed.ruleset_tag)
+      ) {
+        transitionManifestExpectedRulesetTagRef.current = committed.ruleset_tag;
+        setTransitionManifestState({
+          status: "loading",
+          project_id: requestedProjectId,
+          manifest: transitionManifest,
+        });
+        setTransitionManifestRefresh((current) => current + 1);
+      }
+      setDraftTransitionProjection(null);
+      setDraftPreviewConflict(null);
+      setDraftPreviewPending(false);
       applySyncedGraph(nextGraph);
-      updateProject((current) => (current ? projectWithGraph(current, nextGraph) : current));
+      updateProject((current) =>
+        current?.id === requestedProjectId
+          ? projectWithTransitionProjection(current, nextGraph, committed.experiment_control)
+          : current,
+      );
       reconcileFloatingChat(nextGraph.nodes, false);
-      await reload();
       setNotice({
         kind: "info",
         text: humanSyncSuccessNotice(nextGraph.revision, request.proposals, nextGraph),
       });
     } catch (error) {
+      if (committedResponseReceived) {
+        try {
+          await reconcileRequestedProject();
+        } catch (reloadError) {
+          if (isActiveProject(requestedProjectId)) {
+            setNotice({
+              kind: "error",
+              text: `Sync committed, but its response was refused and canonical refresh failed: ${reloadError instanceof Error ? reloadError.message : String(reloadError)}`,
+            });
+          }
+          return;
+        }
+        if (isActiveProject(requestedProjectId)) {
+          setNotice({
+            kind: "error",
+            text: `Sync committed, but its response could not be applied directly: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        return;
+      }
       const failure = humanSyncFailure(error);
-      setNotice({ kind: "error", text: failure.text });
+      if (isActiveProject(requestedProjectId)) {
+        setNotice({ kind: "error", text: failure.text });
+      }
       if (failure.revisionConflict) {
         try {
-          await reload();
+          await reconcileRequestedProject();
         } catch {}
       }
     } finally {
-      setSyncingDraft(false);
+      const currentFence = transitionCoordinatorRef.current.sync_requests[requestedProjectId];
+      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
+        transitionCoordinatorRef.current,
+        { kind: "sync_finished", fence },
+      );
+      if (currentFence?.request_id === fence.request_id) {
+        setSyncingProjectIds((current) => {
+          const next = new Set(current);
+          next.delete(requestedProjectId);
+          return next;
+        });
+      }
     }
   };
 
@@ -1704,23 +2400,25 @@ export default function App() {
     }
   };
 
-  const stopExperimentLoop = async (nodeId: string) => {
+  const stopExperimentLoop = async (nodeId: string, episodeId: string | null = null) => {
     if (!apiBase || experimentStopId) return;
     const finishExperimentStop = beginExperimentStop(nodeId);
     try {
       const control = await api<ExperimentControlState>(
-        `${apiBase}/experiments/${encodeURIComponent(nodeId)}/stop`,
+        experimentStopPath(apiBase, nodeId, episodeId),
         { method: "POST" },
       );
-      updateProject((current) =>
-        current
-          ? {
-              ...current,
-              experiment_control: { ...current.experiment_control, [nodeId]: control },
-            }
-          : current,
-      );
-      await reload();
+      if (!episodeId) {
+        updateProject((current) =>
+          current
+            ? {
+                ...current,
+                experiment_control: { ...current.experiment_control, [nodeId]: control },
+              }
+            : current,
+        );
+      }
+      await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
     } finally {
@@ -1899,6 +2597,24 @@ export default function App() {
     }
   };
 
+  const requestEpisodeMerge = async (episodeId: string) => {
+    if (!apiBase || episodeAction) return;
+    const finishEpisodeAction = beginEpisodeAction(`merge:${episodeId}`);
+    if (!finishEpisodeAction) return;
+    try {
+      const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId);
+      replaceEpisode(nextEpisode);
+      const mergeTask = activeBranchMergeTask(nextEpisode);
+      if (mergeTask) recordStartedTask(mergeTask);
+      await reload();
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally {
+      finishEpisodeAction();
+    }
+  };
+
   const messageEpisodeOrchestrator = async (episodeId: string, body: string) => {
     if (!apiBase || !projectId || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`message:${episodeId}`);
@@ -2006,13 +2722,13 @@ export default function App() {
     void operateTask(task, "retry");
   };
 
-  const commitProjectOpen = (id: string, experimentId: string | null = null) => {
+  const commitProjectOpen = (id: string, experimentRoute: string | null = null) => {
     if (projectId !== id) rememberProjectState(projectId);
-    commitProjectRoute(id, experimentId);
+    commitProjectRoute(id, experimentRoute);
   };
-  const openProject = (id: string, experimentId: string | null = null) => {
-    if (requestDesktopProjectOpen(id, experimentId)) return;
-    commitProjectOpen(id, experimentId);
+  const openProject = (id: string, experimentRoute: string | null = null) => {
+    if (requestDesktopProjectOpen(id, experimentRoute)) return;
+    commitProjectOpen(id, experimentRoute);
   };
   const continueDesktopProjectOpen = () => {
     continueDesktopProjectAccess(commitProjectOpen);
@@ -2327,11 +3043,26 @@ export default function App() {
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = replayFailureLabel(graph);
   const selectedExperimentNode = selectedExperimentRunId
-    ? (presentedGraph.nodes[selectedExperimentRunId] ?? null)
+    ? selectedExperimentUsesBranch
+      ? (selectedBranchExperiment?.node ?? null)
+      : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
     : null;
   const selectedExperimentControl = selectedExperimentRunId
-    ? (project.experiment_control[selectedExperimentRunId] ?? null)
+    ? selectedExperimentUsesBranch
+      ? (selectedBranchExperiment?.control ?? null)
+      : (presentedExperimentControl[selectedExperimentRunId] ?? null)
     : null;
+  const selectedExperimentExecution = projectExperimentExecution(
+    Object.values(presentedGraph.nodes),
+    tasks,
+    watchers,
+    presentedExperimentControl,
+    selectedExperimentRoute,
+    selectedBranchExperiment,
+  );
+  const selectedExperimentNodes = Object.fromEntries(
+    selectedExperimentExecution.nodes.map((node) => [node.id, node]),
+  );
   const selectedExperimentConversation =
     selectedExperimentChatId && selectedExperimentNode?.type === "experiment" ? (
       <Suspense
@@ -2345,15 +3076,16 @@ export default function App() {
           key={selectedExperimentChatId}
           project={project}
           node={selectedExperimentNode}
-          nodes={presentedGraph.nodes}
+          nodes={selectedExperimentNodes}
           glossaryIndex={glossaryIndex}
           runScope={selectedExperimentControl?.operational?.session?.run_truth_scope ?? runScope}
-          tasks={tasks}
-          watchers={watchers}
+          tasks={selectedExperimentExecution.tasks}
+          watchers={selectedExperimentExecution.watchers}
           historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
           chatId={selectedExperimentChatId}
           presentation="workspace"
           fixedConversation
+          readOnly={selectedExperimentUsesBranch}
           graphChangesDisabled={mutationsDisabled}
           resultViews={selectedResultViews}
           resultViewsError={selectedResultViewsError}
@@ -2421,24 +3153,37 @@ export default function App() {
                     mutationsDisabled ||
                     committableDraftCount === 0 ||
                     syncingDraft ||
+                    draftPreviewPending ||
+                    Boolean(draftPreviewConflict) ||
                     ontologyDraftIsStale ||
                     !project.canonical_state.reachable
                   }
-                  title={ontologyDraftIsStale ? "Ontology draft base is stale" : undefined}
+                  title={
+                    draftPreviewConflict ||
+                    (draftPreviewPending
+                      ? "Preparing the staged transition preview"
+                      : ontologyDraftIsStale
+                        ? "Ontology draft base is stale"
+                        : undefined)
+                  }
                   aria-label={
                     syncingDraft
                       ? "Syncing staged changes"
-                      : ontologyDraftIsStale
-                        ? `Ontology conflict, ${committableDraftCount} committable changes`
-                        : behindDraftCount > 0
-                          ? `Sync ${committableDraftCount} committable changes, ${behindDraftCount} behind`
-                          : undefined
+                      : draftPreviewPending
+                        ? "Preparing staged transition preview"
+                        : draftPreviewConflict
+                          ? "Resolve the staged transition conflict before Sync"
+                          : ontologyDraftIsStale
+                            ? `Ontology conflict, ${committableDraftCount} committable changes`
+                            : behindDraftCount > 0
+                              ? `Sync ${committableDraftCount} committable changes, ${behindDraftCount} behind`
+                              : undefined
                   }
                   onClick={() => void syncHumanDraft()}
                 >
-                  {syncingDraft ? (
+                  {syncingDraft || draftPreviewPending ? (
                     <LoaderCircle className="spin" size={14} />
-                  ) : ontologyDraftIsStale ? (
+                  ) : ontologyDraftIsStale || draftPreviewConflict ? (
                     <AlertTriangle size={14} />
                   ) : (
                     <CloudUpload size={14} />
@@ -2613,6 +3358,39 @@ export default function App() {
 
       <div className="project-notices">
         {updateSurface}
+        {draftPreviewPending && (
+          <div className="coverage-banner" role="status">
+            <LoaderCircle className="spin" size={15} aria-hidden="true" />
+            <span>
+              <strong>Preparing staged transition preview.</strong>
+            </span>
+          </div>
+        )}
+        {draftPreviewConflict && (
+          <div className="coverage-banner validation-rejected" role="alert">
+            <AlertTriangle size={15} aria-hidden="true" />
+            <span>
+              <strong>Staged transition conflict.</strong> {draftPreviewConflict} Your staged input
+              is kept;{" "}
+              {draftTransitionProjection
+                ? "the graph remains at the last valid staged projection."
+                : "the graph remains at canonical state."}
+            </span>
+          </div>
+        )}
+        {!draftPreviewPending &&
+          !draftPreviewConflict &&
+          draftTransitionProjection &&
+          draftTransitionProjection.head.revision !== graph.revision && (
+            <div className="coverage-banner" role="status">
+              <GitBranch size={15} aria-hidden="true" />
+              <span>
+                <strong>Staged transition preview.</strong> Candidate revision{" "}
+                {draftTransitionProjection.head.revision}; canonical state remains revision{" "}
+                {graph.revision} until Sync.
+              </span>
+            </div>
+          )}
         {episodeRefreshError && (
           <div className="coverage-banner replay-degraded" role="alert">
             <AlertTriangle size={15} />
@@ -2703,7 +3481,11 @@ export default function App() {
           )}
           {view === "overview" && (
             <ProjectOverview
-              project={projectWithGraph(project, presentedGraph)}
+              project={projectWithTransitionProjection(
+                project,
+                presentedGraph,
+                presentedExperimentControl,
+              )}
               graph={presentedGraph}
               decisionsAwaitingChoice={attentionDecisions}
               latestRevisionSummary={
@@ -2715,10 +3497,10 @@ export default function App() {
           {view === "attention" && (
             <div className="attention-page">
               <div className="attention-main">
-                <AttentionOverview graph={graph} onSelectNode={openNode} />
+                <AttentionOverview graph={attentionGraph} onSelectNode={openNode} />
                 <ProposalJudgmentSection
                   proposals={pendingProposals}
-                  graph={graph}
+                  graph={attentionGraph}
                   glossaryIndex={glossaryIndex}
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}
@@ -2769,6 +3551,7 @@ export default function App() {
                 onInspectTask={selectTaskInspector}
                 onLoadMessages={refreshEpisodeMessages}
                 onStop={requestEpisodeStop}
+                onMerge={requestEpisodeMerge}
                 onReauthorize={requestEpisodeReauthorization}
                 onSendMessage={messageEpisodeOrchestrator}
                 onOperateTask={operateEpisodeOrchestratorTask}
@@ -2778,7 +3561,9 @@ export default function App() {
                 attentionBlockerIds={attentionBlockerIds}
                 tasks={tasks.filter((task) => task.kind !== "auto_research")}
                 watchers={watchers}
-                experimentControl={project.experiment_control}
+                experimentControl={presentedExperimentControl}
+                exactExperimentRoute={selectedExperimentRoute}
+                exactExperimentEntry={selectedBranchExperiment}
                 dismissedTaskIds={dismissedTaskIds}
                 selectedExperimentId={selectedExperimentRunId}
                 focusExperimentId={focusExperimentRunId}
@@ -2800,7 +3585,9 @@ export default function App() {
                 onSelectExperiment={selectExperiment}
                 onDetailFocused={clearExperimentFocus}
                 onRunExperiment={(node) => void runExperiment(node)}
-                onStopExperiment={(nodeId) => void stopExperimentLoop(nodeId)}
+                onStopExperiment={(nodeId, episodeId) =>
+                  void stopExperimentLoop(nodeId, episodeId ?? null)
+                }
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
                 onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
                 onSwitchExperimentProvider={chooseRetryTask}
@@ -3105,7 +3892,24 @@ function readTextScale(): number {
   }
 }
 
-function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectSnapshot {
+export function primaryQuestionForGraph(graph: GraphState): GraphNode | null {
+  const standingPriority: Record<GraphNode["standing"], number> = {
+    accepted: 0,
+    asserted: 1,
+    contested: 2,
+  };
+  return (
+    Object.values(graph.nodes)
+      .filter((node) => node.type === "research_question")
+      .sort(
+        (left, right) =>
+          standingPriority[left.standing] - standingPriority[right.standing] ||
+          left.id.localeCompare(right.id),
+      )[0] ?? null
+  );
+}
+
+export function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectSnapshot {
   const standingCounts = Object.values(graph.nodes).reduce(
     (counts, node) => {
       counts[node.standing] += 1;
@@ -3117,11 +3921,66 @@ function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectS
     ...project,
     graph,
     revision: graph.revision,
-    primary_question: project.primary_question
-      ? (graph.nodes[project.primary_question.id] ?? project.primary_question)
-      : project.primary_question,
-    counts: { ...project.counts, ...standingCounts },
+    primary_question: primaryQuestionForGraph(graph),
+    counts: {
+      ...standingCounts,
+      pending_proposals: Object.values(graph.proposals).filter((item) => item.status === "pending")
+        .length,
+      decisions_awaiting_choice: Object.values(graph.nodes).filter(
+        (node) =>
+          node.type === "decision" && (node.status === "ready" || node.status === "revisit"),
+      ).length,
+      open_blockers: Object.values(graph.nodes).filter(
+        (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
+      ).length,
+    },
   };
+}
+
+function projectWithTransitionProjection(
+  project: ProjectSnapshot,
+  graph: GraphState,
+  experimentControl: Record<string, ExperimentControlState>,
+): ProjectSnapshot {
+  return {
+    ...projectWithGraph(project, graph),
+    experiment_control: experimentControl,
+  };
+}
+
+function localDraftTransitionProjection(
+  graph: GraphState,
+  experimentControl: Record<string, ExperimentControlState>,
+  head: GraphHeadRef,
+  rulesetTag: string | null,
+): BrowserTransitionProjection {
+  return {
+    head,
+    graph,
+    experiment_control: experimentControl,
+    ruleset_tag: rulesetTag,
+    transition_id: head.transition_id,
+    canonical: false,
+    base_head: head,
+  };
+}
+
+function previewTraceMismatch(
+  response: TransitionPreviewResponse,
+  projection: ProjectTransitionResponse,
+): string | null {
+  if (projection.canonical) return "Staged transition preview was marked canonical.";
+  if (!projection.base_head) return "Staged transition preview omitted its canonical base head.";
+  if (!transitionHeadsEqual(projection.base_head, response.transition.pre_head)) {
+    return "Staged transition preview base head did not match its transition trace.";
+  }
+  if (projection.transition_id !== response.transition.transition_id) {
+    return "Staged transition preview id did not match its transition trace.";
+  }
+  if (projection.ruleset_tag !== response.transition.ruleset_tag) {
+    return "Staged transition preview ruleset did not match its transition trace.";
+  }
+  return null;
 }
 
 function preserveProjectReadiness(

@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.providers import (
     AgentCapability,
@@ -437,6 +438,7 @@ class AgentLauncher:
         session_id: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
+        write_scope: ProjectWriteScope | None = None,
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
@@ -471,6 +473,20 @@ class AgentLauncher:
             yield AgentEvent(event="error", text=readiness.reason or "Provider is unavailable.")
             return
 
+        if write_scope is not None:
+            if str(cwd) != write_scope.workspace_root:
+                yield AgentEvent(
+                    event="error",
+                    text="Provider workspace does not match the resolved project write scope.",
+                )
+                return
+            if host != write_scope.execution_host:
+                yield AgentEvent(
+                    event="error",
+                    text="Provider execution host does not match the resolved project write scope.",
+                )
+                return
+
         command = self._command(
             provider,
             prompt,
@@ -481,7 +497,9 @@ class AgentLauncher:
             session_id=session_id,
             read_dirs=read_dirs or [],
             write_dirs=write_dirs or [],
+            write_scope=write_scope,
             capability=capability,
+            provider_version=getattr(readiness, "version", None),
         )
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
@@ -656,7 +674,9 @@ class AgentLauncher:
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path] | None = None,
+        write_scope: ProjectWriteScope | None = None,
         capability: AgentCapability,
+        provider_version: str | None = None,
     ) -> list[str]:
         return profile_for(provider).command(
             prompt,
@@ -667,7 +687,9 @@ class AgentLauncher:
             session_id=session_id,
             read_dirs=read_dirs,
             write_dirs=write_dirs or [],
+            write_scope=write_scope,
             capability=capability,
+            provider_version=provider_version,
         )
 
     @staticmethod

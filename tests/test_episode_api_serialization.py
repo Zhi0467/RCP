@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 
 import pytest
 
@@ -13,7 +14,8 @@ from rcp.api.episodes import (
     serialize_episodes,
 )
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import AuthorizedHuman, GraphBranchSummary
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -58,11 +60,17 @@ def _auto_episode(
     root_status: str = "succeeded",
     ending: str | None = None,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
+    episode_id = str(
+        uuid.UUID(bytes=hashlib.sha256(episode_id.encode("utf-8")).digest()[:16], version=4)
+    )
     now = store.now()
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
     episode = EpisodeRecord(
         episode_id=episode_id,
         project_id="project",
         mode="auto_research",
+        graph_target=graph_target,
+        graph_base_head=GraphHeadRef(revision=0),
         status="queued",
         invocation_ceiling=3,
         authorized_by=_authorizer(store),
@@ -73,6 +81,7 @@ def _auto_episode(
         operation_id=f"{episode_id}-root",
         project_id="project",
         episode_id=episode_id,
+        graph_target=graph_target,
         kind="auto_research",
         status="queued",
         request={
@@ -118,6 +127,22 @@ def _auto_episode(
     return stored_episode, stored_root
 
 
+def _branch_summary(episode: EpisodeRecord) -> GraphBranchSummary:
+    assert episode.graph_base_head is not None
+    return GraphBranchSummary(
+        branch_id=episode.episode_id,
+        episode_id=episode.episode_id,
+        base_head=episode.graph_base_head,
+        head=GraphHeadRef(
+            target=episode.graph_target,
+            revision=episode.graph_base_head.revision,
+            transition_id=episode.graph_base_head.transition_id,
+        ),
+        merge_eligible=False,
+        merge_state="unmerged",
+    )
+
+
 def _begin_report(
     store: AppStore,
     episode: EpisodeRecord,
@@ -159,6 +184,7 @@ def _begin_report(
         operation_id=allocation_operation_id,
         project_id=episode.project_id,
         episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
         kind="episode_report",
         status="queued",
         request={"provider": "codex", "run_on": "local", "execution_host": ""},
@@ -186,9 +212,19 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
         diagnostic="The exact host is temporarily unreachable.",
     )
 
-    response = serialize_episode(store, "project", store.episode(episode.episode_id) or episode)
+    response = serialize_episode(
+        store,
+        "project",
+        store.episode(episode.episode_id) or episode,
+        branch_summary=_branch_summary,
+    )
 
     assert response.starting_instruction == "Trace the strongest evidence."
+    assert response.graph_target == episode.graph_target
+    assert response.graph_base_head == episode.graph_base_head
+    assert response.graph_branch is not None
+    assert response.graph_branch.branch_id == episode.episode_id
+    assert response.tasks[0].graph_target == episode.graph_target
     assert response.current_operation_id == root.operation_id
     assert response.current_orchestrator_task_id == root.operation_id
     assert response.current_control_task_id == root.operation_id
@@ -262,7 +298,7 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
 
     stored = store.episode(episode.episode_id)
     assert stored is not None
-    response = serialize_episode(store, "project", stored)
+    response = serialize_episode(store, "project", stored, branch_summary=_branch_summary)
     payload = response.model_dump(mode="json")
 
     assert response.report is not None
@@ -292,7 +328,7 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
 
     stored = store.episode(episode.episode_id)
     assert stored is not None
-    response = serialize_episode(store, "project", stored)
+    response = serialize_episode(store, "project", stored, branch_summary=_branch_summary)
 
     assert response.status == "failed"
     assert response.wrapup_state == "failed"
@@ -368,7 +404,12 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
     )
     store.create_episode_with_invocation(experiment, experiment_task)
 
-    auto_responses = serialize_episodes(store, "project", mode="auto_research")
+    auto_responses = serialize_episodes(
+        store,
+        "project",
+        mode="auto_research",
+        branch_summary=_branch_summary,
+    )
     experiment_responses = serialize_episodes(store, "project", mode="experiment_loop")
 
     assert [item.episode_id for item in auto_responses] == [stopped.episode_id]
@@ -380,4 +421,9 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
     with pytest.raises(KeyError, match=stopped.episode_id):
         episode_for_project(store, "another-project", stopped.episode_id)
     with pytest.raises(KeyError, match=stopped.episode_id):
-        serialize_episode(store, "another-project", stopped)
+        serialize_episode(
+            store,
+            "another-project",
+            stopped,
+            branch_summary=_branch_summary,
+        )

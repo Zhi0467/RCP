@@ -17,7 +17,7 @@ interface Props {
   onAnswerInvitation: (invitationId: string, response: "accept" | "decline") => Promise<void>;
   experimentLoops: ExperimentLoopIndexEntry[];
   onOpen: (projectId: string) => void;
-  onOpenExperiment: (projectId: string, experimentId: string) => void;
+  onOpenExperiment: (projectId: string, experimentRoute: string) => void;
   onCreate: () => void;
   onDelete: (projectId: string) => Promise<void> | void;
   openProjectTabs: ProjectTab[];

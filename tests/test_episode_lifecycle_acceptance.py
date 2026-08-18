@@ -630,6 +630,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
                     project_id=project_id,
                     origin_operation_id=root_operation_id,
                     origin_task_kind="auto_research",
+                    graph_target=root.graph_target,
                     chat_id=root_operation_id,
                     episode_id=episode_id,
                     continuation=WatcherContinuation(
@@ -666,7 +667,9 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
                 if task.kind == "episode_report"
             ]
             assert len(pending_reports) <= 1
-            assert all(task.status == "queued" for task in pending_reports)
+            assert all(task.status == "queued" for task in pending_reports), [
+                (task.operation_id, task.status) for task in pending_reports
+            ]
             assert store.episode_report_attempts(episode_id) == []
             current_worker = store.agent_task(worker.operation_id)
             assert current_worker is not None and current_worker.status == "running"

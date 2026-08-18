@@ -9,8 +9,8 @@ invariants: [6, 8]
 
 # A team space outlives every process that serves it
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in [Spaces and project homes](../design/spaces-and-project-homes.md).
+This scenario is a proposal and is **not yet human-confirmed**. The current
+boundary is in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity).
 
 A space is an authority domain, not an installation. Restarting, upgrading, or
 moving the server does not create a new space and does not make members enroll
@@ -60,8 +60,8 @@ expected `space_id`.
 ## Boundary
 
 This scenario does not promise that two *restored copies* of one space can
-detect each other. That limitation is deliberate and operator-owned; see
-[Team server operations](../design/team-server-operations.md#restore-and-the-authority-boundary).
+detect each other. That limitation is deliberate and operator-owned under the
+[server and machine operations contract](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 `space_id` surviving a restore is what makes the replacement the same space, and
 it is also what makes two simultaneously running copies indistinguishable.
 

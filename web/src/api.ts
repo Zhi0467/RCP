@@ -243,6 +243,12 @@ export function reauthorizeEpisode(
   });
 }
 
+export function mergeEpisodeToMain(apiBase: string, episodeId: string): Promise<Episode> {
+  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/merge`, {
+    method: "POST",
+  });
+}
+
 export function loadEpisodeMessages(apiBase: string, episodeId: string): Promise<EpisodeMessage[]> {
   return api<EpisodeMessage[]>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/messages`);
 }

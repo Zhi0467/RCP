@@ -11,47 +11,44 @@ from rcp.agents import (
     prepare_agent_patch,
     validate_agent_patch_shape,
 )
-from rcp.core.models import Patch
-from tests.helpers import seed_patch
+from rcp.core.models import Patch, Proposal
+from rcp.core.operations import graph_operations_from_proposal
+from tests.helpers import graph_operation, seed_patch
 
 
 def test_agent_patch_schema_accepts_the_canonical_seed_shape() -> None:
     patch = seed_patch()
     validate_agent_patch_shape(
         patch.model_copy(
-            update={
-                "ops": [operation for operation in patch.ops if operation["op"] != "set_coverage"]
-            }
+            update={"ops": [operation for operation in patch.ops if operation.op != "set_coverage"]}
         )
     )
 
 
 def test_agent_patch_schema_rejects_invented_node_fields_and_slug_formats() -> None:
-    patch = Patch(
-        kind="seed",
-        author="agent",
-        summary="Used an invented graph vocabulary.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": "hyp-invented-shape",
-                        "type": "hypothesis",
-                        "title": "Invented shape",
-                        "statement": "The schema should reject this before graph validation.",
-                        "state": "supported",
-                        "asserted": True,
-                    }
-                ],
-            }
-        ],
-    )
-
-    with pytest.raises(ValueError, match="graph operation schema") as caught:
-        validate_agent_patch_shape(patch)
+    with pytest.raises(ValidationError, match="state|asserted|Extra inputs") as caught:
+        Patch(
+            kind="seed",
+            author="agent",
+            summary="Used an invented graph vocabulary.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "hyp-invented-shape",
+                            "type": "hypothesis",
+                            "title": "Invented shape",
+                            "statement": "The schema should reject this before graph validation.",
+                            "state": "supported",
+                            "asserted": True,
+                        }
+                    ],
+                }
+            ],
+        )
 
     assert "hyp-invented-shape" in str(caught.value) or "Extra inputs" in str(caught.value)
 
@@ -105,17 +102,21 @@ def test_agent_patch_schema_accepts_remove_nodes() -> None:
     ],
 )
 def test_agent_remove_nodes_operation_is_strict(operation: dict[str, object]) -> None:
-    patch = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Tried a malformed node removal.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[operation],
-    )
-
-    with pytest.raises(ValueError, match="graph operation schema"):
-        validate_agent_patch_shape(patch)
+    values = {
+        "kind": "refresh",
+        "author": "agent",
+        "summary": "Tried a malformed node removal.",
+        "run_truth_scope": ["repo-a"],
+        "repositories_read": ["repo-a"],
+        "ops": [operation],
+    }
+    if operation == {"op": "remove_nodes", "node_ids": []}:
+        patch = Patch.model_validate(values)
+        with pytest.raises(ValueError, match="graph operation schema"):
+            validate_agent_patch_shape(patch)
+    else:
+        with pytest.raises(ValidationError):
+            Patch.model_validate(values)
 
 
 def test_agent_patch_is_a_semantic_model_not_a_canonical_patch() -> None:
@@ -128,6 +129,91 @@ def test_agent_patch_is_a_semantic_model_not_a_canonical_patch() -> None:
         "repositories_read",
         "change_summary",
     }
+
+
+@pytest.mark.parametrize(
+    "experiment_fields",
+    [
+        {"invocation_ceiling": "5"},
+        {
+            "attempts": [
+                {
+                    "id": "attempt/one",
+                    "sequence": "1",
+                    "purpose": "Reject nested coercion.",
+                }
+            ]
+        },
+        {
+            "attempts": [
+                {
+                    "id": "attempt/one",
+                    "sequence": 1,
+                    "purpose": "Reject nested decision-pin coercion.",
+                    "decision_bundle": [
+                        {
+                            "decision_id": "dec/budget",
+                            "decision_revision": "2",
+                            "selected_option": "small",
+                        }
+                    ],
+                }
+            ]
+        },
+    ],
+)
+def test_agent_schema_rejects_nested_scalar_coercion(
+    experiment_fields: dict[str, object],
+) -> None:
+    experiment = {
+        "id": "exp/strict-agent-payload",
+        "type": "experiment",
+        "title": "Strict agent payload",
+        "objective": "Reject values with the wrong JSON scalar type.",
+        **experiment_fields,
+    }
+
+    with pytest.raises(ValidationError):
+        AgentPatch.model_validate(
+            {
+                "summary": "Tried to submit a coercible nested scalar.",
+                "ops": [{"op": "create_nodes", "nodes": [experiment]}],
+            }
+        )
+
+
+def test_agent_schema_accepts_datetime_strings_as_the_json_wire_form() -> None:
+    patch = AgentPatch.model_validate(
+        {
+            "summary": "Recorded a source timestamp.",
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "exp/strict-agent-payload",
+                            "type": "experiment",
+                            "title": "Strict agent payload",
+                            "objective": "Preserve the JSON datetime representation.",
+                            "source_refs": [
+                                {
+                                    "machine": "local",
+                                    "truth_repository": "repo-a",
+                                    "source": "codex",
+                                    "session_id": "session-1",
+                                    "record_uuid": "record-1",
+                                    "timestamp": "2026-08-17T09:30:00Z",
+                                    "excerpt": "Observed strict validation.",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert patch.ops[0].nodes[0].source_refs[0].timestamp.year == 2026  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(
@@ -409,7 +495,7 @@ def test_agent_schema_accepts_each_declared_proposal_intent(operation) -> None:
 
     prepared = prepare_agent_patch(patch, kind="work", run_truth_scope=["repo-a"])
 
-    assert prepared.ops[0]["proposals"][0]["ops"][0]["intent"] == operation["intent"]
+    assert prepared.ops[0].proposals[0].ops[0].intent == operation["intent"]
 
 
 @pytest.mark.parametrize(
@@ -500,7 +586,9 @@ def test_new_agent_evidence_requires_an_explicit_origin() -> None:
 
     evidence["origin"] = "internal_run"
     validate_agent_patch_shape(
-        patch.model_copy(update={"ops": [{"op": "create_nodes", "nodes": [evidence]}]})
+        patch.model_copy(
+            update={"ops": [graph_operation({"op": "create_nodes", "nodes": [evidence]})]}
+        )
     )
 
 
@@ -550,13 +638,13 @@ def test_agent_belief_causes_allow_only_a_strict_evidence_edge_shape() -> None:
 def test_agent_belief_causes_reject_missing_extra_or_unknown_fields(
     cause: dict[str, object],
 ) -> None:
-    patch = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Used a malformed belief cause.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
+    values = {
+        "kind": "refresh",
+        "author": "agent",
+        "summary": "Used a malformed belief cause.",
+        "run_truth_scope": ["repo-a"],
+        "repositories_read": ["repo-a"],
+        "ops": [
             {
                 "op": "supersede_nodes",
                 "nodes": [
@@ -567,10 +655,19 @@ def test_agent_belief_causes_reject_missing_extra_or_unknown_fields(
                 ],
             }
         ],
+    }
+    core_valid_causes = (
+        {"kind": "decision", "ref_id": "dec/evaluation-rule"},
+        {"kind": "proposal_resolution", "ref_id": "prop/revise-claim"},
+        {"kind": "human_edit"},
     )
-
-    with pytest.raises(ValueError, match="graph operation schema"):
-        validate_agent_patch_shape(patch)
+    if cause in core_valid_causes:
+        patch = Patch.model_validate(values)
+        with pytest.raises(ValueError, match="graph operation schema"):
+            validate_agent_patch_shape(patch)
+    else:
+        with pytest.raises(ValidationError):
+            Patch.model_validate(values)
 
 
 def test_agent_edge_layer_is_backend_owned() -> None:
@@ -627,32 +724,30 @@ def test_agent_schema_accepts_the_generic_extension_namespace() -> None:
 
 
 def test_agent_extension_fields_cannot_escape_the_namespace() -> None:
-    patch = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Put a custom field at the node top level.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": "mechanism_claim/optimizer-memory",
-                        "type": "hypothesis",
-                        "extension_type": "mechanism_claim",
-                        "extension_fields": {},
-                        "mechanism_family": "optimizer state",
-                        "title": "Optimizer state carries task history",
-                        "statement": "Optimizer state retains information about earlier tasks.",
-                    }
-                ],
-            }
-        ],
-    )
-
-    with pytest.raises(ValueError, match="mechanism_family|Extra inputs"):
-        validate_agent_patch_shape(patch)
+    with pytest.raises(ValidationError, match="mechanism_family|Extra inputs"):
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Put a custom field at the node top level.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "mechanism_claim/optimizer-memory",
+                            "type": "hypothesis",
+                            "extension_type": "mechanism_claim",
+                            "extension_fields": {},
+                            "mechanism_family": "optimizer state",
+                            "title": "Optimizer state carries task history",
+                            "statement": "Optimizer state retains information about earlier tasks.",
+                        }
+                    ],
+                }
+            ],
+        )
 
 
 def test_agent_schema_accepts_custom_relation_names_without_a_layer() -> None:
@@ -692,6 +787,7 @@ def _ontology_proposal() -> dict[str, object]:
         "ops": [
             {
                 "op": "set_ontology",
+                "intent": "legacy_ontology_change",
                 "ontology": {
                     "types": [
                         {
@@ -730,14 +826,14 @@ def _ontology_proposal() -> dict[str, object]:
 
 
 def test_agent_cannot_apply_ontology_directly() -> None:
-    proposal = _ontology_proposal()
+    proposal = Proposal.model_validate(_ontology_proposal())
     patch = Patch(
         kind="refresh",
         author="agent",
         summary="Tried to activate an ontology directly.",
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
-        ops=proposal["ops"],
+        ops=graph_operations_from_proposal(proposal.ops),
     )
 
     with pytest.raises(ValueError, match="set_ontology|graph operation schema"):
@@ -746,6 +842,7 @@ def test_agent_cannot_apply_ontology_directly() -> None:
 
 def test_agent_cannot_propose_an_ontology_change() -> None:
     patch = Patch(
+        schema_generation=1,
         kind="refresh",
         author="agent",
         summary="Proposed a project ontology extension for human review.",
@@ -886,7 +983,7 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
         run_truth_scope=["repo-a"],
         source_operation_id="task-create-proposal",
     )
-    proposal = patch.ops[0]["proposals"][0]
+    proposal = patch.ops[0].proposals[0]
 
     assert isinstance(patch, Patch)
     assert patch.kind == "work"
@@ -896,16 +993,16 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
     assert patch.repositories_read == ["repo-a"]
     assert patch.source_operation_id == "task-create-proposal"
     assert patch.change_summary == ["Raised a belief transition for review."]
-    assert proposal["base_rev"] == 0
-    assert proposal["related_node_ids"] == []
-    assert proposal["related_edge_ids"] == []
-    assert proposal["related_config_keys"] == []
-    assert proposal["status"] == "pending"
-    assert proposal["created_by"] == "agent"
-    assert proposal["created_by_operation_id"] == "task-create-proposal"
-    assert proposal["raised_rev"] == 0
-    assert proposal["resolved_rev"] is None
-    assert proposal["resolved_by"] is None
-    assert proposal["resolved_by_operation_id"] is None
-    assert proposal["resolution_reason"] is None
-    assert proposal["rejection_reason"] is None
+    assert proposal.base_rev == 0
+    assert proposal.related_node_ids == []
+    assert proposal.related_edge_ids == []
+    assert proposal.related_config_keys == []
+    assert proposal.status == "pending"
+    assert proposal.created_by == "agent"
+    assert proposal.created_by_operation_id == "task-create-proposal"
+    assert proposal.raised_rev == 0
+    assert proposal.resolved_rev is None
+    assert proposal.resolved_by is None
+    assert proposal.resolved_by_operation_id is None
+    assert proposal.resolution_reason is None
+    assert proposal.rejection_reason is None

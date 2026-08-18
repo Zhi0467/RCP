@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import AuthorizedHuman, GraphBranchSummary
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.storage import (
     AgentTaskRecord,
     AgentTaskStatus,
@@ -26,7 +28,11 @@ OperationalEpisodeTaskKind = Literal[
     "project_chat",
     "paper_coach",
     "auto_research",
+    "branch_merge",
 ]
+
+BranchSummaryResolver = Callable[[EpisodeRecord], GraphBranchSummary]
+BranchSummariesResolver = Callable[[list[EpisodeRecord]], dict[str, GraphBranchSummary]]
 
 _STOPPABLE_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset({"queued", "running"})
 _TERMINAL_WRAPUP_STATES: frozenset[EpisodeWrapupState] = frozenset(
@@ -99,6 +105,7 @@ class EpisodeTaskResponse(BaseModel):
     native_session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
+    graph_target: GraphTargetRef
     estimate_seconds: float
     estimate_samples: int
     phase: str
@@ -140,6 +147,9 @@ class EpisodeResponse(BaseModel):
     project_id: str
     mode: EpisodeMode
     control_node_id: str | None
+    graph_target: GraphTargetRef
+    graph_base_head: GraphHeadRef | None
+    graph_branch: GraphBranchSummary | None
     root_operation_id: str | None
     current_operation_id: str | None
     current_orchestrator_task_id: str | None
@@ -180,11 +190,20 @@ def serialize_episode(
     store: AppStore,
     project_id: str,
     episode: EpisodeRecord,
+    *,
+    branch_summary: BranchSummaryResolver | None = None,
 ) -> EpisodeResponse:
     """Serialize one project-owned parent from its current durable ledgers."""
 
     if episode.project_id != project_id:
         raise KeyError(episode.episode_id)
+    owns_graph_branch = (
+        episode.mode == "auto_research"
+        and episode.graph_target.kind == "branch"
+        and episode.graph_target.branch_id == episode.episode_id
+    )
+    if owns_graph_branch and branch_summary is None:
+        raise ValueError("a branch-target episode requires its strict graph branch summary")
 
     task_records = _operational_tasks(store, episode)
     recovery_controls_allowed = episode.ending is None and episode.stop_requested_at is None
@@ -224,6 +243,11 @@ def serialize_episode(
         project_id=episode.project_id,
         mode=episode.mode,
         control_node_id=episode.control_node_id,
+        graph_target=episode.graph_target,
+        graph_base_head=episode.graph_base_head,
+        graph_branch=(
+            branch_summary(episode) if owns_graph_branch and branch_summary is not None else None
+        ),
         root_operation_id=episode.root_operation_id,
         current_operation_id=current_operation_id,
         current_orchestrator_task_id=current_orchestrator_task_id,
@@ -263,6 +287,8 @@ def serialize_episodes(
     *,
     mode: EpisodeMode | None = None,
     limit: int = 50,
+    branch_summary: BranchSummaryResolver | None = None,
+    branch_summaries: BranchSummariesResolver | None = None,
 ) -> list[EpisodeResponse]:
     """Serialize the ordered project list, optionally limited to one episode mode."""
 
@@ -271,11 +297,37 @@ def serialize_episodes(
         project_id,
         limit=500 if mode is not None else bounded_limit,
     )
+    selected = [episode for episode in episodes if mode is None or episode.mode == mode][
+        :bounded_limit
+    ]
+    if branch_summary is not None and branch_summaries is not None:
+        raise ValueError("episode serialization accepts one branch summary strategy")
+    if branch_summaries is not None:
+        branch_episodes = [
+            episode
+            for episode in selected
+            if episode.mode == "auto_research"
+            and episode.graph_target.kind == "branch"
+            and episode.graph_target.branch_id == episode.episode_id
+        ]
+        resolved = branch_summaries(branch_episodes)
+        expected_ids = {episode.episode_id for episode in branch_episodes}
+        if set(resolved) != expected_ids:
+            raise ValueError("batched graph branch summaries do not match the episode list")
+
+        def resolve_branch(episode: EpisodeRecord) -> GraphBranchSummary:
+            return resolved[episode.episode_id]
+
+        branch_summary = resolve_branch
     return [
-        serialize_episode(store, project_id, episode)
-        for episode in episodes
-        if mode is None or episode.mode == mode
-    ][:bounded_limit]
+        serialize_episode(
+            store,
+            project_id,
+            episode,
+            branch_summary=branch_summary,
+        )
+        for episode in selected
+    ]
 
 
 def _operational_tasks(store: AppStore, episode: EpisodeRecord) -> list[AgentTaskRecord]:

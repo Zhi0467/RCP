@@ -105,8 +105,8 @@ state; there is no explanatory line under it.
 **Inside the project.** One **Invite member** control in Project Settings —
 placed there because the project shell header is deliberately bare — available to
 any member, offering only people already enrolled in that space. It lists them by
-name and resolves to the durable user id, because duplicate display names are
-legal under [S112](S112-basic-human-identity.md). The same panel lists who is on
+name and resolves to the durable user id; duplicate display names are legal. The
+same panel lists who is on
 the project, with no rank, owner, or role beside any name.
 
 **Leaving** is in the same place. When you are the only member it is visibly

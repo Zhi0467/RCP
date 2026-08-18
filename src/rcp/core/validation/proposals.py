@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import ValidationError
 
 from rcp.core.authority import (
     CONTENT_CHANGE_INTENT,
-    EVIDENCE_EDGE_CAUSE_KIND,
     HYPOTHESIS_PROPOSAL_FIELDS,
     MERGE_INTENT,
     PROPOSAL_INTENTS,
@@ -27,6 +25,26 @@ from rcp.core.models import (
     Patch,
     Proposal,
     ResearchQuestion,
+)
+from rcp.core.operations import (
+    CreateNodesOperation,
+    DecisionCause,
+    EvidenceEdgeCause,
+    GraphOperation,
+    LegacyProposalMergeOperation,
+    LegacyProposalProtectedRelationOperation,
+    LegacyProposalRemovalOperation,
+    LegacyProposalSupersedeOperation,
+    NodeUpdate,
+    ProposalContentChangeOperation,
+    ProposalMergeOperation,
+    ProposalOperation,
+    ProposalProtectedRelationOperation,
+    ProposalRemovalOperation,
+    ProposalStatusChangeOperation,
+    ProposalSupersedeOperation,
+    UpdateNodesOperation,
+    graph_operations_from_proposal,
 )
 from rcp.core.validation.constants import IDENTIFIER_RE
 from rcp.core.validation.nodes import oldest_source_ref
@@ -63,38 +81,40 @@ def decision_transition_error(decision: Decision, changes: dict[str, Any]) -> st
     return None
 
 
-def normalized_decision_proposal_ops(state: GraphState, proposal: Proposal) -> list[dict[str, Any]]:
+def normalized_decision_proposal_ops(state: GraphState, proposal: Proposal) -> list[GraphOperation]:
     """Add the one implied field accepted for legacy Decision Proposal approval."""
 
-    operations = deepcopy(proposal.ops)
+    operations = graph_operations_from_proposal(proposal.ops)
+    normalized: list[GraphOperation] = []
     for operation in operations:
-        if operation.get("op") != "update_nodes":
+        if not isinstance(operation, UpdateNodesOperation):
+            normalized.append(operation)
             continue
-        for update in operation.get("nodes", []):
-            if not isinstance(update, dict):
-                continue
-            node = state.nodes.get(update.get("id"))
-            changes = update.get("changes")
+        updates: list[NodeUpdate] = []
+        for update in operation.nodes:
+            node = state.nodes.get(update.id)
+            changes = dict(update.changes)
             if (
                 isinstance(node, Decision)
-                and isinstance(changes, dict)
                 and changes.get("selected_option") is not None
                 and "status" not in changes
                 and node.status != "decided"
             ):
                 changes["status"] = "decided"
-    return operations
+                update = update.model_copy(update={"changes": changes})
+            updates.append(update)
+        normalized.append(operation.model_copy(update={"nodes": updates}))
+    return normalized
 
 
 def proposal_updates_node(proposal: Proposal, node_id: str) -> bool:
     """Whether any semantic node update in a Proposal targets ``node_id``."""
 
     return any(
-        update.get("id") == node_id
+        update.id == node_id
         for operation in proposal.ops
-        if operation.get("op") == "update_nodes"
-        for update in operation.get("nodes", [])
-        if isinstance(update, dict)
+        if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation))
+        for update in operation.nodes
     )
 
 
@@ -143,9 +163,9 @@ def _proposal_removal_targets(proposal: Proposal) -> set[str]:
     return {
         node_id
         for operation in proposal.ops
-        if operation.get("op") == "remove_nodes" and operation.get("intent") == REMOVAL_INTENT
-        for node_id in operation.get("node_ids", [])
-        if isinstance(node_id, str)
+        if isinstance(operation, ProposalRemovalOperation)
+        and not isinstance(operation, LegacyProposalRemovalOperation)
+        for node_id in operation.node_ids
     }
 
 
@@ -153,22 +173,16 @@ def _proposal_reference_dependencies(proposal: Proposal) -> tuple[set[str], set[
     edge_ids: set[str] = set()
     decision_ids: set[str] = set()
     for op in proposal.ops:
-        if op.get("op") == "remove_edges":
-            edge_ids.update(
-                edge_id for edge_id in op.get("edge_ids", []) if isinstance(edge_id, str)
-            )
-        if op.get("op") != "update_nodes":
+        if isinstance(op, ProposalProtectedRelationOperation) and op.op == "remove_edges":
+            edge_ids.update(op.edge_ids or [])
+        if not isinstance(op, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
             continue
-        for update in op.get("nodes", []):
-            if not isinstance(update, dict):
-                continue
-            cause = update.get("cause")
-            if not isinstance(cause, dict) or not isinstance(cause.get("ref_id"), str):
-                continue
-            if cause.get("kind") == "evidence_edge":
-                edge_ids.add(cause["ref_id"])
-            elif cause.get("kind") == "decision":
-                decision_ids.add(cause["ref_id"])
+        for update in op.nodes:
+            cause = update.cause
+            if isinstance(cause, EvidenceEdgeCause):
+                edge_ids.add(cause.ref_id)
+            elif isinstance(cause, DecisionCause):
+                decision_ids.add(cause.ref_id)
     return edge_ids, decision_ids
 
 
@@ -177,41 +191,32 @@ def _proposal_created_edge_ids(proposal: Proposal) -> set[str]:
 
     edge_ids: set[str] = set()
     for operation in proposal.ops:
-        name = operation.get("op")
-        if name == "create_edges" and operation.get("intent") == PROTECTED_RELATION_CHANGE_INTENT:
-            for raw in operation.get("edges", []):
-                if not isinstance(raw, dict):
-                    continue
-                edge_id = raw.get("id")
-                if not isinstance(edge_id, str):
-                    source = raw.get("source")
-                    relation = raw.get("relation")
-                    target = raw.get("target")
-                    if all(isinstance(value, str) for value in (source, relation, target)):
-                        edge_id = f"{source}::{relation}::{target}"
-                if isinstance(edge_id, str):
-                    edge_ids.add(edge_id)
-        elif name == "supersede_nodes" and operation.get("intent") == SUPERSEDE_INTENT:
+        if (
+            isinstance(operation, ProposalProtectedRelationOperation)
+            and not isinstance(operation, LegacyProposalProtectedRelationOperation)
+            and operation.op == "create_edges"
+        ):
+            for raw in operation.edges or []:
+                edge_ids.add(raw.id or f"{raw.source}::{raw.relation}::{raw.target}")
+        elif isinstance(operation, ProposalSupersedeOperation) and not isinstance(
+            operation, LegacyProposalSupersedeOperation
+        ):
             edge_ids.update(
-                f"{item['id']}::supersedes::{item['superseded_by']}"
-                for item in operation.get("nodes", [])
-                if isinstance(item, dict)
-                and isinstance(item.get("id"), str)
-                and isinstance(item.get("superseded_by"), str)
+                f"{item.id}::supersedes::{item.superseded_by}"
+                for item in operation.nodes
+                if item.superseded_by is not None
             )
-        elif name == "merge_nodes" and operation.get("intent") == MERGE_INTENT:
+        elif isinstance(operation, ProposalMergeOperation) and not isinstance(
+            operation, LegacyProposalMergeOperation
+        ):
             edge_ids.update(
-                f"{item['duplicate']}::duplicate_of::{item['canonical']}"
-                for item in operation.get("merges", [])
-                if isinstance(item, dict)
-                and isinstance(item.get("duplicate"), str)
-                and isinstance(item.get("canonical"), str)
+                f"{item.duplicate}::duplicate_of::{item.canonical}" for item in operation.merges
             )
     return edge_ids
 
 
 def validate_proposal(
-    raw: dict[str, Any],
+    proposal: Proposal | dict[str, Any],
     state: GraphState,
     report: ValidationReport,
     revision: int | None,
@@ -225,13 +230,16 @@ def validate_proposal(
     include_card_flags: bool = False,
     context_patch: Patch | None = None,
 ) -> None:
-    try:
-        proposal = Proposal.model_validate(raw)
-    except ValidationError as exc:
-        report.reject(
-            "invalid-proposal", f"Proposal is malformed: {exc.errors()[0]['msg']}.", revision
-        )
-        return
+    if not isinstance(proposal, Proposal):
+        try:
+            proposal = Proposal.model_validate(proposal)
+        except ValidationError as exc:
+            report.reject(
+                "invalid-proposal",
+                f"Proposal is malformed: {exc.errors()[0]['msg']}.",
+                revision,
+            )
+            return
     if proposal.id in state.proposals:
         report.reject(
             "duplicate-proposal-id", f"Proposal {proposal.id!r} already exists.", revision
@@ -301,11 +309,11 @@ def _validate_agent_proposal_boundary(
     def refuse(message: str) -> None:
         report.reject("invalid-agent-proposal-shape", message, revision)
 
-    if len(proposal.ops) != 1 or not isinstance(proposal.ops[0], dict):
+    if len(proposal.ops) != 1:
         refuse(f"Proposal {proposal.id} must declare exactly one protected-change intent.")
         return
     operation = proposal.ops[0]
-    intent = operation.get("intent")
+    intent = operation.intent
     if intent not in PROPOSAL_INTENTS:
         refuse(
             f"Proposal {proposal.id} must declare one of these intents: "
@@ -328,19 +336,19 @@ def _validate_agent_proposal_boundary(
 def _validate_content_change_intent(
     state: GraphState,
     context_patch: Patch | None,
-    operation: dict[str, Any],
+    operation: ProposalOperation,
 ) -> str | None:
     update, error = _one_update(operation)
     if error is not None:
         return error
     assert update is not None
-    if set(update) != {"id", "changes"}:
+    if update.cause is not None or update.base_updated_rev is not None:
         return "a content change requires exactly id and changes, with no cause."
-    node = _existing_protected_node(state, context_patch, update.get("id"))
+    node = _existing_protected_node(state, context_patch, update.id)
     if node is None:
         return "a content change must target one existing ResearchQuestion or Hypothesis."
-    changes = update.get("changes")
-    if not isinstance(changes, dict) or not changes:
+    changes = update.changes
+    if not changes:
         return "a content change must contain at least one changed field."
     if "status" in changes and isinstance(node, Hypothesis):
         return "Hypothesis status belongs in a status_change intent."
@@ -352,13 +360,13 @@ def _validate_content_change_intent(
 def _validate_status_change_intent(
     state: GraphState,
     context_patch: Patch | None,
-    operation: dict[str, Any],
+    operation: ProposalOperation,
 ) -> str | None:
     update, error = _one_update(operation)
     if error is not None:
         return error
     assert update is not None
-    node = state.nodes.get(update.get("id"))
+    node = state.nodes.get(update.id)
     if isinstance(node, Decision):
         return (
             f"Decision {node.id!r} cannot be proposed by an agent; its outcome requires the "
@@ -366,21 +374,15 @@ def _validate_status_change_intent(
         )
     if not isinstance(node, Hypothesis):
         return "a status change must target one Hypothesis in the staged graph."
-    if set(update) != {"id", "changes", "cause"}:
+    if update.cause is None or update.base_updated_rev is not None:
         return "a status change requires exactly id, changes, and cause."
-    changes = update.get("changes")
-    if not isinstance(changes, dict) or set(changes) != HYPOTHESIS_PROPOSAL_FIELDS:
+    changes = update.changes
+    if set(changes) != HYPOTHESIS_PROPOSAL_FIELDS:
         return "a status change may change only Hypothesis status."
     if changes["status"] == node.status:
         return "a status change must actually change the Hypothesis status."
-    cause = update.get("cause")
-    if (
-        not isinstance(cause, dict)
-        or set(cause) != {"kind", "ref_id"}
-        or cause.get("kind") != EVIDENCE_EDGE_CAUSE_KIND
-        or not isinstance(cause.get("ref_id"), str)
-        or not cause["ref_id"]
-    ):
+    cause = update.cause
+    if not isinstance(cause, EvidenceEdgeCause) or not cause.ref_id:
         return "a status change requires an evidence_edge cause naming an epistemic edge."
     return None
 
@@ -388,12 +390,12 @@ def _validate_status_change_intent(
 def _validate_removal_intent(
     state: GraphState,
     context_patch: Patch | None,
-    operation: dict[str, Any],
+    operation: ProposalOperation,
 ) -> str | None:
-    if set(operation) != {"op", "intent", "node_ids"} or operation.get("op") != "remove_nodes":
+    if not isinstance(operation, ProposalRemovalOperation):
         return "removal requires exactly one remove_nodes operation."
-    node_ids = operation.get("node_ids")
-    if not isinstance(node_ids, list) or len(node_ids) != 1:
+    node_ids = operation.node_ids
+    if len(node_ids) != 1:
         return "removal must name exactly one node."
     if _existing_protected_node(state, context_patch, node_ids[0]) is None:
         return "removal must target one existing ResearchQuestion or Hypothesis."
@@ -403,18 +405,18 @@ def _validate_removal_intent(
 def _validate_supersede_intent(
     state: GraphState,
     context_patch: Patch | None,
-    operation: dict[str, Any],
+    operation: ProposalOperation,
 ) -> str | None:
-    if set(operation) != {"op", "intent", "nodes"} or operation.get("op") != "supersede_nodes":
+    if not isinstance(operation, ProposalSupersedeOperation):
         return "supersede requires exactly one supersede_nodes operation."
-    items = operation.get("nodes")
-    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+    items = operation.nodes
+    if len(items) != 1:
         return "supersede must name exactly one predecessor and successor."
     item = items[0]
-    if set(item) not in ({"id", "superseded_by"}, {"id", "superseded_by", "explanation"}):
+    if item.cause is not None:
         return "supersede accepts only id, superseded_by, and optional explanation."
-    node_id = item.get("id")
-    successor_id = item.get("superseded_by")
+    node_id = item.id
+    successor_id = item.superseded_by
     predecessor = _existing_protected_node(state, context_patch, node_id)
     if predecessor is None:
         return "supersede must retire one existing ResearchQuestion or Hypothesis."
@@ -431,18 +433,18 @@ def _validate_supersede_intent(
 def _validate_merge_intent(
     state: GraphState,
     context_patch: Patch | None,
-    operation: dict[str, Any],
+    operation: ProposalOperation,
 ) -> str | None:
-    if set(operation) != {"op", "intent", "merges"} or operation.get("op") != "merge_nodes":
+    if not isinstance(operation, ProposalMergeOperation):
         return "merge requires exactly one merge_nodes operation."
-    items = operation.get("merges")
-    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+    items = operation.merges
+    if len(items) != 1:
         return "merge must name exactly one duplicate and canonical node."
     item = items[0]
-    if set(item) not in ({"duplicate", "canonical"}, {"duplicate", "canonical", "explanation"}):
+    if item.cause is not None:
         return "merge accepts only duplicate, canonical, and optional explanation."
-    duplicate_id = item.get("duplicate")
-    canonical_id = item.get("canonical")
+    duplicate_id = item.duplicate
+    canonical_id = item.canonical
     duplicate = _existing_protected_node(state, context_patch, duplicate_id)
     if duplicate is None:
         return "merge must fold one existing ResearchQuestion or Hypothesis."
@@ -459,20 +461,20 @@ def _validate_merge_intent(
 def _validate_protected_relation_change_intent(
     state: GraphState,
     context_patch: Patch | None,
-    operation: dict[str, Any],
+    operation: ProposalOperation,
 ) -> str | None:
-    name = operation.get("op")
+    if not isinstance(operation, ProposalProtectedRelationOperation):
+        return "a protected relation change requires one create_edges or remove_edges operation."
+    name = operation.op
     if name == "create_edges":
-        if set(operation) != {"op", "intent", "edges"}:
-            return "a protected relation creation accepts only op, intent, and edges."
-        edges = operation.get("edges")
-        if not isinstance(edges, list) or len(edges) != 1 or not isinstance(edges[0], dict):
+        edges = operation.edges or []
+        if len(edges) != 1:
             return "a protected relation change must create exactly one edge."
         edge = edges[0]
-        endpoints = (edge.get("source"), edge.get("target"))
-        if edge.get("relation") not in PROTECTED_EPISTEMIC_RELATIONS:
+        endpoints = (edge.source, edge.target)
+        if edge.relation not in PROTECTED_EPISTEMIC_RELATIONS:
             return "a protected relation change must use a protected relation."
-        if edge.get("relation") in {"supersedes", "duplicate_of"}:
+        if edge.relation in {"supersedes", "duplicate_of"}:
             return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
         if context_patch is not None and any(
             node_id in created_node_ids(context_patch) for node_id in endpoints
@@ -484,10 +486,8 @@ def _validate_protected_relation_change_intent(
             return "a protected relation change must touch an existing belief node."
         return None
     if name == "remove_edges":
-        if set(operation) != {"op", "intent", "edge_ids"}:
-            return "a protected relation removal accepts only op, intent, and edge_ids."
-        edge_ids = operation.get("edge_ids")
-        if not isinstance(edge_ids, list) or len(edge_ids) != 1:
+        edge_ids = operation.edge_ids or []
+        if len(edge_ids) != 1:
             return "a protected relation change must remove exactly one edge."
         edge_id = edge_ids[0]
         edge = state.edges.get(edge_id) if isinstance(edge_id, str) else None
@@ -506,11 +506,11 @@ def _validate_protected_relation_change_intent(
     return "a protected relation change requires one create_edges or remove_edges operation."
 
 
-def _one_update(operation: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    if set(operation) != {"op", "intent", "nodes"} or operation.get("op") != "update_nodes":
+def _one_update(operation: ProposalOperation) -> tuple[NodeUpdate | None, str | None]:
+    if not isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
         return None, "the declared intent requires exactly one update_nodes operation."
-    updates = operation.get("nodes")
-    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
+    updates = operation.nodes
+    if len(updates) != 1:
         return None, "the declared intent must update exactly one node."
     return updates[0], None
 
@@ -544,12 +544,12 @@ def _protected_node_type(
     if context_patch is None:
         return None
     for operation in context_patch.ops:
-        if operation.get("op") != "create_nodes":
+        if not isinstance(operation, CreateNodesOperation):
             continue
-        for raw in operation.get("nodes", []):
-            if not isinstance(raw, dict) or raw.get("id") != node_id:
+        for raw in operation.nodes:
+            if raw.id != node_id:
                 continue
-            node_type = raw.get("type")
+            node_type = raw.type
             return node_type if node_type in {"research_question", "hypothesis"} else None
     return None
 
@@ -572,38 +572,14 @@ def _validate_proposal_ops(
     from rcp.core.validation.context import OpContext
     from rcp.core.validation.patch import _validate_operations
 
-    control_ops = {
-        str(op.get("op", ""))
-        for op in proposal.ops
-        if op.get("op")
-        in {
-            "create_proposals",
-            "resolve_proposals",
-            "withdraw_proposals",
-            "set_standing",
-        }
-    }
-    if control_ops:
-        report.reject(
-            "invalid-proposal-ops",
-            f"Proposal {proposal.id} contains approval-control operations: "
-            f"{', '.join(sorted(control_ops))}.",
-            revision,
-        )
-        return
-
     if validation_mode == "admission" and context_patch is not None:
         for operation in proposal.ops:
-            if (
-                operation.get("op") != "update_nodes"
-                or operation.get("intent") != CONTENT_CHANGE_INTENT
-            ):
+            if not isinstance(operation, ProposalContentChangeOperation):
                 continue
-            for update in operation.get("nodes", []):
-                changes = update.get("changes", {}) if isinstance(update, dict) else {}
-                if isinstance(changes, dict) and changes.get("source_refs"):
+            for update in operation.nodes:
+                if update.changes.get("source_refs"):
                     oldest_source_ref(
-                        {"source_refs": changes["source_refs"]}, context_patch, report
+                        {"source_refs": update.changes["source_refs"]}, context_patch, report
                     )
 
     synthetic_state = state.model_copy(
@@ -621,7 +597,7 @@ def _validate_proposal_ops(
         kind="approval",
         author="human",
         summary=f"Validate replay operations for {proposal.id}.",
-        ops=list(proposal.ops),
+        ops=graph_operations_from_proposal(proposal.ops),
     )
     replay_report = ValidationReport()
     replay_context = OpContext(

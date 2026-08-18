@@ -123,6 +123,8 @@ export function taskKindLabel(kind: AgentTaskKind): string {
       return "Writing coach";
     case "auto_research":
       return "Auto-research";
+    case "branch_merge":
+      return "Branch merge";
   }
 }
 

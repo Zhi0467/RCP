@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.config import Manifest
 from rcp.core.models import GraphState, Patch
+from rcp.core.operations import SetCoverageOperation
 from rcp.history.delta import RefreshDelta
 from rcp.transport import RepositoryAccess
 
@@ -231,7 +232,7 @@ def validate_work_patch(patch: Patch) -> None:
             "A Work patch must not claim processed_cursors; only seed and refresh read "
             "conversations forward from a cursor."
         )
-    if any(operation.get("op") == "set_coverage" for operation in patch.ops):
+    if any(isinstance(operation, SetCoverageOperation) for operation in patch.ops):
         raise ValueError(
             "A Work patch must not set coverage; only seed and refresh move the coverage boundary."
         )

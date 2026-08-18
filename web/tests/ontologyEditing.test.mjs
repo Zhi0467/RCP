@@ -148,3 +148,34 @@ test("custom node payload is full, asserted, slugged, and preserves the base sem
     mechanism: "Refreshes update directions.",
   });
 });
+
+test("custom Evidence defaults to a result role without authoring compatibility strength", () => {
+  const evidenceOntology = {
+    ...ontology,
+    types: [
+      ...ontology.types,
+      {
+        name: "evaluation_result",
+        definition: "A project-specific evaluation observation.",
+        base_type: "evidence",
+        layer: "epistemic",
+        deprecated: false,
+      },
+    ],
+  };
+  const node = makeCustomNode(
+    evidenceOntology,
+    "evaluation_result",
+    "Held-out Gain",
+    "Held-out gain",
+    "The held-out score increased.",
+    "internal_run",
+    {},
+  );
+
+  assert.equal(node.type, "evidence");
+  assert.equal(node.role, "result");
+  assert.equal(node.origin, "internal_run");
+  assert.equal("strength" in node, false);
+  assert.equal("legacy_strength" in node, false);
+});

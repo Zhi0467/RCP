@@ -31,6 +31,7 @@ from rcp.agents.command_protocol import (
 from rcp.background import AutoResearchChildResumeResult, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import Blocker, GraphState
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_COMMAND_EVENT_MAX_BYTES
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
@@ -130,6 +131,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
     )
     now = store.now()
     authorizer = fabricated_authorizer()
+    graph_target = GraphTargetRef(kind="branch", branch_id="auto_research")
     request = AutoResearchRunRequest(
         episode_id="auto_research",
         role="orchestrator",
@@ -143,6 +145,8 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
             episode_id="auto_research",
             project_id="project",
             mode="auto_research",
+            graph_target=graph_target,
+            graph_base_head=GraphHeadRef(revision=0),
             status="queued",
             invocation_ceiling=8,
             authorized_by=authorizer,
@@ -159,6 +163,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
             operation_id="root",
             project_id="project",
             episode_id="auto_research",
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -239,6 +244,7 @@ def _create_worker(
             operation_id=operation_id,
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status=status,
             request=request.model_dump(mode="json"),
@@ -299,6 +305,7 @@ def _create_routed_worker(
             operation_id=operation_id,
             project_id=auto_research.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="node_chat",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -340,6 +347,7 @@ def _create_worker_recovery(
         operation_id=operation_id,
         project_id=auto_research.project_id,
         episode_id=auto_research.episode_id,
+        graph_target=auto_research.graph_target,
         kind="node_chat",
         status="queued",
         request=request.model_dump(mode="json"),

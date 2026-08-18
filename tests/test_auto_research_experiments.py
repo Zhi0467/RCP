@@ -16,6 +16,7 @@ from rcp.agents import AgentEvent
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import Manifest, write_agent_settings
 from rcp.core.models import Experiment, Patch
+from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
 from rcp.runs.auto_research import AutoResearchStartRequest
@@ -265,14 +266,22 @@ def _setup(
         PROJECT_ID,
         _auto_start(ceiling=ceiling),
         authorized_by=fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id=f"parent-{tmp_path.name}",
         operation_id=f"root-{tmp_path.name}",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
+    assert parent.graph_target.kind == "branch"
+    assert parent.graph_target.branch_id == parent.episode_id
+    assert parent.graph_base_head == GraphHeadRef(revision=0)
+    assert root.graph_target == parent.graph_target
     coordinator = AutoResearchExperimentCoordinator(
         store,
         background,
-        project_service=lambda project_id: service if project_id == PROJECT_ID else None,  # type: ignore[return-value]
+        project_service=lambda project_id, _episode_id: (
+            service if project_id == PROJECT_ID else None
+        ),  # type: ignore[return-value]
         operation_lock=lambda _project_id: nullcontext(),
     )
     return service, store, background, coordinator, parent.episode_id, root.operation_id
@@ -340,6 +349,12 @@ def test_kickoff_preserves_optional_goal_and_uses_current_node_work_profile(
     assert action.disposition == "created"
     task = store.agent_task(action.operation_id or "")
     assert task is not None
+    child = store.episode(child_id)
+    assert child is not None
+    assert child.graph_target == task.graph_target
+    assert child.graph_target.kind == "branch"
+    assert child.graph_target.branch_id == parent_id
+    assert child.graph_base_head == GraphHeadRef(revision=0)
     assert task.request["message"] == expected_message
     assert task.request["control_invocation_ceiling"] == expected_ceiling
     assert (task.request["provider"], task.request["model"], task.request["reasoning"]) == (
@@ -523,7 +538,9 @@ def test_allowance_is_rechecked_after_waiting_for_experiment_operation_lock(
     coordinator = AutoResearchExperimentCoordinator(
         store,
         background,
-        project_service=lambda project_id: service if project_id == PROJECT_ID else None,  # type: ignore[return-value]
+        project_service=lambda project_id, _episode_id: (
+            service if project_id == PROJECT_ID else None
+        ),  # type: ignore[return-value]
         operation_lock=lambda _project_id: locked_operation(),
     )
     arguments = {
@@ -1201,7 +1218,9 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
     restarted_coordinator = AutoResearchExperimentCoordinator(
         store,
         restarted,
-        project_service=lambda project_id: service if project_id == PROJECT_ID else None,  # type: ignore[return-value]
+        project_service=lambda project_id, _episode_id: (
+            service if project_id == PROJECT_ID else None
+        ),  # type: ignore[return-value]
         operation_lock=lambda _project_id: nullcontext(),
     )
     assert recovery_started.wait(timeout=2)

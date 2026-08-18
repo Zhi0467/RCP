@@ -20,9 +20,11 @@ from rcp.core.models import (
     Standing,
     ValidationMessage,
 )
+from rcp.core.operations import graph_operation_from_proposal, graph_operations_from_proposal
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import proposal_dependencies, validate_patch
 from rcp.core.validation.proposals import proposal_is_stale
+from tests.helpers import proposal_operation
 
 
 def _patch(revision: int, ops: list[dict[str, object]], **changes: object) -> Patch:
@@ -84,7 +86,7 @@ def _approval_state(ops: list[dict[str, object]]) -> GraphState:
             consequences="The graph records a new belief.",
             decision_needed="Approve the belief update.",
         ),
-        ops=ops,
+        ops=[proposal_operation(operation) for operation in ops],
         related_node_ids=["hyp/main"],
         base_rev=3,
         raised_rev=3,
@@ -94,10 +96,11 @@ def _approval_state(ops: list[dict[str, object]]) -> GraphState:
 
 
 def _approval_patch(ops: list[dict[str, object]]) -> Patch:
+    proposal_ops = [proposal_operation(operation) for operation in ops]
     return _patch(
         4,
         [
-            *ops,
+            *graph_operations_from_proposal(proposal_ops),
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": "prop/change-belief", "status": "approved"}],
@@ -203,6 +206,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
     evidence_ops = [
         {
             "op": "update_nodes",
+            "intent": "status_change",
             "nodes": [
                 {
                     "id": "hyp/main",
@@ -233,6 +237,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
     decision_ops = [
         {
             "op": "update_nodes",
+            "intent": "status_change",
             "nodes": [
                 {
                     "id": "hyp/main",
@@ -260,6 +265,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
         ops = [
             {
                 "op": "update_nodes",
+                "intent": "status_change",
                 "nodes": [{"id": "hyp/main", "changes": {"status": "active"}, "cause": cause}],
             }
         ]
@@ -270,6 +276,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
     invalid = [
         {
             "op": "update_nodes",
+            "intent": "status_change",
             "nodes": [
                 {
                     "id": "hyp/main",
@@ -279,9 +286,8 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
             ],
         }
     ]
-    assert "invalid-belief-cause" in _codes(
-        validate_patch(_approval_state(invalid), _approval_patch(invalid), ["repo"])
-    )
+    with pytest.raises(ValidationError, match="cause"):
+        _approval_state(invalid)
 
 
 def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
@@ -322,6 +328,11 @@ def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
                         "source": "ev/result",
                         "target": "hyp/main",
                         "relation": "supports",
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "moderate",
+                            "scope": "The intervention result.",
+                        },
                     }
                 ],
             },
@@ -353,6 +364,7 @@ def test_existing_decision_belief_cause_is_replay_only() -> None:
     proposal_ops: list[dict[str, object]] = [
         {
             "op": "update_nodes",
+            "intent": "status_change",
             "nodes": [
                 {
                     "id": "hyp/main",
@@ -562,7 +574,12 @@ def test_rejected_admission_is_skipped_and_later_revision_applies() -> None:
     )
     rejected = _patch(
         1,
-        [{"op": "invent_nodes"}],
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": "rq/missing", "changes": {"title": "Missing target"}}],
+            }
+        ],
         admission="rejected",
         admission_messages=[rejection],
     )
@@ -665,16 +682,19 @@ def test_belief_history_is_derived_from_accepted_patch_log() -> None:
             }
         ],
     )
-    update = {
-        "op": "update_nodes",
-        "nodes": [
-            {
-                "id": "hyp/main",
-                "changes": {"status": "active"},
-                "cause": {"kind": "proposal_resolution", "ref_id": "prop/activate"},
-            }
-        ],
-    }
+    proposal_update = proposal_operation(
+        {
+            "op": "update_nodes",
+            "intent": "status_change",
+            "nodes": [
+                {
+                    "id": "hyp/main",
+                    "changes": {"status": "active"},
+                    "cause": {"kind": "proposal_resolution", "ref_id": "prop/activate"},
+                }
+            ],
+        }
+    )
     propose = _patch(
         2,
         [
@@ -685,7 +705,7 @@ def test_belief_history_is_derived_from_accepted_patch_log() -> None:
                         "id": "prop/activate",
                         "title": "Activate the hypothesis",
                         "card": {},
-                        "ops": [update],
+                        "ops": [proposal_update],
                         "related_node_ids": ["hyp/main"],
                         "base_rev": 1,
                     }
@@ -696,7 +716,7 @@ def test_belief_history_is_derived_from_accepted_patch_log() -> None:
     approve = _patch(
         3,
         [
-            update,
+            graph_operation_from_proposal(proposal_update),
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": "prop/activate", "status": "approved"}],
@@ -756,11 +776,15 @@ def test_remove_nodes_keeps_a_dependent_proposal_pending_and_makes_it_stale() ->
         [
             {
                 "op": "update_nodes",
+                "intent": "content_change",
                 "nodes": [{"id": "hyp/main", "changes": {"status": "active"}}],
             }
         ]
     )
-    operation = {"op": "remove_nodes", "node_ids": ["hyp/main"]}
+    proposal_op = proposal_operation(
+        {"op": "remove_nodes", "intent": "removal", "node_ids": ["hyp/main"]}
+    )
+    operation = graph_operation_from_proposal(proposal_op)
     patch = _patch(
         4,
         [operation],
@@ -770,7 +794,7 @@ def test_remove_nodes_keeps_a_dependent_proposal_pending_and_makes_it_stale() ->
         repositories_read=[],
     )
 
-    assert proposal_dependencies(state, [operation]) == (["hyp/main"], [], [])
+    assert proposal_dependencies(state, [proposal_op]) == (["hyp/main"], [], [])
     assert not validate_patch(state, patch, ["repo"]).rejected
 
     updated = apply_valid_operation(state, patch, operation)
@@ -864,59 +888,78 @@ def _dependency_state() -> GraphState:
 
 
 def test_proposal_dependencies_walks_every_operation_not_just_the_first() -> None:
-    # create_nodes declares no dependencies, so the walk must skip it and keep
-    # going. Stopping there instead would silently drop the removal that follows,
-    # and the Proposal would claim to depend on nothing at all.
+    # Both typed operations contribute dependencies. Stopping after the first
+    # would silently drop the removal and its incident edge.
     state = _dependency_state()
     ops = [
-        {"op": "create_nodes", "nodes": [{"id": "hyp/new", "type": "hypothesis"}]},
-        {"op": "remove_nodes", "node_ids": ["hyp/main"]},
+        proposal_operation(
+            {
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [{"id": "dec/scope", "changes": {"title": "Updated scope"}}],
+            }
+        ),
+        proposal_operation({"op": "remove_nodes", "intent": "removal", "node_ids": ["hyp/main"]}),
     ]
 
-    assert proposal_dependencies(state, ops) == (["hyp/main"], ["edge/informs"], [])
+    assert proposal_dependencies(state, ops) == (
+        ["dec/scope", "hyp/main"],
+        ["edge/informs"],
+        [],
+    )
 
 
 def test_proposal_dependencies_records_the_decision_a_status_change_cites() -> None:
     # A status change caused by a Decision depends on that Decision node; one
     # caused by an evidence edge depends on the edge instead.
     state = _dependency_state()
-    by_decision = {
-        "op": "update_nodes",
-        "nodes": [
-            {
-                "id": "hyp/main",
-                "changes": {"status": "active"},
-                "cause": {"kind": "decision", "ref_id": "dec/scope"},
-            }
-        ],
-    }
-    by_edge = {
-        "op": "update_nodes",
-        "nodes": [
-            {
-                "id": "hyp/main",
-                "changes": {"status": "active"},
-                "cause": {"kind": "evidence_edge", "ref_id": "edge/informs"},
-            }
-        ],
-    }
+    by_decision = proposal_operation(
+        {
+            "op": "update_nodes",
+            "intent": "status_change",
+            "nodes": [
+                {
+                    "id": "hyp/main",
+                    "changes": {"status": "active"},
+                    "cause": {"kind": "decision", "ref_id": "dec/scope"},
+                }
+            ],
+        }
+    )
+    by_edge = proposal_operation(
+        {
+            "op": "update_nodes",
+            "intent": "status_change",
+            "nodes": [
+                {
+                    "id": "hyp/main",
+                    "changes": {"status": "active"},
+                    "cause": {"kind": "evidence_edge", "ref_id": "edge/informs"},
+                }
+            ],
+        }
+    )
 
     assert proposal_dependencies(state, [by_decision]) == (["dec/scope", "hyp/main"], [], [])
     assert proposal_dependencies(state, [by_edge]) == (["hyp/main"], ["edge/informs"], [])
 
 
-def test_proposal_dependencies_ignores_operations_it_has_no_rule_for() -> None:
-    # An unknown operation name must be skipped rather than crash the walk, and a
-    # known one that declares no dependencies must contribute nothing.
+def test_proposal_dependencies_rejects_operations_outside_the_typed_contract() -> None:
     state = _dependency_state()
-    removal = {"op": "remove_edges", "edge_ids": ["edge/informs"]}
-    ops = [
-        {"op": "invent_nodes", "nodes": []},
-        {"op": "upsert_glossary", "terms": []},
-        removal,
-    ]
+    with pytest.raises(ValidationError):
+        proposal_operation({"op": "invent_nodes", "nodes": []})
+    with pytest.raises(ValidationError):
+        proposal_operation({"op": "upsert_glossary", "terms": []})
 
-    # Removing an edge depends on both of its endpoints, and prefixing the walk
-    # with a rule-free and an unknown operation must not change that answer.
-    assert proposal_dependencies(state, ops) == proposal_dependencies(state, [removal])
-    assert proposal_dependencies(state, ops) == (["dec/scope", "hyp/main"], ["edge/informs"], [])
+    removal = proposal_operation(
+        {
+            "op": "remove_edges",
+            "intent": "protected_relation_change",
+            "edge_ids": ["edge/informs"],
+        }
+    )
+    assert proposal_dependencies(state, [removal]) == (
+        ["dec/scope", "hyp/main"],
+        ["edge/informs"],
+        [],
+    )

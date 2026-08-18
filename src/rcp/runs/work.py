@@ -46,11 +46,13 @@ from rcp.agents.prompts import (
     invoked_package_pointers,
     invoked_provider_skill_section,
 )
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin, Patch
+from rcp.core.operations import CreateProposalsOperation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
@@ -79,6 +81,7 @@ from rcp.runs.chat import (
     _logical_chat_turn_operation_id,
     _prepare_chat_prompt_state,
     _prepare_local_artifact_directory,
+    _project_write_scope,
     _read_chat_patch,
     _read_watch_request,
     _record_applied_graph_revision,
@@ -87,7 +90,6 @@ from rcp.runs.chat import (
     _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
-    _work_write_dirs,
 )
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
@@ -222,6 +224,7 @@ class WorkTurn:
     provider_binary: str | None
     read_dirs: list[Path]
     write_dirs: list[Path]
+    write_scope: ProjectWriteScope
     patch_inputs: _ChatPatchInputs
     validator_lifecycle: _WorkValidatorMailboxLifecycle
     validator_budget: PatchValidationBudget
@@ -299,6 +302,7 @@ async def _stream_turn_agent_events(
             session_id=session_id,
             read_dirs=turn.read_dirs,
             write_dirs=turn.write_dirs,
+            write_scope=turn.write_scope,
             execution_host=turn.execution_host,
             execution=turn.execution,
             remote_stage=turn.remote_stage,
@@ -904,6 +908,7 @@ def _prepare_work_chat_prompt(
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     result_view: _PreparedResultView | None,
+    write_scope: ProjectWriteScope,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -932,6 +937,7 @@ def _prepare_work_chat_prompt(
         attachments=attachment_pointers,
         result_view_action=result_view.action if result_view is not None else None,
         result_view_path=result_view.prompt_path if result_view is not None else None,
+        write_scope=write_scope,
     )
     return prompt, retained_master_path
 
@@ -990,6 +996,7 @@ def _experiment_maintenance_binding(
         chat_id=chat_id,
         node_id=resource.control_node_id,
         episode_id=resource.continuation.control_episode_id,
+        graph_target=task.graph_target,
         execution_host=resource.execution_host,
         continuation=resource.continuation,
     )
@@ -1010,6 +1017,7 @@ async def _process_experiment_watcher_maintenance(
     native_session_id: str | None,
     read_dirs: list[Path | PurePosixPath],
     write_dirs: list[Path | PurePosixPath],
+    write_scope: ProjectWriteScope,
     execution_host: str,
     provider_binary: str | None,
     retry_output_digests: dict[str, str],
@@ -1020,7 +1028,10 @@ async def _process_experiment_watcher_maintenance(
         return [], native_session_id, False
     frames: list[str] = []
     staged_by_name = {
-        experiment_watcher_output_name(item.resource.control_node_id): item
+        experiment_watcher_output_name(
+            item.resource.control_node_id,
+            item.resource.graph_target,
+        ): item
         for item in staged_resources
     }
     try:
@@ -1215,6 +1226,7 @@ async def _process_experiment_watcher_maintenance(
                 contract_path=correction_path,
                 remote=bool(execution_host),
                 resumed=True,
+                write_scope=write_scope,
                 continuation="watch_correction",
                 extra={
                     "surface": binding.origin_task_kind,
@@ -1239,6 +1251,7 @@ async def _process_experiment_watcher_maintenance(
                     session_id=native_session_id,
                     read_dirs=read_dirs,
                     write_dirs=write_dirs,
+                    write_scope=write_scope,
                     execution_host=execution_host,
                     execution=execution,
                     remote_stage=remote_stage,
@@ -1578,12 +1591,17 @@ async def _stage_work_turn(
             service,
             resolved.execution_machine_alias,
         )
-        write_dirs = _work_write_dirs(
+        write_scope = _project_write_scope(
             context,
             service,
             resolved.execution_machine_alias,
-            remote=remote_stage is not None,
+            workspace=workspace,
+            remote_stage=remote_stage,
+            data_dir=data_dir,
+            execution=execution,
+            capability="work_auto",
         )
+        write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = (
             await stage_chat_experiment_watcher_resources(
                 request,
@@ -1641,6 +1659,7 @@ async def _stage_work_turn(
             provider_binary=resolved.provider_binary,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
+            write_scope=write_scope,
             patch_inputs=patch_inputs,
             validator_lifecycle=validator_lifecycle,
             validator_budget=validator_budget,
@@ -2023,6 +2042,7 @@ def _compose_fresh_prompt(
                 artifact_path=str(staged.artifact_directory),
                 output_schema_path=turn.patch_inputs.schema_path,
                 validator_command=turn.patch_inputs.validator_command,
+                write_scope=turn.write_scope,
                 execution_host=turn.execution_host,
                 recovery_diagnostics_path=(
                     retry_diagnostics_path if prepared.provider_switch_recovery else None
@@ -2054,6 +2074,7 @@ def _compose_fresh_prompt(
                 execution_host=turn.execution_host,
                 experiment_watcher_resources=staged.experiment_resource_pointers,
                 validator_command=turn.patch_inputs.validator_command,
+                write_scope=turn.write_scope,
                 skill_pointers=staged.skill_pointers,
                 invoked_skill_pointers=invoked_package_pointers(
                     staged.skill_pointers,
@@ -2152,6 +2173,7 @@ def _compose_fresh_prompt(
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         result_view=staged.prepared_result_view,
+        write_scope=turn.write_scope,
     )
     return _ComposedWorkPrompt(
         contract_path=retained_master_path,
@@ -2605,6 +2627,7 @@ async def _validate_watch_deliverable(
                 if turn.request.patch_kind == "experiment_loop"
                 else None
             ),
+            graph_target=origin_task.graph_target,
             execution_host=turn.execution_host,
             continuation=_watcher_continuation(turn, staged),
         )
@@ -2865,6 +2888,7 @@ async def _settle_patch_deliverable(
                 contract_path=correction_path,
                 remote=bool(turn.execution_host),
                 resumed=True,
+                write_scope=turn.write_scope,
                 continuation="graph_correction",
                 extra={
                     "surface": turn.surface,
@@ -3046,6 +3070,7 @@ async def _settle_watch_deliverable(
                 contract_path=correction_path,
                 remote=bool(turn.execution_host),
                 resumed=True,
+                write_scope=turn.write_scope,
                 continuation="watch_correction",
                 extra={
                     "surface": turn.surface,
@@ -3079,6 +3104,7 @@ async def _settle_watch_deliverable(
                     session_id=settled.native_session_id,
                     read_dirs=turn.read_dirs,
                     write_dirs=turn.write_dirs,
+                    write_scope=turn.write_scope,
                     execution_host=turn.execution_host,
                     execution=turn.execution,
                     remote_stage=turn.remote_stage,
@@ -3158,6 +3184,7 @@ async def _apply_work_turn(
         native_session_id=applied.native_session_id,
         read_dirs=turn.read_dirs,
         write_dirs=turn.write_dirs,
+        write_scope=turn.write_scope,
         execution_host=turn.execution_host,
         provider_binary=turn.provider_binary,
         retry_output_digests=retry_baseline.experiment_watch_digests,
@@ -3338,6 +3365,7 @@ async def _apply_experiment_loop_turn(
                     contract_path=correction_path,
                     remote=bool(turn.execution_host),
                     resumed=True,
+                    write_scope=turn.write_scope,
                     continuation="graph_correction",
                     extra={
                         "surface": turn.surface,
@@ -3578,6 +3606,7 @@ async def _launch_and_stream_work_turn(
             contract_path=contract_path,
             remote=bool(turn.execution_host),
             resumed=turn.reusing_checkpoint,
+            write_scope=turn.write_scope,
             continuation=turn.continuation,
             extra={
                 "surface": turn.surface,
@@ -3965,12 +3994,17 @@ async def _stream_work_graph_repair(
             service,
             execution_machine.alias,
         )
-        write_dirs = _work_write_dirs(
+        write_scope = _project_write_scope(
             context,
             service,
             execution_machine.alias,
-            remote=remote_stage is not None,
+            workspace=workspace,
+            remote_stage=remote_stage,
+            data_dir=data_dir,
+            execution=execution,
+            capability="work_auto",
         )
+        write_dirs = [Path(item) for item in write_scope.repository_roots]
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
@@ -3985,6 +4019,7 @@ async def _stream_work_graph_repair(
             provider_binary=provider_binary,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
+            write_scope=write_scope,
             patch_inputs=patch_inputs,
             validator_lifecycle=validator_lifecycle,
             validator_budget=validator_budget,
@@ -4044,6 +4079,7 @@ async def _stream_work_graph_repair(
             contract_path=contract_path,
             remote=bool(execution_host),
             resumed=True,
+            write_scope=write_scope,
             continuation="graph_repair",
             extra={
                 "surface": surface,
@@ -4752,6 +4788,7 @@ async def _stream_work_agent_events(
     session_id: str | None,
     read_dirs: list[Path],
     write_dirs: list[Path],
+    write_scope: ProjectWriteScope,
     execution_host: str,
     execution: AgentTaskExecution | None,
     remote_stage: RemoteRunStage | None,
@@ -4787,6 +4824,7 @@ async def _stream_work_agent_events(
                 session_id=session_id,
                 read_dirs=read_dirs,
                 write_dirs=write_dirs,
+                write_scope=write_scope,
                 execution_host=execution_host,
                 execution=execution,
                 remote_stage=remote_stage,
@@ -5119,14 +5157,9 @@ def _apply_work_patch(
 def _work_patch_proposal_ids(patch: Patch) -> list[str]:
     proposal_ids: list[str] = []
     for operation in patch.ops:
-        if operation.get("op") != "create_proposals":
+        if not isinstance(operation, CreateProposalsOperation):
             continue
-        proposals = operation.get("proposals")
-        if not isinstance(proposals, list):
-            continue
-        for proposal in proposals:
-            if isinstance(proposal, dict) and isinstance(proposal.get("id"), str):
-                proposal_ids.append(proposal["id"])
+        proposal_ids.extend(proposal.id for proposal in operation.proposals)
     return list(dict.fromkeys(proposal_ids))
 
 

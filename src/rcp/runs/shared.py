@@ -20,10 +20,12 @@ from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, Patch
+from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
-from rcp.providers import AgentCapability
+from rcp.providers import AgentCapability, project_write_enforcement_mode
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -408,9 +410,31 @@ def _record_agent_launch_receipt(
     contract_path: str,
     remote: bool,
     resumed: bool,
+    write_scope: ProjectWriteScope | None = None,
     continuation: str | None = None,
     extra: dict[str, object],
 ) -> None:
+    capability = extra.get("capability")
+    scope_payload: dict[str, object] = {}
+    if capability in {"work_auto", "orchestrate"}:
+        if write_scope is None:
+            raise ValueError(f"{capability} launch receipt requires a project write scope")
+        if execution is not None:
+            execution.bind_write_scope(write_scope)
+        scope_payload = {
+            "project_id": write_scope.project_id,
+            "execution_machine": write_scope.execution_machine,
+            "execution_host": write_scope.execution_host,
+            "capability": write_scope.capability,
+            "canonical_write_roots": write_scope.writable_roots,
+            "canonical_repository_roots": write_scope.repository_roots,
+            "protected_write_paths": write_scope.protected_write_paths,
+            "write_scope_fingerprint": write_scope.fingerprint,
+            "provider_enforcement_mode": project_write_enforcement_mode(request.provider),
+            "canonical_state_boundary": "provider_enforced",
+        }
+    elif write_scope is not None:
+        raise ValueError(f"{capability!r} launch cannot record a project write scope")
     if execution is None:
         return
     execution.store.record_agent_task_receipt(
@@ -423,6 +447,7 @@ def _record_agent_launch_receipt(
             "resumed": resumed,
             **({"continuation_cause": continuation} if continuation is not None else {}),
             **extra,
+            **scope_payload,
         },
     )
     encoded = prompt.encode("utf-8")
@@ -438,6 +463,7 @@ def _record_agent_launch_receipt(
             "resumed": resumed,
             **({"continuation_cause": continuation} if continuation is not None else {}),
             **extra,
+            **scope_payload,
         },
         tier="diagnostic",
     )
@@ -471,6 +497,7 @@ async def _stream_agent_events(
     session_id: str | None,
     read_dirs: list[Path],
     write_dirs: list[Path],
+    write_scope: ProjectWriteScope | None,
     execution_host: str,
     execution: AgentTaskExecution | None,
     remote_stage: RemoteRunStage | None,
@@ -502,6 +529,7 @@ async def _stream_agent_events(
             session_id=session_id,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
+            write_scope=write_scope,
             host=execution_host,
             control=execution.control if execution is not None else None,
             remote_pid_file=(
@@ -608,34 +636,16 @@ def _record_patch_receipt(
 ) -> None:
     if execution is None:
         return
-    known_operations = {
-        "create_nodes",
-        "update_nodes",
-        "create_edges",
-        "remove_edges",
-        "remove_nodes",
-        "supersede_nodes",
-        "merge_nodes",
-        "upsert_glossary",
-        "set_coverage",
-        "set_project_truth_scope",
-        "create_proposals",
-        "resolve_proposals",
-        "withdraw_proposals",
-    }
     operation_counts: dict[str, int] = {}
     created_node_count = 0
     created_edge_count = 0
     for operation in patch.ops:
-        raw_kind = operation.get("op")
-        operation_kind = (
-            raw_kind if isinstance(raw_kind, str) and raw_kind in known_operations else "unknown"
-        )
+        operation_kind = operation.op
         operation_counts[operation_kind] = operation_counts.get(operation_kind, 0) + 1
-        if operation_kind == "create_nodes" and isinstance(operation.get("nodes"), list):
-            created_node_count += len(operation["nodes"])
-        if operation_kind == "create_edges" and isinstance(operation.get("edges"), list):
-            created_edge_count += len(operation["edges"])
+        if isinstance(operation, CreateNodesOperation):
+            created_node_count += len(operation.nodes)
+        if isinstance(operation, CreateEdgesOperation):
+            created_edge_count += len(operation.edges)
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "patch_parsed",

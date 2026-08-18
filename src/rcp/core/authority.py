@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from hashlib import sha256
-from typing import Any, Literal, get_args
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -14,6 +14,27 @@ from rcp.core.models import (
     Patch,
     ResearchQuestion,
 )
+from rcp.core.operations import (
+    CreateAmbiguitiesOperation,
+    CreateEdgesOperation,
+    CreateNodesOperation,
+    CreateProposalsOperation,
+    GraphOperation,
+    MergeNodesOperation,
+    RemoveEdgesOperation,
+    RemoveNodesOperation,
+    ResolveAmbiguitiesOperation,
+    ResolveProposalsOperation,
+    SetCoverageOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    SupersedeNodesOperation,
+    UpdateNodesOperation,
+    UpsertGlossaryOperation,
+    WithdrawProposalsOperation,
+)
+from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import AgentCapability
 
 AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v1"
@@ -81,6 +102,7 @@ class AgentTaskAuthority(BaseModel):
 
     operation_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
+    apply_target: GraphTargetRef
     authorized_by: AuthorizedHuman | None
     dispatch_authority: AgentDispatchAuthority | None
     episode_id: str | None = Field(default=None, min_length=1)
@@ -381,26 +403,6 @@ GraphAction = Literal[
 
 GRAPH_ACTIONS = frozenset(get_args(GraphAction))
 
-_BASE_ACTION_BY_OPERATION: dict[str, GraphAction] = {
-    "create_nodes": CREATE_NODE,
-    "update_nodes": UPDATE_NODE,
-    "create_edges": CREATE_EDGE,
-    "remove_edges": REMOVE_EDGE,
-    "remove_nodes": REMOVE_NODE,
-    "supersede_nodes": SUPERSEDE_NODE,
-    "merge_nodes": MERGE_NODE,
-    "create_ambiguities": CREATE_AMBIGUITY,
-    "resolve_ambiguities": RESOLVE_AMBIGUITY,
-    "create_proposals": CREATE_PROPOSAL,
-    "resolve_proposals": RESOLVE_PROPOSAL,
-    "withdraw_proposals": WITHDRAW_PROPOSAL,
-    "upsert_glossary": UPSERT_GLOSSARY,
-    "set_coverage": SET_COVERAGE,
-    "set_standing": SET_STANDING,
-    "set_project_truth_scope": SET_PROJECT_TRUTH_SCOPE,
-    "set_ontology": SET_ONTOLOGY,
-}
-
 ORDINARY_AGENT_GRAPH_ACTIONS: frozenset[GraphAction] = frozenset(
     {
         CREATE_NODE,
@@ -476,7 +478,7 @@ def render_agent_graph_authority_contract() -> str:
 def operation_actions(
     state: GraphState,
     patch: Patch,
-    operation: dict[str, Any],
+    operation: GraphOperation,
 ) -> frozenset[GraphAction]:
     """Derive the closed authority action set for one operation.
 
@@ -486,61 +488,76 @@ def operation_actions(
     cross action boundaries.
     """
 
-    name = operation.get("op")
-    if not isinstance(name, str) or name not in _BASE_ACTION_BY_OPERATION:
-        raise ValueError(f"Unknown graph operation {name!r}.")
-    base = _BASE_ACTION_BY_OPERATION[name]
-
-    if name == "update_nodes":
-        return _update_actions(state, patch, operation, base)
-    if name == "create_edges":
-        return _create_edge_actions(state, patch, operation, base)
-    if name == "remove_edges":
-        return _remove_edge_actions(state, patch, operation, base)
-    if name == "remove_nodes":
+    if isinstance(operation, CreateNodesOperation):
+        return frozenset({CREATE_NODE})
+    if isinstance(operation, UpdateNodesOperation):
+        return _update_actions(state, patch, operation)
+    if isinstance(operation, CreateEdgesOperation):
+        return _create_edge_actions(state, patch, operation)
+    if isinstance(operation, RemoveEdgesOperation):
+        return _remove_edge_actions(state, patch, operation)
+    if isinstance(operation, RemoveNodesOperation):
         return _node_target_actions(
             state,
             patch,
-            operation.get("node_ids", []),
-            base,
+            operation.node_ids,
+            REMOVE_NODE,
             REMOVE_PROTECTED_EPISTEMIC,
         )
-    if name == "supersede_nodes":
-        items = [item for item in _list(operation.get("nodes")) if isinstance(item, dict)]
+    if isinstance(operation, SupersedeNodesOperation):
         return _node_lifecycle_actions(
             state,
             patch,
-            (item.get("id") for item in items),
-            ((item.get("id"), item.get("superseded_by")) for item in items),
+            (item.id for item in operation.nodes),
+            (
+                (item.id, item.superseded_by)
+                for item in operation.nodes
+                if item.superseded_by is not None
+            ),
             "supersedes",
-            base,
+            SUPERSEDE_NODE,
             SUPERSEDE_PROTECTED_EPISTEMIC,
         )
-    if name == "merge_nodes":
-        items = [item for item in _list(operation.get("merges")) if isinstance(item, dict)]
+    if isinstance(operation, MergeNodesOperation):
         return _node_lifecycle_actions(
             state,
             patch,
-            (item.get("duplicate") for item in items),
-            ((item.get("duplicate"), item.get("canonical")) for item in items),
+            (item.duplicate for item in operation.merges),
+            ((item.duplicate, item.canonical) for item in operation.merges),
             "duplicate_of",
-            base,
+            MERGE_NODE,
             MERGE_PROTECTED_EPISTEMIC,
         )
-    if name == "set_standing":
-        node_id = operation.get("node_id")
-        if is_existing_protected_node(state, patch, node_id) or _created_node_type(
-            patch, node_id
+    if isinstance(operation, SetStandingOperation):
+        if is_existing_protected_node(state, patch, operation.node_id) or _created_node_type(
+            patch, operation.node_id
         ) in {"research_question", "hypothesis"}:
             return frozenset({UPDATE_PROTECTED_EPISTEMIC})
-    return frozenset({base})
+        return frozenset({SET_STANDING})
+    if isinstance(operation, CreateAmbiguitiesOperation):
+        return frozenset({CREATE_AMBIGUITY})
+    if isinstance(operation, ResolveAmbiguitiesOperation):
+        return frozenset({RESOLVE_AMBIGUITY})
+    if isinstance(operation, CreateProposalsOperation):
+        return frozenset({CREATE_PROPOSAL})
+    if isinstance(operation, ResolveProposalsOperation):
+        return frozenset({RESOLVE_PROPOSAL})
+    if isinstance(operation, WithdrawProposalsOperation):
+        return frozenset({WITHDRAW_PROPOSAL})
+    if isinstance(operation, UpsertGlossaryOperation):
+        return frozenset({UPSERT_GLOSSARY})
+    if isinstance(operation, SetCoverageOperation):
+        return frozenset({SET_COVERAGE})
+    if isinstance(operation, SetProjectTruthScopeOperation):
+        return frozenset({SET_PROJECT_TRUTH_SCOPE})
+    if isinstance(operation, SetOntologyOperation):
+        return frozenset({SET_ONTOLOGY})
+    raise ValueError(f"Unknown graph operation {getattr(operation, 'op', None)!r}.")
 
 
-def is_existing_protected_node(state: GraphState, patch: Patch, node_id: Any) -> bool:
+def is_existing_protected_node(state: GraphState, patch: Patch, node_id: str) -> bool:
     """Whether ``node_id`` names a pre-Patch ResearchQuestion or Hypothesis."""
 
-    if not isinstance(node_id, str):
-        return False
     return isinstance(state.nodes.get(node_id), (ResearchQuestion, Hypothesis))
 
 
@@ -563,85 +580,70 @@ def permits(patch: Patch, action: GraphAction) -> bool:
 def _update_actions(
     state: GraphState,
     patch: Patch,
-    operation: dict[str, Any],
-    base: GraphAction,
+    operation: UpdateNodesOperation,
 ) -> frozenset[GraphAction]:
     actions: set[GraphAction] = set()
-    for update in _list(operation.get("nodes")):
-        if not isinstance(update, dict):
-            continue
-        node_id = update.get("id")
+    for update in operation.nodes:
+        node_id = update.id
         if is_existing_protected_node(state, patch, node_id):
             actions.add(UPDATE_PROTECTED_EPISTEMIC)
             continue
-        node = state.nodes.get(node_id) if isinstance(node_id, str) else None
+        node = state.nodes.get(node_id)
         is_decision = isinstance(node, Decision) or _created_node_type(patch, node_id) == "decision"
-        changes = update.get("changes")
         if is_decision and (
             patch.human_action == "decision_choice" or patch.agent_action == "decision_choice"
         ):
             actions.add(DECIDE_DECISION)
-        elif (
-            isinstance(node, Decision)
-            and isinstance(changes, dict)
-            and changes.get("status") in {"open", "ready", "revisit"}
-        ):
+        elif isinstance(node, Decision) and update.changes.get("status") in {
+            "open",
+            "ready",
+            "revisit",
+        }:
             actions.add(QUEUE_DECISION)
         else:
-            actions.add(base)
-    return frozenset(actions or {base})
+            actions.add(UPDATE_NODE)
+    return frozenset(actions or {UPDATE_NODE})
 
 
-def _created_node_type(patch: Patch, node_id: Any) -> str | None:
-    if not isinstance(node_id, str):
-        return None
+def _created_node_type(patch: Patch, node_id: str) -> str | None:
     for operation in patch.ops:
-        if operation.get("op") != "create_nodes":
+        if not isinstance(operation, CreateNodesOperation):
             continue
-        for raw in _list(operation.get("nodes")):
-            if isinstance(raw, dict) and raw.get("id") == node_id:
-                node_type = raw.get("type")
-                return node_type if isinstance(node_type, str) else None
+        for node in operation.nodes:
+            if node.id == node_id:
+                return node.type
     return None
 
 
 def _create_edge_actions(
     state: GraphState,
     patch: Patch,
-    operation: dict[str, Any],
-    base: GraphAction,
+    operation: CreateEdgesOperation,
 ) -> frozenset[GraphAction]:
     actions: set[GraphAction] = set()
     new_node_ids = created_node_ids(patch) - set(state.nodes)
-    for edge in _list(operation.get("edges")):
-        if not isinstance(edge, dict):
-            continue
-        endpoints = tuple(
-            node_id
-            for node_id in (edge.get("source"), edge.get("target"))
-            if isinstance(node_id, str)
-        )
+    for edge in operation.edges:
+        endpoints = (edge.source, edge.target)
         restructures = _restructures_protected_relation(
             state,
             patch,
-            edge.get("relation"),
+            edge.relation,
             endpoints,
             new_node_ids=new_node_ids,
         )
-        actions.add(RESTRUCTURE_PROTECTED_EPISTEMIC if restructures else base)
-    return frozenset(actions or {base})
+        actions.add(RESTRUCTURE_PROTECTED_EPISTEMIC if restructures else CREATE_EDGE)
+    return frozenset(actions or {CREATE_EDGE})
 
 
 def _remove_edge_actions(
     state: GraphState,
     patch: Patch,
-    operation: dict[str, Any],
-    base: GraphAction,
+    operation: RemoveEdgesOperation,
 ) -> frozenset[GraphAction]:
     actions: set[GraphAction] = set()
     new_edge_ids = created_edge_ids(patch) - set(state.edges)
-    for edge_id in _list(operation.get("edge_ids")):
-        edge = state.edges.get(edge_id) if isinstance(edge_id, str) else None
+    for edge_id in operation.edge_ids:
+        edge = state.edges.get(edge_id)
         restructures = (
             edge is not None
             and edge_id not in new_edge_ids
@@ -651,21 +653,17 @@ def _remove_edge_actions(
                 for node_id in (edge.source, edge.target)
             )
         )
-        actions.add(RESTRUCTURE_PROTECTED_EPISTEMIC if restructures else base)
-    return frozenset(actions or {base})
+        actions.add(RESTRUCTURE_PROTECTED_EPISTEMIC if restructures else REMOVE_EDGE)
+    return frozenset(actions or {REMOVE_EDGE})
 
 
 def _node_target_actions(
     state: GraphState,
     patch: Patch,
-    node_ids: Any,
+    node_ids: Iterable[str],
     base: GraphAction,
     protected: GraphAction,
 ) -> frozenset[GraphAction]:
-    if not isinstance(node_ids, (list, tuple, set, frozenset)) and not hasattr(
-        node_ids, "__next__"
-    ):
-        return frozenset({base})
     actions = {
         protected if is_existing_protected_node(state, patch, node_id) else base
         for node_id in node_ids
@@ -676,8 +674,8 @@ def _node_target_actions(
 def _node_lifecycle_actions(
     state: GraphState,
     patch: Patch,
-    node_ids: Any,
-    generated_edge_endpoints: Any,
+    node_ids: Iterable[str],
+    generated_edge_endpoints: Iterable[tuple[str, str]],
     generated_relation: str,
     base: GraphAction,
     protected: GraphAction,
@@ -686,8 +684,7 @@ def _node_lifecycle_actions(
 
     actions = set(_node_target_actions(state, patch, node_ids, base, protected))
     new_node_ids = created_node_ids(patch) - set(state.nodes)
-    for raw_endpoints in generated_edge_endpoints:
-        endpoints = tuple(node_id for node_id in raw_endpoints if isinstance(node_id, str))
+    for endpoints in generated_edge_endpoints:
         if _restructures_protected_relation(
             state,
             patch,
@@ -702,8 +699,8 @@ def _node_lifecycle_actions(
 def _restructures_protected_relation(
     state: GraphState,
     patch: Patch,
-    relation: Any,
-    endpoints: tuple[str, ...],
+    relation: str,
+    endpoints: tuple[str, str],
     *,
     new_node_ids: set[str],
 ) -> bool:
@@ -717,33 +714,18 @@ def _restructures_protected_relation(
 
 def created_node_ids(patch: Patch) -> set[str]:
     return {
-        node_id
+        node.id
         for operation in patch.ops
-        if operation.get("op") == "create_nodes"
-        for raw in _list(operation.get("nodes"))
-        if isinstance(raw, dict) and isinstance((node_id := raw.get("id")), str)
+        if isinstance(operation, CreateNodesOperation)
+        for node in operation.nodes
     }
 
 
 def created_edge_ids(patch: Patch) -> set[str]:
     edge_ids: set[str] = set()
     for operation in patch.ops:
-        if operation.get("op") != "create_edges":
+        if not isinstance(operation, CreateEdgesOperation):
             continue
-        for raw in _list(operation.get("edges")):
-            if not isinstance(raw, dict):
-                continue
-            edge_id = raw.get("id")
-            if not isinstance(edge_id, str):
-                source = raw.get("source")
-                relation = raw.get("relation")
-                target = raw.get("target")
-                if all(isinstance(value, str) for value in (source, relation, target)):
-                    edge_id = f"{source}::{relation}::{target}"
-            if isinstance(edge_id, str):
-                edge_ids.add(edge_id)
+        for edge in operation.edges:
+            edge_ids.add(edge.id or f"{edge.source}::{edge.relation}::{edge.target}")
     return edge_ids
-
-
-def _list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []

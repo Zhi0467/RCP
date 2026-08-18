@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -12,9 +13,19 @@ from fastapi.testclient import TestClient
 
 import rcp.api.app as api_app_module
 from rcp.agents import AgentEvent
-from rcp.core.models import Patch
+from rcp.api.app import create_app as create_raw_app
+from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
+from rcp.core.models import GraphBranchMetadata, Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, ProjectRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    AutoResearchChildExperimentRecord,
+    AutoResearchStateRecord,
+    EpisodeNotRunning,
+    EpisodeRecord,
+    ProjectRecord,
+)
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
 from .helpers import create_named_app as create_app
@@ -140,6 +151,160 @@ def _record_loop(
     store.complete_agent_task(operation_id, applied_revision=None, result={})
 
 
+def _record_branch_target_child_experiment(
+    app,
+    *,
+    node_id: str = "exp/launched",
+    branch_ops: list[dict[str, object]] | None = None,
+) -> tuple[EpisodeRecord, EpisodeRecord]:
+    """Persist one real Auto-research branch and an Experiment child that uses it."""
+
+    service = app.state.service
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    authorizer = authorized_human(store)
+    now = store.now()
+    parent_id = str(uuid.uuid4())
+    parent_target = GraphTargetRef(kind="branch", branch_id=parent_id)
+    base_head = service.history.head_ref()
+    service.history.create_auto_research_branch(
+        GraphBranchMetadata(
+            branch_id=parent_id,
+            episode_id=parent_id,
+            project_id=project_id,
+            base_head=base_head,
+            head=GraphHeadRef(
+                target=parent_target,
+                revision=base_head.revision,
+                transition_id=base_head.transition_id,
+            ),
+            authorized_by=authorizer,
+        )
+    )
+    root_id = str(uuid.uuid4())
+    parent, root = store.create_auto_research_episode_with_root_task(
+        EpisodeRecord(
+            episode_id=parent_id,
+            project_id=project_id,
+            mode="auto_research",
+            graph_target=parent_target,
+            graph_base_head=base_head,
+            status="queued",
+            invocation_ceiling=2,
+            authorized_by=authorizer,
+            created_at=now,
+            updated_at=now,
+        ),
+        AutoResearchStateRecord(
+            episode_id=parent_id,
+            starting_instruction="Run the branch-scoped experiment.",
+            created_at=now,
+            updated_at=now,
+        ),
+        AgentTaskRecord(
+            operation_id=root_id,
+            project_id=project_id,
+            episode_id=parent_id,
+            graph_target=parent_target,
+            kind="auto_research",
+            status="queued",
+            request={
+                "episode_id": parent_id,
+                "role": "orchestrator",
+                "actor_operation_id": root_id,
+                "run_truth_scope": ["repo-a"],
+            },
+            created_at=now,
+            updated_at=now,
+            status_message="Queued",
+            authorized_by=authorizer,
+            dispatch_authority=AgentDispatchAuthority(
+                profile="orchestrator",
+                task_contract="orchestrate",
+                scope=AgentDispatchScope(
+                    run_truth_scope=["repo-a"],
+                    episode_id=parent_id,
+                    patch_kind="work",
+                ),
+            ),
+        ),
+    )
+    branch_service = service.for_graph_target(
+        parent_target,
+        expected_episode_id=parent_id,
+    )
+    if branch_ops:
+        branch_service.history.append(
+            Patch(
+                kind="work",
+                author="agent",
+                summary="Prepared the branch-scoped Experiment index fixture.",
+                source_operation_id=root.operation_id,
+                run_truth_scope=["repo-a"],
+                repositories_read=[],
+                ops=branch_ops,
+            )
+        )
+    branch_head = branch_service.history.head_ref()
+
+    child_id = str(uuid.uuid4())
+    child_operation_id = str(uuid.uuid4())
+    goal = "Run the bounded branch experiment."
+    child_request = RunRequest(
+        provider="codex",
+        model="gpt-5",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_id=child_id,
+        chat_scope="node",
+        node_id=node_id,
+        message=goal,
+        mode="work",
+        trigger="orchestrator",
+        patch_kind="experiment_loop",
+        control_node_id=node_id,
+        control_revision=branch_head.revision,
+        control_episode_id=child_id,
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        control_decision_bundle=[],
+        control_completion_criteria=["The branch-indexed loop reaches a conclusion."],
+    )
+    child_task = AgentTaskRecord(
+        operation_id=child_operation_id,
+        project_id=project_id,
+        episode_id=child_id,
+        graph_target=parent_target,
+        kind="node_chat",
+        status="queued",
+        request=child_request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="Queued",
+        authorized_by=authorizer,
+    )
+    store.create_experiment_episode_with_invocation(
+        child_task,
+        auto_research_route=AutoResearchChildExperimentRecord(
+            child_episode_id=child_id,
+            auto_research_episode_id=parent_id,
+            project_id=project_id,
+            control_node_id=node_id,
+            state="running",
+            request={"goal": goal},
+            goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
+            parent_operation_id=root.operation_id,
+            created_at=now,
+            updated_at=now,
+        ),
+    )
+    child = store.episode(child_id)
+    assert child is not None
+    return parent, child
+
+
 def _seed_indexed_project(app) -> tuple[str, str]:
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -171,7 +336,7 @@ def _event_frame(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
 
 
-def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
+def test_experiment_index_uses_main_cache_and_unbounded_project_runtime(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -188,25 +353,27 @@ def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
     monkeypatch.setattr(app.state.service.history, "state", refuse_current_state_read)
 
     store = app.state.background_tasks.store
-    original = store.experiment_loop_runtimes
-    calls: list[tuple[str, tuple[str, ...]]] = []
+    original = store.project_experiment_loop_runtimes
+    calls: list[str] = []
 
-    def capture(requested_project_id, experiment_ids):
-        requested_ids = tuple(experiment_ids)
-        calls.append((requested_project_id, requested_ids))
-        return original(requested_project_id, requested_ids)
+    def capture(requested_project_id):
+        calls.append(requested_project_id)
+        return original(requested_project_id)
 
-    monkeypatch.setattr(store, "experiment_loop_runtimes", capture)
+    monkeypatch.setattr(store, "project_experiment_loop_runtimes", capture)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert calls == [(project_id, ("exp/launched", "exp/never-run"))]
+    assert calls == [project_id]
     assert len(response.json()) == 1
     entry = response.json()[0]
     assert set(entry) == {
         "project_id",
         "project_name",
         "project_reachable",
+        "graph_target",
+        "graph_head",
+        "parent_episode_id",
         "node",
         "control",
         "episode",
@@ -214,6 +381,9 @@ def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
     assert entry["project_id"] == project_id
     assert entry["project_name"] == manifest.name
     assert entry["project_reachable"] is True
+    assert entry["graph_target"] == {"kind": "main", "branch_id": None}
+    assert entry["graph_head"] is None
+    assert entry["parent_episode_id"] is None
     assert entry["node"]["id"] == "exp/launched"
     assert entry["node"]["current_summary"] == ""
     assert entry["control"]["episode_id"] == current_episode
@@ -221,6 +391,270 @@ def test_experiment_index_uses_only_cached_graph_and_batches_project_runtime(
     assert entry["control"]["invocation_ceiling"] == 3
     assert entry["control"]["operational"]["current_operation_id"] == "current-loop"
     assert entry["control"]["operational"]["current_status"] == "succeeded"
+
+
+def test_branch_modified_child_experiment_uses_exact_target_across_index_and_stop(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    main_episode_id = str(uuid.uuid4())
+    store = app.state.background_tasks.store
+    _record_loop(
+        store,
+        project_id,
+        episode_id=main_episode_id,
+        operation_id="superseded-main-loop",
+        created_at="2026-08-17T00:00:00+00:00",
+    )
+    store.request_episode_stop(main_episode_id)
+    store.mark_episode_stop_skipped(main_episode_id)
+    parent, child = _record_branch_target_child_experiment(
+        app,
+        branch_ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/launched",
+                        "changes": {
+                            "title": "Branch-only loop title",
+                            "current_summary": "Visible only on the episode branch.",
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    assert parent.graph_base_head is not None
+    assert store.experiment_loop_runtime(project_id, "exp/launched").episode_id == child.episode_id
+    assert (
+        store.experiment_loop_runtime(
+            project_id,
+            "exp/launched",
+            graph_target=GraphTargetRef(),
+        ).episode_id
+        is None
+    )
+    assert (
+        store.experiment_loop_runtime(
+            project_id,
+            "exp/launched",
+            graph_target=parent.graph_target,
+        ).episode_id
+        == child.episode_id
+    )
+    assert (
+        store.active_experiment_control_ids(
+            project_id,
+            graph_target=GraphTargetRef(),
+        )
+        == set()
+    )
+    assert store.active_experiment_control_ids(
+        project_id,
+        graph_target=parent.graph_target,
+    ) == {"exp/launched"}
+
+    client = TestClient(app)
+    try:
+        cached = client.get(f"/api/projects/{project_id}")
+        assert cached.status_code == 200
+        assert cached.json()["graph"]["nodes"]["exp/launched"]["current_summary"] == ""
+        assert cached.json()["experiment_control"]["exp/launched"]["episode_id"] is None
+        assert cached.json()["experiment_control"]["exp/launched"]["episode"] is None
+
+        main_state = service.history.state()
+        main_node = main_state.nodes["exp/launched"]
+        preview = client.post(
+            f"/api/projects/{project_id}/sync/preview",
+            json={
+                "base_revision": main_state.revision,
+                "nodes": [
+                    {
+                        "node_id": main_node.id,
+                        "base_updated_rev": main_node.updated_rev,
+                        "changes": {"current_summary": "Previewed on main only."},
+                    }
+                ],
+            },
+        )
+        assert preview.status_code == 200, preview.text
+        preview_control = preview.json()["projection"]["experiment_control"]["exp/launched"]
+        assert preview_control["episode_id"] is None
+        assert preview_control["episode"] is None
+
+        invalid_main_run = client.post(
+            f"/api/projects/{project_id}/experiments/exp%2Flaunched/run",
+            json={},
+        )
+        assert invalid_main_run.status_code == 422
+
+        project_list = client.get(
+            f"/api/projects/{project_id}/episodes",
+            params={"mode": "experiment_loop"},
+        )
+        assert project_list.status_code == 200
+        project_child = next(
+            item for item in project_list.json() if item["episode_id"] == child.episode_id
+        )
+        assert project_child["episode_id"] == child.episode_id
+        assert project_child["graph_target"] == parent.graph_target.model_dump(mode="json")
+        assert project_child["graph_base_head"] == parent.graph_base_head.model_dump(mode="json")
+        assert project_child["graph_branch"] is None
+
+        experiment_index = client.get("/api/episodes", params={"mode": "experiment_loop"})
+        assert experiment_index.status_code == 200
+        assert len(experiment_index.json()) == 1
+        entry = experiment_index.json()[0]
+        indexed_child = entry["episode"]
+        assert indexed_child["episode_id"] == child.episode_id
+        assert indexed_child["graph_target"] == parent.graph_target.model_dump(mode="json")
+        assert indexed_child["graph_base_head"] == parent.graph_base_head.model_dump(mode="json")
+        assert indexed_child["graph_branch"] is None
+        assert entry["graph_target"] == parent.graph_target.model_dump(mode="json")
+        assert entry["graph_head"]["target"] == parent.graph_target.model_dump(mode="json")
+        assert entry["graph_head"]["revision"] > parent.graph_base_head.revision
+        assert entry["parent_episode_id"] == parent.episode_id
+        assert entry["node"]["title"] == "Branch-only loop title"
+        assert entry["node"]["current_summary"] == "Visible only on the episode branch."
+        assert entry["control"]["episode_id"] == child.episode_id
+
+        ambiguous_stop = client.post(f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop")
+        assert ambiguous_stop.status_code == 409
+        exact_stop = client.post(
+            f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop",
+            params={"episode_id": child.episode_id},
+        )
+        assert exact_stop.status_code == 200
+        assert exact_stop.json()["episode_id"] == child.episode_id
+        exact_episode_stop = client.post(
+            f"/api/projects/{project_id}/episodes/{child.episode_id}/stop"
+        )
+        assert exact_episode_stop.status_code == 200
+        assert exact_episode_stop.json()["episode_id"] == child.episode_id
+        assert exact_episode_stop.json()["graph_target"] == parent.graph_target.model_dump(
+            mode="json"
+        )
+    finally:
+        client.close()
+
+
+def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    parent, child = _record_branch_target_child_experiment(
+        app,
+        node_id="exp/branch-created",
+        branch_ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/branch-created",
+                        "type": "experiment",
+                        "title": "Created only on the episode branch",
+                        "objective": "Prove the cross-project index follows branch truth.",
+                        "completion_criteria": ["The branch-only node appears in Runs."],
+                        "invocation_ceiling": 3,
+                    }
+                ],
+            }
+        ],
+    )
+    project_id = app.state.default_project_id
+    assert project_id is not None
+
+    with TestClient(app) as client:
+        cached = client.get(f"/api/projects/{project_id}")
+        assert cached.status_code == 200
+        assert "exp/branch-created" not in cached.json()["graph"]["nodes"]
+
+        response = client.get("/api/episodes", params={"mode": "experiment_loop"})
+        assert response.status_code == 200
+        assert len(response.json()) == 1
+        entry = response.json()[0]
+        assert entry["node"]["id"] == "exp/branch-created"
+        assert entry["node"]["title"] == "Created only on the episode branch"
+        assert entry["control"]["episode_id"] == child.episode_id
+        assert entry["episode"]["episode_id"] == child.episode_id
+        assert entry["graph_target"] == parent.graph_target.model_dump(mode="json")
+        assert entry["graph_head"]["target"] == parent.graph_target.model_dump(mode="json")
+        assert entry["parent_episode_id"] == parent.episode_id
+        assert "exp/branch-created" not in service.history.state().nodes
+
+
+def test_exact_experiment_stop_routes_share_the_named_human_gate(manifest, tmp_path: Path) -> None:
+    app = create_raw_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    episode_id = str(uuid.uuid4())
+
+    with TestClient(app) as client:
+        responses = [
+            client.post(
+                f"/api/projects/{project_id}/experiments/exp%2Fbranch-created/stop",
+                params={"episode_id": episode_id},
+            ),
+            client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop"),
+        ]
+
+    for response in responses:
+        assert response.status_code == 428
+        assert response.json()["detail"]["code"] == "identity_name_required"
+
+
+def test_terminal_exact_experiment_stop_is_a_conflict_instead_of_a_server_error(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    _parent, child = _record_branch_target_child_experiment(
+        app,
+        node_id="exp/terminal-stop",
+        branch_ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "exp/terminal-stop",
+                        "type": "experiment",
+                        "title": "Terminal stop",
+                        "objective": "Reject a stale Stop action without a 500.",
+                        "invocation_ceiling": 2,
+                    }
+                ],
+            }
+        ],
+    )
+
+    def terminal_stop(*_args, **_kwargs):
+        raise EpisodeNotRunning("the episode can no longer be stopped before wrap-up")
+
+    monkeypatch.setattr(
+        app.state.background_tasks.store,
+        "request_experiment_loop_stop",
+        terminal_stop,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{child.project_id}/experiments/exp%2Fterminal-stop/stop",
+            params={"episode_id": child.episode_id},
+        )
+
+    assert response.status_code == 409
+    assert "can no longer be stopped" in response.json()["detail"]
 
 
 def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
@@ -345,12 +779,12 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
     project_id, current_episode = _seed_indexed_project(app)
     assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
 
-    def fail_runtime_projection(_project_id, _experiment_ids):
+    def fail_runtime_projection(_project_id):
         raise RuntimeError("runtime projection broke")
 
     monkeypatch.setattr(
         app.state.background_tasks.store,
-        "experiment_loop_runtimes",
+        "project_experiment_loop_runtimes",
         fail_runtime_projection,
     )
     response = TestClient(app, raise_server_exceptions=False).get(

@@ -9,9 +9,9 @@ invariants: [1, 8]
 
 # Dangerous operations need the machine, not a login
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Team server operations](../design/team-server-operations.md#server-operations-are-console-operations).
+This scenario is a proposal and is **not yet human-confirmed**. The current
+boundary is in
+[Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 Every member has equal space authority and there is no admin role. That only
 works if the operations nobody should perform casually are kept off the product

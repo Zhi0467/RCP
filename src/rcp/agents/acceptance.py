@@ -21,6 +21,7 @@ from rcp.agents.launcher import (
     AgentProcessControl,
     ProviderReadiness,
 )
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
 
@@ -164,6 +165,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         session_id: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
+        write_scope: ProjectWriteScope | None = None,
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
@@ -182,6 +184,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     session_id=session_id,
                     read_dirs=read_dirs,
                     write_dirs=write_dirs,
+                    write_scope=write_scope,
                     host=host,
                     control=control,
                     remote_pid_file=remote_pid_file,
@@ -196,6 +199,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             reasoning,
             read_dirs,
             write_dirs,
+            write_scope,
             remote_pid_file,
             capability,
             binary,
@@ -1470,7 +1474,7 @@ def _completion_patch(
                             "The bounded control loop delivered and inspected both watcher "
                             "completions."
                         ),
-                        "strength": "supporting",
+                        "role": "result",
                         "validity": "valid",
                         "origin": "internal_run",
                     }
@@ -1494,6 +1498,12 @@ def _completion_patch(
                         "explanation": (
                             "The completed watcher sequence supports the fixture Hypothesis."
                         ),
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "strong",
+                            "scope": "The deterministic CPU-only acceptance control loop.",
+                            "qualifications": [],
+                        },
                     },
                 ],
             },

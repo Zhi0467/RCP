@@ -5,6 +5,7 @@ tier: hermetic
 driver: pytest
 covered_by:
   - tests/test_graph_condition_watchers.py
+  - tests/test_transition_event_reconciliation.py
   - tests/test_watchers.py::test_graph_condition_column_migrates_before_its_index_is_created
   - tests/test_experiment_loop_agent_io.py::test_staged_graph_watcher_state_uses_condition_fields_without_shell_telemetry
   - tests/test_prompts.py
@@ -19,8 +20,8 @@ last_passed: 2026-08-12 — focused S76 backend, API, and web checks; full basel
 **Confirmed by the human 2026-08-12**, including the closed two-condition
 vocabulary: waiting on a new node attaching, and waiting on a standing change,
 were both offered and both declined. Add a third condition only when something
-concretely needs it. The design is settled in
-[the wake handoff](../handoffs/handoff-2026-08-07-graph-condition-wake.md).
+concretely needs it. The current contract is in
+[Watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
 
 An agent that arms a graph condition sleeps until that fact becomes canonical,
 then wakes exactly once. Nothing about this promise lives in the browser: it is
@@ -62,6 +63,7 @@ both an external watcher and a graph condition.
 - `initially_satisfied_node_status_condition_is_immediately_ready`
 - `proposal_resolution_must_happen_after_arming`
 - `accepted_boundaries_are_applied_in_canonical_order`
+- `transition_events_reconcile_once_per_exact_graph_target_and_head`
 
 ## Boundary
 
@@ -74,6 +76,10 @@ but unsynced draft. Each wait is based at its durable arming revision. A node
 status already true there is ready immediately; an earlier Proposal resolution
 does not satisfy a newly armed wait. Accepted revisions are reconciled in
 canonical order even when task callbacks settle out of order.
+
+Resolution is observed from the final retained Blocker and its stable canonical
+transition event. No intermediate delete or SQLite-before-canonical shortcut is
+allowed. Main and branch targets retain independent event watermarks.
 
 `watch-graph` on the staged agent client is orchestrator-only and is out of
 scope here; Experiment loops arm by file.

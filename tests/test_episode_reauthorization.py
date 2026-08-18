@@ -19,6 +19,7 @@ def test_reauthorize_creates_a_fresh_episode_after_a_report_error(manifest, tmp_
     tasks.stream = settling_auto_research_stream(stage)
     original, original_root, _ = create_terminal_auto_episode(
         store,
+        app.state.catalog.open(project_id).history,
         project_id,
         episode_id="exhausted-episode",
         invocation_ceiling=2,
@@ -56,6 +57,16 @@ def test_reauthorize_creates_a_fresh_episode_after_a_report_error(manifest, tmp_
         assert fresh_episode_id != original.episode_id
         assert fresh_operation_id != original_root.operation_id
         assert fresh_payload["mode"] == "auto_research"
+        assert fresh_payload["graph_target"] == {
+            "kind": "branch",
+            "branch_id": fresh_episode_id,
+        }
+        assert fresh_payload["graph_base_head"]["target"] == {
+            "kind": "main",
+            "branch_id": None,
+        }
+        assert fresh_payload["graph_branch"]["branch_id"] == fresh_episode_id
+        assert fresh_payload["tasks"][0]["graph_target"] == fresh_payload["graph_target"]
         assert fresh_payload["starting_instruction"] == "Resolve the disputed interpretation."
         assert fresh_payload["budget"] == {
             "invocation_ceiling": 4,
@@ -104,6 +115,7 @@ def test_reauthorization_preflight_failure_leaves_the_old_episode_unchanged(
     service = app.state.catalog.open(project_id)
     original, _root, _ = create_terminal_auto_episode(
         store,
+        service.history,
         project_id,
         episode_id="exhausted-episode",
         report_error="The report output was invalid.",

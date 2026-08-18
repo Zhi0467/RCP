@@ -10,6 +10,18 @@ from rcp.core.models import (
     GraphState,
     Patch,
 )
+from rcp.core.operations import (
+    CreateNodesOperation,
+    GraphOperation,
+    RemoveNodesOperation,
+    ResolveAmbiguitiesOperation,
+    ResolveProposalsOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    UpdateNodesOperation,
+    graph_operations_from_proposal,
+)
 from rcp.core.validation.proposals import (
     decision_transition_error,
     normalized_decision_proposal_ops,
@@ -27,31 +39,34 @@ def validate_approval_shape(
     mode: Literal["admission", "replay"],
 ) -> None:
     revision = patch.revision or None
-    resolution_ops = [op for op in patch.ops if op.get("op") == "resolve_proposals"]
+    resolution_ops = [op for op in patch.ops if isinstance(op, ResolveProposalsOperation)]
     approved_resolution = any(
-        resolution.get("status") == "approved"
+        resolution.status == "approved"
         for operation in resolution_ops
-        for resolution in operation.get("resolutions", [])
-        if isinstance(resolution, dict)
+        for resolution in operation.resolutions
     )
     if patch.human_action == "decision_choice" and not approved_resolution:
         _validate_direct_decision_choice(state, patch, resolution_ops, report, revision)
         return
     if not resolution_ops:
-        names = [op.get("op") for op in patch.ops]
-        standalone_operations = {
-            "set_standing",
-            "remove_nodes",
-            "set_ontology",
-            "set_project_truth_scope",
-        }
-        if mode == "replay":
-            standalone_operations.add("resolve_ambiguities")
-        if len(patch.ops) == 1 and names[0] in standalone_operations:
+        names = [op.op for op in patch.ops]
+        standalone_types = (
+            SetStandingOperation,
+            RemoveNodesOperation,
+            SetOntologyOperation,
+            SetProjectTruthScopeOperation,
+        )
+        if len(patch.ops) == 1 and isinstance(patch.ops[0], standalone_types):
             return
-        if len(patch.ops) == 1 and names[0] == "create_nodes":
-            nodes = patch.ops[0].get("nodes")
-            if not isinstance(nodes, list) or len(nodes) != 1 or not isinstance(nodes[0], dict):
+        if (
+            mode == "replay"
+            and len(patch.ops) == 1
+            and isinstance(patch.ops[0], ResolveAmbiguitiesOperation)
+        ):
+            return
+        if len(patch.ops) == 1 and isinstance(patch.ops[0], CreateNodesOperation):
+            nodes = patch.ops[0].nodes
+            if len(nodes) != 1:
                 report.reject(
                     "invalid-direct-node-create",
                     "A confirmed staged New node patch must create exactly one node.",
@@ -59,13 +74,13 @@ def validate_approval_shape(
                 )
                 return
             node = nodes[0]
-            if not isinstance(node.get("extension_type"), str):
+            if not isinstance(node.extension_type, str):
                 report.reject(
                     "invalid-direct-node-create",
                     "The standalone New-node path creates exactly one custom ontology node.",
                     revision,
                 )
-            if node.get("standing", "asserted") != "asserted" or node.get("source_refs", []):
+            if node.standing != "asserted" or node.source_refs:
                 report.reject(
                     "invalid-direct-node-create",
                     "A human-created custom node starts asserted and cannot claim source records.",
@@ -73,8 +88,8 @@ def validate_approval_shape(
                 )
             return
         if names and set(names) <= {"update_nodes", "set_standing"}:
-            update_ops = [op for op in patch.ops if op.get("op") == "update_nodes"]
-            standing_ops = [op for op in patch.ops if op.get("op") == "set_standing"]
+            update_ops = [op for op in patch.ops if isinstance(op, UpdateNodesOperation)]
+            standing_ops = [op for op in patch.ops if isinstance(op, SetStandingOperation)]
             if len(update_ops) != 1 or len(standing_ops) > 1:
                 report.reject(
                     "invalid-standalone-review",
@@ -90,8 +105,8 @@ def validate_approval_shape(
                 revision,
                 mode=mode,
             )
-            edits = update_ops[0].get("nodes", [])
-            if standing_ops and edits and standing_ops[0].get("node_id") != edits[0].get("id"):
+            edits = update_ops[0].nodes
+            if standing_ops and edits and standing_ops[0].node_id != edits[0].id:
                 report.reject(
                     "invalid-standalone-review",
                     "A staged node edit and review must target the same node.",
@@ -110,18 +125,18 @@ def validate_approval_shape(
             "invalid-proposal-resolution", "Resolve one proposal per approval patch.", revision
         )
         return
-    resolutions = resolution_ops[0].get("resolutions", [])
+    resolutions = resolution_ops[0].resolutions
     if len(resolutions) != 1:
         report.reject(
             "invalid-proposal-resolution", "Resolve one proposal per approval patch.", revision
         )
         return
     resolution = resolutions[0]
-    proposal = state.proposals.get(resolution.get("id"))
+    proposal = state.proposals.get(resolution.id)
     if proposal is None or proposal.status != "pending":
         report.reject("proposal-not-pending", "The referenced proposal is not pending.", revision)
         return
-    status = resolution.get("status")
+    status = resolution.status
     is_stale = proposal_is_stale(state, proposal)
     if is_stale and status != "withdrawn":
         report.reject(
@@ -130,12 +145,15 @@ def validate_approval_shape(
             revision,
         )
     semantic_ops = [
-        op for op in patch.ops if op.get("op") not in {"resolve_proposals", "set_standing"}
+        op
+        for op in patch.ops
+        if not isinstance(op, (ResolveProposalsOperation, SetStandingOperation))
     ]
     if status == "approved":
         normalized_ops = normalized_decision_proposal_ops(state, proposal)
-        is_verbatim = semantic_ops == proposal.ops
-        requires_normalization = normalized_ops != proposal.ops
+        proposal_semantic_ops = graph_operations_from_proposal(proposal.ops)
+        is_verbatim = semantic_ops == proposal_semantic_ops
+        requires_normalization = normalized_ops != proposal_semantic_ops
         if not is_verbatim and semantic_ops != normalized_ops:
             report.reject(
                 "proposal-replay-mismatch",
@@ -196,7 +214,7 @@ def validate_approval_shape(
 def _validate_direct_decision_choice(
     state: GraphState,
     patch: Patch,
-    resolution_ops: list[dict[str, Any]],
+    resolution_ops: list[ResolveProposalsOperation],
     report: ValidationReport,
     revision: int | None,
 ) -> None:
@@ -212,44 +230,39 @@ def _validate_direct_decision_choice(
         refuse(f"Only an actor permitted to {DECIDE_DECISION} may choose a Decision option.")
         return
 
-    names = [op.get("op") for op in patch.ops]
+    names = [op.op for op in patch.ops]
     if not names or set(names) - {"update_nodes", "resolve_proposals", "set_standing"}:
         refuse(
             "A direct Decision choice may only update that Decision, withdraw its Proposals, and review it."
         )
         return
-    update_ops = [op for op in patch.ops if op.get("op") == "update_nodes"]
-    standing_ops = [op for op in patch.ops if op.get("op") == "set_standing"]
+    update_ops = [op for op in patch.ops if isinstance(op, UpdateNodesOperation)]
+    standing_ops = [op for op in patch.ops if isinstance(op, SetStandingOperation)]
     if len(update_ops) != 1 or len(standing_ops) > 1:
         refuse("A direct Decision choice must update and optionally review exactly one Decision.")
         return
     operation = update_ops[0]
-    if set(operation) != {"op", "nodes"}:
-        refuse("A direct Decision choice update may contain only 'op' and 'nodes'.")
-        return
-    updates = operation.get("nodes")
-    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
+    updates = operation.nodes
+    if len(updates) != 1:
         refuse("A direct Decision choice must update exactly one existing Decision.")
         return
     update = updates[0]
-    if set(update) != {"id", "base_updated_rev", "changes"}:
+    if update.base_updated_rev is None or update.cause is not None:
         refuse("A direct Decision choice requires exactly id, base_updated_rev, and changes.")
         return
-    node = state.nodes.get(update.get("id"))
+    node = state.nodes.get(update.id)
     if not isinstance(node, Decision):
-        refuse(f"Cannot choose an option on non-Decision node {update.get('id')!r}.")
+        refuse(f"Cannot choose an option on non-Decision node {update.id!r}.")
         return
     if node.status == "superseded":
         refuse(f"Decision {node.id} is superseded and cannot be decided again.", node_id=node.id)
-    if update.get("base_updated_rev") != node.updated_rev or isinstance(
-        update.get("base_updated_rev"), bool
-    ):
+    if update.base_updated_rev != node.updated_rev:
         refuse(
             f"{node.id} changed after this choice was staged; reload before saving.",
             node_id=node.id,
         )
-    changes = update.get("changes")
-    if not isinstance(changes, dict) or not changes:
+    changes = update.changes
+    if not changes:
         refuse(
             f"A direct choice for {node.id} must include selected_option and status.",
             node_id=node.id,
@@ -284,7 +297,7 @@ def _validate_direct_decision_choice(
             f"Direct choice on {node.id} must select one non-empty option from its current options.",
             node_id=node.id,
         )
-    if standing_ops and standing_ops[0].get("node_id") != node.id:
+    if standing_ops and standing_ops[0].node_id != node.id:
         refuse(
             "A direct Decision choice and its staged judgment must target the same Decision.",
             node_id=node.id,
@@ -292,21 +305,12 @@ def _validate_direct_decision_choice(
 
     seen_proposals: set[str] = set()
     for operation in resolution_ops:
-        resolutions = operation.get("resolutions")
-        if not isinstance(resolutions, list) or not resolutions:
+        resolutions = operation.resolutions
+        if not resolutions:
             refuse(f"Proposal withdrawals for {node.id} cannot be empty.", node_id=node.id)
             continue
         for resolution in resolutions:
-            if not isinstance(resolution, dict):
-                refuse(f"Proposal withdrawals for {node.id} are malformed.", node_id=node.id)
-                continue
-            proposal_id = resolution.get("id")
-            if not isinstance(proposal_id, str):
-                refuse(
-                    f"A Proposal withdrawal for {node.id} requires a Proposal id.",
-                    node_id=node.id,
-                )
-                continue
+            proposal_id = resolution.id
             proposal = state.proposals.get(proposal_id)
             if proposal_id in seen_proposals:
                 refuse(
@@ -324,12 +328,12 @@ def _validate_direct_decision_choice(
                     node_id=node.id,
                 )
             seen_proposals.add(proposal_id)
-            if resolution.get("status") != "withdrawn":
+            if resolution.status != "withdrawn":
                 refuse(
                     f"Direct choice on {node.id} may only withdraw superseded Proposals.",
                     node_id=node.id,
                 )
-            if not isinstance(resolution.get("reason"), str) or not resolution["reason"].strip():
+            if not isinstance(resolution.reason, str) or not resolution.reason.strip():
                 refuse(
                     f"Withdrawal of Proposal {proposal_id!r} for {node.id} requires a reason.",
                     node_id=node.id,
@@ -356,23 +360,17 @@ def _validate_direct_decision_choice(
 
 def _validate_approved_decision_result(
     state: GraphState,
-    semantic_ops: list[dict[str, Any]],
+    semantic_ops: list[GraphOperation],
     report: ValidationReport,
     revision: int | None,
 ) -> None:
     for operation in semantic_ops:
-        if operation.get("op") != "update_nodes":
+        if not isinstance(operation, UpdateNodesOperation):
             continue
-        for update in operation.get("nodes", []):
-            if not isinstance(update, dict):
-                continue
-            node = state.nodes.get(update.get("id"))
-            changes = update.get("changes")
-            if (
-                isinstance(node, Decision)
-                and isinstance(changes, dict)
-                and (error := decision_transition_error(node, changes))
-            ):
+        for update in operation.nodes:
+            node = state.nodes.get(update.id)
+            changes = update.changes
+            if isinstance(node, Decision) and (error := decision_transition_error(node, changes)):
                 report.reject(
                     "incoherent-decision-approval",
                     error,
@@ -381,15 +379,13 @@ def _validate_approved_decision_result(
                 )
 
 
-def _writes_decision_outcome(state: GraphState, operations: list[dict[str, Any]]) -> bool:
+def _writes_decision_outcome(state: GraphState, operations: list[GraphOperation]) -> bool:
     return any(
-        isinstance(state.nodes.get(update.get("id")), Decision)
-        and isinstance(update.get("changes"), dict)
-        and ("selected_option" in update["changes"] or update["changes"].get("status") == "decided")
+        isinstance(state.nodes.get(update.id), Decision)
+        and ("selected_option" in update.changes or update.changes.get("status") == "decided")
         for operation in operations
-        if operation.get("op") == "update_nodes"
-        for update in operation.get("nodes", [])
-        if isinstance(update, dict)
+        if isinstance(operation, UpdateNodesOperation)
+        for update in operation.nodes
     )
 
 
@@ -448,20 +444,14 @@ def _validate_attempt_release(
 def _validate_direct_node_edit(
     state: GraphState,
     patch: Patch,
-    operation: dict[str, Any],
+    operation: UpdateNodesOperation,
     report: ValidationReport,
     revision: int | None,
     *,
     mode: Literal["admission", "replay"],
 ) -> None:
-    if set(operation) != {"op", "nodes"}:
-        report.reject(
-            "invalid-direct-node-edit",
-            "A direct node edit operation may contain only 'op' and 'nodes'.",
-            revision,
-        )
-    updates = operation.get("nodes", [])
-    if not isinstance(updates, list) or len(updates) != 1 or not isinstance(updates[0], dict):
+    updates = operation.nodes
+    if len(updates) != 1:
         report.reject(
             "invalid-direct-node-edit",
             "A direct node edit must update exactly one existing node.",
@@ -469,33 +459,29 @@ def _validate_direct_node_edit(
         )
         return
     update = updates[0]
-    if set(update) != {"id", "base_updated_rev", "changes"}:
+    if update.base_updated_rev is None or update.cause is not None:
         report.reject(
             "invalid-direct-node-edit",
             "A direct node edit requires exactly id, base_updated_rev, and changes.",
             revision,
         )
-    node = state.nodes.get(update.get("id"))
+    node = state.nodes.get(update.id)
     if node is None:
         report.reject(
             "unknown-node",
-            f"Cannot update missing node {update.get('id')!r}.",
+            f"Cannot update missing node {update.id!r}.",
             revision,
         )
         return
-    base_updated_rev = update.get("base_updated_rev")
-    if (
-        not isinstance(base_updated_rev, int)
-        or isinstance(base_updated_rev, bool)
-        or base_updated_rev != node.updated_rev
-    ):
+    base_updated_rev = update.base_updated_rev
+    if base_updated_rev != node.updated_rev:
         report.reject(
             "stale-node-edit",
             f"{node.id} changed after this editor opened; reload it before saving.",
             revision,
         )
-    changes = update.get("changes")
-    if not isinstance(changes, dict) or not changes:
+    changes = update.changes
+    if not changes:
         report.reject(
             "empty-node-edit",
             "A direct node edit must change at least one editable field.",

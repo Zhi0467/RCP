@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.background import AgentTaskExecution
 from rcp.providers import ProviderSkillReference
 from rcp.runs.discuss import stream_discuss_run
@@ -171,11 +172,14 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
 
     second_prompt = launcher.prompts[1]
     assert second_prompt.startswith("Open and retain the RCP chat master context at:\n")
-    assert "chat-master-v4-" in second_prompt.splitlines()[1]
+    assert f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-" in second_prompt.splitlines()[1]
     committed = store.chat_session_context("codex", "laptop", session_id)
     assert committed is not None
-    assert committed.protocol_version == 4
-    assert json.loads(committed.snapshot_json)["contract_key"] == "chat-master-v4"
+    assert committed.protocol_version == CHAT_MASTER_CONTEXT_VERSION
+    assert (
+        json.loads(committed.snapshot_json)["contract_key"]
+        == f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}"
+    )
 
 
 @pytest.mark.asyncio

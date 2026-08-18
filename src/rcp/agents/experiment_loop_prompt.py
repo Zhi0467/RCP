@@ -14,7 +14,9 @@ from rcp.agents.prompts import (
     _repository_pointers,
     _watcher_execution_host,
     selected_skill_section,
+    write_scope_section,
 )
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 
 _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
@@ -55,6 +57,7 @@ def experiment_loop_task_contract(
     artifact_path: str,
     output_schema_path: str,
     validator_command: str,
+    write_scope: ProjectWriteScope | None = None,
     execution_host: str = "",
     recovery_diagnostics_path: str | None = None,
     skill_pointers: list[dict[str, object]] | None = None,
@@ -62,6 +65,11 @@ def experiment_loop_task_contract(
 ) -> str:
     """Build the self-contained contract for one bounded Experiment-loop invocation."""
 
+    write_boundary = (
+        "\n" + write_scope_section(write_scope).strip() + "\n"
+        if write_scope is not None
+        else "- RCP resolves this invocation's exact writable roots before launch."
+    )
     required = {
         "focused Experiment id": focused_experiment_id,
         "loop control path": loop_control_path,
@@ -165,8 +173,10 @@ Operational method:
   may each need different checks.
 {_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 - You may use Bash, Python, network access, SSH, and any other available tool needed for this
-  Experiment. Repository pointers name expected context, not a tool allowlist. For a non-empty host,
-  use the path on that host over SSH rather than copying the repository locally.
+  Experiment. RCP imposes no tool allowlist. Repository pointers name expected context, not the
+  write boundary. For a non-empty host, use the path on that host over SSH rather than copying the
+  repository locally.
+{write_boundary}
 - Read `AGENTS.md` and `CLAUDE.md` at each repository root before changing it, and apply them as
   local method constraints under this contract. Never create, edit, move, or delete `.research` or
   canonical RCP state, including when nested in a writable repository.
@@ -266,11 +276,14 @@ Watcher handoff protocol:
   work remains in its system, 0 when that work is gone, and another status only when it cannot
   answer. It never submits, cancels, kills, edits, or otherwise changes external state. Verify the
   detached work outlives this turn and run the exact check from a fresh login shell before handoff.
-- For Slurm, ask for the whole active-job set and interpret membership; never look one job up
-  directly, because a finished job's "invalid job id" error is indistinguishable from an
-  unreachable scheduler and would degrade the watcher instead of completing it. Use
+- Ask for the set of live work and test membership; never look one identifier up directly. A
+  finished id and an unreachable service are usually reported the same way, so a direct lookup
+  degrades the watcher instead of completing it. A scheduler job:
   `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids"; case $? in 0) exit 1;;
-  1) exit 0;; *) exit 2;; esac` (replace `4471` with the submitted job id).
+  1) exit 0;; *) exit 2;; esac`. A local process:
+  `pids=$(ps -axo pid=) || exit 2; grep -Fxq 4471 <<<"${{pids// /}}"; case $? in 0) exit 1;;
+  1) exit 0;; *) exit 2;; esac`. Replace `4471` with the real id. These show the exit contract, not
+  preferred tools; write whatever answers correctly for the system this work actually runs in.
 - RCP discovers `watch.json` after the turn, validates both lists, and arms them atomically; one
   invalid observer, group, stop item, or graph condition rejects the whole object for in-session
   correction.
@@ -307,7 +320,8 @@ Graph reflection and authority:
   `repositories_read` honestly; do not set coverage or cursors.
 - This loop may update only its own Experiment's attempts, status, `current_summary`, and
   `next_action`; queue an existing pinned Decision by setting it to `ready`, or reopen a settled pinned Decision
-  as `revisit` when new evidence undermines it; create Evidence or Blockers; assert legal epistemic
+  as `revisit` when new evidence undermines it; create Evidence with methodological `role` `result`
+  or `diagnostic`, never node-global evidential strength; create Blockers; assert legal epistemic
   edges; attach each same-Patch Evidence with `produces` and each same-Patch Blocker with
   `blocked_by`; connect same-Patch Evidence to an existing Decision with `informs` or to a Blocker
   with `addresses`; and create a Hypothesis Proposal within the pinned governing/tested boundary.
@@ -315,9 +329,12 @@ Graph reflection and authority:
   decide a Decision, directly change a Hypothesis status, edit the pinned bundle, or remove graph
   objects. Experiment status is a scientific description, not loop control.
 - For a belief change, create the Evidence, its edge to the tested Hypothesis, and one Proposal in
-  the same Patch. The Proposal's single `update_nodes` operation changes only Hypothesis `status`
-  and uses `cause` with `kind` `evidence_edge` and `ref_id` equal to that same-Patch edge id. Only
-  human acceptance can apply that belief change.
+  the same Patch. The Evidence-to-Hypothesis edge's relation states direction and its required
+  `assessment` states claim-relative `relevance`, `weight`, optional `scope`, and concrete
+  `qualifications`; do not attach that assessment to `produces`, `informs`, or `addresses`. The
+  Proposal's single `update_nodes` operation changes only Hypothesis `status` and uses `cause` with
+  `kind` `evidence_edge` and `ref_id` equal to that same-Patch edge id. Only human acceptance can
+  apply that belief change.
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   reader-facing concepts rather than ids or operation names. The Markdown reply and Patch are
   independent: report operational truth without claiming RCP accepted the Patch.
@@ -438,17 +455,22 @@ state:
 
 1. A watcher condition remains, or you have useful debugging and relaunching work to do.
 
-   Continue the work that is useful now. Use external observers for detached work that will outlive
-   this turn—typically a SLURM or other scheduler job, a long build or compilation, a long
-   evaluation, data collection, simulation, or another process expected to take at least ten
-   minutes. You may also wait on a canonical graph fact. Write `{watch_path}` as one object with
-   exactly the `external` and `graph` lists:
+   Continue the work that is useful now. Use external observers for detached work that will still
+   be running after this turn ends—a scheduler job, a long build, an evaluation, data collection, a
+   simulation, or any other process you started and left running. How long the work takes does not
+   decide this; whether it outlives the turn does. You may also wait on a canonical graph fact.
+   Write `{watch_path}` as one object with exactly the `external` and `graph` lists:
 
    {{
      "external": [
        {{
          "check_command": "ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 48192 <<<\\"$ids\\"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac",
          "log_path": "/absolute/path/to/job-48192.log",
+         "cwd": "/absolute/path/to/repository"
+       }},
+       {{
+         "check_command": "pids=$(ps -axo pid=) || exit 2; grep -Fxq 90210 <<<\\"${{pids// /}}\\"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac",
+         "log_path": "/absolute/path/to/sweep-90210.log",
          "cwd": "/absolute/path/to/repository"
        }}
      ],

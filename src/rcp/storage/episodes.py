@@ -55,6 +55,7 @@ class EpisodeStoreMixin:
         if (
             root_task.episode_id != record.episode_id
             or root_task.project_id != record.project_id
+            or root_task.graph_target != record.graph_target
             or root_task.kind == "episode_report"
             or root_task.status != "queued"
             or not root_task.visible
@@ -1251,6 +1252,8 @@ class EpisodeStoreMixin:
     def _validate_new_episode(record: EpisodeRecord) -> None:
         if record.authorized_by is None:
             raise ValueError("a new episode requires its human authorization snapshot")
+        if record.mode == "auto_research" and record.graph_target.kind != "branch":
+            raise ValueError("a new Auto-research episode requires its persistent graph branch")
         if (
             record.status != "queued"
             or record.root_operation_id is not None
@@ -1341,18 +1344,21 @@ class EpisodeStoreMixin:
         connection.execute(
             """
             INSERT INTO episodes (
-                episode_id, project_id, mode, control_node_id, root_operation_id, status,
+                episode_id, project_id, mode, control_node_id,
+                graph_target_json, graph_base_head_json, root_operation_id, status,
                 invocation_ceiling, invocations_used, authorized_space_id,
                 authorized_user_id, authorized_display_name, stop_requested_at,
                 stop_settled_at, ending, ending_diagnostic, wrapup_state,
                 wrapup_error, report_attempts_used, created_at, updated_at, ended_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.episode_id,
                 record.project_id,
                 record.mode,
                 record.control_node_id,
+                record.graph_target.model_dump_json(),
+                record.graph_base_head.model_dump_json() if record.graph_base_head else None,
                 record.root_operation_id,
                 record.status,
                 record.invocation_ceiling,
@@ -1472,6 +1478,13 @@ class EpisodeStoreMixin:
     @staticmethod
     def _episode_record(row: sqlite3.Row) -> EpisodeRecord:
         data = dict(row)
+        data["graph_target"] = json.loads(
+            data.pop("graph_target_json", '{"kind":"main","branch_id":null}')
+        )
+        graph_base_head_json = data.pop("graph_base_head_json", None)
+        data["graph_base_head"] = (
+            json.loads(graph_base_head_json) if graph_base_head_json is not None else None
+        )
         data["authorized_by"] = _authorized_human_snapshot(data)
         data.pop("authorized_space_id", None)
         data.pop("authorized_user_id", None)

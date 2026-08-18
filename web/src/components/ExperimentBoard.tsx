@@ -2,15 +2,17 @@ import { ChevronRight, FlaskConical, WifiOff } from "lucide-react";
 import { useMemo } from "react";
 import {
   buildExperimentBoard,
+  experimentBoardRouteToken,
   experimentTerminalLabel,
   type ExperimentBoardItem,
 } from "../experimentBoard";
+import { activeExperimentGuidanceText } from "../experimentGuidance";
 import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
 import type { ExperimentLoopIndexEntry } from "../types";
 
 interface Props {
   entries: ExperimentLoopIndexEntry[];
-  onOpen: (projectId: string, experimentId: string) => void;
+  onOpen: (projectId: string, experimentRoute: string) => void;
 }
 
 export function ExperimentBoard({ entries, onOpen }: Props) {
@@ -94,13 +96,16 @@ function ExperimentRows({
           health === "completed"
             ? experimentTerminalLabel(entry.node.status)
             : experimentHealthLabel(health);
-        const summary = entry.node.next_action || entry.node.current_summary;
+        const summary = activeExperimentGuidanceText(entry.node);
         return (
           <li
             className={`experiment-board-row ${tone}`}
-            key={`${entry.project_id}:${entry.node.id}`}
+            key={`${entry.project_id}:${entry.node.id}:${entry.control.episode_id ?? "unbound"}`}
           >
-            <button type="button" onClick={() => onOpen(entry.project_id, entry.node.id)}>
+            <button
+              type="button"
+              onClick={() => onOpen(entry.project_id, experimentBoardRouteToken(entry))}
+            >
               <span className="experiment-board-status-rail" aria-hidden="true" />
               <span className="experiment-board-row-copy">
                 <span className="experiment-board-row-heading">

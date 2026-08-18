@@ -416,6 +416,18 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(t
     assert store.experiment_episode(episode_id) == before
 
 
+def test_episode_origin_cannot_arm_a_watcher_for_another_episode(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    mismatched = _record("mismatched-episode", origin="loop-root").model_copy(
+        update={"continuation": _loop_continuation(str(uuid.uuid4()))}
+    )
+
+    with pytest.raises(ValueError, match="cannot change its origin task graph binding"):
+        store.create_watchers([mismatched])
+
+
 def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
     tmp_path,
 ) -> None:

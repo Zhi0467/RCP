@@ -10,6 +10,7 @@ from rcp.agents.command_protocol import SpawnArguments
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
@@ -51,6 +52,7 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
     )
     now = store.now()
     authorizer = fabricated_authorizer()
+    graph_target = GraphTargetRef(kind="branch", branch_id="auto_research")
     request = AutoResearchRunRequest(
         episode_id="auto_research",
         role="orchestrator",
@@ -64,6 +66,8 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
             episode_id="auto_research",
             project_id="project",
             mode="auto_research",
+            graph_target=graph_target,
+            graph_base_head=GraphHeadRef(revision=0),
             status="queued",
             invocation_ceiling=8,
             authorized_by=authorizer,
@@ -80,6 +84,7 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
             operation_id="root",
             project_id="project",
             episode_id="auto_research",
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -226,14 +231,14 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path) -> None
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
     second = reconcile_pending_auto_research_child_admissions(
         store,
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
 
     route = store.auto_research_child_work(child_id)
@@ -298,7 +303,7 @@ def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_pa
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=unavailable_then_ready,
-        seat_node_type=lambda _project_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
 
     admission = store.auto_research_child_admission(child_id)
@@ -328,7 +333,7 @@ def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_pa
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=unavailable_then_ready,
-        seat_node_type=lambda _project_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
 
     route = store.auto_research_child_work(child_id)
@@ -386,7 +391,7 @@ def test_restart_recovers_completed_unavailable_spawn_owner_without_rewriting_it
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
 
     command = store.agent_command(command_id)
@@ -475,7 +480,7 @@ def test_restart_reconciles_experiment_goal_from_durable_snapshot(tmp_path) -> N
         background,
         coordinator,  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _node_id: "experiment",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "experiment",
     )
 
     admission = store.auto_research_child_admission(child_id)
@@ -534,7 +539,7 @@ def test_restart_recovers_completed_unavailable_experiment_owner_from_goal_snaps
         background,
         coordinator,  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _node_id: "experiment",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "experiment",
     )
 
     command = store.agent_command(command_id)
@@ -580,7 +585,7 @@ def test_restart_cancels_malformed_admission_and_finish_no_longer_blocks(tmp_pat
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
 
     admission = store.auto_research_child_admission(child_id)
@@ -615,7 +620,9 @@ def test_app_startup_reconciles_the_crash_window(manifest, tmp_path) -> None:
         root = wait_for_task(store, root_id)
         episode = store.episode(episode_id)
         assert episode is not None
-        first_app.state.catalog.open(project_id).history.append(
+        first_app.state.catalog.open(project_id).for_graph_target(
+            episode.graph_target
+        ).history.append(
             Patch(
                 kind="work",
                 author="agent",
@@ -699,7 +706,7 @@ def test_normal_live_task_settlement_retries_a_deferred_child_admission(
         root = wait_for_task(store, root_id, expect="succeeded")
         episode = store.episode(episode_id)
         assert episode is not None
-        app.state.catalog.open(project_id).history.append(
+        app.state.catalog.open(project_id).for_graph_target(episode.graph_target).history.append(
             Patch(
                 kind="work",
                 author="agent",

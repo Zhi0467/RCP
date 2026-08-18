@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
@@ -120,6 +121,12 @@ def _episode(
         project_id=project_id,
         mode=mode,
         control_node_id=control_node_id,
+        graph_target=(
+            GraphTargetRef(kind="branch", branch_id=episode_id)
+            if mode == "auto_research"
+            else GraphTargetRef()
+        ),
+        graph_base_head=(GraphHeadRef(revision=0) if mode == "auto_research" else None),
         status="queued",
         invocation_ceiling=ceiling,
         authorized_by=_authorizer(store),

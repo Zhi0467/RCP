@@ -147,6 +147,71 @@ raise SystemExit(0 if stat.S_ISDIR(info.st_mode) else 1)
 """
         return self._ssh(["python3", "-c", script, root])
 
+    def canonical_directories(
+        self,
+        paths: list[str],
+        *,
+        require_writable: bool,
+    ) -> tuple[dict[str, str], str]:
+        """Resolve exact directories on the execution account without broadening them."""
+
+        declared = list(dict.fromkeys(paths))
+        script = """
+import json,os,sys
+declared=json.loads(sys.argv[1]); require_writable=sys.argv[2]=='1'
+resolved={}
+for raw in declared:
+    expanded=os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        print('project repository root must be absolute: '+raw,file=sys.stderr)
+        raise SystemExit(40)
+    target=os.path.realpath(expanded)
+    if not os.path.isdir(target):
+        print('project repository root is unavailable: '+raw,file=sys.stderr)
+        raise SystemExit(41)
+    if require_writable and not os.access(target,os.W_OK):
+        print('project repository root is not writable: '+raw,file=sys.stderr)
+        raise SystemExit(42)
+    resolved[raw]=target
+print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resolved},sort_keys=True))
+"""
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                script,
+                json.dumps(declared, separators=(",", ":")),
+                "1" if require_writable else "0",
+            ]
+        )
+        if result.returncode == 255:
+            raise StateUnavailable(
+                result.stderr.strip() or "could not inspect remote project repository roots"
+            )
+        if result.returncode:
+            raise ValueError(
+                result.stderr.strip() or "remote project repository roots are unavailable"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise StateUnavailable(
+                "remote repository root inspection returned invalid data"
+            ) from exc
+        values = payload.get("paths") if isinstance(payload, dict) else None
+        home = payload.get("home") if isinstance(payload, dict) else None
+        if (
+            not isinstance(values, dict)
+            or set(values) != set(declared)
+            or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in values.items()
+            )
+            or not isinstance(home, str)
+            or not home
+        ):
+            raise StateUnavailable("remote repository root inspection returned invalid paths")
+        return values, home
+
     def attach_artifact_source(self, root: str) -> RemoteRunStage:
         """Adopt saved provenance; the bounded artifact read performs the SSH check."""
         if not _safe_root(root):

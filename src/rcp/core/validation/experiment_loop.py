@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from rcp.core.authority import EVIDENCE_EDGE_CAUSE_KIND, EVIDENCE_RELATIONS
+from rcp.core.authority import EVIDENCE_RELATIONS
 from rcp.core.models import (
     RELATION_SPEC,
     Decision,
@@ -14,8 +14,20 @@ from rcp.core.models import (
     ExperimentDecisionPin,
     GraphState,
     Patch,
+    Proposal,
 )
 from rcp.core.ontology import custom_relation
+from rcp.core.operations import (
+    CreateEdgesOperation,
+    CreateNodesOperation,
+    CreateProposalsOperation,
+    EvidenceEdgeCause,
+    GraphOperation,
+    ProposalContentChangeOperation,
+    ProposalOperation,
+    ProposalStatusChangeOperation,
+    UpdateNodesOperation,
+)
 from rcp.core.validation.report import ValidationReport
 
 _ATTEMPT_CLOSE_FIELDS = frozenset(
@@ -54,18 +66,17 @@ def validate_experiment_loop_authority(
         )
 
     has_proposals = any(
-        op.get("op") == "create_proposals" and bool(op.get("proposals")) for op in patch.ops
+        isinstance(op, CreateProposalsOperation) and bool(op.proposals) for op in patch.ops
     )
     created_types = _created_node_types(patch.ops)
     for op in patch.ops:
-        name = op.get("op")
-        if name == "update_nodes":
+        if isinstance(op, UpdateNodesOperation):
             _validate_updates(state, op, experiment, pinned, has_proposals, report, revision)
-        elif name == "create_nodes":
+        elif isinstance(op, CreateNodesOperation):
             _validate_created_nodes(op, experiment.id, report, revision)
-        elif name == "create_edges":
+        elif isinstance(op, CreateEdgesOperation):
             _validate_created_edges(state, op, experiment.id, created_types, report, revision)
-        elif name == "create_proposals":
+        elif isinstance(op, CreateProposalsOperation):
             _validate_proposals(
                 op,
                 experiment.id,
@@ -77,7 +88,7 @@ def validate_experiment_loop_authority(
         else:
             report.reject(
                 "experiment-loop-operation",
-                f"Experiment loop {experiment.id} cannot use operation {name!r}.",
+                f"Experiment loop {experiment.id} cannot use operation {op.op!r}.",
                 revision,
                 related_node_ids=[experiment.id],
             )
@@ -85,7 +96,7 @@ def validate_experiment_loop_authority(
 
 def _validate_updates(
     state: GraphState,
-    op: dict[str, Any],
+    op: UpdateNodesOperation,
     experiment: Experiment,
     pinned: list[ExperimentDecisionPin],
     has_proposals: bool,
@@ -93,12 +104,10 @@ def _validate_updates(
     revision: int | None,
 ) -> None:
     pinned_ids = {item.decision_id for item in pinned}
-    for update in op.get("nodes", []):
-        node_id = update.get("id")
-        changes = update.get("changes")
+    for update in op.nodes:
+        node_id = update.id
+        changes = update.changes
         if node_id in pinned_ids:
-            if not isinstance(changes, dict):
-                continue
             if set(changes) != {"status"} or changes.get("status") not in {
                 "open",
                 "ready",
@@ -129,8 +138,6 @@ def _validate_updates(
                     item for item in (experiment.id, node_id) if isinstance(item, str)
                 ],
             )
-            continue
-        if not isinstance(changes, dict):
             continue
         forbidden = sorted(set(changes) - {"attempts", "status", "current_summary", "next_action"})
         if forbidden:
@@ -248,13 +255,13 @@ def _validate_attempts(
 
 
 def _validate_created_nodes(
-    op: dict[str, Any],
+    op: CreateNodesOperation,
     experiment_id: str,
     report: ValidationReport,
     revision: int | None,
 ) -> None:
-    for node in op.get("nodes", []):
-        if node.get("type") not in {"evidence", "blocker"}:
+    for node in op.nodes:
+        if node.type not in {"evidence", "blocker"}:
             report.reject(
                 "experiment-loop-created-node",
                 f"Experiment loop {experiment_id} may create only Evidence or Blocker nodes.",
@@ -263,16 +270,13 @@ def _validate_created_nodes(
             )
 
 
-def _created_node_types(ops: Iterable[dict[str, Any]]) -> dict[str, str]:
+def _created_node_types(ops: Iterable[GraphOperation]) -> dict[str, str]:
     created: dict[str, str] = {}
     for op in ops:
-        if op.get("op") != "create_nodes":
+        if not isinstance(op, CreateNodesOperation):
             continue
-        for node in op.get("nodes", []):
-            node_id = node.get("id")
-            node_type = node.get("type")
-            if isinstance(node_id, str) and isinstance(node_type, str):
-                created[node_id] = node_type
+        for node in op.nodes:
+            created[node.id] = node.type
     return created
 
 
@@ -285,18 +289,18 @@ _EVIDENCE_HANDOFF_RELATIONS = {"informs": "decision", "addresses": "blocker"}
 
 def _validate_created_edges(
     state: GraphState,
-    op: dict[str, Any],
+    op: CreateEdgesOperation,
     experiment_id: str,
     created_types: dict[str, str],
     report: ValidationReport,
     revision: int | None,
 ) -> None:
-    for edge in op.get("edges", []):
-        relation_name = edge.get("relation")
+    for edge in op.edges:
+        relation_name = edge.relation
         if relation_name in _SELF_ATTACHMENT_RELATIONS:
             expected_type = _SELF_ATTACHMENT_RELATIONS[relation_name]
-            target = edge.get("target")
-            if edge.get("source") == experiment_id and created_types.get(target) == expected_type:
+            target = edge.target
+            if edge.source == experiment_id and created_types.get(target) == expected_type:
                 continue
             report.reject(
                 "experiment-loop-self-attachment",
@@ -304,13 +308,14 @@ def _validate_created_edges(
                 f"experiment to a {expected_type} node this patch creates.",
                 revision,
                 related_node_ids=[
-                    item for item in (experiment_id, target) if isinstance(item, str)
+                    experiment_id,
+                    target,
                 ],
             )
             continue
         if relation_name in _EVIDENCE_HANDOFF_RELATIONS:
-            source = edge.get("source")
-            target = edge.get("target")
+            source = edge.source
+            target = edge.target
             target_node = state.nodes.get(target)
             target_type = target_node.type if target_node is not None else created_types.get(target)
             expected_target_type = _EVIDENCE_HANDOFF_RELATIONS[relation_name]
@@ -322,7 +327,9 @@ def _validate_created_edges(
                 f"this patch creates to a {expected_target_type} node.",
                 revision,
                 related_node_ids=[
-                    item for item in (experiment_id, source, target) if isinstance(item, str)
+                    experiment_id,
+                    source,
+                    target,
                 ],
             )
             continue
@@ -350,7 +357,7 @@ def _tested_hypothesis_ids(state: GraphState, experiment_id: str) -> set[str]:
 
 def _grounding_edge_ids(
     state: GraphState,
-    ops: Iterable[dict[str, Any]],
+    ops: Iterable[GraphOperation],
     created_types: dict[str, str],
 ) -> dict[str, set[str]]:
     """Same-patch Evidence -> Hypothesis edge ids grouped by target.
@@ -361,29 +368,23 @@ def _grounding_edge_ids(
 
     grounded: dict[str, set[str]] = {}
     for op in ops:
-        if op.get("op") != "create_edges":
+        if not isinstance(op, CreateEdgesOperation):
             continue
-        for edge in op.get("edges", []):
-            if not isinstance(edge, dict):
-                continue
-            target = edge.get("target")
-            source = edge.get("source")
+        for edge in op.edges:
+            target = edge.target
+            source = edge.source
             existing_source = state.nodes.get(source)
             source_type = (
                 existing_source.type if existing_source is not None else created_types.get(source)
             )
-            if (
-                edge.get("relation") in EVIDENCE_RELATIONS
-                and source_type == "evidence"
-                and isinstance(target, str)
-            ):
-                edge_id = edge.get("id") or f"{source}::{edge.get('relation')}::{target}"
+            if edge.relation in EVIDENCE_RELATIONS and source_type == "evidence":
+                edge_id = edge.id or f"{source}::{edge.relation}::{target}"
                 grounded.setdefault(target, set()).add(edge_id)
     return grounded
 
 
 def _validate_proposals(
-    op: dict[str, Any],
+    op: CreateProposalsOperation,
     experiment_id: str,
     tested_hypothesis_ids: set[str],
     grounding_edge_ids: dict[str, set[str]],
@@ -397,9 +398,8 @@ def _validate_proposals(
     apply a Decision outcome.
     """
 
-    for proposal in op.get("proposals", []):
-        replay_ops = proposal.get("ops")
-        target_ids = _proposal_update_targets(replay_ops)
+    for proposal in op.proposals:
+        target_ids = _proposal_update_targets(proposal.ops)
 
         if target_ids and target_ids <= tested_hypothesis_ids:
             _validate_belief_proposal(
@@ -420,27 +420,25 @@ def _validate_proposals(
         )
 
 
-def _proposal_update_targets(replay_ops: Any) -> set[str]:
+def _proposal_update_targets(replay_ops: list[ProposalOperation]) -> set[str]:
     """Node ids a proposal's replay would update, or empty when it is malformed."""
 
-    if not isinstance(replay_ops, list) or not replay_ops:
+    if not replay_ops:
         return set()
     targets: set[str] = set()
     for replay_op in replay_ops:
-        if not isinstance(replay_op, dict) or replay_op.get("op") != "update_nodes":
+        if not isinstance(
+            replay_op, (ProposalContentChangeOperation, ProposalStatusChangeOperation)
+        ):
             return set()
-        updates = replay_op.get("nodes")
-        if not isinstance(updates, list) or not updates:
+        if not replay_op.nodes:
             return set()
-        ids = {item.get("id") for item in updates if isinstance(item, dict)}
-        if len(ids) != len(updates) or not all(isinstance(item, str) for item in ids):
-            return set()
-        targets.update(item for item in ids if isinstance(item, str))
+        targets.update(item.id for item in replay_op.nodes)
     return targets
 
 
 def _validate_belief_proposal(
-    proposal: dict[str, Any],
+    proposal: Proposal,
     experiment_id: str,
     target_ids: set[str],
     grounding_edge_ids: dict[str, set[str]],
@@ -471,23 +469,21 @@ def _validate_belief_proposal(
 
     updates = [
         item
-        for replay_op in proposal.get("ops", [])
-        for item in replay_op.get("nodes", [])
-        if isinstance(item, dict)
+        for replay_op in proposal.ops
+        if isinstance(replay_op, (ProposalContentChangeOperation, ProposalStatusChangeOperation))
+        for item in replay_op.nodes
     ]
     for update in updates:
-        changes = update.get("changes")
-        if not isinstance(changes, dict) or set(changes) != {"status"}:
+        changes = update.changes
+        if set(changes) != {"status"}:
             refuse(
                 "experiment-loop-belief-proposal-operations",
                 f"A belief proposal from {experiment_id} may change only {hypothesis_id}'s status.",
             )
             continue
-        cause = update.get("cause")
-        if (
-            not isinstance(cause, dict)
-            or cause.get("kind") != EVIDENCE_EDGE_CAUSE_KIND
-            or cause.get("ref_id") not in grounding_edge_ids.get(hypothesis_id, set())
+        cause = update.cause
+        if not isinstance(cause, EvidenceEdgeCause) or cause.ref_id not in grounding_edge_ids.get(
+            hypothesis_id, set()
         ):
             refuse(
                 "experiment-loop-belief-cause",

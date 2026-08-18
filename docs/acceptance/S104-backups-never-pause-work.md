@@ -9,9 +9,9 @@ invariants: [1, 2, 7]
 
 # A backup interrupts nothing and claims nothing it did not capture
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Team server operations](../design/team-server-operations.md#backups-do-not-pause-work).
+This scenario is a proposal and is **not yet human-confirmed**. The current
+boundary is in
+[Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 An earlier design had the server delay dispatch and delay applying results for
 the duration of each capture. With canonical history on remote machines that

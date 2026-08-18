@@ -8,13 +8,13 @@ you are expected to update it as the project changes.
 
 ## What RCP is
 
-RCP is the implementation of the single canonical design blueprint at
-[`docs/research-control-panel-blueprint.md`](docs/research-control-panel-blueprint.md).
-Its version lives inside that file. A design change edits that file in place and
-bumps its internal version and changelog; **never create a blueprint amendment,
-delta, or retained snapshot file.** Git history is the archive. The blueprint is
-the specification: when code and blueprint disagree, say so explicitly instead
-of silently picking one.
+RCP implements the cross-cutting design in [`docs/design.md`](docs/design.md)
+and the current module contracts under [`docs/specs/`](docs/specs/). Active
+acceptance scenarios state selected observable promises, active decision records
+explain rationale, and active handoffs authorize work not yet implemented. Read
+the precedence hierarchy in `docs/design.md`; [`docs/archive/`](docs/archive/)
+is historical and never current authority. When current sources or code
+disagree, say so explicitly instead of silently picking one.
 
 [`docs/open-questions.md`](docs/open-questions.md) holds design questions that
 are raised and evidenced but **not decided**. Read it before proposing a change
@@ -22,7 +22,7 @@ to something it covers, and add an entry rather than deciding an open question
 inside an implementation.
 
 In one sentence: a local web app that turns agent-driven research conversations
-into one project-global research graph, a human authority queue, and a
+into one durable research-graph record, a human authority queue, and a
 human-authored paper introduction with a read-only writing coach.
 
 ### Current stack — subject to change; verify before relying on it
@@ -41,14 +41,14 @@ Read `pyproject.toml` and `web/package.json` for the authoritative versions.
 The main agent orients, plans, verifies, and reviews. **Implementation fans out
 to subagents.**
 
-0. **Write the acceptance scenario first, and confirm it.** For a new feature, a
-   bug the user actually hit, or a substantial change to a module: propose the
-   scenario in [`docs/acceptance/`](docs/acceptance/README.md) — including the
-   **UI path** for anything new — and get the human's confirmation *before*
-   planning or writing code. The scenario is where the design decisions actually
-   get made; settling it first means they get made deliberately rather than
-   improvised inside an implementation and discovered later. Skip this only for
-   changes too small to have a user-visible promise.
+0. **Decide whether the work creates a durable product promise.** Add and confirm
+   an [`docs/acceptance/`](docs/acceptance/README.md) scenario first only for a
+   cross-module journey, authority/recovery/data-loss boundary, external
+   integration, or browser/desktop interaction not already covered by an active
+   scenario. Bugs, refactors, API shapes, and module-local regressions normally
+   get focused tests and a specification update only when semantics changed. A
+   handoff explicitly marked human-confirmed and ready to implement does not
+   require another confirmation interview.
 1. **Read, yourself.** Open the relevant files directly. Do not delegate
    orientation — you need the context to plan and to review later.
 2. **Make single edits, yourself.** One-file or few-line changes: just do them
@@ -66,6 +66,9 @@ to subagents.**
    you are the one who can tell whether it matches the plan and respects the
    invariants. Delegate a review only as an extra pass on large changes, never
    as a substitute for reading the diff.
+7. **Close the documentation loop.** Update current specifications when
+   behavior changed and archive an implemented, superseded, or abandoned handoff
+   when its work closes. Never cite an archived file as current authority.
 
 ### Where to cut the fan-out
 
@@ -225,15 +228,20 @@ If a hook modifies files, review and stage those changes, then rerun the full
 hook suite until it passes. A first formatter pass that changed files is not a
 successful final check.
 
-### Done means the scenario passes
+Before exporting, archiving, or committing a change set, enumerate
+`git ls-files --others --exclude-standard` and account for every intended new
+path in the snapshot. A tracked-only pre-commit or archive is not proof that the
+snapshot is complete.
 
-[`docs/acceptance/`](docs/acceptance/README.md) holds the promises the app makes,
-one file each, in the language of someone using it. **For feature work, a
-user-reported bug, or a substantial change, "done" is the named scenario
-passing** — not the baseline going green.
+### Done means the checks and applicable scenario pass
 
-Name the scenario your change belongs to. If none covers it, write it first (see
-step 0 above). A scenario declares how cheaply it can be checked: `driver:
+[`docs/acceptance/`](docs/acceptance/README.md) holds selected durable promises
+in the language of someone using RCP. Relevant focused checks and any active
+scenario whose promise the change touches must pass; a baseline alone is not
+proof of user-visible behavior.
+
+Name every applicable active scenario. If none covers the change, apply step 0's
+durable-product-promise test before adding one. A scenario declares how cheaply it can be checked: `driver:
 pytest` for backend truth, `api` for a served app without a browser, `browser`
 only when the thing that can break lives in the frontend — pin state, draft
 state, split position, a toggle resetting, a run staying visible across views.
@@ -293,10 +301,11 @@ State clearly what you verified and what you did not.
 
 ## Invariants
 
-These encode blueprint decisions. Breaking one silently invalidates the app's
+These encode current design/specification decisions. Breaking one silently invalidates the app's
 guarantees — surface the conflict instead of working around it.
 
-1. **`.research/patches/` is append-only.** Never edit or delete a patch file.
+1. **Canonical main and graph-branch Patch logs are append-only.** Never edit or
+   delete a patch file under `.research/patches/` or a branch Patch namespace.
    A human Sync is committed as one visible `patches/batch-*` directory; replay
    ignores its hidden `.batch-*` staging directory until the directory rename.
    An SSH mirror may discard an unpublished local batch after remote failure,
@@ -308,46 +317,63 @@ guarantees — surface the conflict instead of working around it.
    current state (`src/rcp/history/manager.py`, `src/rcp/core/materialize.py`).
 2. **Materialized files are never hand-edited.** `graph.json`, `research.md`,
    `glossary.json`, `proposals.json`, `coverage.json` are outputs.
-3. **Agents assert or propose; humans hold authority.** Only human UI actions
-   set `standing`, approve gated operations, or change project truth membership.
-   Do not add an agent path that writes any of those. A human authority action
+3. **Agents assert or propose; humans hold the protected authority boundary.**
+   Only human UI actions approve gated operations, change project truth
+   membership, authorize a bounded episode, or dispatch a branch merge.
+   Ordinary agents never choose a Decision or set standing. The deliberate
+   exception is the human-authorized Auto-research orchestrator: on its graph
+   branch, and through a human-dispatched merge agent carrying the orchestrator
+   graph profile, it may choose Decisions and judge non-protected node types.
+   No agent may approve a Proposal. A human authority action
    whose operations cannot distinguish it from an ordinary edit names itself on
    the patch (`human_action` in [models.py](src/rcp/core/models.py)); validation
    dispatches on that name. Never infer which action produced a patch from its
    operation shape — a direct Decision choice and a node edit are both one
    `update_nodes` on one node, and guessing silently reroutes the other one.
 4. **Agent permission contracts are fixed by capability.** `permissions_for()`
-   in [config.py](src/rcp/config.py) is the contract; the manifest may not widen
-   or narrow it. Discuss has writable conversation scratch but no project or
-   graph authority. Work is unrestricted for tooling and repositories: Codex
-   bypasses approvals and sandboxing, and Claude uses `bypassPermissions`.
-   Work-originated graph and watcher corrections retain that same Work capability
-   and native session; only their instruction changes. Direct canonical `.research` writes are
-   forbidden by the Work prompt contract only, a known accepted prompt-enforced
-   boundary for both providers. Seed, Refresh, and their generic patch correction
+   in [config.py](src/rcp/config.py) is the semantic contract; the manifest may
+   not widen or narrow it. Discuss has writable conversation scratch but no
+   project or graph authority. Work-like Codex and Claude launches use their
+   supported native unattended exact-root enforcement for the task workspace
+   and RCP-admitted project repositories; dangerous/bypass permission modes are
+   forbidden. Work-originated graph and watcher corrections retain the same
+   native session, capability, project, graph target, and write-scope
+   fingerprint; only their instruction changes. Canonical `.research` is
+   outside every agent write scope. This is cooperative accidental-write
+   containment, not hostile same-account isolation or a read-secrecy claim.
+   Seed, Refresh, and their generic patch correction
    write only their run scratch. The paper coach has no write or Apply path
    anywhere. Every launch names its capability outright — `AgentLauncher.stream`
    and `_command` require it, and there is no boolean shorthand a caller can pass
    instead.
 4b. **One way to get a patch out of an agent.** There is no write-path mode. The
    provider is launched with its cwd on a scratch folder and writes `patch.json`
-   there; that file is the only graph-change channel RCP reads. Work may edit any
-   repository its unrestricted tools can reach, but those edits carry operational
-   authority, not graph authority. Its prohibition on direct canonical
-   `.research` writes is a prompt contract, not an OS boundary. Conversations may
+   there; that file is the only graph-change channel RCP reads. Work may edit
+   only the exact task stage and admitted project repository roots; those edits
+   carry operational authority, not graph authority. Conversations may
    write optional preview files under the exact RCP-created artifact directory
    for its turn, but those files are temporary, non-canonical, and carry no
    graph authority. Never parse a patch out of stdout or a final message, never
    add a canonical-state write path, and never copy a repository merely to make
    it readable — off-machine repos are read over SSH from the host and path in
    the prompt.
-5. **Run scope vs. project scope.** The whole graph and canonical `research.md`
-   enter every graph agent run; only run-scope repositories enter as raw
-   pointers. For Work this is a context boundary, not a repository permission
-   boundary. Keep that distinction when touching `src/rcp/agents/context.py`.
+5. **Run context, write scope, and graph target are distinct.** The whole graph
+   and canonical `research.md` for the exact main/branch target enter every
+   graph-agent run; only run-scope repositories enter as raw pointers. Those
+   pointers bound context, while `ProjectWriteScope` independently grants exact
+   Work-like repository roots on the execution machine. Keep both distinctions
+   when touching `src/rcp/agents/context.py` or `src/rcp/agents/write_scope.py`.
 6. **Exactly one canonical state repository**, possibly remote. Writes go
    through the `StateWorkspace` (lock, publish explicit changed files); never
-   write canonical files directly from a route handler.
+   write canonical files directly from a route handler. Auto-research graph
+   branches are namespaces inside this repository, not additional project homes.
+6b. **One synchronous transition manager owns semantic mutation.** Human Sync,
+   agent Apply, branch Apply, and branch merge prepare typed initiating and
+   generated operations to deterministic closure and commit one exact-target
+   revision or nothing. Replay applies recorded expanded operations and never
+   reruns historical rules. Every mutation response replaces graph, control,
+   guidance validity, and head from one final state; the client computes no rule
+   outcome.
 7. **Atomic writes.** Manifest and materialized output writes go through the
    existing temp-file-then-`os.replace` helpers.
 7b. **Materialization never mutates a contained model in place.** Every change in
@@ -421,8 +447,8 @@ guarantees — surface the conflict instead of working around it.
    current state while holding the canonical append lock. There is no original
    context-revision pin or Resume-ancestor walk, and graph movement alone is not
    a rejection. Work graph and watcher corrections reuse the same native Work
-   session and unrestricted Work permissions; only the instruction changes, and
-   they must not repeat completed operational side effects.
+   session and exact provider-enforced project write scope; only the instruction
+   changes, and they must not repeat completed operational side effects.
 
    A remote single-patch append uses the patch file as an observable atomic
    commit point: a confirmed commit succeeds and repairs derived outputs, an
@@ -450,8 +476,9 @@ guarantees — surface the conflict instead of working around it.
    is not resent; Settings, contract, repository, or package-pointer changes are appended as compact
    replacement deltas and become the session baseline only after a successful turn. Discuss has
    those repositories read-only. Work receives the same exact pointers as
-   context, but its tooling and repository access are unrestricted; it may return
-   its optional semantic `patch.json`. Discuss and Work never read, index, copy,
+   context, while provider-enforced writes are limited to the exact task
+   workspace and RCP-admitted repository roots; it may return its optional
+   semantic `patch.json`. Discuss and Work never read, index, copy,
    project, prompt with, validate, or authorize from prior chat transcripts. Discuss has no active
    Patch channel even though the session master retains the inactive Work contract. A
    provider continuation/session identifier may still be passed to the provider
@@ -493,7 +520,14 @@ guarantees — surface the conflict instead of working around it.
    Task Resume/Retry is recovery, not the revision mechanism.
 10g. **One episode parent, one native session, one graceful stop.** Auto-research
    and bounded Experiment control are two modes of one persisted episode parent;
-   their adapters keep distinct operational policy. Every bounded episode has
+   their adapters keep distinct operational policy. Every Auto-research episode
+   is durably bound before launch to one persistent graph-only branch based on
+   one coherent main head; root, child Work/Experiment, watcher, correction,
+   settlement, and report graph paths retain that exact target. Main stays
+   independently writable. Only a human-dispatched, graph-only merge agent may
+   semantically rebase a quiescent branch head onto current main, producing one
+   attributable transition or nothing; repository files are never branched or
+   merged and the graph branch is never discarded. Every bounded episode has
    exactly one validated native-session binding — provider,
    session id, execution host, and exact reusable stage — committed only by a
    mechanically successful joint Patch/watcher handoff. A graph-level rejection
@@ -565,8 +599,9 @@ guarantees — surface the conflict instead of working around it.
   append-only and materialized files are outputs (invariants 1 and 2); a
   whitespace fixer rewriting one would violate both. Keep the top-level
   `exclude:` in `.pre-commit-config.yaml` if you add hooks.
-- The blueprint is long. Read the specific section you need (headings are
-  greppable) rather than the whole file.
+- Read [`docs/design.md`](docs/design.md), the applicable current module in
+  [`docs/specs/`](docs/specs/), and any active scenario the change touches.
+  Ignore archived documents unless the task is explicitly historical.
 - Remote/SSH paths mean a path *on that machine*, always paired with a host.
 - `examples/demo-project/state-repo` is a real fixture project with a
   multi-revision graph, a pending proposal, and an ambiguity. Running the demo
@@ -587,11 +622,12 @@ carrying forward, and correct an entry when they change their mind.
   task, then verify the repaired behavior.
 - UI-level verification is expected for features, user-reported bugs, and
   substantial changes — not just green tests.
-- **Acceptance before code.** The human's attention goes to design and to
-  scenarios, not to reading code or tests. So the agent proposes the scenario —
-  including the UI path for anything new — and confirms it *before* building.
-  Real flows catch what unit tests structurally cannot; unit tests remain the
-  cheap way to *check* a promise, never the statement of one.
+- **Durable acceptance before code.** The human's attention goes to product
+  journeys and authority boundaries, not one scenario per defect. Propose and
+  confirm a scenario—including the UI path—before building a new durable
+  cross-module promise. Use focused regression tests for bugs, refactors, and
+  module-local behavior already governed by a current specification or active
+  scenario. A confirmed implementation handoff does not reopen design.
 - A scenario is not a unit test wearing a costume. If its assertions are fully
   determined by one API call, its driver is `pytest` and it should say so. A
   browser is earned only when the thing that can break lives in the browser.
@@ -607,6 +643,22 @@ carrying forward, and correct an entry when they change their mind.
   `[profile.dev]` in [Cargo.toml](web/src-tauri/Cargo.toml) instead. Building the
   *release* bundle is a separate, deliberate drive; "desktop is done" refers to
   the dev app unless the human says release.
+- **Only the dev bundle is kept in `target/`; the rest is disposable cache.**
+  `target/debug/bundle/` holds `RCP Dev.app`, and it is self-contained — the
+  binary resolves the checkout from a compiled-in `CARGO_MANIFEST_DIR`
+  ([backend.rs](web/src-tauri/src/backend.rs)), so nothing under `target/` is
+  read at runtime. `deps/`, `incremental/`, and `build/` only make the next
+  rebuild fast, and `target/release/` is not used at all while the workflow is
+  dev-app-only. Pruning all four is safe and reclaims several GB:
+
+  ```sh
+  rm -rf web/src-tauri/target/debug/{deps,incremental,build} web/src-tauri/target/release
+  ```
+
+  The cost is one cold compile the next time `web/src-tauri/` itself changes.
+  Note `target/debug` is named for the cargo *profile*, not for symbols —
+  `debug = 0` already drops those, and `tauri build --debug` is still required
+  because `debug_assertions` is what selects the checkout backend.
 - The dev app is a thin shell over the checkout, not a copy of it. Under
   `debug_assertions` it runs `uv run rcp serve` from the checkout with
   `--web-assets source` ([backend.rs](web/src-tauri/src/backend.rs)), so Python
@@ -622,10 +674,11 @@ carrying forward, and correct an entry when they change their mind.
   pre-push/release verification.
 - Nothing versioned should be hardcoded into instructions; point at the source
   of truth instead.
-- **This repo is single-branch: commit directly to `main`.** Do not create a
-  working branch first and do not suggest one; a branch-first commit only strands
-  the work and forces a merge. Committing still happens only when the human asks,
-  and pushing still requires an explicit request.
+- **The Git development workflow is single-branch: commit directly to `main`.**
+  Do not create a working Git branch first or suggest one; a branch-first commit
+  only strands the work and forces a merge. This is unrelated to RCP's canonical
+  Auto-research graph branches. Committing still happens only when the human
+  asks, and pushing still requires an explicit request.
 - **Agent-facing prose is written, not accreted.** Every contract opens by saying
   what RCP is and what the agent's role in it is, because the name is otherwise
   unexplained jargon. Say a rule once: a precedence list that restates its own
@@ -659,16 +712,17 @@ carrying forward, and correct an entry when they change their mind.
   write it to a file would be two channels for one payload. Capture it from the
   provider's labelled final assistant message instead.
 - Conversation scratch is writable in both modes. Discuss has no graph contract;
-  Work is the per-turn authorization for unrestricted operational execution and
-  one optional semantic `patch.json`. RCP, not the agent, adds graph bookkeeping.
-  Optional previews stay temporary and provider-agnostic.
+  Work is the per-turn authorization for operational execution within its exact
+  provider-enforced project write scope and one optional semantic `patch.json`.
+  RCP, not the agent, adds graph bookkeeping. Optional previews stay temporary
+  and provider-agnostic.
 - Discuss and Work are switchable on every node and project conversation.
   Discuss is plum, Work is dark forest, `Shift+Tab` toggles while the composer is
   focused, and every sent turn keeps an immutable visible mode label. A resumed
   task keeps its original mode regardless of the current composer setting.
-- Work is non-interactive and unrestricted for both providers; Discuss,
-  Seed/Refresh and their generic patch correction, and paper coaching keep
-  narrower profiles. Invariant 4 states the contract and
+- Work is non-interactive and uses provider-native exact project write
+  containment for both providers; Discuss, Seed/Refresh and their generic patch
+  correction, and paper coaching keep narrower profiles. Invariant 4 states the contract and
   [providers.py](src/rcp/providers.py) owns the per-provider flags that implement
   it — do not restate either in prose that will drift.
 - A Work patch is not a universal Proposal. Ordinary legal graph operations
@@ -685,7 +739,8 @@ carrying forward, and correct an entry when they change their mind.
 - Context boundaries are named exactly, never approximated by a containing
   directory: Discuss and Work get the graph/current node and exact run-scope
   repository pointers, but no provider-root or prior-transcript input. Those
-  pointers bound context, not unrestricted Work permission. Seed and Refresh are
+  pointers bound context, while `ProjectWriteScope` independently binds exact
+  Work writes. Seed and Refresh are
   the only paths that receive provider-source roots for ingestion. The agent
   reads those roots in place after the project watermark; RCP never moves the
   conversation files.
@@ -787,11 +842,13 @@ carrying forward, and correct an entry when they change their mind.
   human-action boundary. Deterministic history rendering is a safety net that
   resolves ids to titles and derives truthful operation fallbacks; it does not
   invent scientific causality.
-- **RCP is not a version-control system.** Every project already lives in a git
-  repository with an append-only patch log inside it. Do not add a third layer:
-  no forking, branching, merging, or divergent-copy reconciliation. Where a
-  duplicate or a moved project must be recognized, the answer is a nameplate the
-  project carries and a refusal, not history semantics.
+- **Graph branches are one narrow canonical exception, not version control.**
+  Every Auto-research episode owns one append-only graph-only branch inside the
+  canonical state repository, and a human may dispatch its semantic merge to
+  main. Do not generalize it into user branches, Git branches/worktrees,
+  repository rollback, branch discard, branch-to-branch merge, or a conflict
+  viewer. Project duplication or movement still uses the canonical nameplate and
+  refusal/transfer semantics, never inferred history reconciliation.
 - **Ask plainly; do not answer a question with a pointer.** When the human needs
   to decide something, put the decision itself in front of them — self-contained,
   scoped, and readable without opening a file. "Confirm S76" and "Q6 leaves four
@@ -801,9 +858,10 @@ carrying forward, and correct an entry when they change their mind.
 - The Auto-research orchestrator is a Work agent. It gets the project's Settings-enabled
   skills and workflows, staged and rendered through the same one pointer block every
   other contract uses. Only the concluding report is narrowed to its one required skill.
-- **Permission is code, not configuration.** Both agent profiles are constants.
-  Changing what an agent may do is a code change with a scenario attached, so
-  nobody can misconfigure their way into an agent that rewrites their beliefs.
+- **Permission is code, not configuration.** Agent profiles are constants.
+  Changing what an agent may do requires the governing specification and focused
+  contract checks to change together; add an acceptance scenario only when the
+  change creates a durable product promise under step 0.
 - **The protected-type rule.** An agent operation is free unless it touches an
   existing ResearchQuestion or Hypothesis record — those two types are the
   project's beliefs. This covers update, remove, supersede, merge, and the edges
@@ -964,9 +1022,10 @@ longer apply.
   configured root in the contract, and leaves the provider to inspect the roots
   it can reach. It does not inspect or move conversation files as a fallback.
 - `codex exec resume` accepts neither `--sandbox` nor `--cd`. A Work Resume must
-  still receive `--dangerously-bypass-approvals-and-sandbox`; narrower resumed
-  capabilities carry their sandbox mode through `--config`. Check the
-  subcommand's own `--help` before assuming a flag carries over from `codex exec`.
+  carry its saved exact project permission profile through the provider's
+  supported `--config` path; it must never fall back to the dangerous bypass
+  flag. Check the subcommand's own `--help` before assuming a flag carries over
+  from `codex exec`.
 - Chat must not be made dependent on source-pointer reachability. A prior chat
   transcript is UI history only; Discuss and Work never resolve, copy, or validate
   it as agent input. A provider session id may continue the provider's native
@@ -996,11 +1055,12 @@ longer apply.
   `POST …/tasks/{id}/resume` so the child is real. Validate the saved native
   stage and session provenance, but never walk that lineage to recover a Work
   patch base revision; Apply always uses live state under the append lock.
-- Claude `--add-dir` is context plumbing, not a Work authority boundary:
-  `bypassPermissions` makes Work repository/tool access unrestricted. Do not put
-  provider roots into Discuss or Work context. Seed/Refresh may receive provider
-  roots only when source assembly degraded and the prompt explicitly explains
-  why.
+- Claude `--add-dir` is context plumbing, not a Work authority boundary. Work
+  uses unattended `dontAsk` mode plus an RCP-authored strict settings allow-list
+  for the exact task stage and admitted repositories; it never uses the provider
+  bypass mode. Do not put provider-log roots into Discuss or Work context.
+  Seed/Refresh receives configured provider-log roots only under its distinct
+  in-place ingestion contract.
 - Benign shell noise must never become a failure reason. `bash -lic` writes
   "cannot set terminal process group" on every remote run, so a connection
   dropped mid-run was reported to the human as a tty error instead of a lost
@@ -1095,6 +1155,13 @@ longer apply.
   `interrupt_active_agent_tasks`. `check_pause()` was invented by one campaign
   test and passed ~2 runs in 3; the real idiom is
   `execution.control.pause_requested.is_set()` (fixed 2026-08-12).
+- A contract that *describes* an enforcement boundary drifts from the code that enforces it. The
+  Work contract claimed RCP imposes no repository allowlist while `providers.py` denied every write
+  outside the resolved roots, so a contract-authorized action came back as an unexplained tool
+  denial and the agent could only answer it by guessing at other commands. Render the resolved
+  `ProjectWriteScope` (`write_scope_section` in [prompts.py](src/rcp/agents/prompts.py)) so the
+  prompt and the provider flags read the same object. Applies to any policy stated in prose next to
+  code that enforces it (fixed 2026-08-18).
 
 ## Maintaining this file
 

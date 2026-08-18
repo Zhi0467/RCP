@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
 
 
-ProjectServiceLookup = Callable[[str], ProjectService]
+ProjectServiceLookup = Callable[[str, str], ProjectService]
 ExperimentOperationLock = Callable[[str], AbstractContextManager[object]]
 
 
@@ -95,7 +95,7 @@ class AutoResearchExperimentCoordinator:
         elif goal_sha256 is not None:
             raise ValueError("An absent Experiment goal cannot carry a digest.")
 
-        service = self.project_service(parent.project_id)
+        service = self.project_service(parent.project_id, auto_research_episode_id)
         now = self.store.now()
         intent = {
             "goal": goal,
@@ -261,9 +261,10 @@ class AutoResearchExperimentCoordinator:
             child = self.store.episode(child_episode_id)
             if child is None or child.mode != "experiment_loop":
                 raise ValueError("The child Experiment route lost its episode parent.")
-            runtime = self.store.experiment_loop_runtime(
+            runtime = self.store.experiment_loop_runtime_for_target(
                 route.project_id,
                 route.control_node_id,
+                child.graph_target,
             )
             if runtime.episode_id != child_episode_id and child.stop_requested_at is None:
                 raise ValueError("The requested child is no longer the current Experiment episode.")
@@ -271,6 +272,8 @@ class AutoResearchExperimentCoordinator:
                 self.store.request_experiment_loop_stop(
                     route.project_id,
                     route.control_node_id,
+                    episode_id=child.episode_id,
+                    graph_target=child.graph_target,
                 )
         child = self.store.episode(child_episode_id)
         status = child.status if child is not None else "stopped"
@@ -351,6 +354,8 @@ class AutoResearchExperimentCoordinator:
         return advanced
 
     def _live_predecessor_id(self, project_id: str, node_id: str) -> str | None:
+        # Admission is deliberately node-global: a branch must not duplicate the
+        # same real-world Experiment while another target still owns live work.
         runtime = self.store.experiment_loop_runtime(project_id, node_id)
         if runtime.episode_id is None:
             return None
@@ -394,15 +399,18 @@ class AutoResearchExperimentCoordinator:
             raise ValueError("The pending Experiment replacement names another predecessor.")
         if predecessor.status == "wrapping_up":
             return
-        runtime = self.store.experiment_loop_runtime(
+        runtime = self.store.experiment_loop_runtime_for_target(
             route.project_id,
             route.control_node_id,
+            predecessor.graph_target,
         )
         if runtime.episode_id != predecessor_id:
             raise ValueError("The pending Experiment predecessor is no longer current.")
         self.store.request_experiment_loop_stop(
             route.project_id,
             route.control_node_id,
+            episode_id=predecessor.episode_id,
+            graph_target=predecessor.graph_target,
         )
 
     def _fresh_request_from_route(
@@ -416,7 +424,7 @@ class AutoResearchExperimentCoordinator:
         if invocation_limit is not None and not isinstance(invocation_limit, int):
             raise ValueError("The pending Experiment replacement has an invalid invocation limit.")
         return self._fresh_request(
-            self.project_service(route.project_id),
+            self.project_service(route.project_id, route.auto_research_episode_id),
             child_episode_id=route.child_episode_id,
             node_id=route.control_node_id,
             goal=goal,

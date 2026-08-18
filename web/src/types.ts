@@ -4,7 +4,7 @@ export type AppView =
   "overview" | "attention" | "scientific" | "dag" | "execution" | "paper" | "settings" | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
-export type AgentTaskKind = AgentSurface | "auto_research";
+export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
 export type AgentTaskStatus =
   "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
 export type ConversationMode = "discuss" | "work";
@@ -104,9 +104,13 @@ export interface GraphNode {
   description?: string;
   current_summary?: string;
   next_action?: string | null;
+  current_summary_stale?: boolean;
+  next_action_stale?: boolean;
   blocker_type?: string;
   validity?: string;
   origin?: "internal_run" | "external_publication" | "external_instance" | "analytic" | "unknown";
+  role?: "result" | "diagnostic";
+  legacy_strength?: "diagnostic" | "preliminary" | "supporting" | "confirmatory" | null;
   attempts?: ExperimentAttempt[];
   invocation_ceiling?: number;
   completion_criteria?: string[];
@@ -197,6 +201,9 @@ export interface ExperimentLoopIndexEntry {
   project_id: string;
   project_name: string;
   project_reachable: boolean | null;
+  graph_target: GraphTargetRef;
+  graph_head: GraphHeadRef | null;
+  parent_episode_id: string | null;
   node: GraphNode;
   control: ExperimentControlState;
   episode: Episode | null;
@@ -234,6 +241,7 @@ interface WatcherDeliveryRecord {
   chat_id: string;
   node_id: string | null;
   episode_id: string | null;
+  graph_target: GraphTargetRef;
   execution_host: string;
   continuation: WatcherContinuation;
   status: "active" | "degraded" | "completed" | "stopped";
@@ -276,6 +284,14 @@ export interface Edge {
   relation: string;
   layer: "epistemic" | "action" | "seam" | "meta";
   explanation: string;
+  assessment?: EvidenceAssessment | null;
+}
+
+export interface EvidenceAssessment {
+  relevance: "direct" | "indirect" | "contextual";
+  weight: "limited" | "moderate" | "strong";
+  scope?: string | null;
+  qualifications: string[];
 }
 
 export type BaseNodeType = GraphNode["type"];
@@ -695,6 +711,97 @@ export interface ValidationMessage {
   patch_revision?: number | null;
   related_node_ids: string[];
   related_edge_ids: string[];
+  operation_index?: number | null;
+  rule_id?: string | null;
+  cause_chain?: TransitionCauseRef[];
+  failed_invariant?: string | null;
+}
+
+export type GraphTargetRef =
+  { kind: "main"; branch_id?: null } | { kind: "branch"; branch_id: string };
+
+export interface GraphHeadRef {
+  target: GraphTargetRef;
+  revision: number;
+  transition_id: string | null;
+}
+
+export interface BranchMergeProvenance {
+  schema_generation: 1;
+  merge_id: string;
+  branch_id: string;
+  episode_id: string;
+  branch_base_head: GraphHeadRef;
+  branch_head: GraphHeadRef;
+  rebased_main_head: GraphHeadRef;
+  merge_task_id: string;
+}
+
+export interface BranchMergeReceipt {
+  schema_generation: 1;
+  outcome: "committed" | "no_change";
+  provenance: BranchMergeProvenance;
+  result_main_head: GraphHeadRef;
+  authorized_by: AuthorizedHuman;
+  created_at: string;
+}
+
+export interface GraphBranchSummary {
+  branch_id: string;
+  episode_id: string;
+  base_head: GraphHeadRef;
+  head: GraphHeadRef;
+  merge_eligible: boolean;
+  merge_state: "unmerged" | "running" | "merged" | "needs_action" | "failed";
+  latest_successful_merge: BranchMergeReceipt | null;
+  active_merge_task_id: string | null;
+  merge_diagnostic: string | null;
+}
+
+export type TransitionCauseRef =
+  | { kind: "action"; action_index: number; event_id?: null }
+  | { kind: "event"; action_index?: null; event_id: string };
+
+export interface GuidanceFieldValidity {
+  status: "empty" | "current" | "stale";
+  invalidated_by_event_id?: string | null;
+}
+
+export interface ExperimentGuidanceValidity {
+  current_summary: GuidanceFieldValidity;
+  next_action: GuidanceFieldValidity;
+}
+
+export interface ProjectTransitionResponse {
+  head: GraphHeadRef;
+  graph: GraphState;
+  experiment_control: Record<string, ExperimentControlState>;
+  guidance_validity: Record<string, ExperimentGuidanceValidity>;
+  ruleset_tag: string;
+  transition_id: string | null;
+  canonical: boolean;
+  base_head?: GraphHeadRef | null;
+}
+
+export interface TransitionTrigger {
+  operation: string;
+  node_types: string[];
+  node_fields: string[];
+  relations: string[];
+}
+
+export interface TransitionTriggerManifest {
+  ruleset_tag: string;
+  triggers: TransitionTrigger[];
+}
+
+export interface TransitionPreviewResponse {
+  projection: ProjectTransitionResponse;
+  transition: {
+    transition_id: string;
+    pre_head: GraphHeadRef;
+    ruleset_tag: string;
+  };
 }
 
 export interface Repository {
@@ -947,6 +1054,7 @@ export interface AgentTask {
   native_session_id?: string | null;
   stage_host?: string | null;
   stage_root?: string | null;
+  graph_target: GraphTargetRef;
   estimate_seconds: number;
   estimate_samples: number;
   phase: string;
@@ -1008,6 +1116,9 @@ export interface Episode {
   project_id: string;
   mode: EpisodeMode;
   control_node_id: string | null;
+  graph_target: GraphTargetRef;
+  graph_base_head: GraphHeadRef | null;
+  graph_branch: GraphBranchSummary | null;
   root_operation_id: string | null;
   current_operation_id: string | null;
   current_orchestrator_task_id: string | null;

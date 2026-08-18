@@ -17,7 +17,7 @@ last_checked: 2026-08-08 — the completed remote Discuss fixture now keeps its
 The artifact contract does not change on the desktop: the preview is optional,
 the answer and the graph do not depend on it, and a preview that cannot be shown
 says so without touching the reply or the verdict
-([S16](S16-chat-artifact-contract.md)). What changes is the machinery underneath,
+([Answer and artifacts are independent](../specs/paper-artifacts-and-result-views.md#answer-and-artifacts-are-independent)). What changes is the machinery underneath,
 and what a breach would cost.
 
 Today the Open control asks for a new browser window, nulls its opener, and

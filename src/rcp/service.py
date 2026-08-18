@@ -26,6 +26,7 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
+from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor
 from rcp.config import (
     AgentExecutionProfile,
@@ -36,12 +37,6 @@ from rcp.config import (
 )
 from rcp.control import derive_experiment_control_state
 from rcp.core.authority import (
-    CONTENT_CHANGE_INTENT,
-    MERGE_INTENT,
-    PROTECTED_RELATION_CHANGE_INTENT,
-    REMOVAL_INTENT,
-    STATUS_CHANGE_INTENT,
-    SUPERSEDE_INTENT,
     AgentDispatchAuthority,
     AgentDispatchScope,
 )
@@ -58,6 +53,21 @@ from rcp.core.models import (
     ProjectNode,
     Proposal,
     Standing,
+)
+from rcp.core.operations import (
+    ProposalContentChangeOperation,
+    ProposalMergeOperation,
+    ProposalProtectedRelationOperation,
+    ProposalRemovalOperation,
+    ProposalStatusChangeOperation,
+    ProposalSupersedeOperation,
+    UpdateNodesOperation,
+)
+from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transitions import (
+    CommittedTransition,
+    PreparedTransition,
+    project_transition_projection,
 )
 from rcp.core.validation.proposals import (
     normalized_decision_proposal_ops,
@@ -117,13 +127,11 @@ def _is_decision_choice(changes: dict[str, Any]) -> bool:
 
 def _proposal_applies_decision_choice(state: GraphState, proposal: Proposal) -> bool:
     for operation in normalized_decision_proposal_ops(state, proposal):
-        if operation.get("op") != "update_nodes":
+        if not isinstance(operation, UpdateNodesOperation):
             continue
-        for update in operation.get("nodes", []):
-            if not isinstance(update, dict) or not isinstance(update.get("changes"), dict):
-                continue
-            if isinstance(state.nodes.get(update.get("id")), Decision) and _is_decision_choice(
-                update["changes"]
+        for update in operation.nodes:
+            if isinstance(state.nodes.get(update.id), Decision) and _is_decision_choice(
+                update.changes
             ):
                 return True
     return False
@@ -141,18 +149,20 @@ def _proposal_approval_standing_targets(proposal: Proposal) -> list[str]:
     if len(proposal.ops) != 1:
         return list(proposal.related_node_ids)
     operation = proposal.ops[0]
-    intent = operation.get("intent")
-    if intent is None:
+    if operation.intent.startswith("legacy_"):
         return list(proposal.related_node_ids)
-    if intent in {REMOVAL_INTENT, PROTECTED_RELATION_CHANGE_INTENT}:
+    if isinstance(operation, (ProposalRemovalOperation, ProposalProtectedRelationOperation)):
         return []
-    if intent in {CONTENT_CHANGE_INTENT, STATUS_CHANGE_INTENT}:
-        return [operation["nodes"][0]["id"]]
-    if intent == SUPERSEDE_INTENT:
-        return [operation["nodes"][0]["id"]]
-    if intent == MERGE_INTENT:
-        return [operation["merges"][0]["duplicate"]]
-    raise ValueError(f"unknown Proposal intent: {intent!r}")
+    if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+        return [operation.nodes[0].id]
+    if isinstance(operation, ProposalSupersedeOperation):
+        return [operation.nodes[0].id]
+    if isinstance(operation, ProposalMergeOperation):
+        return [operation.merges[0].duplicate]
+    # Central compatibility decoding assigns synthetic legacy intents to old
+    # scope/ontology proposals. They retain their historical dependency-based
+    # standing behavior rather than being reinterpreted as a current intent.
+    return list(proposal.related_node_ids)
 
 
 def _proposal_judgment_patch(
@@ -594,11 +604,15 @@ class ProjectService:
         data_dir: Path | None = None,
         provider_skills: ProviderSkillInventoryManager | None = None,
         project_id: str | None = None,
+        repository_inventory: Callable[[], list[RegisteredRepositoryRoot]] | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
         self.launcher = launcher or AgentLauncher()
         self.provider_skills = provider_skills
+        self._data_dir = data_dir
+        self._project_id = project_id or history.project_id
+        self._repository_inventory = repository_inventory
         state_repository = manifest.repository_map[manifest.state.repository]
         state_machine = manifest.machine_map[state_repository.machine]
         app_chat_origin = AppChatOrigin(
@@ -627,6 +641,44 @@ class ProjectService:
     @property
     def manifest(self) -> Manifest:
         return self.history.manifest
+
+    def repository_ownership_inventory(
+        self,
+        *,
+        project_id: str,
+    ) -> list[RegisteredRepositoryRoot]:
+        if self._repository_inventory is not None:
+            return self._repository_inventory()
+        return registered_repository_roots(self.manifest, project_id=project_id)
+
+    def for_graph_target(
+        self,
+        target: GraphTargetRef,
+        *,
+        expected_episode_id: str | None = None,
+    ) -> ProjectService:
+        """Return a service whose graph reads and writes stay on one exact target."""
+
+        if target.kind == "main":
+            if expected_episode_id is not None:
+                raise ValueError("an episode-target service requires a graph branch")
+            return self
+        assert target.branch_id is not None
+        history = self.history.branch(
+            target.branch_id,
+            expected_episode_id=expected_episode_id,
+            expected_project_id=self._project_id,
+        )
+        return ProjectService(
+            history.manifest,
+            history,
+            self.paper,
+            self.launcher,
+            data_dir=self._data_dir,
+            provider_skills=self.provider_skills,
+            project_id=self._project_id,
+            repository_inventory=self._repository_inventory,
+        )
 
     def chat_path(
         self,
@@ -1198,6 +1250,45 @@ class ProjectService:
     ) -> GraphState:
         """Commit one project-wide human draft in one canonical transaction."""
 
+        transition = self.sync_graph_transition(
+            request,
+            active_control_node_ids=active_control_node_ids,
+            authorized_by=authorized_by,
+        )
+        return (
+            transition.projection.graph
+            if transition is not None
+            else self.history.current_materialization().state
+        )
+
+    def preview_sync_graph(
+        self,
+        request: GraphSyncRequest,
+        *,
+        active_control_node_ids: set[str],
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> PreparedTransition:
+        """Prepare the same complete Sync candidate without writing canonical history."""
+
+        return self.history.preview_batch_from_state(
+            lambda state: self._build_sync_patches(
+                request,
+                state,
+                active_control_node_ids=active_control_node_ids,
+            ),
+            expected_revision=request.base_revision,
+            authorized_by=authorized_by,
+        )
+
+    def sync_graph_transition(
+        self,
+        request: GraphSyncRequest,
+        *,
+        active_control_node_ids: set[str],
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> CommittedTransition | None:
+        """Commit one project-wide human draft as exactly one graph transition."""
+
         has_staged_work = (
             any(
                 (
@@ -1210,9 +1301,9 @@ class ProjectService:
             or request.ontology is not None
         )
         if not has_staged_work:
-            return self.history.current_materialization().state
+            return None
         try:
-            _, result = self.history.append_batch_from_state(
+            prepared, result = self.history.append_batch_from_state(
                 lambda state: self._build_sync_patches(
                     request,
                     state,
@@ -1225,7 +1316,19 @@ class ProjectService:
             if "graph changed after this draft began" in str(exc):
                 raise NodeEditConflict(str(exc)) from exc
             raise
-        return result.state
+        if not prepared:
+            return None
+        patch = prepared[0]
+        if patch.transition is None:
+            raise RuntimeError("graph Sync committed without transition provenance")
+        return CommittedTransition(
+            patch=patch,
+            projection=project_transition_projection(
+                result.state,
+                patch.transition,
+                canonical=True,
+            ),
+        )
 
     def _build_sync_patches(
         self,

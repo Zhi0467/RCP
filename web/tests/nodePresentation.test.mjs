@@ -28,3 +28,25 @@ test("custom nodes keep their extension label even after the definition is remov
   );
   assert.equal(nodeTypeLabel({ type: "hypothesis" }), "Hypothesis");
 });
+
+test("Evidence presentation separates methodological role from labelled legacy strength", () => {
+  const presentation = presentNode({
+    id: "ev/example",
+    type: "evidence",
+    title: "Example result",
+    observation: "The held-out score improved.",
+    interpretation: "The change matters in the tested regime.",
+    role: "result",
+    legacy_strength: "supporting",
+  });
+
+  assert.equal(presentation.label, "What was observed");
+  assert.deepEqual(
+    presentation.context.map(({ label, value }) => [label, value]),
+    [
+      ["What it means", "The change matters in the tested regime."],
+      ["Evidence role", "result"],
+      ["Legacy strength (historical)", "supporting"],
+    ],
+  );
+});

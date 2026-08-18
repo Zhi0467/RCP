@@ -32,9 +32,12 @@ prose-only, circular, self-blocking, stale, duplicate, and incomplete dependenci
 ## Pass 3: narrow provenance
 
 Apply Evidence triage only to Evidence carrying the claims and action gates identified by the first
-two passes. Check source precedence, observation and interpretation boundaries, strength, validity,
-citations, and whether `informs` or `addresses` is being mistaken for a human decision or lifecycle
-transition.
+two passes. Check source precedence, observation and interpretation boundaries, methodological
+role, validity, citations, and each Evidence-to-Hypothesis edge's relation direction, relevance,
+weight, scope, and qualifications. Treat historical unassessed relations as legacy uncertainty;
+never infer weight from a legacy global strength label. Check separately whether `informs` or
+`addresses` is being mistaken for a human decision or lifecycle transition; those action edges do
+not carry a Hypothesis assessment.
 
 ## Deliver one report
 

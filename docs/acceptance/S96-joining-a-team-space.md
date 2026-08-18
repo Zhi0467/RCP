@@ -28,7 +28,7 @@ last_checked: 2026-08-15 — an isolated served team space drove steps 1–4. In
 
 This scenario is human-confirmed. It implements the server half of enrollment
 and the browser login boundary from
-[Team authentication and membership](../design/team-authentication-and-membership.md).
+[Team initialization and enrollment](../specs/projects-spaces-and-operations.md#team-initialization-and-enrollment).
 The later desktop **Add team space** form, SSH transport, and operating-system
 credential storage are outside this scenario.
 

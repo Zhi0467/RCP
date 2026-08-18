@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from rcp.core.models import GraphState, Patch
+from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.core.validation.report import ValidationReport
 
 
@@ -36,13 +37,15 @@ class OpContext:
 
 #: Validates one operation, reporting into ``ctx.report``. Returns the oldest
 #: source-reference timestamp the operation cited, or ``None`` when it cites none.
-OpValidator = Callable[[dict[str, Any], OpContext], Any]
+OpValidator = Callable[[GraphOperation, OpContext], Any]
 
 #: Returns the graph nodes and project-config keys one operation depends on, as
 #: ``(candidate node ids, config keys)``. Node ids are retained even when the
 #: outer patch creates them, because RCP derives Proposal bookkeeping before the
 #: staged patch has materialized those nodes.
-OpDependencies = Callable[[dict[str, Any], GraphState], tuple[list[Any], list[str]]]
+OpDependencies = Callable[
+    [GraphOperation | ProposalOperation, GraphState], tuple[list[Any], list[str]]
+]
 
 
 @dataclass(frozen=True)

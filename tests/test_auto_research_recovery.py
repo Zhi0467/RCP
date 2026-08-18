@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_recovery import (
     AutoResearchOrchestratorTerminalFailure,
@@ -38,13 +39,20 @@ def _store(tmp_path: Path) -> AppStore:
 
 
 def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root"):
-    return tasks.start_auto_research(
+    episode, root = tasks.start_auto_research(
         "project",
         AutoResearchStartRequest(invocation_ceiling=4, run_truth_scope=["repo"]),
         authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
         episode_id="auto_research",
         operation_id=operation_id,
     )
+    assert episode.graph_target.kind == "branch"
+    assert episode.graph_target.branch_id == episode.episode_id
+    assert episode.graph_base_head == GraphHeadRef(revision=0)
+    assert root.graph_target == episode.graph_target
+    return episode, root
 
 
 def _install_recovery_callback(tasks: BackgroundAgentTasks) -> None:

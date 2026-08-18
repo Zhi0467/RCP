@@ -38,7 +38,7 @@ from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
     _prepare_local_artifact_directory,
-    _work_write_dirs,
+    _project_write_scope,
 )
 from rcp.runs.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.discuss import stream_discuss_run
@@ -808,7 +808,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
 
     refresh = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
     assert refresh.status_code == 409
-    assert refresh.json()["code"] == "invalid-node"
+    assert refresh.json()["code"] == "patch-schema-invalid"
 
     project = client.get(f"/api/projects/{project_id}").json()
     profiles = {
@@ -2764,7 +2764,7 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
     correction = launcher.prompts[1]
     assert len(correction.splitlines()) < 200
     assert "does not match the graph operation schema" not in correction
-    assert "invent_nodes" not in correction
+    assert "set_ontology" not in correction
     correction_inputs = launcher.input_snapshots[1]
     diagnostic = next(
         value for name, value in correction_inputs.items() if name.endswith("correction-1.json")
@@ -2773,7 +2773,7 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
         value for name, value in correction_inputs.items() if name.endswith("correction-1.md")
     )
     assert "does not match the graph operation schema" in diagnostic
-    assert "invent_nodes" in diagnostic
+    assert "set_ontology" in diagnostic
     assert str(launcher.workspaces[0] / "patch.json") in contract
 
 
@@ -6162,10 +6162,14 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert launcher.workspaces == [workspace, workspace]
     second_artifacts = workspace / "turns" / second_operation_id / "artifacts"
     second_prompt = launcher.prompts[1]
+    # A Work envelope is the marker, that turn's enforced write boundary, the unchanged human
+    # bytes, and the delta — in that order and nothing else.
     assert second_prompt.startswith(
         f"This is a Work turn.\nArtifact directory for this turn: {second_artifacts}"
-        f"\n\n{second_message}\n\nRCP context update"
+        f"\n\nEnforced write boundary on the machine this turn runs on:\n"
     )
+    assert f"\n\n{second_message}\n\nRCP context update" in second_prompt
+    assert second_prompt.index("Enforced write boundary") < second_prompt.index(second_message)
     second_delta = json.loads(second_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
     assert set(second_delta) == {"patch"}
     assert set(second_delta["patch"]) == {
@@ -6210,8 +6214,9 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     third_artifacts = workspace / "turns" / third_operation_id / "artifacts"
     assert third_prompt.startswith(
         f"This is a Work turn.\nArtifact directory for this turn: {third_artifacts}"
-        f"\n\n{third_message}"
+        f"\n\nEnforced write boundary on the machine this turn runs on:\n"
     )
+    assert f"\n\n{third_message}\n\nRCP context update" in third_prompt
     delta = json.loads(third_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
     assert set(delta) == {"patch", "settings"}
     assert delta["settings"]["reasoning"] == "high"
@@ -6258,13 +6263,24 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
     launch = next(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
     )
-    assert launch["payload"]["canonical_state_boundary"] == "prompt_only"
+    repository_root = str(Path(manifest.repository_map["repo-a"].path).resolve())
+    assert launch["payload"]["canonical_state_boundary"] == "provider_enforced"
+    assert (
+        launch["payload"]["provider_enforcement_mode"]
+        == {
+            "codex": "codex.permission-profile.v1",
+            "claude": "claude.sandbox-allowlist.v1",
+        }[provider]
+    )
+    assert launch["payload"]["canonical_repository_roots"] == [repository_root]
+    assert launch["payload"]["canonical_write_roots"][1:] == [repository_root]
+    assert str(Path(repository_root) / ".research") in launch["payload"]["protected_write_paths"]
+    assert len(launch["payload"]["write_scope_fingerprint"]) == 64
     assert launch["payload"]["network_access"] is True
 
 
-@pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
-def test_work_write_dirs_passes_canonical_research_pointer(
-    manifest, tmp_path, remote: bool
+def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
+    manifest, tmp_path
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -6277,8 +6293,25 @@ def test_work_write_dirs_passes_canonical_research_pointer(
         mode="work",
     )
     context = service.assemble_chat(request)
-    canonical_research = Path(manifest.repository_map["repo-a"].path) / ".research"
-    context = context.model_copy(
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    scope = _project_write_scope(
+        context,
+        service,
+        "laptop",
+        workspace=workspace,
+        remote_stage=None,
+        data_dir=tmp_path / "data",
+        execution=None,
+        capability="work_auto",
+    )
+    repository_root = Path(manifest.repository_map["repo-a"].path).resolve()
+    canonical_research = repository_root / ".research"
+
+    assert scope.repository_roots == [str(repository_root)]
+    assert str(canonical_research) in scope.protected_write_paths
+
+    unsafe_context = context.model_copy(
         update={
             "repositories": [
                 RepositoryPointer(
@@ -6290,13 +6323,20 @@ def test_work_write_dirs_passes_canonical_research_pointer(
         }
     )
 
-    assert _work_write_dirs(context, service, "laptop", remote=remote) == [canonical_research]
+    with pytest.raises(ValueError, match="registered project root"):
+        _project_write_scope(
+            unsafe_context,
+            service,
+            "laptop",
+            workspace=workspace,
+            remote_stage=None,
+            data_dir=tmp_path / "data",
+            execution=None,
+            capability="work_auto",
+        )
 
 
-@pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
-def test_work_write_dirs_passes_pointer_with_parent_segments(
-    manifest, tmp_path, remote: bool
-) -> None:
+def test_work_write_scope_rejects_pointer_with_parent_segments(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -6321,13 +6361,24 @@ def test_work_write_dirs_passes_pointer_with_parent_segments(
             ]
         }
     )
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
 
-    pointer = Path(f"{state_root}/..")
-    assert _work_write_dirs(context, service, "laptop", remote=remote) == [pointer]
+    with pytest.raises(ValueError, match="registered project root"):
+        _project_write_scope(
+            context,
+            service,
+            "laptop",
+            workspace=workspace,
+            remote_stage=None,
+            data_dir=tmp_path / "data",
+            execution=None,
+            capability="work_auto",
+        )
 
 
 @pytest.mark.parametrize("target", ["research", "ancestor"])
-def test_local_work_write_dirs_passes_symlinked_pointer(manifest, tmp_path, target: str) -> None:
+def test_local_work_write_scope_rejects_symlinked_pointer(manifest, tmp_path, target: str) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -6355,8 +6406,20 @@ def test_local_work_write_dirs_passes_symlinked_pointer(manifest, tmp_path, targ
             ]
         }
     )
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
 
-    assert _work_write_dirs(context, service, "laptop", remote=False) == [alias]
+    with pytest.raises(ValueError, match="registered project root"):
+        _project_write_scope(
+            context,
+            service,
+            "laptop",
+            workspace=workspace,
+            remote_stage=None,
+            data_dir=tmp_path / "data",
+            execution=None,
+            capability="work_auto",
+        )
 
 
 @pytest.mark.asyncio
@@ -6908,6 +6971,10 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
                         "source": "ev/work-activation-result",
                         "target": "hyp/replanning-restores-plasticity",
                         "relation": "supports",
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "moderate",
+                        },
                     }
                 ],
             },
@@ -7679,14 +7746,14 @@ def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
     project_id = app.state.default_project_id
     winner_barrier = threading.Barrier(2)
     release_winner = threading.Event()
-    original_sync = service.sync_graph
+    original_sync = service.sync_graph_transition
 
     def held_sync(*args, **kwargs):
         winner_barrier.wait(timeout=3)
         assert release_winner.wait(timeout=3)
         return original_sync(*args, **kwargs)
 
-    monkeypatch.setattr(service, "sync_graph", held_sync)
+    monkeypatch.setattr(service, "sync_graph_transition", held_sync)
 
     async def drive_race():
         transport = httpx.ASGITransport(app=app)
@@ -7986,10 +8053,12 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     )
     execution.store.create_watchers(
         [
+            # A retained main-graph watcher may predate durable origin tasks; do not
+            # forge the current episode root as provenance for this prior episode.
             WatcherRecord(
                 watcher_id="stopped-prior-episode",
                 project_id=app.state.default_project_id,
-                origin_operation_id=execution.operation_id,
+                origin_operation_id="legacy-prior-episode-operation",
                 origin_task_kind="node_chat",
                 chat_id=request.chat_id,
                 node_id=request.control_node_id,

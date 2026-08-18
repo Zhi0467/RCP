@@ -20,10 +20,10 @@ invariants: [8, 10g]
 # One budget, one stop
 
 Confirmed 2026-08-12 and revised 2026-08-14. An Auto-research episode spends
-from one operational pot, and stopping it is graceful. Its sibling
-[S77](S77-auto-research-stops-at-belief.md) owns what the
-orchestrator may change; the lifecycle this one protects is settled in
-[the orchestrator handoff](../handoffs/handoff-2026-08-07-orchestrator.md).
+from one operational pot, and stopping it is graceful. The current authority,
+budget, child, Stop, and reporting contracts are specified in
+[Auto-research and branch merge](../specs/auto-research-and-branch-merge.md) and
+[Conversations, episodes, and watchers](../specs/conversations-episodes-and-watchers.md).
 
 ## The surface, decided 2026-08-12
 
@@ -197,7 +197,8 @@ or discard a valid Patch. Retry and Resume of the already-authorized turn can
 never clear the stop intent.
 
 Authority — what the orchestrator may change in the graph — is
-[S77](S77-auto-research-stops-at-belief.md), and should not be re-asserted here.
+the [orchestration command contract](../specs/authority-and-proposals.md#orchestration-commands),
+and should not be re-asserted here.
 
 The report renders through the existing sandboxed HTML boundary; an episode
 document is not a reason to invent an unrestricted one.

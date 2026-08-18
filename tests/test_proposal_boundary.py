@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from rcp.core.materialize import apply_valid_patch
-from rcp.core.models import Patch, Proposal
+from rcp.core.models import Patch
+from rcp.core.operations import adapt_persisted_patch_document, graph_operations_from_proposal
 from rcp.core.validation import validate_patch
 from rcp.core.validation.proposals import normalized_decision_proposal_ops, proposal_is_stale
 from rcp.history import HistoryManager
@@ -18,6 +20,24 @@ def _agent_patch(*ops: dict) -> Patch:
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
         ops=list(ops),
+    )
+
+
+def _legacy_patch(*ops: dict, revision: int = 0) -> Patch:
+    """Decode intentionally old persisted operation documents through the adapter."""
+
+    return Patch.model_validate(
+        adapt_persisted_patch_document(
+            {
+                "revision": revision,
+                "kind": "refresh",
+                "author": "agent",
+                "summary": "Historical Proposal fixture.",
+                "run_truth_scope": ["repo-a"],
+                "repositories_read": ["repo-a"],
+                "ops": list(ops),
+            }
+        )
     )
 
 
@@ -66,6 +86,11 @@ def _state_with_decision(manifest, *, governed: bool = True):
             "source": "ev/evaluation-result",
             "target": "hyp/replanning-restores-plasticity",
             "relation": "supports",
+            "assessment": {
+                "relevance": "direct",
+                "weight": "moderate",
+                "scope": "Matched evaluation conditions.",
+            },
         },
         {
             "source": "exp/evaluation",
@@ -395,6 +420,11 @@ def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, o
         base_rev=state.revision,
     )
 
+    if "intent" not in operation:
+        with pytest.raises(ValidationError, match="intent"):
+            _agent_patch(proposal)
+        return
+
     report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
 
     assert report.rejected
@@ -478,6 +508,11 @@ def test_attaching_evidence_to_an_existing_hypothesis_stays_direct(manifest) -> 
                     "target": "hyp/replanning-restores-plasticity",
                     "relation": "weakens",
                     "explanation": "The alternative evaluation narrows the claim.",
+                    "assessment": {
+                        "relevance": "direct",
+                        "weight": "limited",
+                        "scope": "The alternative evaluation condition.",
+                    },
                 }
             ],
         }
@@ -490,15 +525,19 @@ def test_attaching_evidence_to_an_existing_hypothesis_stays_direct(manifest) -> 
 
 def test_replay_accepts_historical_proposals_without_declared_intent(manifest) -> None:
     state = _state_with_decision(manifest)
-    patch = _agent_patch(
+    current = _agent_patch(
         _proposal(
             proposal_id="prop/legacy-status",
             node_id="hyp/replanning-restores-plasticity",
             changes={"status": "active"},
             cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
         )
-    ).model_copy(update={"revision": state.revision + 1})
-    del patch.ops[0]["proposals"][0]["ops"][0]["intent"]
+    )
+    raw = current.model_dump(mode="python", exclude_unset=True)
+    raw.pop("schema_generation", None)
+    del raw["ops"][0]["proposals"][0]["ops"][0]["intent"]
+    raw["revision"] = state.revision + 1
+    patch = Patch.model_validate(adapt_persisted_patch_document(raw))
 
     report = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
 
@@ -508,28 +547,34 @@ def test_replay_accepts_historical_proposals_without_declared_intent(manifest) -
 def test_replay_does_not_add_expected_absence_to_legacy_relation_proposals(manifest) -> None:
     state = _state_with_decision(manifest)
     edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
-    proposal = Proposal.model_validate(
+    proposal_patch = _legacy_patch(
         {
-            "id": "prop/legacy-create-relation",
-            "title": "Legacy relation proposal",
-            "card": {"decision_needed": "Approve the historical relation."},
-            "ops": [
+            "op": "create_proposals",
+            "proposals": [
                 {
-                    "op": "create_edges",
-                    "edges": [
+                    "id": "prop/legacy-create-relation",
+                    "title": "Legacy relation proposal",
+                    "card": {"decision_needed": "Approve the historical relation."},
+                    "ops": [
                         {
-                            "id": edge_id,
-                            "source": "rq/learning-after-shift",
-                            "target": "hyp/replanning-restores-plasticity",
-                            "relation": "has_hypothesis",
+                            "op": "create_edges",
+                            "edges": [
+                                {
+                                    "id": edge_id,
+                                    "source": "rq/learning-after-shift",
+                                    "target": "hyp/replanning-restores-plasticity",
+                                    "relation": "has_hypothesis",
+                                }
+                            ],
                         }
                     ],
+                    "base_rev": state.revision,
+                    "raised_rev": state.revision,
                 }
             ],
-            "base_rev": state.revision,
-            "raised_rev": state.revision,
         }
     )
+    proposal = proposal_patch.ops[0].proposals[0]  # type: ignore[union-attr]
 
     assert not proposal_is_stale(state, proposal)
 
@@ -1152,27 +1197,33 @@ def test_new_decision_proposal_cannot_mark_a_retained_selection_decided(manifest
 
 def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest) -> None:
     state = _state_with_decision(manifest)
-    proposal = Proposal.model_validate(
+    proposal_patch = _legacy_patch(
         {
-            "id": "prop/legacy-selection",
-            "title": "Choose matched evaluation",
-            "card": {"decision_needed": "Choose matched evaluation?"},
-            "ops": [
+            "op": "create_proposals",
+            "proposals": [
                 {
-                    "op": "update_nodes",
-                    "nodes": [
+                    "id": "prop/legacy-selection",
+                    "title": "Choose matched evaluation",
+                    "card": {"decision_needed": "Choose matched evaluation?"},
+                    "ops": [
                         {
-                            "id": "dec/evaluation-rule",
-                            "changes": {"selected_option": "matched"},
+                            "op": "update_nodes",
+                            "nodes": [
+                                {
+                                    "id": "dec/evaluation-rule",
+                                    "changes": {"selected_option": "matched"},
+                                }
+                            ],
                         }
                     ],
+                    "related_node_ids": ["dec/evaluation-rule"],
+                    "base_rev": state.revision,
+                    "raised_rev": state.revision,
                 }
             ],
-            "related_node_ids": ["dec/evaluation-rule"],
-            "base_rev": state.revision,
-            "raised_rev": state.revision,
         }
     )
+    proposal = proposal_patch.ops[0].proposals[0]  # type: ignore[union-attr]
     state = state.model_copy(update={"proposals": {proposal.id: proposal}})
     verbatim_approval = Patch(
         revision=state.revision + 1,
@@ -1180,7 +1231,7 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
         author="human",
         summary="Approved the legacy selection without normalization.",
         ops=[
-            *proposal.ops,
+            *graph_operations_from_proposal(proposal.ops),
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": proposal.id, "status": "approved"}],
@@ -1220,7 +1271,7 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
     assert admission.rejected
     assert any(message.code == "unnormalized-decision-approval" for message in admission.messages)
     assert not replay.rejected
-    assert semantic_ops[0]["nodes"][0]["changes"] == {
+    assert semantic_ops[0].nodes[0].changes == {
         "selected_option": "matched",
         "status": "decided",
     }
@@ -1234,22 +1285,30 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
 
 def test_legacy_decided_proposal_without_a_listed_selection_is_refused(manifest) -> None:
     state = _state_with_decision(manifest)
-    proposal = Proposal.model_validate(
+    proposal_patch = _legacy_patch(
         {
-            "id": "prop/legacy-missing-selection",
-            "title": "Mark the evaluation decided",
-            "card": {"decision_needed": "Mark it decided?"},
-            "ops": [
+            "op": "create_proposals",
+            "proposals": [
                 {
-                    "op": "update_nodes",
-                    "nodes": [{"id": "dec/evaluation-rule", "changes": {"status": "decided"}}],
+                    "id": "prop/legacy-missing-selection",
+                    "title": "Mark the evaluation decided",
+                    "card": {"decision_needed": "Mark it decided?"},
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "nodes": [
+                                {"id": "dec/evaluation-rule", "changes": {"status": "decided"}}
+                            ],
+                        }
+                    ],
+                    "related_node_ids": ["dec/evaluation-rule"],
+                    "base_rev": state.revision,
+                    "raised_rev": state.revision,
                 }
             ],
-            "related_node_ids": ["dec/evaluation-rule"],
-            "base_rev": state.revision,
-            "raised_rev": state.revision,
         }
     )
+    proposal = proposal_patch.ops[0].proposals[0]  # type: ignore[union-attr]
     state = state.model_copy(update={"proposals": {proposal.id: proposal}})
     approval = Patch(
         revision=state.revision + 1,
@@ -1258,7 +1317,7 @@ def test_legacy_decided_proposal_without_a_listed_selection_is_refused(manifest)
         human_action="decision_choice",
         summary="Approved an incoherent legacy proposal.",
         ops=[
-            *proposal.ops,
+            *graph_operations_from_proposal(proposal.ops),
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": proposal.id, "status": "approved"}],
@@ -1307,6 +1366,7 @@ def test_agent_proposal_rejects_a_third_shape(manifest) -> None:
                 "ops": [
                     {
                         "op": "create_edges",
+                        "intent": "protected_relation_change",
                         "edges": [
                             {
                                 "source": "rq/learning-after-shift",

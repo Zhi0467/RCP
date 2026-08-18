@@ -25,10 +25,9 @@ enforced. Granting it to a second person — invitations, accept, decline, leave
 and removal — is [S122](S122-project-invitations.md), and everything that can
 only happen when membership *changes* lives there.
 
-The design is in
-[Team authentication and membership](../design/team-authentication-and-membership.md#project-membership).
-This closes boundary 8 of
-[Identity, permissions, and agent profiles](../design/identity-permissions-and-agent-profiles.md#acceptance-boundaries).
+The current contracts are in
+[Project membership and invitations](../specs/projects-spaces-and-operations.md#project-membership-and-invitations)
+and [Human identity and project membership](../specs/authority-and-proposals.md#human-identity-and-project-membership).
 
 Space enrollment and project membership are different layers. Joining the lab's
 RCP does not admit you to every project in it. Today it does, and that is the
@@ -48,9 +47,8 @@ of them everything.
   acting user and write the first membership row. Without this, a membership gate
   locks people out of projects they just made.
 - **Membership binds the durable `user_id`, not a display name.** `acting_user`
-  returns one without demanding a name, so first-run is unchanged and
-  [S112](S112-basic-human-identity.md)'s rule stands: a name is required before an
-  attributed write, not before existing.
+  returns one without demanding a name, so first-run is unchanged: a name is
+  required before an attributed write, not before existing.
 - **A personal space has exactly one member.** The owner is seated the same way,
   so the check is one query and there is no personal-space branch to fall
   through.

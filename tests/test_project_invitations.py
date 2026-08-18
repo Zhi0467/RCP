@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from rcp.api.app import create_app
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.storage import (
     AgentTaskRecord,
@@ -245,6 +246,8 @@ def _running_auto_research_episode(
         episode_id=episode_id,
         project_id=project_id,
         mode="auto_research",
+        graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+        graph_base_head=GraphHeadRef(revision=0),
         status="queued",
         invocation_ceiling=12,
         authorized_by=authorizer,
@@ -255,6 +258,7 @@ def _running_auto_research_episode(
         operation_id=f"{episode_id}-root",
         project_id=project_id,
         episode_id=episode_id,
+        graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
         kind="auto_research",
         status="queued",
         request={

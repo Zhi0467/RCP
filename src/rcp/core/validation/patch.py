@@ -11,6 +11,20 @@ from typing import Literal
 
 from rcp.core.authority import operation_actions, permits
 from rcp.core.models import Decision, ExperimentDecisionPin, GraphState, Patch
+from rcp.core.operations import (
+    CreateEdgesOperation,
+    CreateNodesOperation,
+    CreateProposalsOperation,
+    GraphOperation,
+    MergeNodesOperation,
+    RemoveEdgesOperation,
+    RemoveNodesOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    SupersedeNodesOperation,
+    UpdateNodesOperation,
+)
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
@@ -33,6 +47,17 @@ def validate_patch(
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
+    if patch.transition is not None:
+        return _validate_transition_patch(
+            state,
+            patch,
+            project_truth_scope,
+            repository_aliases=repository_aliases,
+            machine_aliases=machine_aliases,
+            default_run_truth_scope=default_run_truth_scope,
+            state_repository=state_repository,
+            mode=mode,
+        )
     try:
         return _validate_patch(
             state,
@@ -54,6 +79,58 @@ def validate_patch(
             patch.revision or None,
         )
         return report
+
+
+def _validate_transition_patch(
+    state: GraphState,
+    patch: Patch,
+    project_truth_scope: Iterable[str],
+    *,
+    repository_aliases: Iterable[str] | None,
+    machine_aliases: Iterable[str] | None,
+    default_run_truth_scope: Iterable[str] | None,
+    state_repository: str | None,
+    mode: Literal["admission", "replay"],
+) -> ValidationReport:
+    report = ValidationReport()
+    if mode != "replay":
+        report.reject(
+            "reserved-transition-trace",
+            "A committed transition trace is backend-owned and cannot be supplied for admission.",
+            patch.revision or None,
+        )
+        return report
+    try:
+        from rcp.core.materialize import apply_valid_patch
+        from rcp.core.transitions import validate_transition_trace
+
+        source_patches = validate_transition_trace(state, patch)
+        staged = state
+        for source_patch in source_patches:
+            validation_state = staged.model_copy(update={"revision": state.revision})
+            source_report = validate_patch(
+                validation_state,
+                source_patch,
+                validation_state.project_truth_scope,
+                repository_aliases=repository_aliases,
+                machine_aliases=machine_aliases,
+                default_run_truth_scope=default_run_truth_scope,
+                state_repository=state_repository,
+                mode="replay",
+            )
+            report.messages.extend(source_report.messages)
+            if source_report.rejected:
+                break
+            staged = apply_valid_patch(validation_state, source_patch).model_copy(
+                update={"revision": state.revision}
+            )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        report.reject(
+            "transition-trace-invalid",
+            f"Committed transition provenance is invalid: {exc}.",
+            patch.revision or None,
+        )
+    return report
 
 
 def _validate_patch(
@@ -92,6 +169,13 @@ def _validate_patch(
         experiment_control_node_id=control_node_id,
     )
 
+    if mode == "admission" and patch.schema_generation != 2:
+        report.reject(
+            "legacy-schema-write",
+            "New graph writes must use the current schema generation.",
+            ctx.revision,
+        )
+
     if patch.revision and patch.revision != state.revision + 1:
         report.reject(
             "non-monotonic-revision",
@@ -119,7 +203,7 @@ def _validate_patch(
             ctx.revision,
         )
 
-    op_names = [str(op.get("op", "")) for op in patch.ops]
+    op_names = [op.op for op in patch.ops]
     if any(name.startswith("delete") for name in op_names):
         report.reject("delete-forbidden", "Graph objects are never deleted.", ctx.revision)
 
@@ -148,11 +232,10 @@ def _validate_patch(
 
 def _validate_created_proposal_liveness(ctx: OpContext) -> None:
     proposal_positions = {
-        raw.get("id"): index
+        proposal.id: index
         for index, operation in enumerate(ctx.patch.ops)
-        if operation.get("op") == "create_proposals"
-        for raw in operation.get("proposals", [])
-        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+        if isinstance(operation, CreateProposalsOperation)
+        for proposal in operation.proposals
     }
     for proposal_id, position in sorted(proposal_positions.items()):
         proposal = ctx.state.proposals.get(proposal_id)
@@ -206,116 +289,84 @@ def _later_dependency_mutations(
 
     later = ctx.patch.ops[position + 1 :]
     created_nodes = {
-        raw.get("id")
+        raw.id
         for operation in later
-        if operation.get("op") == "create_nodes"
-        for raw in operation.get("nodes", [])
-        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+        if isinstance(operation, CreateNodesOperation)
+        for raw in operation.nodes
     }
     changed_nodes = {
-        raw.get("id")
+        raw.id
         for operation in later
-        if operation.get("op") in {"update_nodes", "supersede_nodes"}
-        for raw in operation.get("nodes", [])
-        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+        if isinstance(operation, (UpdateNodesOperation, SupersedeNodesOperation))
+        for raw in operation.nodes
     }
     changed_nodes.update(
-        raw.get("duplicate")
+        raw.duplicate
         for operation in later
-        if operation.get("op") == "merge_nodes"
-        for raw in operation.get("merges", [])
-        if isinstance(raw, dict) and isinstance(raw.get("duplicate"), str)
+        if isinstance(operation, MergeNodesOperation)
+        for raw in operation.merges
     )
     changed_nodes.update(
         node_id
         for operation in later
-        if operation.get("op") == "remove_nodes"
-        for node_id in operation.get("node_ids", [])
-        if isinstance(node_id, str)
+        if isinstance(operation, RemoveNodesOperation)
+        for node_id in operation.node_ids
     )
     changed_nodes.update(
-        operation.get("node_id")
-        for operation in later
-        if operation.get("op") == "set_standing" and isinstance(operation.get("node_id"), str)
+        operation.node_id for operation in later if isinstance(operation, SetStandingOperation)
     )
     created_edges = {edge_id for operation in later for edge_id in _created_edges(operation)}
     removed_edges = {
         edge_id
         for operation in later
-        if operation.get("op") == "remove_edges"
-        for edge_id in operation.get("edge_ids", [])
-        if isinstance(edge_id, str)
+        if isinstance(operation, RemoveEdgesOperation)
+        for edge_id in operation.edge_ids
     }
     moved_nodes = related_nodes & (changed_nodes | (created_nodes & present_nodes))
     moved_edges = related_edges & (removed_edges | (created_edges & set(present_edges)))
     moved_config: set[str] = set()
-    if "ontology" in related_config and any(op.get("op") == "set_ontology" for op in later):
+    if "ontology" in related_config and any(isinstance(op, SetOntologyOperation) for op in later):
         moved_config.add("ontology")
     if "project_truth_scope" in related_config and any(
-        op.get("op") == "set_project_truth_scope" for op in later
+        isinstance(op, SetProjectTruthScopeOperation) for op in later
     ):
         moved_config.add("project_truth_scope")
     return moved_nodes, moved_edges, moved_config
 
 
 def _update_resource_presence(
-    nodes: set[str], edges: dict[str, tuple[str, str]], operation: dict
+    nodes: set[str], edges: dict[str, tuple[str, str]], operation: GraphOperation
 ) -> None:
-    name = operation.get("op")
-    if name == "create_nodes":
-        nodes.update(
-            raw["id"]
-            for raw in operation.get("nodes", [])
-            if isinstance(raw, dict) and isinstance(raw.get("id"), str)
-        )
-    elif name == "remove_nodes":
-        removed = {node_id for node_id in operation.get("node_ids", []) if isinstance(node_id, str)}
+    if isinstance(operation, CreateNodesOperation):
+        nodes.update(raw.id for raw in operation.nodes)
+    elif isinstance(operation, RemoveNodesOperation):
+        removed = set(operation.node_ids)
         nodes.difference_update(removed)
         for edge_id, endpoints in list(edges.items()):
             if any(node_id in removed for node_id in endpoints):
                 edges.pop(edge_id)
-    elif name == "remove_edges":
-        for edge_id in operation.get("edge_ids", []):
-            if isinstance(edge_id, str):
-                edges.pop(edge_id, None)
+    elif isinstance(operation, RemoveEdgesOperation):
+        for edge_id in operation.edge_ids:
+            edges.pop(edge_id, None)
     edges.update(_created_edges(operation))
 
 
-def _created_edges(operation: dict) -> dict[str, tuple[str, str]]:
+def _created_edges(operation: GraphOperation) -> dict[str, tuple[str, str]]:
     created: dict[str, tuple[str, str]] = {}
-    name = operation.get("op")
-    if name == "create_edges":
-        raw_edges = operation.get("edges", [])
-        relation_key = "relation"
-        source_key = "source"
-        target_key = "target"
-    elif name == "supersede_nodes":
-        raw_edges = operation.get("nodes", [])
-        relation_key = None
-        source_key = "id"
-        target_key = "superseded_by"
-    elif name == "merge_nodes":
-        raw_edges = operation.get("merges", [])
-        relation_key = None
-        source_key = "duplicate"
-        target_key = "canonical"
+    if isinstance(operation, CreateEdgesOperation):
+        values = [(raw.id, raw.source, raw.relation, raw.target) for raw in operation.edges]
+    elif isinstance(operation, SupersedeNodesOperation):
+        values = [
+            (None, raw.id, "supersedes", raw.superseded_by)
+            for raw in operation.nodes
+            if raw.superseded_by is not None
+        ]
+    elif isinstance(operation, MergeNodesOperation):
+        values = [(None, raw.duplicate, "duplicate_of", raw.canonical) for raw in operation.merges]
     else:
-        return created
-    for raw in raw_edges:
-        if not isinstance(raw, dict):
-            continue
-        source = raw.get(source_key)
-        target = raw.get(target_key)
-        relation = (
-            raw.get(relation_key)
-            if relation_key
-            else ("supersedes" if name == "supersede_nodes" else "duplicate_of")
-        )
-        if not all(isinstance(value, str) for value in (source, relation, target)):
-            continue
-        edge_id = raw.get("id") if name == "create_edges" else None
-        if not isinstance(edge_id, str):
-            edge_id = f"{source}::{relation}::{target}"
+        values = []
+    for edge_id, source, relation, target in values:
+        edge_id = edge_id or f"{source}::{relation}::{target}"
         created[edge_id] = (source, target)
     return created
 
@@ -326,23 +377,23 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
     if ctx.mode != "admission":
         return
     touched_ids = {
-        raw.get("id")
+        raw.id
         for operation in ctx.patch.ops
-        if operation.get("op") in {"create_nodes", "update_nodes", "supersede_nodes"}
-        for raw in operation.get("nodes", [])
-        if isinstance(raw, dict) and isinstance(raw.get("id"), str)
+        if isinstance(
+            operation, (CreateNodesOperation, UpdateNodesOperation, SupersedeNodesOperation)
+        )
+        for raw in operation.nodes
     }
     touched_ids.update(
-        raw.get("duplicate")
+        raw.duplicate
         for operation in ctx.patch.ops
-        if operation.get("op") == "merge_nodes"
-        for raw in operation.get("merges", [])
-        if isinstance(raw, dict) and isinstance(raw.get("duplicate"), str)
+        if isinstance(operation, MergeNodesOperation)
+        for raw in operation.merges
     )
     touched_ids.update(
-        operation.get("node_id")
+        operation.node_id
         for operation in ctx.patch.ops
-        if operation.get("op") == "set_standing" and isinstance(operation.get("node_id"), str)
+        if isinstance(operation, SetStandingOperation)
     )
     for node_id in sorted(touched_ids):
         node = ctx.state.nodes.get(node_id)
@@ -564,25 +615,21 @@ def _has_declared_decision_outcome(ctx: OpContext) -> bool:
         node.id for node in ctx.initial_state.nodes.values() if isinstance(node, Decision)
     }
     decision_ids.update(
-        raw.get("id")
+        raw.id
         for operation in ctx.patch.ops
-        if operation.get("op") == "create_nodes"
-        for raw in operation.get("nodes", [])
-        if isinstance(raw, dict)
-        and raw.get("type") == "decision"
-        and isinstance(raw.get("id"), str)
+        if isinstance(operation, CreateNodesOperation)
+        for raw in operation.nodes
+        if raw.type == "decision"
     )
     return any(
-        isinstance(update, dict)
-        and update.get("id") in decision_ids
-        and isinstance(update.get("changes"), dict)
+        update.id in decision_ids
         and (
-            update["changes"].get("status") == "decided"
-            or update["changes"].get("selected_option") is not None
+            update.changes.get("status") == "decided"
+            or update.changes.get("selected_option") is not None
         )
         for operation in ctx.patch.ops
-        if operation.get("op") == "update_nodes"
-        for update in operation.get("nodes", [])
+        if isinstance(operation, UpdateNodesOperation)
+        for update in operation.nodes
     )
 
 
@@ -624,16 +671,10 @@ def _validate_operations(ctx: OpContext):
     """Run each operation's rule, returning the oldest source reference cited."""
     oldest_ref = None
     for op in ctx.patch.ops:
-        name = op.get("op")
-        if not name:
-            ctx.report.reject(
-                "missing-op-name", "Every operation requires an 'op' field.", ctx.revision
-            )
-            continue
+        name = op.op
         rule = OP_RULES.get(name)
-        if rule is None:
-            ctx.report.reject("unknown-operation", f"Unknown operation {name!r}.", ctx.revision)
-            continue
+        if rule is None:  # pragma: no cover - the typed union and registry are kept exhaustive
+            raise ValueError(f"typed operation {name!r} is missing from the operation registry")
         if ctx.mode == "admission" and rule.legacy_only:
             ctx.report.reject(
                 "legacy-only-operation",
@@ -643,7 +684,6 @@ def _validate_operations(ctx: OpContext):
             )
             continue
         rejects_before = sum(message.level == "reject" for message in ctx.report.messages)
-        _validate_proposal_intent_location(ctx, op)
         _validate_operation_authority(ctx, op)
         if rule.structural_validate is not None:
             oldest_ref = older(oldest_ref, rule.structural_validate(op, ctx))
@@ -666,7 +706,7 @@ def _validate_operations(ctx: OpContext):
     return oldest_ref
 
 
-def _validate_operation_authority(ctx: OpContext, operation: dict) -> None:
+def _validate_operation_authority(ctx: OpContext, operation: GraphOperation) -> None:
     """Check live producer permission once, before an operation is staged."""
 
     if ctx.mode != "admission":
@@ -683,30 +723,3 @@ def _validate_operation_authority(ctx: OpContext, operation: dict) -> None:
                 f"Action {action!r} is not permitted for this Patch producer.",
                 ctx.revision,
             )
-
-
-def _validate_proposal_intent_location(ctx: OpContext, operation: dict) -> None:
-    """Keep declared intent on stored Proposal semantics, never ordinary ops."""
-
-    if "intent" not in operation or ctx.mode != "admission":
-        return
-    semantic_names = {
-        "update_nodes",
-        "remove_nodes",
-        "supersede_nodes",
-        "merge_nodes",
-        "create_edges",
-        "remove_edges",
-    }
-    is_proposal_dry_run = ctx.patch.kind == "approval" and ctx.reference_patch is not None
-    is_proposal_approval = ctx.patch.kind == "approval" and any(
-        op.get("op") == "resolve_proposals" for op in ctx.patch.ops
-    )
-    if operation.get("op") not in semantic_names or (
-        not is_proposal_dry_run and not is_proposal_approval
-    ):
-        ctx.report.reject(
-            "unexpected-proposal-intent",
-            "Declared intent is legal only inside a Proposal's stored semantic operation.",
-            ctx.revision,
-        )

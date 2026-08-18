@@ -19,6 +19,7 @@ from rcp.core.authority import (
     require_dispatch,
 )
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
@@ -29,6 +30,8 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
+    WatcherContinuation,
+    WatcherRecord,
 )
 from tests.helpers import seated_on_every_project, seed_patch
 
@@ -234,6 +237,15 @@ def test_dispatch_binding_is_strict_and_normalized() -> None:
         )
     with pytest.raises(ValidationError, match="sorted and unique"):
         AgentDispatchScope(run_truth_scope=["repo-b", "repo-a"], patch_kind="work")
+    with pytest.raises(ValidationError, match="apply_target"):
+        AgentTaskAuthority.model_validate(
+            {
+                "operation_id": "missing-apply-target",
+                "project_id": "project-one",
+                "authorized_by": None,
+                "dispatch_authority": None,
+            }
+        )
 
 
 def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
@@ -268,6 +280,8 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
             episode_id=episode_id,
             project_id=project_id,
             mode="auto_research",
+            graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+            graph_base_head=GraphHeadRef(revision=0),
             status="queued",
             invocation_ceiling=4,
             authorized_by=authorizer,
@@ -284,6 +298,7 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
             operation_id=root_operation_id,
             project_id=project_id,
             episode_id=episode_id,
+            graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
             kind="auto_research",
             status="queued",
             request=root_request.model_dump(mode="json"),
@@ -312,6 +327,7 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
             operation_id=worker_operation_id,
             project_id=project_id,
             episode_id=episode_id,
+            graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
             kind="auto_research",
             status="queued",
             request=worker_request.model_dump(mode="json"),
@@ -340,12 +356,15 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
     ordinary_binding = store.agent_task_authority(project_id, ordinary_operation_id)
 
     assert root_binding.episode_id == episode_id
+    assert root_binding.apply_target == GraphTargetRef(kind="branch", branch_id=episode_id)
     assert root_binding.dispatch_authority is not None
     assert root_binding.dispatch_authority.profile == "orchestrator"
     assert worker_binding.episode_id == episode_id
+    assert worker_binding.apply_target == GraphTargetRef(kind="branch", branch_id=episode_id)
     assert worker_binding.dispatch_authority is not None
     assert worker_binding.dispatch_authority.profile == "ordinary"
     assert ordinary_binding.episode_id is None
+    assert ordinary_binding.apply_target == GraphTargetRef()
 
 
 @pytest.mark.parametrize(
@@ -411,6 +430,7 @@ def test_incomplete_contract_scope_refuses_dispatch_and_apply(
     task = AgentTaskAuthority(
         operation_id="malformed-scope-task",
         project_id="project-one",
+        apply_target=GraphTargetRef(),
         authorized_by=AuthorizedHuman(
             space_id=str(uuid.uuid4()),
             user_id=str(uuid.uuid4()),
@@ -701,6 +721,32 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
     store = AppStore(tmp_path / "watcher.sqlite3")
     authorizer = _authorizer(store)
     request = _work_request(trigger="watcher", watcher_ids=["watcher-one"])
+    now = store.now()
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="watcher-one",
+                project_id="project-one",
+                origin_operation_id="origin-task",
+                origin_task_kind="project_chat",
+                chat_id=request.chat_id or "project-chat",
+                continuation=WatcherContinuation(
+                    provider=request.provider or "codex",
+                    model=request.model,
+                    reasoning=request.reasoning,
+                    run_on=request.run_on or "local",
+                    run_truth_scope=request.run_truth_scope,
+                    patch_kind="work",
+                ),
+                status="completed",
+                created_at=now,
+                completed_at=now,
+                check_command="true",
+                log_path=str(tmp_path / "watcher.log"),
+                cwd=str(tmp_path),
+            )
+        ]
+    )
     claim_seen: list[AgentDispatchAuthority | None] = []
     stream_seen = threading.Event()
 

@@ -38,6 +38,14 @@ export function startLiveEpisodePolling(
   };
 }
 
+export function episodePollingTarget(episodes: Episode[]): Episode | null {
+  return (
+    episodes.find(isLiveEpisode) ??
+    episodes.find((episode) => episode.graph_branch?.merge_state === "running") ??
+    null
+  );
+}
+
 export function resultViewSelectionKey(
   projectId: string | null,
   experimentId: string | null,
@@ -134,6 +142,7 @@ export function useEpisodeDialogs({
   const episodes = episodeState.projectId === projectId ? episodeState.episodes : [];
   const episodeMessages = episodeState.projectId === projectId ? episodeState.messages : {};
   const liveAutoResearchEpisode = episodes.find(isLiveEpisode) ?? null;
+  const pollingEpisode = episodePollingTarget(episodes);
 
   const refreshEpisodes = useCallback(async () => {
     if (!projectId || !apiBase) return;
@@ -191,7 +200,7 @@ export function useEpisodeDialogs({
   }, [apiBase, projectId, refreshEpisodes]);
 
   useEffect(() => {
-    const episodeId = liveAutoResearchEpisode?.episode_id;
+    const episodeId = pollingEpisode?.episode_id;
     if (!episodeId) return;
     return startLiveEpisodePolling(
       {
@@ -208,7 +217,7 @@ export function useEpisodeDialogs({
       },
       () => setEpisodeRefreshError(null),
     );
-  }, [liveAutoResearchEpisode?.episode_id, refreshEpisodeMessages, refreshEpisodes]);
+  }, [pollingEpisode?.episode_id, refreshEpisodeMessages, refreshEpisodes]);
 
   const replaceEpisode = useCallback(
     (nextEpisode: Episode) => {

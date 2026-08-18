@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -9,6 +10,9 @@ from fastapi.testclient import TestClient
 from rcp.agents import AgentEvent
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
+from rcp.core.models import GraphBranchMetadata
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history import HistoryManager
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     auto_research_exhaustion_signal,
@@ -48,6 +52,7 @@ def settling_auto_research_stream(stage: Path):
 
 def create_terminal_auto_episode(
     store: AppStore,
+    history: HistoryManager,
     project_id: str,
     *,
     episode_id: str,
@@ -58,9 +63,28 @@ def create_terminal_auto_episode(
 ) -> tuple[EpisodeRecord, AgentTaskRecord, EpisodeReportRecord | None]:
     if (report_html is None) == (report_error is None):
         raise ValueError("provide exactly one report result")
+    episode_id = str(
+        uuid.UUID(bytes=hashlib.sha256(episode_id.encode("utf-8")).digest()[:16], version=4)
+    )
     now = store.now()
     operation_id = f"{episode_id}-root"
     authorizer = authorized_human(store)
+    graph_base_head = history.head_ref()
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
+    history.create_auto_research_branch(
+        GraphBranchMetadata(
+            branch_id=episode_id,
+            episode_id=episode_id,
+            project_id=project_id,
+            base_head=graph_base_head,
+            head=GraphHeadRef(
+                target=graph_target,
+                revision=graph_base_head.revision,
+                transition_id=graph_base_head.transition_id,
+            ),
+            authorized_by=authorizer,
+        )
+    )
     run_request = AutoResearchRunRequest(
         episode_id=episode_id,
         role="orchestrator",
@@ -76,6 +100,8 @@ def create_terminal_auto_episode(
         episode_id=episode_id,
         project_id=project_id,
         mode="auto_research",
+        graph_target=graph_target,
+        graph_base_head=graph_base_head,
         status="queued",
         invocation_ceiling=invocation_ceiling,
         authorized_by=authorizer,
@@ -86,6 +112,7 @@ def create_terminal_auto_episode(
         operation_id=operation_id,
         project_id=project_id,
         episode_id=episode_id,
+        graph_target=graph_target,
         kind="auto_research",
         status="queued",
         request=run_request.model_dump(mode="json"),
@@ -190,6 +217,11 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
         assert len(listed.json()) == 1
         current = listed.json()[0]
         assert current["episode_id"] == episode_id
+        assert current["graph_target"] == {"kind": "branch", "branch_id": episode_id}
+        assert current["graph_base_head"]["target"] == {"kind": "main", "branch_id": None}
+        assert current["graph_branch"]["branch_id"] == episode_id
+        assert current["graph_branch"]["base_head"] == current["graph_base_head"]
+        assert current["tasks"][0]["graph_target"] == current["graph_target"]
         assert current["starting_instruction"] == "Follow the contradictory evidence."
         assert current["budget"]["invocations_used"] == 1
         assert [task["kind"] for task in current["tasks"]] == ["auto_research"]
@@ -289,6 +321,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     )
     episode, root, report = create_terminal_auto_episode(
         store,
+        app.state.catalog.open(project_id).history,
         project_id,
         episode_id="reported-episode",
         report_html=html,

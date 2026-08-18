@@ -98,6 +98,7 @@ interface Props {
   chatId: string;
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
+  readOnly?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
   resultViews?: ResultViewDescriptor[];
@@ -280,6 +281,7 @@ export function NodeChat({
   chatId,
   presentation = "floating",
   fixedConversation = false,
+  readOnly = false,
   reviewPending = false,
   graphChangesDisabled = false,
   resultViews,
@@ -599,7 +601,7 @@ export function NodeChat({
   }, [selectMode]);
 
   useEffect(() => {
-    if (presentation !== "workspace") return;
+    if (presentation !== "workspace" || readOnly) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
       if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
@@ -608,9 +610,10 @@ export function NodeChat({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [presentation, toggleMode]);
+  }, [presentation, readOnly, toggleMode]);
 
   const updateMessage = (next: string) => {
+    if (readOnly) return;
     if (next && !modeState.pinned) {
       writeStorage(modeKey, mode);
       setModeState({ value: mode, pinned: true });
@@ -671,7 +674,7 @@ export function NodeChat({
   }, [project.id, resultViews]);
 
   useEffect(() => {
-    if (!resultViews?.length) return;
+    if (!resultViews?.length || readOnly) return;
     const receiveGesture = (event: MessageEvent) => {
       for (const view of resultViews) {
         if (!view.can_revise) continue;
@@ -695,9 +698,10 @@ export function NodeChat({
     };
     window.addEventListener("message", receiveGesture);
     return () => window.removeEventListener("message", receiveGesture);
-  }, [message, persistResultViewTarget, resultViews, selectMode]);
+  }, [message, persistResultViewTarget, readOnly, resultViews, selectMode]);
 
   const chooseResultViewTarget = (value: string) => {
+    if (readOnly) return;
     if (value === "create") {
       selectMode("work");
       persistResultViewTarget({ action: "create" });
@@ -718,7 +722,7 @@ export function NodeChat({
   };
 
   const keepResultViewCard = async (viewId: string) => {
-    if (!onKeepResultView || keepingResultViewId) return;
+    if (readOnly || !onKeepResultView || keepingResultViewId) return;
     setKeepingResultViewId(viewId);
     setResultViewKeepErrors((current) => withoutMapKey(current, viewId));
     try {
@@ -749,6 +753,7 @@ export function NodeChat({
   };
 
   const toggleDictation = async () => {
+    if (readOnly) return;
     if (dictating) {
       stopDictation();
       return;
@@ -775,6 +780,7 @@ export function NodeChat({
   };
 
   const addFiles = async (incoming: File[]) => {
+    if (readOnly) return;
     setDraggingFiles(false);
     if (attachmentUploadBusyRef.current) {
       setSubmitError("Wait for the current files to finish preparing before adding more.");
@@ -901,6 +907,7 @@ export function NodeChat({
   };
 
   const send = async () => {
+    if (readOnly) return;
     const text = message.trim();
     const resultViewRequest = resultViewRequestForTarget(mode, resultViewTarget, resultViews);
     if (
@@ -966,7 +973,7 @@ export function NodeChat({
   };
 
   const repairGraphUpdate = async (taskId: string) => {
-    if (repairingTaskId) return;
+    if (readOnly || repairingTaskId) return;
     setRepairingTaskId(taskId);
     setRepairErrors((current) => withoutMapKey(current, taskId));
     try {
@@ -1130,7 +1137,7 @@ export function NodeChat({
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={node || conversationTitle ? `Chat about ${chatTitle}` : "Project chat"}
-      aria-keyshortcuts={presentation === "workspace" ? "Shift+Tab" : undefined}
+      aria-keyshortcuts={presentation === "workspace" && !readOnly ? "Shift+Tab" : undefined}
     >
       {presentation === "floating" && (
         <header data-drag-handle="true">
@@ -1157,21 +1164,23 @@ export function NodeChat({
             <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
           )}
         </div>
-        {!fixedConversation && (
+        {!fixedConversation && !readOnly && (
           <button className="chat-new-session" type="button" onClick={onNewSession}>
             <MessageCirclePlus size={13} /> New session
           </button>
         )}
         {presentation === "workspace" && watcherToggle}
-        <div className="chat-scope-control">
-          <RepositoryScope
-            repositories={project.repositories}
-            projectScope={project.project_truth_scope}
-            stateRepository={project.state_repository}
-            selected={scope}
-            onChange={relatedActive || reviewPending ? () => undefined : setScope}
-          />
-        </div>
+        {!readOnly && (
+          <div className="chat-scope-control">
+            <RepositoryScope
+              repositories={project.repositories}
+              projectScope={project.project_truth_scope}
+              stateRepository={project.state_repository}
+              selected={scope}
+              onChange={relatedActive || reviewPending ? () => undefined : setScope}
+            />
+          </div>
+        )}
       </div>
       {liveWatchers.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Active watchers">
@@ -1191,7 +1200,7 @@ export function NodeChat({
                       : "Not evaluated yet"}
                 </time>
                 {external && watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-                {onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
+                {!readOnly && onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
                   <button
                     className="button compact"
                     type="button"
@@ -1286,6 +1295,7 @@ export function NodeChat({
                   {pausedLineTask ? (
                     <InlinePausedTask
                       task={pausedLineTask}
+                      disabled={readOnly}
                       onResume={() => onResumeTask(pausedLineTask)}
                       onRetry={() => onRetryTask(pausedLineTask)}
                     />
@@ -1359,7 +1369,7 @@ export function NodeChat({
                   taskId={line.taskId}
                   repairBusy={repairingTaskId === line.taskId}
                   repairDisabled={
-                    graphChangesDisabled || relatedActive || submitting || reviewPending
+                    readOnly || graphChangesDisabled || relatedActive || submitting || reviewPending
                   }
                   repairContinued={continuedTaskIds.has(line.taskId)}
                   repairError={repairErrors.get(line.taskId) ?? null}
@@ -1392,7 +1402,7 @@ export function NodeChat({
                       <button
                         className="button compact result-view-keep"
                         type="button"
-                        disabled={!onKeepResultView || Boolean(keepingResultViewId)}
+                        disabled={readOnly || !onKeepResultView || Boolean(keepingResultViewId)}
                         aria-busy={keepingResultViewId === view.view_id}
                         onClick={() => void keepResultViewCard(view.view_id)}
                       >
@@ -1430,202 +1440,204 @@ export function NodeChat({
           </section>
         )}
       </div>
-      <div
-        className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
-        data-mode={mode}
-        onDragEnter={(event) => {
-          if (event.dataTransfer.types.includes("Files")) setDraggingFiles(true);
-        }}
-        onDragOver={(event) => {
-          if (!event.dataTransfer.types.includes("Files")) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "copy";
-        }}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-            setDraggingFiles(false);
-          }
-        }}
-        onDrop={(event) => {
-          if (!event.dataTransfer.files.length) return;
-          event.preventDefault();
-          void addFiles(Array.from(event.dataTransfer.files));
-        }}
-      >
-        <SkillPicker {...skills.props} />
-        {(resultViews !== undefined || resultViewTarget.action !== "none") && (
-          <div className="result-view-target">
-            <label>
-              <span>View</span>
-              <select
-                aria-label="Result view target"
-                value={resultViewTargetValue}
-                onChange={(event) => chooseResultViewTarget(event.currentTarget.value)}
-              >
-                <option value="none">No view</option>
-                <option value="create">New view</option>
-                {resultViewTargetNeedsPlaceholder && resultViewTarget.action === "revise" && (
-                  <option value={`revise:${resultViewTarget.view_id}`} disabled>
-                    {resultViews === undefined
-                      ? "Selected view (loading)"
-                      : resultViewTargetDescriptor
-                        ? `${resultViewTargetDescriptor.name} (not revisable)`
-                        : "Selected view (unavailable)"}
-                  </option>
-                )}
-                {(resultViews ?? [])
-                  .filter((view) => view.can_revise)
-                  .map((view) => (
-                    <option value={`revise:${view.view_id}`} key={view.view_id}>
-                      {view.name}
+      {!readOnly && (
+        <div
+          className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
+          data-mode={mode}
+          onDragEnter={(event) => {
+            if (event.dataTransfer.types.includes("Files")) setDraggingFiles(true);
+          }}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setDraggingFiles(false);
+            }
+          }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.files.length) return;
+            event.preventDefault();
+            void addFiles(Array.from(event.dataTransfer.files));
+          }}
+        >
+          <SkillPicker {...skills.props} />
+          {(resultViews !== undefined || resultViewTarget.action !== "none") && (
+            <div className="result-view-target">
+              <label>
+                <span>View</span>
+                <select
+                  aria-label="Result view target"
+                  value={resultViewTargetValue}
+                  onChange={(event) => chooseResultViewTarget(event.currentTarget.value)}
+                >
+                  <option value="none">No view</option>
+                  <option value="create">New view</option>
+                  {resultViewTargetNeedsPlaceholder && resultViewTarget.action === "revise" && (
+                    <option value={`revise:${resultViewTarget.view_id}`} disabled>
+                      {resultViews === undefined
+                        ? "Selected view (loading)"
+                        : resultViewTargetDescriptor
+                          ? `${resultViewTargetDescriptor.name} (not revisable)`
+                          : "Selected view (unavailable)"}
                     </option>
-                  ))}
-              </select>
-            </label>
-            {resultViewTargetError && (
-              <span className="result-view-error" role="alert">
-                {resultViewTargetError}
+                  )}
+                  {(resultViews ?? [])
+                    .filter((view) => view.can_revise)
+                    .map((view) => (
+                      <option value={`revise:${view.view_id}`} key={view.view_id}>
+                        {view.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              {resultViewTargetError && (
+                <span className="result-view-error" role="alert">
+                  {resultViewTargetError}
+                </span>
+              )}
+            </div>
+          )}
+          {attachments.length > 0 && (
+            <div className="chat-attachment-chips" aria-label="Files for this turn">
+              {attachments.map((item) => (
+                <div className={`chat-attachment-chip ${item.status}`} key={item.localId}>
+                  {item.status === "preparing" ? (
+                    <LoaderCircle className="spin" size={12} />
+                  ) : (
+                    <File size={12} />
+                  )}
+                  <span>
+                    <strong>{item.file.name}</strong>
+                    <small>
+                      {item.status === "preparing"
+                        ? "Preparing"
+                        : item.status === "ready"
+                          ? `Ready · ${formatBytes(item.file.size)}`
+                          : item.error || "Could not prepare file"}
+                    </small>
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${item.file.name}`}
+                    onClick={() => removeAttachment(item)}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <input
+            ref={attachmentInputRef}
+            className="visually-hidden"
+            type="file"
+            multiple
+            accept={CHAT_ATTACHMENT_ACCEPT}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              if (files.length) void addFiles(files);
+            }}
+          />
+          <button
+            className="icon-button chat-add-file"
+            type="button"
+            aria-label="Add files"
+            disabled={
+              attachments.length >= MAX_CHAT_ATTACHMENTS || attachmentsPreparing || submitting
+            }
+            onClick={() => attachmentInputRef.current?.click()}
+          >
+            <Plus size={16} />
+          </button>
+          <textarea
+            ref={textareaRef}
+            aria-label="Message"
+            aria-keyshortcuts="Shift+Tab"
+            value={message}
+            onChange={(event) => {
+              if (dictating) stopDictation(true);
+              updateMessage(event.target.value);
+            }}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files);
+              if (!files.length) return;
+              event.preventDefault();
+              void addFiles(files);
+            }}
+            onKeyDown={(event) => {
+              if (skills.handleKeyDown(event)) return;
+              if (isConversationModeShortcut(event.key, event.shiftKey)) {
+                if (presentation !== "workspace") {
+                  event.preventDefault();
+                  toggleMode();
+                }
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="chat-send">
+            <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
+              {(["discuss", "work"] as const).map((option) => (
+                <button
+                  type="button"
+                  className={option}
+                  aria-pressed={mode === option}
+                  onClick={() => selectMode(option)}
+                  key={option}
+                >
+                  {modeLabel(option)}
+                </button>
+              ))}
+            </div>
+            <div className="chat-send-actions">
+              {desktop && (
+                <button
+                  className={`icon-button chat-dictation-button${dictating ? " recording" : ""}`}
+                  type="button"
+                  aria-label={dictating ? "Stop dictation" : "Start dictation"}
+                  aria-pressed={dictating}
+                  title={dictationError || (dictating ? "Stop dictation" : "Dictate")}
+                  disabled={submitting}
+                  onClick={() => void toggleDictation()}
+                >
+                  {dictating ? <MicOff size={15} /> : <Mic size={15} />}
+                </button>
+              )}
+              <button
+                className="icon-button primary chat-send-button"
+                disabled={
+                  !message.trim() ||
+                  attachmentsUnready ||
+                  relatedActive ||
+                  Boolean(pausedAttempt) ||
+                  submitting ||
+                  Boolean(repairingTaskId) ||
+                  reviewPending ||
+                  scope.length === 0 ||
+                  !providerReady
+                }
+                onClick={() => void send()}
+                aria-label={`Start ${modeLabel(mode)} turn`}
+              >
+                <Send size={15} />
+              </button>
+            </div>
+            {dictationError && (
+              <span className="chat-dictation-error" role="alert">
+                {dictationError}
               </span>
             )}
           </div>
-        )}
-        {attachments.length > 0 && (
-          <div className="chat-attachment-chips" aria-label="Files for this turn">
-            {attachments.map((item) => (
-              <div className={`chat-attachment-chip ${item.status}`} key={item.localId}>
-                {item.status === "preparing" ? (
-                  <LoaderCircle className="spin" size={12} />
-                ) : (
-                  <File size={12} />
-                )}
-                <span>
-                  <strong>{item.file.name}</strong>
-                  <small>
-                    {item.status === "preparing"
-                      ? "Preparing"
-                      : item.status === "ready"
-                        ? `Ready · ${formatBytes(item.file.size)}`
-                        : item.error || "Could not prepare file"}
-                  </small>
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${item.file.name}`}
-                  onClick={() => removeAttachment(item)}
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <input
-          ref={attachmentInputRef}
-          className="visually-hidden"
-          type="file"
-          multiple
-          accept={CHAT_ATTACHMENT_ACCEPT}
-          onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? []);
-            event.currentTarget.value = "";
-            if (files.length) void addFiles(files);
-          }}
-        />
-        <button
-          className="icon-button chat-add-file"
-          type="button"
-          aria-label="Add files"
-          disabled={
-            attachments.length >= MAX_CHAT_ATTACHMENTS || attachmentsPreparing || submitting
-          }
-          onClick={() => attachmentInputRef.current?.click()}
-        >
-          <Plus size={16} />
-        </button>
-        <textarea
-          ref={textareaRef}
-          aria-label="Message"
-          aria-keyshortcuts="Shift+Tab"
-          value={message}
-          onChange={(event) => {
-            if (dictating) stopDictation(true);
-            updateMessage(event.target.value);
-          }}
-          onPaste={(event) => {
-            const files = Array.from(event.clipboardData.files);
-            if (!files.length) return;
-            event.preventDefault();
-            void addFiles(files);
-          }}
-          onKeyDown={(event) => {
-            if (skills.handleKeyDown(event)) return;
-            if (isConversationModeShortcut(event.key, event.shiftKey)) {
-              if (presentation !== "workspace") {
-                event.preventDefault();
-                toggleMode();
-              }
-              return;
-            }
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <div className="chat-send">
-          <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
-            {(["discuss", "work"] as const).map((option) => (
-              <button
-                type="button"
-                className={option}
-                aria-pressed={mode === option}
-                onClick={() => selectMode(option)}
-                key={option}
-              >
-                {modeLabel(option)}
-              </button>
-            ))}
-          </div>
-          <div className="chat-send-actions">
-            {desktop && (
-              <button
-                className={`icon-button chat-dictation-button${dictating ? " recording" : ""}`}
-                type="button"
-                aria-label={dictating ? "Stop dictation" : "Start dictation"}
-                aria-pressed={dictating}
-                title={dictationError || (dictating ? "Stop dictation" : "Dictate")}
-                disabled={submitting}
-                onClick={() => void toggleDictation()}
-              >
-                {dictating ? <MicOff size={15} /> : <Mic size={15} />}
-              </button>
-            )}
-            <button
-              className="icon-button primary chat-send-button"
-              disabled={
-                !message.trim() ||
-                attachmentsUnready ||
-                relatedActive ||
-                Boolean(pausedAttempt) ||
-                submitting ||
-                Boolean(repairingTaskId) ||
-                reviewPending ||
-                scope.length === 0 ||
-                !providerReady
-              }
-              onClick={() => void send()}
-              aria-label={`Start ${modeLabel(mode)} turn`}
-            >
-              <Send size={15} />
-            </button>
-          </div>
-          {dictationError && (
-            <span className="chat-dictation-error" role="alert">
-              {dictationError}
-            </span>
-          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1647,20 +1659,32 @@ function InlineTaskProgress({ task }: { task: AgentTask | null }) {
 
 function InlinePausedTask({
   task,
+  disabled,
   onResume,
   onRetry,
 }: {
   task: AgentTask;
+  disabled: boolean;
   onResume: () => void;
   onRetry: () => void;
 }) {
   return (
     <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
       <span>{task.status_message}</span>
-      <button type="button" className="button compact primary" onClick={onResume}>
+      <button
+        type="button"
+        className="button compact primary"
+        disabled={disabled}
+        onClick={onResume}
+      >
         <Play size={11} /> Resume
       </button>
-      <button type="button" className="button compact secondary" onClick={onRetry}>
+      <button
+        type="button"
+        className="button compact secondary"
+        disabled={disabled}
+        onClick={onRetry}
+      >
         <RotateCcw size={11} /> Retry
       </button>
     </div>

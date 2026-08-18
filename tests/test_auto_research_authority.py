@@ -35,6 +35,7 @@ from rcp.core.models import (
     Patch,
     ResearchQuestion,
 )
+from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.patch import validate_patch
 
 from .helpers import fabricated_authorizer, seated_on_every_project
@@ -81,6 +82,7 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
             AgentTaskAuthority(
                 operation_id="episode-turn-one",
                 project_id="project-one",
+                apply_target=GraphTargetRef(),
                 authorized_by=fabricated_authorizer("Auto-research owner"),
                 dispatch_authority=authority,
             ),
@@ -92,6 +94,7 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
     task = AgentTaskAuthority(
         operation_id="episode-turn-one",
         project_id="project-one",
+        apply_target=GraphTargetRef(),
         authorized_by=fabricated_authorizer("Auto-research owner"),
         dispatch_authority=authority,
     )

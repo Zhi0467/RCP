@@ -12,6 +12,7 @@ import {
   watcherIsActive,
   watcherLastObservedAt,
 } from "../runProjection";
+import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
 import type { WatcherRecord } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
@@ -93,6 +94,7 @@ interface Props {
   watcherCheckBusyId: string | null;
   providerLabel?: string;
   conversation?: ReactNode;
+  allowStart?: boolean;
   onRun: () => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
@@ -110,6 +112,7 @@ export function ExperimentRunDetail({
   watcherCheckBusyId,
   providerLabel,
   conversation,
+  allowStart = true,
   onRun,
   onStopLoop,
   onRecover,
@@ -149,11 +152,20 @@ export function ExperimentRunDetail({
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
   const canStop =
+    !reportIsTerminal &&
     episode?.status !== "wrapping_up" &&
     (live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status)));
   const showStop = Boolean(control?.episode_id && !stopRequested && (stopBusy || canStop));
   const stopBlocksRecovery = stopRequested && !stopUnsettled;
-  const recommendation = experimentRecommendation(run);
+  const baseRecommendation = experimentRecommendation(run);
+  const recommendation =
+    !allowStart && baseRecommendation.step === "start_episode"
+      ? { step: "review" as const, label: "Review the owning Auto-research episode" }
+      : baseRecommendation;
+  const summaryGuidance = experimentGuidanceDetail(node, "current_summary");
+  const nextActionGuidance = experimentGuidanceDetail(node, "next_action");
+  const currentSummary = currentExperimentGuidance(node, "current_summary");
+  const currentNextAction = currentExperimentGuidance(node, "next_action");
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
 
@@ -217,23 +229,25 @@ export function ExperimentRunDetail({
               <ExternalLink size={12} aria-hidden="true" /> Open report
             </EpisodeReportLink>
           )}
-          <button
-            type="button"
-            className="button primary compact experiment-run-button"
-            disabled={
-              runDisabled ||
-              runBusy ||
-              episodeParentLive ||
-              taskInFlight ||
-              stopUnsettled ||
-              !control?.ready
-            }
-            onClick={onRun}
-            aria-describedby={control?.reasons.length ? `${node.id}-run-requirements` : undefined}
-          >
-            <FlaskConical size={13} aria-hidden="true" />{" "}
-            {runBusy ? "Starting" : control?.episode_id ? "Start new episode" : "Start episode"}
-          </button>
+          {allowStart && (
+            <button
+              type="button"
+              className="button primary compact experiment-run-button"
+              disabled={
+                runDisabled ||
+                runBusy ||
+                episodeParentLive ||
+                taskInFlight ||
+                stopUnsettled ||
+                !control?.ready
+              }
+              onClick={onRun}
+              aria-describedby={control?.reasons.length ? `${node.id}-run-requirements` : undefined}
+            >
+              <FlaskConical size={13} aria-hidden="true" />{" "}
+              {runBusy ? "Starting" : control?.episode_id ? "Start new episode" : "Start episode"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -295,12 +309,24 @@ export function ExperimentRunDetail({
           <h4>Research summary</h4>
         </div>
         <p className="experiment-run-prose">
-          {String(node.current_summary || node.objective || "No summary recorded")}
+          {String(currentSummary || node.objective || "No current summary recorded")}
         </p>
-        {node.next_action && (
+        {currentNextAction && (
           <p className="experiment-run-prose experiment-run-next-action">
             <span className="eyebrow">Next action</span>
-            {String(node.next_action)}
+            {currentNextAction}
+          </p>
+        )}
+        {summaryGuidance.status === "stale" && (
+          <p className="experiment-run-prose">
+            <span className="eyebrow">{summaryGuidance.label}</span>
+            {summaryGuidance.text}
+          </p>
+        )}
+        {nextActionGuidance.status === "stale" && (
+          <p className="experiment-run-prose experiment-run-next-action">
+            <span className="eyebrow">{nextActionGuidance.label}</span>
+            {nextActionGuidance.text}
           </p>
         )}
       </section>

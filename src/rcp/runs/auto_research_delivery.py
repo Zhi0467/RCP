@@ -575,6 +575,7 @@ def _auto_research_graph_watcher_binding(
         chat_id=canonical.actor_operation_id,
         node_id=request.control_node_id,
         episode_id=context.episode.episode_id,
+        graph_target=context.task.graph_target,
         execution_host=execution_host,
         continuation=WatcherContinuation(
             provider=request.provider,

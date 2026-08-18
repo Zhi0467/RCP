@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, Field
+
+if TYPE_CHECKING:
+    from rcp.agents.write_scope import ProjectWriteScope
 
 """The provider registry.
 
@@ -185,10 +189,15 @@ class ProviderProfile:
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
+        write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
+        provider_version: str | None,
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError
+
+    def project_write_enforcement_mode(self) -> str:
+        raise ValueError(f"Provider {self.id!r} has no project write enforcement mode")
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
         return ProviderStreamEvent(event="raw", text=raw)
@@ -288,6 +297,9 @@ class CodexProfile(ProviderProfile):
     def native_skill_token(self, name: str) -> str:
         return f"${name}"
 
+    def project_write_enforcement_mode(self) -> str:
+        return "codex.permission-profile.v1"
+
     def command(
         self,
         prompt: str,
@@ -299,9 +311,11 @@ class CodexProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
+        write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
+        provider_version: str | None,
     ) -> list[str]:
-        del prompt, read_dirs, write_dirs
+        del prompt, read_dirs
         command = [binary, "exec"]
         if session_id:
             # `codex exec resume` has no --sandbox or --cd; it takes the process
@@ -316,8 +330,27 @@ class CodexProfile(ProviderProfile):
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
         if capability in {"work_auto", "orchestrate"}:
-            command.append("--dangerously-bypass-approvals-and-sandbox")
+            scope = _require_project_write_scope(
+                write_scope,
+                capability=capability,
+                write_dirs=write_dirs,
+            )
+            _require_provider_version(
+                provider="Codex",
+                actual=provider_version,
+                minimum=(0, 138, 0),
+            )
+            command.extend(
+                [
+                    "--config",
+                    'default_permissions="rcp_project"',
+                    "--config",
+                    _codex_permission_profile(scope),
+                ]
+            )
         else:
+            if write_scope is not None:
+                raise ValueError(f"capability {capability!r} cannot carry a project write scope")
             command.extend(["--config", 'approval_policy="never"'])
             sandbox = "read-only" if capability == "paper_readonly" else "workspace-write"
             if session_id:
@@ -415,7 +448,7 @@ class ClaudeProfile(ProviderProfile):
     usage_profile = "claude.query.v1"
     local_session_roots_field = "claude_roots"
     remote_session_roots_field = "remote_claude_roots"
-    declared_against = "2.1.219"
+    declared_against = "2.1.233"
     declared = _CLAUDE_MODELS
 
     def auth_command(self, binary: str) -> list[str]:
@@ -477,6 +510,9 @@ class ClaudeProfile(ProviderProfile):
             if isinstance(name, str) and name
         ]
 
+    def project_write_enforcement_mode(self) -> str:
+        return "claude.sandbox-allowlist.v1"
+
     def command(
         self,
         prompt: str,
@@ -488,7 +524,9 @@ class ClaudeProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
+        write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
+        provider_version: str | None,
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
@@ -496,10 +534,25 @@ class ClaudeProfile(ProviderProfile):
         # scratch-patch runs retain acceptEdits and the paper coach remains
         # plan-only. Native public-web retrieval is pre-authorized explicitly
         # on non-bypass launches without broadening Bash permissions.
+        work_like = capability in {"work_auto", "orchestrate"}
+        scope = None
+        if work_like:
+            scope = _require_project_write_scope(
+                write_scope,
+                capability=capability,
+                write_dirs=write_dirs,
+            )
+            _require_provider_version(
+                provider="Claude",
+                actual=provider_version,
+                minimum=(2, 1, 233),
+            )
+        elif write_scope is not None:
+            raise ValueError(f"capability {capability!r} cannot carry a project write scope")
         permission_mode = {
             "discuss": "acceptEdits",
-            "work_auto": "bypassPermissions",
-            "orchestrate": "bypassPermissions",
+            "work_auto": "dontAsk",
+            "orchestrate": "dontAsk",
             "scratch_patch": "acceptEdits",
             "paper_readonly": "plan",
         }[capability]
@@ -512,13 +565,28 @@ class ClaudeProfile(ProviderProfile):
             "--permission-mode",
             permission_mode,
         ]
-        if capability not in {"work_auto", "orchestrate"}:
+        if scope is not None:
+            command.extend(
+                [
+                    "--setting-sources",
+                    "",
+                    "--settings",
+                    json.dumps(_claude_write_settings(scope), separators=(",", ":")),
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    '{"mcpServers":{}}',
+                ]
+            )
+        else:
             command.extend(["--allowedTools", "WebSearch", "WebFetch"])
         if session_id:
             command.extend(["--resume", session_id])
         # Deduplicate while preserving first-seen order: one --add-dir per source
         # session directory previously blew past the argv size limit.
-        for directory in dict.fromkeys(str(item) for item in [*read_dirs, *write_dirs]):
+        additional_dirs = [*read_dirs, *write_dirs]
+        if scope is not None:
+            additional_dirs = [*read_dirs, *(Path(item) for item in scope.repository_roots)]
+        for directory in dict.fromkeys(str(item) for item in additional_dirs):
             command.extend(["--add-dir", directory])
         if model:
             command.extend(["--model", model])
@@ -619,6 +687,88 @@ def _usage_dedupe_key(value: dict[str, object], raw: str, *fields: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _require_project_write_scope(
+    scope: ProjectWriteScope | None,
+    *,
+    capability: AgentCapability,
+    write_dirs: list[Path],
+) -> ProjectWriteScope:
+    if scope is None:
+        raise ValueError(f"{capability} launch requires a resolved project write scope")
+    if scope.capability != capability:
+        raise ValueError("project write scope capability does not match the provider launch")
+    supplied = list(dict.fromkeys(str(item) for item in write_dirs))
+    if supplied != scope.repository_roots:
+        raise ValueError("provider write directories do not match the resolved project scope")
+    return scope
+
+
+def _require_provider_version(
+    *,
+    provider: str,
+    actual: str | None,
+    minimum: tuple[int, int, int],
+) -> None:
+    parsed = tuple(int(item) for item in re.findall(r"\d+", actual or "")[:3])
+    if len(parsed) != 3 or parsed < minimum:
+        required = ".".join(str(item) for item in minimum)
+        reported = actual or "unknown"
+        raise ValueError(
+            f"{provider} {reported} cannot enforce the declared project write roots; "
+            f"RCP requires {required} or newer"
+        )
+
+
+def _codex_permission_profile(scope: ProjectWriteScope) -> str:
+    roots = ",".join(
+        f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
+    )
+    return (
+        "permissions={rcp_project={workspace_roots={"
+        + roots
+        + '},filesystem={":root"="read",":workspace_roots"={"."="write",'
+        '".research"="deny"}},network={enabled=true}}}'
+    )
+
+
+def _claude_write_settings(scope: ProjectWriteScope) -> dict[str, object]:
+    allow_patterns = [
+        f"{tool}({_claude_absolute_pattern(path)})"
+        for path in scope.writable_roots
+        for tool in ("Edit", "Write")
+    ]
+    deny_patterns = [
+        f"{tool}({_claude_absolute_pattern(path)})"
+        for path in scope.protected_write_paths
+        for tool in ("Edit", "Write")
+    ]
+    return {
+        "disableAllHooks": True,
+        "permissions": {
+            "defaultMode": "dontAsk",
+            "disableAutoMode": "disable",
+            "disableBypassPermissionsMode": "disable",
+            "allow": ["Bash", "WebSearch", "WebFetch", *allow_patterns],
+            "deny": deny_patterns,
+        },
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "autoAllowBashIfSandboxed": True,
+            "allowUnsandboxedCommands": False,
+            "filesystem": {
+                "allowWrite": scope.writable_roots,
+                "denyWrite": scope.protected_write_paths,
+            },
+            "network": {"allowedDomains": ["*"]},
+        },
+    }
+
+
+def _claude_absolute_pattern(path: str) -> str:
+    return f"//{path.lstrip('/')}/**"
+
+
 PROVIDERS: dict[str, ProviderProfile] = {
     profile.id: profile for profile in (CodexProfile(), ClaudeProfile())
 }
@@ -650,6 +800,10 @@ def profile_for(provider: str) -> ProviderProfile:
         return PROVIDERS[provider]
     except KeyError:
         raise ValueError(f"Unknown agent provider: {provider!r}") from None
+
+
+def project_write_enforcement_mode(provider: str) -> str:
+    return profile_for(provider).project_write_enforcement_mode()
 
 
 def _known_provider(value: str) -> str:

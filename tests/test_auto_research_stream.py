@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
 import threading
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,7 +28,8 @@ from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
-from rcp.core.models import Patch
+from rcp.core.models import GraphBranchMetadata, Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.paper import PaperService
@@ -282,8 +285,8 @@ def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
     manifest,
     tmp_path,
 ) -> None:
-    service = _service(manifest, tmp_path)
-    service.history.append(
+    main_service = _service(manifest, tmp_path)
+    main_service.history.append(
         _orchestrator_state_patch(
             {
                 "id": "dec/validator",
@@ -295,8 +298,10 @@ def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
             }
         )
     )
-    store, _auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
-    _enable_task_attribution(service, store)
+    service, store, _auto_research, root, _worker = _setup_branch_auto_research(
+        main_service,
+        tmp_path / "store",
+    )
     candidate = json.dumps(
         {
             "summary": "Selected the validated route.",
@@ -370,6 +375,7 @@ def _service(manifest, tmp_path: Path) -> ProjectService:
         history,
         PaperService(manifest, AppStore(tmp_path / "paper.sqlite3")),
         data_dir=tmp_path / "service-data",
+        project_id="project",
     )
 
 
@@ -382,6 +388,8 @@ def _setup_auto_research(
     stage_root: str | None = None,
     run_on: str = "laptop",
     invocation_ceiling: int = 12,
+    episode_id: str = "auto_research",
+    graph_base_head: GraphHeadRef | None = None,
 ) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord, AgentTaskRecord]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     store = AppStore(tmp_path / "app.sqlite3")
@@ -397,8 +405,10 @@ def _setup_auto_research(
     )
     authorizer = fabricated_authorizer()
     now = store.now()
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
+    graph_base_head = graph_base_head or GraphHeadRef(revision=0)
     root_request = AutoResearchRunRequest(
-        episode_id="auto_research",
+        episode_id=episode_id,
         role="orchestrator",
         actor_operation_id="root",
         provider="codex",
@@ -412,15 +422,17 @@ def _setup_auto_research(
         task_contract="orchestrate",
         scope=AgentDispatchScope(
             run_truth_scope=["repo-a"],
-            episode_id="auto_research",
+            episode_id=episode_id,
             patch_kind="work",
         ),
     )
     auto_research, root = store.create_auto_research_episode_with_root_task(
         EpisodeRecord(
-            episode_id="auto_research",
+            episode_id=episode_id,
             project_id="project",
             mode="auto_research",
+            graph_target=graph_target,
+            graph_base_head=graph_base_head,
             status="queued",
             invocation_ceiling=invocation_ceiling,
             authorized_by=authorizer,
@@ -428,7 +440,7 @@ def _setup_auto_research(
             updated_at=now,
         ),
         AutoResearchStateRecord(
-            episode_id="auto_research",
+            episode_id=episode_id,
             starting_instruction=None,
             created_at=now,
             updated_at=now,
@@ -436,7 +448,8 @@ def _setup_auto_research(
         AgentTaskRecord(
             operation_id="root",
             project_id="project",
-            episode_id="auto_research",
+            episode_id=episode_id,
+            graph_target=graph_target,
             kind="auto_research",
             status="queued",
             request=root_request.model_dump(mode="json"),
@@ -455,6 +468,8 @@ def _setup_auto_research(
         raise ValueError(f"unsupported root test status: {root_status}")
     root = store.agent_task(root.operation_id)
     assert root is not None
+    assert auto_research.graph_target == root.graph_target == graph_target
+    assert auto_research.graph_base_head == graph_base_head
     store.record_agent_task_receipt(
         root.operation_id,
         "operation_created",
@@ -467,7 +482,7 @@ def _setup_auto_research(
         },
     )
     worker_request = AutoResearchRunRequest(
-        episode_id="auto_research",
+        episode_id=episode_id,
         role="worker",
         actor_operation_id="worker",
         provider="codex",
@@ -484,7 +499,7 @@ def _setup_auto_research(
         task_contract="work_auto",
         scope=AgentDispatchScope(
             run_truth_scope=["repo-a"],
-            episode_id="auto_research",
+            episode_id=episode_id,
             patch_kind="work",
         ),
     )
@@ -492,7 +507,8 @@ def _setup_auto_research(
         AgentTaskRecord(
             operation_id="worker",
             project_id="project",
-            episode_id="auto_research",
+            episode_id=episode_id,
+            graph_target=graph_target,
             kind="auto_research",
             status=worker_status,
             request=worker_request.model_dump(mode="json"),
@@ -507,6 +523,7 @@ def _setup_auto_research(
         ),
         role="worker",
     )
+    assert worker.graph_target == graph_target
     store.record_agent_task_receipt(
         worker.operation_id,
         "operation_created",
@@ -658,6 +675,48 @@ def _enable_task_attribution(
     service.history.project_membership_check = seated_on_every_project
 
 
+def _setup_branch_auto_research(
+    main_service: ProjectService,
+    tmp_path: Path,
+) -> tuple[
+    ProjectService,
+    AppStore,
+    EpisodeRecord,
+    AgentTaskRecord,
+    AgentTaskRecord,
+]:
+    """Create the real episode branch used by exact-target validation and Apply tests."""
+
+    episode_id = str(uuid.uuid4())
+    base_head = main_service.history.head_ref()
+    store, episode, root, worker = _setup_auto_research(
+        tmp_path,
+        episode_id=episode_id,
+        graph_base_head=base_head,
+    )
+    _enable_task_attribution(main_service, store)
+    assert episode.authorized_by is not None
+    main_service.history.create_auto_research_branch(
+        GraphBranchMetadata(
+            branch_id=episode_id,
+            episode_id=episode_id,
+            project_id=episode.project_id,
+            base_head=base_head,
+            head=GraphHeadRef(
+                target=episode.graph_target,
+                revision=base_head.revision,
+                transition_id=base_head.transition_id,
+            ),
+            authorized_by=episode.authorized_by,
+        )
+    )
+    branch_service = main_service.for_graph_target(
+        episode.graph_target,
+        expected_episode_id=episode_id,
+    )
+    return branch_service, store, episode, root, worker
+
+
 def _orchestrator_state_patch(*nodes: dict[str, object]) -> Patch:
     return Patch(
         kind="refresh",
@@ -733,6 +792,22 @@ class _LocalBackedRemoteStage:
         if path.exists():
             path.unlink()
 
+    def canonical_directories(
+        self,
+        paths: list[str],
+        *,
+        require_writable: bool,
+    ) -> tuple[dict[str, str], str]:
+        canonical: dict[str, str] = {}
+        for raw in paths:
+            resolved = Path(raw).resolve(strict=True)
+            if not resolved.is_dir():
+                raise ValueError(f"remote path is not a directory: {raw}")
+            if require_writable and not os.access(resolved, os.W_OK):
+                raise ValueError(f"remote path is not writable: {raw}")
+            canonical[raw] = str(resolved)
+        return canonical, str(Path.home().resolve())
+
 
 def _record_original_contract(
     store: AppStore,
@@ -779,6 +854,7 @@ def _recovery_task(
             operation_id=operation_id,
             project_id=worker.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="running",
             request=request.model_dump(mode="json"),
@@ -836,6 +912,7 @@ def _claimed_mail_recovery(tmp_path: Path):
             operation_id="mail-wake",
             project_id=worker.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="running",
             request=request.model_dump(mode="json"),
@@ -917,8 +994,8 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
     tmp_path,
     monkeypatch,
 ) -> None:
-    service = _service(manifest, tmp_path)
-    service.history.append(
+    main_service = _service(manifest, tmp_path)
+    main_service.history.append(
         _orchestrator_state_patch(
             {
                 "id": "dec/budget",
@@ -937,8 +1014,10 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             },
         )
     )
-    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
-    _enable_task_attribution(service, store)
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        main_service,
+        tmp_path / "store",
+    )
     execution = _execution(store, root)
 
     def apply_patch(_context, patch_text, source_effect_id):
@@ -1152,7 +1231,9 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
     ]
     assert len(applied_patches) == 3
     assert all(patch.profile == "orchestrator" for patch in applied_patches)
-    assert applied_patches[0].agent_action == "decision_choice"
+    assert applied_patches[0].agent_action is None
+    assert applied_patches[0].transition is not None
+    assert applied_patches[0].transition.initiating_groups[0].agent_action == "decision_choice"
     assert all(patch.source_effect_id is not None for patch in applied_patches)
     assert len({patch.source_effect_id for patch in applied_patches}) == 3
     assert all(patch.source_effect_sha256 is not None for patch in applied_patches)
@@ -1221,9 +1302,11 @@ async def test_orchestrator_final_settlement_recovers_apply_committed_before_con
     tmp_path,
     monkeypatch,
 ) -> None:
-    service = _service(manifest, tmp_path)
-    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
-    _enable_task_attribution(service, store)
+    main_service = _service(manifest, tmp_path)
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        main_service,
+        tmp_path / "store",
+    )
     execution = _execution(store, root)
 
     def apply_patch(_context, patch_text, source_effect_id):
@@ -1457,8 +1540,8 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
     tmp_path,
     monkeypatch,
 ) -> None:
-    service = _service(manifest, tmp_path)
-    service.history.append(
+    main_service = _service(manifest, tmp_path)
+    main_service.history.append(
         _orchestrator_state_patch(
             {
                 "id": "rq/existing",
@@ -1468,8 +1551,10 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
             }
         )
     )
-    store, _auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
-    _enable_task_attribution(service, store)
+    service, store, _auto_research, root, _worker = _setup_branch_auto_research(
+        main_service,
+        tmp_path / "store",
+    )
     candidate = json.dumps(
         {
             "summary": "Tried to rewrite an existing protected belief.",
@@ -1554,6 +1639,7 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
             operation_id="orchestrator-continuation",
             project_id=root.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="running",
             request=continuation_request.model_dump(mode="json"),
@@ -1780,6 +1866,7 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
             operation_id="orchestrator-null-resume",
             project_id=root.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="running",
             request=clean_request.model_dump(mode="json"),
@@ -2372,6 +2459,7 @@ async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path
             operation_id="mail-wake",
             project_id=worker.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="running",
             request=request.model_dump(mode="json"),
@@ -2510,6 +2598,7 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
             operation_id="lifecycle-wake",
             project_id=root.project_id,
             episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
             kind="auto_research",
             status="running",
             request=request.model_dump(mode="json"),

@@ -35,7 +35,7 @@ AutoResearchWorkerRequestFactory = Callable[
     [AutoResearchCommandContext, SpawnArguments, str, str],
     RunRequest,
 ]
-AutoResearchSeatNodeType = Callable[[str, str], str | None]
+AutoResearchSeatNodeType = Callable[[str, str, str], str | None]
 
 
 @dataclass(frozen=True)
@@ -267,7 +267,11 @@ def _reconcile_spawn(
     snapshot = context.command_file
     if snapshot is None or snapshot.filename != arguments.instruction_file:
         raise ValueError("The admitted Spawn command lost its instruction snapshot.")
-    node_type = seat_node_type(admission.project_id, arguments.seat_node_id)
+    node_type = seat_node_type(
+        admission.project_id,
+        admission.episode_id,
+        arguments.seat_node_id,
+    )
     if node_type is None or node_type.casefold() not in {"experiment", "blocker"}:
         raise ValueError("Auto-research workers may be seated only on Experiments and Blockers.")
     if store.auto_research_child_work(admission.child_id) is not None:

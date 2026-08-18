@@ -110,6 +110,9 @@ class RowMappingMixin:
     def _watcher_record(row: sqlite3.Row) -> StoredWatcherRecord:
         data = dict(row)
         data["continuation"] = json.loads(data.pop("continuation_json"))
+        data["graph_target"] = json.loads(
+            data.pop("graph_target_json", '{"kind":"main","branch_id":null}')
+        )
         data["notified"] = bool(data["notified"])
         graph_condition_json = data.pop("graph_condition_json", None)
         if graph_condition_json is None:
@@ -131,6 +134,9 @@ class RowMappingMixin:
     @staticmethod
     def _experiment_episode_record(row: sqlite3.Row) -> ExperimentEpisodeRecord:
         data = dict(row)
+        data["graph_target"] = json.loads(
+            data.pop("graph_target_json", '{"kind":"main","branch_id":null}')
+        )
         data["last_watcher_ids"] = json.loads(data.pop("last_watcher_ids_json"))
         data["context_baseline"] = json.loads(data.pop("context_baseline_json"))
         return ExperimentEpisodeRecord.model_validate(data)
@@ -150,6 +156,9 @@ class RowMappingMixin:
         data.pop("authorized_user_id", None)
         data.pop("authorized_display_name", None)
         data["request"] = json.loads(data.pop("request_json"))
+        data["graph_target"] = json.loads(
+            data.pop("graph_target_json", '{"kind":"main","branch_id":null}')
+        )
         result_json = data.pop("result_json", None)
         data["result"] = json.loads(result_json) if result_json else None
         status = data["status"]
@@ -186,6 +195,11 @@ class RowMappingMixin:
             and not active
             and not recovery_abandoned
         )
+        if data.get("kind") == "branch_merge":
+            # A merge retry is a new human dispatch against the then-current
+            # main head, never recovery of an old native session or stage.
+            data["can_resume"] = False
+            data["can_retry"] = False
         return AgentTaskRecord.model_validate(data)
 
     @staticmethod

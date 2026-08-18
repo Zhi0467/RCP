@@ -353,7 +353,10 @@ test("a final Experiment report error is visible and does not block a fresh epis
 
   assertDetailProjection(html, "Report error", "Report generation ended with an error");
   assert.match(html, /Report generation error: The visual report could not be generated\./);
-  assert.doesNotMatch(html, /Retry codex|Resume codex|experiment-run-button" disabled=""/);
+  assert.doesNotMatch(
+    html,
+    /Retry codex|Resume codex|Stop loop|experiment-run-button" disabled=""/,
+  );
 });
 
 test("a stopped Experiment shows neither a report nor a report error", () => {

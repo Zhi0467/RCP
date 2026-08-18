@@ -9,9 +9,8 @@ invariants: [1, 6]
 
 # Hand a personal project over to the lab, once
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Spaces and project homes](../design/spaces-and-project-homes.md#project-transfer-is-one-way).
+This scenario is a proposal and is **not yet human-confirmed**. The current
+boundary is in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home).
 
 Transfer is personal space → team space, one way. Files do not move: the
 canonical state repository keeps its path. What changes is who may write it, and

@@ -211,7 +211,7 @@ def test_existing_research_preflight_reports_exact_degraded_boundary_without_wri
     assert existing["replay_status"] == "degraded"
     assert existing["coherent_revision"] == 0
     assert existing["replay_failure"]["revision"] == 1
-    assert existing["replay_failure"]["code"] == "invalid-node"
+    assert existing["replay_failure"]["code"] == "patch-schema-invalid"
     assert "not-a-node-type" in existing["replay_failure"]["message"]
     after = {
         path.relative_to(manifest.research_dir): path.read_bytes()

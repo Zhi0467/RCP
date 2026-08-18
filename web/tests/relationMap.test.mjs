@@ -13,6 +13,7 @@ const server = await createServer({
 });
 const {
   RelationMap,
+  evidenceAssessmentPresentation,
   groupIncidentRelations,
   makeRelationModalBackgroundInert,
   relationOverlayHost,
@@ -122,6 +123,78 @@ test("renders incoming peers above the focus, outgoing peers below, and edge war
   assert.match(html, /Contradicts/);
   assert.match(html, /Relation does not match the ontology\./);
   assert.match(html, /Expand relation map for Focused node/);
+});
+
+test("renders claim-relative Evidence assessment separately and labels legacy unassessed edges", () => {
+  const evidence = {
+    ...node("ev/result", "Held-out result"),
+    type: "evidence",
+    observation: "The held-out score improved.",
+    role: "result",
+  };
+  const decision = {
+    ...node("dec/route", "Route choice"),
+    type: "decision",
+    question: "Which route?",
+  };
+  const allNodes = { ...nodes, [evidence.id]: evidence, [decision.id]: decision };
+  const assessed = {
+    id: "assessed-support",
+    source: evidence.id,
+    target: nodes.focus.id,
+    relation: "supports",
+    layer: "epistemic",
+    explanation: "The result bears on the focused claim.",
+    assessment: {
+      relevance: "direct",
+      weight: "strong",
+      scope: "Shifted small-model regime",
+      qualifications: ["The large model was not evaluated."],
+    },
+  };
+  const legacy = {
+    ...assessed,
+    id: "legacy-weakening",
+    relation: "weakens",
+    assessment: null,
+  };
+
+  assert.deepEqual(evidenceAssessmentPresentation(assessed, allNodes), assessed.assessment);
+  assert.equal(evidenceAssessmentPresentation(legacy, allNodes), "legacy");
+  const html = renderToStaticMarkup(
+    React.createElement(RelationMap, {
+      focusedNode: nodes.focus,
+      allNodes,
+      incidentEdges: [assessed, legacy],
+      validationMessages: [],
+      onOpenNodeWindow() {},
+    }),
+  );
+
+  assert.match(html, /Supports/);
+  assert.match(html, /Assessment · Direct relevance · Strong weight/);
+  assert.match(html, /Scope · Shifted small-model regime/);
+  assert.match(html, /Qualifications · The large model was not evaluated\./);
+  assert.match(html, /Legacy unassessed relation/);
+
+  const nonApplicable = {
+    ...assessed,
+    id: "decision-information",
+    target: decision.id,
+    relation: "informs",
+  };
+  assert.equal(evidenceAssessmentPresentation(nonApplicable, allNodes), null);
+  const actionHtml = renderToStaticMarkup(
+    React.createElement(RelationMap, {
+      focusedNode: evidence,
+      allNodes,
+      incidentEdges: [nonApplicable],
+      validationMessages: [],
+      onOpenNodeWindow() {},
+    }),
+  );
+  assert.match(actionHtml, /Informs/);
+  assert.doesNotMatch(actionHtml, /Evidence assessment|Legacy unassessed|Strong weight/);
 });
 
 test("server rendering does not access the document for the closed overlay", () => {

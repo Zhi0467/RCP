@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.service import RunRequest
 
 _AUTO_RESEARCH_GRAPH_ROLES = frozenset({"orchestrator", "worker"})
@@ -24,6 +25,8 @@ def task_graph_capable(kind: str, request: object) -> bool:
             auto_research_request is not None
             and auto_research_request.role in _AUTO_RESEARCH_GRAPH_ROLES
         )
+    if kind == "branch_merge":
+        return _branch_merge_request(request) is not None
     return False
 
 
@@ -56,5 +59,16 @@ def _auto_research_request(request: object) -> AutoResearchRunRequest | None:
         return None
     try:
         return AutoResearchRunRequest.model_validate(request)
+    except ValidationError:
+        return None
+
+
+def _branch_merge_request(request: object) -> BranchMergeRunRequest | None:
+    if isinstance(request, BranchMergeRunRequest):
+        return request
+    if not isinstance(request, dict):
+        return None
+    try:
+        return BranchMergeRunRequest.model_validate(request)
     except ValidationError:
         return None

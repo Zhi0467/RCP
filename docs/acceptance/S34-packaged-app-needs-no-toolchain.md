@@ -50,7 +50,7 @@ counting parents from a source file.
 
 The application version is also three different strings today — the package
 metadata, the FastAPI constructor, and `rcp.__version__` — which matters because
-[S29](S29-refuse-instead-of-taking.md) refuses on version mismatch, and a rule
+the desktop ownership handshake refuses on version mismatch, and a rule
 cannot compare a value that disagrees with itself.
 
 **The dev app defers packaging bugs rather than removing them.** Every promise

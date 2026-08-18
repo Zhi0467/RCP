@@ -549,6 +549,8 @@ class AppStoreBase:
                     native_session_id TEXT,
                     stage_host TEXT,
                     stage_root TEXT,
+                    graph_target_json TEXT NOT NULL DEFAULT '{"kind":"main","branch_id":null}',
+                    write_scope_fingerprint TEXT,
                     estimate_seconds REAL NOT NULL DEFAULT 300,
                     estimate_samples INTEGER NOT NULL DEFAULT 0,
                     phase TEXT NOT NULL DEFAULT 'queued',
@@ -639,6 +641,7 @@ class AppStoreBase:
                     chat_id TEXT NOT NULL,
                     node_id TEXT,
                     episode_id TEXT,
+                    graph_target_json TEXT NOT NULL DEFAULT '{"kind":"main","branch_id":null}',
                     execution_host TEXT NOT NULL,
                     check_command TEXT NOT NULL,
                     log_path TEXT NOT NULL,
@@ -669,11 +672,22 @@ class AppStoreBase:
                     ON watchers(status, created_at);
                 CREATE INDEX IF NOT EXISTS watchers_delivery
                     ON watchers(project_id, origin_operation_id, notified, completed_at);
+                CREATE TABLE IF NOT EXISTS graph_watcher_reconciliation (
+                    project_id TEXT NOT NULL,
+                    graph_target_key TEXT NOT NULL,
+                    graph_target_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision >= 0),
+                    transition_id TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, graph_target_key)
+                );
                 CREATE TABLE IF NOT EXISTS episodes (
                     episode_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
                     mode TEXT NOT NULL CHECK(mode IN ('auto_research', 'experiment_loop')),
                     control_node_id TEXT,
+                    graph_target_json TEXT NOT NULL DEFAULT '{"kind":"main","branch_id":null}',
+                    graph_base_head_json TEXT,
                     root_operation_id TEXT,
                     status TEXT NOT NULL,
                     invocation_ceiling INTEGER NOT NULL CHECK(invocation_ceiling >= 1),
@@ -1006,6 +1020,15 @@ class AppStoreBase:
                 """
             )
             self._migrate_episode_lineage(connection)
+            # Legacy graph_runs tables may still expose campaign_id (or no
+            # lineage column at all) until the migration above.  Build the
+            # branch-merge index only after episode_id is guaranteed to exist.
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS graph_runs_active_branch_merge "
+                "ON graph_runs(episode_id) "
+                "WHERE kind = 'branch_merge' "
+                "AND status IN ('queued', 'running', 'pausing')"
+            )
             has_legacy_campaigns = (
                 connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'campaigns'"
@@ -1029,6 +1052,13 @@ class AppStoreBase:
             self._ensure_column(connection, "graph_runs", "stage_host", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_root", "TEXT")
             self._ensure_column(
+                connection,
+                "graph_runs",
+                "graph_target_json",
+                'TEXT NOT NULL DEFAULT \'{"kind":"main","branch_id":null}\'',
+            )
+            self._ensure_column(connection, "graph_runs", "write_scope_fingerprint", "TEXT")
+            self._ensure_column(
                 connection, "graph_runs", "estimate_seconds", "REAL NOT NULL DEFAULT 300"
             )
             self._ensure_column(
@@ -1047,6 +1077,19 @@ class AppStoreBase:
                 "visible",
                 "INTEGER NOT NULL DEFAULT 1",
             )
+            self._ensure_column(
+                connection,
+                "watchers",
+                "graph_target_json",
+                'TEXT NOT NULL DEFAULT \'{"kind":"main","branch_id":null}\'',
+            )
+            self._ensure_column(
+                connection,
+                "episodes",
+                "graph_target_json",
+                'TEXT NOT NULL DEFAULT \'{"kind":"main","branch_id":null}\'',
+            )
+            self._ensure_column(connection, "episodes", "graph_base_head_json", "TEXT")
             self._ensure_column(
                 connection,
                 "auto_research_child_work",

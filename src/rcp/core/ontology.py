@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
-
 from rcp.core.models import (
     ALL_NODE_TYPES,
     RELATION_SPEC,
@@ -21,6 +19,7 @@ from rcp.core.models import (
     ProjectNode,
     ResearchQuestion,
 )
+from rcp.core.operations import SetOntologyOperation
 
 if TYPE_CHECKING:
     from rcp.core.validation.report import ValidationReport
@@ -49,23 +48,11 @@ BASE_FIELD_NAMES = frozenset(
 
 
 def parse_ontology_operation(
-    op: dict[str, Any], report: ValidationReport, revision: int | None
-) -> OntologyState | None:
-    if set(op) != {"op", "ontology"}:
-        report.reject(
-            "invalid-ontology-operation",
-            "set_ontology requires exactly 'op' and the complete 'ontology' snapshot.",
-            revision,
-        )
-    try:
-        ontology = OntologyState.model_validate(op.get("ontology"))
-    except ValidationError as exc:
-        report.reject(
-            "invalid-ontology",
-            f"Ontology snapshot is malformed: {exc.errors()[0]['msg']}.",
-            revision,
-        )
-        return None
+    operation: SetOntologyOperation,
+    report: ValidationReport,
+    revision: int | None,
+) -> OntologyState:
+    ontology = operation.ontology
     validate_ontology_structure(ontology, report, revision)
     return ontology
 

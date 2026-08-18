@@ -491,6 +491,10 @@ class ProjectStoreMixin:
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "graph_watcher_reconciliation": connection.execute(
+                        "DELETE FROM graph_watcher_reconciliation WHERE project_id = ?",
+                        (project_id,),
+                    ).rowcount,
                 }
                 connection.execute(
                     """

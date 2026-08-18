@@ -52,6 +52,8 @@ class AutoResearchStoreMixin:
         episode: EpisodeRecord,
         state: AutoResearchStateRecord,
         task: AgentTaskRecord,
+        *,
+        activate: bool = True,
     ) -> tuple[EpisodeRecord, AgentTaskRecord]:
         """Create the Auto child, parent, first allocation, and root task atomically."""
 
@@ -72,7 +74,10 @@ class AutoResearchStoreMixin:
             raise ValueError("the episode root operation does not match its task")
 
         episode = episode.model_copy(
-            update={"root_operation_id": task.operation_id, "status": "running"}
+            update={
+                "root_operation_id": task.operation_id,
+                "status": "running" if activate else "queued",
+            }
         )
         try:
             with self.connection() as connection:
@@ -127,6 +132,48 @@ class AutoResearchStoreMixin:
         stored_task = self.agent_task(task.operation_id)
         assert stored_episode is not None and stored_task is not None
         return stored_episode, stored_task
+
+    def activate_auto_research_reservation(
+        self,
+        episode_id: str,
+        operation_id: str,
+    ) -> EpisodeRecord:
+        """Mark a reserved root runnable only after its exact graph branch exists."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode_row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            task_row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if episode_row is None or task_row is None:
+                raise KeyError(episode_id)
+            episode = self._episode_record(episode_row)
+            task = self._agent_task_record(task_row)
+            if (
+                episode.mode != "auto_research"
+                or episode.root_operation_id != operation_id
+                or task.episode_id != episode_id
+                or task.kind != "auto_research"
+                or task.parent_operation_id is not None
+                or task.status != "queued"
+            ):
+                raise ValueError("Auto-research reservation lost its queued root binding.")
+            if episode.status == "running":
+                return episode
+            if episode.status != "queued" or episode.ending is not None:
+                raise ValueError("Auto-research reservation is no longer runnable.")
+            connection.execute(
+                "UPDATE episodes SET status = 'running', updated_at = ? WHERE episode_id = ?",
+                (self.now(), episode_id),
+            )
+        activated = self.episode(episode_id)
+        assert activated is not None
+        return activated
 
     def auto_research_state(self, episode_id: str) -> AutoResearchStateRecord | None:
         with self.connection() as connection:

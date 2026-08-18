@@ -14,6 +14,7 @@ from rcp.core.authority import (
     require_dispatch,
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
+from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, build_revision_summaries
 from tests.helpers import refresh_patch, seated_on_every_project, seed_patch
@@ -53,6 +54,7 @@ def _task_authority(
     return AgentTaskAuthority(
         operation_id=operation_id,
         project_id=project_id,
+        apply_target=GraphTargetRef(),
         authorized_by=authorizer,
         dispatch_authority=AgentDispatchAuthority(
             profile=profile,
@@ -192,10 +194,11 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
     assert single.profile is None
     assert single.task_id is None
     assert single.episode_id is None
-    assert [patch.authorized_by for patch in batch] == [authorizer, authorizer]
-    assert result.state.revision == 4
+    assert [patch.authorized_by for patch in batch] == [authorizer]
+    assert batch[0].transition is not None
+    assert len(batch[0].transition.initiating_groups) == 2
+    assert result.state.revision == 3
     assert [patch.authorized_by for patch in history.load_patches()[1:]] == [
-        authorizer,
         authorizer,
         authorizer,
     ]
@@ -300,7 +303,19 @@ def test_episode_worker_keeps_ordinary_profile_and_episode_id(manifest) -> None:
         kind="work",
         author="agent",
         summary="Episode worker result",
-        ops=[],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": "rq/worker-result",
+                        "type": "research_question",
+                        "title": "Worker result",
+                        "question": "What did the worker learn?",
+                    }
+                ],
+            }
+        ],
         run_truth_scope=["repo-a"],
         source_operation_id=operation_id,
     )
@@ -340,7 +355,19 @@ def test_episode_orchestrator_patch_keeps_episode_id(manifest) -> None:
             kind="work",
             author="agent",
             summary="Orchestrator result",
-            ops=[],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "rq/orchestrator-result",
+                            "type": "research_question",
+                            "title": "Orchestrator result",
+                            "question": "What did the orchestrator learn?",
+                        }
+                    ],
+                }
+            ],
             run_truth_scope=["repo-a"],
             source_operation_id=operation_id,
         )
@@ -356,6 +383,7 @@ def test_orchestrator_without_canonical_episode_id_is_refused(manifest) -> None:
     authority = AgentTaskAuthority(
         operation_id=operation_id,
         project_id=PROJECT_ID,
+        apply_target=GraphTargetRef(),
         authorized_by=authorizer,
         dispatch_authority=AgentDispatchAuthority(
             profile="orchestrator",

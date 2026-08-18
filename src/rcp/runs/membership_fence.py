@@ -73,7 +73,12 @@ def _fence_one(
         # new admissions, and the loop reads it before claiming a wake.
         store.request_episode_stop(episode_id)
         return
-    store.request_experiment_loop_stop(project_id, node_id)
+    store.request_experiment_loop_stop(
+        project_id,
+        node_id,
+        episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
+    )
 
 
 def _experiment_control_node(store: AppStore, project_id: str, episode_id: str) -> str | None:

@@ -33,10 +33,11 @@ CLI or Claude Code.
 ## Assert
 
 - `check provider_launched` — the CLI actually started; no flag was rejected
-- `check_work_permissions` — Codex uses
-  `--dangerously-bypass-approvals-and-sandbox` and Claude uses
-  `--permission-mode bypassPermissions`; both have unrestricted repository and
-  tooling access without an RCP approval interaction
+- `check_work_permissions` — Codex uses its native exact project permission
+  profile and Claude uses unattended `dontAsk` plus RCP-authored strict
+  settings; neither uses a dangerous/bypass mode, and both can write only the
+  exact task stage and admitted project repositories without an RCP approval
+  interaction
 - `check_network_enabled` — the launch receipt records network access for Work
   and the provider accepts the setting
 - `check_validator_client` — the immutable Python client runs from the writable
@@ -52,11 +53,12 @@ CLI or Claude Code.
   semantic validator and was re-prepared and revalidated at Apply
 - `check whole_graph_entered_the_run` — full graph and canonical `research.md`
 - `check only_run_scope_repos_entered_as_pointers` — project scope did not leak
-  in as raw content; those pointers are context, not a Work permission allowlist
+  in as raw content; context pointers and the independently resolved exact write
+  scope agree without being conflated
 - `check provider_cwd_was_the_scratch_folder`
-- `check_canonical_state_boundary_is_prompt_only` — the Work contract forbids
-  direct canonical `.research` writes and the receipt describes that known
-  limitation as prompt-enforced for both providers, never sandbox-enforced
+- `check_canonical_state_is_outside_write_scope` — direct canonical `.research`,
+  cross-project, parent, app-data, and broad roots are absent from the provider's
+  enforced project write scope
 - `check graph_matches_log`
 - `check no_server_traceback`
 
@@ -65,7 +67,7 @@ run and pinning them makes this useless.
 
 ## Failure means
 
-The seam between RCP and a real provider broke — a renamed bypass flag, a changed
-output format, a staged validator client the provider cannot run, or a prompt
-that stopped producing a semantic deliverable. A fake agent will pass happily
-through every one of these.
+The seam between RCP and a real provider broke — an invalid native containment
+profile, a changed output format, a staged validator client the provider cannot
+run, or a prompt that stopped producing a semantic deliverable. A fake agent
+will pass happily through every one of these.

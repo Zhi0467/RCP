@@ -20,7 +20,7 @@ last_checked: 2026-08-15 — the envelope field, admission refusals, legacy
 # Episode work retains its authorization lineage
 
 Confirmed by the human 2026-08-12, once the orchestrator lifecycle in
-[S77](S77-auto-research-stops-at-belief.md) and
+[the Auto-research specification](../specs/auto-research-and-branch-merge.md) and
 [S78](S78-one-budget-one-stop.md) was itself confirmed, and was generalized to
 both episode modes in [S120](S120-episodes-wrap-up-with-a-visual-report.md).
 This scenario is not part of base attribution in
@@ -168,6 +168,7 @@ permission decision may read it; it exists so history can say what happened.
 This is asserted behaviorally: varying the field must leave every verdict
 identical.
 
-Authority — what an orchestrator may change — is
-[S77](S77-auto-research-stops-at-belief.md), and the Auto-research lifecycle is
-[S78](S78-one-budget-one-stop.md). Neither is restated here.
+Authority — what an orchestrator may change — is in the
+[authority specification](../specs/authority-and-proposals.md#orchestration-commands),
+and the Auto-research lifecycle is [S78](S78-one-budget-one-stop.md). Neither is
+restated here.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import (
@@ -11,6 +12,7 @@ from pydantic import (
 from rcp.core.models import (
     AuthorizedHuman,
 )
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
@@ -248,6 +250,7 @@ class WatcherStoreMixin:
                 record.project_id,
                 record.origin_operation_id,
                 record.origin_task_kind,
+                record.graph_target.key,
                 record.chat_id,
                 record.node_id,
                 record.episode_id,
@@ -312,6 +315,7 @@ class WatcherStoreMixin:
             "project_id",
             "origin_operation_id",
             "origin_task_kind",
+            "graph_target",
             "chat_id",
             "node_id",
             "episode_id",
@@ -329,6 +333,21 @@ class WatcherStoreMixin:
 
     @staticmethod
     def _insert_watcher(connection: sqlite3.Connection, record: StoredWatcherRecord) -> None:
+        origin = connection.execute(
+            "SELECT project_id, episode_id, graph_target_json FROM graph_runs "
+            "WHERE operation_id = ?",
+            (record.origin_operation_id,),
+        ).fetchone()
+        if origin is None:
+            if record.graph_target.kind == "branch":
+                raise ValueError("a branch watcher requires its durable origin task")
+        elif (
+            origin["project_id"] != record.project_id
+            or (origin["episode_id"] is not None and origin["episode_id"] != record.episode_id)
+            or json.loads(origin["graph_target_json"])
+            != record.graph_target.model_dump(mode="json")
+        ):
+            raise ValueError("a watcher cannot change its origin task graph binding")
         stopped_episode = connection.execute(
             """
             SELECT COALESCE(
@@ -357,6 +376,20 @@ class WatcherStoreMixin:
                 }
             )
         if isinstance(record, GraphWatcherRecord):
+            consumed = connection.execute(
+                """
+                SELECT revision FROM graph_watcher_reconciliation
+                WHERE project_id = ? AND graph_target_key = ?
+                """,
+                (record.project_id, record.graph_target.key),
+            ).fetchone()
+            if (
+                record.status != "stopped"
+                and record.armed_revision is not None
+                and consumed is not None
+                and record.armed_revision < int(consumed["revision"])
+            ):
+                raise ValueError("a graph watcher cannot arm behind the consumed target boundary")
             # Legacy watcher tables keep these external-only columns NOT NULL.
             # The separate GraphWatcherRecord never exposes the compatibility
             # placeholders; graph_condition_json selects its stored type.
@@ -375,14 +408,14 @@ class WatcherStoreMixin:
             """
             INSERT INTO watchers (
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, node_id, episode_id, execution_host,
+                chat_id, node_id, episode_id, graph_target_json, execution_host,
                 check_command, log_path, cwd, graph_condition_json, armed_revision,
                 continuation_json, status, created_at, last_checked_at,
                 last_exit_code, last_error, completed_at, next_check_at,
                 consecutive_error_count, group_id, group_label, notified,
                 notification_operation_id, stopped_by, stop_reason, stopped_at,
                 stop_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -392,6 +425,7 @@ class WatcherStoreMixin:
                 record.chat_id,
                 record.node_id,
                 record.episode_id,
+                record.graph_target.model_dump_json(),
                 record.execution_host,
                 check_command,
                 log_path,
@@ -473,6 +507,239 @@ class WatcherStoreMixin:
             ).fetchall()
         return [str(row["project_id"]) for row in rows]
 
+    def graph_watcher_reconciliation_head(
+        self,
+        project_id: str,
+        graph_target: GraphTargetRef,
+    ) -> GraphHeadRef | None:
+        """Return the last graph boundary atomically consumed for one target."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT graph_target_json, revision, transition_id
+                FROM graph_watcher_reconciliation
+                WHERE project_id = ? AND graph_target_key = ?
+                """,
+                (project_id, graph_target.key),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            stored_target = GraphTargetRef.model_validate_json(row["graph_target_json"])
+            head = GraphHeadRef(
+                target=stored_target,
+                revision=row["revision"],
+                transition_id=row["transition_id"],
+            )
+        except ValueError as exc:
+            raise RuntimeError("Stored graph-watcher reconciliation head is invalid.") from exc
+        if stored_target != graph_target:
+            raise RuntimeError("Stored graph-watcher target key does not match its target.")
+        return head
+
+    def initialize_graph_watcher_target_baselines(
+        self,
+        project_id: str,
+        graph_target: GraphTargetRef,
+        *,
+        armed_revision: int,
+        evaluated_at: str | None = None,
+    ) -> None:
+        """Give every migrated target-local graph watcher one current baseline."""
+
+        timestamp = evaluated_at or self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE project_id = ? AND graph_condition_json IS NOT NULL
+                  AND armed_revision IS NULL AND status = 'active' AND notified = 0
+                ORDER BY created_at, watcher_id
+                """,
+                (project_id,),
+            ).fetchall()
+            ids = [
+                record.watcher_id
+                for row in rows
+                if isinstance((record := self._watcher_record(row)), GraphWatcherRecord)
+                and record.graph_target == graph_target
+            ]
+            if not ids:
+                return
+            placeholders = ",".join("?" for _ in ids)
+            connection.execute(
+                f"""
+                UPDATE watchers SET armed_revision = ?, last_checked_at = ?
+                WHERE watcher_id IN ({placeholders})
+                  AND graph_condition_json IS NOT NULL AND armed_revision IS NULL
+                  AND status = 'active' AND notified = 0
+                """,
+                (armed_revision, timestamp, *ids),
+            )
+
+    def consume_graph_watcher_boundary(
+        self,
+        project_id: str,
+        head: GraphHeadRef,
+        *,
+        evaluate: Callable[[GraphWatcherRecord], Literal["active", "completed", "removed"]],
+        evaluated_at: str | None = None,
+    ) -> bool:
+        """Evaluate and checkpoint one accepted target boundary atomically.
+
+        The target-local head is the durable receipt. A repeated or older
+        boundary performs no watcher writes; a same-revision identity mismatch
+        fails closed. ``transition_id=None`` is the stable identity for an
+        accepted historical Patch that predates transition traces. If evaluation
+        raises, SQLite rolls back both watcher changes and the head so a restart
+        can retry the exact boundary.
+        """
+
+        timestamp = evaluated_at or self.now()
+        target_json = json.dumps(
+            head.target.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor_row = connection.execute(
+                """
+                SELECT graph_target_json, revision, transition_id
+                FROM graph_watcher_reconciliation
+                WHERE project_id = ? AND graph_target_key = ?
+                """,
+                (project_id, head.target.key),
+            ).fetchone()
+            if cursor_row is not None:
+                try:
+                    stored_target = GraphTargetRef.model_validate_json(
+                        cursor_row["graph_target_json"]
+                    )
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "Stored graph-watcher reconciliation target is invalid."
+                    ) from exc
+                if stored_target != head.target:
+                    raise RuntimeError("Stored graph-watcher target key does not match its target.")
+                stored_revision = int(cursor_row["revision"])
+                if stored_revision > head.revision:
+                    return False
+                if stored_revision == head.revision:
+                    if cursor_row["transition_id"] != head.transition_id:
+                        raise RuntimeError(
+                            "Accepted graph boundary changed identity at a consumed revision."
+                        )
+                    return False
+
+            rows = connection.execute(
+                """
+                SELECT * FROM watchers
+                WHERE project_id = ? AND graph_condition_json IS NOT NULL
+                  AND status = 'active' AND notified = 0
+                ORDER BY created_at, watcher_id
+                """,
+                (project_id,),
+            ).fetchall()
+            for row in rows:
+                record = self._watcher_record(row)
+                if not isinstance(record, GraphWatcherRecord):
+                    raise RuntimeError(
+                        "External watcher row appeared in the graph-condition index."
+                    )
+                if record.graph_target != head.target or record.armed_revision is None:
+                    continue
+                if record.armed_revision >= head.revision:
+                    continue
+                self._record_graph_watcher_result_locked(
+                    connection,
+                    record,
+                    result=evaluate(record),
+                    evaluated_at=timestamp,
+                )
+
+            if cursor_row is None:
+                connection.execute(
+                    """
+                    INSERT INTO graph_watcher_reconciliation(
+                        project_id, graph_target_key, graph_target_json,
+                        revision, transition_id, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        head.target.key,
+                        target_json,
+                        head.revision,
+                        head.transition_id,
+                        timestamp,
+                    ),
+                )
+            else:
+                previous_revision = int(cursor_row["revision"])
+                updated = connection.execute(
+                    """
+                    UPDATE graph_watcher_reconciliation
+                    SET graph_target_json = ?, revision = ?, transition_id = ?, updated_at = ?
+                    WHERE project_id = ? AND graph_target_key = ? AND revision = ?
+                    """,
+                    (
+                        target_json,
+                        head.revision,
+                        head.transition_id,
+                        timestamp,
+                        project_id,
+                        head.target.key,
+                        previous_revision,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("Graph-watcher reconciliation head changed concurrently.")
+        return True
+
+    @staticmethod
+    def _record_graph_watcher_result_locked(
+        connection: sqlite3.Connection,
+        current: GraphWatcherRecord,
+        *,
+        result: Literal["active", "completed", "removed"],
+        evaluated_at: str,
+    ) -> None:
+        if result == "active":
+            connection.execute(
+                """
+                UPDATE watchers SET last_checked_at = ?
+                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                  AND status = 'active' AND notified = 0
+                """,
+                (evaluated_at, current.watcher_id),
+            )
+        elif result == "completed":
+            connection.execute(
+                """
+                UPDATE watchers
+                SET status = 'completed', last_checked_at = ?, completed_at = ?,
+                    next_check_at = NULL
+                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                  AND status = 'active' AND notified = 0
+                """,
+                (evaluated_at, evaluated_at, current.watcher_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE watchers
+                SET status = 'stopped', notified = 1, last_checked_at = ?,
+                    next_check_at = NULL, stopped_by = 'loop',
+                    stop_reason = 'Graph condition target was removed.', stopped_at = ?
+                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
+                  AND status = 'active' AND notified = 0
+                """,
+                (evaluated_at, evaluated_at, current.watcher_id),
+            )
+
     def record_graph_watcher_result(
         self,
         watcher_id: str,
@@ -494,38 +761,12 @@ class WatcherStoreMixin:
                 raise ValueError("an external watcher cannot receive a graph evaluation")
             if current.status != "active" or current.notified:
                 return current
-            if result == "active":
-                connection.execute(
-                    """
-                    UPDATE watchers SET last_checked_at = ?
-                    WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                      AND status = 'active' AND notified = 0
-                    """,
-                    (timestamp, watcher_id),
-                )
-            elif result == "completed":
-                connection.execute(
-                    """
-                    UPDATE watchers
-                    SET status = 'completed', last_checked_at = ?, completed_at = ?,
-                        next_check_at = NULL
-                    WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                      AND status = 'active' AND notified = 0
-                    """,
-                    (timestamp, timestamp, watcher_id),
-                )
-            else:
-                connection.execute(
-                    """
-                    UPDATE watchers
-                    SET status = 'stopped', notified = 1, last_checked_at = ?,
-                        next_check_at = NULL, stopped_by = 'loop',
-                        stop_reason = 'Graph condition target was removed.', stopped_at = ?
-                    WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                      AND status = 'active' AND notified = 0
-                    """,
-                    (timestamp, timestamp, watcher_id),
-                )
+            self._record_graph_watcher_result_locked(
+                connection,
+                current,
+                result=result,
+                evaluated_at=timestamp,
+            )
         stored = self.watcher(watcher_id)
         assert isinstance(stored, GraphWatcherRecord)
         return stored
@@ -573,7 +814,7 @@ class WatcherStoreMixin:
             if any(not isinstance(record, WatcherRecord) for record in records):
                 raise RuntimeError("Graph conditions cannot enter the external watcher poller.")
             stopping_contexts: dict[
-                tuple[str, str],
+                tuple[str, str, str],
                 tuple[dict[str, object], ExperimentEpisodeRecord] | None,
             ] = {}
             return [
@@ -655,7 +896,7 @@ class WatcherStoreMixin:
         connection: sqlite3.Connection,
         record: StoredWatcherRecord,
         cache: dict[
-            tuple[str, str],
+            tuple[str, str, str],
             tuple[dict[str, object], ExperimentEpisodeRecord] | None,
         ],
     ) -> bool:
@@ -663,7 +904,7 @@ class WatcherStoreMixin:
         control_node_id = continuation.control_node_id
         if continuation.patch_kind != "experiment_loop" or not control_node_id:
             return False
-        key = (record.project_id, control_node_id)
+        key = (record.project_id, control_node_id, record.graph_target.key)
         if key not in cache:
             root = connection.execute(
                 """
@@ -671,10 +912,17 @@ class WatcherStoreMixin:
                 WHERE project_id = ? AND parent_operation_id IS NULL
                   AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
                   AND json_extract(request_json, '$.control_node_id') = ?
+                  AND json_extract(graph_target_json, '$.kind') = ?
+                  AND json_extract(graph_target_json, '$.branch_id') IS ?
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT 1
                 """,
-                key,
+                (
+                    record.project_id,
+                    control_node_id,
+                    record.graph_target.kind,
+                    record.graph_target.branch_id,
+                ),
             ).fetchone()
             context = None
             if root is not None:
@@ -772,6 +1020,7 @@ class WatcherStoreMixin:
             key = (
                 (
                     first.project_id,
+                    first.graph_target.key,
                     "experiment_loop",
                     first.node_id,
                     first.execution_host,
@@ -780,6 +1029,7 @@ class WatcherStoreMixin:
                 if first.continuation.patch_kind == "experiment_loop"
                 else (
                     first.project_id,
+                    first.graph_target.key,
                     first.origin_task_kind,
                     first.chat_id,
                     first.node_id,
@@ -824,7 +1074,7 @@ class WatcherStoreMixin:
         ungrouped = [self._watcher_record(row) for row in ungrouped_rows]
         grouped_records = [self._watcher_record(row) for row in grouped_rows]
         stopping_contexts: dict[
-            tuple[str, str], tuple[dict[str, object], ExperimentEpisodeRecord] | None
+            tuple[str, str, str], tuple[dict[str, object], ExperimentEpisodeRecord] | None
         ] = {}
         units: list[list[StoredWatcherRecord]] = []
         grouped: dict[str, list[StoredWatcherRecord]] = {}
@@ -892,6 +1142,7 @@ class WatcherStoreMixin:
                         (
                             "experiment_loop",
                             item.node_id,
+                            item.graph_target.key,
                             item.execution_host,
                             self._automatic_watcher_delivery_policy(item.continuation),
                         )
@@ -1108,6 +1359,8 @@ class WatcherStoreMixin:
         continuation = first.continuation
         request = record.request
         trigger = request.get("trigger")
+        if {item.graph_target.key for item in watchers} != {record.graph_target.key}:
+            raise ValueError("watcher notification changed its exact graph target")
         auto_research_wake = first.origin_task_kind == "auto_research"
         if auto_research_wake:
             if record.kind != "auto_research" or record.episode_id is None:
@@ -1208,14 +1461,21 @@ class WatcherStoreMixin:
                 raise ValueError("an automatic Experiment wake must continue an existing episode")
             newest = connection.execute(
                 """
-                SELECT kind, request_json FROM graph_runs
+                SELECT kind, request_json, graph_target_json FROM graph_runs
                 WHERE project_id = ? AND parent_operation_id IS NULL
                   AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
                   AND json_extract(request_json, '$.control_node_id') = ?
+                  AND json_extract(graph_target_json, '$.kind') = ?
+                  AND json_extract(graph_target_json, '$.branch_id') IS ?
                 ORDER BY created_at DESC, rowid DESC
                 LIMIT 1
                 """,
-                (record.project_id, continuation.control_node_id),
+                (
+                    record.project_id,
+                    continuation.control_node_id,
+                    record.graph_target.kind,
+                    record.graph_target.branch_id,
+                ),
             ).fetchone()
             newest_request = json.loads(newest["request_json"]) if newest is not None else None
             if newest_request is None or newest_request.get("control_episode_id") != episode_id:
@@ -1251,10 +1511,17 @@ class WatcherStoreMixin:
             WHERE project_id = ? AND parent_operation_id IS NULL
               AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
               AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(graph_target_json, '$.kind') = ?
+              AND json_extract(graph_target_json, '$.branch_id') IS ?
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
-            (record.project_id, continuation.control_node_id),
+            (
+                record.project_id,
+                continuation.control_node_id,
+                record.graph_target.kind,
+                record.graph_target.branch_id,
+            ),
         ).fetchone()
         if previous is None:
             raise ValueError("a human watcher claim requires a prior Experiment episode")

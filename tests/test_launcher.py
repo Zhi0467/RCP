@@ -8,13 +8,37 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
 from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
 from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
+from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.providers import profile_for
+
+
+def _project_write_scope(
+    *,
+    capability: Literal["work_auto", "orchestrate"],
+    stage: str,
+    repository_paths: list[str],
+) -> ProjectWriteScope:
+    repositories = [
+        WritableRepositoryRoot(alias=Path(path).name, machine="local", path=path)
+        for path in sorted(repository_paths)
+    ]
+    return ProjectWriteScope.create(
+        project_id="project-1",
+        execution_machine="local",
+        execution_host="",
+        capability=capability,
+        stage_root=stage,
+        workspace_root=stage,
+        repositories=repositories,
+        protected_write_paths=[f"{path}/.research" for path in repository_paths],
+    )
 
 
 def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) -> None:
@@ -844,77 +868,209 @@ def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
     assert 'approval_policy="never"' in command
 
 
-def test_codex_work_bypasses_approvals_and_sandbox() -> None:
+def test_codex_work_uses_exact_project_permission_profile() -> None:
+    stage = "/data/chat-stage"
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage=stage,
+        repository_paths=["/project/repo-a"],
+    )
     command = AgentLauncher._command(
         "codex",
         "run the experiment",
-        cwd=Path("/data/chat-stage"),
+        cwd=Path(stage),
         model=None,
         reasoning=None,
         session_id=None,
         read_dirs=[Path("/data/chat-stage/inputs")],
         write_dirs=[Path("/project/repo-a"), Path("/project/repo-a")],
+        write_scope=scope,
         capability="work_auto",
+        provider_version="0.147.0",
     )
 
     assert "--sandbox" not in command
-    assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert 'web_search="live"' in command
     assert not any(item.startswith("sandbox_mode=") for item in command)
     assert not any(item.startswith("approval_policy=") for item in command)
     assert not any(item.startswith("approvals_reviewer=") for item in command)
-    assert not any(item.startswith("default_permissions=") for item in command)
-    assert not any(item.startswith("permissions={") for item in command)
-    assert not any("workspace_roots" in item for item in command)
+    assert 'default_permissions="rcp_project"' in command
+    assert (
+        'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
+        '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
+        '{"."="write",".research"="deny"}},network={enabled=true}}}'
+    ) in command
+    assert command[command.index("--cd") + 1] == stage
+    assert "--add-dir" not in command
     assert command[-1] == "-"
 
 
-def test_codex_orchestrate_keeps_unrestricted_work_access() -> None:
+def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
+    stage = "/data/campaign-stage"
+    scope = _project_write_scope(
+        capability="orchestrate",
+        stage=stage,
+        repository_paths=["/project/repo-b"],
+    )
     command = AgentLauncher._command(
         "codex",
         "orchestrate the campaign",
-        cwd=Path("/data/campaign-stage"),
+        cwd=Path(stage),
         model=None,
         reasoning=None,
         session_id=None,
         read_dirs=[Path("/project/repo-a")],
-        write_dirs=[Path("/project/repo-a")],
+        write_dirs=[Path("/project/repo-b")],
+        write_scope=scope,
         capability="orchestrate",
+        provider_version="0.138.0",
     )
 
-    assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert "--sandbox" not in command
     assert not any(item.startswith("sandbox_mode=") for item in command)
     assert not any(item.startswith("approval_policy=") for item in command)
-    assert not any("workspace_roots" in item for item in command)
+    permission_profile = next(item for item in command if item.startswith("permissions={"))
+    assert '"/data/campaign-stage"=true' in permission_profile
+    assert '"/project/repo-b"=true' in permission_profile
+    assert "/project/repo-a" not in permission_profile
+    assert '":root"="read"' in permission_profile
+    assert '".research"="deny"' in permission_profile
+    assert "network={enabled=true}" in permission_profile
     assert command[-1] == "-"
 
 
-def test_codex_work_resume_bypasses_approvals_and_sandbox() -> None:
+def test_codex_graph_only_orchestrate_accepts_no_repository_write_roots() -> None:
+    stage = "/data/branch-merge-stage/workspace"
+    scope = _project_write_scope(
+        capability="orchestrate",
+        stage=stage,
+        repository_paths=[],
+    )
+    command = AgentLauncher._command(
+        "codex",
+        "merge the graph branch",
+        cwd=Path(stage),
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[Path("/data/branch-merge-stage/inputs")],
+        write_dirs=[],
+        write_scope=scope,
+        capability="orchestrate",
+        provider_version="0.147.0",
+    )
+
+    permission_profile = next(item for item in command if item.startswith("permissions={"))
+    assert f"{json.dumps(stage)}=true" in permission_profile
+    assert "/project/" not in permission_profile
+    assert command[command.index("--cd") + 1] == stage
+    assert "--add-dir" not in command
+
+
+def test_codex_work_resume_keeps_the_exact_project_permission_profile() -> None:
     session_id = "019f0000-0000-7000-8000-000000000002"
+    stage = "/data/chat-stage"
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage=stage,
+        repository_paths=["/project/repo-a"],
+    )
     command = AgentLauncher._command(
         "codex",
         "continue the operational turn",
-        cwd=Path("/data/chat-stage"),
+        cwd=Path(stage),
         model=None,
         reasoning=None,
         session_id=session_id,
         read_dirs=[],
         write_dirs=[Path("/project/repo-a")],
+        write_scope=scope,
         capability="work_auto",
+        provider_version="0.147.0",
     )
 
     assert command[:4] == ["codex", "exec", "resume", "--json"]
     assert "--sandbox" not in command
     assert not any(item.startswith("sandbox_mode=") for item in command)
-    assert command.count("--dangerously-bypass-approvals-and-sandbox") == 1
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert 'web_search="live"' in command
     assert not any(item.startswith("approval_policy=") for item in command)
     assert not any(item.startswith("approvals_reviewer=") for item in command)
-    assert not any(item.startswith("default_permissions=") for item in command)
-    assert not any(item.startswith("permissions={") for item in command)
-    assert not any("workspace_roots" in item for item in command)
+    assert 'default_permissions="rcp_project"' in command
+    permission_profile = next(item for item in command if item.startswith("permissions={"))
+    assert '"/data/chat-stage"=true' in permission_profile
+    assert '"/project/repo-a"=true' in permission_profile
+    assert '".research"="deny"' in permission_profile
+    assert "--cd" not in command
     assert command[-2:] == [session_id, "-"]
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
+def test_work_like_provider_commands_require_a_resolved_project_scope(
+    provider: str,
+    capability: Literal["work_auto", "orchestrate"],
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=rf"^{capability} launch requires a resolved project write scope$",
+    ):
+        AgentLauncher._command(
+            provider,
+            "operate on the project",
+            cwd=Path("/data/task-stage"),
+            model=None,
+            reasoning=None,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[Path("/project/repo-a")],
+            capability=capability,
+            provider_version="99.0.0",
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_version", "required_version"),
+    [
+        ("codex", "0.137.9", "0.138.0"),
+        ("codex", None, "0.138.0"),
+        ("claude", "2.1.232", "2.1.233"),
+        ("claude", None, "2.1.233"),
+    ],
+)
+def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
+    provider: str,
+    provider_version: str | None,
+    required_version: str,
+) -> None:
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage="/data/task-stage",
+        repository_paths=["/project/repo-a"],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"cannot enforce the declared project write roots; RCP requires "
+            rf"{required_version} or newer$"
+        ),
+    ):
+        AgentLauncher._command(
+            provider,
+            "operate on the project",
+            cwd=Path("/data/task-stage"),
+            model=None,
+            reasoning=None,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[Path("/project/repo-a")],
+            write_scope=scope,
+            capability="work_auto",
+            provider_version=provider_version,
+        )
 
 
 def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
@@ -988,58 +1144,170 @@ def test_claude_read_only_command_keeps_plan_permission_mode() -> None:
     assert command[command.index("--resume") + 1] == "paper-session"
 
 
-def test_claude_work_bypasses_permissions() -> None:
+def test_claude_work_uses_exact_sandbox_and_tool_allowlists() -> None:
+    stage = "/data/chat-stage"
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage=stage,
+        repository_paths=["/project/repo-a"],
+    )
     command = AgentLauncher._command(
         "claude",
         "run the experiment",
-        cwd=Path("/data/chat-stage"),
+        cwd=Path(stage),
         model=None,
         reasoning=None,
         session_id=None,
         read_dirs=[Path("/data/chat-stage/inputs")],
         write_dirs=[Path("/project/repo-a"), Path("/project/repo-a")],
+        write_scope=scope,
         capability="work_auto",
+        provider_version="2.1.233",
     )
 
-    assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
+    assert command[command.index("--setting-sources") + 1] == ""
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings == {
+        "disableAllHooks": True,
+        "permissions": {
+            "defaultMode": "dontAsk",
+            "disableAutoMode": "disable",
+            "disableBypassPermissionsMode": "disable",
+            "allow": [
+                "Bash",
+                "WebSearch",
+                "WebFetch",
+                "Edit(//data/chat-stage/**)",
+                "Write(//data/chat-stage/**)",
+                "Edit(//project/repo-a/**)",
+                "Write(//project/repo-a/**)",
+            ],
+            "deny": [
+                "Edit(//project/repo-a/.research/**)",
+                "Write(//project/repo-a/.research/**)",
+            ],
+        },
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "autoAllowBashIfSandboxed": True,
+            "allowUnsandboxedCommands": False,
+            "filesystem": {
+                "allowWrite": ["/data/chat-stage", "/project/repo-a"],
+                "denyWrite": ["/project/repo-a/.research"],
+            },
+            "network": {"allowedDomains": ["*"]},
+        },
+    }
+    assert command[command.index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
+    assert add_dirs == ["/data/chat-stage/inputs", "/project/repo-a"]
 
 
-def test_claude_orchestrate_keeps_unrestricted_work_access() -> None:
+def test_claude_orchestrate_allows_only_its_resolved_project_roots() -> None:
+    stage = "/data/campaign-stage"
+    scope = _project_write_scope(
+        capability="orchestrate",
+        stage=stage,
+        repository_paths=["/project/repo-b"],
+    )
     command = AgentLauncher._command(
         "claude",
         "orchestrate the campaign",
-        cwd=Path("/data/campaign-stage"),
+        cwd=Path(stage),
         model=None,
         reasoning=None,
         session_id=None,
         read_dirs=[Path("/project/repo-a")],
         write_dirs=[Path("/project/repo-b")],
+        write_scope=scope,
         capability="orchestrate",
+        provider_version="2.1.234",
     )
 
-    assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["sandbox"]["filesystem"] == {
+        "allowWrite": ["/data/campaign-stage", "/project/repo-b"],
+        "denyWrite": ["/project/repo-b/.research"],
+    }
+    assert settings["permissions"]["deny"] == [
+        "Edit(//project/repo-b/.research/**)",
+        "Write(//project/repo-b/.research/**)",
+    ]
+    assert "Edit(//project/repo-a/**)" not in settings["permissions"]["allow"]
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
     assert add_dirs == ["/project/repo-a", "/project/repo-b"]
 
 
-def test_claude_work_resume_keeps_the_native_session_and_bypasses_permissions() -> None:
+def test_claude_graph_only_orchestrate_accepts_no_repository_write_roots() -> None:
+    stage = "/data/branch-merge-stage/workspace"
+    inputs = "/data/branch-merge-stage/inputs"
+    scope = _project_write_scope(
+        capability="orchestrate",
+        stage=stage,
+        repository_paths=[],
+    )
+    command = AgentLauncher._command(
+        "claude",
+        "merge the graph branch",
+        cwd=Path(stage),
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[Path(inputs)],
+        write_dirs=[],
+        write_scope=scope,
+        capability="orchestrate",
+        provider_version="2.1.234",
+    )
+
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["sandbox"]["filesystem"] == {
+        "allowWrite": [stage],
+        "denyWrite": [],
+    }
+    assert settings["permissions"]["deny"] == []
+    add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
+    assert add_dirs == [inputs]
+
+
+def test_claude_work_resume_keeps_the_native_session_and_exact_scope() -> None:
     session_id = "claude-experiment-episode-session"
+    stage = "/data/chat-stage"
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage=stage,
+        repository_paths=["/project/repo-a"],
+    )
     command = AgentLauncher._command(
         "claude",
         "continue the bounded experiment turn",
-        cwd=Path("/data/chat-stage"),
+        cwd=Path(stage),
         model=None,
         reasoning=None,
         session_id=session_id,
         read_dirs=[Path("/data/chat-stage/inputs")],
         write_dirs=[Path("/project/repo-a")],
+        write_scope=scope,
         capability="work_auto",
+        provider_version="2.1.233",
     )
 
-    assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["sandbox"]["filesystem"]["allowWrite"] == [
+        "/data/chat-stage",
+        "/project/repo-a",
+    ]
+    assert settings["sandbox"]["filesystem"]["denyWrite"] == ["/project/repo-a/.research"]
     assert command[command.index("--resume") + 1] == session_id
 
 

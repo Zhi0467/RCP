@@ -18,6 +18,7 @@ from rcp.core.ontology import (
     validate_new_node_extensions,
     validate_updated_extension_fields,
 )
+from rcp.core.operations import CreateNodesOperation
 from rcp.core.validation.constants import NODE_ADAPTER, NODE_PREFIXES, SLUG_RE
 from rcp.core.validation.report import ValidationReport
 
@@ -215,10 +216,10 @@ def requires_proposal(node: Any, changes: dict[str, Any]) -> bool:
 
 def created_node_id(patch: Patch, node_id: Any) -> bool:
     return any(
-        raw.get("id") == node_id
-        for op in patch.ops
-        if op.get("op") == "create_nodes"
-        for raw in op.get("nodes", [])
+        node.id == node_id
+        for operation in patch.ops
+        if isinstance(operation, CreateNodesOperation)
+        for node in operation.nodes
     )
 
 

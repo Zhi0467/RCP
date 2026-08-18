@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from rcp.agents import ChatContext, agent_output_schema
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
+from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -31,6 +32,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.providers import AgentCapability
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.shared import (
     _remove_local_tree,
@@ -748,26 +750,59 @@ def _chat_read_dirs(
     return read_dirs
 
 
-def _work_write_dirs(
+def _project_write_scope(
     context: ChatContext,
     service: ProjectService,
     execution_machine: str,
     *,
-    remote: bool,
-) -> list[Path]:
-    """On-machine repository pointers supplied to an unrestricted Work provider."""
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+    data_dir: Path,
+    execution: AgentTaskExecution | None,
+    capability: AgentCapability,
+    stage_only: bool = False,
+) -> ProjectWriteScope:
+    """Resolve one durable provider-neutral scope from project-owned authority."""
 
-    del service
-    pointers = [item for item in context.repositories if item.machine == execution_machine]
-    roots = [Path(item.path) for item in pointers]
-    if remote:
-        return list(dict.fromkeys(roots))
-    missing = [str(path) for path in roots if not path.is_dir()]
-    if missing:
-        raise StateUnavailable(
-            f"Work repository roots are unavailable on the execution machine: {missing}"
-        )
-    return list(dict.fromkeys(roots))
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    if execution is not None and task is None:
+        raise ValueError("project write scope has no durable agent task binding")
+    if stage_only:
+        admitted_aliases: list[str] = []
+    elif task is not None:
+        if task.dispatch_authority is None:
+            raise ValueError("Work-like task has no durable dispatch authority")
+        if task.dispatch_authority.task_contract != capability:
+            raise ValueError("Work-like capability conflicts with its durable dispatch authority")
+        admitted_aliases = list(task.dispatch_authority.scope.run_truth_scope)
+        if sorted(set(context.run_truth_scope)) != admitted_aliases:
+            raise ValueError("Work-like context conflicts with its durable repository scope")
+    else:
+        admitted_aliases = sorted(set(context.run_truth_scope))
+    project_id = (
+        task.project_id
+        if task is not None
+        else service.history.project_id
+        or "manifest-" + hashlib.sha256(str(service.manifest.path).encode("utf-8")).hexdigest()
+    )
+    stage_root = (
+        str(remote_stage.root)
+        if remote_stage is not None and remote_stage.root is not None
+        else str(workspace)
+    )
+    return resolve_project_write_scope(
+        manifest=service.manifest,
+        project_id=project_id,
+        execution_machine=execution_machine,
+        capability=capability,
+        stage_root=stage_root,
+        workspace_root=str(workspace),
+        admitted_aliases=admitted_aliases,
+        repository_pointers=context.repositories,
+        remote_stage=remote_stage,
+        app_data_dir=data_dir,
+        repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+    )
 
 
 def _chat_path(service: ProjectService, request: RunRequest) -> Path:

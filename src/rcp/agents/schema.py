@@ -1,37 +1,83 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from rcp.core.authority import HYPOTHESIS_PROPOSAL_FIELDS, AgentProfile
 from rcp.core.models import (
+    EvidenceAssessment,
     ExperimentAttempt,
+    ExperimentAttemptDebug,
+    ExperimentDecisionPin,
     GatedCard,
     Patch,
     SourceRef,
 )
+from rcp.core.operations import GraphOperation, operation_dict
 
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _NODE_ID = rf"[a-z][a-z0-9]*(?:_[a-z0-9]+)*/{_SLUG}"
 
 
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+_DATETIME_ADAPTER = TypeAdapter(datetime)
+
+
+def _wire_datetime(value: Any) -> Any:
+    if isinstance(value, str) and len(value) >= 10 and value[4] == "-" and value[7] == "-":
+        return _DATETIME_ADAPTER.validate_python(value)
+    return value
 
 
 class AgentSourceRef(SourceRef):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def accept_json_datetime_wire_form(cls, value: Any) -> Any:
+        return _wire_datetime(value)
+
+
+class AgentExperimentDecisionPin(ExperimentDecisionPin):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AgentExperimentAttemptDebug(ExperimentAttemptDebug):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class AgentExperimentAttempt(ExperimentAttempt):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
+    decision_bundle: list[AgentExperimentDecisionPin] = Field(default_factory=list)
+    debug: AgentExperimentAttemptDebug | None = None
     source_refs: list[AgentSourceRef] = Field(default_factory=list)
+
+    @field_validator("started_at", "finished_at", mode="before")
+    @classmethod
+    def accept_json_datetime_wire_form(cls, value: Any) -> Any:
+        return _wire_datetime(value)
 
 
 class AgentGatedCard(GatedCard):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AgentEvidenceAssessment(EvidenceAssessment):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class AgentNode(_StrictModel):
@@ -88,7 +134,6 @@ class AgentExperiment(AgentNode):
         "running",
         "analyzing",
         "completed",
-        "blocked",
         "abandoned",
         "superseded",
     ] = "proposed"
@@ -101,7 +146,7 @@ class AgentEvidence(AgentNode):
     type: Literal["evidence"]
     observation: str
     interpretation: str = ""
-    strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] = "preliminary"
+    role: Literal["result", "diagnostic"] = "result"
     validity: Literal["valid", "qualified", "invalid", "superseded"] = "valid"
     origin: Literal[
         "internal_run", "external_publication", "external_instance", "analytic", "unknown"
@@ -137,6 +182,7 @@ class NewEdge(_StrictModel):
     target: str
     relation: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
     explanation: str = ""
+    assessment: AgentEvidenceAssessment | None = None
 
 
 class EvidenceEdgeCause(_StrictModel):
@@ -510,10 +556,12 @@ def _agent_patch_profile(
     return "ordinary"
 
 
-def _strip_rcp_bookkeeping(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _strip_rcp_bookkeeping(operations: list[GraphOperation]) -> list[dict[str, Any]]:
+    """Project typed core operations onto the deliberately narrower agent schema."""
+
     stripped: list[dict[str, Any]] = []
     for operation in operations:
-        item = {key: value for key, value in operation.items()}
+        item = operation_dict(operation)
         name = item.get("op")
         if name == "create_nodes":
             item["nodes"] = [

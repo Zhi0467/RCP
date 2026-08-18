@@ -118,10 +118,10 @@ dispatch, and removing another person from a project or the space entirely
 ([S103](S103-server-operations-are-console-operations.md)). Leaving is your own
 act and lands in S122; removal is somebody else's.
 
-Deferred until the orchestrator exists: campaign and budget binding, spawned
-children recording their parent, the `orchestrate` contract, and the elevated
-profile's actions ([S77](S77-auto-research-stops-at-belief.md),
-[S78](S78-one-budget-one-stop.md)).
+The implemented orchestrator binds campaign, budget, spawned-child lineage, and
+its explicit profile under the
+[Auto-research specification](../specs/auto-research-and-branch-merge.md#episode-scope-budget-and-authority)
+and [S78](S78-one-budget-one-stop.md).
 
 ## Failure means
 

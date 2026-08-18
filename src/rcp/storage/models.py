@@ -27,6 +27,7 @@ from rcp.core.models import (
     AuthorizedHuman,
     normalize_display_name,
 )
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
@@ -195,6 +196,7 @@ AgentTaskKind = Literal[
     "project_chat",
     "paper_coach",
     "auto_research",
+    "branch_merge",
     "episode_report",
 ]
 AgentTaskStatus = Literal[
@@ -297,6 +299,8 @@ class AgentTaskRecord(BaseModel):
     native_session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
+    write_scope_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     estimate_seconds: float = 300.0
     estimate_samples: int = 0
     phase: str = "queued"
@@ -424,6 +428,8 @@ class EpisodeRecord(BaseModel):
     project_id: str
     mode: EpisodeMode
     control_node_id: str | None = None
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
+    graph_base_head: GraphHeadRef | None = None
     root_operation_id: str | None = None
     status: EpisodeStatus
     invocation_ceiling: int = Field(ge=1)
@@ -452,6 +458,13 @@ class EpisodeRecord(BaseModel):
             raise ValueError("an Experiment-loop episode requires its control node")
         if self.mode == "auto_research" and self.control_node_id is not None:
             raise ValueError("an Auto-research episode cannot carry an Experiment control node")
+        if self.graph_target.kind == "main" and self.graph_base_head is not None:
+            raise ValueError("a main-target episode cannot carry a branch base head")
+        if self.graph_target.kind == "branch":
+            if self.graph_base_head is None or self.graph_base_head.target.kind != "main":
+                raise ValueError("a branch-target episode requires its immutable main base head")
+            if self.mode == "auto_research" and self.graph_target.branch_id != self.episode_id:
+                raise ValueError("an Auto-research episode must own its same-id graph branch")
         if self.wrapup_state in {"ready", "failed"} and self.ending is None:
             raise ValueError("a terminal episode wrap-up requires its semantic ending")
         return self
@@ -958,6 +971,7 @@ class ExperimentEpisodeRecord(BaseModel):
     episode_id: str
     project_id: str
     control_node_id: str
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     provider: str | None = None
     execution_machine: str | None = None
     execution_host: str = ""
@@ -1201,6 +1215,7 @@ class WatcherDeliveryRecord(BaseModel):
     chat_id: str
     node_id: str | None = None
     episode_id: str | None = None
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str = ""
     continuation: WatcherContinuation
     status: WatcherStatus = "active"
@@ -1277,6 +1292,7 @@ class ExperimentWatcherResourceRecord(BaseModel):
     project_id: str
     control_node_id: str
     episode_id: str
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str
     wake_task_kind: Literal["node_chat"]
     wake_chat_id: str
@@ -1428,6 +1444,7 @@ _PROJECT_ID_TABLES = (
     "episodes",
     "agent_usage",
     "watchers",
+    "graph_watcher_reconciliation",
     "auto_research_child_work",
     "auto_research_child_experiments",
     "auto_research_child_admissions",

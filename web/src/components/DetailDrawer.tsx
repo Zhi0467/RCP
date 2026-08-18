@@ -1,6 +1,7 @@
 import { Check, FlaskConical, MessageCircle, Minus, PencilLine, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { experimentGuidanceDetail } from "../experimentGuidance";
 import type { GlossaryIndex } from "../glossary";
 import { DraggableWindow } from "./DraggableWindow";
 import { GlossaryText } from "./GlossaryText";
@@ -70,6 +71,9 @@ const ignored = new Set([
   "created_rev",
   "updated_rev",
   "source_refs",
+  "attempts",
+  "current_summary_stale",
+  "next_action_stale",
   "draft_touched",
   "origin",
   "extension_type",
@@ -133,7 +137,19 @@ export function DetailDrawer({
     stagedFieldKeys(draftNodeChange, editableNodeFields(node, ontology)),
   );
   const standingBeforeEdit = useRef<GraphNode["standing"] | null>(null);
-  const editFields = useMemo(() => editableNodeFields(editBase, ontology), [editBase, ontology]);
+  const editFields = useMemo(
+    () =>
+      editableNodeFields(editBase, ontology).map((field) => {
+        if (
+          editBase.type !== "experiment" ||
+          (field.key !== "current_summary" && field.key !== "next_action")
+        ) {
+          return field;
+        }
+        return { ...field, label: experimentGuidanceDetail(editBase, field.key).label };
+      }),
+    [editBase, ontology],
+  );
   const changes = useMemo(
     () => changedNodeFields(editBase, draft, ontology),
     [draft, editBase, ontology],
@@ -247,7 +263,18 @@ export function DetailDrawer({
     onRemove();
   };
   const transitions = nodeBeliefTransitions(node.id, beliefTransitions);
-  const presentation = presentNode(node);
+  const rawPresentation = presentNode(node);
+  const presentation =
+    node.type === "experiment"
+      ? {
+          ...rawPresentation,
+          context: rawPresentation.context.map((item) => {
+            if (item.key !== "current_summary" && item.key !== "next_action") return item;
+            const guidance = experimentGuidanceDetail(node, item.key);
+            return { ...item, label: guidance.label };
+          }),
+        }
+      : rawPresentation;
   const presentedKeys = new Set([
     presentation.key,
     ...presentation.context.map((item) => item.key),
@@ -534,26 +561,6 @@ export function DetailDrawer({
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>
-                  )}
-                  {(node.attempts ?? []).length > 0 && (
-                    <ol className="experiment-attempts" aria-label="Attempts">
-                      {(node.attempts ?? []).map((attempt) => {
-                        const open = ["planned", "submitted", "running"].includes(attempt.status);
-                        return (
-                          <li key={attempt.id} className={open ? "open" : undefined}>
-                            <span className="experiment-attempt-status">{attempt.status}</span>
-                            <span>{attempt.purpose}</span>
-                            {attempt.decision_bundle.length > 0 && (
-                              <span className="experiment-attempt-pins">
-                                {attempt.decision_bundle
-                                  .map((pin) => pin.selected_option)
-                                  .join(", ")}
-                              </span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ol>
                   )}
                   {experimentControl.decision_drift.length > 0 && (
                     <ul className="experiment-decision-drift" aria-label="Decision drift">

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from rcp.core.authority import (
     CREATE_EDGE,
@@ -14,7 +15,7 @@ from rcp.core.authority import (
     permits,
 )
 from rcp.core.materialize import apply_valid_patch
-from rcp.core.models import Decision, GraphState, Patch
+from rcp.core.models import Decision, Experiment, GraphState, Patch
 from rcp.core.validation import validate_patch
 from tests.helpers import seed_patch
 
@@ -59,6 +60,47 @@ def test_create_node_then_update_it_validates_in_written_order() -> None:
     )
 
     assert not report.rejected
+
+
+def test_current_node_update_rejects_nested_scalar_coercion_but_legacy_replay_preserves_it() -> (
+    None
+):
+    state = GraphState(
+        project_truth_scope=["repo-a"],
+        nodes={
+            "exp/strict-update": Experiment(
+                id="exp/strict-update",
+                type="experiment",
+                title="Strict update",
+                objective="Reject coercible update payloads at admission.",
+                invocation_ceiling=3,
+            )
+        },
+    )
+    patch = _agent_patch(
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": "exp/strict-update",
+                    "changes": {"invocation_ceiling": "6"},
+                }
+            ],
+        }
+    )
+
+    admission = validate_patch(state, patch, ["repo-a"])
+
+    assert admission.rejected
+    assert any(message.code == "invalid-node-update" for message in admission.messages)
+    with pytest.raises(ValidationError):
+        apply_valid_patch(state, patch)
+
+    legacy = patch.model_copy(update={"schema_generation": 1})
+    replay = validate_patch(state, legacy, ["repo-a"], mode="replay")
+    updated = apply_valid_patch(state, legacy)
+    assert not replay.rejected
+    assert updated.nodes["exp/strict-update"].invocation_ceiling == 6
 
 
 def test_same_patch_belief_creation_edit_and_connection_stay_direct() -> None:
@@ -115,7 +157,7 @@ def test_existing_protected_relation_derives_the_protected_action() -> None:
     }
     patch = _agent_patch(operation)
 
-    assert operation_actions(state, patch, operation) == frozenset(
+    assert operation_actions(state, patch, patch.ops[0]) == frozenset(
         {RESTRUCTURE_PROTECTED_EPISTEMIC}
     )
 
@@ -174,7 +216,7 @@ def test_generated_meta_relation_cannot_bypass_protected_endpoint_authority(
     state = apply_valid_patch(state, addition)
     patch = _agent_patch(operation)
 
-    assert operation_actions(state, patch, operation) == frozenset(
+    assert operation_actions(state, patch, patch.ops[0]) == frozenset(
         {ordinary_action, RESTRUCTURE_PROTECTED_EPISTEMIC}
     )
     report = validate_patch(state, patch, ["repo-a"])
@@ -297,7 +339,7 @@ def test_later_same_id_creation_cannot_exempt_an_earlier_protected_action(
 
     report = validate_patch(state, patch, ["repo-a"])
 
-    assert expected_action in operation_actions(state, patch, operation)
+    assert expected_action in operation_actions(state, patch, patch.ops[0])
     assert any(
         message.code == "graph-action-refused" and expected_action in message.message
         for message in report.messages
@@ -340,27 +382,27 @@ def test_decision_action_is_declared_by_human_action_not_guessed_from_update_sha
         ops=[operation],
     )
 
-    assert operation_actions(state, ordinary_edit, operation) == frozenset({UPDATE_NODE})
-    assert operation_actions(state, declared_choice, operation) == frozenset({DECIDE_DECISION})
+    assert operation_actions(state, ordinary_edit, ordinary_edit.ops[0]) == frozenset({UPDATE_NODE})
+    assert operation_actions(state, declared_choice, declared_choice.ops[0]) == frozenset(
+        {DECIDE_DECISION}
+    )
 
 
 def test_proposal_intent_cannot_leak_onto_an_ordinary_operation() -> None:
-    report = _validate(
-        {"op": "create_nodes", "nodes": [_research_question("rq/staged-question")]},
-        {
-            "op": "update_nodes",
-            "intent": "content_change",
-            "nodes": [
-                {
-                    "id": "rq/staged-question",
-                    "changes": {"question": "A leaked intent cannot authorize this edit."},
-                }
-            ],
-        },
-    )
-
-    assert report.rejected
-    assert any(message.code == "unexpected-proposal-intent" for message in report.messages)
+    with pytest.raises(ValidationError, match="intent"):
+        _agent_patch(
+            {"op": "create_nodes", "nodes": [_research_question("rq/staged-question")]},
+            {
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [
+                    {
+                        "id": "rq/staged-question",
+                        "changes": {"question": "A leaked intent cannot authorize this edit."},
+                    }
+                ],
+            },
+        )
 
 
 @pytest.mark.parametrize(
@@ -375,9 +417,8 @@ def test_proposal_intent_cannot_leak_onto_an_ordinary_operation() -> None:
 def test_malformed_operations_are_reported_instead_of_escaping_authority_derivation(
     operation,
 ) -> None:
-    report = _validate(operation)
-
-    assert report.rejected
+    with pytest.raises(ValidationError):
+        _agent_patch(operation)
 
 
 def test_ambiguity_operations_are_replay_only_and_preserve_written_order() -> None:

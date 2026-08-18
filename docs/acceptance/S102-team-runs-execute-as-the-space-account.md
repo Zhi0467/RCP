@@ -9,9 +9,9 @@ invariants: [4, 4b, 5]
 
 # Team work runs where the space can reach it, as the space
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Spaces and project homes](../design/spaces-and-project-homes.md#team-runs-execute-as-the-spaces-service-account).
+This scenario is a proposal and is **not yet human-confirmed**. The current
+boundary is in
+[Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 Provider credentials are resolved from the executing process's `$HOME`, not from
 where the provider binary happens to live. RCP launches providers without
@@ -66,9 +66,9 @@ escape: it would have to be done per task contract, because Work needs write
 access where Discuss needs only read.
 
 Concurrency is not at issue and is not re-asserted here. Several members' work
-sharing one provider login is the arrangement RCP already runs under, and
-concurrent agent tasks against one account are covered by
-[S65](S65-concurrent-agent-tasks.md).
+sharing one provider login is the arrangement RCP already runs under; concurrent
+task durability is specified in
+[Durable task lifecycle](../specs/providers-and-containment.md#durable-task-lifecycle).
 
 Remote behavior cannot be verified without a reachable host. This scenario is
 `tier: remote` and must never be reported as passing from a machine that has

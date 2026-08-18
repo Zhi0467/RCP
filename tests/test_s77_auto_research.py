@@ -22,6 +22,7 @@ from rcp.core.models import (
     Patch,
     ResearchQuestion,
 )
+from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
@@ -323,6 +324,10 @@ def _protected_seed_patch() -> Patch:
                         "source": "ev/cause",
                         "target": "hyp/existing",
                         "relation": "supports",
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "strong",
+                        },
                     },
                 ],
             },
@@ -440,6 +445,7 @@ def test_s77_protected_changes_wait_for_human_judgment(manifest, tmp_path: Path)
     authority = AgentTaskAuthority(
         operation_id="auto-research-root",
         project_id="project",
+        apply_target=GraphTargetRef(),
         authorized_by=authorizer,
         dispatch_authority=AgentDispatchAuthority(
             profile="orchestrator",

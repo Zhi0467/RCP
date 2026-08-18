@@ -9,7 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.write_scope import registered_repository_roots
 from rcp.background import AgentTaskExecution
+from rcp.runs.episode_reconcile import EpisodeReconciler
 from rcp.runs.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.skill_registry import official_registry
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, EpisodeWrapupRecord, ProjectRecord
@@ -63,6 +65,103 @@ class _ReportLauncher:
         yield AgentEvent(event="session", session_id="native-session")
         yield AgentEvent(event="answer", text="Report written.")
         yield AgentEvent(event="done")
+
+
+@pytest.mark.parametrize(
+    "wrapup_state",
+    ["ready", "failed", "skipped", "legacy_unavailable"],
+)
+def test_auto_research_reconciliation_keeps_terminal_wrapup_immutable(
+    monkeypatch,
+    wrapup_state,
+) -> None:
+    episode = SimpleNamespace(
+        mode="auto_research",
+        stop_requested_at=None,
+        wrapup_state=wrapup_state,
+    )
+    store = SimpleNamespace(
+        episode=lambda _episode_id: episode,
+        episode_tasks=lambda *_args, **_kwargs: [],
+    )
+    background = SimpleNamespace(
+        start_episode_report=lambda _episode_id: pytest.fail("terminal report restarted")
+    )
+    monkeypatch.setattr(
+        "rcp.runs.episode_reconcile.auto_research_wrapup_spec",
+        lambda *_args, **_kwargs: pytest.fail("terminal receipt rebuilt"),
+    )
+
+    EpisodeReconciler(store, background, logger=SimpleNamespace()).reconcile_auto_research_episode(
+        "episode",
+        source="watcher poll",
+    )
+
+
+@pytest.mark.parametrize("wrapup_state", ["pending", "running"])
+def test_auto_research_reconciliation_restarts_persisted_wrapup_without_rebuilding(
+    monkeypatch,
+    wrapup_state,
+) -> None:
+    episode = SimpleNamespace(
+        mode="auto_research",
+        stop_requested_at=None,
+        wrapup_state=wrapup_state,
+    )
+    store = SimpleNamespace(
+        episode=lambda _episode_id: episode,
+        episode_tasks=lambda *_args, **_kwargs: [],
+    )
+    started: list[str] = []
+    background = SimpleNamespace(start_episode_report=started.append)
+    monkeypatch.setattr(
+        "rcp.runs.episode_reconcile.auto_research_wrapup_spec",
+        lambda *_args, **_kwargs: pytest.fail("persisted receipt rebuilt"),
+    )
+
+    EpisodeReconciler(store, background, logger=SimpleNamespace()).reconcile_auto_research_episode(
+        "episode",
+        source="watcher poll",
+    )
+
+    assert started == ["episode"]
+
+
+def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure() -> None:
+    episode = SimpleNamespace(
+        mode="auto_research",
+        stop_requested_at=None,
+        wrapup_state="pending",
+    )
+    receipts: list[tuple[object, ...]] = []
+    store = SimpleNamespace(
+        episode=lambda _episode_id: episode,
+        episode_tasks=lambda *_args, **_kwargs: [],
+        record_agent_task_receipt=lambda *args, **kwargs: receipts.append((*args, kwargs)),
+    )
+
+    def fail_restart(_episode_id: str) -> None:
+        raise ValueError("allocation is unavailable")
+
+    warnings: list[tuple[object, ...]] = []
+    background = SimpleNamespace(start_episode_report=fail_restart)
+    logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
+
+    EpisodeReconciler(store, background, logger=logger).reconcile_auto_research_episode(
+        "episode",
+        source="startup",
+        operation_id="operation",
+    )
+
+    assert len(warnings) == 1
+    assert warnings[0][:3] == (
+        "Could not restart episode report for %s after %s: %s",
+        "episode",
+        "startup",
+    )
+    assert str(warnings[0][3]) == "allocation is unavailable"
+    assert receipts[0][0:2] == ("operation", "episode_report_reconciliation_failed")
+    assert receipts[0][2]["detail"] == "allocation is unavailable"
 
 
 def _setup_report(
@@ -178,7 +277,19 @@ def _setup_report(
         stage_host=None,
         stage_root=str(stage),
     )
-    return SimpleNamespace(manifest=manifest), store, request, execution, stage
+    return (
+        SimpleNamespace(
+            manifest=manifest,
+            repository_ownership_inventory=lambda *, project_id: registered_repository_roots(
+                manifest,
+                project_id=project_id,
+            ),
+        ),
+        store,
+        request,
+        execution,
+        stage,
+    )
 
 
 async def _events(stream) -> list[AgentEvent]:
@@ -215,7 +326,9 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
     assert launcher.calls == 1
     assert launcher.kwargs[0]["session_id"] == "native-session"
     assert launcher.kwargs[0]["read_dirs"] == [stage / "inputs"]
-    assert launcher.kwargs[0]["write_dirs"] == [stage]
+    assert launcher.kwargs[0]["write_dirs"] == []
+    assert launcher.kwargs[0]["write_scope"].writable_roots == [str(stage)]
+    assert launcher.kwargs[0]["write_scope"].repository_roots == []
     assert launcher.kwargs[0]["capability"] == "work_auto"
     contract = launcher.contracts[0]
     assert "immutable compact episode receipt" in contract

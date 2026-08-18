@@ -9,10 +9,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from rcp.agents.schema import parse_agent_patch_json
+from rcp.agents.schema import (
+    CreateEdgesOperation as AgentCreateEdgesOperation,
+)
+from rcp.agents.schema import (
+    CreateProposalsOperation as AgentCreateProposalsOperation,
+)
+from rcp.agents.schema import (
+    UpdateNodesOperation as AgentUpdateNodesOperation,
+)
+from rcp.agents.schema import (
+    parse_agent_patch_json,
+)
 from rcp.background import AgentTaskExecution
 from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
+from rcp.core.operations import UpdateNodesOperation as CoreUpdateNodesOperation
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.runs.shared import _stage_json_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
@@ -124,10 +137,14 @@ class StagedExperimentWatcherResource:
         }
 
 
-def experiment_watcher_output_name(control_node_id: str) -> str:
+def experiment_watcher_output_name(
+    control_node_id: str,
+    graph_target: GraphTargetRef | None = None,
+) -> str:
     """Return the stable physical filename that selects one Experiment resource."""
 
-    digest = hashlib.sha256(control_node_id.encode("utf-8")).hexdigest()
+    target = graph_target or GraphTargetRef()
+    digest = hashlib.sha256(f"{target.key}\0{control_node_id}".encode()).hexdigest()
     return f"{_EXPERIMENT_WATCH_OUTPUT_PREFIX}{digest}{_EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
 
 
@@ -183,7 +200,10 @@ def clear_stale_experiment_watcher_outputs(
             raise StateUnavailable(f"could not inspect stale chat watcher outputs: {exc}") from exc
     # Exact current paths are removed even when a previous agent replaced one
     # with a symlink; the remote regular-file listing deliberately omits symlinks.
-    names.update(experiment_watcher_output_name(item.control_node_id) for item in resources)
+    names.update(
+        experiment_watcher_output_name(item.control_node_id, item.graph_target)
+        for item in resources
+    )
     for name in sorted(names):
         if remote_stage is not None:
             remote_stage.remove_workspace_file(name)
@@ -356,15 +376,15 @@ def experiment_watcher_delivery_request(
     )
 
 
-def _completion_problem(operations: list[dict[str, object]], control_node_id: str) -> str | None:
+def _completion_problem(operations: list[object], control_node_id: str) -> str | None:
     for operation in operations:
-        if operation.get("op") != "update_nodes":
+        if not isinstance(operation, (AgentUpdateNodesOperation, CoreUpdateNodesOperation)):
             continue
-        for update in operation.get("nodes", []):
-            if not isinstance(update, dict) or update.get("id") != control_node_id:
+        for update in operation.nodes:
+            if update.id != control_node_id:
                 continue
-            changes = update.get("changes")
-            if not isinstance(changes, dict) or changes.get("status") != "completed":
+            changes = update.changes
+            if changes.get("status") != "completed":
                 continue
             next_action = changes.get("next_action")
             if isinstance(next_action, str) and next_action.strip():
@@ -375,8 +395,7 @@ def _completion_problem(operations: list[dict[str, object]], control_node_id: st
 def validate_experiment_completion(patch: Patch, control_node_id: str) -> None:
     """Reject a terminal claim that still names unfinished Experiment work."""
 
-    operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
-    problem = _completion_problem(operations, control_node_id)
+    problem = _completion_problem(list(patch.ops), control_node_id)
     if problem is not None:
         raise ValueError(problem)
 
@@ -390,8 +409,7 @@ def experiment_exit_problem(patch_text: str | None, control_node_id: str) -> str
         patch = parse_agent_patch_json(patch_text)
     except ValueError:
         return None
-    operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
-    return _completion_problem(operations, control_node_id)
+    return _completion_problem(list(patch.ops), control_node_id)
 
 
 def experiment_loop_semantic_ending(
@@ -406,32 +424,28 @@ def experiment_loop_semantic_ending(
         patch = parse_agent_patch_json(patch_text)
     except ValueError:
         return None
-    operations = patch.model_dump(mode="python", exclude_none=True)["ops"]
+    operations = list(patch.ops)
     completed = _completion_problem(operations, control_node_id) is None and any(
-        update.get("id") == control_node_id
-        and isinstance(changes := update.get("changes"), dict)
-        and changes.get("status") in _EXIT_STATUSES
+        update.id == control_node_id and update.changes.get("status") in _EXIT_STATUSES
         for operation in operations
-        if operation.get("op") == "update_nodes"
-        for update in operation.get("nodes", [])
-        if isinstance(update, dict)
+        if isinstance(operation, AgentUpdateNodesOperation)
+        for update in operation.nodes
     )
     pause_signals: list[ExperimentLoopEndingSignal] = []
-    if any(op.get("op") == "create_proposals" and op.get("proposals") for op in operations):
+    if any(
+        isinstance(operation, AgentCreateProposalsOperation) and operation.proposals
+        for operation in operations
+    ):
         pause_signals.append("proposal_created")
-    for op in operations:
-        if op.get("op") == "update_nodes":
-            for update in op.get("nodes", []):
-                changes = update.get("changes", {})
-                if (
-                    update.get("id") != control_node_id
-                    and isinstance(changes, dict)
-                    and changes.get("status") in {"ready", "revisit"}
-                ):
+    for operation in operations:
+        if isinstance(operation, AgentUpdateNodesOperation):
+            for update in operation.nodes:
+                changes = update.changes
+                if update.id != control_node_id and changes.get("status") in {"ready", "revisit"}:
                     pause_signals.append("decision_awaits_human")
-        if op.get("op") == "create_edges" and any(
-            edge.get("source") == control_node_id and edge.get("relation") == "blocked_by"
-            for edge in op.get("edges", [])
+        if isinstance(operation, AgentCreateEdgesOperation) and any(
+            edge.source == control_node_id and edge.relation == "blocked_by"
+            for edge in operation.edges
         ):
             pause_signals.append("blocker_linked")
     signals = tuple(dict.fromkeys(pause_signals))
@@ -648,15 +662,13 @@ def _receipt_control_result(
     except ValueError:
         patch = None
     if patch is not None:
-        for operation in patch.model_dump(mode="python", exclude_none=True)["ops"]:
-            if operation.get("op") != "update_nodes":
+        for operation in patch.ops:
+            if not isinstance(operation, AgentUpdateNodesOperation):
                 continue
-            for update in operation.get("nodes", []):
-                if not isinstance(update, dict) or update.get("id") != control_node_id:
+            for update in operation.nodes:
+                if update.id != control_node_id:
                     continue
-                changes = update.get("changes")
-                if not isinstance(changes, dict):
-                    continue
+                changes = update.changes
                 if isinstance(changes.get("attempts"), list):
                     attempts = changes["attempts"]
                 if "current_summary" in changes:
@@ -812,6 +824,8 @@ def persist_experiment_watchers_idempotently(
                 origin_task_kind=binding.origin_task_kind,
                 chat_id=binding.chat_id,
                 node_id=binding.node_id,
+                episode_id=binding.episode_id,
+                graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
@@ -869,6 +883,8 @@ def persist_experiment_watchers_idempotently(
                 origin_task_kind=binding.origin_task_kind,
                 chat_id=binding.chat_id,
                 node_id=binding.node_id,
+                episode_id=binding.episode_id,
+                graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
                 condition=condition,
                 armed_revision=armed_revision,
@@ -948,6 +964,7 @@ def _watcher_state(
         record
         for record in all_records
         if record.continuation.patch_kind == "experiment_loop"
+        and record.graph_target == task.graph_target
         and record.continuation.control_node_id == control_node_id
         and (
             record.watcher_id in delivered
@@ -1026,7 +1043,10 @@ async def stage_chat_experiment_watcher_resources(
     task = execution.store.agent_task(execution.operation_id)
     if task is None:
         raise ValueError("The chat operation is no longer available for watcher resource staging.")
-    all_resources = execution.store.experiment_watcher_resources(task.project_id)
+    all_resources = execution.store.experiment_watcher_resources(
+        task.project_id,
+        graph_target=task.graph_target,
+    )
     if clear_stale:
         clear_stale_experiment_watcher_outputs(workspace, remote_stage, all_resources)
 
@@ -1054,9 +1074,18 @@ async def stage_chat_experiment_watcher_resources(
                 for resource in visible
             )
         )
-        refreshed = visible_resources(execution.store.experiment_watcher_resources(task.project_id))
-        if {item.control_node_id: item.watcher_snapshot_token for item in visible} == {
-            item.control_node_id: item.watcher_snapshot_token for item in refreshed
+        refreshed = visible_resources(
+            execution.store.experiment_watcher_resources(
+                task.project_id,
+                graph_target=task.graph_target,
+            )
+        )
+        if {
+            (item.control_node_id, item.graph_target.key): item.watcher_snapshot_token
+            for item in visible
+        } == {
+            (item.control_node_id, item.graph_target.key): item.watcher_snapshot_token
+            for item in refreshed
         }:
             break
         visible = refreshed
@@ -1066,7 +1095,9 @@ async def stage_chat_experiment_watcher_resources(
         )
     staged: list[StagedExperimentWatcherResource] = []
     for resource, watcher_state in zip(visible, watcher_states, strict=True):
-        digest = hashlib.sha256(resource.control_node_id.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(
+            f"{resource.graph_target.key}\0{resource.control_node_id}".encode()
+        ).hexdigest()[:16]
         watcher_state_path = _stage_json_task_input(
             local_stage,
             remote_stage,
@@ -1078,7 +1109,11 @@ async def stage_chat_experiment_watcher_resources(
                 resource=resource,
                 watcher_state_path=watcher_state_path,
                 watch_path=str(
-                    workspace / experiment_watcher_output_name(resource.control_node_id)
+                    workspace
+                    / experiment_watcher_output_name(
+                        resource.control_node_id,
+                        resource.graph_target,
+                    )
                 ),
             )
         )

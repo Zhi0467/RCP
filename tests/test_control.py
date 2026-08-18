@@ -152,6 +152,7 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
         ops=[
             {
                 "op": "update_nodes",
+                "intent": "content_change",
                 "nodes": [{"id": DECISION_ID, "changes": {"selected_option": "8xA100"}}],
             }
         ],
@@ -200,7 +201,16 @@ def _belief_patch_ops(
             "op": "create_edges",
             "edges": [
                 {"source": EXPERIMENT_ID, "target": "ev/result", "relation": "produces"},
-                {"source": "ev/result", "target": "hyp/target", "relation": relation},
+                {
+                    "source": "ev/result",
+                    "target": "hyp/target",
+                    "relation": relation,
+                    "assessment": {
+                        "relevance": "direct",
+                        "weight": "moderate",
+                        "qualifications": [],
+                    },
+                },
             ],
         },
         {
@@ -290,6 +300,7 @@ def test_a_proposal_that_only_references_a_decision_does_not_gate_the_run() -> N
         ops=[
             {
                 "op": "update_nodes",
+                "intent": "content_change",
                 "nodes": [{"id": "hyp/target", "changes": {"scope": "Narrower."}}],
             }
         ],
@@ -570,24 +581,28 @@ def test_loop_patch_may_create_evidence_blockers_and_scoped_evidence_edges() -> 
         "observation": "The run completed.",
         "origin": "internal_run",
     }
-    valid = _patch(
-        [
-            {"op": "create_nodes", "nodes": [evidence]},
-            {
-                "op": "create_edges",
-                "edges": [
-                    {
-                        "source": evidence["id"],
-                        "target": "hyp/target",
-                        "relation": "supports",
-                    }
-                ],
-            },
-        ]
-    )
+    valid_ops = [
+        {"op": "create_nodes", "nodes": [evidence]},
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "source": evidence["id"],
+                    "target": "hyp/target",
+                    "relation": "supports",
+                    "assessment": {
+                        "relevance": "direct",
+                        "weight": "moderate",
+                        "qualifications": [],
+                    },
+                }
+            ],
+        },
+    ]
+    valid = _patch(valid_ops)
     assert not validate_patch(state, valid, ["repo"]).rejected
 
-    invalid = deepcopy(valid.ops)
+    invalid = deepcopy(valid_ops)
     invalid[0]["nodes"] = [
         {
             "id": "hyp/new",
@@ -617,26 +632,25 @@ def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None
         "observation": "The run completed.",
         "origin": "internal_run",
     }
-    handoffs = _patch(
-        [
-            {"op": "create_nodes", "nodes": [evidence]},
-            {
-                "op": "create_edges",
-                "edges": [
-                    {"source": EXPERIMENT_ID, "target": evidence["id"], "relation": "produces"},
-                    {"source": evidence["id"], "target": DECISION_ID, "relation": "informs"},
-                    {
-                        "source": evidence["id"],
-                        "target": "blk/capacity",
-                        "relation": "addresses",
-                    },
-                ],
-            },
-        ]
-    )
+    handoff_ops = [
+        {"op": "create_nodes", "nodes": [evidence]},
+        {
+            "op": "create_edges",
+            "edges": [
+                {"source": EXPERIMENT_ID, "target": evidence["id"], "relation": "produces"},
+                {"source": evidence["id"], "target": DECISION_ID, "relation": "informs"},
+                {
+                    "source": evidence["id"],
+                    "target": "blk/capacity",
+                    "relation": "addresses",
+                },
+            ],
+        },
+    ]
+    handoffs = _patch(handoff_ops)
     assert not validate_patch(state, handoffs, ["repo"]).rejected
 
-    wrong_source = deepcopy(handoffs.ops)
+    wrong_source = deepcopy(handoff_ops)
     wrong_source[1]["edges"][1] = {
         "source": EXPERIMENT_ID,
         "target": DECISION_ID,
@@ -646,7 +660,7 @@ def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None
         validate_patch(state, _patch(wrong_source), ["repo"])
     )
 
-    wrong_target = deepcopy(handoffs.ops)
+    wrong_target = deepcopy(handoff_ops)
     wrong_target[1]["edges"][2] = {
         "source": evidence["id"],
         "target": "hyp/target",
@@ -672,23 +686,22 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
         "title": "Exhausted",
         "description": "The attempt ceiling was reached.",
     }
-    attached = _patch(
-        [
-            {"op": "create_nodes", "nodes": [evidence, blocker]},
-            {
-                "op": "create_edges",
-                "edges": [
-                    {"source": EXPERIMENT_ID, "target": "ev/result", "relation": "produces"},
-                    {"source": EXPERIMENT_ID, "target": "blk/exhausted", "relation": "blocked_by"},
-                ],
-            },
-        ]
-    )
+    attached_ops = [
+        {"op": "create_nodes", "nodes": [evidence, blocker]},
+        {
+            "op": "create_edges",
+            "edges": [
+                {"source": EXPERIMENT_ID, "target": "ev/result", "relation": "produces"},
+                {"source": EXPERIMENT_ID, "target": "blk/exhausted", "relation": "blocked_by"},
+            ],
+        },
+    ]
+    attached = _patch(attached_ops)
     assert not validate_patch(state, attached, ["repo"]).rejected
 
     # Attaching a node the patch did not create would let the loop claim
     # someone else's evidence or block itself on an unrelated blocker.
-    foreign = deepcopy(attached.ops)
+    foreign = deepcopy(attached_ops)
     foreign[1]["edges"] = [
         {"source": EXPERIMENT_ID, "target": "blk/capacity", "relation": "blocked_by"}
     ]
@@ -697,7 +710,7 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
     )
 
     # And it may only attach to its own experiment.
-    foreign_source = deepcopy(attached.ops)
+    foreign_source = deepcopy(attached_ops)
     foreign_source[1]["edges"] = [
         {"source": "exp/other", "target": "ev/result", "relation": "produces"}
     ]
@@ -756,6 +769,11 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
                     "source": "ev/proposal",
                     "target": "hyp/target",
                     "relation": "supports",
+                    "assessment": {
+                        "relevance": "direct",
+                        "weight": "moderate",
+                        "qualifications": [],
+                    },
                 }
             ],
         },
@@ -808,6 +826,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
     hidden_foreign_update["ops"] = [
         {
             "op": "update_nodes",
+            "intent": "content_change",
             "nodes": [{"id": "blk/capacity", "changes": {"status": "resolved"}}],
         }
     ]
@@ -850,56 +869,43 @@ def test_proposal_only_attempt_requires_a_proposal_in_the_same_patch() -> None:
     assert "experiment-loop-proposal-attempt" in _codes(validate_patch(_state(), patch, ["repo"]))
 
     launched_proposal_attempt = _attempt(attempt_kind="proposal_only", status="completed")
-    launched = _patch(
-        [
-            {
-                "op": "update_nodes",
-                "nodes": [
-                    {
-                        "id": EXPERIMENT_ID,
-                        "changes": {"attempts": [launched_proposal_attempt]},
-                    }
-                ],
-            },
-            {
-                "op": "create_proposals",
-                "proposals": [
-                    {
-                        "id": "prop/with-job",
-                        "title": "Change resources",
-                        "card": {},
-                        "ops": [
-                            {
-                                "op": "update_nodes",
-                                "nodes": [{"id": DECISION_ID, "changes": {"status": "revisit"}}],
-                            }
-                        ],
-                        "related_node_ids": [DECISION_ID],
-                        "base_rev": 3,
-                    }
-                ],
-            },
-        ]
-    )
+    launched_ops = [
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": EXPERIMENT_ID,
+                    "changes": {"attempts": [launched_proposal_attempt]},
+                }
+            ],
+        },
+        {
+            "op": "create_proposals",
+            "proposals": [
+                {
+                    "id": "prop/with-job",
+                    "title": "Change resources",
+                    "card": {},
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "intent": "content_change",
+                            "nodes": [{"id": DECISION_ID, "changes": {"status": "revisit"}}],
+                        }
+                    ],
+                    "related_node_ids": [DECISION_ID],
+                    "base_rev": 3,
+                }
+            ],
+        },
+    ]
+    launched = _patch(launched_ops)
     assert "experiment-loop-proposal-job" in _codes(validate_patch(_state(), launched, ["repo"]))
 
     nonterminal_attempt = attempt.model_copy(update={"status": "running"})
-    nonterminal = launched.model_copy(
-        update={
-            "ops": [
-                {
-                    "op": "update_nodes",
-                    "nodes": [
-                        {
-                            "id": EXPERIMENT_ID,
-                            "changes": {"attempts": [nonterminal_attempt]},
-                        }
-                    ],
-                },
-                launched.ops[1],
-            ]
-        }
-    )
+    nonterminal_ops = deepcopy(launched_ops)
+    nonterminal_ops[0]["nodes"][0]["changes"]["attempts"] = [nonterminal_attempt]
+    nonterminal = _patch(nonterminal_ops)
     assert "experiment-loop-proposal-status" in _codes(
         validate_patch(_state(), nonterminal, ["repo"])
     )

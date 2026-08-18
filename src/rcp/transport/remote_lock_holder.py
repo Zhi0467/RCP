@@ -22,6 +22,7 @@ import re
 import shutil
 import stat
 import sys
+import uuid
 from pathlib import Path
 
 
@@ -30,6 +31,55 @@ def relative_path(value: str) -> Path:
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"unsafe relative path: {value}")
     return path
+
+
+def validate_branch_path(path: Path) -> None:
+    if not path.parts or path.parts[0] != "branches":
+        return
+    if len(path.parts) not in {3, 4}:
+        raise ValueError(f"unsafe branch path: {path}")
+    try:
+        branch_id = uuid.UUID(path.parts[1])
+    except ValueError as exc:
+        raise ValueError(f"unsafe branch path: {path}") from exc
+    if str(branch_id) != path.parts[1] or branch_id.version != 4:
+        raise ValueError(f"unsafe branch path: {path}")
+    if len(path.parts) == 3 and path.parts[2] not in {
+        "branch.json",
+        "graph.json",
+        "glossary.json",
+        "proposals.json",
+        "coverage.json",
+        "research.md",
+    }:
+        raise ValueError(f"unsafe branch path: {path}")
+    if len(path.parts) == 4:
+        if path.parts[2] == "patches" and re.fullmatch(r"[0-9]{6}[.]json", path.parts[3]):
+            return
+        if path.parts[2] == "merges" and re.fullmatch(r"[a-f0-9]{64}[.]json", path.parts[3]):
+            return
+        raise ValueError(f"unsafe branch path: {path}")
+
+
+def require_safe_branch_parents(root: Path, path: Path) -> None:
+    validate_branch_path(path)
+    if not path.parts or path.parts[0] != "branches":
+        return
+    for parent in (root / "branches", root / "branches" / path.parts[1]):
+        try:
+            mode = os.lstat(parent).st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"unsafe branch parent: {parent}")
+    if len(path.parts) == 4:
+        leaf_parent = root / "branches" / path.parts[1] / path.parts[2]
+        try:
+            mode = os.lstat(leaf_parent).st_mode
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"unsafe branch parent: {leaf_parent}")
 
 
 def apply_staged(command: dict, lock_path: str) -> dict:
@@ -45,6 +95,10 @@ def apply_staged(command: dict, lock_path: str) -> dict:
     paths = [relative_path(value) for value in command["paths"]]
     commit_value = command.get("commit")
     commit = relative_path(commit_value) if commit_value is not None else None
+    for path in paths:
+        require_safe_branch_parents(root, path)
+    if commit is not None:
+        require_safe_branch_parents(root, commit)
     commit_is_directory = bool(command.get("commit_is_directory"))
     ordinary = [
         path
@@ -62,6 +116,17 @@ def apply_staged(command: dict, lock_path: str) -> dict:
                     if commit_is_directory:
                         shutil.rmtree(commit_source)
                     else:
+                        if not stat.S_ISREG(os.lstat(commit_target).st_mode) or not stat.S_ISREG(
+                            os.lstat(commit_source).st_mode
+                        ):
+                            raise FileExistsError(
+                                f"history commit path has an incompatible type: {commit_target}"
+                            )
+                        if commit_target.read_bytes() != commit_source.read_bytes():
+                            raise FileExistsError(
+                                f"history commit content disagrees with existing file: "
+                                f"{commit_target}"
+                            )
                         commit_source.unlink()
             elif commit_source.exists():
                 os.replace(commit_source, commit_target)

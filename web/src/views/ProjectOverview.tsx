@@ -1,4 +1,5 @@
 import { ArrowUpRight } from "lucide-react";
+import { currentExperimentGuidance } from "../experimentGuidance";
 import type { AppView, GraphNode, GraphState, ProjectSnapshot, RevisionSummary } from "../types";
 
 interface Props {
@@ -25,7 +26,12 @@ export function ProjectOverview({
   const latestNode = [...nodes].sort((left, right) => right.updated_rev - left.updated_rev)[0];
   const blockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
   const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
-  const nextExperiment = activeExperiments.find((node) => node.next_action);
+  const nextExperiment = activeExperiments.find((node) =>
+    currentExperimentGuidance(node, "next_action"),
+  );
+  const nextExperimentAction = nextExperiment
+    ? currentExperimentGuidance(nextExperiment, "next_action")
+    : null;
   const question =
     project.primary_question?.question ||
     project.primary_question?.title ||
@@ -96,7 +102,7 @@ export function ProjectOverview({
       number: "06",
       prompt: "What happens next?",
       answer: String(
-        nextExperiment?.next_action ||
+        nextExperimentAction ||
           (!project.last_refresh_at
             ? "Seed the graph from the selected truth repositories."
             : "Refresh when new research work lands."),

@@ -32,6 +32,7 @@ from rcp.agents.command_mailbox import (
 )
 from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
 from rcp.agents.prompts import PromptFactory
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
@@ -59,8 +60,8 @@ from rcp.runs.auto_research_mail import (
 from rcp.runs.chat import (
     _chat_read_dirs,
     _clear_stale_turn_handoffs,
+    _project_write_scope,
     _read_chat_patch,
-    _work_write_dirs,
 )
 from rcp.runs.shared import (
     _existing_patch_digest,
@@ -257,12 +258,17 @@ async def stream_auto_research_orchestrator_run(
                 service,
                 turn.request.run_on or "",
             )
-            write_dirs = _work_write_dirs(
+            write_scope = _project_write_scope(
                 context,
                 service,
                 turn.request.run_on or "",
-                remote=stage.remote is not None,
+                workspace=stage.workspace,
+                remote_stage=stage.remote,
+                data_dir=data_dir,
+                execution=execution,
+                capability="orchestrate",
             )
+            write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
                 _existing_patch_digest(stage.workspace, stage.remote)
                 if execution.continuation == "retry"
@@ -275,6 +281,7 @@ async def stream_auto_research_orchestrator_run(
                 contract_path=contract_path,
                 remote=bool(stage.execution_host),
                 resumed=turn.binding.native_session_id is not None,
+                write_scope=write_scope,
                 continuation=execution.continuation,
                 extra={
                     "surface": "auto_research",
@@ -298,6 +305,7 @@ async def stream_auto_research_orchestrator_run(
                     session_id=turn.binding.native_session_id,
                     read_dirs=read_dirs,
                     write_dirs=write_dirs,
+                    write_scope=write_scope,
                     execution_host=stage.execution_host,
                     execution=execution,
                     remote_stage=stage.remote,
@@ -358,6 +366,7 @@ async def stream_auto_research_orchestrator_run(
             schema_path=schema_path,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
+            write_scope=write_scope,
             provider_binary=stage.provider_binary,
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
@@ -495,12 +504,17 @@ async def stream_auto_research_worker_run(
                 service,
                 turn.request.run_on or "",
             )
-            write_dirs = _work_write_dirs(
+            write_scope = _project_write_scope(
                 context,
                 service,
                 turn.request.run_on or "",
-                remote=stage.remote is not None,
+                workspace=stage.workspace,
+                remote_stage=stage.remote,
+                data_dir=data_dir,
+                execution=execution,
+                capability="work_auto",
             )
+            write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
                 _existing_patch_digest(stage.workspace, stage.remote)
                 if execution.continuation == "retry"
@@ -513,6 +527,7 @@ async def stream_auto_research_worker_run(
                 contract_path=contract_path,
                 remote=bool(stage.execution_host),
                 resumed=turn.binding.native_session_id is not None,
+                write_scope=write_scope,
                 continuation=execution.continuation,
                 extra={
                     "surface": "auto_research",
@@ -538,6 +553,7 @@ async def stream_auto_research_worker_run(
                     session_id=turn.binding.native_session_id,
                     read_dirs=read_dirs,
                     write_dirs=write_dirs,
+                    write_scope=write_scope,
                     execution_host=stage.execution_host,
                     execution=execution,
                     remote_stage=stage.remote,
@@ -594,6 +610,7 @@ async def stream_auto_research_worker_run(
             schema_path=schema_path,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
+            write_scope=write_scope,
             provider_binary=stage.provider_binary,
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
@@ -1652,6 +1669,7 @@ async def _settle_worker_patch(
     schema_path: str,
     read_dirs: list[Path],
     write_dirs: list[Path],
+    write_scope: ProjectWriteScope,
     provider_binary: str | None,
     native_session_id: str,
     retry_patch_digest: str | None,
@@ -1826,6 +1844,7 @@ async def _settle_worker_patch(
                 contract_path=correction_path,
                 remote=bool(stage.execution_host),
                 resumed=True,
+                write_scope=write_scope,
                 continuation="graph_correction",
                 extra={
                     "surface": "auto_research",
@@ -1851,6 +1870,7 @@ async def _settle_worker_patch(
                     session_id=native_session_id,
                     read_dirs=read_dirs,
                     write_dirs=write_dirs,
+                    write_scope=write_scope,
                     execution_host=stage.execution_host,
                     execution=execution,
                     remote_stage=stage.remote,
@@ -1973,6 +1993,7 @@ async def _settle_orchestrator_patch(
     schema_path: str,
     read_dirs: list[Path],
     write_dirs: list[Path],
+    write_scope: ProjectWriteScope,
     provider_binary: str | None,
     native_session_id: str,
     retry_patch_digest: str | None,
@@ -1989,6 +2010,7 @@ async def _settle_orchestrator_patch(
         schema_path=schema_path,
         read_dirs=read_dirs,
         write_dirs=write_dirs,
+        write_scope=write_scope,
         provider_binary=provider_binary,
         native_session_id=native_session_id,
         retry_patch_digest=retry_patch_digest,

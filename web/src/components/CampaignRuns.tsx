@@ -4,6 +4,7 @@ import {
   ExternalLink,
   LoaderCircle,
   MessageCircle,
+  Network,
   Play,
   RotateCcw,
   Send,
@@ -34,6 +35,7 @@ interface Props {
   onInspectTask: (operationId: string) => void;
   onLoadMessages: (episodeId: string) => Promise<void>;
   onStop: (episodeId: string) => Promise<void>;
+  onMerge: (episodeId: string) => Promise<void>;
   onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
@@ -48,6 +50,7 @@ export function AutoResearchEpisodes({
   onInspectTask,
   onLoadMessages,
   onStop,
+  onMerge,
   onReauthorize,
   onSendMessage,
   onOperateTask,
@@ -71,6 +74,7 @@ export function AutoResearchEpisodes({
             onInspectTask={onInspectTask}
             onLoadMessages={onLoadMessages}
             onStop={onStop}
+            onMerge={onMerge}
             onReauthorize={onReauthorize}
             onSendMessage={onSendMessage}
             onOperateTask={onOperateTask}
@@ -92,6 +96,7 @@ function EpisodeRow({
   onInspectTask,
   onLoadMessages,
   onStop,
+  onMerge,
   onReauthorize,
   onSendMessage,
   onOperateTask,
@@ -105,6 +110,7 @@ function EpisodeRow({
   onInspectTask: (operationId: string) => void;
   onLoadMessages: (episodeId: string) => Promise<void>;
   onStop: (episodeId: string) => Promise<void>;
+  onMerge: (episodeId: string) => Promise<void>;
   onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
@@ -133,6 +139,7 @@ function EpisodeRow({
     Number.isSafeInteger(parsedAdditionalInvocations) &&
     parsedAdditionalInvocations >= 1;
   const stopBusy = busyAction === `stop:${episode.episode_id}`;
+  const mergeBusy = busyAction === `merge:${episode.episode_id}`;
   const reauthorizeBusy = busyAction === `reauthorize:${episode.episode_id}`;
   const messageBusy = busyAction === `message:${episode.episode_id}`;
   const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
@@ -184,6 +191,16 @@ function EpisodeRow({
     setLocalError(null);
     try {
       await onOperateTask(taskControl.task, taskControl.kind);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const mergeToMain = async () => {
+    if (!episode.graph_branch?.merge_eligible || anotherActionBusy) return;
+    setLocalError(null);
+    try {
+      await onMerge(episode.episode_id);
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
     }
@@ -316,6 +333,66 @@ function EpisodeRow({
             <strong>{recommendation.label}</strong>
           </div>
 
+          {episode.graph_branch && (
+            <section
+              className={`campaign-graph-branch ${episode.graph_branch.merge_state}`}
+              aria-label="Episode graph branch"
+            >
+              <header>
+                <span className="campaign-branch-identity">
+                  <span className="eyebrow">Graph branch</span>
+                  <strong title={episode.graph_branch.branch_id}>
+                    {compactIdentity(episode.graph_branch.branch_id)}
+                  </strong>
+                </span>
+                <span className={`status-pill branch-${episode.graph_branch.merge_state}`}>
+                  {branchMergeStateLabel(episode.graph_branch.merge_state)}
+                </span>
+              </header>
+              <div className="campaign-branch-heads">
+                <GraphHeadFact label="Base on main" head={episode.graph_branch.base_head} />
+                <span className="campaign-branch-head-path" aria-hidden="true" />
+                <GraphHeadFact label="Branch head" head={episode.graph_branch.head} />
+                {episode.graph_branch.latest_successful_merge && (
+                  <GraphHeadFact
+                    label={
+                      episode.graph_branch.latest_successful_merge.outcome === "committed"
+                        ? "Merged on main"
+                        : "Main unchanged"
+                    }
+                    head={episode.graph_branch.latest_successful_merge.result_main_head}
+                  />
+                )}
+              </div>
+              {(episode.graph_branch.merge_state === "needs_action" ||
+                episode.graph_branch.merge_state === "failed") &&
+                episode.graph_branch.merge_diagnostic && (
+                  <div
+                    className={`campaign-branch-diagnostic ${episode.graph_branch.merge_state}`}
+                    role={episode.graph_branch.merge_state === "failed" ? "alert" : "status"}
+                  >
+                    {episode.graph_branch.merge_diagnostic}
+                  </div>
+                )}
+              {episode.graph_branch.merge_eligible &&
+                episode.graph_branch.merge_state !== "running" && (
+                  <button
+                    className="button primary compact campaign-branch-merge"
+                    type="button"
+                    disabled={anotherActionBusy}
+                    onClick={() => void mergeToMain()}
+                  >
+                    {mergeBusy ? (
+                      <LoaderCircle className="spin" size={12} />
+                    ) : (
+                      <Network size={12} />
+                    )}
+                    {mergeBusy ? "Starting merge…" : "Merge to main"}
+                  </button>
+                )}
+            </section>
+          )}
+
           {episode.starting_instruction && (
             <div className="campaign-starting-instruction">
               <span className="field-label">Starting instruction</span>
@@ -332,14 +409,14 @@ function EpisodeRow({
               <ul>
                 {taskRows.map(({ task, role, depth }) => {
                   const target = taskTarget(task);
+                  const roleLabel =
+                    task.kind === "branch_merge" ? "Branch merge" : episodeTaskRoleLabel(role);
                   return (
                     <li className={`campaign-task depth-${depth}`} key={task.operation_id}>
                       <button type="button" onClick={() => onInspectTask(task.operation_id)}>
-                        <span className={`campaign-task-role ${role}`}>
-                          {episodeTaskRoleLabel(role)}
-                        </span>
+                        <span className={`campaign-task-role ${role}`}>{roleLabel}</span>
                         <span className="campaign-task-copy">
-                          <strong>{target || episodeTaskRoleLabel(role)}</strong>
+                          <strong>{target || roleLabel}</strong>
                           <span>{task.status_message}</span>
                         </span>
                         <span className={`status-pill ${task.status}`}>
@@ -429,6 +506,38 @@ function EpisodeRow({
       )}
     </article>
   );
+}
+
+function GraphHeadFact({ label, head }: { label: string; head: Episode["graph_base_head"] }) {
+  if (!head) return null;
+  return (
+    <span className="campaign-branch-head">
+      <span>{label}</span>
+      <strong>r{head.revision}</strong>
+      <code title={head.transition_id ?? undefined}>
+        {head.transition_id ? compactIdentity(head.transition_id) : "origin"}
+      </code>
+    </span>
+  );
+}
+
+function branchMergeStateLabel(state: NonNullable<Episode["graph_branch"]>["merge_state"]): string {
+  switch (state) {
+    case "unmerged":
+      return "Unmerged";
+    case "running":
+      return "Merge running";
+    case "merged":
+      return "Merged";
+    case "needs_action":
+      return "Merge needs action";
+    case "failed":
+      return "Merge failed";
+  }
+}
+
+function compactIdentity(value: string): string {
+  return value.length <= 18 ? value : `${value.slice(0, 8)}\u2026${value.slice(-6)}`;
 }
 
 function EpisodeBudgetMeter({ episode }: { episode: Episode }) {

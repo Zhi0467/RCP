@@ -9,9 +9,19 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, Patch, ValidationMessage
+from rcp.core.operations import (
+    CreateNodesOperation,
+    RemoveNodesOperation,
+    ResolveProposalsOperation,
+    SetOntologyOperation,
+    SetStandingOperation,
+    UpdateNodesOperation,
+    graph_operations_from_proposal,
+)
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest, RunRequest
@@ -119,6 +129,7 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
                 "ops": [
                     {
                         "op": "update_nodes",
+                        "intent": "legacy_content_change",
                         "nodes": [
                             {
                                 "id": "dec/evaluation-rule",
@@ -136,6 +147,7 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
         )
     state = service.history.state()
     legacy_patch = Patch(
+        schema_generation=1,
         revision=state.revision + 1,
         kind="refresh",
         author="agent",
@@ -332,17 +344,19 @@ def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(
         "withdrawn"
     }
     stored = service.history.load_patches()[-1]
-    assert [operation["op"] for operation in stored.ops] == [
+    assert [operation.op for operation in stored.ops] == [
         "update_nodes",
         "resolve_proposals",
         "set_standing",
     ]
-    resolutions = stored.ops[1]["resolutions"]
-    assert {item["id"] for item in resolutions} == {
+    resolution_operation = stored.ops[1]
+    assert isinstance(resolution_operation, ResolveProposalsOperation)
+    resolutions = resolution_operation.resolutions
+    assert {item.id for item in resolutions} == {
         "prop/evaluation-matched",
         "prop/evaluation-shifted",
     }
-    assert all(item["status"] == "withdrawn" and item["reason"] for item in resolutions)
+    assert all(item.status == "withdrawn" and item.reason for item in resolutions)
     assert all("human decided" in item for item in stored.change_summary if "Proposal" in item)
     assert not validate_patch(before_sync, stored, ["repo-a"], mode="replay").rejected
 
@@ -356,6 +370,7 @@ def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     legacy_patch = Patch(
+        schema_generation=1,
         revision=state.revision + 1,
         kind="refresh",
         author="agent",
@@ -373,6 +388,7 @@ def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "legacy_content_change",
                                 "nodes": [
                                     {
                                         "id": "dec/evaluation-rule",
@@ -423,13 +439,12 @@ def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(
     patches = service._build_sync_patches(request, state, active_control_node_ids=set())
 
     assert len(patches) == 1
-    resolutions = next(
-        operation["resolutions"]
-        for operation in patches[0].ops
-        if operation["op"] == "resolve_proposals"
+    resolution_operation = next(
+        operation for operation in patches[0].ops if operation.op == "resolve_proposals"
     )
-    assert resolutions[0]["id"] == "prop/legacy-mixed-target"
-    assert resolutions[0]["status"] == "withdrawn"
+    assert isinstance(resolution_operation, ResolveProposalsOperation)
+    assert resolution_operation.resolutions[0].id == "prop/legacy-mixed-target"
+    assert resolution_operation.resolutions[0].status == "withdrawn"
     assert not validate_patch(state, patches[0], ["repo-a"]).rejected
 
 
@@ -532,6 +547,7 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     legacy_proposal = Patch(
+        schema_generation=1,
         revision=state.revision + 1,
         kind="refresh",
         author="agent",
@@ -549,6 +565,7 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "legacy_content_change",
                                 "nodes": [
                                     {
                                         "id": "dec/evaluation-rule",
@@ -572,7 +589,7 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(manifest, tmp
         author="human",
         summary="Approved the legacy Proposal before the implied status existed.",
         ops=[
-            *state.proposals["prop/legacy-selection"].ops,
+            *graph_operations_from_proposal(state.proposals["prop/legacy-selection"].ops),
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": "prop/legacy-selection", "status": "approved"}],
@@ -615,6 +632,7 @@ def test_graph_sync_approves_a_legacy_decision_proposal_through_decision_choice(
     append_decision_fixture(service, with_proposals=False)
     state = service.history.state()
     legacy_proposal = Patch(
+        schema_generation=1,
         revision=state.revision + 1,
         kind="refresh",
         author="agent",
@@ -632,6 +650,7 @@ def test_graph_sync_approves_a_legacy_decision_proposal_through_decision_choice(
                         "ops": [
                             {
                                 "op": "update_nodes",
+                                "intent": "legacy_content_change",
                                 "nodes": [
                                     {
                                         "id": "dec/evaluation-rule",
@@ -717,40 +736,40 @@ def test_direct_choice_refuses_a_proposal_withdrawal_without_an_id(manifest, tmp
     append_decision_fixture(service, with_proposals=True)
     state = service.history.state()
     decision = state.nodes["dec/evaluation-rule"]
-    patch = Patch(
-        kind="approval",
-        author="human",
-        summary="Withdrew Proposals without naming them.",
-        human_action="decision_choice",
-        ops=[
-            {
-                "op": "update_nodes",
-                "nodes": [
-                    {
-                        "id": decision.id,
-                        "base_updated_rev": decision.updated_rev,
-                        "changes": {"selected_option": "shifted", "status": "decided"},
-                    }
-                ],
-            },
-            {
-                "op": "resolve_proposals",
-                "resolutions": [
-                    {"status": "withdrawn", "reason": "The human decided directly."},
-                    {"status": "withdrawn", "reason": "The human decided directly."},
-                ],
-            },
-        ],
-    )
+    with pytest.raises(ValidationError) as exc_info:
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Withdrew Proposals without naming them.",
+            human_action="decision_choice",
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [
+                        {
+                            "id": decision.id,
+                            "base_updated_rev": decision.updated_rev,
+                            "changes": {"selected_option": "shifted", "status": "decided"},
+                        }
+                    ],
+                },
+                {
+                    "op": "resolve_proposals",
+                    "resolutions": [
+                        {"status": "withdrawn", "reason": "The human decided directly."},
+                        {"status": "withdrawn", "reason": "The human decided directly."},
+                    ],
+                },
+            ],
+        )
 
-    report = validate_patch(state, patch, ["repo-a"])
-
-    assert report.rejected
-    assert any(
-        message.code == "invalid-direct-decision-choice"
-        and "requires a Proposal id" in message.message
-        for message in report.messages
-    )
+    missing_id_locations = {
+        tuple(error["loc"]) for error in exc_info.value.errors() if error["type"] == "missing"
+    }
+    assert missing_id_locations == {
+        ("ops", 1, "resolve_proposals", "resolutions", 0, "id"),
+        ("ops", 1, "resolve_proposals", "resolutions", 1, "id"),
+    }
 
 
 @pytest.mark.parametrize(
@@ -832,30 +851,23 @@ def test_graph_sync_updates_blocker_lifecycle_directly(
     )
     stored = service.history.load_patches()[-1]
     assert stored.kind == "approval"
-    assert stored.ops == [
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": blocker.id,
-                    "base_updated_rev": blocker.updated_rev,
-                    "changes": {"status": synced_status},
-                }
-            ],
-        },
-        {
-            "op": "set_standing",
-            "node_id": blocker.id,
-            "standing": "asserted",
-        },
-    ]
+    assert len(stored.ops) == 2
+    update_operation, standing_operation = stored.ops
+    assert isinstance(update_operation, UpdateNodesOperation)
+    assert len(update_operation.nodes) == 1
+    assert update_operation.nodes[0].id == blocker.id
+    assert update_operation.nodes[0].base_updated_rev == blocker.updated_rev
+    assert update_operation.nodes[0].changes == {"status": synced_status}
+    assert isinstance(standing_operation, SetStandingOperation)
+    assert standing_operation.node_id == blocker.id
+    assert standing_operation.standing == "asserted"
     assert stored.change_summary == expected_history_sentences
     assert service.history.revision_summaries(from_revision=5, to_revision=5)[0]["sentences"] == (
         expected_history_sentences
     )
 
 
-def test_graph_sync_builds_from_the_single_in_lock_current_replay(
+def test_graph_sync_builds_and_commits_from_the_single_in_lock_current_replay(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -890,7 +902,10 @@ def test_graph_sync_builds_from_the_single_in_lock_current_replay(
     )
 
     assert state.revision == 3
-    assert calls == [(False, False), (False, True)]
+    # The transition is prepared from one current replay, then the one committed
+    # patch is replayed to write every materialized output. There is no pending
+    # batch replay path whose private staging files could diverge from history.
+    assert calls == [(False, False), (True, False)]
 
 
 def test_project_service_coalesces_concurrent_index_builds(manifest, tmp_path, monkeypatch) -> None:
@@ -995,7 +1010,10 @@ def test_graph_sync_removes_node_and_its_incident_edges(manifest, tmp_path) -> N
     stored = service.history.load_patches()[-1]
     assert stored.kind == "approval"
     assert stored.author == "human"
-    assert stored.ops == [{"op": "remove_nodes", "node_ids": ["rq/learning-after-shift"]}]
+    assert len(stored.ops) == 1
+    remove_operation = stored.ops[0]
+    assert isinstance(remove_operation, RemoveNodesOperation)
+    assert remove_operation.node_ids == ["rq/learning-after-shift"]
 
 
 def test_graph_sync_removal_preserves_base_revision_conflict(manifest, tmp_path) -> None:
@@ -1103,6 +1121,10 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
                             "source": "ev/replanning-activation",
                             "target": "hyp/replanning-restores-plasticity",
                             "relation": "supports",
+                            "assessment": {
+                                "relevance": "direct",
+                                "weight": "moderate",
+                            },
                         }
                     ],
                 },
@@ -1152,7 +1174,7 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         )
 
     assert decided.status_code == 200
-    assert decided.json()["revision"] == 5
+    assert decided.json()["revision"] == (4 if same_draft else 5)
     assert (
         decided.json()["proposals"]["prop/activate-replanning-hypothesis"]["status"] == "withdrawn"
     )
@@ -1164,20 +1186,23 @@ def test_graph_sync_staged_decision_withdraws_proposal_made_stale_by_node_remova
         else "The proposal “Treat replanning as the active hypothesis” was stale and was "
         "withdrawn without applying changes."
     )
-    assert service.history.load_patches()[-1].ops == [
-        {
-            "op": "resolve_proposals",
-            "resolutions": [
-                {
-                    "id": "prop/activate-replanning-hypothesis",
-                    "status": "withdrawn",
-                    "reason": withdrawal_reason,
-                }
-            ],
-        }
-    ]
+    stored = service.history.load_patches()[-1]
+    assert stored.transition is not None
+    resolution_operation = next(
+        operation for operation in stored.ops if isinstance(operation, ResolveProposalsOperation)
+    )
+    assert isinstance(resolution_operation, ResolveProposalsOperation)
+    assert len(resolution_operation.resolutions) == 1
+    resolution = resolution_operation.resolutions[0]
+    assert resolution.id == "prop/activate-replanning-hypothesis"
+    assert resolution.status == "withdrawn"
+    assert resolution.reason == withdrawal_reason
     if same_draft:
-        assert service.history.load_patches()[-1].change_summary == [withdrawal_reason]
+        assert stored.change_summary == [
+            "Removed “Replanning restores plasticity”.",
+            withdrawal_reason,
+        ]
+        assert len(stored.transition.initiating_groups) == 2
 
 
 def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> None:
@@ -1250,8 +1275,8 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    initial = seed_patch()
-    initial.ops[0]["nodes"].append(
+    initial_document = seed_patch().model_dump(mode="python")
+    initial_document["ops"][0]["nodes"].append(
         {
             "id": "exp/active-loop",
             "type": "experiment",
@@ -1260,6 +1285,7 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
             "status": "running",
         }
     )
+    initial = Patch.model_validate(initial_document)
     append_fixture_patch(service, initial)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -1327,7 +1353,10 @@ def test_graph_sync_commits_ontology_as_human_approval_patch(manifest, tmp_path)
     stored = service.history.load_patches()[-1]
     assert stored.kind == "approval"
     assert stored.author == "human"
-    assert stored.ops == [{"op": "set_ontology", "ontology": ontology_payload()}]
+    assert len(stored.ops) == 1
+    ontology_operation = stored.ops[0]
+    assert isinstance(ontology_operation, SetOntologyOperation)
+    assert ontology_operation.ontology.model_dump(mode="python") == ontology_payload()
 
 
 def test_graph_sync_unchanged_ontology_writes_no_patch(manifest, tmp_path) -> None:
@@ -1451,7 +1480,7 @@ def test_graph_sync_creates_an_asserted_node_of_an_active_custom_type(manifest, 
     assert created["standing"] == "asserted"
     stored = service.history.load_patches()[-1]
     assert stored.kind == "approval"
-    assert stored.ops[0]["op"] == "create_nodes"
+    assert isinstance(stored.ops[0], CreateNodesOperation)
 
 
 def test_graph_sync_replaces_active_extension_fields_on_an_existing_custom_node(
@@ -1617,7 +1646,9 @@ def test_batch_overwrites_forged_admission_receipts(manifest) -> None:
     assert not stored.admission_messages
 
 
-def test_batch_reuses_pending_replay_for_committed_outputs(manifest, monkeypatch) -> None:
+def test_batch_commits_one_patch_then_replays_canonical_history_for_outputs(
+    manifest, monkeypatch
+) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     raw = Patch(
@@ -1648,7 +1679,7 @@ def test_batch_reuses_pending_replay_for_committed_outputs(manifest, monkeypatch
 
     assert [patch.revision for patch in prepared] == [2]
     assert result.state.revision == 2
-    assert calls == [(False, False), (False, True)]
+    assert calls == [(False, False), (True, False)]
     stored = json.loads((manifest.research_dir / "graph.json").read_text(encoding="utf-8"))
     assert stored["revision"] == 2
 
@@ -1722,7 +1753,7 @@ def test_graph_sync_refuses_stale_project_draft(manifest, tmp_path) -> None:
     assert "graph changed" in response.json()["detail"].lower()
 
 
-def test_interrupted_batch_write_exposes_none_of_the_sync(manifest, monkeypatch) -> None:
+def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, monkeypatch) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     before_graph = (manifest.research_dir / "graph.json").read_bytes()
@@ -1753,17 +1784,14 @@ def test_interrupted_batch_write_exposes_none_of_the_sync(manifest, monkeypatch)
         ),
     ]
     original_atomic_text = history._atomic_text
-    staged_writes = 0
+    commit_target = manifest.research_dir / "patches" / "000002.json"
 
-    def fail_second_staged_patch(path, content):
-        nonlocal staged_writes
-        if path.parent.name.startswith(".batch-"):
-            staged_writes += 1
-            if staged_writes == 2:
-                raise OSError("simulated disk failure")
+    def fail_atomic_transition_commit(path, content):
+        if path == commit_target:
+            raise OSError("simulated disk failure")
         original_atomic_text(path, content)
 
-    monkeypatch.setattr(history, "_atomic_text", fail_second_staged_patch)
+    monkeypatch.setattr(history, "_atomic_text", fail_atomic_transition_commit)
 
     with pytest.raises(OSError, match="simulated disk failure"):
         history.append_batch(patches, expected_revision=1)
@@ -1771,6 +1799,7 @@ def test_interrupted_batch_write_exposes_none_of_the_sync(manifest, monkeypatch)
     assert [patch.revision for patch in history.load_patches()] == [1]
     assert history.state().revision == 1
     assert (manifest.research_dir / "graph.json").read_bytes() == before_graph
+    assert not commit_target.exists()
     assert not list((manifest.research_dir / "patches").glob(".batch-*"))
     assert not list((manifest.research_dir / "patches").glob("batch-*"))
 
@@ -1857,5 +1886,8 @@ def test_graph_sync_refuses_creating_an_already_decided_decision(manifest, tmp_p
     )
 
     assert response.status_code == 422, response.text
-    assert "decide_decision" in response.json()["detail"]
+    assert any(
+        item["code"] == "agent-created-decision-action" and "selected_option" in item["message"]
+        for item in response.json()["detail"]
+    )
     assert "policy_decision/pre-decided" not in service.history.state().nodes

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from rcp.core.authority import (
 from rcp.core.models import (
     AuthorizedHuman,
 )
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
     AGENT_TASK_ESTIMATE_HISTORY_LIMIT,
@@ -154,6 +156,88 @@ class AgentTaskStoreMixin:
         assert stored is not None
         return stored
 
+    def create_branch_merge_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        """Admit one human-dispatched, graph-only merge without spending episode budget."""
+
+        if (
+            record.kind != "branch_merge"
+            or record.episode_id is None
+            or record.status != "queued"
+            or not record.visible
+            or record.parent_operation_id is not None
+            or record.authorized_by is None
+            or record.graph_target.kind != "branch"
+        ):
+            raise ValueError("a branch merge requires one visible attributed branch root task")
+        authority = record.dispatch_authority
+        if (
+            authority is None
+            or authority.profile != "orchestrator"
+            or authority.task_contract != "orchestrate"
+            or authority.scope.episode_id != record.episode_id
+            or authority.scope.patch_kind != "work"
+        ):
+            raise ValueError("a branch merge requires exact graph-only orchestrator authority")
+        require_dispatch(authority)
+        if not self.auto_research_is_quiescent(record.episode_id):
+            raise ValueError("an Auto-research branch must be quiescent before merge")
+
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT * FROM graph_runs WHERE operation_id = ?",
+                    (record.operation_id,),
+                ).fetchone()
+                if existing is not None:
+                    stored = self._agent_task_record(existing)
+                    projection = {
+                        "elapsed_seconds",
+                        "progress",
+                        "can_pause",
+                        "can_resume",
+                        "can_retry",
+                    }
+                    if stored.model_dump(exclude=projection) != record.model_dump(
+                        exclude=projection
+                    ):
+                        raise ValueError("the branch merge task conflicts with its durable id")
+                    return stored
+                episode = connection.execute(
+                    "SELECT * FROM episodes WHERE episode_id = ?",
+                    (record.episode_id,),
+                ).fetchone()
+                if episode is None:
+                    raise KeyError(record.episode_id)
+                stored_episode = self._episode_record(episode)
+                if (
+                    stored_episode.mode != "auto_research"
+                    or stored_episode.project_id != record.project_id
+                    or stored_episode.graph_target != record.graph_target
+                    or stored_episode.ending is None
+                    or stored_episode.status
+                    not in {"needs_action", "completed", "stopped", "failed"}
+                ):
+                    raise ValueError("only an ended Auto-research branch is merge eligible")
+                active_writer = connection.execute(
+                    """
+                    SELECT operation_id FROM graph_runs
+                    WHERE project_id = ? AND graph_target_json = ?
+                      AND kind NOT IN ('branch_merge', 'episode_report')
+                      AND status IN ('queued', 'running', 'pausing', 'paused')
+                    LIMIT 1
+                    """,
+                    (record.project_id, record.graph_target.model_dump_json()),
+                ).fetchone()
+                if active_writer is not None:
+                    raise ValueError("the graph branch still has an active writer")
+                self._insert_agent_task(connection, record)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("another merge is already active for this branch") from exc
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
     def _insert_agent_task(
         self,
         connection: sqlite3.Connection,
@@ -164,6 +248,7 @@ class AgentTaskStoreMixin:
         self._validate_dispatch_authority_insert(connection, record)
         self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
+        self._validate_graph_target_insert(connection, record)
         connection.execute(
             """
             INSERT INTO graph_runs (
@@ -171,10 +256,11 @@ class AgentTaskStoreMixin:
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
                 parent_operation_id, native_session_id, stage_host,
-                stage_root, estimate_seconds, estimate_samples, phase,
+                stage_root, graph_target_json, write_scope_fingerprint,
+                estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
                 authorized_user_id, authorized_display_name, visible
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -196,6 +282,8 @@ class AgentTaskStoreMixin:
                 record.native_session_id,
                 record.stage_host,
                 record.stage_root,
+                record.graph_target.model_dump_json(),
+                record.write_scope_fingerprint,
                 record.estimate_seconds,
                 record.estimate_samples,
                 record.phase,
@@ -211,6 +299,42 @@ class AgentTaskStoreMixin:
                 int(record.visible),
             ),
         )
+
+    @staticmethod
+    def _validate_graph_target_insert(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> None:
+        """Bind every graph-capable continuation to its durable target."""
+
+        if record.episode_id is None:
+            if record.graph_target.kind != "main":
+                raise ValueError("a branch-target task requires its episode lineage")
+        else:
+            episode = connection.execute(
+                "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
+                (record.episode_id,),
+            ).fetchone()
+            if episode is None:
+                raise ValueError("an episode task requires its durable episode parent")
+            if episode["project_id"] != record.project_id:
+                raise ValueError("an episode task belongs to another project")
+            if json.loads(episode["graph_target_json"])["kind"] != record.graph_target.kind or (
+                json.loads(episode["graph_target_json"]).get("branch_id")
+                != record.graph_target.branch_id
+            ):
+                raise ValueError("an episode task cannot change its graph target")
+
+        if record.parent_operation_id is None:
+            return
+        parent = connection.execute(
+            "SELECT graph_target_json FROM graph_runs WHERE operation_id = ?",
+            (record.parent_operation_id,),
+        ).fetchone()
+        if parent is None:
+            return
+        if json.loads(parent["graph_target_json"]) != record.graph_target.model_dump(mode="json"):
+            raise ValueError("a task continuation cannot change its graph target")
 
     def _insert_agent_task_dispatch_intent_receipt(
         self,
@@ -471,20 +595,45 @@ class AgentTaskStoreMixin:
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return
+        prior_chat_targets = connection.execute(
+            """
+            SELECT DISTINCT graph_target_json
+            FROM graph_runs
+            WHERE project_id = ? AND kind = ?
+              AND json_extract(request_json, '$.chat_id') = ?
+            """,
+            (record.project_id, record.kind, chat_id),
+        ).fetchall()
+        if any(
+            GraphTargetRef.model_validate_json(row["graph_target_json"]) != record.graph_target
+            for row in prior_chat_targets
+        ):
+            raise ValueError(
+                "This conversation belongs to another graph target and cannot continue here."
+            )
         session_id = record.request.get("session_id")
         watcher_ids = record.request.get("watcher_ids")
         if isinstance(session_id, str) and session_id:
             rows = connection.execute(
                 """
-                SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
+                SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root,
+                                graph_target_json,
+                                json_extract(request_json, '$.chat_id') AS chat_id
                 FROM graph_runs
                 WHERE project_id = ? AND kind = ?
-                  AND json_extract(request_json, '$.chat_id') = ?
                   AND native_session_id = ?
-                  AND stage_root IS NOT NULL AND stage_root != ''
                 """,
-                (record.project_id, record.kind, chat_id, session_id),
+                (record.project_id, record.kind, session_id),
             ).fetchall()
+            if any(
+                GraphTargetRef.model_validate_json(row["graph_target_json"]) != record.graph_target
+                or row["chat_id"] != chat_id
+                for row in rows
+            ):
+                raise ValueError(
+                    "This native session belongs to another conversation or graph target."
+                )
+            rows = [row for row in rows if row["root"]]
         elif (
             record.request.get("trigger") == "watcher"
             and isinstance(watcher_ids, list)
@@ -586,7 +735,8 @@ class AgentTaskStoreMixin:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT operation_id, project_id, episode_id, dispatch_authority_json,
+                SELECT operation_id, project_id, episode_id, kind, graph_target_json,
+                       dispatch_authority_json,
                        authorized_space_id, authorized_user_id, authorized_display_name
                 FROM graph_runs
                 WHERE project_id = ? AND operation_id = ?
@@ -596,9 +746,11 @@ class AgentTaskStoreMixin:
         if row is None:
             raise KeyError(operation_id)
         dispatch_json = row["dispatch_authority_json"]
+        stored_target = GraphTargetRef.model_validate_json(row["graph_target_json"])
         return AgentTaskAuthority(
             operation_id=str(row["operation_id"]),
             project_id=str(row["project_id"]),
+            apply_target=(GraphTargetRef() if row["kind"] == "branch_merge" else stored_target),
             authorized_by=self._authorized_human_snapshot(row),
             episode_id=row["episode_id"],
             dispatch_authority=(
@@ -734,6 +886,39 @@ class AgentTaskStoreMixin:
                     project_id,
                     int(include_hidden),
                     max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
+                ),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def graph_target_tasks(
+        self,
+        project_id: str,
+        graph_target: GraphTargetRef,
+        *,
+        include_hidden: bool = False,
+    ) -> list[AgentTaskRecord]:
+        """Return every task bound to one exact graph target without a list-page limit."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'auto_research_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs
+                WHERE project_id = ? AND graph_target_json = ? AND (? OR visible = 1)
+                ORDER BY created_at, operation_id
+                """,
+                (
+                    project_id,
+                    graph_target.model_dump_json(),
+                    int(include_hidden),
                 ),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
@@ -1842,6 +2027,74 @@ class AgentTaskStoreMixin:
             if existing is None:
                 raise KeyError(operation_id)
             raise ValueError("Agent task native session conflicts with its saved RCP checkpoint.")
+
+    def bind_agent_task_write_scope(
+        self,
+        operation_id: str,
+        *,
+        project_id: str,
+        stage_host: str,
+        stage_root: str,
+        fingerprint: str,
+    ) -> None:
+        """Compare-and-set the durable filesystem scope before provider launch."""
+
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise ValueError("agent task write-scope fingerprint must be lowercase SHA-256")
+        normalized_host = stage_host or ""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT project_id, kind, native_session_id,
+                       COALESCE(stage_host, '') AS stage_host,
+                       stage_root, write_scope_fingerprint
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            if row["project_id"] != project_id:
+                raise ValueError("agent task write scope belongs to a different project")
+            if row["stage_host"] != normalized_host or row["stage_root"] != stage_root:
+                raise ValueError("agent task write scope does not match its saved execution stage")
+            existing = row["write_scope_fingerprint"]
+            if existing is not None and existing != fingerprint:
+                raise ValueError("agent task write scope changed after it was durably bound")
+
+            clauses = ["(COALESCE(stage_host, '') = ? AND stage_root = ?)"]
+            values: list[object] = [normalized_host, stage_root]
+            native_session_id = row["native_session_id"]
+            if native_session_id:
+                clauses.append("native_session_id = ?")
+                values.append(native_session_id)
+            related = connection.execute(
+                f"""
+                SELECT DISTINCT write_scope_fingerprint
+                FROM graph_runs
+                WHERE operation_id != ? AND kind = ?
+                  AND write_scope_fingerprint IS NOT NULL
+                  AND ({" OR ".join(clauses)})
+                """,
+                (operation_id, row["kind"], *values),
+            ).fetchall()
+            inherited = {item["write_scope_fingerprint"] for item in related}
+            if inherited and inherited != {fingerprint}:
+                raise ValueError(
+                    "agent task continuation conflicts with its saved project write scope"
+                )
+            updated = connection.execute(
+                """
+                UPDATE graph_runs
+                SET write_scope_fingerprint = ?, updated_at = ?
+                WHERE operation_id = ?
+                  AND (write_scope_fingerprint IS NULL OR write_scope_fingerprint = ?)
+                """,
+                (fingerprint, self.now(), operation_id, fingerprint),
+            ).rowcount
+            if updated != 1:
+                raise ValueError("agent task write scope changed while it was being bound")
 
     def clear_agent_task_stage(self, operation_id: str) -> None:
         now = self.now()

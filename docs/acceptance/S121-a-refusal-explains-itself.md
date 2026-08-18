@@ -11,10 +11,9 @@ invariants: [1, 3, 10b]
 
 **Confirmed by the human 2026-08-15.**
 
-It owns boundary 10 of
-[Identity, permissions, and agent profiles](../design/identity-permissions-and-agent-profiles.md#acceptance-boundaries)
-— the last of that module's ten boundaries with no scenario. Seven are proven;
-the other two wait on project membership and transfer. This one waits on nothing:
+It owns the user-visible refusal boundary in
+[Two permission gates](../specs/authority-and-proposals.md#two-permission-gates).
+It waits on no additional design decision:
 the two gates in [S100](S100-permission-is-checked-twice.md) run today, on a
 personal space, against every agent.
 

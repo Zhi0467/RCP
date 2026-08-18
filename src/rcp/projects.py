@@ -22,10 +22,12 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, TypeAdapter
 
 from rcp.agents import AgentLauncher
+from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, Manifest, load_manifest
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import GraphState
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
@@ -290,6 +292,7 @@ class ProjectCatalog:
                 self.launcher,
                 data_dir=self.data_dir,
                 provider_skills=self.provider_skills,
+                repository_inventory=self.repository_ownership_inventory,
             )
             snapshot = service.project_snapshot(state=materialization.state)
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -780,6 +783,30 @@ class ProjectCatalog:
                     targets.add((provider, machine.host, machine.provider_paths.get(provider)))
         return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
+    def repository_ownership_inventory(self) -> list[RegisteredRepositoryRoot]:
+        """Load every registered repository ownership boundary from its manifest."""
+
+        roots: list[RegisteredRepositoryRoot] = []
+        for record in self.store.projects():
+            try:
+                manifest = load_manifest(record.locator)
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                raise ValueError(
+                    "Cannot establish the repository ownership inventory because registered "
+                    f"project {record.project_id!r} is unavailable: {exc}"
+                ) from exc
+            roots.extend(registered_repository_roots(manifest, project_id=record.project_id))
+        return sorted(
+            roots,
+            key=lambda item: (
+                item.execution_host,
+                item.project_id,
+                item.alias,
+                item.machine,
+                item.path,
+            ),
+        )
+
     def delete(self, project_id: str) -> ProjectDeletionResult:
         """Forget one RCP registration without touching any research source."""
         project_id = self._canonical_project_id(project_id)
@@ -1193,6 +1220,7 @@ class ProjectCatalog:
             self.launcher,
             data_dir=self.data_dir,
             provider_skills=self.provider_skills,
+            repository_inventory=self.repository_ownership_inventory,
         )
         return service, initialized_state
 
@@ -1409,16 +1437,36 @@ class ProjectDisplayCache:
 
         state = GraphState.model_validate(snapshot["graph"])
         experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
-        runtimes = self._store.experiment_loop_runtimes(project_id, experiment_ids)
+        runtimes = self._store.experiment_loop_runtimes(
+            project_id,
+            experiment_ids,
+            graph_target=GraphTargetRef(),
+        )
         settle_ids = [
             experiment_id
             for experiment_id, runtime in runtimes.items()
             if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
         ]
         for experiment_id in settle_ids:
-            self._store.settle_experiment_loop_stop(project_id, experiment_id)
+            runtime = runtimes[experiment_id]
+            episode = (
+                self._store.episode(runtime.episode_id) if runtime.episode_id is not None else None
+            )
+            if episode is not None:
+                self._store.settle_experiment_loop_stop(
+                    project_id,
+                    experiment_id,
+                    episode_id=episode.episode_id,
+                    graph_target=episode.graph_target,
+                )
         if settle_ids:
-            runtimes.update(self._store.experiment_loop_runtimes(project_id, settle_ids))
+            runtimes.update(
+                self._store.experiment_loop_runtimes(
+                    project_id,
+                    settle_ids,
+                    graph_target=GraphTargetRef(),
+                )
+            )
         controls: dict[str, object] = {}
         for experiment_id in experiment_ids:
             runtime = runtimes[experiment_id]

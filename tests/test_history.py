@@ -7,10 +7,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 
 import pytest
+from pydantic import ValidationError
 
 import rcp.config as config_module
 from rcp.config import load_manifest
-from rcp.core.models import Patch, ValidationMessage
+from rcp.core.models import GraphState, Patch, ValidationMessage
+from rcp.core.operations import operation_dict
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.transitions import GraphTransitionManager
 from rcp.history import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
 from rcp.history.manager import ProjectIdentityConflict
 from tests.helpers import refresh_patch, seed_patch, shape_invalid_patch
@@ -345,12 +349,9 @@ def test_malformed_remove_edges_is_rejected_before_history_admission(
     history = HistoryManager(manifest)
     history.append(seed_patch())
 
-    with pytest.raises(PatchRejected) as caught:
-        history.append(_remove_edges_patch(operation), discard_on_reject=True)
+    with pytest.raises(ValidationError):
+        _remove_edges_patch(operation)
 
-    assert any(
-        message.code == "invalid-remove-edges-operation" for message in caught.value.report.messages
-    )
     assert history.state().revision == 1
     assert history.state().replay_status == "complete"
 
@@ -481,7 +482,7 @@ def test_direct_human_prose_edit_preserves_node_standing(manifest, standing) -> 
     assert edited.title == "Search-time replanning may preserve future learning"
     assert edited.standing.value == standing
     assert edited.updated_rev == patch.revision
-    assert patch.ops == [
+    assert [operation_dict(operation) for operation in patch.ops] == [
         {
             "op": "update_nodes",
             "nodes": [
@@ -955,7 +956,7 @@ def test_malformed_agent_patch_is_auditable_without_poisoning_replay(manifest) -
                     {
                         "source": "rq/learning-after-shift",
                         "target": "hyp/replanning-restores-plasticity",
-                        "relation": "not-a-relation",
+                        "relation": "not_a_relation",
                     }
                 ],
             }
@@ -1012,7 +1013,7 @@ def test_tampered_accepted_patch_halts_before_it_and_blocks_later_writes(manifes
     assert state.revision == 1
     assert state.replay_failure is not None
     assert state.replay_failure.revision == 2
-    assert state.replay_failure.code == "invalid-node"
+    assert state.replay_failure.code == "patch-schema-invalid"
     assert "rq/tampered" not in state.nodes
     assert "rq/never-replayed" not in state.nodes
     with pytest.raises(ReplayHalted, match="revision 2"):
@@ -1052,7 +1053,7 @@ def test_structural_failure_after_invalid_patch_reports_the_earliest_boundary(ma
     assert state.revision == 1
     assert state.replay_failure is not None
     assert state.replay_failure.revision == 2
-    assert state.replay_failure.code == "invalid-node"
+    assert state.replay_failure.code == "patch-schema-invalid"
     assert "rq/semantic-failure" not in state.nodes
     assert "rq/schema-failure" not in state.nodes
 
@@ -1093,7 +1094,7 @@ def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
                     {
                         "source": "rq/transfer-after-shift",
                         "target": "hyp/replanning-restores-plasticity",
-                        "relation": "not-a-relation",
+                        "relation": "not_a_relation",
                     }
                 ],
             },
@@ -1215,6 +1216,8 @@ def test_replay_degrades_without_repairing_missing_scope_provenance(
     assert result.state.replay_failure.code == "scope-provenance-missing"
     assert "absent while Patch history exists" in result.state.replay_failure.message
     assert not scope_base.exists()
+    with pytest.raises(ReplayHalted, match="scope-provenance-missing"):
+        history.head_ref(result)
 
 
 def test_empty_history_may_bootstrap_scope_provenance_from_manifest(manifest) -> None:
@@ -1405,3 +1408,93 @@ def test_legacy_patch_without_producer_replays_without_rewriting_history(manifes
     assert state.revision == 1
     assert "rq/learning-after-shift" in state.nodes
     assert path.read_bytes() == legacy_bytes
+
+
+def _transition_question_patch(node_id: str, *, revision: int = 0) -> Patch:
+    return Patch(
+        revision=revision,
+        kind="refresh",
+        author="agent",
+        producer="agent",
+        summary=f"Create {node_id}.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": node_id,
+                        "type": "research_question",
+                        "title": node_id,
+                        "question": "Does exact transition ancestry remain intact?",
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def test_main_replay_rejects_a_divergent_transition_history_splice(manifest) -> None:
+    alternate_first = GraphTransitionManager().prepare_validated(
+        GraphState(project_truth_scope=["repo-a"]),
+        [_transition_question_patch("rq/alternate-first", revision=1)],
+    )
+    assert alternate_first.patch.transition is not None
+    alternate_second = GraphTransitionManager().prepare_validated(
+        alternate_first.projection.graph,
+        [_transition_question_patch("rq/alternate-second", revision=2)],
+        pre_head=GraphHeadRef(
+            revision=1,
+            transition_id=alternate_first.patch.transition.transition_id,
+        ),
+    )
+    history = HistoryManager(manifest)
+    accepted_first, _result = history.append(_transition_question_patch("rq/accepted-first"))
+    assert accepted_first.transition is not None
+    assert (
+        alternate_second.patch.transition is not None
+        and alternate_second.patch.transition.pre_head.transition_id
+        == alternate_first.patch.transition.transition_id
+    )
+    (manifest.research_dir / "patches" / "000002.json").write_text(
+        alternate_second.patch.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    replay = history.materialize(write_outputs=False).state
+
+    assert replay.replay_status == "degraded"
+    assert replay.replay_failure is not None
+    assert replay.replay_failure.code == "transition-head-mismatch"
+    assert replay.replay_failure.revision == 2
+    assert replay.revision == 1
+    assert "rq/accepted-first" in replay.nodes
+    assert "rq/alternate-second" not in replay.nodes
+
+
+def test_main_replay_rejects_a_transition_for_a_different_target(manifest) -> None:
+    history = HistoryManager(manifest)
+    appended, _result = history.append(_transition_question_patch("rq/main-target"))
+    assert appended.transition is not None
+    forged_trace = appended.transition.model_copy(
+        update={
+            "pre_head": appended.transition.pre_head.model_copy(
+                update={"target": GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))}
+            )
+        }
+    )
+    path = manifest.research_dir / "patches" / "000001.json"
+    path.write_text(
+        appended.model_copy(update={"transition": forged_trace}).model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    replay = history.materialize(write_outputs=False).state
+
+    assert replay.replay_status == "degraded"
+    assert replay.replay_failure is not None
+    assert replay.replay_failure.code == "transition-head-mismatch"
+    assert replay.replay_failure.revision == 1
+    assert replay.revision == 0
+    assert "rq/main-target" not in replay.nodes

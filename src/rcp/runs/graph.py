@@ -1096,6 +1096,7 @@ async def _stream_graph_agent_events(
                 session_id=session_id,
                 read_dirs=read_dirs,
                 write_dirs=[],
+                write_scope=None,
                 execution_host=execution_host,
                 execution=execution,
                 remote_stage=remote_stage,

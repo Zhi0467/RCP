@@ -8,6 +8,7 @@ import pytest
 import rcp.storage as storage_package
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
@@ -89,6 +90,7 @@ def _task(
         operation_id=operation_id,
         project_id=episode.project_id,
         episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
         kind="auto_research",
         status=status,
         request=request,
@@ -120,6 +122,8 @@ def _episode(
         episode_id=episode_id,
         project_id=project_id,
         mode="auto_research",
+        graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+        graph_base_head=GraphHeadRef(revision=0),
         status=episode_status,
         invocation_ceiling=ceiling,
         authorized_by=authorizer,
@@ -241,6 +245,8 @@ def test_auto_research_root_cannot_bypass_new_episode_invariants(tmp_path) -> No
         episode_id="episode-b",
         project_id="project",
         mode="auto_research",
+        graph_target=GraphTargetRef(kind="branch", branch_id="episode-b"),
+        graph_base_head=GraphHeadRef(revision=0),
         status="queued",
         invocation_ceiling=4,
         authorized_by=_authorizer(),
@@ -429,6 +435,7 @@ def test_stop_fence_closes_admission_and_retires_current_and_new_watchers(tmp_pa
         origin_task_kind="auto_research",
         chat_id=root.operation_id,
         episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
         continuation=WatcherContinuation(provider="codex", run_on="local", patch_kind="work"),
         condition={"node_id": "claim", "status_in": ["active"]},
         armed_revision=1,
@@ -756,6 +763,7 @@ def test_public_usage_snapshot_excludes_hidden_episode_report_usage(tmp_path) ->
         operation_id="hidden-report",
         project_id=episode.project_id,
         episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
         kind="episode_report",
         status="queued",
         request={

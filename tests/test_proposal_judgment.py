@@ -114,6 +114,10 @@ def _service(manifest: Manifest, tmp_path) -> ProjectService:
                             "source": STATUS_EVIDENCE_ID,
                             "target": HYPOTHESIS_ID,
                             "relation": "supports",
+                            "assessment": {
+                                "relevance": "direct",
+                                "weight": "moderate",
+                            },
                         }
                     ],
                 },
@@ -290,6 +294,10 @@ def test_removal_approval_withdraws_if_a_new_incident_relation_was_not_judged(
                             "source": STATUS_EVIDENCE_ID,
                             "target": HYPOTHESIS_ID,
                             "relation": "weakens",
+                            "assessment": {
+                                "relevance": "direct",
+                                "weight": "moderate",
+                            },
                         }
                     ],
                 }

@@ -5,8 +5,11 @@ import time
 import uuid
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman, Patch
+from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.history import HistoryManager
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
 
@@ -16,6 +19,9 @@ from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
 # failures whenever the full suite is competing for the CPU.
 TASK_SETTLE_TIMEOUT = 60.0
 _TASK_POLL_INTERVAL = 0.01
+
+_GRAPH_OPERATION_ADAPTER = TypeAdapter(GraphOperation)
+_PROPOSAL_OPERATION_ADAPTER = TypeAdapter(ProposalOperation)
 
 _RCP_OWNED_ITEM_FIELDS = {
     "create_nodes": ("nodes", {"standing", "created_rev", "updated_rev"}),
@@ -161,7 +167,7 @@ def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):
 def agent_patch_json(patch: Patch) -> str:
     """Render canonical test data as the semantic JSON an agent may write."""
 
-    operations = json.loads(json.dumps(patch.ops))
+    operations = [operation.model_dump(mode="json", exclude_unset=True) for operation in patch.ops]
     for operation in operations:
         owned = _RCP_OWNED_ITEM_FIELDS.get(operation.get("op"))
         if owned is None:
@@ -212,15 +218,32 @@ def refresh_patch(node_id: str = "rq/transfer-after-shift") -> Patch:
 
 
 def shape_invalid_patch() -> Patch:
-    """Parses as a Patch, but names an operation the agent schema does not define."""
+    """A core-valid Patch using an operation absent from the agent schema."""
     return Patch(
         kind="refresh",
         author="agent",
         summary="Used an operation that is not in the agent schema.",
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
-        ops=[{"op": "invent_nodes", "nodes": []}],
+        ops=[
+            {
+                "op": "set_ontology",
+                "ontology": {"types": [], "fields": [], "relations": []},
+            }
+        ],
     )
+
+
+def graph_operation(document: dict[str, Any]) -> GraphOperation:
+    """Parse one exact GraphOperation for direct contract-level test calls."""
+
+    return _GRAPH_OPERATION_ADAPTER.validate_python(document)
+
+
+def proposal_operation(document: dict[str, Any]) -> ProposalOperation:
+    """Parse one exact ProposalOperation for direct contract-level test calls."""
+
+    return _PROPOSAL_OPERATION_ADAPTER.validate_python(document)
 
 
 def gated_patch() -> Patch:

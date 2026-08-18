@@ -220,11 +220,12 @@ packaging/               PyInstaller configuration and packaged-backend smoke te
 tests/                   Python test suite
 web/tests/               TypeScript behavior tests
 docs/acceptance/         User-visible promises and their verification drivers
+docs/design.md           Cross-cutting product boundaries and invariant index
+docs/specs/              Current modular behavior specifications
 examples/demo-project/   Local project fixture
 ```
 
-[`docs/research-control-panel-blueprint.md`](docs/research-control-panel-blueprint.md) is
-the single design specification. Its version is maintained inside that file; design changes
-edit it in place rather than creating amendment files. When implementation and blueprint
-disagree, record the disagreement rather than silently choosing one. Acceptance scenarios
-define what “done” means for user-visible behavior.
+[`docs/design.md`](docs/design.md) defines the documentation hierarchy and
+cross-cutting invariants. Current module behavior lives in [`docs/specs/`](docs/specs/),
+while acceptance scenarios state selected observable promises. Historical snapshots under
+`docs/archive/` are evidence, never current authority.

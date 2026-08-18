@@ -16,13 +16,13 @@ authorize implementation until the human resolves
 The behavioral choices below remain proposed rather than settled.
 
 The registry, versioning, and per-run staging this scenario originally proposed
-now ship under
-[S64](S64-project-skill-workflow-selection.md), which settled two of its
+the [official skills and workflows contract](../specs/providers-and-containment.md#official-skills-and-workflows),
+which settled two of its
 premises differently: packages are staged because a **human selected them**, not
 automatically per graph-writing launch, and the registry records no "permitted
 receiving surfaces" — any package may be selected on any surface, because
 capability comes from the captured Discuss/Work/Seed/Refresh mode alone. Read
-this file only for the part S64 did not decide: whether a *scanner* skill
+this file only for the part that contract did not decide: whether a *scanner* skill
 becomes a required step inside patch authoring.
 
 That part remains a proposal. It would add `graph-scanner`, a package with an
@@ -37,7 +37,7 @@ blocking the graph-writing launch.
 
 ## UI path (proposal — confirmation required)
 
-1. Select the scanner for a Work, Seed, or Refresh task through the S64 picker,
+1. Select the scanner for a Work, Seed, or Refresh task through the package picker,
    then inspect its contract in Agent tasks. The staged skill id and version are
    visible with the compact pointer, not the skill body.
 2. The agent writes `patch.json`, invokes the scanner, reads its report, and may
@@ -103,11 +103,11 @@ blocking the graph-writing launch.
 ## Assert
 
 - A scanner package carries a locally testable script beside its `SKILL.md`,
-  which the prompt-level packages S64 ships do not.
+  which the shipped prompt-level packages do not.
 - Wheel and PyInstaller packaging include every non-Python scanner file; a
   packaged-resource test fails if any registered folder or file is absent.
 - Every task records the scanner's invocation state and advisory outcome
-  alongside the package versions S64 already records.
+  alongside the package versions already recorded.
 - Ordinary repository sessions cannot discover the staged skills.
 - The scanner reports only clean, findings, or unavailable; runtime and
   transport failure cannot masquerade as a graph finding.

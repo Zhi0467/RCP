@@ -68,9 +68,9 @@ only exit the rule leaves open, and it is most of the work.
    operations in one Proposal really are one intent, rather than a bundle
    smuggled through a relaxed limit. Intent is declared and checked against a
    closed set of shapes, never inferred from how the operations happen to look.
-3. **One profile now.** The elevated orchestrator profile is defined when
-   [S77](S77-auto-research-stops-at-belief.md) is confirmed, not built ahead of it
-   here.
+3. **One explicit orchestrator profile.** Its deliberate Decision exception is
+   defined in [Agent profiles](../specs/authority-and-proposals.md#agent-profiles),
+   not inferred from campaign wording.
 
 The human also chose to build the dispatch-time gate alongside this. That promise
 belongs to [S100](S100-permission-is-checked-twice.md), which shares this
@@ -132,16 +132,15 @@ cannot act on and stops being trustworthy.
 - A **supersede** or **merge** Proposal shows both nodes, because one of them
   alone does not state the question.
 - Approve and Reject are the existing controls. No new destination, no new
-  vocabulary, and no explanatory line under anything
-  ([S20](S20-no-ui-commentary-lines.md)).
+  vocabulary, and no explanatory line under anything.
 
 ## Boundary
 
 Not team membership, not the orchestrator, and not campaign scope. Those are
 [S100](S100-permission-is-checked-twice.md),
-[S77](S77-auto-research-stops-at-belief.md), and
-[S78](S78-one-budget-one-stop.md), and none of them can be driven until the
-machinery they describe exists.
+the [orchestration command contract](../specs/authority-and-proposals.md#orchestration-commands),
+and [S78](S78-one-budget-one-stop.md). This scenario does not restate those
+separate boundaries.
 
 Attaching Evidence to a Hypothesis stays direct, even though it argues for a
 status change. The status change is gated one layer down, and gating both would

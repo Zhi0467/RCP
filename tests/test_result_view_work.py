@@ -12,7 +12,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.runs.work import stream_work_run
-from rcp.service import RunRequest
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
@@ -85,6 +85,8 @@ def _execution(
     now = store.now()
     owner = store.local_owner
     assert owner is not None and owner.display_name is not None
+    dispatch_authority = resolve_dispatch_authority("node_chat", request)
+    assert dispatch_authority is not None
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -99,6 +101,7 @@ def _execution(
             parent_operation_id=parent_operation_id,
             native_session_id=request.session_id,
             stage_root=stage_root,
+            dispatch_authority=dispatch_authority,
             authorized_by=AuthorizedHuman(
                 space_id=store.space_id,
                 user_id=owner.user_id,

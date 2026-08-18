@@ -21,17 +21,24 @@ repair canonical state unless a separate outer task explicitly asks for a later 
 ## Check
 
 **Claims outrunning support.** Flag a conclusion that no Evidence establishes, a supported
-Hypothesis carried only by qualified or unrelated Evidence, or prose that drops a recorded caveat.
+Hypothesis carried only by qualified or unrelated Evidence, an applicable current
+Evidence-to-Hypothesis edge missing its claim-relative assessment, or prose that drops the edge's
+scope or qualifications. Treat a historical unassessed edge as legacy uncertainty, never as an
+implicit weight.
 
 **Relations hiding their reasoning.** Require an explanation of why a relation holds. Check that
 an Experiment `tests` a Hypothesis it can discriminate, `produces` the Evidence it generated, and
 uses `governed_by` or `blocked_by` only for genuine input gates. Check complete action chains rather
-than treating every Experiment without a Hypothesis or Decision as an orphan.
+than treating every Experiment without a Hypothesis or Decision as an orphan. On each
+Evidence-to-Hypothesis epistemic edge, verify that the relation states direction and the assessment
+separately states relevance, weight, optional scope, and qualifications. The same Evidence may bear
+differently on different Hypotheses. Flag an assessment attached to Hypothesis-to-Hypothesis
+`contradicts`, `produces`, `informs`, `addresses`, or another non-applicable relation.
 
 **Missing truthful roles.** Flag Evidence with no provenance or producing Experiment when one is
-known; a Blocker that blocks nothing; or an Experiment whose role is expressed neither through
-`tests`, `produces`, nor an action-gate chain. Accept honest isolation such as a newly recorded
-observation awaiting placement.
+known, or whose methodological `result` or `diagnostic` role conflicts with its observation; a
+Blocker that blocks nothing; or an Experiment whose role is expressed neither through `tests`, `produces`, nor an action-gate chain. Never interpret a legacy global strength label as a current
+edge weight. Accept honest isolation such as a newly recorded observation awaiting placement.
 
 **Split identity.** Flag duplicate nodes that divide one entity's claims, evidence, or action
 relations. Prefer reusing an existing identity over adding a near-copy.

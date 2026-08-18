@@ -30,8 +30,8 @@ chooses to update anyway goes through S31's ownership-aware pause — pause,
 replace, relaunch, resume — not a shortcut.
 
 If the application is **reusing** a source-built server rather than owning a
-sidecar, updating updates only the application. [S29](S29-refuse-instead-of-taking.md)'s
-exact-version rule will then correctly refuse to reuse that server until the
+sidecar, updating updates only the application. The exact-version ownership rule
+will then correctly refuse to reuse that server until the
 checkout catches up. That is right, and it is written here because it is
 confusing when discovered and unremarkable when stated.
 

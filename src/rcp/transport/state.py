@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -48,6 +49,11 @@ _LOCK_UNSAFE_ENTRY = "unsafe-entry"
 _KEPT_VIEW_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,238})\.html")
 _ARCHIVE_TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}T[0-9]{12}Z")
 _RETAINED_HISTORY_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
+_RETAINED_BRANCH_PATCH_PATTERN = re.compile(r"[0-9]{6}\.json")
+_RETAINED_BRANCH_MERGE_PATTERN = re.compile(r"[a-f0-9]{64}\.json")
+_RETAINED_BRANCH_DERIVED_NAMES = frozenset(
+    {"graph.json", "research.md", "glossary.json", "proposals.json", "coverage.json"}
+)
 _RETAINED_HISTORY_CHANGED_MESSAGE = (
     "Retained research changed since you reviewed it. Run the read-only preflight again "
     "before archiving."
@@ -257,11 +263,109 @@ def _retained_history_paths(root: Path) -> list[Path]:
                     if re.fullmatch(r"[0-9]{6}\.json", patch.name):
                         require_regular(patch, "retained patch")
                         paths.append(patch)
+
+    branches = root / "branches"
+    if os.path.lexists(branches):
+        try:
+            branches_mode = branches.lstat().st_mode
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not inspect retained graph branches at {branches}: {exc}"
+            ) from exc
+        if not stat.S_ISDIR(branches_mode):
+            raise StateUnavailable(
+                f"Retained graph branches path is not a regular directory: {branches}"
+            )
+        try:
+            branch_entries = sorted(branches.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not enumerate retained graph branches at {branches}: {exc}"
+            ) from exc
+        for branch in branch_entries:
+            try:
+                branch_id = uuid.UUID(branch.name)
+            except ValueError as exc:
+                raise StateUnavailable(
+                    f"Retained graph branch has a malformed canonical name: {branch}"
+                ) from exc
+            if str(branch_id) != branch.name or branch_id.version != 4:
+                raise StateUnavailable(
+                    f"Retained graph branch has a malformed canonical name: {branch}"
+                )
+            try:
+                branch_mode = branch.lstat().st_mode
+            except OSError as exc:
+                raise StateUnavailable(
+                    f"Could not inspect retained graph branch at {branch}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(branch_mode):
+                raise StateUnavailable(
+                    f"Retained graph branch path is not a regular directory: {branch}"
+                )
+
+            try:
+                entries = {child.name: child for child in branch.iterdir()}
+            except OSError as exc:
+                raise StateUnavailable(
+                    f"Could not enumerate retained graph branch at {branch}: {exc}"
+                ) from exc
+            allowed = {
+                "branch.json",
+                "patches",
+                "merges",
+                *_RETAINED_BRANCH_DERIVED_NAMES,
+            }
+            malformed = sorted(entries.keys() - allowed)
+            if malformed:
+                raise StateUnavailable(
+                    "Retained graph branch contains a malformed canonical entry: "
+                    f"{entries[malformed[0]]}"
+                )
+
+            metadata = branch / "branch.json"
+            require_regular(metadata, "retained graph branch metadata")
+            paths.append(metadata)
+            for name in _RETAINED_BRANCH_DERIVED_NAMES:
+                derived = entries.get(name)
+                if derived is not None:
+                    require_regular(derived, "retained graph branch derived output")
+
+            for directory_name, pattern, label in (
+                ("patches", _RETAINED_BRANCH_PATCH_PATTERN, "retained graph branch patch"),
+                ("merges", _RETAINED_BRANCH_MERGE_PATTERN, "retained graph branch merge receipt"),
+            ):
+                directory = branch / directory_name
+                try:
+                    directory_mode = directory.lstat().st_mode
+                except OSError as exc:
+                    raise StateUnavailable(
+                        f"Could not inspect {label} path at {directory}: {exc}"
+                    ) from exc
+                if not stat.S_ISDIR(directory_mode):
+                    raise StateUnavailable(
+                        f"{label.capitalize()} path is not a regular directory: {directory}"
+                    )
+                try:
+                    children = directory.iterdir()
+                    for child in children:
+                        if pattern.fullmatch(child.name) is None:
+                            raise StateUnavailable(
+                                f"{label.capitalize()} has a malformed canonical name: {child}"
+                            )
+                        require_regular(child, label)
+                        paths.append(child)
+                except StateUnavailable:
+                    raise
+                except OSError as exc:
+                    raise StateUnavailable(
+                        f"Could not enumerate {label} path at {directory}: {exc}"
+                    ) from exc
     return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
 
 
 def _retained_history_fingerprint(root: Path) -> str:
-    digest = hashlib.sha256(b"rcp-retained-history-v1\0")
+    digest = hashlib.sha256(b"rcp-retained-history-v2\0")
     for path in _retained_history_paths(root):
         relative = path.relative_to(root).as_posix().encode()
         try:
@@ -607,6 +711,16 @@ class StateWorkspace:
         """Publish one patch as the visible history commit point."""
 
         del patch_path
+        self.publish(relative_paths)
+
+    def publish_committed_branch_file(
+        self,
+        relative_paths: list[Path | str],
+        commit_path: Path | str,
+    ) -> None:
+        """Publish immutable branch metadata or a merge receipt as a commit point."""
+
+        _validated_branch_commit_path(commit_path)
         self.publish(relative_paths)
 
     def require_materialization_repair(self) -> None:
@@ -960,6 +1074,11 @@ class SSHStateWorkspace(StateWorkspace):
     def _refresh_snapshot(self) -> bool:
         if not self._remote_manifest_exists():
             return False
+        if self._publication_lease is not None:
+            self._publication_lease.assert_owned()
+            refreshed = self._sync_remote_tree()
+            self._publication_lease.assert_owned()
+            return refreshed
         with self._remote_advisory_lock(self.lock_dir) as lease:
             lease.assert_owned()
             refreshed = self._sync_remote_tree()
@@ -1372,6 +1491,22 @@ class SSHStateWorkspace(StateWorkspace):
                 lease=lease,
             )
 
+    def publish_committed_branch_file(
+        self,
+        relative_paths: list[Path | str],
+        commit_path: Path | str,
+    ) -> None:
+        """Commit immutable branch metadata or one merge receipt before derived files."""
+
+        with self.snapshot_lock, self._publication_lock() as lease:
+            commit = _validated_branch_commit_path(commit_path)
+            self._publish_committed_history(
+                relative_paths,
+                commit,
+                commit_is_directory=False,
+                lease=lease,
+            )
+
     def _publish_committed_history(
         self,
         relative_paths: list[Path | str],
@@ -1394,7 +1529,11 @@ class SSHStateWorkspace(StateWorkspace):
         if not includes_commit:
             raise ValueError("committed history publication is missing its patch files")
 
-        stage_name = commit_path.name if commit_is_directory else f"patch-{commit_path.name}"
+        if commit_path.parts and commit_path.parts[0] == "branches":
+            digest = hashlib.sha256(commit_path.as_posix().encode("utf-8")).hexdigest()[:16]
+            stage_name = f"branch-{digest}-{commit_path.name}"
+        else:
+            stage_name = commit_path.name if commit_is_directory else f"patch-{commit_path.name}"
         stage = self.remote_root / ".publish" / stage_name
         prepared = self._ssh(["mkdir", "-p", str(stage)])
         if prepared.returncode:
@@ -1555,7 +1694,54 @@ def _validated_relative_path(value: Path | str) -> Path:
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(f"state publish path must be relative: {relative}")
+    if relative.parts and relative.parts[0] == "branches":
+        _validated_branch_relative_path(relative)
     return relative
+
+
+def _validated_branch_id(value: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("branch paths require a canonical episode UUIDv4") from exc
+    if str(parsed) != value or parsed.version != 4:
+        raise ValueError("branch paths require a canonical episode UUIDv4")
+    return value
+
+
+def _validated_branch_relative_path(relative: Path) -> None:
+    parts = relative.parts
+    if len(parts) not in {3, 4}:
+        raise ValueError(f"invalid canonical branch path: {relative}")
+    _validated_branch_id(parts[1])
+    if len(parts) == 3 and parts[2] in {
+        "branch.json",
+        "graph.json",
+        "glossary.json",
+        "proposals.json",
+        "coverage.json",
+        "research.md",
+    }:
+        return
+    if len(parts) == 4:
+        if parts[2] == "patches" and re.fullmatch(r"[0-9]{6}\.json", parts[3]):
+            return
+        if parts[2] == "merges" and re.fullmatch(r"[a-f0-9]{64}\.json", parts[3]):
+            return
+    raise ValueError(f"invalid canonical branch path: {relative}")
+
+
+def _validated_branch_commit_path(value: Path | str) -> Path:
+    relative = _validated_relative_path(value)
+    parts = relative.parts
+    if len(parts) == 3 and parts[0] == "branches" and parts[2] == "branch.json":
+        _validated_branch_id(parts[1])
+        return relative
+    if len(parts) == 4 and parts[0] == "branches":
+        _validated_branch_id(parts[1])
+        if parts[2] == "merges" and re.fullmatch(r"[a-f0-9]{64}\.json", parts[3]):
+            return relative
+    raise ValueError(f"invalid committed branch path: {relative}")
 
 
 def _validated_batch_directory(value: Path | str) -> Path:
@@ -1567,9 +1753,18 @@ def _validated_batch_directory(value: Path | str) -> Path:
 
 def _validated_patch_path(value: Path | str) -> Path:
     relative = _validated_relative_path(value)
-    if relative.parent != Path("patches") or not re.fullmatch(r"[0-9]{6}\.json", relative.name):
-        raise ValueError(f"invalid committed patch path: {relative}")
-    return relative
+    if relative.parent == Path("patches") and re.fullmatch(r"[0-9]{6}\.json", relative.name):
+        return relative
+    parts = relative.parts
+    if (
+        len(parts) == 4
+        and parts[0] == "branches"
+        and parts[2] == "patches"
+        and re.fullmatch(r"[0-9]{6}\.json", parts[3])
+    ):
+        _validated_branch_id(parts[1])
+        return relative
+    raise ValueError(f"invalid committed patch path: {relative}")
 
 
 def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manifest, StateWorkspace]:

@@ -9,11 +9,9 @@ invariants: [8]
 
 # One window, several spaces, no confusion about which one you are in
 
-This scenario is a proposal and is **not yet human-confirmed**. The design is
-settled in
-[Spaces and project homes](../design/spaces-and-project-homes.md#multi-space-client-boundary)
-and
-[Team authentication and membership](../design/team-authentication-and-membership.md#where-the-token-lives).
+This scenario is a proposal and is **not yet human-confirmed**. The current
+boundaries are in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
+and [Project index and identity](../specs/api-web-and-desktop-projections.md#project-index-and-identity).
 
 Every RCP backend serves its own interface. So selecting a team space points the
 application window at that team server, and the screen a member is looking at is
@@ -91,6 +89,5 @@ of it is reachable through browser tooling, and no automated desktop harness
 exists yet, so it is driven manually through the built application, its
 accessibility tree, screenshots, and shell logs.
 
-The connection handshake's contents belong to
-[Team API compatibility](../design/team-api-compatibility.md#the-connection-handshake);
-this scenario asserts only what the window does with them.
+The connection handshake is an API projection contract; this scenario asserts
+only what the window does with it.

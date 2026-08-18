@@ -11,8 +11,26 @@ const server = await createServer({
 });
 const { LIVE_EPISODE_POLL_INTERVAL_MS, startLiveEpisodePolling } =
   await server.ssrLoadModule("/src/App.tsx");
+const { episodePollingTarget } = await server.ssrLoadModule("/src/hooks/useEpisodeDialogs.ts");
 
 after(() => server.close());
+
+test("episode polling follows active work and an ended episode's running branch merge", () => {
+  const live = { episode_id: "live", status: "running", graph_branch: null };
+  const merging = {
+    episode_id: "merging",
+    status: "completed",
+    graph_branch: { merge_state: "running" },
+  };
+  const merged = {
+    ...merging,
+    graph_branch: { merge_state: "merged" },
+  };
+
+  assert.equal(episodePollingTarget([merging])?.episode_id, "merging");
+  assert.equal(episodePollingTarget([merging, live])?.episode_id, "live");
+  assert.equal(episodePollingTarget([merged]), null);
+});
 
 test("live episode polling is single-flight and keeps failures visible until recovery", async () => {
   const timers = new Map();

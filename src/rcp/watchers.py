@@ -3,19 +3,26 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import sqlite3
 import subprocess
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Literal, Protocol, Self
+from typing import TYPE_CHECKING, Literal, Protocol, Self
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from rcp.core.models import AuthorizedHuman, Experiment, ExperimentDecisionPin, GraphState
+from rcp.core.models import AuthorizedHuman, Experiment, ExperimentDecisionPin, GraphState, Patch
+from rcp.core.transition_models import (
+    GraphHeadRef,
+    GraphTargetRef,
+    TransitionEvent,
+    TransitionTrace,
+)
 from rcp.limits import (
     WATCHER_CHECK_TIMEOUT_SECONDS,
     WATCHER_CHECK_WORKERS,
@@ -37,6 +44,9 @@ from rcp.storage import (
     WatcherStopRequest,
 )
 from rcp.transport.ssh import ssh_arguments
+
+if TYPE_CHECKING:
+    from rcp.runs.transition_event_reconciliation import AcceptedGraphBoundary
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +131,7 @@ class WatcherBinding(BaseModel):
     chat_id: str
     node_id: str | None = None
     episode_id: str | None = None
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str = ""
     continuation: WatcherContinuation
 
@@ -135,6 +146,13 @@ class WatcherCheckResult(BaseModel):
 WatcherCheckRunner = Callable[[WatchSpec, str, float], WatcherCheckResult]
 WatcherCompletionCallback = Callable[[list[WatcherRecord]], None]
 WatcherPollCompletedCallback = Callable[[], None]
+GraphWatcherTargetResolver = Callable[[GraphWatcherRecord], GraphTargetRef]
+
+
+def implicit_main_watcher_target(record: GraphWatcherRecord) -> GraphTargetRef:
+    """Resolve the stored target; migrated pre-branch watchers default to main."""
+
+    return record.graph_target
 
 
 class WatcherRetryGeneration:
@@ -340,23 +358,69 @@ def graph_condition_result(
     raise TypeError(f"Unsupported graph condition: {type(condition).__name__}")
 
 
+def graph_condition_transition_event_result(
+    condition: GraphCondition,
+    lifecycle_events: Sequence[TransitionEvent],
+    *,
+    armed_revision: int,
+    boundary_revision: int,
+) -> Literal["active", "completed"]:
+    """Evaluate stable events visible after a watcher's canonical arm boundary.
+
+    A node-status event is authoritative even when a later action in the same
+    transition removes the node from the final graph.  The strict revision
+    comparison also keeps watchers armed after a commit from consuming that
+    commit retroactively.  Proposal conditions currently have no lifecycle
+    event contract and therefore continue to use final-state evaluation.
+    """
+
+    if armed_revision >= boundary_revision:
+        return "active"
+    if not isinstance(condition, NodeStatusGraphCondition):
+        return "active"
+    for event in lifecycle_events:
+        if (
+            event.event_type == "node_status_changed"
+            and event.node_id == condition.node_id
+            and event.field == "status"
+            and isinstance(event.after, str)
+            and event.after in condition.status_in
+        ):
+            return "completed"
+    return "active"
+
+
 def evaluate_graph_watchers(
     store: AppStore,
     project_id: str,
     state: GraphState,
+    *,
+    lifecycle_events: Sequence[TransitionEvent] = (),
+    graph_target: GraphTargetRef | None = None,
+    watcher_target: GraphWatcherTargetResolver = implicit_main_watcher_target,
 ) -> list[list[StoredWatcherRecord]]:
-    """Evaluate one project's graph watchers and return coalesced ready deliveries.
+    """Evaluate one in-memory boundary without advancing the durable target head.
 
-    The caller supplies canonical state at a revision boundary or startup. A
-    degraded replay is deliberately a no-op. Completed external observers are
-    included by the store's existing grouping policy, so compatible conditions
-    that become ready together share one wake.
+    This low-level primitive exists for isolated evaluation and compatibility
+    tests. Production delivery routes accepted history through
+    ``reconcile_accepted_graph_boundaries``, which uses the same pure result
+    function while atomically checkpointing the boundary. A degraded replay is
+    deliberately a no-op. Lifecycle events must come from the accepted
+    transition at this exact boundary; callers must never pass a preview or an
+    uncommitted candidate.
+
+    Existing stored graph watchers implicitly target ``main``. The resolver is
+    injectable so branch-aware storage can route a boundary without teaching
+    this evaluator how targets are persisted.
     """
 
     if state.replay_status != "complete":
         return ready_graph_watcher_groups(store, project_id)
+    target = graph_target or GraphTargetRef()
     evaluated_at = store.now()
     for record in store.active_graph_watchers(project_id):
+        if watcher_target(record) != target:
+            continue
         if record.armed_revision is None:
             store.initialize_graph_watcher_baseline(
                 record.watcher_id,
@@ -366,27 +430,50 @@ def evaluate_graph_watchers(
             continue
         if record.armed_revision >= state.revision:
             continue
-        result = graph_condition_result(
-            record.condition,
-            state,
-            armed_revision=record.armed_revision,
-        )
-        if result != "removed":
-            try:
-                validate_graph_conditions([record.condition], state)
-            except ValueError as exc:
-                logger.error(
-                    "Stored graph watcher %s is semantically invalid: %s",
-                    record.watcher_id,
-                    exc,
-                )
-                result = "active"
+        result = graph_watcher_boundary_result(record, state, lifecycle_events)
         store.record_graph_watcher_result(
             record.watcher_id,
             result=result,
             evaluated_at=evaluated_at,
         )
     return ready_graph_watcher_groups(store, project_id)
+
+
+def graph_watcher_boundary_result(
+    record: GraphWatcherRecord,
+    state: GraphState,
+    lifecycle_events: Sequence[TransitionEvent],
+) -> Literal["active", "completed", "removed"]:
+    """Pure target-boundary evaluation shared by direct and durable reconciliation."""
+
+    if record.armed_revision is None:
+        raise ValueError("a graph watcher requires an arming revision before evaluation")
+    event_result = graph_condition_transition_event_result(
+        record.condition,
+        lifecycle_events,
+        armed_revision=record.armed_revision,
+        boundary_revision=state.revision,
+    )
+    result = (
+        "completed"
+        if event_result == "completed"
+        else graph_condition_result(
+            record.condition,
+            state,
+            armed_revision=record.armed_revision,
+        )
+    )
+    if result != "removed" and event_result != "completed":
+        try:
+            validate_graph_conditions([record.condition], state)
+        except ValueError as exc:
+            logger.error(
+                "Stored graph watcher %s is semantically invalid: %s",
+                record.watcher_id,
+                exc,
+            )
+            return "active"
+    return result
 
 
 def ready_graph_watcher_groups(
@@ -412,6 +499,12 @@ class _ProjectHistory(Protocol):
     def state(self) -> GraphState: ...
 
     def accepted_boundary_states(self) -> tuple[_AcceptedReplay, list[GraphState]]: ...
+
+    def accepted_patch_boundaries(
+        self,
+    ) -> tuple[_AcceptedReplay, list[tuple[GraphState, Patch, GraphState]]]: ...
+
+    def transition_trace_at_revision(self, revision: int) -> TransitionTrace | None: ...
 
 
 class _ExecutionMachine(Protocol):
@@ -519,6 +612,17 @@ class _ExperimentEpisodeReconciler(Protocol):
     ) -> None: ...
 
 
+class _GraphBoundaryReconciler(Protocol):
+    def __call__(
+        self,
+        store: AppStore,
+        project_id: str,
+        boundaries: Sequence[AcceptedGraphBoundary],
+        *,
+        current_head: GraphHeadRef,
+    ) -> list[list[StoredWatcherRecord]]: ...
+
+
 class _GraphWatcherReplayDegraded(RuntimeError):
     pass
 
@@ -532,6 +636,7 @@ class WatcherDelivery:
         *,
         retry: GraphWatcherRetryRegistry,
         project_service: Callable[[str], _ProjectService],
+        graph_project_service: Callable[[str, GraphTargetRef], _ProjectService] | None = None,
         generic_request: Callable[[list[StoredWatcherRecord]], object],
         experiment_operation_lock: Callable[[str], AbstractContextManager[object]],
         experiment_admission: _ExperimentAdmission,
@@ -547,10 +652,7 @@ class WatcherDelivery:
         task_graph_capable: Callable[[AgentTaskKind, object], bool],
         task_experiment_episode_id: Callable[[object], str | None],
         reconcile_experiment_episode: _ExperimentEpisodeReconciler,
-        evaluate_graph: Callable[
-            [AppStore, str, GraphState],
-            list[list[StoredWatcherRecord]],
-        ],
+        reconcile_graph_boundaries: _GraphBoundaryReconciler,
         ready_graph_groups: Callable[
             [AppStore, str],
             list[list[StoredWatcherRecord]],
@@ -560,6 +662,9 @@ class WatcherDelivery:
         self._store = store
         self._retry = retry
         self._project_service = project_service
+        self._graph_project_service = graph_project_service or (
+            lambda project_id, _target: project_service(project_id)
+        )
         self._generic_request = generic_request
         self._experiment_operation_lock = experiment_operation_lock
         self._experiment_admission = experiment_admission
@@ -572,7 +677,7 @@ class WatcherDelivery:
         self._task_graph_capable = task_graph_capable
         self._task_experiment_episode_id = task_experiment_episode_id
         self._reconcile_experiment_episode = reconcile_experiment_episode
-        self._evaluate_graph = evaluate_graph
+        self._reconcile_graph_boundaries = reconcile_graph_boundaries
         self._ready_graph_groups = ready_graph_groups
         self._logger = logger
 
@@ -596,9 +701,18 @@ class WatcherDelivery:
         if execution.applied_revision is None and not execution.armed_graph_watchers:
             self.deliver_ready_graph_wake_groups(project_id, source="task settlement")
             return
+        task = self._store.agent_task(execution.operation_id)
+        graph_target = (
+            GraphTargetRef()
+            if kind == "branch_merge"
+            else task.graph_target
+            if task is not None
+            else GraphTargetRef()
+        )
         self.evaluate_graph_wake_boundary(
             project_id,
             execution.applied_graph_state,
+            graph_target=graph_target,
             source=("agent patch" if execution.applied_revision is not None else "watcher arming"),
         )
 
@@ -628,7 +742,7 @@ class WatcherDelivery:
             return
         first = group[0]
         continuation = first.continuation
-        service = self._project_service(first.project_id)
+        service = self._graph_project_service(first.project_id, first.graph_target)
         if first.origin_task_kind == "auto_research":
             started: list[str] = []
 
@@ -660,9 +774,10 @@ class WatcherDelivery:
                 if not isinstance(state.nodes.get(control_node_id), Experiment):
                     self._store.stop_watchers(first.project_id, watcher_ids)
                     return
-                runtime = self._store.experiment_loop_runtime(
+                runtime = self._store.experiment_loop_runtime_for_target(
                     first.project_id,
                     control_node_id,
+                    first.graph_target,
                 )
                 episode = (
                     self._store.experiment_episode(runtime.episode_id)
@@ -679,6 +794,10 @@ class WatcherDelivery:
                             diagnostic=preflight.diagnostic,
                         )
                     return
+                if episode.graph_target != first.graph_target:
+                    raise ValueError(
+                        "An Experiment watcher resolved an episode on another graph target."
+                    )
                 current_machine = (
                     service.manifest.machine_map.get(runtime.run_on)
                     if runtime.run_on is not None
@@ -809,6 +928,7 @@ class WatcherDelivery:
         project_id: str,
         _trigger_state: GraphState | None,
         *,
+        graph_target: GraphTargetRef | None = None,
         source: str,
         retry_generation: WatcherRetryGeneration | None = None,
     ) -> None:
@@ -820,44 +940,90 @@ class WatcherDelivery:
             with self._retry.lock_for(project_id):
                 active_records = self._store.active_graph_watchers(project_id)
                 if active_records:
-                    service = self._project_service(project_id)
-                    replay, boundaries = service.history.accepted_boundary_states()
-                    if not self._retry.generation_is_current(retry_generation):
-                        return
-                    if replay.state.replay_status != "complete":
-                        raise _GraphWatcherReplayDegraded(
-                            "canonical graph replay is degraded at revision "
-                            f"{replay.state.revision}"
+                    targets = {
+                        record.graph_target.key: record.graph_target for record in active_records
+                    }
+                    if graph_target is not None:
+                        targets = (
+                            {graph_target.key: graph_target} if graph_target.key in targets else {}
+                        )
+                    for target in targets.values():
+                        service = self._graph_project_service(project_id, target)
+                        replay, boundaries = service.history.accepted_boundary_states()
+                        if not self._retry.generation_is_current(retry_generation):
+                            return
+                        if replay.state.replay_status != "complete":
+                            raise _GraphWatcherReplayDegraded(
+                                f"{target.key} graph replay is degraded at revision "
+                                f"{replay.state.revision}"
+                            )
+
+                        # Captured task/sync state is only an arrival signal. The
+                        # target-local durable head selects the not-yet-consumed
+                        # accepted boundaries; main and branch revisions never
+                        # consume one another's watcher events.
+                        consumed_head = self._store.graph_watcher_reconciliation_head(
+                            project_id,
+                            target,
+                        )
+                        if (
+                            consumed_head is not None
+                            and consumed_head.revision > replay.state.revision
+                        ):
+                            raise _GraphWatcherReplayDegraded(
+                                f"{target.key} graph is behind its consumed watcher head "
+                                f"{consumed_head.revision} at revision {replay.state.revision}"
+                            )
+                        trace_reader = getattr(
+                            service.history, "transition_trace_at_revision", None
+                        )
+                        from rcp.runs.transition_event_reconciliation import (
+                            AcceptedGraphBoundary,
                         )
 
-                    # Captured task/sync state is only an arrival signal. Every
-                    # production entry point replays accepted boundaries in canonical
-                    # order so reversed task settlement cannot invert terminal watcher
-                    # outcomes. Legacy rows are based at the coherent head and never
-                    # retroactively evaluated against earlier history.
-                    evaluated_at = self._store.now()
-                    for record in active_records:
-                        if record.armed_revision is None:
-                            initialized = self._retry.run_for_generation(
-                                retry_generation,
-                                lambda record=record: self._store.initialize_graph_watcher_baseline(
-                                    record.watcher_id,
-                                    armed_revision=replay.state.revision,
-                                    evaluated_at=evaluated_at,
-                                ),
+                        accepted_boundaries: list[AcceptedGraphBoundary] = []
+                        for boundary in boundaries:
+                            if (
+                                consumed_head is not None
+                                and boundary.revision < consumed_head.revision
+                            ):
+                                continue
+                            trace = (
+                                trace_reader(boundary.revision) if callable(trace_reader) else None
                             )
-                            if not initialized:
-                                return
-                    for boundary in boundaries:
-                        evaluated = self._retry.run_for_generation(
+                            if trace is not None and trace.pre_head.target != target:
+                                raise _GraphWatcherReplayDegraded(
+                                    "accepted transition target does not match its history view"
+                                )
+                            lifecycle_events = (
+                                tuple(trace.lifecycle_events) if trace is not None else ()
+                            )
+                            accepted_boundaries.append(
+                                AcceptedGraphBoundary(
+                                    target=target,
+                                    revision=boundary.revision,
+                                    transition_id=(
+                                        trace.transition_id if trace is not None else None
+                                    ),
+                                    state=boundary,
+                                    lifecycle_events=lifecycle_events,
+                                )
+                            )
+                        reconciled = self._retry.run_for_generation(
                             retry_generation,
-                            lambda boundary=boundary: self._evaluate_graph(
-                                self._store,
-                                project_id,
-                                boundary,
+                            lambda accepted_boundaries=accepted_boundaries, target=target, replay=replay: (
+                                self._reconcile_graph_boundaries(
+                                    self._store,
+                                    project_id,
+                                    accepted_boundaries,
+                                    current_head=GraphHeadRef(
+                                        target=target,
+                                        revision=replay.state.revision,
+                                    ),
+                                )
                             ),
                         )
-                        if not evaluated:
+                        if not reconciled:
                             return
         except _GraphWatcherReplayDegraded as exc:
             if not self._retry.run_for_generation(
@@ -878,7 +1044,11 @@ class WatcherDelivery:
             )
             return
         except Exception as exc:
-            if isinstance(exc, OSError) or self._state_unavailable(exc):
+            if (
+                isinstance(exc, OSError)
+                or self._state_unavailable(exc)
+                or _retryable_sqlite_error(exc)
+            ):
                 if not self._retry.run_for_generation(
                     retry_generation,
                     lambda: self._retry.schedule(project_id),
@@ -974,6 +1144,13 @@ class WatcherDelivery:
                     source="watcher poll",
                     retry_generation=generation,
                 )
+
+
+def _retryable_sqlite_error(exc: Exception) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
 
 
 def run_watcher_check(
@@ -1122,6 +1299,7 @@ def arm_watchers(
                 chat_id=binding.chat_id,
                 node_id=binding.node_id,
                 episode_id=binding.episode_id,
+                graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
@@ -1157,6 +1335,7 @@ def arm_watchers(
                     chat_id=binding.chat_id,
                     node_id=binding.node_id,
                     episode_id=binding.episode_id,
+                    graph_target=binding.graph_target,
                     execution_host=binding.execution_host,
                     condition=condition,
                     armed_revision=state.revision,

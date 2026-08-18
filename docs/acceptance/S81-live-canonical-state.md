@@ -9,11 +9,15 @@ covered_by:
   - tests/test_api.py::test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_refresh
   - tests/test_api.py::test_moved_head_refreshes_in_background_singleflight
   - tests/test_api.py::test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate
+  - tests/test_transition_api.py
+  - tests/test_transition_control_projection.py
   - web/tests/canonicalRevisionRefresh.test.mjs
   - web/tests/humanDraft.test.mjs
-last_passed: 2026-08-11 — an isolated served project reconciled an external
-  revision without reload, preserved three staged nodes as two committable plus
-  one behind, and kept both the browser console and server traceback log clean
+  - web/tests/projectTransition.test.mjs
+  - web/tests/transitionAppIntegration.test.mjs
+last_passed: 2026-08-18 — served browser drive previewed and synced a Blocker
+  resolution, replaced graph/control/guidance at one exact head, retained the
+  reversible draft reset, and kept browser console and server log clean
 invariants: [1, 2, 3, 6, 10b]
 ---
 
@@ -21,8 +25,9 @@ invariants: [1, 2, 3, 6, 10b]
 
 An open project stays aligned with canonical graph state. When any RCP surface
 applies a graph revision, every visible client for that project notices the new
-revision and reconciles its project snapshot. Newly asserted graph content and
-new Proposals therefore appear without a browser reload, desktop restart, view
+revision and reconciles one coherent project snapshot. Graph, Experiment
+control, guidance validity, and transition head therefore change atomically;
+new content and Proposals appear without a browser reload, desktop restart, view
 change, or agent Refresh run.
 
 Detection is cheap and read-only. A cache-only client heartbeat schedules a
@@ -38,8 +43,9 @@ entries remain committable.
 - Keep a project's Research or Inbox view open in the desktop app or browser.
 - Apply a Work patch from that client or another client connected to the same
   backend.
-- The visible graph and Inbox reconcile automatically within a short bounded
-  interval. There is no new refresh control.
+- The visible graph, Inbox, Experiment control, and guidance validity reconcile
+  automatically within a short bounded interval at one head. There is no new
+  refresh control and no client rule engine.
 - The circular project Refresh action keeps its existing meaning: run the
   Seed/Refresh ingestion agent. It is never repurposed as a display reload.
 - A transient detection or reconciliation failure leaves the last truthful
@@ -59,6 +65,9 @@ changed.
 3. Do not reload, navigate, hide, or refocus client B.
 4. Repeat while client B has an unsynced human draft based on the old revision.
 5. Observe the lightweight change check while the project remains unchanged.
+6. Stage a Blocker resolution whose backend trigger manifest requires preview.
+   Confirm preview is noncanonical, then Sync and confirm the browser replaces
+   graph/control/guidance/head together rather than splicing projections.
 
 ## Assert
 
@@ -72,6 +81,8 @@ changed.
 - `unsynced_human_draft_is_preserved_and_moved_entries_are_behind`
 - `refresh_agent_control_keeps_its_existing_meaning`
 - `probe_or_reload_failure_keeps_the_last_snapshot_visible`
+- `rule_triggering_human_edit_uses_backend_preview`
+- `mutation_projection_replaces_graph_control_guidance_and_head_atomically`
 
 ## Failure means
 

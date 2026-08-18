@@ -8,6 +8,7 @@ import {
   loadEpisodeMessages,
   loadEpisodes,
   loadExperimentEpisodes,
+  mergeEpisodeToMain,
   reauthorizeEpisode,
   sendEpisodeMessage,
   startEpisode,
@@ -60,6 +61,9 @@ const episode = {
   project_id: "project one",
   mode: "auto_research",
   control_node_id: null,
+  graph_target: { kind: "main" },
+  graph_base_head: null,
+  graph_branch: null,
   root_operation_id: rootTask.operation_id,
   current_operation_id: rootTask.operation_id,
   current_orchestrator_task_id: rootTask.operation_id,
@@ -107,17 +111,18 @@ test("the Auto-research dialog meters only operational invocations", () => {
   assert.doesNotMatch(html, /Start auto-research" disabled/);
 });
 
-function renderEpisodes(values, tasks = values.flatMap((value) => value.tasks)) {
+function renderEpisodes(values, { busyAction = null } = {}) {
   return renderToStaticMarkup(
     React.createElement(AutoResearchEpisodes, {
       episodes: values,
-      tasks,
+      tasks: values.flatMap((value) => value.tasks),
       messagesByEpisode: {},
-      busyAction: null,
+      busyAction,
       taskActionId: null,
       onInspectTask() {},
       async onLoadMessages() {},
       async onStop() {},
+      async onMerge() {},
       async onReauthorize() {},
       async onSendMessage() {},
       async onOperateTask() {},
@@ -277,6 +282,126 @@ test("reauthorization keeps the immutable old episode and inserts the fresh pare
   assert.equal(isLiveEpisode(freshEpisode), true);
 });
 
+const branchId = "8ba94d42-4d42-4ccb-9d2a-f299340dd3b8";
+const baseHead = {
+  target: { kind: "main" },
+  revision: 4,
+  transition_id: "transition-main-base-0004",
+};
+const branchHead = {
+  target: { kind: "branch", branch_id: branchId },
+  revision: 2,
+  transition_id: "transition-branch-head-0002",
+};
+
+function withGraphBranch(overrides = {}) {
+  return {
+    ...episode,
+    graph_target: { kind: "branch", branch_id: branchId },
+    graph_base_head: baseHead,
+    graph_branch: {
+      branch_id: branchId,
+      episode_id: episode.episode_id,
+      base_head: baseHead,
+      head: branchHead,
+      merge_eligible: true,
+      merge_state: "unmerged",
+      latest_successful_merge: null,
+      active_merge_task_id: null,
+      merge_diagnostic: null,
+      ...overrides,
+    },
+  };
+}
+
+test("an eligible episode shows its graph branch base, head, and merge action", () => {
+  const html = renderEpisodes([withGraphBranch()]);
+
+  assert.match(html, /Episode graph branch/);
+  assert.match(html, /Graph branch/);
+  assert.match(html, /8ba94d42\u20260dd3b8/);
+  assert.match(html, /Base on main/);
+  assert.match(html, />r4</);
+  assert.match(html, /Branch head/);
+  assert.match(html, />r2</);
+  assert.match(html, /Unmerged/);
+  assert.match(html, />Merge to main</);
+});
+
+test("an ineligible or running branch has no merge action, while another busy action disables it", () => {
+  const running = renderEpisodes([
+    withGraphBranch({
+      merge_eligible: false,
+      merge_state: "running",
+      active_merge_task_id: "merge-task",
+    }),
+  ]);
+  const disabled = renderEpisodes([withGraphBranch()], {
+    busyAction: `stop:${episode.episode_id}`,
+  });
+
+  assert.match(running, /Merge running/);
+  assert.doesNotMatch(running, />Merge to main</);
+  assert.match(disabled, /<button[^>]+disabled=""[^>]*>.*Merge to main/s);
+});
+
+test("merged and failed branch summaries stay visible without branch-management controls", () => {
+  const merged = renderEpisodes([
+    withGraphBranch({
+      merge_eligible: false,
+      merge_state: "merged",
+      latest_successful_merge: {
+        schema_generation: 1,
+        outcome: "committed",
+        provenance: {
+          schema_generation: 1,
+          merge_id: "merge-1",
+          branch_id: branchId,
+          episode_id: episode.episode_id,
+          branch_base_head: baseHead,
+          branch_head: branchHead,
+          rebased_main_head: { ...baseHead, revision: 10, transition_id: "main-before-0010" },
+          merge_task_id: "merge-task",
+        },
+        result_main_head: { ...baseHead, revision: 11, transition_id: "main-after-0011" },
+        authorized_by: { space_id: "space", user_id: "human", display_name: "Ada" },
+        created_at: "2026-08-12T08:05:00Z",
+      },
+    }),
+  ]);
+  const failed = renderEpisodes([
+    withGraphBranch({
+      merge_state: "failed",
+      merge_diagnostic: "The branch delta could not be rebased onto current main.",
+    }),
+  ]);
+
+  assert.match(merged, />Merged</);
+  assert.match(merged, /Merged on main/);
+  assert.match(merged, />r11</);
+  assert.doesNotMatch(merged, />Merge to main</);
+  assert.doesNotMatch(merged, /discard|switch|conflict viewer/i);
+  assert.match(failed, /Merge failed/);
+  assert.match(failed, /The branch delta could not be rebased onto current main\./);
+  assert.match(failed, />Merge to main</);
+});
+
+test("a paused or interrupted merge asks for action without presenting a failure", () => {
+  const needsAction = renderEpisodes([
+    withGraphBranch({
+      merge_state: "needs_action",
+      merge_diagnostic: "The merge was interrupted before it could finish.",
+    }),
+  ]);
+
+  assert.match(needsAction, /campaign-graph-branch needs_action/);
+  assert.match(needsAction, /Merge needs action/);
+  assert.match(needsAction, /campaign-branch-diagnostic needs_action/);
+  assert.match(needsAction, /The merge was interrupted before it could finish\./);
+  assert.match(needsAction, />Merge to main</);
+  assert.doesNotMatch(needsAction, /Merge failed|branch-failed|role="alert"/);
+});
+
 test("retries and continuations stay at their canonical actor depth", () => {
   const orchestratorRetryOne = {
     ...rootTask,
@@ -359,6 +484,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     });
     await stopEpisode("/api/projects/demo", "episode/alpha");
     await reauthorizeEpisode("/api/projects/demo", "episode/alpha", 4);
+    await mergeEpisodeToMain("/api/projects/demo", "episode/alpha");
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
     await loadExperimentEpisodes();
@@ -390,6 +516,11 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       path: "/api/projects/demo/episodes/episode%2Falpha/reauthorize",
       method: "POST",
       body: JSON.stringify({ invocation_ceiling: 4 }),
+    },
+    {
+      path: "/api/projects/demo/episodes/episode%2Falpha/merge",
+      method: "POST",
+      body: null,
     },
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/messages",

@@ -5,6 +5,7 @@ import pytest
 from rcp.config import load_manifest, write_project_scope
 from rcp.core.materialize import prepare_patch_bookkeeping
 from rcp.core.models import Patch
+from rcp.core.operations import adapt_persisted_patch_document, graph_operations_from_proposal
 from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
@@ -110,6 +111,11 @@ def proposal_patch() -> Patch:
                         "source": "ev/replanning-activation",
                         "target": "hyp/replanning-restores-plasticity",
                         "relation": "supports",
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "moderate",
+                            "scope": "Analytic activation evidence.",
+                        },
                     }
                 ],
             },
@@ -161,6 +167,7 @@ def content_proposal_patch() -> Patch:
 
 def ontology_proposal_patch() -> Patch:
     return Patch(
+        schema_generation=1,
         kind="refresh",
         author="agent",
         summary="Proposed a project-specific ontology type.",
@@ -179,7 +186,13 @@ def ontology_proposal_patch() -> Patch:
                             "consequences": "New hypotheses may use this custom semantic type.",
                             "decision_needed": "Decide whether to activate the custom type.",
                         },
-                        "ops": [{"op": "set_ontology", "ontology": ontology_payload()}],
+                        "ops": [
+                            {
+                                "op": "set_ontology",
+                                "intent": "legacy_ontology_change",
+                                "ontology": ontology_payload(),
+                            }
+                        ],
                         "related_node_ids": [],
                         "related_config_keys": ["ontology"],
                         "base_rev": 1,
@@ -212,6 +225,11 @@ def evidence_proposal_patch(*, remove_cause: bool = False) -> Patch:
                     "source": "ev/replanning-result",
                     "target": "hyp/replanning-restores-plasticity",
                     "relation": "supports",
+                    "assessment": {
+                        "relevance": "direct",
+                        "weight": "moderate",
+                        "scope": "Held-out learning curve recovery.",
+                    },
                 }
             ],
         },
@@ -295,8 +313,8 @@ def test_content_intent_survives_materialization_and_applies_without_evidence(
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
     )
 
-    assert stored.ops[0]["intent"] == "content_change"
-    assert "cause" not in stored.ops[0]["nodes"][0]
+    assert stored.ops[0].intent == "content_change"
+    assert stored.ops[0].nodes[0].cause is None
 
     state = service.decide_proposal(
         stored.id,
@@ -357,7 +375,7 @@ def test_approved_removal_intent_can_remove_an_accepted_hypothesis(manifest) -> 
         author="human",
         summary="Approved removal of the accepted hypothesis.",
         ops=[
-            *proposal.ops,
+            *graph_operations_from_proposal(proposal.ops),
             {
                 "op": "resolve_proposals",
                 "resolutions": [{"id": proposal.id, "status": "approved"}],
@@ -483,9 +501,9 @@ def test_human_created_proposal_records_operation_provenance(manifest) -> None:
 
     prepared = prepare_patch_bookkeeping(state, patch)
 
-    proposal = prepared.ops[0]["proposals"][0]
-    assert proposal["created_by"] == "human"
-    assert proposal["created_by_operation_id"] == "human-create-proposal"
+    proposal = prepared.ops[0].proposals[0]
+    assert proposal.created_by == "human"
+    assert proposal.created_by_operation_id == "human-create-proposal"
 
 
 def test_agent_cannot_resolve_a_pending_proposal_with_human_decision_status(manifest) -> None:
@@ -532,7 +550,11 @@ def test_agent_ontology_proposal_is_rejected(manifest) -> None:
 def test_historical_ontology_proposal_remains_replayable(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    patch = ontology_proposal_patch().model_copy(update={"revision": 2})
+    raw = ontology_proposal_patch().model_dump(mode="python", exclude_unset=True)
+    raw.pop("schema_generation", None)
+    raw["ops"][0]["proposals"][0]["ops"][0].pop("intent", None)
+    raw["revision"] = 2
+    patch = Patch.model_validate(adapt_persisted_patch_document(raw))
 
     report = validate_patch(
         history.state(),
@@ -547,12 +569,14 @@ def test_historical_ontology_proposal_remains_replayable(manifest) -> None:
 def test_historical_non_evidence_belief_cause_remains_replayable(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    patch = proposal_patch().model_copy(update={"revision": 2})
-    update = patch.ops[0]["proposals"][0]["ops"][0]["nodes"][0]
+    raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
+    raw["revision"] = 2
+    update = raw["ops"][0]["proposals"][0]["ops"][0]["nodes"][0]
     update["cause"] = {
         "kind": "proposal_resolution",
         "ref_id": "prop/activate-replanning-hypothesis",
     }
+    patch = Patch.model_validate(raw)
 
     report = validate_patch(
         history.state(),
@@ -567,8 +591,10 @@ def test_historical_non_evidence_belief_cause_remains_replayable(manifest) -> No
 def test_replay_does_not_recheck_rcp_owned_proposal_base_revision(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    patch = proposal_patch().model_copy(update={"revision": 2})
-    patch.ops[0]["proposals"][0]["base_rev"] = 999
+    raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
+    raw["revision"] = 2
+    raw["ops"][0]["proposals"][0]["base_rev"] = 999
+    patch = Patch.model_validate(raw)
 
     report = validate_patch(
         history.state(),
@@ -707,8 +733,9 @@ def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
 ) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    patch = proposal_patch().model_copy(update={"source_operation_id": "agent-create-proposal"})
-    proposal = patch.ops[0]["proposals"][0]
+    raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
+    raw["source_operation_id"] = "agent-create-proposal"
+    proposal = raw["ops"][0]["proposals"][0]
     bookkeeping = {
         "related_node_ids": ["rq/learning-after-shift"],
         "related_edge_ids": ["provider/supplied"],
@@ -729,25 +756,26 @@ def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
             proposal.pop(field, None)
     else:
         proposal.update(bookkeeping)
+    patch = Patch.model_validate(raw)
 
     canonical, result = history.append(patch)
-    prepared = canonical.ops[0]["proposals"][0]
+    prepared = canonical.ops[0].proposals[0]
     admitted = result.state.proposals["prop/activate-replanning-hypothesis"]
 
     assert canonical.admission == "accepted"
-    assert prepared["base_rev"] == 1
-    assert prepared["related_node_ids"] == ["hyp/replanning-restores-plasticity"]
-    assert prepared["related_edge_ids"] == ["edge/replanning-activation"]
-    assert prepared["related_config_keys"] == []
-    assert prepared["status"] == "pending"
-    assert prepared["created_by"] == "agent"
-    assert prepared["created_by_operation_id"] == "agent-create-proposal"
-    assert prepared["raised_rev"] == 0
-    assert prepared["resolved_rev"] is None
-    assert prepared["resolved_by"] is None
-    assert prepared["resolved_by_operation_id"] is None
-    assert prepared["resolution_reason"] is None
-    assert prepared["rejection_reason"] is None
+    assert prepared.base_rev == 1
+    assert prepared.related_node_ids == ["hyp/replanning-restores-plasticity"]
+    assert prepared.related_edge_ids == ["edge/replanning-activation"]
+    assert prepared.related_config_keys == []
+    assert prepared.status == "pending"
+    assert prepared.created_by == "agent"
+    assert prepared.created_by_operation_id == "agent-create-proposal"
+    assert prepared.raised_rev == 0
+    assert prepared.resolved_rev is None
+    assert prepared.resolved_by is None
+    assert prepared.resolved_by_operation_id is None
+    assert prepared.resolution_reason is None
+    assert prepared.rejection_reason is None
     assert admitted.base_rev == 1
     assert admitted.related_node_ids == ["hyp/replanning-restores-plasticity"]
     assert admitted.related_edge_ids == ["edge/replanning-activation"]
@@ -768,18 +796,26 @@ def test_proposal_bookkeeping_derives_removed_edge_dependencies_from_state(manif
     history.append(seed_patch())
     state = history.state()
     edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
-    patch = proposal_patch()
-    proposal = patch.ops[0]["proposals"][0]
-    proposal["ops"] = [{"op": "remove_edges", "edge_ids": [edge_id]}]
+    raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
+    proposal = raw["ops"][0]["proposals"][0]
+    proposal["ops"] = [
+        {
+            "op": "remove_edges",
+            "intent": "protected_relation_change",
+            "edge_ids": [edge_id],
+        }
+    ]
     proposal["related_node_ids"] = ["provider/supplied"]
+    patch = Patch.model_validate(raw)
 
     prepared = prepare_patch_bookkeeping(state, patch)
 
-    assert prepared.ops[0]["proposals"][0]["related_node_ids"] == [
+    prepared_proposal = prepared.ops[0].proposals[0]
+    assert prepared_proposal.related_node_ids == [
         "hyp/replanning-restores-plasticity",
         "rq/learning-after-shift",
     ]
-    assert prepared.ops[0]["proposals"][0]["related_edge_ids"] == [edge_id]
+    assert prepared_proposal.related_edge_ids == [edge_id]
 
 
 def test_canonical_patch_persists_dependencies_seen_after_earlier_same_patch_operations(
@@ -816,6 +852,11 @@ def test_canonical_patch_persists_dependencies_seen_after_earlier_same_patch_ope
                         "source": "ev/same-patch-removal-dependency",
                         "target": "hyp/replanning-restores-plasticity",
                         "relation": "weakens",
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "limited",
+                            "scope": "Same-patch evidence fixture.",
+                        },
                     }
                 ],
             },
@@ -841,8 +882,8 @@ def test_canonical_patch_persists_dependencies_seen_after_earlier_same_patch_ope
 
     canonical, result = history.append(patch)
 
-    stored = canonical.ops[2]["proposals"][0]
-    assert edge_id in stored["related_edge_ids"]
+    stored = canonical.ops[2].proposals[0]
+    assert edge_id in stored.related_edge_ids
     assert edge_id in result.state.proposals[proposal_id].related_edge_ids
     assert edge_id in history.state().proposals[proposal_id].related_edge_ids
 
@@ -903,6 +944,7 @@ def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manife
     history.append(seed_patch())
     before = manifest.path.read_text(encoding="utf-8")
     patch = Patch(
+        schema_generation=1,
         kind="refresh",
         author="agent",
         summary="Proposed a repository on an unknown machine.",
@@ -924,6 +966,7 @@ def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manife
                         "ops": [
                             {
                                 "op": "set_project_truth_scope",
+                                "intent": "legacy_project_truth_scope_change",
                                 "truth_scope": ["repo-a", "repo-b", "repo-c"],
                                 "repository": {
                                     "alias": "repo-c",
@@ -970,16 +1013,17 @@ def test_manifest_scope_write_validates_before_replacing_file(manifest) -> None:
 def test_proposal_replay_is_dry_run_materialized_at_creation(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
-    patch = proposal_patch()
-    raw_proposal = patch.ops[0]["proposals"][0]
+    raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
+    raw_proposal = raw["ops"][0]["proposals"][0]
     raw_proposal["ops"] = [
         {
             "op": "create_edges",
+            "intent": "protected_relation_change",
             "edges": [
                 {
                     "source": "rq/learning-after-shift",
                     "target": "hyp/replanning-restores-plasticity",
-                    "relation": "not-a-relation",
+                    "relation": "unknown_relation",
                 }
             ],
         }
@@ -988,6 +1032,7 @@ def test_proposal_replay_is_dry_run_materialized_at_creation(manifest) -> None:
         "hyp/replanning-restores-plasticity",
         "rq/learning-after-shift",
     ]
+    patch = Patch.model_validate(raw)
 
     with pytest.raises(PatchRejected) as caught:
         history.append(patch)
@@ -1000,6 +1045,7 @@ def test_agent_cannot_propose_a_project_scope_change(manifest, tmp_path) -> None
     history = HistoryManager(manifest)
     history.append(seed_patch())
     patch = Patch(
+        schema_generation=1,
         kind="refresh",
         author="agent",
         summary="Proposed adding a valid repository.",
@@ -1021,6 +1067,7 @@ def test_agent_cannot_propose_a_project_scope_change(manifest, tmp_path) -> None
                         "ops": [
                             {
                                 "op": "set_project_truth_scope",
+                                "intent": "legacy_project_truth_scope_change",
                                 "truth_scope": ["repo-a", "repo-b", "repo-c"],
                                 "repository": {
                                     "alias": "repo-c",

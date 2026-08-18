@@ -23,6 +23,30 @@ export interface OneHopRelationGroups {
   outgoing: RelationPeerGroup[];
 }
 
+type EvidenceAssessmentPresentation = NonNullable<Edge["assessment"]> | "legacy";
+
+const assessedEvidenceRelations = new Set([
+  "supports",
+  "weakens",
+  "refutes",
+  "inconclusive",
+  "contradicts",
+]);
+
+export function evidenceAssessmentPresentation(
+  edge: Edge,
+  allNodes: Record<string, GraphNode>,
+): EvidenceAssessmentPresentation | null {
+  if (
+    allNodes[edge.source]?.type !== "evidence" ||
+    allNodes[edge.target]?.type !== "hypothesis" ||
+    !assessedEvidenceRelations.has(edge.relation)
+  ) {
+    return null;
+  }
+  return edge.assessment ?? "legacy";
+}
+
 const MODAL_FOCUSABLE_SELECTOR =
   'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
@@ -310,6 +334,7 @@ function RelationFlow({
               key={`incoming-${group.nodeId}`}
               group={group}
               node={allNodes[group.nodeId]}
+              allNodes={allNodes}
               validationMessages={validationMessages}
               direction="incoming"
               onSelectNode={onSelectNode}
@@ -329,6 +354,7 @@ function RelationFlow({
               key={`outgoing-${group.nodeId}`}
               group={group}
               node={allNodes[group.nodeId]}
+              allNodes={allNodes}
               validationMessages={validationMessages}
               direction="outgoing"
               onSelectNode={onSelectNode}
@@ -343,6 +369,7 @@ function RelationFlow({
 interface RelationPeerProps {
   group: RelationPeerGroup;
   node?: GraphNode;
+  allNodes: Record<string, GraphNode>;
   validationMessages: ValidationMessage[];
   direction: "incoming" | "outgoing";
   onSelectNode: (nodeId: string) => void;
@@ -351,6 +378,7 @@ interface RelationPeerProps {
 function RelationPeer({
   group,
   node,
+  allNodes,
   validationMessages,
   direction,
   onSelectNode,
@@ -359,12 +387,39 @@ function RelationPeer({
     <div className="relation-map-edges">
       {group.edges.map((edge) => {
         const flags = edgeValidationFlags(edge.id, validationMessages);
+        const assessment = evidenceAssessmentPresentation(edge, allNodes);
         return (
           <div className={`relation-map-edge${flags.length > 0 ? " has-flag" : ""}`} key={edge.id}>
             <span className="relation-map-edge-arrow" aria-hidden="true">
               ↓
             </span>
             <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
+            {assessment === "legacy" && (
+              <span className="relation-map-edge-warning">
+                <AlertTriangle size={12} />
+                Legacy unassessed relation
+              </span>
+            )}
+            {assessment && assessment !== "legacy" && (
+              <>
+                <span
+                  className="relation-map-edge-label"
+                  aria-label={`Evidence assessment: ${assessment.relevance} relevance, ${assessment.weight} weight`}
+                >
+                  Assessment · {humanize(assessment.relevance)} relevance ·{" "}
+                  {humanize(assessment.weight)} weight
+                </span>
+                {assessment.scope && (
+                  <span className="relation-map-edge-label">Scope · {assessment.scope}</span>
+                )}
+                {assessment.qualifications.length > 0 && (
+                  <span className="relation-map-edge-warning">
+                    <AlertTriangle size={12} />
+                    Qualifications · {assessment.qualifications.join(" · ")}
+                  </span>
+                )}
+              </>
+            )}
             {flags.map((flag, index) => (
               <span
                 className="relation-map-edge-warning"

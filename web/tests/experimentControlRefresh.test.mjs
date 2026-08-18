@@ -10,10 +10,13 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const {
+  activeBranchMergeTask,
   failedTaskActionNeedsAuthoritativeProjectReload,
   loadExperimentWatcherPoll,
   terminalTaskNeedsAuthoritativeProjectReload,
+  terminalTasksSince,
 } = await server.ssrLoadModule("/src/App.tsx");
+const { reconcileKnownActiveTasks } = await server.ssrLoadModule("/src/hooks/useAgentTasks.ts");
 
 after(() => server.close());
 
@@ -31,18 +34,74 @@ test("terminal Experiment work refetches control state even without a graph revi
     status: "paused",
   };
   const ordinaryChat = {
+    kind: "project_chat",
     status: "succeeded",
     applied_revision: null,
     request: { patch_kind: "work" },
+  };
+  const branchMerge = {
+    ...ordinaryChat,
+    kind: "branch_merge",
   };
 
   assert.equal(terminalTaskNeedsAuthoritativeProjectReload(completedLoop), true);
   assert.equal(terminalTaskNeedsAuthoritativeProjectReload(pausedLoop), true);
   assert.equal(terminalTaskNeedsAuthoritativeProjectReload(ordinaryChat), false);
+  assert.equal(terminalTaskNeedsAuthoritativeProjectReload(branchMerge), true);
   assert.equal(
     terminalTaskNeedsAuthoritativeProjectReload({ ...ordinaryChat, applied_revision: 7 }),
     true,
   );
+});
+
+test("poll reconciliation observes every task that terminalized, not only the selected active task", () => {
+  const previous = [
+    { operation_id: "newer", kind: "auto_research", status: "running" },
+    { operation_id: "merge", kind: "branch_merge", status: "running" },
+    { operation_id: "chat", kind: "project_chat", status: "succeeded" },
+  ];
+  const current = [
+    { ...previous[0], status: "running" },
+    { ...previous[1], status: "succeeded" },
+    previous[2],
+  ];
+
+  assert.deepEqual(
+    terminalTasksSince(previous, current).map((task) => task.operation_id),
+    ["merge"],
+  );
+  assert.equal(
+    terminalTasksSince(previous, current).some(terminalTaskNeedsAuthoritativeProjectReload),
+    true,
+  );
+});
+
+test("a fast merge completion remains observable while another task keeps polling active", () => {
+  const main = { operation_id: "main", kind: "auto_research", status: "running" };
+  const merge = { operation_id: "merge", kind: "branch_merge", status: "queued" };
+  const responseEpisode = {
+    graph_branch: { active_merge_task_id: merge.operation_id },
+    tasks: [merge],
+  };
+  const knownActive = new Map();
+
+  assert.deepEqual(reconcileKnownActiveTasks(knownActive, [main]), []);
+  const started = activeBranchMergeTask(responseEpisode);
+  assert.equal(started, merge);
+  knownActive.set(started.operation_id, started);
+  // A concurrent project reload may still return the pre-commit graph here.
+  assert.deepEqual(reconcileKnownActiveTasks(knownActive, [main, merge]), []);
+  // Its task request may then observe the terminal merge and must force another reload.
+  const terminal = reconcileKnownActiveTasks(knownActive, [
+    main,
+    { ...merge, status: "succeeded" },
+  ]);
+
+  assert.deepEqual(
+    terminal.map((task) => task.operation_id),
+    ["merge"],
+  );
+  assert.equal(terminal.some(terminalTaskNeedsAuthoritativeProjectReload), true);
 });
 
 test("failed Experiment Resume and Retry refetch authoritative stop state", () => {

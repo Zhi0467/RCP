@@ -31,7 +31,7 @@ unavailable.
 
 Network access means the provider can use its native web search and fetch tools
 without an interactive approval that RCP cannot present. It does not grant
-unrestricted shell commands, repository writes, graph authority, or paper
+additional shell commands, repository write roots, graph authority, or paper
 authorship.
 
 ## UI path (confirmed)
@@ -73,8 +73,8 @@ page and completed normally.
 - `resume_keeps_web_access` — continuing a native session does not lose the
   grant.
 - `authority_is_unchanged` — Discuss and Paper Coach remain read-only,
-  Seed/Refresh remain scratch-only, and only Work retains unrestricted
-  repository and graph-operational authority.
+  Seed/Refresh remain scratch-only, and only Work retains exact admitted-project
+  operational write access plus its optional semantic graph channel.
 - `receipts_tell_the_truth` — every user-facing task records network access as
   enabled; offline Patch correction remains explicit.
 
