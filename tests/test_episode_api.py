@@ -276,7 +276,7 @@ def test_episode_mail_is_durable_when_immediate_delivery_fails(
         raise RuntimeError("delivery transport is unavailable")
 
     monkeypatch.setattr(
-        "rcp.api.app.deliver_pending_auto_research_mail",
+        "rcp.api.episode_routes.deliver_pending_auto_research_mail",
         delivery_is_temporarily_unavailable,
     )
 
