@@ -6,8 +6,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-import rcp.runs.result_views as result_views
-from rcp.runs.result_views import (
+import rcp.runs.tasks.result_views as result_views
+from rcp.runs.tasks.result_views import (
     discover_result_view,
     list_local_result_view_files,
     prepare_local_result_view_slot,

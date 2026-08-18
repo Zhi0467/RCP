@@ -503,11 +503,11 @@ only guards whose fact can be returned atomically by the new transition seam.
   identical (`runs/graph.py:1177-1194`, `runs/work.py:4959-4976`). Their
   corresponding lost-lock functions deliberately differ, so a broad
   `CanonicalLockObserver` was not established by this clone alone.
-- `_result_view_id` is duplicated byte for byte (`runs/result_views.py:233-236`,
-  `transport/run_stage.py:1272-1275`). This is the one confirmed Phase 4 move:
-  expose one descriptively named validator from `rcp.artifacts` beside
-  `ResultViewDescriptor` and import it from both callers. Do not create a value
-  type or expand the phase into a duplicate sweep.
+- At the audited baseline, `_result_view_id` was duplicated byte for byte in the
+  result-view task module and `transport/run_stage.py`. Phase 4a subsequently
+  centralized it as `validate_result_view_id` in `rcp.artifacts`; the result-view
+  caller now lives in `runs/tasks/result_views.py`. This was the one confirmed
+  Phase 4 move, not permission for a duplicate sweep or a new value type.
 - User-ID and graph-condition nonblank validators are repeated in `storage/models.py:65-71`, `storage/models.py:109-115`, `storage/models.py:1157-1173`, and `storage/models.py:1191-1197`.
 - Directory fsync helpers at `projects.py:1820` and `history/manager.py:1609`
   have normalized-AST-identical bodies but different method/function shapes.
@@ -1006,9 +1006,12 @@ repository/Unit-of-Work rewrite does not follow from the 242-method count.
 **The concept.** A rule written in two places can drift, and nothing announces when it
 has. There are two flavors, and the second is far more dangerous.
 
-**Flavor one: literal copies.** `_result_view_id` exists twice, character for character,
-at [result_views.py:233](../../src/rcp/runs/result_views.py) and
-[run_stage.py:1272](../../src/rcp/transport/run_stage.py):
+**Flavor one: literal copies.** At the audited pre-refactor baseline,
+`_result_view_id` existed twice, character for character, in the result-view task
+module and [run_stage.py](../../src/rcp/transport/run_stage.py). Phase 4a moved the
+shared validator to [artifacts.py](../../src/rcp/artifacts.py), and the result-view
+caller later moved to
+[tasks/result_views.py](../../src/rcp/runs/tasks/result_views.py):
 
 ```python
 def _result_view_id(value: str) -> str:

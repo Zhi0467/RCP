@@ -5,8 +5,9 @@
   committed. Phase 3 found four qualifying harmful partial-write windows; two
   Auto-research endings, graph-repair admission, and the final cross-store
   Experiment-loop recovery are committed. Phase 5's paper, chat, history,
-  generic-watcher, result-view, Sync, task, and Experiment routers are
-  committed. The detailed Phases 5–7 re-review remains the work order.
+  generic-watcher, result-view, Sync, task, Experiment, and episode routers are
+  committed. Phase 6's result-view task owner is implemented and verified; the
+  remaining detailed Phases 5–7 re-review remains the work order.
 - **Originally confirmed:** 2026-08-18. **Phases 0–4 re-review opened and
   closed:** 2026-08-18. **Phases 5–7 re-review closed:** 2026-08-19.
 - **Every grouping in this document was checked against the code**, not inferred
@@ -52,6 +53,8 @@ does not silently amend it.
 | 2026-08-19 | 5 / Sync     | Sync and Sync preview move together into `api/sync.py`. `ApiServices` exposes the already-constructed display cache, watcher delivery object, and re-entrant Experiment operation locks through narrow required dependencies. Human Sync still takes the Experiment lock only for node removal, ordinary edits remain lock-free, active control ids are main-target-only, accepted Sync alone evaluates the watcher wake boundary, preview has no operational side effects, and exception mappings are unchanged. | Committed as `62ee427`; the main-agent focused Sync/transition/membership/route set, full backend suite, Ruff, and both hook passes are green. |
 | 2026-08-19 | 5 / tasks    | All nine task handlers and eleven route entries move together into `api/tasks.py`: dispatch, list/detail, Pause, Resume, Retry, graph repair, and GET/HEAD artifact preview/download. `ApiServices` exposes the exact existing `BackgroundAgentTasks` and `ExperimentAdmission` objects as required narrow dependencies; Start/Resume/Retry continue sharing the original result-view Keep locks, and attachment claim/release, visibility, authority, recovery refusals, CSP, and HTTP error mappings are unchanged. The two pure profile/skill resolution helpers used by both task routes and Auto-research worker composition move once into `api/task_requests.py`, so neither new module imports `api.app` and no policy is duplicated. This slice deliberately does not implement Phase 7's episode-lineage recovery dispatch. The task list/detail test and non-blocking preview/download boundary test move to `test_api_tasks.py`; the broader artifact lifecycle remains with its cross-module chat/run coverage. | Committed as `e58a9d2`; 108 main-agent focused tests, the full backend suite, Ruff, the exact-new-file hooks, and the all-files hooks are green. |
 | 2026-08-19 | 5 / Experiment | Experiment Run, retired bulk watcher Stop, and graceful Stop loop move together into `api/experiments.py`, with the greedy `.../watchers/stop` route still registered before `{node_id:path}/stop`. The same module owns the exact bound-episode Stop helper used by both the Experiment route and the still-unmoved episode Stop route; its store and catalog are explicit inputs, and both callers retain the original re-entrant per-project lock. The four store-aware runtime/control projection functions move once into `api/experiment_controls.py` rather than duplicating them or making pure graph `rcp.control` storage-aware. The project-safe HTTP episode lookup moves to its existing `api/episodes.py` owner. No `ApiServices` field, lock, fallback, dynamic state mirror, or product behavior was added; main/branch target identity, pending-watcher claim, Stop settlement, and error mappings are unchanged. Existing dedicated Experiment Stop/index tests already own these routes, so no artificial test move was made. | Committed as `61a8575`; 96 main-agent focused tests, the full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
+| 2026-08-19 | 5 / episodes | All eight episode handlers and nine route entries move together into `api/episode_routes.py`: list, start, exact Stop, branch merge, reauthorize, mail list/send, and GET/HEAD report preview. The five branch reservation/projection helpers move once into `api/episode_branches.py` with explicit store/catalog inputs; `app.py` binds only the two callbacks still used by composition and recovery. The route module reuses the exact existing background engine, identity boundary, per-project Experiment lock, and Experiment Stop helper. Branch identity, merge eligibility, writable-state checks, durable-mail-before-best-effort-delivery, report visibility, membership, and HTTP mappings are unchanged; no `ApiServices` field, fallback, or second lock was added. | Committed as `a1f9f2f`; the main-agent episode/result-view focused set, full backend suite, Ruff, exact-new-file hooks, and all-files hooks are green. |
+| 2026-08-19 | 6 / result views | The existing result-view stage primitives and the exact ten-definition Work lifecycle cluster move together into `runs/tasks/result_views.py`; the old `runs/result_views.py` is removed with no compatibility shim. `work.py` imports only the seven lifecycle names it calls, while Discuss imports the two policy-neutral retention primitives. The moved ASTs and call direction are unchanged, no surface discriminator or fallback was introduced, and direct tests now patch the semantic owner. The detailed pre-move inbound/outbound ledger is retained below. | Implementation and main-agent review complete; focused suites, full backend, Ruff, exact-new-file hooks, and all-files hooks are green. |
 
 ## Phases 0–4 re-review ledger
 
@@ -114,7 +117,7 @@ document.
 10. **Phase 4a moves the one verified duplicate and does not start a sweep.**
     Move the byte-identical result-view id validator to `rcp.artifacts` beside
     `ResultViewDescriptor`, expose it under a descriptive public name, and import
-    it from both `runs/result_views.py` and `transport/run_stage.py`. The existing
+    it from both `runs/tasks/result_views.py` and `transport/run_stage.py`. The existing
     dependency direction supports that home. Do not search-and-refactor unrelated
     similar helpers as part of this phase.
 11. **Phase 4b is struck.** The watcher exit mapping is a tiny stable protocol,
@@ -886,13 +889,13 @@ module is handed, not how many classes the store is cut into.
 
 ### 4a. Literal duplication
 
-`_result_view_id` is byte-identical in
-[run_stage.py](../../src/rcp/transport/run_stage.py) and
-[result_views.py](../../src/rcp/runs/result_views.py). Move it to
-`rcp.artifacts` beside `ResultViewDescriptor`, name it publicly for what it
-validates, and import it from both callers. `runs/result_views.py` already imports
-artifact validation from that module, and `transport/run_stage.py` can depend on
-the same neutral contract without importing `runs/`.
+At the audited pre-Phase-4 baseline, `_result_view_id` was byte-identical in
+[run_stage.py](../../src/rcp/transport/run_stage.py) and the result-view task
+module, now [tasks/result_views.py](../../src/rcp/runs/tasks/result_views.py).
+Phase 4a moved it to `rcp.artifacts` beside `ResultViewDescriptor`, named it
+publicly for what it validates, and imported it from both callers. The task
+module already depends on artifact validation, and `transport/run_stage.py` can
+depend on the same neutral contract without importing `runs/`.
 
 Do not turn this into a sweep for other similar bodies. This phase moves the one
 verified duplicate only.
@@ -1181,6 +1184,35 @@ The result-view move is the verified ten-definition cluster:
 `_result_view_action_was_settled_by_ancestor`,
 `_prepare_result_view_create_slot`, `_prepare_result_view_turn`,
 `_record_result_view_rejection`, and `_finalize_result_view_turn`.
+
+#### Implemented result-view call ledger
+
+This is the pre-move call ledger used for the extraction. “Primitive” means a
+function that already belonged to the old result-view module and moved into the
+same task owner; store calls and standard-library calls are listed only when
+they explain an ownership edge.
+
+| Moved definition                                | Inbound callers outside the ten-definition cluster                                                                 | Outbound calls                                                                                                                        |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `_PreparedResultView`                           | `_StagedWorkInputs` and `_prepare_work_chat_prompt` annotations                                                   | No calls; refers to primitive `ResultViewSnapshot`                                                                                    |
+| `_result_view_expiry`                           | None                                                                                                              | No cluster call; computes the retention deadline                                                                                      |
+| `_result_view_task`                             | None                                                                                                              | No cluster call; reads the durable task from the store                                                                                 |
+| `_preflight_result_view_revision`               | `_resolve_work_execution`                                                                                         | `_result_view_task`; primitive `ResultViewSnapshot`; store record/byte reads                                                          |
+| `_roll_result_view_retention`                   | `_stage_work_turn`                                                                                                | `_result_view_expiry`; primitives `touch_conversation_stage` and `touch_saved_conversation_stages`; store retention/event writes      |
+| `_result_view_action_was_settled_by_ancestor`   | None                                                                                                              | `_result_view_task`; store task-lineage reads and `RunRequest` validation                                                             |
+| `_prepare_result_view_create_slot`              | Direct focused tests                                                                                              | Primitive `prepare_result_view_slot`                                                                                                  |
+| `_prepare_result_view_turn`                     | `_stage_work_turn` and direct focused tests                                                                       | `_result_view_task`, `_result_view_action_was_settled_by_ancestor`, `_prepare_result_view_create_slot`, `_PreparedResultView`, and primitive `prepare_result_view_slot` |
+| `_record_result_view_rejection`                 | `_launch_and_stream_work_turn`                                                                                    | No cluster call; records the diagnostic receipt and warning event                                                                     |
+| `_finalize_result_view_turn`                    | `_launch_and_stream_work_turn`                                                                                    | `_result_view_expiry`, `_result_view_task`, `_record_result_view_rejection`; primitives `discover_result_view` and `require_result_view_changed`; store create/revise/receipt/event writes |
+
+The remaining inbound edges are internal: `_preflight_result_view_revision`,
+`_result_view_action_was_settled_by_ancestor`, `_prepare_result_view_turn`, and
+`_finalize_result_view_turn` call `_result_view_task`; preparation calls the
+ancestor and slot helpers; finalization calls expiry and rejection. This is why
+the ten definitions move as one owner while `work.py` retains only orchestration
+call sites. The old module had no non-test compatibility caller after Work,
+Discuss, and direct result-view tests changed imports, so it was deleted rather
+than shimmed.
 
 The Auto-research child core is these fourteen definitions. This independently
 recorded ledger replaces the unsupported original 14-definition cluster claim;

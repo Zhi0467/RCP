@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.core.models import Patch
-from rcp.runs.result_views import prepare_local_result_view_slot
+from rcp.runs.tasks.result_views import prepare_local_result_view_slot
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore, ResultViewRecord
 from rcp.transport import StateUnavailable

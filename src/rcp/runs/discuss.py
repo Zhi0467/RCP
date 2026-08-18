@@ -34,7 +34,6 @@ from rcp.runs.chat import (
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
-from rcp.runs.result_views import touch_conversation_stage, touch_saved_conversation_stages
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -49,6 +48,7 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
+from rcp.runs.tasks.result_views import touch_conversation_stage, touch_saved_conversation_stages
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable

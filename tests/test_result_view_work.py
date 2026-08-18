@@ -785,7 +785,7 @@ def test_background_retry_handoff_creates_after_pre_slot_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import rcp.runs.work as work_module
+    import rcp.runs.tasks.result_views as result_views_module
 
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
@@ -800,7 +800,7 @@ def test_background_retry_handoff_creates_after_pre_slot_failure(
         "Create the view after setup recovers.",
         result_view={"action": "create"},
     )
-    real_prepare_slot = work_module.prepare_result_view_slot
+    real_prepare_slot = result_views_module.prepare_result_view_slot
     prepare_reuse: list[bool] = []
 
     def fail_before_first_slot(*args, **kwargs):
@@ -809,7 +809,7 @@ def test_background_retry_handoff_creates_after_pre_slot_failure(
             raise ValueError("simulated failure before the deterministic slot existed")
         return real_prepare_slot(*args, **kwargs)
 
-    monkeypatch.setattr(work_module, "prepare_result_view_slot", fail_before_first_slot)
+    monkeypatch.setattr(result_views_module, "prepare_result_view_slot", fail_before_first_slot)
 
     def create_writer(prompt: str, _workspace: Path) -> None:
         _created_slot(prompt).joinpath("handoff-recovery.html").write_text(
@@ -1197,7 +1197,10 @@ def test_unbound_create_recovery_creates_its_missing_deterministic_slot(
     tmp_path: Path,
     continuation: str,
 ) -> None:
-    from rcp.runs.work import _prepare_result_view_create_slot, _prepare_result_view_turn
+    from rcp.runs.tasks.result_views import (
+        _prepare_result_view_create_slot,
+        _prepare_result_view_turn,
+    )
 
     store = AppStore(tmp_path / "rcp.sqlite3")
     owner = store.local_owner
