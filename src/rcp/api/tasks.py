@@ -41,8 +41,8 @@ from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import _logical_chat_turn_operation_id
-from rcp.runs.coach import _resolved_coach_request
 from rcp.runs.task_policy import task_graph_capable
+from rcp.runs.tasks.coach import _resolved_coach_request
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AppStore

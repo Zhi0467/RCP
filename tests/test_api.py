@@ -39,7 +39,6 @@ from rcp.runs.chat import (
     _prepare_local_artifact_directory,
     _project_write_scope,
 )
-from rcp.runs.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.graph import (
     _record_context_reuse,
@@ -53,6 +52,7 @@ from rcp.runs.shared import (
     _sse,
     _sweep_stale_stages,
 )
+from rcp.runs.tasks.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import (
