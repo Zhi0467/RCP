@@ -17,6 +17,26 @@
   scratch. This one is the work order. Where they disagree, this one wins, and the
   disagreements are listed at the end.
 
+## Implementation decision and ambiguity log
+
+Keep this ledger current while the work is in flight. It records choices made
+while translating the settled design into code, including choices that may need
+human review. The phase text above and below remains the authority; this ledger
+does not silently amend it.
+
+| Date       | Slice        | Decision or ambiguity                                                                                                                                                                                                                                                                                               | Review state                                                                                    |
+| ---------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 2026-08-19 | 0b / 1       | A refused loud single-task transition writes exactly one truthful warning event. “No side effects” in the regression means no false success event, receipt, Patch cleanup, or lifecycle notice; it does not suppress that explicit refusal event.                                                                   | Settled by the Phase 1 contract and now stated explicitly in S10.                               |
+| 2026-08-19 | 0c           | Run the one-time coverage inventory after Phase 2 stops changing `api/app.py`, but before Phase 5 moves any route. Measuring a file while another worker edits it would not produce reproducible line/function evidence; the later stable tree still guards 5–7.                                                    | Implementation timing only; no product or test-coverage contract changed.                       |
+| 2026-08-19 | commits      | Concurrent workers share one worktree. Verify the combined stable tree, keep a focused check for each owned slice, and create exact-file commits so unfinished or unrelated paths are never swept into an earlier commit.                                                                                           | User-requested slice discipline; final full-suite and all-files checks still run.               |
+| 2026-08-19 | 4a           | Move only the byte-identical result-view id validator to `rcp.artifacts`; do not use the extraction as permission for a helper sweep.                                                                                                                                                                               | Settled by the handoff; focused result-view tests preserve exact behavior.                      |
+| 2026-08-19 | 2            | A `/cached` assertion run only after the current-project route has stored a completed snapshot is a false green: it never exercises completion of graph-only saved data. Keep independent evidence for saved-cache completion and the fresh-open path, plus existing post-stream/reconcile paths.                   | Review correction; no product behavior changed.                                                 |
+| 2026-08-19 | 1            | No lifecycle-related `lost its …` guard became redundant: the private transition result intentionally does not escape the store, and the changed production callers consume no new atomic fact. Removed-guard count is zero.                                                                                        | Settled after auditing the changed call sites; do not sweep the other literals.                 |
+| 2026-08-19 | 1 checks     | The episode acceptance fixture's command broker is forbidden by the managed sandbox and produced six `Operation not permitted` failures there. The exact file passed 6/6 when rerun outside the sandbox; this is environmental evidence, not a product fallback.                                                    | Verification fact; retain the unsandboxed command in the slice record.                          |
+| 2026-08-19 | 2            | Persisted display snapshots remain graph-only and may therefore omit `experiment_control`; `ProjectDisplayCache.complete_snapshot` is the single completion primitive for fresh drafts and saved dictionaries. The private draft stays non-serializable while retaining minimal item access for internal consumers. | Settled implementation of the confirmed boundary; review if full immutability is later desired. |
+| 2026-08-19 | 3 / watchers | The watcher-only transaction audit found no qualifying harmful partial commit. Admission/claim paths use compound writers; per-watcher and per-boundary progress is deliberately durable and retryable. This closes only the watcher candidate set, not the rest of Phase 3.                                        | Evidence reviewed; no watcher production change is justified.                                   |
+| 2026-08-19 | delegation   | Luna-max implementation tasks should normally span a coherent file or module seam—about ten minutes of agent work or one hour of human work. Avoid both whole-phase ownership and two-line microtasks; the main agent retains cross-module synthesis, review, checks, and commits.                                  | Human-confirmed working rule for the remaining phases.                                          |
+
 ## Phases 0–4 re-review ledger
 
 This ledger records the 2026-08-18 fact check against the live working tree.
@@ -498,8 +518,8 @@ still belongs in the table because it has a different bulk contract.
 
 ### 0c. Coverage, measured once
 
-`pytest-cov` is not installed. Add it to the `dev` dependency group in
-[pyproject.toml](../../pyproject.toml) and run coverage over `src/rcp/api`,
+`pytest-cov` is now present in the `dev` dependency group in
+[pyproject.toml](../../pyproject.toml). Run coverage over `src/rcp/api`,
 `src/rcp/background.py`, and `src/rcp/runs/work.py` once.
 
 The deliverable is **a list of routes and functions no test exercises**, appended
@@ -507,6 +527,99 @@ to this document. Those are where Phases 5–7 have no safety net and need a tes
 written before the move, not after.
 
 One-time measurement. Do not add a coverage threshold or a CI gate.
+
+#### Phase 0c result — 2026-08-19
+
+The authoritative run used the existing checkout environment and emitted its
+JSON outside the repository:
+
+```text
+.venv/bin/python -m pytest --cov=src/rcp \
+  --cov-report=json:/private/tmp/rcp-phase0c-20260819-elevated.json \
+  --cov-report=term-missing
+```
+
+The first sandbox execution of that command could not start the acceptance
+command broker (`[Errno 1] Operation not permitted`), so its 39 failures were
+not treated as code failures or used for the inventory. The same command was
+rerun with the required sandbox escalation. It passed **2267 tests**, with one
+existing `StarletteDeprecationWarning`, in 436.29 seconds. Coverage.py 7.15.4
+reported 82.85% overall (36,955 statements; 30,616 covered); branch coverage
+was not enabled. The JSON used below is
+`/private/tmp/rcp-phase0c-20260819-elevated.json`.
+
+Tree state captured before and after the run was the same: `HEAD` was
+`f6085b0d08f4779f9a38707342f6d2567b5ab53c`, with these concurrent paths dirty
+or untracked:
+
+```text
+M docs/acceptance/S10-pause-resume-retry.md
+M docs/handoffs/handoff-2026-08-18-backend-structural-refactor.md
+M docs/handoffs/rcp_architecture_audit.md
+M docs/specs/projects-spaces-and-operations.md
+M pyproject.toml
+M src/rcp/api/app.py
+M src/rcp/artifacts.py
+M src/rcp/projects.py
+M src/rcp/runs/result_views.py
+M src/rcp/service.py
+M src/rcp/storage/agent_tasks.py
+M src/rcp/storage/models.py
+M src/rcp/storage/rows.py
+M src/rcp/transport/run_stage.py
+M tests/test_api.py
+M uv.lock
+?? tests/test_agent_task_lifecycle.py
+?? tests/test_route_inventory.py
+```
+
+The target-file summaries from that run were:
+
+| File                      | Statements | Covered | Coverage |
+| ------------------------- | ---------: | ------: | -------: |
+| `src/rcp/api/__init__.py` |          2 |       2 |     100% |
+| `src/rcp/api/app.py`      |      1,699 |   1,481 |      87% |
+| `src/rcp/api/episodes.py` |        199 |     188 |      94% |
+| `src/rcp/api/identity.py` |         60 |      58 |      97% |
+| `src/rcp/background.py`   |      1,554 |   1,306 |      84% |
+| `src/rcp/runs/work.py`    |      1,717 |   1,354 |      79% |
+
+#### Route handlers with zero executed statements
+
+The live route inventory was walked recursively through `original_router`; the
+82 `APIRoute` entries were grouped by their runtime endpoint `__name__`, then
+joined to coverage.py's `create_app.<endpoint>` function summaries. These seven
+application handlers had zero covered statements:
+
+| Endpoint              | Method and path                                 | Statements |
+| --------------------- | ----------------------------------------------- | ---------: |
+| `logout_team_session` | `POST /api/team/session/logout`                 |          5 |
+| `space_users`         | `GET /api/space/users`                          |          2 |
+| `providers`           | `GET /api/providers`                            |          1 |
+| `register_project`    | `POST /api/projects`                            |          5 |
+| `project_watchers`    | `GET /api/projects/{project_id}/watchers`       |          2 |
+| `save_paper`          | `PUT /api/projects/{project_id}/paper`          |          2 |
+| `paper_sessions`      | `GET /api/projects/{project_id}/paper/sessions` |          2 |
+
+#### Other zero-covered functions and methods
+
+These are the remaining target-file functions whose coverage.py function
+summary had `covered_lines == 0` and at least one statement, grouped by file.
+The line is the function summary's start line; the number in parentheses is
+its statement count.
+
+- `src/rcp/api/app.py`: `create_app.background_task_stream.validate_auto_research_patch` (line 693, 6); `create_app.background_task_stream.apply_auto_research_patch` (line 720, 4); `default_data_dir` (line 3903, 4).
+- `src/rcp/api/episodes.py`: none.
+- `src/rcp/api/identity.py`: none.
+- `src/rcp/api/__init__.py`: none.
+- `src/rcp/background.py`: `BackgroundAgentTasks.pause_auto_research_worker` (line 2564, 6).
+- `src/rcp/runs/work.py`: `_experiment_maintenance_binding` (line 977, 10); `_process_experiment_watcher_maintenance.reject_maintenance` (line 1084, 2); `_record_work_lock_lost` (line 4979, 4).
+
+This is a one-time statement/function inventory, not a claim that covered
+functions are fully tested. It does not measure branch coverage, does not infer
+untested code from missing-line lists, and does not add a threshold or CI gate.
+FastAPI-generated routes are intentionally excluded from the application
+handler list; the frozen route test still guards all 86 route entries.
 
 **Phase 0 is done when:** both tests are committed and green, the xfail count is
 recorded here, and the untested list is written here.
