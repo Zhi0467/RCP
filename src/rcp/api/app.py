@@ -13,17 +13,13 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import (
-    APIRouter,
-    Depends,
     FastAPI,
     HTTPException,
-    Query,
     Request,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp import __version__
@@ -37,7 +33,6 @@ from rcp.api.dependencies import (
 from rcp.api.dependencies import (
     get_project_service as _project_service,
 )
-from rcp.api.dependencies import require_registered_project as _require_registered_project
 from rcp.api.episode_branches import (
     ensure_auto_research_graph_target as _ensure_auto_research_graph_target,
 )
@@ -56,6 +51,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
 from rcp.api.paper import router as paper_router
+from rcp.api.project_state import router as project_state_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request
@@ -68,7 +64,6 @@ from rcp.background import (
     AgentTaskRequest,
     BackgroundAgentTasks,
 )
-from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -77,12 +72,6 @@ from rcp.limits import (
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.providers import profile_for
-from rcp.repository_preview import (
-    REPOSITORY_PREVIEW_CSP,
-    load_repository_source_for_path,
-    repository_source_document,
-)
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -115,7 +104,6 @@ from rcp.runs.experiment_loop import (
     preflight_episode_wake,
 )
 from rcp.runs.graph import stream_graph_run
-from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
@@ -124,7 +112,6 @@ from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_
 from rcp.service import (
     CoachRequest,
     ProjectService,
-    ProjectSettingsRequest,
     RunRequest,
 )
 from rcp.setup import ProjectSetupManager
@@ -137,7 +124,6 @@ from rcp.sources import (
 )
 from rcp.storage import (
     AgentTaskKind,
-    AgentUsageSnapshot,
     AppStore,
     GraphWatcherRecord,
     StoredWatcherRecord,
@@ -207,12 +193,6 @@ class TeamPublicAuthBodyLimit:
         await self.app(scope, replay, send)
 
 
-class ProjectInviteRequest(BaseModel):
-    """Who is being invited. The server derives the inviter from the session."""
-
-    user_id: str
-
-
 class _LazyProjectService:
     """Compatibility handle that opens the default project only when inspected."""
 
@@ -261,7 +241,6 @@ def create_app(
     )
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
-    acting_user = identity_access.acting_user
     launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
@@ -293,7 +272,6 @@ def create_app(
         logger=logger,
     )
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
-    schedule_project_reconciliation = project_display_cache.schedule_project_reconciliation
 
     setup = ProjectSetupManager(app_data, catalog, launcher)
     default_record = (
@@ -1121,223 +1099,14 @@ def create_app(
             payload["project"] = default_project_name
         return payload
 
-    # S101. Every project-scoped route hangs off this one router, so membership
-    # is declared once instead of remembered 36 times. A route added outside it
-    # is caught by test_project_membership's route enumeration, not by review.
-    projects_router = APIRouter(dependencies=[Depends(require_project_membership)])
     # Exposed so the route-enumeration test can prove membership is attached,
     # rather than trusting that every project route was declared in one place.
     app.state.project_membership_dependency = require_project_membership
 
-    @projects_router.get("/api/projects/{project_id}")
-    async def project(project_id: str) -> dict[str, object]:
-        cached = project_display_cache.cached_project_snapshot(project_id)
-        if cached is not None:
-            return cached
-        try:
-            generation = catalog.reserve_cached_snapshot_generation(project_id)
-            service, snapshot = await asyncio.to_thread(
-                project_display_cache.open_snapshot, project_id
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        try:
-            committed = catalog.commit_cached_snapshot(
-                project_id,
-                snapshot,
-                generation=generation,
-                patch_log_head=service.history.workspace.cached_patch_log_head(),
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (OSError, TypeError, ValueError) as exc:
-            logger.warning("Could not update display snapshot for %s: %s", project_id, exc)
-        else:
-            if not committed:
-                latest = project_display_cache.cached_project_snapshot(project_id)
-                if latest is not None:
-                    return latest
-        return snapshot
-
-    @projects_router.get("/api/projects/{project_id}/members")
-    def project_members(project_id: str) -> list[dict[str, object]]:
-        canonical = catalog.resolve_project_id(project_id)
-        users = {user.user_id: user for user in store.space_users()}
-        return [
-            {
-                "user_id": record.user_id,
-                "display_name": (
-                    users[record.user_id].display_name if record.user_id in users else None
-                ),
-                "seated_at": record.seated_at,
-            }
-            for record in store.project_members(canonical)
-        ]
-
-    @projects_router.post("/api/projects/{project_id}/invitations", status_code=201)
-    def invite_project_member(
-        project_id: str,
-        body: ProjectInviteRequest,
-        request: Request,
-    ) -> dict[str, object]:
-        canonical = catalog.resolve_project_id(project_id)
-        # The server derives the inviter from the session; the body names only
-        # who is being invited.
-        inviter = acting_user(request)
-        try:
-            invitation = store.invite_to_project(
-                canonical,
-                body.user_id,
-                invited_by=inviter.user_id,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return invitation.model_dump(mode="json")
-
-    @projects_router.post("/api/projects/{project_id}/leave", status_code=204)
-    def leave_project(project_id: str, request: Request) -> Response:
-        canonical = catalog.resolve_project_id(project_id)
-        leaving = acting_user(request)
-        try:
-            store.leave_project(canonical, leaving.user_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        fence_episodes_for_departed_member(store, background_tasks, canonical, leaving.user_id)
-        return Response(status_code=204)
-
-    @projects_router.get("/api/projects/{project_id}/cached")
-    def cached_project(project_id: str) -> dict[str, object]:
-        snapshot = project_display_cache.cached_project_snapshot(project_id)
-        if snapshot is None:
-            raise HTTPException(status_code=404, detail="Cached project snapshot not found")
-        return snapshot
-
-    @projects_router.get("/api/projects/{project_id}/cached/revision")
-    async def cached_project_revision(project_id: str) -> dict[str, object]:
-        snapshot = project_display_cache.cached_project_snapshot(project_id)
-        if snapshot is None:
-            raise HTTPException(status_code=404, detail="Cached project snapshot not found")
-        schedule_project_reconciliation(project_id)
-        return {
-            "revision": snapshot["revision"],
-            "snapshot_freshness": snapshot["snapshot_freshness"],
-            "last_remote_sync_at": snapshot["last_remote_sync_at"],
-        }
-
-    @projects_router.get("/api/projects/{project_id}/readiness")
-    def project_readiness(project_id: str, refresh: bool = False) -> dict[str, object]:
-        try:
-            return catalog.readiness_snapshot(project_id, refresh=refresh)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    @projects_router.get("/api/projects/{project_id}/graph")
-    def graph(project_id: str) -> dict[str, object]:
-        return _project_service(catalog, project_id).graph_snapshot()
-
-    @projects_router.get("/api/projects/{project_id}/revision")
-    def project_revision(project_id: str) -> dict[str, int]:
-        service = _project_service(catalog, project_id)
-        return {"revision": service.history.current_accepted_revision()}
-
-    @projects_router.get("/api/projects/{project_id}/repositories/files/preview")
-    @projects_router.head("/api/projects/{project_id}/repositories/files/preview")
-    def preview_repository_file(
-        project_id: str,
-        request: Request,
-        path: str = Query(min_length=1),
-        line: int | None = Query(default=None, ge=1),
-    ) -> Response:
-        record = store.project(project_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="Project not found")
-        try:
-            manifest = load_manifest(record.locator)
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        try:
-            source = load_repository_source_for_path(manifest, path)
-            document = repository_source_document(source, line=line)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return Response(
-            b"" if request.method == "HEAD" else document,
-            media_type="text/html",
-            headers={
-                "Cache-Control": "no-store",
-                "Content-Security-Policy": REPOSITORY_PREVIEW_CSP,
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
-    @projects_router.put("/api/projects/{project_id}/settings")
-    def update_project_settings(
-        project_id: str,
-        body: ProjectSettingsRequest,
-    ) -> dict[str, object]:
-        try:
-            snapshot = project_display_cache.update_settings(project_id, body)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return snapshot
-
-    @projects_router.post(
-        "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve"
-    )
-    def resolve_project_provider_path(
-        project_id: str,
-        machine_alias: str,
-        provider: str,
-    ) -> dict[str, object]:
-        try:
-            profile_for(provider)
-            result = project_display_cache.resolve_provider_path(
-                project_id,
-                machine_alias,
-                provider,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return result
-
-    @projects_router.get("/api/projects/{project_id}/sources")
-    def sources(project_id: str, refresh: bool = False):
-        service = _project_service(catalog, project_id)
-        return service.index_snapshot(refresh=refresh).model_dump(mode="json")
-
-    @projects_router.delete("/api/projects/{project_id}/caches")
-    def clear_rebuildable_caches(project_id: str):
-        service = _project_service(catalog, project_id)
-        if store.has_active_agent_task(project_id):
-            raise HTTPException(
-                status_code=409,
-                detail="This project's cache cannot be cleared while its agent task is active.",
-            )
-        return service.clear_rebuildable_caches()
-
-    @projects_router.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)
-    def agent_usage(project_id: str) -> AgentUsageSnapshot:
-        _require_registered_project(catalog, project_id)
-        return store.agent_usage_snapshot(project_id)
-
     app.include_router(team_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
-    app.include_router(projects_router)
+    app.include_router(project_state_router)
     app.include_router(episode_router)
     app.include_router(experiments_router)
     app.include_router(chats_router)
