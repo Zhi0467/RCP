@@ -26,8 +26,9 @@ from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_reposito
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, Manifest, load_manifest
 from rcp.core.materialize import MaterializationResult
-from rcp.core.models import GraphState
+from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
@@ -1440,6 +1441,55 @@ class ProjectDisplayCache:
     ) -> dict[str, object]:
         payload = dict(snapshot)
         self._complete_live_control(project_id, payload)
+        return payload
+
+    def transition_payload(
+        self,
+        project_id: str,
+        projection: ProjectTransitionProjection,
+        *,
+        reconcile_operational: bool,
+    ) -> dict[str, object]:
+        """Combine one graph/head projection with matching run controls."""
+
+        payload = projection.model_dump(mode="json")
+        control_snapshot: dict[str, object] = {"graph": payload["graph"]}
+        if reconcile_operational:
+            control_snapshot = self.complete_transition_control(
+                project_id,
+                control_snapshot,
+            )
+        else:
+            state = projection.graph
+            experiment_ids = [
+                node.id for node in state.nodes.values() if isinstance(node, Experiment)
+            ]
+            runtimes = self._store.experiment_loop_runtimes(
+                project_id,
+                experiment_ids,
+                graph_target=GraphTargetRef(),
+            )
+            controls: dict[str, object] = {}
+            for experiment_id in experiment_ids:
+                runtime = runtimes[experiment_id]
+                control = self._project_experiment_control(
+                    state,
+                    experiment_id,
+                    runtime,
+                )
+                episode = (
+                    self._store.episode(runtime.episode_id)
+                    if runtime.episode_id is not None
+                    else None
+                )
+                control["episode"] = (
+                    self._serialize_episode(project_id, episode)
+                    if episode is not None and episode.mode == "experiment_loop"
+                    else None
+                )
+                controls[experiment_id] = control
+            control_snapshot["experiment_control"] = controls
+        payload["experiment_control"] = control_snapshot["experiment_control"]
         return payload
 
     def refresh_cached_project_after_stream(

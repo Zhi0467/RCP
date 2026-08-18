@@ -86,7 +86,7 @@ from rcp.core.models import (
     normalize_display_name,
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.core.transitions import ProjectTransitionProjection, current_project_projection
+from rcp.core.transitions import current_project_projection
 from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -542,57 +542,6 @@ def create_app(
     )
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
     schedule_project_reconciliation = project_display_cache.schedule_project_reconciliation
-
-    def project_transition_payload(
-        project_id: str,
-        projection: ProjectTransitionProjection,
-        *,
-        reconcile_operational: bool,
-    ) -> dict[str, object]:
-        """Combine one graph/head projection with the matching live run controls."""
-
-        payload = projection.model_dump(mode="json")
-        control_snapshot: dict[str, object] = {"graph": payload["graph"]}
-        if reconcile_operational:
-            control_snapshot = project_display_cache.complete_transition_control(
-                project_id,
-                control_snapshot,
-            )
-        else:
-            state = projection.graph
-            experiment_ids = [
-                node.id for node in state.nodes.values() if isinstance(node, Experiment)
-            ]
-            runtimes = store.experiment_loop_runtimes(
-                project_id,
-                experiment_ids,
-                graph_target=GraphTargetRef(),
-            )
-            controls: dict[str, object] = {}
-            for experiment_id in experiment_ids:
-                runtime = runtimes[experiment_id]
-                control = _experiment_control_from_runtime(
-                    state,
-                    experiment_id,
-                    runtime,
-                ).model_dump(mode="json")
-                episode = (
-                    store.episode(runtime.episode_id) if runtime.episode_id is not None else None
-                )
-                control["episode"] = (
-                    serialize_episode(
-                        store,
-                        project_id,
-                        episode,
-                        branch_summary=graph_branch_summary,
-                    ).model_dump(mode="json")
-                    if episode is not None and episode.mode == "experiment_loop"
-                    else None
-                )
-                controls[experiment_id] = control
-            control_snapshot["experiment_control"] = controls
-        payload["experiment_control"] = control_snapshot["experiment_control"]
-        return payload
 
     setup = ProjectSetupManager(app_data, catalog, launcher)
     default_record = (
@@ -2006,7 +1955,7 @@ def create_app(
             evaluate_graph_wake_boundary(project_id, state, source="human Sync")
             payload = state.model_dump(mode="json")
             payload.update(
-                project_transition_payload(
+                project_display_cache.transition_payload(
                     project_id,
                     projection,
                     reconcile_operational=True,
@@ -2039,7 +1988,7 @@ def create_app(
             )
             assert prepared.patch.transition is not None
             return {
-                "projection": project_transition_payload(
+                "projection": project_display_cache.transition_payload(
                     project_id,
                     prepared.projection,
                     reconcile_operational=False,
