@@ -40,7 +40,6 @@ from rcp.runs.chat import (
     _project_write_scope,
 )
 from rcp.runs.coach import _paper_snapshot_path, stream_coach
-from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.graph import (
     _record_context_reuse,
@@ -54,6 +53,7 @@ from rcp.runs.shared import (
     _sse,
     _sweep_stale_stages,
 )
+from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import (
     CoachRequest,
@@ -3540,7 +3540,7 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     answer = "The reply remains available."
     launcher = FakeLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
     monkeypatch.setattr(
-        "rcp.runs.discuss._discover_chat_artifacts",
+        "rcp.runs.tasks.discuss._discover_chat_artifacts",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("previewer bug")),
     )
     request = RunRequest(
@@ -3626,7 +3626,7 @@ async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
     def reject_path(*_args, **_kwargs) -> None:
         raise ValueError("cache path used a different canonical spelling")
 
-    monkeypatch.setattr("rcp.runs.discuss._append_chat_exchange", reject_path)
+    monkeypatch.setattr("rcp.runs.tasks.discuss._append_chat_exchange", reject_path)
 
     frames = [
         frame async for frame in stream_discuss_run(service, launcher, request, tmp_path / "data")
@@ -4792,7 +4792,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_artifact_files(self, _scope_id):
             return []
 
-    monkeypatch.setattr("rcp.runs.discuss.RemoteRunStage", RecordingRemoteStage)
+    monkeypatch.setattr("rcp.runs.tasks.discuss.RemoteRunStage", RecordingRemoteStage)
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="Remote continuation."), AgentEvent(event="done")]
     )

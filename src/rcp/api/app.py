@@ -98,7 +98,6 @@ from rcp.runs.auto_research_stream import (
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.branch_merge_task import stream_branch_merge_task
 from rcp.runs.coach import stream_coach
-from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.episode_reconcile import EpisodeReconciler
 from rcp.runs.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.runs.experiment_loop import (
@@ -108,6 +107,7 @@ from rcp.runs.experiment_loop import (
 from rcp.runs.graph import stream_graph_run
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata

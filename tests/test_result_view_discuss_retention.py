@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
-from rcp.runs.discuss import _refresh_result_view_retention
+from rcp.runs.tasks.discuss import _refresh_result_view_retention
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore, ResultViewRecord
 

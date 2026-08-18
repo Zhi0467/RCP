@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import rcp.attachments as attachments_module
 from rcp.agents import AgentEvent, PromptFactory
 from rcp.attachments import ChatAttachmentStore
-from rcp.runs.discuss import stream_discuss_run
+from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.service import RunRequest
 
 from .helpers import append_fixture_patch, seed_patch
