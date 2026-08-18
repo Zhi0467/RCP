@@ -2,24 +2,73 @@
 
 ## Conclusion
 
-RCP has a strong canonical-state core, but the application around that core has become an orchestration-heavy modular monolith: three oversized control surfaces, `create_app`, `BackgroundAgentTasks`, and `App`, coordinate several partially overlapping state machines through callbacks, shared SQLite access, post-hoc snapshot mutation, and locally hidden dependency cycles. ~~The most urgent issue is more basic: this source snapshot is incomplete and cannot build or collect its test suite.~~ That was an artifact of a bad extraction and is not true of this repository — see the status section below.
+RCP has a strong canonical-state core, but the application around that core has
+become an orchestration-heavy modular monolith. Four oversized surfaces —
+`create_app`, `BackgroundAgentTasks`, `runs/work.py`, and frontend `App` —
+coordinate overlapping state machines through nested closures, shared SQLite
+access, post-construction snapshot completion, and reverse dependencies hidden
+by local imports.
 
-## Status, updated 2026-08-18
+This audit is evidence and explanation, not the current implementation order.
+The fact-checked and human-confirmed
+[backend structural-refactor handoff](handoff-2026-08-18-backend-structural-refactor.md)
+supersedes its remedies wherever they disagree.
 
-This audit was run against an extracted copy of the repository, not this checkout. Two prompt
-findings have since been acted on, one was declined, and one was wrong. Read the section below
-before acting on anything in section 9 or section 10.
+## Status, fact-checked 2026-08-19
 
-**The snapshot findings are false for this repository.** Every file the audit reports as missing is
-present here: all eight Python modules, `web/src/projectTransition.ts`, `web/src/experimentGuidance.ts`,
-`docs/design.md`, and `docs/specs/`. `uv run pytest --collect-only` exits 0 and collects 2201 tests.
-The "Scope and verification boundary" section, risk 1 in section 2, the dead-documentation bullet in
-section 6, and all of P0 in section 10 describe a bad extraction. Ignore them. The structural
-findings were checked against this checkout and hold.
+The original audit was run against an incomplete extracted copy. The current
+fact check used committed checkout `f6085b0` and directly reran the relevant
+source measurements. The complete baseline is healthy:
 
-**Reading this document without a software background.** Appendix A at the end explains the
-five main structural findings from scratch, defining each term and grounding every claim in
-code from this repository. Start there if sections 2, 3, and 8 are hard to act on.
+- `uv run pytest`: **2,204 passed** across **113 test files**;
+- `uv run ruff check src tests`: passed;
+- `npm --prefix web run build`: passed; and
+- `npm --prefix web test`: **419 passed**.
+
+Every originally reported missing file is present, including all eight Python
+modules, `web/src/projectTransition.ts`, `web/src/experimentGuidance.ts`,
+`docs/design.md`, and `docs/specs/`. The original missing-source finding, risk 1
+in section 2, the dead-documentation finding in section 6, and P0 in section 10
+are false for this repository.
+
+The structural evidence required additional corrections rather than a blanket
+"all findings hold":
+
+- `create_app` is exactly lines 333–3278, with 99 direct child functions, 157
+  local names, and 77 distinct application handlers owning 82 application route
+  entries. Their median transitive closure reach is 2 names and the maximum is
+  11; the file is structurally difficult, but an individual route does not
+  usually reach the whole closure.
+- `BackgroundAgentTasks` remains 3,916 lines and 70 methods. The old 45-policy,
+  32-caller, and five-method/12-call boundary counts were not reproducible. The
+  implementation handoff now assigns every method exactly once: 24 engine
+  shells, 36 Auto-research policy methods, 4 Experiment policy methods, 2
+  common episode/report methods, 1 branch-merge admission method, 2 watcher
+  methods, and 1 shared authority resolver.
+- `runs/work.py` is 5,207 lines with 88 module-level class/function definitions
+  plus one private alias. Its internal call graph has no cyclic strongly
+  connected component. The result-view cluster is the only retained exact
+  ten-definition closed cluster; semantic ownership, not a speculative call
+  graph partition, governs the rest of the split.
+- `AppStore` exposes **242**, not approximately 246, public callable members
+  across ten mixins and is referenced from 22 `src/rcp` files. Its breadth is
+  real, but breadth alone did not establish a harmful transaction gap. The
+  watcher examples named by the original audit already use compound atomic
+  store operations.
+- Project snapshot completion remains a real latent consistency hazard, but the
+  current count is seven direct completion calls in `api/app.py` and two
+  internal calls in `projects.py`, not eleven generic caller obligations.
+- A current static import scan including function-local imports and package
+  barrels finds five multi-module strongly connected groups, not the original
+  three groups of sizes 11, 7, and 5. Section 2 records the current groups and
+  the limits of that analysis.
+
+**Reading this document without a software background.** Appendix A at the end
+explains the five main structural findings from scratch. Its measurements and
+causal claims were corrected during this pass; start there if sections 2, 3,
+and 8 are hard to act on.
+
+Two prompt findings were fixed, one was declined, and one was narrowed:
 
 **Fixed: the write-authority contradiction (section 9, failure 1).** The Work contract now renders
 the resolved `ProjectWriteScope` instead of describing it. `write_scope_section` in
@@ -61,16 +110,20 @@ nothing keeps them agreeing — generating that block from `RELATION_SPEC` remai
 
 ## Scope and verification boundary
 
-I reviewed the extracted repository under `/mnt/data/repo_audit`, approximately 111,000 source lines across 188 Python and frontend source files. The audit used source tracing, AST import and complexity analysis, exact-clone detection, prompt rendering with representative inputs, and test collection.
+The original extraction under `/mnt/data/repo_audit` contained approximately
+111,000 source lines across 188 Python and frontend files, but it omitted
+required source and documentation. Its 93 collection errors and five unresolved
+frontend imports describe that extraction only and are not evidence about RCP.
 
-The snapshot is not self-consistent:
-
-- `PYTHONPATH=src pytest --collect-only -q` exits with status 2 and 93 collection errors. The first failures are missing internal modules, not failed assertions.
-- Eight imported Python modules are absent: `rcp.agents.write_scope`, `rcp.core.operations`, `rcp.core.transition_models`, `rcp.core.transitions`, `rcp.history.branches`, `rcp.runs.branch_merge_request`, `rcp.runs.branch_merge_task`, and `rcp.runs.transition_event_reconciliation`.
-- The frontend has five unresolved relative imports caused by two missing modules: `web/src/projectTransition` and `web/src/experimentGuidance`.
-- `README.md:223-230` and `AGENTS.md:11-17` identify `docs/design.md` and `docs/specs/` as current architectural authority, but neither exists in this snapshot.
-
-These omissions materially limit confidence around graph transitions, branch merge semantics, exact project write-scope resolution, and part of the frontend draft-transition reducer. Call sites and surrounding invariants were still auditable.
+The 2026-08-19 pass used the complete committed checkout. Under the explicit
+`src/rcp/**/*.py`, `web/src/**/*.ts`, and `web/src/**/*.tsx` source set, it has
+**118,276 lines across 200 files**. The pass used source tracing, Python and
+TypeScript AST measurements, static imports including local imports, exact and
+normalized-clone comparison, test collection, the full backend and frontend
+suites, and the current design/specification hierarchy. Approximate decision
+scores and prompt sizes whose original scripts or representative inputs were
+not retained are labelled historical rather than silently recreated with a
+different heuristic.
 
 ## 1. Primary dependency flows
 
@@ -112,11 +165,26 @@ The intended high-level split is documented in `README.md:20-50`: React owns the
 
 ### Canonical graph write flow
 
-1. A human sync or an agent run creates a candidate transition or `patch.json`.
-2. The candidate is parsed and validated against current state. Agent validation occurs both during the run and again at commit time.
-3. A graph-writing run obtains the local or remote run lock. The local implementation uses `.agent-run.lock` and `flock` (`transport/state.py:661-692`); the remote implementation uses an advisory process lock (`transport/state.py:1248-1301`).
-4. `HistoryManager.append` enters the workspace transaction and append lock, rematerializes current state, checks the expected revision, validates, appends, rematerializes, and publishes (`history/manager.py:484-575`). Human batches are built from fresh state while the same lock is held (`history/manager.py:1055-1115`).
-5. The display read model is refreshed and returned to the UI.
+1. A human Sync, an agent Apply, a branch Apply, or a branch merge prepares
+   typed initiating operations. Agent-produced operations arrive only through
+   scratch `patch.json`.
+2. `GraphTransitionManager` validates the initiating operations in written
+   order, computes deterministic rule closure, and produces the expanded
+   transition. Agent validation occurs during the run and Apply re-prepares
+   against live current state.
+3. A graph-writing run obtains the local or remote run lock. The local
+   implementation uses `.agent-run.lock` and `flock`; the remote implementation
+   uses an advisory holder process. Canonical mutation then enters the workspace
+   transaction and append lock.
+4. `HistoryManager.append` or `append_batch_from_state` rematerializes current
+   state, validates, appends one exact-target revision, rematerializes, and
+   publishes (`history/manager.py:484-600`, `history/manager.py:1055-1128`). A
+   human draft may carry an expected-revision fence and is built from fresh
+   state under the lock. Agent Apply has no original context-revision pin:
+   graph movement alone is not rejection, because the operations are
+   re-prepared and validated against current state.
+5. Replay applies the recorded expanded operations without rerunning historical
+   rules. The display read model is refreshed and returned to the UI.
 
 This is the strongest lifecycle in the system. Freshness is checked under the same append lock used by writers, and canonical state is regenerated from history rather than edited independently.
 
@@ -158,7 +226,10 @@ The frontend keeps canonical project state, a `HumanDraft`, transition head, rul
 - reconciles retained local draft state and transition manifests;
 - clears the in-flight fence (`web/src/App.tsx:2186-2370`).
 
-The missing `projectTransition` module contains the central reducer and routing functions imported at `web/src/App.tsx:64-77`, so this lifecycle cannot be reviewed completely.
+`web/src/projectTransition.ts` contains the central reducer and routing functions
+imported by `App`. It is present, covered by focused reducer, presentation, and
+integration tests, and was included in this pass. The concentration in `App`
+remains real; incompleteness is not part of the finding.
 
 ### Read-model and cache lifecycle
 
@@ -166,116 +237,205 @@ The missing `projectTransition` module contains the central reducer and routing 
 
 ## 2. Highest-risk dependency points
 
-| Rank | Risk | Why it is high risk |
-|---|---|---|
-| 1 | Incomplete source and missing current design authority | The backend cannot collect 93 test modules, the frontend has unresolved imports, and the documented current design/specification files are absent. Changes cannot be validated against either executable or documentary authority. |
-| 2 | `api/app.py:create_app` | At 2,946 lines, it is the DI container, route registry, startup/shutdown coordinator, cache assembler, task dispatcher, episode recovery coordinator, watcher bootstrap, and home of many business callbacks. A heuristic scan counted roughly 441 decision points. See `api/app.py:333-3278`. |
-| 3 | Implicit durable-task state machine | `BackgroundAgentTasks` is a 3,916-line class with 70 methods. It coordinates SQLite status, threads, per-thread event loops, provider sessions, stages, episodes, watchers, callbacks, and recovery. The repeated “lost its durable task/episode/branch identity” guards in `api/app.py:623-653` are compensating controls for this fragmented model. |
-| 4 | `AppStore` god repository | `storage/__init__.py:1-43` explicitly says `AppStore` is the whole public surface and mixins exist only to avoid a 10,000-line file. Across its base and mixins, it exposes approximately 246 public methods over one SQLite database. Domain ownership and cross-table transaction boundaries are therefore implicit. |
-| 5 | Split canonical/operational project snapshots | A `ProjectSnapshot` looks complete but is not. Every caller must remember post-hoc decoration. The code acknowledges that omission can erase visible lifecycle state (`projects.py:1425-1436`). |
-| 6 | Frontend `App` as a mega-controller | `App` spans 3,319 lines and owns routing, project tabs, identity, desktop lifecycle, canonical reconciliation, local drafts, transitions, task launch, chats, graph panels, paper, watchers, and dialogs (`web/src/App.tsx:567-3885`). The missing transition module makes this worse. |
-| 7 | Hidden architectural cycles | There are no top-level runtime import cycles in the supplied Python source, but local imports and package barrels create three strongly connected architectural groups. This allows import-time execution while preserving bidirectional design dependencies. |
-| 8 | Operational SQLite as a broad single failure domain | Corruption or migration failure does not destroy canonical `.research` truth, but it can simultaneously affect identity, memberships, tasks, episodes, watchers, result views, and caches. `AppStoreBase._initialize` is a 1,158-line schema/bootstrap/migration function (`storage/base.py:125-1282`). |
+| Rank | Risk                                                | Why it is high risk                                                                                                                                                                                                                                                                                                                                                 |
+| ---: | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|    1 | `api/app.py:create_app`                             | At 2,946 lines it is the DI container, route registry, startup/shutdown coordinator, cache assembler, task dispatcher, episode recovery coordinator, watcher bootstrap, and home of 77 application handlers. The former 441-point score is historical because its heuristic was not retained.                                                                       |
+|    2 | Implicit durable-task and episode policy            | `BackgroundAgentTasks` is a 3,916-line class with 70 methods. It coordinates SQLite status, threads, per-thread event loops, provider sessions, stages, episodes, watchers, callbacks, and recovery. The 66 literal `lost its …` guards span 19 files, but many protect immutable bindings rather than task status, so the phrase count is not a causal classifier. |
+|    3 | Split canonical/operational project snapshots       | A `ProjectSnapshot` looks complete but is not. Seven route-level and two internal paths currently complete it after graph-only construction; omission can erase visible lifecycle state.                                                                                                                                                                            |
+|    4 | Frontend `App` as a mega-controller                 | `App` still spans exactly 3,319 lines and owns routing, project tabs, identity, desktop lifecycle, canonical reconciliation, local drafts, transitions, task launch, chats, graph panels, paper, watchers, and dialogs (`web/src/App.tsx:567-3885`). `projectTransition.ts` exists and is tested.                                                                   |
+|    5 | Reverse architectural dependencies                  | There are no demonstrated top-level import crashes, but a scan including local imports and package barrels produces five strongly connected groups. This is dependency-direction evidence, not proof that every member should be merged or moved together.                                                                                                          |
+|    6 | Operational SQLite as a broad single failure domain | Corruption or migration failure does not destroy canonical `.research` truth, but it can simultaneously affect identity, memberships, tasks, episodes, watchers, result views, and caches. `AppStoreBase._initialize` remains a 1,158-line schema/bootstrap/migration function (`storage/base.py:125-1282`).                                                        |
+|    7 | Broad `AppStore` surface                            | `AppStore` exposes 242 public callable members over one SQLite file. That makes reach broad, but the original audit did not prove that this shape itself caused a partial commit; the post-Phase-1 harmful-sequence audit in the implementation handoff is the gate.                                                                                                |
 
 ### Circular dependency groups
 
-Static import analysis found three multi-module strongly connected groups when local imports are included:
+The current scan treats every `src/rcp` Python module as a node, includes imports
+inside functions, and resolves an import through a package `__init__` as an edge
+to that package barrel. It finds five non-trivial strongly connected groups:
 
-1. **Orchestration cycle, 11 modules.** `background` depends on Auto-research, episode report, task policy, agents, and service; recovery/report/shared modules import `BackgroundAgentTasks` or `AgentTaskExecution` locally. Representative edges are `background.py:15-43`, `runs/auto_research_recovery.py:13`, `runs/episode_report.py:41`, and `runs/shared.py:33`.
-2. **Validation/materialization cycle, 7 modules.** `materialize` imports validation; patch validation imports materialization locally; proposal validation imports the patch operation validator locally. See `core/materialize.py:46`, `core/validation/patch.py:104,697`, and `core/validation/proposals.py:573`.
-3. **Storage/watcher cycle, 5 modules.** The storage package imports experiment and watcher mixins, watcher behavior imports the storage package, and watcher storage imports experiment storage. See `storage/__init__.py:11-23`, `watchers.py:32`, `storage/watchers.py:19`, and `storage/experiments.py:83`.
+1. **Validation, authority, provider, and transport — 21 modules:**
+   `agents.context`, `agents.write_scope`, `config`, `core.authority`,
+   `core.materialize`, `core.transitions`, the `core.validation` barrel plus
+   `approval`, `experiment_loop`, `nodes`, `ops`, `patch`, `proposals`, and
+   `registry`, `history.delta`, `providers`, the `transport` barrel plus
+   `repositories`, `run_stage`, `state`, and `workspace_mailbox`.
+2. **Run orchestration — 12 modules:** the `agents` barrel,
+   `agents.acceptance`, `background`, `runs.auto_research`,
+   `runs.auto_research_recovery`, `runs.branch_merge_request`,
+   `runs.episode_report`, `runs.episode_wrapup`, `runs.experiment_admission`,
+   `runs.shared`, `runs.task_policy`, and `service`.
+3. **Storage/watcher reconciliation — 6 modules:**
+   `runs.transition_event_reconciliation`, the `storage` barrel,
+   `storage.base`, `storage.experiments`, `storage.watchers`, and `watchers`.
+4. **Core model/operation pair — 2 modules:** `core.models` and
+   `core.operations`.
+5. **History branch/manager pair — 2 modules:** `history.branches` and
+   `history.manager`.
 
-These are not immediate import crashes because the reverse edges are delayed or hidden behind package exports. They are still evidence that dependency direction is not well defined.
+These are not immediate import crashes: many reverse edges are delayed and some
+exist only because a package barrel is counted as a module. The result does show
+that dependency direction is not clean, but it does not by itself prescribe a
+module split. The old 11/7/5 groups should not be reused.
 
-## 3. The three most problematic structural abstractions
+## 3. Three structural pressure points
 
 ### 1. `ProjectService` plus mutable `ProjectSnapshot`
 
-The abstraction claims to be a project-facing service and read model, but it cannot assemble the operational truth needed by the UI. `ProjectService.project_snapshot` supplies graph-derived experiment controls (`service.py:934-938`), then `ProjectDisplayCache` must overwrite them with SQLite-derived task and episode state. A route can return a validly typed but semantically incomplete snapshot.
+The abstraction claims to be a project-facing service and read model, but it
+cannot assemble the operational truth needed by the UI.
+`ProjectService.project_snapshot` supplies graph-derived experiment controls
+(`service.py:934-938`), then `ProjectDisplayCache` overwrites them with
+SQLite-derived task and episode state. A route can return a validly typed but
+semantically incomplete snapshot. Seven direct completion calls in `app.py` and
+two internal calls in `projects.py` currently maintain the convention.
 
 The branch abstraction leaks in the same way. `ProjectService.for_graph_target` creates a second full `ProjectService` around a branch-specific `HistoryManager`, while retaining paper, launcher, provider skills, and repository inventory (`service.py:654-681`). A graph target should be an explicit parameter of graph queries and commands, not a reason to clone a broad service object.
 
-**Replacement:** separate command services from a `ProjectReadModelAssembler` that explicitly joins canonical state, operational state, provider readiness, and cache status. Make completeness part of the return type, not a caller convention.
+The observation that `for_graph_target` clones a broad service remains true,
+but this audit did not demonstrate a bug from that choice and the current
+structural handoff deliberately excludes `service.py`.
+
+**Confirmed replacement:** the graph-only builder returns an opaque,
+non-serializable internal draft. One display/I/O boundary completes either a
+fresh draft or a saved backend snapshot with current operational control and
+returns the public serializable form. This makes completeness unavoidable
+without introducing a new broad read-model layer.
 
 ### 2. `AppStore` as a mixin-composed whole-system API
 
 The mixins improve file size only. They do not create bounded contexts, ownership, or interfaces. `AppStore` exposes spaces, projects, result views, episodes, Auto-research, children, experiments, watchers, tasks, and row mapping as one object (`storage/__init__.py:26-43`). Any orchestration module can reach any table through the same dependency.
 
-This makes multi-domain transitions difficult to locate and test. A caller may perform several committed connection contexts rather than one explicit unit of work, while every connection context auto-commits (`storage/base.py:115-123`).
+Every connection context auto-commits (`storage/base.py:115-123`), so two store
+calls are two commits unless a compound method deliberately owns one
+transaction. That is a risk pattern, not proof that every multi-call sequence is
+wrong. The original watcher examples already use compound atomic methods, and
+some episode flows intentionally persist a fence before later settlement so
+recovery can observe it.
 
-**Replacement:** per-context repositories with narrow protocols, plus an explicit SQLite unit of work for transitions that span task, episode, watcher, and child records. One physical database is acceptable; one logical API is not required.
+**Disposition:** splitting `AppStore` into repositories was rejected. After the
+Phase 1 lifecycle fix, audit caller-level multi-commit sequences for one named
+invariant that a crash between commits can violate. Add a narrow compound store
+method and failure-injection test only for a proven case. If none qualifies,
+make no Phase 3 code change.
 
 ### 3. “Agent task” as an implicit distributed state machine
 
 A task is nominally one record, but correctness depends on coordinated identity across an operation ID, parent operation, episode, graph target, stage root, provider-native session, write-scope fingerprint, watcher group, lifecycle mail, and receipts. Request kind is mapped repeatedly through `if`/`isinstance` branches, including `_request_from_record` and `_validate_request_type` (`background.py:4141-4169`). `create_app` then redispatches the same kinds through a large nested stream function (`api/app.py:623-824`).
 
-**Replacement:** one discriminated `RunEnvelope` and a handler registry. Each handler owns `admit`, `stage`, `execute`, `settle`, and `recover`. Persist state transitions as typed events or a transition log and reduce them into the task/episode read model. Recovery should replay the same transition rules instead of implementing a parallel startup algorithm.
+**Disposition:** the generic `RunEnvelope`/handler-registry replacement was
+rejected because these policies have different contracts. One-invocation
+executors move under `runs/tasks/`; long-lived parent policy moves under
+`runs/episodes/`; ordinary Work, Experiment-loop, and Auto-research child Work
+keep explicit entry points. `BackgroundAgentTasks` launches an already-admitted
+durable `operation_id`, while the existing `EpisodeReconciler` receives an
+ID-only settlement notification and reloads durable state. Shared plumbing is
+allowed, but it may not select policy using `kind`, `surface`, `is_chat`, or an
+equivalent discriminator.
 
 ## 4. Most difficult modules for a new senior engineer
 
 1. **`src/rcp/api/app.py`**. There is no clean composition boundary. Understanding one route can require following nested closures that capture the catalog, store, cache, background tasks, episode coordinators, locks, and watcher registries.
 2. **`src/rcp/background.py`**. It contains the actual durable task lifecycle, admission, recovery, pause/resume/retry, thread ownership, event-loop ownership, and settlement semantics.
-3. **`src/rcp/runs/work.py`**. At 5,202 lines, it combines turn resolution, staging, prompt composition, watcher maintenance, live correction mailboxes, patch validation, Work commit, Experiment-loop commit, Auto-research child mail, result views, and finalization.
+3. **`src/rcp/runs/work.py`**. At 5,207 lines, it combines turn resolution, staging, prompt composition, watcher maintenance, live correction mailboxes, patch validation, Work commit, Experiment-loop commit, Auto-research child mail, result views, and finalization.
 4. **`src/rcp/storage/base.py` plus the storage mixins**. A new engineer must infer schema versions, migration invariants, and cross-table relationships from a 1,158-line initializer and hundreds of methods spread across topic files.
 5. **`src/rcp/history/manager.py` and `src/rcp/transport/state.py`**. These encode the most important correctness boundary, including local/SSH snapshots, publication leases, run locks, append locks, repair, replay, and remote failure reconciliation.
-6. **`web/src/App.tsx` and the missing `projectTransition` module**. The frontend has both server state and local transaction state, with stale-response and multi-tab handling embedded in one component.
+6. **`web/src/App.tsx` and `web/src/projectTransition.ts`**. The frontend has
+   both server state and local transaction state, with stale-response and
+   multi-tab handling concentrated in `App`; the reducer module exists and is
+   covered by focused tests.
 7. **The prompt stack**, especially `agents/prompts.py`, `agents/experiment_loop_prompt.py`, and `agents/auto_research_prompt.py`. Backend authority, provider capability, watcher schema, graph ontology, continuation semantics, and examples are duplicated across long prose contracts.
 
-The absent `docs/design.md` and `docs/specs/` materially increase onboarding cost. `AGENTS.md` is 75 KB and describes itself as a living document that agents should update (`AGENTS.md:1138-1145`), so it cannot substitute for concise, stable architecture documentation.
+`docs/design.md`, `docs/specs/`, `docs/decisions/`, current acceptance scenarios,
+and current handoffs now provide the authority hierarchy that the extraction
+lacked. `AGENTS.md` is 76,927 bytes and intentionally remains the canonical
+agent instruction file; its size is an onboarding cost, not missing design
+authority.
 
-## 5. What I would invert in a rewrite
+## 5. Historical rewrite directions and current disposition
 
 I would retain Python, FastAPI, React, Tauri, SQLite, structured patch files, provider-enforced write boundaries, and append-only canonical history. The main problems are structural, not language choices.
 
-### Invert orchestration around an explicit application kernel
+### Application kernel — not selected
 
-`create_app` should be under roughly 100 lines. It should instantiate an `ApplicationKernel`, include routers, and register a lifecycle object. Move boot-time repair into `StartupReconciler`, run dispatch into `RunDispatcher`, watcher operation into `WatcherRuntime`, and route logic into bounded-context routers.
+The original recommendation was to put `create_app` under roughly 100 lines,
+instantiate an `ApplicationKernel`, include routers, and add separate
+`StartupReconciler`, `RunDispatcher`, and `WatcherRuntime` objects. The line
+target was judgment, not a measured requirement, and those wrapper objects were
+not selected. The confirmed change extracts route modules, stores one typed
+`ApiServices` composition container at `app.state.services`, and gives handlers
+narrow dependency accessors. The existing `EpisodeReconciler` owns episode
+startup/settlement; no second coordinator is added.
 
-### Invert callback coordination into commands, events, and handlers
+### Generic command/event kernel — not selected
 
-Use a lightweight durable workflow model in the existing SQLite database:
+The audit proposed a lightweight durable workflow model in the existing SQLite
+database:
 
 - API and watcher inputs produce typed commands.
 - A transition function validates current state and writes one transaction containing state changes and an outbox effect.
 - A bounded async supervisor executes effects.
 - Completion produces typed events that pass through the same transition function.
 
-This does not require Temporal or another service. An internal event/outbox design is enough at the current deployment scale and makes restart recovery deterministic.
+This does not require Temporal or another service, but it is still a new runtime
+framework. The confirmed plan instead adds one narrow durable boundary:
+admission writes the exact launch intent atomically, the engine exposes
+`launch_admitted(operation_id)`, and task settlement notifies
+`EpisodeReconciler` by ID after committing the verdict. Startup reconciliation
+repairs a crash before notification.
 
-### Invert the storage façade
+### Split the storage façade — rejected
 
-Keep one SQLite file, but expose `TaskRepository`, `EpisodeRepository`, `WatcherRepository`, `ProjectRepository`, and `IdentityRepository`. Cross-domain operations use an explicit `UnitOfWork`. Move schema migration into numbered migration files rather than rerunning a 1,158-line mixed bootstrap/migration procedure at startup.
+The audit proposed `TaskRepository`, `EpisodeRepository`, `WatcherRepository`,
+`ProjectRepository`, and `IdentityRepository`, plus an explicit `UnitOfWork`.
+That is not the implementation plan. Keep the composed `AppStore`; add a narrow
+compound method only when the Phase 3 audit proves a harmful crash window.
+Numbered migrations remain a separate possible cleanup, not an authorized phase
+of the backend structural refactor.
 
-### Invert project reads into an explicit joined read model
+### Joined read-model service — narrowed
 
-Canonical graph state and operational runtime state are intentionally distinct. Make that distinction visible:
+Canonical graph state and operational runtime state remain intentionally
+distinct, but the confirmed fix does not add `GraphQueryService`,
+`OperationsQueryService`, and `ProjectReadModelAssembler`. It uses one opaque
+graph-only draft and one completion boundary returning the public snapshot. The
+important property is that an incomplete value cannot be serialized or reach a
+route, not the number of new service objects.
 
-- `GraphQueryService` returns canonical state for an exact `GraphTargetRef`.
-- `OperationsQueryService` returns tasks, episodes, and watchers.
-- `ProjectReadModelAssembler` joins them and reports freshness/reconciliation explicitly.
+### Run-handler registry — rejected
 
-Do not mutate a `ProjectSnapshot` after construction.
-
-### Invert run-kind branching into a handler registry
-
-Define a discriminated `RunEnvelope` whose `kind` selects a `RunHandler`. A handler has a uniform lifecycle:
+The audit proposed a discriminated `RunEnvelope` whose `kind` selects a
+`RunHandler` with this uniform lifecycle:
 
 ```text
 admit -> stage -> build_contract -> execute -> read_handoff -> validate -> commit -> settle
                                       \-> pause/fail/recover
 ```
 
-Common provider event decoding, receipts, cancellation-safe owned tasks, lock observation, staged-file cleanup, and finalization belong in shared primitives. Kind-specific code should implement only its policy.
+Common provider event decoding, receipts, cancellation-safe owned tasks, lock
+observation, staged-file cleanup, and finalization may remain shared primitives.
+The registry and uniform policy lifecycle are rejected: explicit task entry
+points and explicit Auto-research/Experiment episode algorithms keep their
+different contracts visible.
 
-### Invert frontend ownership
+### Frontend ownership — outside the confirmed backend refactor
 
-Make `App` a route and shell composer. Use a server-state cache such as TanStack Query for projects, tasks, episodes, watchers, and readiness. Keep local transition state in one reducer/store keyed by project. Move `syncHumanDraft` into a command object with explicit input and outcome types. Generate the TypeScript API client and discriminated unions from OpenAPI where practical.
+The audit proposed making `App` a route/shell composer, adopting a server-state
+cache such as TanStack Query, keeping transition state in one project-keyed
+reducer/store, moving `syncHumanDraft` into a typed command object, and
+generating more TypeScript contracts from OpenAPI. These remain unselected
+frontend proposals. The current handoff changes `web/` only as needed to
+preserve behavior while the backend structure moves.
 
-### Invert prompt prose into generated contracts
+### Generate prompt prose — partly selected
 
-Keep a short immutable authority envelope. Send only the active mode contract. Generate watcher, patch, command, and continuation descriptions from the same typed models used by validators. The task message should render the exact provider-enforced write roots and protected paths.
+The task message now renders the exact provider-enforced write roots and
+protected paths, and generating the base relation block from `RELATION_SPEC`
+remains a valid narrow candidate. Sending only the active chat contract was
+explicitly declined under invariant 10d. A broad rewrite of every watcher,
+patch, command, and continuation description is not part of the confirmed
+backend refactor.
 
-### Enforce dependency direction
+### Dependency direction — diagnostic, not an authorized phase
 
 Ban internal imports from package barrels such as `rcp.storage`, `rcp.agents`, and `rcp.core`; import leaf modules instead. Add import-linter rules for layers such as:
 
@@ -286,78 +446,134 @@ repositories/providers/transport -> domain
 frontend shell -> features -> API/types
 ```
 
-Local imports should not be used to conceal reverse architectural dependencies.
+Local imports should not be used merely to conceal reverse architectural
+dependencies. The five current SCCs are evidence for review during the selected
+module moves; an import-linter dependency and repository-wide barrel ban are
+not part of the confirmed work.
 
 ## 6. Premature abstractions, dead options, and unreachable defenses
 
 ### High-confidence findings
 
-- **The storage mixin split is a cosmetic abstraction.** The package says so directly (`storage/__init__.py:1-6`). It reduces file length but not coupling.
+- **The storage mixin split reduces file length, not API breadth.** The package
+  says so directly (`storage/__init__.py:1-6`), and `AppStore` still exposes 242
+  public callables. Calling that breadth "cosmetic" overstates the consequence:
+  the topic files do provide code ownership, and no broad repository split is
+  authorized without a proven transaction failure.
 - **`_LazyProjectService` is a compatibility façade.** It exists to make `app.state.service` lazily expose the default project (`api/app.py:316-330`, `api/app.py:1217-1225`). Source use is dominated by tests. Production code is already project-ID and catalog based. Remove it from the production application surface and provide a test fixture helper.
 - **`Manifest.execution` and `paper.coach` are legacy migration inputs, not current configuration.** They are consumed to synthesize profiles (`config.py:171-194`) and removed on write (`config.py:467-473`). Isolate them in a versioned manifest migration loader instead of carrying them in the live model.
 - **`AgentSurfaceConfig.permissions` appears configurable but is derived policy.** Missing values are filled with `permissions_for(surface)`, and any widening or narrowing is rejected (`config.py:212-228`). The writer always serializes the derived policy (`config.py:461-465`). Either omit it from user configuration or store only a policy version/digest.
 - **An old-client compatibility branch is unreachable through the current API.** `write_agent_settings` says omitted surfaces are preserved (`config.py:449-455`), but `ProjectSettingsRequest` rejects any request that does not include every surface (`service.py:584-593`), and the route passes that model directly (`api/app.py:1941-1954`). Remove the branch or actually support partial updates.
-- **The current documentation hierarchy is a dead reference in this snapshot.** Code-agent instructions repeatedly require files that are absent (`README.md:223-230`, `AGENTS.md:11-17`, `AGENTS.md:597-599`).
+- **The documentation hierarchy is live.** `docs/design.md`, `docs/specs/`,
+  `docs/decisions/`, active acceptance scenarios, and current handoffs all exist
+  and are checked by `tests/test_documentation.py`. The original dead-reference
+  finding was solely an extraction artifact.
 
 ### What I did not find
 
-A token-level static scan found no high-confidence top-level private Python function that is defined only once and never referenced in source or tests. This does not prove there is no dead code, especially because missing modules prevent a complete build and type-aware analysis. It does mean the main waste is structural duplication and compatibility surface, not a large pile of obviously orphaned helper functions.
+A token-level static scan found no high-confidence top-level private Python
+function that is defined only once and never referenced in source or tests.
+That does not prove there is no dead code; dynamic registration and imports make
+token counts incomplete. The full checkout does build and test, so missing
+modules are no longer a limitation on this statement.
 
 ### Defensive code assessment
 
 The `bootstrap_code is None` branch in `storage/base.py:111-112` is mechanically impossible when `issue_bootstrap=True`, but it is a harmless invariant assertion and should become an explicit `assert` or invariant helper, not a priority deletion.
 
-The many guards that say a task “lost” its durable task, episode, branch identity, allocation, or session binding are not impossible scenarios. They are necessary because lifecycle state is split across records and modules. Removing them would weaken safety. Their frequency is evidence that the lifecycle abstraction should be consolidated.
+The 66 literal `lost its …` guards across 19 files are not impossible scenarios
+and should not be swept away. Many protect immutable session, branch,
+allocation, or snapshot bindings rather than task-status transitions. Their
+frequency shows a large invariant surface, but does not prove that one generic
+lifecycle abstraction should replace the distinct policies. Phase 1 audits
+only guards whose fact can be returned atomically by the new transition seam.
 
 ## 7. Reimplemented logic and consolidation targets
 
 ### Exact or near-exact duplicates
 
-- `_prepare_worker_handoffs` and `_prepare_orchestrator_handoffs` are identical (`runs/auto_research_stream.py:1102-1149`). Replace them with one function accepting the shared turn protocol.
-- `_wait_for_owned_task` and `_wait_for_work_validator_task` implement the same cancellation-safe wait (`runs/auto_research_stream.py:1581-1599`, `runs/work.py:4695-4713`). Move this into an `OwnedAsyncTask` utility.
-- `_record_run_lock_wait` and `_record_work_lock_wait` are identical (`runs/graph.py:1177-1194`, `runs/work.py:4954-4971`). Use one `CanonicalLockObserver` with strategy-specific lost-lock wording.
-- `_result_view_id` is duplicated byte for byte (`runs/result_views.py:233-236`, `transport/run_stage.py:1272-1275`). Create a `ResultViewId` value type.
+- `_prepare_worker_handoffs` and `_prepare_orchestrator_handoffs` have identical
+  bodies but distinct typed signatures; they are not byte-identical functions.
+  Keeping the actor roles explicit is consistent with the current policy.
+- `_wait_for_owned_task` and `_wait_for_work_validator_task` have the same
+  cancellation-safe algorithm, with different names and docstrings
+  (`runs/auto_research_stream.py:1581-1599`, `runs/work.py:4700-4718`). This is a
+  plausible shared-plumbing leaf, not an authorized new runtime abstraction.
+- `_record_run_lock_wait` and `_record_work_lock_wait` are normalized-AST
+  identical (`runs/graph.py:1177-1194`, `runs/work.py:4959-4976`). Their
+  corresponding lost-lock functions deliberately differ, so a broad
+  `CanonicalLockObserver` was not established by this clone alone.
+- `_result_view_id` is duplicated byte for byte (`runs/result_views.py:233-236`,
+  `transport/run_stage.py:1272-1275`). This is the one confirmed Phase 4 move:
+  expose one descriptively named validator from `rcp.artifacts` beside
+  `ResultViewDescriptor` and import it from both callers. Do not create a value
+  type or expand the phase into a duplicate sweep.
 - User-ID and graph-condition nonblank validators are repeated in `storage/models.py:65-71`, `storage/models.py:109-115`, `storage/models.py:1157-1173`, and `storage/models.py:1191-1197`.
-- Directory fsync helpers are repeated in `projects.py:1820` and `history/manager.py:1609`.
-- Prompt pointer helpers are repeated as `_pointer` and `_optional_pointer` in `agents/prompts.py:120` and `agents/auto_research_prompt.py:43`.
+- Directory fsync helpers at `projects.py:1820` and `history/manager.py:1609`
+  have normalized-AST-identical bodies but different method/function shapes.
+- Prompt pointer helpers `_pointer` and `_optional_pointer` at
+  `agents/prompts.py:121` and `agents/auto_research_prompt.py:43` have
+  normalized-AST-identical bodies. Neither leaf duplicate is part of the
+  confirmed refactor.
 
 ### Semantic duplicates
 
-- **Live patch validation:** Graph and Work each parse, shape-check, prepare, call `history.validate_candidate`, map unavailable/invalid states, collect reject messages, and construct `PatchValidationResult` (`runs/graph.py:1122-1174`, `runs/work.py:4861-4951`). Consolidate a generic `validate_live_candidate(build_candidate, message_policy)` primitive.
+- **Live patch validation:** Graph and Work each parse, shape-check, prepare,
+  call `history.validate_candidate`, map unavailable/invalid states, collect
+  reject messages, and construct `PatchValidationResult`. Shared leaf plumbing
+  is acceptable, but a helper taking `kind`, `surface`, or a message-policy
+  discriminator would violate invariant 10. The original generic primitive is
+  not the confirmed design.
 - **SSE event decoding:** `background.py:4177-4184`, `runs/episode_report.py:669-672`, and several Work, Graph, and Auto-research loops each decode `data:` frames independently. Use one strict `decode_agent_event_frame` function.
-- **Run-kind dispatch and request validation:** task kind is interpreted in `create_app`, `BackgroundAgentTasks`, and `runs/task_policy.py`, with repeated `isinstance` checks. A discriminated envelope plus handler registry removes this class of duplication.
-- **Watcher protocol:** the same external and graph watcher shapes, exit semantics, Slurm guidance, and atomic validation rules are separately encoded in Pydantic models, Work prompts, Experiment initial prompts, Experiment wake prompts, and correction prompts. Generate all model-facing text and examples from a single `WatcherContract` descriptor.
-- **Settlement and receipt handling:** Work, Graph, Discuss, Auto-research, and report runs repeat provider stream, stage cleanup, receipt, final-message, and correction mechanics. Extract one `AgentTurnRunner` with policy hooks.
+- **Run-kind dispatch and request validation:** task kind is interpreted in
+  `create_app`, `BackgroundAgentTasks`, and `runs/task_policy.py`, with repeated
+  `isinstance` checks. The confirmed replacement is admission-time authority
+  resolution plus explicit task and episode entry points, not a discriminated
+  envelope or handler registry.
+- **Watcher protocol:** watcher shapes and exit semantics appear in typed models
+  and several prompts. The stable three-way exit protocol already has runtime
+  and prompt tests, so a shared prose renderer was explicitly struck from Phase 4. Broader schema generation would require separate evidence and scope.
+- **Settlement and receipt handling:** Work, Graph, Discuss, Auto-research, and
+  report runs repeat some provider-stream and cleanup mechanics. Shared plumbing
+  remains desirable where it is policy-neutral; one `AgentTurnRunner` with
+  policy hooks would recreate the rejected runtime framework.
 
 ## 8. Highest cognitive-complexity functions and decomposition
 
-The numbers below are a consistent AST heuristic, not Sonar's exact metric. They are useful for relative ranking.
+Every line span below reproduces against `f6085b0`. The decision-point and
+frontend branch-token numbers came from the original audit's AST heuristic, but
+its exact scoring script was not retained. They are historical relative ranks,
+not reproducible implementation thresholds.
 
-| Function | Lines | Approx. decision points | Main responsibilities to extract |
-|---|---:|---:|---|
-| `api/app.py:create_app` | 2,946 | 441 | `ApplicationKernel`, routers, `RunDispatcher`, `StartupReconciler`, watcher runtime, serialization/read-model helpers |
-| `core/materialize.py:_apply_patch` | 255 | 56 | One operation handler per operation type, each returning state plus emitted bookkeeping; dispatch table instead of nested branching |
-| `runs/graph.py:stream_graph_run` | 687 | 124 | stage inputs, compose prompt, stream provider, correct handoff, commit patch, finalize result |
-| `history/delta.py:_operation_fallbacks` | 92 | 38 | A formatter registry keyed by operation type; pure formatter per operation |
-| `runs/discuss.py:stream_discuss_run` | 505 | 73 | shared turn execution, Discuss-specific context policy, artifact settlement, transcript commit |
-| `runs/auto_research_effects.py:auto_research_command_effects` | 732 | 129 | parse command, authorize, execute each command type, reconcile unknown outcomes; use command handlers and an effect result algebra |
-| `service.py:ProjectService._build_sync_patches` | 362 | 87 | normalization, ontology edits, node creation, node updates, removals, proposal judgments, conflict detection, patch aggregation |
-| `runs/work.py:_process_experiment_watcher_maintenance` | 293 | 35 | parse requested watcher changes, bind episode, stop/rearm, validate joint handoff, produce one typed maintenance plan |
-| `background.py:BackgroundAgentTasks._create_and_spawn` | 177 | 55 | admission policy, durable creation, recovery binding, worker scheduling; delegate by handler and persist one transition |
-| `agents/launcher.py:AgentLauncher.stream` | 234 | 57 | provider resolution, local/SSH setup, capability/write-scope enforcement, process stream, cleanup; split transport from provider protocol |
+| Function                                                      | Lines | Historical decision points | Original decomposition suggestion                                                                                                         |
+| ------------------------------------------------------------- | ----: | -------------------------: | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `api/app.py:create_app`                                       | 2,946 |                        441 | `ApplicationKernel`, routers, `RunDispatcher`, `StartupReconciler`, watcher runtime, serialization/read-model helpers                     |
+| `core/materialize.py:_apply_patch`                            |   255 |                         56 | One operation handler per operation type, each returning state plus emitted bookkeeping; dispatch table instead of nested branching       |
+| `runs/graph.py:stream_graph_run`                              |   687 |                        124 | stage inputs, compose prompt, stream provider, correct handoff, commit patch, finalize result                                             |
+| `history/delta.py:_operation_fallbacks`                       |    92 |                         38 | A formatter registry keyed by operation type; pure formatter per operation                                                                |
+| `runs/discuss.py:stream_discuss_run`                          |   505 |                         73 | shared turn execution, Discuss-specific context policy, artifact settlement, transcript commit                                            |
+| `runs/auto_research_effects.py:auto_research_command_effects` |   732 |                        129 | parse command, authorize, execute each command type, reconcile unknown outcomes; use command handlers and an effect result algebra        |
+| `service.py:ProjectService._build_sync_patches`               |   362 |                         87 | normalization, ontology edits, node creation, node updates, removals, proposal judgments, conflict detection, patch aggregation           |
+| `runs/work.py:_process_experiment_watcher_maintenance`        |   293 |                         35 | parse requested watcher changes, bind episode, stop/rearm, validate joint handoff, produce one typed maintenance plan                     |
+| `background.py:BackgroundAgentTasks._create_and_spawn`        |   177 |                         55 | admission policy, durable creation, recovery binding, worker scheduling; delegate by handler and persist one transition                   |
+| `agents/launcher.py:AgentLauncher.stream`                     |   234 |                         57 | provider resolution, local/SSH setup, capability/write-scope enforcement, process stream, cleanup; split transport from provider protocol |
 
 Frontend concentration is similar:
 
-| Component/function | Span | Approx. branch tokens | Decomposition |
-|---|---:|---:|---|
-| `App` | 3,319 lines | 608 | route shell, project-session provider, transition provider, task launcher, desktop shell, feature pages |
-| `NodeChat` | 1,373 lines | 280 | transcript model, input composer, task/run state, artifact/result-view panel, presentation |
-| `DetailDrawer` | 718 lines | 136 | node schema adapter, editable field groups, proposal controls, relation view, presentation |
-| `ExperimentRunDetail` | 366 lines | 100 | runtime summary selector, watcher state, controls, report/results, presentation |
-| `PaperWorkspace` | 602 lines | 129 | paper query state, editor, coach session, artifact/preview state |
-| `syncHumanDraft` | 185 lines | 39 | precondition reducer, sync command, stale-response disposition, canonical reload, draft rebase, UI notification |
+| Component/function    |        Span | Approx. branch tokens | Decomposition                                                                                                   |
+| --------------------- | ----------: | --------------------: | --------------------------------------------------------------------------------------------------------------- |
+| `App`                 | 3,319 lines |                   608 | route shell, project-session provider, transition provider, task launcher, desktop shell, feature pages         |
+| `NodeChat`            | 1,373 lines |                   280 | transcript model, input composer, task/run state, artifact/result-view panel, presentation                      |
+| `DetailDrawer`        |   718 lines |                   136 | node schema adapter, editable field groups, proposal controls, relation view, presentation                      |
+| `ExperimentRunDetail` |   366 lines |                   100 | runtime summary selector, watcher state, controls, report/results, presentation                                 |
+| `PaperWorkspace`      |   602 lines |                   129 | paper query state, editor, coach session, artifact/preview state                                                |
+| `syncHumanDraft`      |   185 lines |                    39 | precondition reducer, sync command, stale-response disposition, canonical reload, draft rebase, UI notification |
 
-The decomposition should favor pure phase functions and typed intermediate values. For example, `stream_work_run` should become:
+The decomposition should favor pure phase functions and typed intermediate
+values. The sequence below remains a useful description of shared Work
+mechanics, but task dispatch must now select explicit ordinary-Work,
+Experiment-loop, or Auto-research-child entry points before those mechanics;
+`stream_work_run` must not retain a mode switch:
 
 ```text
 resolve_turn
@@ -377,15 +593,18 @@ Each phase should accept and return a typed value rather than mutate an `AgentTa
 
 ### Representative prompt size
 
-Using representative paths and one repository, with no large graph or repository content embedded:
+The original audit rendered representative paths and one repository, with no
+large graph or repository content embedded. The exact input fixture was not
+retained, so these values are historical and were not presented as current
+measurements in the 2026-08-19 fact check:
 
-| Contract | Characters | Approx. tokens | Lines |
-|---|---:|---:|---:|
-| Discuss | 3,926 | 982 | 80 |
-| Work | 17,208 | 4,302 | 230 |
-| Chat master, Discuss plus Work | 21,866 | 5,466 | 325 |
-| Auto-research orchestrator | 12,171 | 3,043 | 170 |
-| Experiment loop | 30,069 | 7,517 | 380 |
+| Contract                       | Characters | Approx. tokens | Lines |
+| ------------------------------ | ---------: | -------------: | ----: |
+| Discuss                        |      3,926 |            982 |    80 |
+| Work                           |     17,208 |          4,302 |   230 |
+| Chat master, Discuss plus Work |     21,866 |          5,466 |   325 |
+| Auto-research orchestrator     |     12,171 |          3,043 |   170 |
+| Experiment loop                |     30,069 |          7,517 |   380 |
 
 Token estimates use characters divided by four and are directional. They exclude task-specific files, graph records, repository instructions, prior messages, skill packages, diagnostics, and tool output.
 
@@ -403,9 +622,15 @@ Token estimates use characters divided by four and are directional. They exclude
 
 **Fixed 2026-08-18. See the status section above.** The description below is the original finding.
 
-The Work contract says RCP imposes no repository allowlist and that repository pointers are not a filesystem permission boundary (`agents/prompts.py:965-971`). The provider layer requires `write_dirs` to equal the resolved repository roots and permits writes only in those roots while denying protected paths (`providers.py:690-703`, `providers.py:722-765`).
+The old Work contract said RCP imposed no repository allowlist and that
+repository pointers were not a filesystem permission boundary. The provider
+layer required `write_dirs` to equal the resolved repository roots and permitted
+writes only in those roots while denying protected paths.
 
-From the agent's perspective, a contract-authorized action can fail as an unexplained tool denial. This is worse than a narrow prompt because the model may spend turns trying alternate commands or infer that the provider is malfunctioning. Render the exact `ProjectWriteScope` into the prompt. The missing `agents/write_scope.py` prevents auditing whether those roots are themselves correct.
+From the agent's perspective, a contract-authorized action could therefore fail
+as an unexplained tool denial. `ProjectWriteScope` and
+`agents/write_scope.py` are now present, tested, and rendered into the active
+Work-like launch or turn; the extraction's missing-file limitation was false.
 
 #### 2. The stable chat context includes an inactive contract
 
@@ -413,15 +638,26 @@ From the agent's perspective, a contract-authorized action can fail as an unexpl
 
 `chat_master_context` embeds both complete Discuss and Work contracts and asks later turns to follow only the selected one (`agents/prompts.py:553-643`). This spends roughly 5.5k tokens before conversation context and creates mode interference. A Discuss turn still contains detailed Work, patch, watcher, and repository-write instructions in context.
 
-Send only the active contract. Cache policy server-side or identify immutable policy by version and digest rather than relying on both contracts remaining in the model's attention.
+The original recommendation was to send only the active contract and cache
+policy server-side. Do not implement it: invariant 10d intentionally uses one
+stable master containing both contracts and a per-turn marker that activates
+exactly one.
 
 #### 3. The task plane is buried under control-plane protocol
 
-A Work agent must understand RCP ontology extensions, graph causal checks, proposal authority, source refs, patch schema, watcher lifecycle, validation correction, artifact rules, repository instructions, and session continuation before doing the user's operation. The Experiment agent additionally receives a 380-line finite-state protocol governing attempts, watcher groups, invocation budgets, human pauses, and handoff pairing.
+A Work agent must understand RCP ontology extensions, graph causal checks,
+proposal authority, source refs, patch schema, watcher lifecycle, validation
+correction, artifact rules, repository instructions, and session continuation
+before doing the user's operation. The original representative Experiment
+rendering was 380 lines; that exact rendering is not reproducible without its
+missing input fixture.
 
 This makes “satisfy the orchestration protocol” a competing objective with “solve the human's task.” It also increases the chance that a scientifically or operationally correct result is rejected for a small handoff-format mistake.
 
-Move mechanically checkable protocol into typed tools. The prompt should explain intent and current allowed transitions, while JSON Schema and tool errors carry exact shape requirements.
+The direction remains plausible, but it is not a fact or a confirmed phase.
+RCP already stages a validator client and typed command clients for several
+mechanically checkable paths. Any further move requires a separately scoped
+contract change rather than being folded into the structural refactor.
 
 #### 4. Normative policy is duplicated across prose and code
 
@@ -429,7 +665,11 @@ Move mechanically checkable protocol into typed tools. The prompt should explain
 
 Watcher shape and semantics are present in storage models, Work prompt, Experiment prompt, wake prompt, and correction prompts. Graph authority is centralized better, with a version and digest, but surrounding authoring rules are repeated. Drift is already visible in the filesystem-boundary contradiction.
 
-Generate prompt fragments, examples, and validation help from the same descriptors used by backend validation.
+Do not turn this into a blanket prompt generator. The watcher exit mapping is
+small, stable, and covered by runtime plus prompt tests. Generate the base
+relation block from `RELATION_SPEC` only if that narrow change is separately
+accepted; it is changing computed policy that otherwise has no agent-visible
+representation.
 
 #### 5. Examples over-anchor the model
 
@@ -441,23 +681,43 @@ Examples should be explicitly non-normative. ~~and selected from detected projec
 part was rejected: probing the machine to decide which examples to ship is machinery in place of
 writing. Ship a few varied examples and label them.
 
-#### 6. Repository instructions are an unbounded second policy layer
+#### 6. Repository instructions can be large, but remain authoritative
 
-Work tells the model to read `AGENTS.md` and `CLAUDE.md` at every repository root (`agents/prompts.py:961-973`). In this repository, `AGENTS.md` is 75 KB, refers to missing design/spec files, and instructs agents to update itself at the end of work (`AGENTS.md:1138-1145`). For the human message in this audit, that creates a large, partly stale instruction detour and a temptation to modify policy documentation unrelated to the requested code review.
+Work tells the model to read `AGENTS.md` and `CLAUDE.md` at every repository
+root before changing that repository (`agents/prompts.py:1017`). In this
+repository, `AGENTS.md` is 76,927 bytes, but its design/specification references
+are present and current. Repository instructions are a deliberately subordinate
+method-constraint layer, not stale product authority.
 
-Stage a concise, task-relevant repository instruction digest with source pointers. Keep the raw files available for targeted lookup, not mandatory full reading on every turn.
+The proposed instruction digest was not accepted. A digest could silently omit
+the exact repository-owned constraint relevant to a write. Reducing instruction
+size would need its own fidelity contract and evidence; it is not part of this
+handoff.
 
-### Recommended prompt architecture
+### Historical prompt recommendations and disposition
 
-1. **Immutable authority envelope, about 300 to 600 tokens.** Identity, authority hierarchy, exact tool capability, exact readable/writable roots, protected paths, output channels, policy version/digest.
-2. **One active mode contract.** Discuss, Work, Experiment, orchestrator, or report, never multiple inactive modes.
-3. **Human objective first.** Preserve the exact message, then state the expected operational outcome.
-4. **Machine-readable context manifest.** Revision, graph target, paths, repository roots, host, session continuity, budget, and allowed transitions as JSON.
-5. **Typed actions rather than a prose API manual.** Expose Auto-research commands and watcher handoff as tools or a schema-backed CLI. Show only actions currently legal in this state.
-6. **Generated validation guidance.** Produce schema summaries and correction text from Pydantic/domain descriptors.
-7. **Delta continuation prompts.** On resume or wake, send changed facts, delivered events, remaining budget, and currently legal transitions. Do not resend the entire immutable contract unless the provider session is new.
-8. **Separate normative rules from examples.** Label examples non-normative and ship several from
-   different systems. Do not detect tooling to select them.
+1. **Exact authority envelope:** partly implemented through
+   `ProjectWriteScope`, provider capability, authority version/digest, and
+   protected paths. The 300–600-token target was never measured as a
+   requirement.
+2. **One active mode contract:** declined. Invariant 10d intentionally sends the
+   stable Discuss and Work contracts once, then activates exactly one with the
+   per-turn marker.
+3. **Unchanged human objective:** already implemented; human-authored message
+   bytes remain untouched.
+4. **Machine-readable context and deltas:** durable context snapshots and
+   compact replacement deltas already carry the revision, graph target,
+   repositories, packages, and session binding.
+5. **Typed actions:** Auto-research command clients and the staged Patch
+   validator implement part of this direction. A general tool conversion is
+   unconfirmed.
+6. **Generated validation guidance:** potentially useful for the base relation
+   table; not a blanket prompt rewrite.
+7. **Delta continuation prompts:** already the chat protocol. New provider
+   sessions receive the master; resumes receive the marker, human message, and
+   changed context.
+8. **Non-normative varied examples:** implemented for external watcher checks;
+   no tooling-detection machinery is added.
 
 ## 10. Prioritized remediation
 
@@ -468,29 +728,51 @@ See the status section at the top.
 
 ### P1: Remove the largest consistency hazards
 
-- Replace mutable snapshot decoration with one explicit project read-model assembler.
-- Extract `RunDispatcher` and `StartupReconciler` from `create_app`.
-- Introduce a discriminated run envelope, handler registry, and centralized transition rules for task/episode/watcher lifecycles.
-- Split `AppStore` into bounded repositories and add an explicit unit of work.
+- Add the Phase 0 route and lifecycle safety nets, then centralize the legal
+  agent-task status transitions and their guarded side effects in one private
+  storage seam.
+- Replace serializable half-built snapshots with an opaque internal draft and
+  one public display/I/O completion boundary.
+- Extract route modules through one typed `ApiServices` composition container
+  and narrow dependency accessors; do not add an application-kernel business
+  layer.
+- Separate one-invocation task execution under `runs/tasks/` from parent policy
+  under `runs/episodes/`, reuse the thin `EpisodeReconciler`, and reduce
+  `BackgroundAgentTasks` to the exact 24 policy-neutral engine shells.
+- Audit harmful multi-commit sequences after the lifecycle fix and add only
+  proven compound operations. Do not split `AppStore` pre-emptively.
 
 ### P2: Reduce change cost
 
-- Split frontend `App` and `NodeChat`; move server state to a query cache and local draft state to one reducer/store.
-- Consolidate live patch validation, SSE decoding, owned async task cleanup, lock observation, IDs, and watcher schemas.
-- Move migrations into numbered modules and enforce import-layer rules.
+- Frontend `App` and `NodeChat` remain substantial future candidates, but the
+  confirmed handoff is backend-only and changes `web/` only to keep behavior
+  working.
+- Consolidate only policy-neutral leaf plumbing. The one verified immediate
+  duplicate is the result-view id validator; the watcher renderer and generic
+  run-handler framework are rejected.
+- Numbered migrations and import-layer rules remain separate possible work, not
+  part of the current implementation order.
 - ~~Render the exact provider scope into the prompt.~~ Done 2026-08-18. Generating the rest of
   the prompt contracts from runtime policy is still open, starting with the relation table.
 
 ## Final assessment
 
-The application is not architecturally unsalvageable. Its most important invariant, append-only canonical research state with locked validation and rematerialization, is coherent and should be preserved. The problem is that nearly every newer feature has been integrated by extending shared orchestrators and adding another cross-record reconciliation path. The next phase should stop adding branches to `create_app`, `BackgroundAgentTasks`, `work.py`, and `App.tsx`, and instead make lifecycle transitions, read-model composition, and prompt authority first-class typed components.
+The application is not architecturally unsalvageable. Its most important
+invariant, append-only canonical research state with locked validation and
+rematerialization, is coherent and should be preserved. The backend next step
+is the exact phased work in the structural handoff: transition safety,
+non-serializable snapshot drafts, narrow route extraction, semantic task/episode
+ownership, and a policy-neutral background engine. `App.tsx`, broad storage
+interfaces, a generic run registry, and wholesale prompt redesign are not part
+of that authorization.
 
 ## Appendix A: the five structural findings, explained from scratch
 
 This appendix restates the main structural findings for a reader who is not a
 professional software engineer. It defines every term it uses and grounds each claim in
 code from this repository. The technical sections above are the reference; this is the
-explanation. Every number here was measured against this checkout on 2026-08-18.
+explanation. Every number here was rechecked against committed checkout
+`f6085b0` on 2026-08-19 unless explicitly labelled historical.
 
 The single thread through all five: none of it is bad code, and all of it works today.
 The cost is that each one makes information **not local** — to answer a simple question
@@ -553,16 +835,16 @@ redirect? The eight lines do not say. You go find each one.
 **The cost.** Look at the signature: `def team_invitations(request: Request)`. It
 declares that this function takes one thing. It also touches the database and the
 identity system, and says so nowhere. **The function's header understates what the
-function reaches.** In a design without this problem those would be parameters, so one
-line would tell you the function's full reach. It also blocks testing: you cannot run
-this function against a fake database, because it does not accept a database — it
-reaches out and takes the real one.
+function reaches.** That makes direct isolated testing harder; current route tests
+usually construct the application so the closure exists rather than inject the route's
+two narrow services.
 
-**The scale.** `create_app` defines **157 names** and **99 functions** inside itself.
-Each of those 99 can silently reach any of those 157, and none declares which it uses.
-Change one of the 157 and you cannot tell who breaks without checking all 99. That is
-what "no seam" means: a seam is a place you can cut code apart and work on one piece
-alone, and here all 99 pieces share one pool of names.
+**The scale.** `create_app` defines **157 local names** and **99 direct child
+functions**. This does not mean every child reaches all 157. The 77 application
+handlers collectively close over 31 distinct names; median transitive reach is 2 and
+the maximum is 11. The problem is hidden declaration and one shared edit surface, not
+that every route has broad runtime reach. A seam is a place code can be cut apart and
+worked on independently; these handlers currently share one enclosing scope.
 
 ### A2. Task lifecycle rules that exist nowhere in particular
 
@@ -571,7 +853,7 @@ allowed between them. A traffic light is green, yellow, or red; green may become
 yellow may become red, green may never jump to red. That set of states plus the allowed
 moves is a **state machine**, and the moves are **transitions**.
 
-There are two ways to build one. *Explicit* — one place lists the rules and every change
+There are two ways to build one. _Explicit_ — one place lists the rules and every change
 goes through it:
 
 ```python
@@ -585,7 +867,7 @@ def change(light, new_state):
 
 To learn the rules, read `ALLOWED`. One place.
 
-*Implicit* — each piece of code that changes the state checks for itself. This also
+_Implicit_ — each piece of code that changes the state checks for itself. This also
 works, but there is no `ALLOWED`. To learn the rules you must find every function that
 writes the state and read all of them.
 
@@ -595,33 +877,40 @@ writes the state and read all of them.
 write that column, each in a different method, each carrying its own rule in a `WHERE`
 clause:
 
-| writes | permitted only from |
-|---|---|
-| `running` | `queued` |
-| `pausing` | `queued`, `running` |
-| `paused` | `queued`, `running`, `pausing` |
-| `succeeded` | `queued`, `running`, `pausing` |
-| `failed` | `queued`, `running`, `pausing` |
+| writes        | permitted only from            |
+| ------------- | ------------------------------ |
+| `running`     | `queued`                       |
+| `pausing`     | `queued`, `running`            |
+| `paused`      | `queued`, `running`, `pausing` |
+| `succeeded`   | `queued`, `running`, `pausing` |
+| `failed`      | `queued`, `running`, `pausing` |
 | `interrupted` | `queued`, `running`, `pausing` |
 
 That table was assembled by reading all seven statements. It does not exist anywhere in
 the code.
 
+Resume and Retry are deliberately absent: they create new recovery tasks rather than
+move the existing row, and they depend on session, stage, episode, and task-kind facts.
+Their `can_resume` and `can_retry` calculations remain explicit in `rows.py`; this phase
+adds no second recovery table. Only `can_pause` derives from the status-transition rule.
+
 **The natural objection.** Each statement does check, so the rules are enforced.
 
-They are — but they are only *knowable* by reading all seven and combining them, and
+They are — but they are only _knowable_ by reading all seven and combining them, and
 nothing prevents an eighth from arriving with a slightly different rule. `running` is
 already the odd one out.
 
-**The cost.** When state rules are spread out, the system can reach combinations nobody
-planned, and that is discovered at runtime rather than in review.
+**The demonstrated cost.** Across the 49 lifecycle operation/source-status cases,
+**22** currently write an event or receipt for a transition that did not happen. An
+illegal completion from each of four terminal statuses also deletes retained Patch
+output even though the status update changed no row. Those are direct consequences of
+each method guarding the status change separately from its side effects.
 
-**The scale.** The phrase "lost its…" appears **66 times** in `src/rcp`: "lost its
-durable episode," "lost its branch episode," "lost its control binding," "lost its
-current allocation." Each is code checking that a record which should point at something
-does not. These checks are correct and should stay. But sixty-six of them is what it
-costs to keep one task's state spread across many records that can disagree — and it is
-the same reason startup must run a long repair pass instead of replaying one rule set.
+**A related but different scale measurement.** The phrase `lost its …` appears **66
+times across 19 `src/rcp` files**. Many occurrences protect immutable episode,
+branch, session, allocation, or file-snapshot bindings rather than task status. They
+are valid fail-closed checks and are not evidence that all 66 arose from the missing
+transition table. Phase 1 audits only the lifecycle-related subset.
 
 ### A3. An object that is not finished when it is built
 
@@ -636,7 +925,7 @@ def fill_in_total(receipt):               # every caller must remember this
     receipt["total"] = look_up_total()
 ```
 
-Both steps must happen, but step one already produces something that *looks* finished.
+Both steps must happen, but step one already produces something that _looks_ finished.
 It has a `total`. The number is simply wrong.
 
 **In this repository.** A project snapshot is the bundle of data sent to the browser.
@@ -652,13 +941,19 @@ docstring states the problem ([projects.py:1425](../../src/rcp/projects.py)):
 
 **The natural objection.** Callers simply have to remember one line.
 
-**Why that is not enough.** There are **11** call sites and nothing verifies them. A
-twelfth route that forgets still returns a valid snapshot: every field present, types
-correct, tests green. The Experiment section in Runs goes blank for the user.
+**Why that is not enough.** There are seven direct completion calls in `api/app.py`
+and two internal calls in `projects.py`. Nothing in the return type or serialization
+boundary proves a future route used one of them. A route that forgets can still return
+a valid snapshot: every field is present and typed, but the Experiment section in Runs
+can go blank.
 
 **The cost.** The correctness of this object rests on a rule that lives only in a
 docstring. An unenforced rule is eventually missed, and this one fails silently and
 user-visibly at the same time.
+
+The saved snapshot involved here is an internal backend copy used while opening or
+refreshing a project. It is not the cache-management UI. The confirmed completion
+boundary owns both fresh graph-only drafts and these saved backend reads.
 
 ### A4. One door to every room (`AppStore`)
 
@@ -673,7 +968,7 @@ def send_invoice(everything):    # reaches anything at all
 Both run. But the first line of each tells you very different amounts: the first states
 the function's whole reach, the second states nothing.
 
-**In this repository.** `AppStore` is the wide one — **246 public methods** covering
+**In this repository.** `AppStore` is the wide one — **242 public callable members** covering
 projects, spaces, tasks, episodes, watchers, experiments, result views, invitations, and
 identity, on one object, held by **22 modules**. Splitting the files by topic
 (`agent_tasks.py`, `watchers.py`, `episodes.py`) makes each file shorter; it does not
@@ -695,14 +990,16 @@ def connection(self):
         connection.close()
 ```
 
-Two method calls are therefore two separate saves. If an operation must change a task,
-an episode, and a watcher together and the second fails, the first is already permanent.
-There is no way to declare "these three changes are one change, all or nothing," because
-nothing in the design represents an operation that spans three tables.
+Two public method calls are therefore two separate saves unless a deliberately compound
+store method performs the work inside one connection. Such compound methods already
+exist; the watcher examples cited by the original audit are atomic today. Other flows
+intentionally persist a fence before later settlement so restart recovery can see it.
 
-**The cost.** Multi-table operations have no home and no all-or-nothing guarantee. It is
-also why one migration fault can affect tasks, episodes, watchers, and identity at
-once — they sit behind the same door.
+**The cost and limit of the claim.** A caller-level sequence can still create a harmful
+crash window, but the audit did not prove one from object width alone. The correct next
+step is to name the invariant, inject failure between commits, and add one compound
+method only if the intermediate state is invalid and not part of recovery. A broad
+repository/Unit-of-Work rewrite does not follow from the 242-method count.
 
 ### A5. The same rule written down in several places
 
@@ -721,26 +1018,31 @@ def _result_view_id(value: str) -> str:
 ```
 
 Change `24` in one and not the other and half the system accepts an id the other half
-rejects. Low stakes, easy fix. `_record_run_lock_wait` and `_record_work_lock_wait` are
-the same story.
+rejects. Low stakes, easy fix. `_record_run_lock_wait` and `_record_work_lock_wait`
+also have normalized-identical bodies, but their surrounding lost-lock behavior
+differs; only the result-view validator is a confirmed immediate move.
 
 **Flavor two: the same rule stated in prose and in code.** The watcher exit contract is a
 rule — exit 1 means the work is still running, exit 0 means it is gone, anything else
 means the check could not tell. The code acting on it is at
 [watchers.py:1195](../../src/rcp/watchers.py), branching on `returncode`. The rule is
-*also* written out in English, for the agent, in **5 separate places** across two prompt
-files. Six copies of one rule, five of them prose that no test can check.
+_also_ written out in English, for the agent, in **5 separate places** across two prompt
+files. Runtime tests cover exit 0, exit 1, and an unexpected exit, and a prompt test pins
+the work-remains wording. The copies therefore have some drift detection; they are not
+five wholly unchecked statements.
 
 **The natural objection.** They are consistent, so no harm.
 
 **They were not.** This is the write-authority bug fixed on 2026-08-18. The rule was
-which folders the agent may write to. `providers.py` enforced three folders; the prompt
-said there was no restriction. Both had been true once; one drifted. Nothing failed
+which folders the agent may write to. The provider enforced exact task scratch and
+admitted repository roots while the prompt said there was no restriction. Both had
+been true once; one drifted. Nothing failed
 loudly — the agent attempted a write it had been told was permitted, received a bare
 denial with no explanation, and could only guess at other commands.
 
-**The cost.** Prose sitting beside code that enforces the same rule will drift, and when
-it does nothing breaks visibly. The fix is not to delete the prose, which the agent
-needs, but to generate it from the same object the code uses so the two cannot disagree.
-`write_scope_section` now does this for the write folders; the relation table generated
-from `RELATION_SPEC` is the next candidate.
+**The cost.** Prose beside code can drift when it restates changing computed policy.
+The fix is not automatically to generate every stable protocol sentence.
+`write_scope_section` now renders the changing write boundary from the same object the
+provider uses. The tiny stable watcher exit mapping remains explicit and tested. The
+base relation table generated from `RELATION_SPEC` is the next plausible candidate
+because that authoring policy exists in code but otherwise never reaches the agent.
