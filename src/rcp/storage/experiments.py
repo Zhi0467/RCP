@@ -329,61 +329,108 @@ class ExperimentStoreMixin:
             raise ValueError("An Experiment recovery requires its parent and episode lineage.")
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            episode_row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?", (record.episode_id,)
-            ).fetchone()
-            if episode_row is None:
-                raise KeyError(record.episode_id)
-            episode = self._episode_record(episode_row)
-            if (
-                episode.mode != "experiment_loop"
-                or episode.project_id != record.project_id
-                or episode.graph_target != record.graph_target
-                or episode.control_node_id != record.request.get("control_node_id")
-            ):
-                raise ValueError("The recovery task belongs to another episode.")
-            route = connection.execute(
-                """
-                SELECT auto_research_episode_id, state
-                FROM auto_research_child_experiments
-                WHERE child_episode_id = ?
-                """,
-                (record.episode_id,),
-            ).fetchone()
-            if route is not None:
-                if route["state"] != "running":
-                    raise EpisodeNotRunning(
-                        "the routed child Experiment is no longer accepting recovery work"
-                    )
-                parent = self._load_auto_research_episode(
-                    connection,
-                    str(route["auto_research_episode_id"]),
-                )
-                self._validate_auto_research_parent_admission(parent)
-            if (
-                episode.status not in {"running", "stopping"}
-                or episode.ending is not None
-                or self._experiment_has_ending_receipt(connection, record.episode_id)
-            ):
-                raise EpisodeNotRunning("the episode is not admitting recovery work")
-            if not self._experiment_recovery_has_paid_root(
+            self._insert_experiment_recovery_task(
                 connection,
-                record.episode_id,
-                record.parent_operation_id,
-            ):
-                raise ValueError("The Experiment recovery has no paid invocation ancestor.")
-            if self._has_active_chat_overlap(connection, record):
-                raise ValueError("Another task is already active in this conversation.")
-            self._insert_agent_task(connection, record)
-            if continuation_cause is not None:
-                self._insert_agent_task_dispatch_intent_receipt(
-                    connection,
-                    record,
-                    continuation_cause=continuation_cause,
-                )
+                record,
+                continuation_cause=continuation_cause,
+            )
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    def create_experiment_graph_repair_task(
+        self,
+        parent_operation_id: str,
+        record: AgentTaskRecord,
+    ) -> AgentTaskRecord:
+        """Atomically claim an Experiment graph repair and admit its child task."""
+
+        if (
+            record.status != "queued"
+            or not record.visible
+            or record.parent_operation_id != parent_operation_id
+            or record.episode_id is None
+            or record.request.get("patch_kind") != "experiment_loop"
+            or record.request.get("message") is not None
+        ):
+            raise ValueError("An Experiment graph repair requires a queued patch-only child.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._claim_agent_task_graph_repair(connection, parent_operation_id)
+            self._insert_experiment_recovery_task(
+                connection,
+                record,
+                continuation_cause="graph_repair",
+            )
+            stored = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (record.operation_id,)
+            ).fetchone()
+            assert stored is not None
+        return self._agent_task_record(stored)
+
+    def _insert_experiment_recovery_task(
+        self,
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str | None,
+    ) -> None:
+        """Insert one validated Experiment recovery task in an open transaction."""
+
+        episode_id = record.episode_id
+        assert episode_id is not None
+        episode_row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if episode_row is None:
+            raise KeyError(episode_id)
+        episode = self._episode_record(episode_row)
+        if (
+            episode.mode != "experiment_loop"
+            or episode.project_id != record.project_id
+            or episode.graph_target != record.graph_target
+            or episode.control_node_id != record.request.get("control_node_id")
+        ):
+            raise ValueError("The recovery task belongs to another episode.")
+        route = connection.execute(
+            """
+            SELECT auto_research_episode_id, state
+            FROM auto_research_child_experiments
+            WHERE child_episode_id = ?
+            """,
+            (episode_id,),
+        ).fetchone()
+        if route is not None:
+            if route["state"] != "running":
+                raise EpisodeNotRunning(
+                    "the routed child Experiment is no longer accepting recovery work"
+                )
+            parent = self._load_auto_research_episode(
+                connection,
+                str(route["auto_research_episode_id"]),
+            )
+            self._validate_auto_research_parent_admission(parent)
+        if (
+            episode.status not in {"running", "stopping"}
+            or episode.ending is not None
+            or self._experiment_has_ending_receipt(connection, episode_id)
+        ):
+            raise EpisodeNotRunning("the episode is not admitting recovery work")
+        if not self._experiment_recovery_has_paid_root(
+            connection,
+            episode_id,
+            record.parent_operation_id,
+        ):
+            raise ValueError("The Experiment recovery has no paid invocation ancestor.")
+        if self._has_active_chat_overlap(connection, record):
+            raise ValueError("Another task is already active in this conversation.")
+        self._insert_agent_task(connection, record)
+        if continuation_cause is not None:
+            self._insert_agent_task_dispatch_intent_receipt(
+                connection,
+                record,
+                continuation_cause=continuation_cause,
+            )
 
     @staticmethod
     def _new_experiment_episode(

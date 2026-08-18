@@ -1179,6 +1179,102 @@ def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(manifest, t
         loop.store.claim_agent_task_graph_repair("loop-root")
 
 
+def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(status="running")
+    loop.store.complete_agent_task(
+        "loop-root",
+        applied_revision=None,
+        result={
+            "messages": ["Operational work completed."],
+            "graph_update": {
+                "status": "rejected",
+                "validation_messages": ["Repair the Patch."],
+                "repairable": True,
+            },
+        },
+    )
+    stage = tmp_path / "repair-stage"
+    loop.bind_session(stage)
+    loop.store.checkpoint_agent_task(
+        "loop-root",
+        native_session_id="native-session-abc",
+        stage_root=str(stage),
+    )
+    episode = loop.store.episode(loop.episode_id)
+    assert episode is not None
+    repair_request = loop.root_request().model_copy(
+        update={"message": None, "session_id": "native-session-abc"}
+    )
+    now = loop.store.now()
+
+    def child(operation_id: str) -> AgentTaskRecord:
+        return AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=loop.project_id,
+            episode_id=loop.episode_id,
+            kind="node_chat",
+            status="queued",
+            request=repair_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting to repair the graph update.",
+            attempt=2,
+            parent_operation_id="loop-root",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+            graph_target=episode.graph_target,
+            authorized_by=loop.authorizer,
+            dispatch_authority=_task_authority(repair_request),
+        )
+
+    original_insert = loop.store._insert_agent_task
+
+    def fail_after_child_insert(connection, record) -> None:
+        original_insert(connection, record)
+        raise RuntimeError("simulated Experiment graph repair insert failure")
+
+    monkeypatch.setattr(loop.store, "_insert_agent_task", fail_after_child_insert)
+    with pytest.raises(RuntimeError, match="simulated Experiment graph repair insert failure"):
+        loop.store.create_experiment_graph_repair_task(
+            "loop-root", child("experiment-repair-failed")
+        )
+
+    parent = loop.store.agent_task("loop-root")
+    assert parent is not None and parent.result is not None
+    assert parent.result["graph_update"]["repairable"] is True
+    assert loop.store.agent_task("experiment-repair-failed") is None
+    assert [task.operation_id for task in loop.store.episode_tasks(loop.episode_id)] == [
+        "loop-root"
+    ]
+
+    monkeypatch.setattr(loop.store, "_insert_agent_task", original_insert)
+    admitted = loop.store.create_experiment_graph_repair_task(
+        "loop-root", child("experiment-repair")
+    )
+
+    assert admitted.operation_id == "experiment-repair"
+    parent = loop.store.agent_task("loop-root")
+    assert parent is not None and parent.result is not None
+    assert parent.result["graph_update"]["repairable"] is False
+    children = [
+        task
+        for task in loop.store.episode_tasks(loop.episode_id)
+        if task.parent_operation_id == "loop-root"
+    ]
+    assert [task.operation_id for task in children] == ["experiment-repair"]
+    assert loop.store.agent_task_continuation_cause("experiment-repair") == "graph_repair"
+    receipt = next(
+        item
+        for item in loop.store.agent_task_receipts("experiment-repair")
+        if item.category == "operation_created"
+    )
+    assert receipt.payload["continuation_cause"] == "graph_repair"
+    assert receipt.payload["admission_committed"] is True
+
+
 @pytest.mark.parametrize(
     ("status", "action"),
     [("paused", "resume"), ("failed", "retry")],

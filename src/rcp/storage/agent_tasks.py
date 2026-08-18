@@ -768,103 +768,114 @@ class AgentTaskStoreMixin:
             ),
         )
 
+    def _claim_agent_task_graph_repair(
+        self,
+        connection: sqlite3.Connection,
+        operation_id: str,
+    ) -> sqlite3.Row:
+        """Claim one repairable graph result inside its caller's transaction."""
+
+        row = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        data = dict(row)
+        request = json.loads(data["request_json"])
+        result = json.loads(data["result_json"]) if data.get("result_json") else None
+        graph_update = result.get("graph_update") if isinstance(result, dict) else None
+        eligible = (
+            data["status"] == "succeeded"
+            and data["kind"] in {"node_chat", "project_chat"}
+            and isinstance(request, dict)
+            and request.get("mode") == "work"
+            and bool(data.get("native_session_id"))
+            and bool(data.get("stage_root"))
+            and isinstance(graph_update, dict)
+            and graph_update.get("status") == "rejected"
+            and graph_update.get("repairable") is True
+        )
+        if not eligible:
+            raise ValueError(
+                "This task has no repairable graph update. Start a new Work turn instead."
+            )
+        if request.get("patch_kind") == "experiment_loop":
+            control_node_id = request.get("control_node_id")
+            episode_id = request.get("control_episode_id")
+            invocation = request.get("control_invocation")
+            if (
+                not isinstance(control_node_id, str)
+                or not isinstance(episode_id, str)
+                or not isinstance(invocation, int)
+            ):
+                raise ValueError("The Experiment graph repair lost its control binding.")
+            self._validate_current_experiment_graph_repair(
+                connection,
+                project_id=data["project_id"],
+                control_node_id=control_node_id,
+                episode_id=episode_id,
+                invocation=invocation,
+                operation_id=operation_id,
+            )
+        assert isinstance(result, dict)
+        assert isinstance(graph_update, dict)
+        graph_update = {**graph_update, "repairable": False}
+        claimed_result = {**result, "graph_update": graph_update}
+        claimed_json = self._bounded_result_json(claimed_result)
+        cursor = connection.execute(
+            """
+            UPDATE graph_runs
+            SET result_json = ?, updated_at = ?
+            WHERE operation_id = ? AND result_json = ?
+            """,
+            (claimed_json, self.now(), operation_id, data["result_json"]),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("This graph update repair was already claimed.")
+        claimed = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+        assert claimed is not None
+        return claimed
+
     def claim_agent_task_graph_repair(self, operation_id: str) -> AgentTaskRecord:
         """Atomically consume one rejected Work result's manual repair eligibility."""
 
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(operation_id)
-            data = dict(row)
-            request = json.loads(data["request_json"])
-            result = json.loads(data["result_json"]) if data.get("result_json") else None
-            graph_update = result.get("graph_update") if isinstance(result, dict) else None
-            eligible = (
-                data["status"] == "succeeded"
-                and data["kind"] in {"node_chat", "project_chat"}
-                and isinstance(request, dict)
-                and request.get("mode") == "work"
-                and bool(data.get("native_session_id"))
-                and bool(data.get("stage_root"))
-                and isinstance(graph_update, dict)
-                and graph_update.get("status") == "rejected"
-                and graph_update.get("repairable") is True
-            )
-            if not eligible:
-                raise ValueError(
-                    "This task has no repairable graph update. Start a new Work turn instead."
-                )
-            if request.get("patch_kind") == "experiment_loop":
-                control_node_id = request.get("control_node_id")
-                episode_id = request.get("control_episode_id")
-                invocation = request.get("control_invocation")
-                if (
-                    not isinstance(control_node_id, str)
-                    or not isinstance(episode_id, str)
-                    or not isinstance(invocation, int)
-                ):
-                    raise ValueError("The Experiment graph repair lost its control binding.")
-                self._validate_current_experiment_graph_repair(
-                    connection,
-                    project_id=data["project_id"],
-                    control_node_id=control_node_id,
-                    episode_id=episode_id,
-                    invocation=invocation,
-                    operation_id=operation_id,
-                )
-            assert isinstance(result, dict)
-            assert isinstance(graph_update, dict)
-            graph_update = {**graph_update, "repairable": False}
-            claimed_result = {**result, "graph_update": graph_update}
-            claimed_json = self._bounded_result_json(claimed_result)
-            cursor = connection.execute(
-                """
-                UPDATE graph_runs
-                SET result_json = ?, updated_at = ?
-                WHERE operation_id = ? AND result_json = ?
-                """,
-                (claimed_json, self.now(), operation_id, data["result_json"]),
-            )
-            if cursor.rowcount != 1:
-                raise ValueError("This graph update repair was already claimed.")
+            connection.execute("BEGIN IMMEDIATE")
+            self._claim_agent_task_graph_repair(connection, operation_id)
         claimed = self.agent_task(operation_id)
         assert claimed is not None
         return claimed
 
-    def restore_agent_task_graph_repair(self, operation_id: str) -> None:
-        """Undo an unconsumed claim only when no repair child was created."""
+    def create_agent_task_graph_repair(
+        self,
+        parent_operation_id: str,
+        record: AgentTaskRecord,
+    ) -> AgentTaskRecord:
+        """Atomically claim an ordinary Work repair and admit its child task."""
 
+        if (
+            record.status != "queued"
+            or not record.visible
+            or record.parent_operation_id != parent_operation_id
+            or record.kind not in {"node_chat", "project_chat"}
+            or record.episode_id is not None
+            or record.request.get("mode") != "work"
+            or record.request.get("patch_kind") != "work"
+        ):
+            raise ValueError("An ordinary Work graph repair requires a queued child task.")
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT result_json FROM graph_runs WHERE operation_id = ?",
-                (operation_id,),
+            connection.execute("BEGIN IMMEDIATE")
+            self._claim_agent_task_graph_repair(connection, parent_operation_id)
+            if self._has_active_chat_overlap(connection, record):
+                raise ValueError("Another task is already active in this conversation.")
+            self._insert_agent_task(connection, record)
+            stored = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (record.operation_id,)
             ).fetchone()
-            if row is None or not row["result_json"]:
-                return
-            child = connection.execute(
-                "SELECT 1 FROM graph_runs WHERE parent_operation_id = ? LIMIT 1",
-                (operation_id,),
-            ).fetchone()
-            if child is not None:
-                return
-            result = json.loads(row["result_json"])
-            graph_update = result.get("graph_update") if isinstance(result, dict) else None
-            if (
-                not isinstance(graph_update, dict)
-                or graph_update.get("status") != "rejected"
-                or graph_update.get("repairable") is not False
-            ):
-                return
-            restored = {
-                **result,
-                "graph_update": {**graph_update, "repairable": True},
-            }
-            connection.execute(
-                "UPDATE graph_runs SET result_json = ?, updated_at = ? WHERE operation_id = ?",
-                (self._bounded_result_json(restored), self.now(), operation_id),
-            )
+            assert stored is not None
+        return self._agent_task_record(stored)
 
     def agent_tasks(
         self,

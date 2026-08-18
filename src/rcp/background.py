@@ -2524,26 +2524,22 @@ class BackgroundAgentTasks:
                 "The rejected graph update has no retained RCP-owned session and stage. "
                 "Start a new Work turn instead."
             )
-        previous = self.store.claim_agent_task_graph_repair(operation_id)
         request = request.model_copy(
             update={"session_id": previous.native_session_id, "message": None}
         )
-        try:
-            return self._create_and_spawn(
-                previous.project_id,
-                previous.kind,
-                request,
-                parent=previous,
-                continuation="graph_repair",
-                estimate_seconds=previous.estimate_seconds,
-                estimate_samples=previous.estimate_samples,
-                stage_host=previous.stage_host,
-                stage_root=previous.stage_root,
-                authorized_by=authorized_by,
-            )
-        except Exception:
-            self.store.restore_agent_task_graph_repair(operation_id)
-            raise
+        return self._create_and_spawn(
+            previous.project_id,
+            previous.kind,
+            request,
+            parent=previous,
+            continuation="graph_repair",
+            claim_graph_repair_parent=True,
+            estimate_seconds=previous.estimate_seconds,
+            estimate_samples=previous.estimate_samples,
+            stage_host=previous.stage_host,
+            stage_root=previous.stage_root,
+            authorized_by=authorized_by,
+        )
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
         current = self._require_operation(operation_id)
@@ -3149,6 +3145,7 @@ class BackgroundAgentTasks:
         authorized_by: AuthorizedHuman | None = None,
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
+        claim_graph_repair_parent: bool = False,
     ) -> AgentTaskRecord | None:
         episode: EpisodeRecord | None = None
         task_graph_target = parent.graph_target if parent is not None else GraphTargetRef()
@@ -3183,6 +3180,8 @@ class BackgroundAgentTasks:
             raise ValueError("An ordinary agent task requires a human authorizer snapshot.")
         if authorized_by is not None and not authorized_by.display_name.strip():
             raise ValueError("A human authorizer snapshot must include a nonblank display name.")
+        if claim_graph_repair_parent and (parent is None or continuation != "graph_repair"):
+            raise ValueError("Only an initial graph-repair admission can claim its parent.")
         operation_id = operation_id or str(uuid.uuid4())
         dispatch_authority = self._resolved_dispatch_authority(
             kind,
@@ -3296,14 +3295,27 @@ class BackgroundAgentTasks:
                 "handoff",
                 "graph_repair",
             }:
-                record = self.store.create_experiment_recovery_task(
-                    task_record,
-                    continuation_cause=continuation,
-                )
+                if claim_graph_repair_parent:
+                    record = self.store.create_experiment_graph_repair_task(
+                        parent.operation_id,
+                        task_record,
+                    )
+                else:
+                    record = self.store.create_experiment_recovery_task(
+                        task_record,
+                        continuation_cause=continuation,
+                    )
             else:
                 raise ValueError("An Experiment watcher wake must use start_watcher_notification.")
         else:
-            record = self.store.create_agent_task(task_record)
+            if claim_graph_repair_parent:
+                assert parent is not None
+                record = self.store.create_agent_task_graph_repair(
+                    parent.operation_id,
+                    task_record,
+                )
+            else:
+                record = self.store.create_agent_task(task_record)
         if isinstance(request, AutoResearchRunRequest) and request.wake_cause is not None:
             return self.ensure_auto_research_wake_spawned(
                 request.episode_id,

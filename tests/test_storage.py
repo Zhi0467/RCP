@@ -2535,6 +2535,98 @@ def test_agent_task_result_keeps_a_bounded_latest_tail_of_graph_updates(tmp_path
     )
 
 
+def test_work_graph_repair_admission_rolls_back_claim_and_child_together(
+    tmp_path, monkeypatch
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    chat_id = str(uuid.uuid4())
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=chat_id,
+        message="Complete operational work.",
+        mode="work",
+        patch_kind="work",
+    )
+    authority = resolve_dispatch_authority("project_chat", request)
+    assert authority is not None
+    authorizer = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=str(uuid.uuid4()),
+        display_name="Test researcher",
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="work-parent",
+            project_id="project",
+            kind="project_chat",
+            status="succeeded",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Graph update rejected.",
+            native_session_id="repair-session",
+            stage_root=str(tmp_path / "repair-stage"),
+            result={
+                "messages": ["Operational work completed."],
+                "graph_update": {
+                    "status": "rejected",
+                    "validation_messages": ["Repair the Patch."],
+                    "repairable": True,
+                },
+            },
+            authorized_by=authorizer,
+            dispatch_authority=authority,
+        )
+    )
+    repair_request = request.model_copy(update={"message": None, "session_id": "repair-session"})
+
+    def child(operation_id: str) -> AgentTaskRecord:
+        return AgentTaskRecord(
+            operation_id=operation_id,
+            project_id="project",
+            kind="project_chat",
+            status="queued",
+            request=repair_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Waiting to repair the graph update.",
+            attempt=2,
+            parent_operation_id="work-parent",
+            native_session_id="repair-session",
+            stage_root=str(tmp_path / "repair-stage"),
+            authorized_by=authorizer,
+            dispatch_authority=authority,
+        )
+
+    original_insert = store._insert_agent_task
+
+    def fail_after_child_insert(connection, record) -> None:
+        original_insert(connection, record)
+        raise RuntimeError("simulated graph repair insert failure")
+
+    monkeypatch.setattr(store, "_insert_agent_task", fail_after_child_insert)
+    with pytest.raises(RuntimeError, match="simulated graph repair insert failure"):
+        store.create_agent_task_graph_repair("work-parent", child("work-repair-failed"))
+
+    parent = store.agent_task("work-parent")
+    assert parent is not None and parent.result is not None
+    assert parent.result["graph_update"]["repairable"] is True
+    assert store.agent_task("work-repair-failed") is None
+
+    monkeypatch.setattr(store, "_insert_agent_task", original_insert)
+    admitted = store.create_agent_task_graph_repair("work-parent", child("work-repair"))
+
+    assert admitted.operation_id == "work-repair"
+    parent = store.agent_task("work-parent")
+    assert parent is not None and parent.result is not None
+    assert parent.result["graph_update"]["repairable"] is False
+    children = [
+        task for task in store.agent_tasks("project") if task.parent_operation_id == "work-parent"
+    ]
+    assert [task.operation_id for task in children] == ["work-repair"]
+
+
 def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
