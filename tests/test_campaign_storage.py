@@ -465,6 +465,124 @@ def test_stop_fence_closes_admission_and_retires_current_and_new_watchers(tmp_pa
     assert settled.wrapup_state == "skipped"
 
 
+def test_auto_research_stop_and_watcher_settlement_is_atomic(tmp_path, monkeypatch) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _episode(store)
+    watcher = GraphWatcherRecord(
+        watcher_id="watch-atomic-stop",
+        project_id=episode.project_id,
+        origin_operation_id=root.operation_id,
+        origin_task_kind="auto_research",
+        chat_id=root.operation_id,
+        episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
+        continuation=WatcherContinuation(provider="codex", run_on="local", patch_kind="work"),
+        condition={"node_id": "claim", "status_in": ["active"]},
+        armed_revision=1,
+        status="active",
+        created_at=store.now(),
+    )
+    store.create_watchers([watcher])
+    before_episode = store.episode(episode.episode_id)
+    before_watcher = store.watcher(watcher.watcher_id)
+    assert before_episode is not None and before_watcher is not None
+
+    def fail_after_episode_update(connection, *, episode_id: str, now: str) -> int:
+        row = connection.execute(
+            "SELECT status, stop_requested_at FROM episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["status"] == "stopping"
+        assert row["stop_requested_at"] == now
+        raise RuntimeError("injected Auto-research Stop settlement failure")
+
+    monkeypatch.setattr(
+        store, "_settle_auto_research_watchers_in_connection", fail_after_episode_update
+    )
+    with pytest.raises(RuntimeError, match="Stop settlement failure"):
+        store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
+
+    assert store.episode(episode.episode_id) == before_episode
+    assert store.watcher(watcher.watcher_id) == before_watcher
+
+    monkeypatch.undo()
+    settled = store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
+
+    assert settled == store.episode(episode.episode_id)
+    assert settled.status == "stopping"
+    assert settled.stop_requested_at is not None
+    stopped_watcher = store.watcher(watcher.watcher_id)
+    assert stopped_watcher is not None
+    assert stopped_watcher.status == "stopped"
+    assert stopped_watcher.notified is True
+
+
+def test_auto_research_ending_fence_and_watcher_settlement_is_atomic(tmp_path, monkeypatch) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _episode(store, episode_id="ending-atomic", root_status="failed")
+    watcher = GraphWatcherRecord(
+        watcher_id="watch-atomic-ending",
+        project_id=episode.project_id,
+        origin_operation_id=root.operation_id,
+        origin_task_kind="auto_research",
+        chat_id=root.operation_id,
+        episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
+        continuation=WatcherContinuation(provider="codex", run_on="local", patch_kind="work"),
+        condition={"node_id": "claim", "status_in": ["active"]},
+        armed_revision=1,
+        status="active",
+        created_at=store.now(),
+    )
+    store.create_watchers([watcher])
+    before_episode = store.episode(episode.episode_id)
+    before_watcher = store.watcher(watcher.watcher_id)
+    assert before_episode is not None and before_watcher is not None
+
+    def fail_after_episode_update(connection, *, episode_id: str, now: str) -> int:
+        row = connection.execute(
+            "SELECT status, ending, ending_diagnostic FROM episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        assert row is not None
+        assert row["status"] == "wrapping_up"
+        assert row["ending"] == "failed"
+        assert row["ending_diagnostic"] == "terminal"
+        raise RuntimeError("injected Auto-research ending settlement failure")
+
+    monkeypatch.setattr(
+        store, "_settle_auto_research_watchers_in_connection", fail_after_episode_update
+    )
+    with pytest.raises(RuntimeError, match="ending settlement failure"):
+        store.fence_auto_research_ending_and_settle_watchers(
+            episode.episode_id,
+            "failed",
+            diagnostic="terminal",
+        )
+
+    assert store.episode(episode.episode_id) == before_episode
+    assert store.watcher(watcher.watcher_id) == before_watcher
+
+    monkeypatch.undo()
+    fenced = store.fence_auto_research_ending_and_settle_watchers(
+        episode.episode_id,
+        "failed",
+        diagnostic="terminal",
+    )
+
+    assert fenced == store.episode(episode.episode_id)
+    assert fenced.status == "wrapping_up"
+    assert fenced.ending == "failed"
+    assert fenced.ending_diagnostic == "terminal"
+    stopped_watcher = store.watcher(watcher.watcher_id)
+    assert stopped_watcher is not None
+    assert stopped_watcher.status == "stopped"
+    assert stopped_watcher.notified is True
+
+
 def test_non_stop_ending_fence_closes_auto_research_recovery_admission(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)

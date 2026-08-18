@@ -1,10 +1,11 @@
 # Handoff: backend structural refactor
 
-- **Status:** All phases were fact-checked against the live working tree and
-  re-settled with the human. Phases 0–4 closed on 2026-08-18; the detailed
-  Phases 5–7 re-review closed on 2026-08-19. This handoff is ready to implement
-  in the stated order. Reproduce drift-prone measurements before relying on them
-  in a later tree.
+- **Status:** Implementation is in progress on `main`. The audit correction,
+  Phase 0 safety net, Phases 1–2, Phase 4a, and the Phase 5 membership seam are
+  committed. Phase 3 found four qualifying harmful partial-write windows; two
+  Auto-research endings and graph-repair admission have verified fixes, while
+  the cross-store Experiment-loop handoff recovery is the remaining Phase 3
+  item. The detailed Phases 5–7 re-review remains the work order.
 - **Originally confirmed:** 2026-08-18. **Phases 0–4 re-review opened and
   closed:** 2026-08-18. **Phases 5–7 re-review closed:** 2026-08-19.
 - **Every grouping in this document was checked against the code**, not inferred
@@ -37,6 +38,11 @@ does not silently amend it.
 | 2026-08-19 | 3 / watchers | The watcher-only transaction audit found no qualifying harmful partial commit. Admission/claim paths use compound writers; per-watcher and per-boundary progress is deliberately durable and retryable. This closes only the watcher candidate set, not the rest of Phase 3.                                                  | Evidence reviewed; no watcher production change is justified.                                    |
 | 2026-08-19 | delegation   | Luna-max implementation tasks should normally span a coherent file or module seam—about ten minutes of agent work or one hour of human work. Avoid both whole-phase ownership and two-line microtasks; the main agent retains cross-module synthesis, review, checks, and commits.                                            | Human-confirmed working rule for the remaining phases.                                           |
 | 2026-08-19 | 5 / gate     | `ApiServices` begins with the three cohesive objects the membership dependency actually needs: `AppStore`, `ProjectCatalog`, and `IdentityAccess`. Its whole-container resolver stays private; exported dependency functions return narrow members. Existing dynamic `app.state` fields remain during incremental extraction. | Settled composition seam; later router slices may add cohesive runtime objects only when needed. |
+| 2026-08-19 | 3 / audit    | An AST-assisted inventory found 425 store methods and 156 transitively mutating methods, then reviewed external functions with more than one mutating call. Four sequences met the actual gate: Auto-research non-Stop ending, Auto-research Stop, manual graph-repair admission, and Experiment-loop Patch/watcher/session handoff. Mutually exclusive branches, durable checkpoints, trailing observability, and already-compound writers were closed with no change. | Reproducible classifier plus semantic call-site review; counts are evidence, not future API contracts. |
+| 2026-08-19 | 3 / Auto     | Both Auto-research endings now pair the generic episode fence and Auto watcher settlement inside one `BEGIN IMMEDIATE` compound method. Failure injection after the episode update proves both episode and watcher state roll back; a successful retry lands both. | Verified in the campaign and Auto-research focused suites.                                       |
+| 2026-08-19 | 3 / repair   | Initial graph-repair admission now claims the rejected parent and inserts the ordinary or Experiment child in one transaction. An explicit orchestration flag distinguishes that first admission from Resume/Retry children that retain `graph_repair` policy but must not consume the parent again. The obsolete restore-on-exception fallback was removed; the direct claim remains only as the low-level eligibility seam used by focused tests. | Failure injection covers rollback for ordinary and Experiment admission; recovery-child routing is focused-tested. |
+| 2026-08-19 | 3 / loop     | The Experiment-loop sequence crosses the canonical state repository and SQLite, so one database transaction cannot make all three effects atomic. The fix therefore needs two pieces: one SQLite transaction for watcher rows plus episode binding, and an idempotent recovery protocol keyed to the invocation root so a real Retry can reuse the retained exact Patch/watch handoff after a crash. Ordinary Work survivor rules must remain unchanged. | Cross-module design settled; implementation and real-retry failure injection still in progress.  |
+| 2026-08-19 | 5 / paper    | The paper group is the first extracted leaf router: four handlers plus `PaperSaveRequest`, the exact shared membership dependency, and a narrow catalog dependency. Route identity stays frozen; only the editable handler-module map moves. Paper API tests now cover snapshot, create, save, sessions, and the removed conflict route's 405. | Worker checks passed; main-agent combined verification and commit are pending.                    |
 
 ## Phases 0–4 re-review ledger
 

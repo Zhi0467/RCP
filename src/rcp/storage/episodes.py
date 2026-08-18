@@ -199,29 +199,43 @@ class EpisodeStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(episode_id)
-            episode = self._episode_record(row)
-            if episode.ending == "stopped" and episode.wrapup_state == "skipped":
-                return episode
-            if episode.stop_requested_at is not None:
-                return episode
-            if episode.status not in {"queued", "running", "stopping"}:
-                raise EpisodeNotRunning("the episode can no longer be stopped before wrap-up")
-            connection.execute(
-                """
-                UPDATE episodes
-                SET status = 'stopping', stop_requested_at = ?, updated_at = ?
-                WHERE episode_id = ?
-                """,
-                (now, now, episode_id),
-            )
+            self._request_episode_stop_in_connection(connection, episode_id, now=now)
         stopped = self.episode(episode_id)
         assert stopped is not None
         return stopped
+
+    def _request_episode_stop_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        episode_id: str,
+        *,
+        now: str,
+    ) -> EpisodeRecord:
+        row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(episode_id)
+        episode = self._episode_record(row)
+        if episode.ending == "stopped" and episode.wrapup_state == "skipped":
+            return episode
+        if episode.stop_requested_at is not None:
+            return episode
+        if episode.status not in {"queued", "running", "stopping"}:
+            raise EpisodeNotRunning("the episode can no longer be stopped before wrap-up")
+        connection.execute(
+            """
+            UPDATE episodes
+            SET status = 'stopping', stop_requested_at = ?, updated_at = ?
+            WHERE episode_id = ?
+            """,
+            (now, now, episode_id),
+        )
+        updated = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        assert updated is not None
+        return self._episode_record(updated)
 
     def fence_episode_ending(
         self,
@@ -232,37 +246,59 @@ class EpisodeStoreMixin:
     ) -> EpisodeRecord:
         """Fence new operational work as soon as one non-Stop ending is known."""
 
-        if ending == "stopped":
-            raise ValueError("Stop uses its dedicated graceful settlement path.")
-        self._status_for_ending(ending)
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(episode_id)
-            episode = self._episode_record(row)
-            if episode.ending is not None:
-                if episode.ending != ending or episode.ending_diagnostic != diagnostic:
-                    raise EpisodeReportConflict("the episode ending fence is immutable")
-                return episode
-            if episode.stop_requested_at is not None or episode.status == "stopping":
-                raise EpisodeNotRunning("Stop already fenced this episode")
-            if episode.status not in {"queued", "running"}:
-                raise EpisodeNotRunning("the episode can no longer accept an ending fence")
-            connection.execute(
-                """
-                UPDATE episodes
-                SET status = 'wrapping_up', ending = ?, ending_diagnostic = ?, updated_at = ?
-                WHERE episode_id = ?
-                """,
-                (ending, diagnostic, now, episode_id),
+            self._fence_episode_ending_in_connection(
+                connection,
+                episode_id,
+                ending,
+                diagnostic=diagnostic,
+                now=now,
             )
         fenced = self.episode(episode_id)
         assert fenced is not None
         return fenced
+
+    def _fence_episode_ending_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        episode_id: str,
+        ending: EpisodeEnding,
+        *,
+        diagnostic: str | None,
+        now: str,
+    ) -> EpisodeRecord:
+        if ending == "stopped":
+            raise ValueError("Stop uses its dedicated graceful settlement path.")
+        self._status_for_ending(ending)
+        row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(episode_id)
+        episode = self._episode_record(row)
+        if episode.ending is not None:
+            if episode.ending != ending or episode.ending_diagnostic != diagnostic:
+                raise EpisodeReportConflict("the episode ending fence is immutable")
+            return episode
+        if episode.stop_requested_at is not None or episode.status == "stopping":
+            raise EpisodeNotRunning("Stop already fenced this episode")
+        if episode.status not in {"queued", "running"}:
+            raise EpisodeNotRunning("the episode can no longer accept an ending fence")
+        connection.execute(
+            """
+            UPDATE episodes
+            SET status = 'wrapping_up', ending = ?, ending_diagnostic = ?, updated_at = ?
+            WHERE episode_id = ?
+            """,
+            (ending, diagnostic, now, episode_id),
+        )
+        updated = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        assert updated is not None
+        return self._episode_record(updated)
 
     def allocate_episode_invocation(
         self,

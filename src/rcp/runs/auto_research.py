@@ -199,8 +199,11 @@ def fence_auto_research_ending(
     """Fence new work and return the mode signal central settlement consumes."""
 
     episode = _auto_research_episode(store, episode_id)
-    store.fence_episode_ending(episode.episode_id, ending, diagnostic=diagnostic)
-    store.settle_auto_research_watchers(episode.episode_id)
+    store.fence_auto_research_ending_and_settle_watchers(
+        episode.episode_id,
+        ending,
+        diagnostic=diagnostic,
+    )
     return AutoResearchEndingSignal(
         episode_id=episode_id,
         ending=ending,
@@ -252,12 +255,10 @@ def auto_research_failure_signal(
 
 
 def request_auto_research_stop(store: AppStore, episode_id: str) -> EpisodeRecord:
-    """Persist Stop first, then retain every Auto watcher as stopped."""
+    """Persist Stop and retain every Auto watcher as one atomic boundary."""
 
     _auto_research_episode(store, episode_id)
-    episode = store.request_episode_stop(episode_id)
-    store.settle_auto_research_watchers(episode_id)
-    return episode
+    return store.request_auto_research_stop_and_settle_watchers(episode_id)
 
 
 def settle_auto_research_stop(

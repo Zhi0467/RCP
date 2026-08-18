@@ -30,6 +30,7 @@ from rcp.storage.models import (
     AutoResearchRecoveryStatus,
     AutoResearchRole,
     AutoResearchStateRecord,
+    EpisodeEnding,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
@@ -1339,6 +1340,46 @@ class AutoResearchStoreMixin:
                 episode_id=episode_id,
                 now=now,
             )
+
+    def request_auto_research_stop_and_settle_watchers(self, episode_id: str) -> EpisodeRecord:
+        """Persist Auto-research Stop and retire its watchers in one transaction."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode = self._request_episode_stop_in_connection(connection, episode_id, now=now)
+            self._settle_auto_research_watchers_in_connection(
+                connection,
+                episode_id=episode_id,
+                now=now,
+            )
+        return episode
+
+    def fence_auto_research_ending_and_settle_watchers(
+        self,
+        episode_id: str,
+        ending: EpisodeEnding,
+        *,
+        diagnostic: str | None = None,
+    ) -> EpisodeRecord:
+        """Fence an Auto-research ending and retire its watchers in one transaction."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode = self._fence_episode_ending_in_connection(
+                connection,
+                episode_id,
+                ending,
+                diagnostic=diagnostic,
+                now=now,
+            )
+            self._settle_auto_research_watchers_in_connection(
+                connection,
+                episode_id=episode_id,
+                now=now,
+            )
+        return episode
 
     def _settle_auto_research_watchers_in_connection(
         self,
