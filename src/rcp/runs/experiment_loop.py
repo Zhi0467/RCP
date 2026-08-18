@@ -768,19 +768,17 @@ def root_experiment_loop_operation_id(execution: AgentTaskExecution) -> str:
         operation_id = record.parent_operation_id
 
 
-def persist_experiment_watchers_idempotently(
+def prepare_experiment_watcher_records(
     execution: AgentTaskExecution,
     specs: list[ExperimentWatchSpec],
     results: list[WatcherCheckResult],
     binding: WatcherBinding,
-    stops: list[WatcherStopRequest] | None = None,
     *,
     graph_conditions: list[GraphCondition] | None = None,
     graph_state: GraphState | None = None,
     armed_revision: int | None = None,
-    expected_watcher_snapshot_token: str | None = None,
 ) -> list[StoredWatcherRecord]:
-    """Persist one validated handoff once across Retry/crash recovery."""
+    """Prepare one deterministic watcher handoff without writing storage."""
 
     if len(specs) != len(results):
         raise ValueError("Experiment-loop watcher checks do not match their specifications.")
@@ -797,7 +795,6 @@ def persist_experiment_watchers_idempotently(
             raise ValueError("an Experiment handoff cannot repeat a graph condition")
         validate_graph_conditions(conditions, graph_state)
     created_at = execution.store.now()
-    stop_requests = list(stops or [])
     desired: list[StoredWatcherRecord] = []
     for index, (spec, result) in enumerate(zip(specs, results, strict=True)):
         group = getattr(spec, "group", None)
@@ -896,12 +893,38 @@ def persist_experiment_watchers_idempotently(
             )
         )
 
+    return desired
+
+
+def persist_experiment_watchers_idempotently(
+    execution: AgentTaskExecution,
+    specs: list[ExperimentWatchSpec],
+    results: list[WatcherCheckResult],
+    binding: WatcherBinding,
+    stops: list[WatcherStopRequest] | None = None,
+    *,
+    graph_conditions: list[GraphCondition] | None = None,
+    graph_state: GraphState | None = None,
+    armed_revision: int | None = None,
+    expected_watcher_snapshot_token: str | None = None,
+) -> list[StoredWatcherRecord]:
+    """Persist one validated handoff once across Retry/crash recovery."""
+
+    desired = prepare_experiment_watcher_records(
+        execution,
+        specs,
+        results,
+        binding,
+        graph_conditions=graph_conditions,
+        graph_state=graph_state,
+        armed_revision=armed_revision,
+    )
     # The store owns the BEGIN IMMEDIATE boundary shared with Stop loop. It
     # atomically deduplicates this deterministic handoff and, when stop intent
     # won the race, persists/returns every watcher as stopped and notified.
     return execution.store.persist_experiment_watchers_idempotently(
         desired,
-        stops=stop_requests,
+        stops=stops,
         binding=binding,
         expected_watcher_snapshot_token=expected_watcher_snapshot_token,
     )
@@ -1252,7 +1275,7 @@ def experiment_graph_result_summary(graph_update: GraphUpdateResult) -> str:
     return "no graph change"
 
 
-def commit_experiment_episode_binding(
+def _prepare_experiment_episode_binding_intent(
     execution: AgentTaskExecution,
     request: RunRequest,
     *,
@@ -1260,18 +1283,14 @@ def commit_experiment_episode_binding(
     execution_host: str,
     stage_host: str | None,
     stage_root: str | None,
-    graph_result: str,
-    watcher_ids: list[str],
-    context_baseline: dict[str, object],
-    ending_signal: dict[str, object] | None = None,
-) -> None:
-    """Bind this episode to the session and stage a later automatic wake resumes.
-
-    Only a turn with a mechanically successful joint Patch/watch handoff commits,
-    so a provider, task, or handoff failure never moves the binding or baseline.
-    A graph rejection is still recorded truthfully because the turn and its
-    accepted watcher handoff completed.
-    """
+    ending_signal: dict[str, object] | None,
+) -> tuple[
+    AgentTaskRecord,
+    ExperimentEpisodeRecord | None,
+    bool,
+    dict[str, object] | None,
+]:
+    """Validate a completed turn and prepare its binding-replacement intent."""
 
     if ending_signal is not None and ending_signal.get("episode_id") != request.control_episode_id:
         raise ValueError("Experiment ending signal names another episode.")
@@ -1344,6 +1363,41 @@ def commit_experiment_episode_binding(
         if replacement_authorized and episode is not None
         else None
     )
+    return task, episode, replacement_authorized, replacement_provenance
+
+
+def commit_experiment_episode_binding(
+    execution: AgentTaskExecution,
+    request: RunRequest,
+    *,
+    native_session_id: str | None,
+    execution_host: str,
+    stage_host: str | None,
+    stage_root: str | None,
+    graph_result: str,
+    watcher_ids: list[str],
+    context_baseline: dict[str, object],
+    ending_signal: dict[str, object] | None = None,
+) -> None:
+    """Bind this episode to the session and stage a later automatic wake resumes.
+
+    Only a turn with a mechanically successful joint Patch/watch handoff commits,
+    so a provider, task, or handoff failure never moves the binding or baseline.
+    A graph rejection is still recorded truthfully because the turn and its
+    accepted watcher handoff completed.
+    """
+
+    task, _episode, replacement_authorized, replacement_provenance = (
+        _prepare_experiment_episode_binding_intent(
+            execution,
+            request,
+            native_session_id=native_session_id,
+            execution_host=execution_host,
+            stage_host=stage_host,
+            stage_root=stage_root,
+            ending_signal=ending_signal,
+        )
+    )
     execution.store.commit_experiment_episode_turn(
         episode_id=request.control_episode_id,
         project_id=task.project_id,
@@ -1379,6 +1433,85 @@ def commit_experiment_episode_binding(
             "binding_replaced": replacement_authorized,
         },
     )
+
+
+def commit_experiment_episode_handoff(
+    execution: AgentTaskExecution,
+    request: RunRequest,
+    watcher_records: list[StoredWatcherRecord],
+    binding: WatcherBinding,
+    *,
+    native_session_id: str | None,
+    execution_host: str,
+    stage_host: str | None,
+    stage_root: str | None,
+    graph_result: str,
+    context_baseline: dict[str, object],
+    stops: list[WatcherStopRequest] | None = None,
+    expected_watcher_snapshot_token: str | None = None,
+    ending_signal: dict[str, object] | None = None,
+) -> list[StoredWatcherRecord]:
+    """Commit prepared watchers and the episode binding as one handoff."""
+
+    task, _episode, replacement_authorized, replacement_provenance = (
+        _prepare_experiment_episode_binding_intent(
+            execution,
+            request,
+            native_session_id=native_session_id,
+            execution_host=execution_host,
+            stage_host=stage_host,
+            stage_root=stage_root,
+            ending_signal=ending_signal,
+        )
+    )
+    continuation = binding.continuation
+    if (
+        binding.origin_operation_id != root_experiment_loop_operation_id(execution)
+        or binding.project_id != task.project_id
+        or binding.chat_id != request.chat_id
+        or binding.node_id != request.node_id
+        or binding.episode_id != request.control_episode_id
+        or binding.execution_host != execution_host
+        or continuation.provider != request.provider
+        or continuation.run_on != request.run_on
+        or continuation.patch_kind != request.patch_kind
+        or continuation.control_node_id != request.control_node_id
+        or continuation.control_episode_id != request.control_episode_id
+        or continuation.control_invocation != request.control_invocation
+        or continuation.control_invocation_ceiling != request.control_invocation_ceiling
+    ):
+        raise ValueError("Experiment handoff binding does not match the current task scope.")
+    stored_watchers, _stored_episode = execution.store.commit_experiment_episode_handoff(
+        watcher_records,
+        binding=binding,
+        operation_id=execution.operation_id,
+        native_session_id=native_session_id,
+        stage_host=stage_host,
+        stage_root=stage_root,
+        graph_result=graph_result,
+        context_baseline=context_baseline,
+        stops=stops,
+        expected_watcher_snapshot_token=expected_watcher_snapshot_token,
+        ending_signal=ending_signal,
+        replace_binding=replacement_authorized,
+        replacement_provenance=replacement_provenance,
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "experiment_episode_binding",
+        {
+            "episode_id": request.control_episode_id,
+            "invocation": request.control_invocation,
+            "provider": request.provider,
+            "execution_machine": request.run_on,
+            "stage_host": stage_host,
+            "stage_root": stage_root,
+            "graph_result": graph_result,
+            "watcher_ids": [item.watcher_id for item in stored_watchers],
+            "binding_replaced": replacement_authorized,
+        },
+    )
+    return stored_watchers
 
 
 async def stage_experiment_loop_context(

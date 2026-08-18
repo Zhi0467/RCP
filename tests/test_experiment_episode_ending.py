@@ -9,11 +9,15 @@ from rcp.core.models import ExperimentDecisionPin
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.runs.experiment_loop import (
     commit_experiment_episode_binding,
+    commit_experiment_episode_handoff,
     experiment_loop_ending_signal,
     experiment_loop_semantic_ending,
     experiment_loop_wrapup_spec,
+    prepare_experiment_watcher_records,
 )
 from rcp.service import GraphUpdateResult, RunRequest
+from rcp.storage import WatcherContinuation
+from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
 
 _CONTROL_NODE_ID = "exp/evaluation"
 _EPISODE_ID = "00000000-0000-4000-8000-000000000099"
@@ -360,15 +364,37 @@ class _RecordingStore:
         self.events: list[tuple[str, object]] = []
 
     def agent_task(self, operation_id: str) -> SimpleNamespace:
-        return SimpleNamespace(project_id="project-id", parent_operation_id=None)
+        return SimpleNamespace(
+            project_id="project-id",
+            parent_operation_id=(
+                "root-operation" if operation_id == "continuation-operation" else None
+            ),
+        )
 
     def experiment_episode(self, episode_id: str) -> None:
         return None
+
+    def now(self) -> str:
+        return "2026-08-19T00:00:00+00:00"
 
     def commit_experiment_episode_turn(self, **values: object) -> None:
         self.events.append(("commit", (values["operation_id"], values.get("ending_signal"))))
         if self.fail_commit:
             raise RuntimeError("handoff commit failed")
+
+    def commit_experiment_episode_handoff(
+        self, records: list[object], **values: object
+    ) -> tuple[list[object], None]:
+        binding = values["binding"]
+        self.events.append(
+            (
+                "compound",
+                (values["operation_id"], binding.origin_operation_id, len(records)),
+            )
+        )
+        if self.fail_commit:
+            raise RuntimeError("handoff commit failed")
+        return records, None
 
     def record_agent_task_receipt(
         self,
@@ -383,6 +409,7 @@ def _binding_request() -> RunRequest:
     return RunRequest(
         provider="codex",
         run_on="laptop",
+        node_id=_CONTROL_NODE_ID,
         chat_id="episode-chat",
         mode="work",
         patch_kind="experiment_loop",
@@ -400,6 +427,27 @@ def _minimal_ending_signal() -> dict[str, object]:
         "partial": False,
         "receipt": {"semantic_signals": ["experiment_completed"]},
     }
+
+
+def _handoff_binding() -> WatcherBinding:
+    return WatcherBinding(
+        project_id="project-id",
+        origin_operation_id="root-operation",
+        origin_task_kind="node_chat",
+        chat_id="episode-chat",
+        node_id=_CONTROL_NODE_ID,
+        episode_id=_EPISODE_ID,
+        execution_host="",
+        continuation=WatcherContinuation(
+            provider="codex",
+            run_on="laptop",
+            patch_kind="experiment_loop",
+            control_node_id=_CONTROL_NODE_ID,
+            control_episode_id=_EPISODE_ID,
+            control_invocation=2,
+            control_invocation_ceiling=4,
+        ),
+    )
 
 
 def test_exit_receipt_is_written_on_exact_operation_after_binding_commit() -> None:
@@ -451,3 +499,54 @@ def test_failed_binding_commit_cannot_publish_an_exit_receipt() -> None:
         )
 
     assert store.events == [("commit", ("continuation-operation", _minimal_ending_signal()))]
+
+
+def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage() -> None:
+    store = _RecordingStore()
+    execution = SimpleNamespace(
+        operation_id="continuation-operation", store=store, continuation="fresh"
+    )
+    binding = _handoff_binding()
+    prepared = prepare_experiment_watcher_records(
+        execution,
+        [ExperimentWatchSpec(check_command="true", log_path="/tmp/result.log", cwd="/tmp")],
+        [WatcherCheckResult(state="complete", checked_at="2026-08-19T00:01:00+00:00")],
+        binding,
+    )
+
+    assert len(prepared) == 1
+    assert prepared[0].origin_operation_id == "root-operation"
+    stored = commit_experiment_episode_handoff(
+        execution,
+        _binding_request(),
+        prepared,
+        binding,
+        native_session_id="native-session",
+        execution_host="",
+        stage_host=None,
+        stage_root="/tmp/exact-episode-stage",
+        graph_result="applied as revision 42",
+        context_baseline={"revision": 42},
+    )
+
+    assert stored == prepared
+    assert store.events == [
+        ("compound", ("continuation-operation", "root-operation", 1)),
+        (
+            "experiment_episode_binding",
+            (
+                "continuation-operation",
+                {
+                    "episode_id": _EPISODE_ID,
+                    "invocation": 2,
+                    "provider": "codex",
+                    "execution_machine": "laptop",
+                    "stage_host": None,
+                    "stage_root": "/tmp/exact-episode-stage",
+                    "graph_result": "applied as revision 42",
+                    "watcher_ids": [prepared[0].watcher_id],
+                    "binding_replaced": False,
+                },
+            ),
+        ),
+    ]
