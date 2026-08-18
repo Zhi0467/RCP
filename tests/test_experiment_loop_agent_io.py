@@ -22,9 +22,11 @@ from rcp.runs.experiment_loop import (
     stage_chat_experiment_watcher_resources,
 )
 from rcp.runs.shared import _parent_task_contract_path
+from rcp.runs.tasks.experiment_watcher_maintenance import (
+    _process_experiment_watcher_maintenance,
+)
 from rcp.runs.work import (
     _apply_work_patch,
-    _process_experiment_watcher_maintenance,
     _required_work_continuation_session_id,
     stream_work_run,
 )

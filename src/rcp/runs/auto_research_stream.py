@@ -68,6 +68,7 @@ from rcp.runs.shared import (
     _parent_task_contract_path,
     _ProviderOutcome,
     _record_agent_launch_receipt,
+    _retry_deliverable_is_unchanged,
     _sse,
     _stage_context_paths,
     _stage_json_task_input,
@@ -83,7 +84,6 @@ from rcp.runs.work import (
     _CorrectionPatchRead,
     _read_correction_patch,
     _record_work_graph_rejection,
-    _retry_deliverable_is_unchanged,
     _WorkPatchFailure,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest

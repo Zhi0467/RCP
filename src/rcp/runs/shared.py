@@ -86,6 +86,39 @@ def _existing_patch_digest(
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _retry_deliverable_is_unchanged(
+    execution: AgentTaskExecution | None,
+    *,
+    filename: str,
+    predecessor_digest: str | None,
+    current_text: str | None,
+    allow_unchanged: bool = False,
+) -> bool:
+    """Record whether a reused Retry stage still contains its predecessor's output."""
+
+    if execution is None or execution.continuation != "retry":
+        return False
+    current_digest = (
+        hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+        if current_text is not None
+        else None
+    )
+    unchanged = predecessor_digest is not None and current_digest == predecessor_digest
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "retry_deliverable_comparison",
+        {
+            "filename": filename,
+            "predecessor_sha256": predecessor_digest,
+            "retry_sha256": current_digest,
+            "unchanged": unchanged,
+            "consumed": current_text is not None and (not unchanged or allow_unchanged),
+        },
+        tier="diagnostic",
+    )
+    return unchanged and not allow_unchanged
+
+
 def _collect_patch_text(
     workspace: Path,
     remote_stage: RemoteRunStage | None,
