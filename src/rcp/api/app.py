@@ -6,7 +6,6 @@ import os
 import sys
 import threading
 import time
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager, suppress
 from pathlib import Path
@@ -43,10 +42,13 @@ from rcp.api.episodes import (
     EpisodeResponse,
     ReauthorizeEpisodeBody,
     StartEpisodeBody,
-    episode_for_project,
+    _episode_for_http,
     serialize_episode,
     serialize_episodes,
 )
+from rcp.api.experiment_controls import _experiment_control_from_runtime
+from rcp.api.experiments import router as experiments_router
+from rcp.api.experiments import stop_bound_experiment_episode
 from rcp.api.history import router as history_router
 from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess, TrustedPrincipalResolver
 from rcp.api.paper import router as paper_router
@@ -65,24 +67,17 @@ from rcp.background import (
     BackgroundAgentTasks,
 )
 from rcp.config import load_manifest
-from rcp.control import (
-    ExperimentControlState,
-    ExperimentOperationalState,
-    ExperimentSessionBinding,
-    admit_experiment_watcher_invocation,
-    derive_experiment_control_state,
-)
+from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.models import (
     DISPLAY_NAME_MAX_LENGTH,
     BranchMergeReceipt,
     Experiment,
-    ExperimentDecisionPin,
     GraphBranchMetadata,
     GraphBranchSummary,
     GraphState,
     normalize_display_name,
 )
-from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -130,11 +125,6 @@ from rcp.runs.coach import stream_coach
 from rcp.runs.discuss import stream_discuss_run
 from rcp.runs.episode_reconcile import EpisodeReconciler
 from rcp.runs.episode_report import EpisodeReportRunRequest, stream_episode_report_run
-from rcp.runs.experiment_admission import (
-    experiment_start_message,
-    fresh_experiment_run_request,
-    resolve_experiment_node_work_request,
-)
 from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
@@ -1956,229 +1946,10 @@ def create_app(
         ).clear()
         return current_service.indexer.cache_metrics().model_dump(mode="json")
 
-    @projects_router.post(
-        "/api/projects/{project_id}/experiments/{node_id:path}/run", status_code=202
-    )
-    def run_experiment(
-        project_id: str,
-        node_id: str,
-        body: dict[str, object],
-        request: Request,
-    ) -> dict[str, object]:
-        authorized_by = require_patch_capable_identity(request)
-        service = _project_service(catalog, project_id)
-        try:
-            with experiment_operation_lock(project_id):
-                state = service.history.state()
-                node = state.nodes.get(node_id)
-                if not isinstance(node, Experiment):
-                    raise HTTPException(status_code=404, detail="Experiment not found")
-                runtime, control = _experiment_control(
-                    store,
-                    project_id,
-                    state,
-                    node_id,
-                    graph_target=GraphTargetRef(),
-                )
-                if not control.ready:
-                    raise HTTPException(status_code=409, detail=" ".join(control.reasons))
-                supplied = RunRequest.model_validate(body)
-                if supplied.result_view is not None:
-                    raise ValueError("Result views require an ordinary node Work turn.")
-                if not supplied.chat_id:
-                    raise ValueError("Run requires a chat_id")
-                uuid.UUID(supplied.chat_id)
-                episode_id = str(uuid.uuid4())
-                pending_group = (
-                    None
-                    if runtime.stop_requested and runtime.stop_settled
-                    else store.completed_experiment_watcher_group(
-                        project_id,
-                        node_id,
-                        graph_target=GraphTargetRef(),
-                    )
-                )
-                if pending_group is not None:
-                    experiment_request = experiment_watcher_delivery_request(
-                        pending_group,
-                        trigger="experiment_run",
-                        episode_id=episode_id,
-                        invocation=1,
-                        invocation_ceiling=node.invocation_ceiling,
-                        control_revision=state.revision,
-                        decision_bundle=control.governing_decisions,
-                        completion_criteria=list(node.completion_criteria),
-                    )
-                    experiment_request = experiment_request.model_copy(
-                        update={
-                            "run_truth_scope": supplied.run_truth_scope,
-                            "chat_scope": "node",
-                            "node_id": node_id,
-                            "message": experiment_start_message(supplied.message, node_id),
-                            "chat_id": supplied.chat_id,
-                            "session_id": None,
-                        }
-                    )
-                    experiment_request = resolve_experiment_node_work_request(
-                        service, experiment_request
-                    )
-                    record = background_tasks.start_watcher_notification(
-                        project_id,
-                        "node_chat",
-                        experiment_request,
-                        [item.watcher_id for item in pending_group],
-                        authorized_by=authorized_by,
-                    )
-                    if record is None:
-                        raise ValueError(
-                            "The pending watcher completion could not be claimed because its "
-                            "conversation is active."
-                        )
-                    return record.model_dump(mode="json")
-                experiment_request = fresh_experiment_run_request(
-                    service,
-                    supplied,
-                    node=node,
-                    state_revision=state.revision,
-                    control=control,
-                    episode_id=episode_id,
-                )
-                record = background_tasks.start(
-                    project_id,
-                    "node_chat",
-                    experiment_request,
-                    authorized_by=authorized_by,
-                )
-        except ValueError as exc:
-            status = 409 if "already running" in str(exc) else 422
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
-        return record.model_dump(mode="json")
-
     @projects_router.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)
     def agent_usage(project_id: str) -> AgentUsageSnapshot:
         _require_registered_project(catalog, project_id)
         return store.agent_usage_snapshot(project_id)
-
-    @projects_router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
-    def stop_experiment_watchers(project_id: str, node_id: str) -> list[dict[str, object]]:
-        """Reject the retired bulk watcher control in favor of graceful Stop loop."""
-
-        _require_registered_project(catalog, project_id)
-        raise HTTPException(
-            status_code=409,
-            detail="This control was retired. Use Stop loop for the current Experiment episode.",
-        )
-
-    def stop_bound_experiment_episode(
-        project_id: str,
-        episode: EpisodeRecord,
-    ) -> ExperimentControlState:
-        """Stop one exact current loop against the graph target it actually controls."""
-
-        node_id = episode.control_node_id
-        if episode.mode != "experiment_loop" or node_id is None:
-            raise HTTPException(status_code=409, detail="This is not an Experiment-loop episode.")
-        main_service = _project_service(catalog, project_id)
-        try:
-            target_service = (
-                main_service
-                if episode.graph_target.kind == "main"
-                else main_service.for_graph_target(
-                    episode.graph_target,
-                    expected_episode_id=episode.graph_target.branch_id,
-                )
-            )
-            materialization = target_service.history.current_materialization()
-            state = materialization.state
-            head = target_service.history.head_ref(materialization)
-        except (KeyError, OSError, StateUnavailable, ValueError) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        if head.target != episode.graph_target:
-            raise HTTPException(
-                status_code=409,
-                detail="The Experiment episode no longer resolves to its exact graph target.",
-            )
-        if not isinstance(state.nodes.get(node_id), Experiment):
-            raise HTTPException(status_code=404, detail="Experiment not found")
-        if episode.graph_target.kind == "branch":
-            route = store.auto_research_child_experiment(episode.episode_id)
-            if route is None or route.auto_research_episode_id != episode.graph_target.branch_id:
-                raise HTTPException(
-                    status_code=409,
-                    detail="The branch Experiment lost its Auto-research parent binding.",
-                )
-        runtime = store.experiment_loop_runtime_for_target(
-            project_id,
-            node_id,
-            episode.graph_target,
-        )
-        if runtime.episode_id != episode.episode_id:
-            raise HTTPException(
-                status_code=409,
-                detail="Only the current exact Experiment episode can be stopped.",
-            )
-        try:
-            store.request_experiment_loop_stop(
-                project_id,
-                node_id,
-                episode_id=episode.episode_id,
-                graph_target=episode.graph_target,
-            )
-        except EpisodeNotRunning as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        _, control = _experiment_control_for_target(
-            store,
-            project_id,
-            state,
-            node_id,
-            graph_target=episode.graph_target,
-        )
-        return control
-
-    # Registered after `.../watchers/stop`: `{node_id:path}` is greedy, so this
-    # route would otherwise swallow that one with a node id ending in
-    # "/watchers".
-    @projects_router.post("/api/projects/{project_id}/experiments/{node_id:path}/stop")
-    def stop_experiment_loop(
-        project_id: str,
-        node_id: str,
-        request: Request,
-        episode_id: str | None = Query(default=None),
-    ) -> dict[str, object]:
-        """Finish the current turn, then disable automatic continuation.
-
-        The stop is durable before this returns, so no unclaimed watcher can win
-        a wake afterwards. It never cancels the live task, kills external work,
-        deletes a watcher, or changes what the Experiment means, and calling it
-        again changes nothing.
-        """
-
-        require_patch_capable_identity(request)
-        with experiment_operation_lock(project_id):
-            if episode_id is None:
-                runtime = store.experiment_loop_runtime(
-                    project_id,
-                    node_id,
-                )
-                episode = (
-                    store.episode(runtime.episode_id) if runtime.episode_id is not None else None
-                )
-                if episode is None or episode.project_id != project_id:
-                    raise HTTPException(status_code=404, detail="Experiment episode not found")
-                if episode.graph_target != GraphTargetRef():
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "This Experiment runs on an episode graph branch; select its exact "
-                            "episode before stopping the loop."
-                        ),
-                    )
-            else:
-                episode = _episode_for_http(store, catalog, project_id, episode_id)
-                if episode.control_node_id != node_id:
-                    raise HTTPException(status_code=404, detail="Experiment episode not found")
-            control = stop_bound_experiment_episode(project_id, episode)
-        return control.model_dump(mode="json")
 
     @projects_router.get(
         "/api/projects/{project_id}/episodes",
@@ -2253,7 +2024,12 @@ def create_app(
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         elif episode.mode == "experiment_loop":
             with experiment_operation_lock(project_id):
-                stop_bound_experiment_episode(project_id, episode)
+                stop_bound_experiment_episode(
+                    project_id,
+                    episode,
+                    store=store,
+                    catalog=catalog,
+                )
         else:
             raise HTTPException(status_code=409, detail="This episode cannot be stopped.")
         current = store.episode(episode.episode_id)
@@ -2474,6 +2250,7 @@ def create_app(
         return {**package.catalog_entry(), "body": body}
 
     app.include_router(projects_router)
+    app.include_router(experiments_router)
     app.include_router(chats_router)
     app.include_router(history_router)
     app.include_router(paper_router)
@@ -2548,127 +2325,6 @@ def _cached_project_reachable(snapshot: dict[str, object] | None) -> bool | None
     return reachable if isinstance(reachable, bool) else None
 
 
-def _experiment_control(
-    store: AppStore,
-    project_id: str,
-    state: GraphState,
-    experiment_id: str,
-    *,
-    graph_target: GraphTargetRef,
-) -> tuple[ExperimentLoopRuntime, ExperimentControlState]:
-    """Derive one Experiment's operational and semantic control state together.
-
-    Deriving is also where a graceful stop is reconciled, so the same joint
-    handoff settles identically after a restart without anyone replaying it.
-    """
-
-    runtime = store.experiment_loop_runtime(
-        project_id,
-        experiment_id,
-        graph_target=graph_target,
-    )
-    if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active:
-        store.settle_experiment_loop_stop(
-            project_id,
-            experiment_id,
-            episode_id=runtime.episode_id,
-            graph_target=graph_target,
-        )
-        runtime = store.experiment_loop_runtime(
-            project_id,
-            experiment_id,
-            graph_target=graph_target,
-        )
-    return runtime, _experiment_control_from_runtime(state, experiment_id, runtime)
-
-
-def _experiment_control_for_target(
-    store: AppStore,
-    project_id: str,
-    state: GraphState,
-    experiment_id: str,
-    *,
-    graph_target: GraphTargetRef,
-) -> tuple[ExperimentLoopRuntime, ExperimentControlState]:
-    """Derive and reconcile one exact target-bound operational runtime."""
-
-    runtime = store.experiment_loop_runtime_for_target(
-        project_id,
-        experiment_id,
-        graph_target,
-    )
-    if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active:
-        store.settle_experiment_loop_stop(
-            project_id,
-            experiment_id,
-            episode_id=runtime.episode_id,
-            graph_target=graph_target,
-        )
-        runtime = store.experiment_loop_runtime_for_target(
-            project_id,
-            experiment_id,
-            graph_target,
-        )
-    return runtime, _experiment_control_from_runtime(state, experiment_id, runtime)
-
-
-def _experiment_control_from_runtime(
-    state: GraphState,
-    experiment_id: str,
-    runtime: ExperimentLoopRuntime,
-) -> ExperimentControlState:
-    """Combine graph authority with one already-projected operational runtime."""
-
-    pins = [ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle]
-    return derive_experiment_control_state(
-        state,
-        experiment_id,
-        {experiment_id} if runtime.active else set(),
-        episode_id=runtime.episode_id,
-        invocations_used=runtime.invocations_used,
-        invocation_ceiling=runtime.invocation_ceiling,
-        paused=runtime.paused,
-        detached_work_active=runtime.detached_work_active,
-        episode_decision_bundle=pins if runtime.episode_id is not None else None,
-        operational=_experiment_operational_state(runtime),
-    )
-
-
-def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentOperationalState:
-    """Project the loop runtime onto the operational block Runs reads.
-
-    The native session id itself stays in the backend; whether one is bound is
-    the only part of it the human needs.
-    """
-
-    return ExperimentOperationalState(
-        task_active=runtime.task_active,
-        detached_work_active=runtime.detached_work_active,
-        watcher_degraded=runtime.watcher_degraded,
-        watcher_completion_pending=runtime.watcher_completion_pending,
-        episode_exited=runtime.episode_exited,
-        stop_requested=runtime.stop_requested,
-        stop_settled=runtime.stop_settled,
-        chat_id=runtime.chat_id,
-        current_operation_id=runtime.current_operation_id,
-        current_status=runtime.current_status,
-        current_phase=runtime.current_phase,
-        current_status_message=runtime.current_status_message,
-        current_last_activity_at=runtime.current_last_activity_at,
-        current_invocation=runtime.current_invocation,
-        session=ExperimentSessionBinding(
-            provider=runtime.provider,
-            model=runtime.model,
-            reasoning=runtime.reasoning,
-            run_on=runtime.run_on,
-            execution_host=runtime.execution_host,
-            run_truth_scope=runtime.run_truth_scope,
-            native_session_bound=runtime.session_bound,
-            diagnostic=runtime.session_diagnostic,
-        ),
-    )
-
-
 def _experiment_control_node_id(
     request: RunRequest | CoachRequest | dict[str, object],
 ) -> str | None:
@@ -2685,19 +2341,6 @@ def _experiment_control_node_id(
     if not isinstance(node_id, str) or not node_id:
         raise ValueError("A bounded experiment-loop task must name its control node.")
     return node_id
-
-
-def _episode_for_http(
-    store: AppStore,
-    catalog: ProjectCatalog,
-    project_id: str,
-    episode_id: str,
-) -> EpisodeRecord:
-    _require_registered_project(catalog, project_id)
-    try:
-        return episode_for_project(store, project_id, episode_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Episode not found") from exc
 
 
 def _resolved_auto_research_start_request(

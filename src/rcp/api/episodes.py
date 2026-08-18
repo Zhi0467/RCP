@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal
 
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from rcp.api.dependencies import require_registered_project
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.projects import ProjectCatalog
 from rcp.storage import (
     AgentTaskRecord,
     AgentTaskStatus,
@@ -184,6 +187,19 @@ def episode_for_project(
     if episode is None or episode.project_id != project_id:
         raise KeyError(episode_id)
     return episode
+
+
+def _episode_for_http(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    project_id: str,
+    episode_id: str,
+) -> EpisodeRecord:
+    require_registered_project(catalog, project_id)
+    try:
+        return episode_for_project(store, project_id, episode_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Episode not found") from exc
 
 
 def serialize_episode(
