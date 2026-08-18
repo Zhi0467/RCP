@@ -4,10 +4,8 @@ import json
 
 from fastapi.testclient import TestClient
 
-from rcp import __version__
 from rcp.server_runtime import (
     ServerMetadata,
-    data_dir_identity,
     published_server_metadata,
     read_server_metadata,
     remove_server_metadata,
@@ -106,36 +104,6 @@ def test_source_app_shutdown_leaves_outer_supervisor_metadata_in_place(tmp_path)
         with TestClient(app):
             pass
         assert read_server_metadata(data_dir) == metadata
-
-
-def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) -> None:
-    data_dir = tmp_path / "data"
-    metadata = ServerMetadata.create(
-        data_dir,
-        host="127.0.0.1",
-        port=18421,
-        owner_kind="desktop",
-    )
-    app = create_app(data_dir=data_dir, instance_metadata=metadata)
-
-    with TestClient(app) as client:
-        response = client.get("/api/health")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "version": __version__,
-        "space_id": app.state.space_id,
-        "space_kind": "personal",
-        "space_name": None,
-        "instance_id": metadata.instance_id,
-        "pid": metadata.pid,
-        "data_dir_id": data_dir_identity(data_dir),
-        "owner_kind": "desktop",
-        "active_agent_tasks": 0,
-        "projects": 0,
-        "agent_mode": "provider",
-    }
 
 
 def test_remote_parser_source_is_loaded_as_a_package_resource(monkeypatch) -> None:

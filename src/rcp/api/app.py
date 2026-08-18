@@ -28,6 +28,7 @@ from rcp.agents.command_protocol import SpawnArguments
 from rcp.api.chats import router as chats_router
 from rcp.api.dependencies import (
     ApiServices,
+    HealthComposition,
     require_project_membership,
 )
 from rcp.api.dependencies import (
@@ -46,6 +47,7 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiment_controls import _experiment_control_from_runtime
 from rcp.api.experiments import router as experiments_router
+from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
 from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.index import membership_router as index_membership_router
@@ -720,6 +722,13 @@ def create_app(
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
     )
+    health_composition = HealthComposition(
+        instance_metadata=identity,
+        agent_mode=agent_mode,
+        default_project_name=default_project_name,
+        space_id=space_id,
+        space_kind=space_kind,
+    )
     services = ApiServices(
         store=store,
         catalog=catalog,
@@ -734,6 +743,7 @@ def create_app(
         experiment_operation_lock=experiment_operation_lock,
         background_tasks=background_tasks,
         experiment_admission=experiment_admission,
+        health_composition=health_composition,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1070,39 +1080,11 @@ def create_app(
             content={"detail": {"code": exc.code, "message": str(exc)}},
         )
 
-    @app.get("/api/health")
-    async def health() -> dict[str, object]:
-        with store.connection() as connection:
-            active_agent_tasks = int(
-                connection.execute(
-                    """
-                    SELECT COUNT(*) FROM graph_runs
-                    WHERE status IN ('queued', 'running', 'pausing')
-                    """
-                ).fetchone()[0]
-            )
-        payload: dict[str, object] = {
-            "status": "ok",
-            "version": __version__,
-            "space_id": space_id,
-            "space_kind": space_kind,
-            "space_name": store.space_name,
-            "instance_id": identity.instance_id,
-            "pid": identity.pid,
-            "data_dir_id": identity.data_dir_id,
-            "owner_kind": identity.owner_kind,
-            "active_agent_tasks": active_agent_tasks,
-            "projects": len(catalog.cards()),
-            "agent_mode": agent_mode,
-        }
-        if default_project_name is not None:
-            payload["project"] = default_project_name
-        return payload
-
     # Exposed so the route-enumeration test can prove membership is attached,
     # rather than trusting that every project route was declared in one place.
     app.state.project_membership_dependency = require_project_membership
 
+    app.include_router(health_router)
     app.include_router(team_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)

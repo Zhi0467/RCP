@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from fastapi import HTTPException, Request
 
@@ -10,10 +11,22 @@ from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
+from rcp.server_runtime import ServerMetadata
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
-from rcp.storage import AppStore
+from rcp.storage import AppStore, SpaceKind
 from rcp.watchers import WatcherDelivery, WatcherPoller
+
+
+@dataclass(frozen=True, slots=True)
+class HealthComposition:
+    """Startup identity and mode values exposed to the health route."""
+
+    instance_metadata: ServerMetadata
+    agent_mode: Literal["acceptance", "provider"]
+    default_project_name: str | None
+    space_id: str
+    space_kind: SpaceKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +46,7 @@ class ApiServices:
     experiment_admission: ExperimentAdmission
     launcher: AgentLauncher
     setup: ProjectSetupManager
+    health_composition: HealthComposition
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -60,6 +74,10 @@ def get_launcher(request: Request) -> AgentLauncher:
 
 def get_setup(request: Request) -> ProjectSetupManager:
     return _api_services(request).setup
+
+
+def get_health_composition(request: Request) -> HealthComposition:
+    return _api_services(request).health_composition
 
 
 def get_attachment_store(request: Request) -> ChatAttachmentStore:
@@ -123,6 +141,7 @@ def require_project_membership(project_id: str, request: Request) -> str:
 
 __all__ = [
     "ApiServices",
+    "HealthComposition",
     "get_attachment_store",
     "get_background_tasks",
     "get_catalog",
@@ -130,6 +149,7 @@ __all__ = [
     "get_launcher",
     "get_experiment_operation_lock",
     "get_experiment_admission",
+    "get_health_composition",
     "get_project_service",
     "get_project_display_cache",
     "get_result_view_keep_locks",

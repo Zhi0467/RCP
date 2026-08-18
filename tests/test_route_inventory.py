@@ -134,7 +134,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "get_paper": "src/rcp/api/paper.py",
     "graph": "src/rcp/api/project_state.py",
     "graph_transition_manifest": "src/rcp/api/history.py",
-    "health": "src/rcp/api/app.py",
+    "health": "src/rcp/api/health.py",
     "history": "src/rcp/api/history.py",
     "history_summaries": "src/rcp/api/history.py",
     "invite_project_member": "src/rcp/api/project_state.py",

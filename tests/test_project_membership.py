@@ -122,6 +122,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "experiment_admission",
         "launcher",
         "setup",
+        "health_composition",
     )
     assert services.store is app.state.background_tasks.store
     assert services.catalog is app.state.catalog
@@ -135,6 +136,14 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert services.experiment_operation_lock is not None
     assert services.launcher is not None
     assert services.setup is not None
+    assert services.health_composition.instance_metadata is app.state.instance_metadata
+    assert services.health_composition.agent_mode == app.state.agent_mode
+    assert (
+        services.health_composition.default_project_name
+        == app.state.catalog.card(app.state.default_project_id)["name"]
+    )
+    assert services.health_composition.space_id == app.state.space_id
+    assert services.health_composition.space_kind == app.state.space_kind
     assert not hasattr(services, "__dict__")
     with pytest.raises(FrozenInstanceError):
         services.store = services.store
