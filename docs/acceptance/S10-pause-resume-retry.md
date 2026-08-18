@@ -19,7 +19,7 @@ Every agent run is background work. Closing the surface you launched it from
 must not cancel it.
 
 The lifecycle is heavily tested. What is not tested is the thing you would
-actually notice: whether the run stays *visible* once you navigate away.
+actually notice: whether the run stays _visible_ once you navigate away.
 
 ## Setup
 
@@ -64,6 +64,15 @@ be paused mid-run, then writes a valid patch.
 - `patches_appended == 1` across the whole chain, not one per attempt
 - `retry_starts_clean`
 - `shutdown_pauses_live_work`
+- `refused_lifecycle_is_truthful` — when a single-task lifecycle status guard
+  refuses an operation, the task history keeps its status, receipts, retained
+  Patch output, and routed lifecycle notices unchanged, while appending exactly
+  one truthful warning refusal event. The human `request_pause` contract still
+  raises without an event, and bulk restart interruption stays quiet for
+  terminal rows; only an applied completion may remove retained Patch output.
+  The focused `tests/test_agent_task_lifecycle.py` matrix covers all 49
+  source-status and lifecycle-operation pairs, plus missing-id and terminal
+  progress-update behavior.
 
 ## Failure means
 

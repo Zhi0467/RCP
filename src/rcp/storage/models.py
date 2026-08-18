@@ -215,6 +215,18 @@ AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 # caller that treats it as settled reads a state the task is about to leave.
 ACTIVE_AGENT_TASK_STATUSES: frozenset[AgentTaskStatus] = frozenset({"queued", "running", "pausing"})
 
+# One table owns the status transitions used by the durable task lifecycle.
+# Recovery actions are deliberately not represented here: Resume and Retry
+# create child attempts and have additional native-session requirements.
+AGENT_TASK_TRANSITIONS: dict[AgentTaskStatus, frozenset[AgentTaskStatus]] = {
+    "running": frozenset({"queued"}),
+    "pausing": frozenset({"queued", "running"}),
+    "paused": frozenset({"queued", "running", "pausing"}),
+    "succeeded": frozenset({"queued", "running", "pausing"}),
+    "failed": frozenset({"queued", "running", "pausing"}),
+    "interrupted": frozenset({"queued", "running", "pausing"}),
+}
+
 _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
 _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC = (
     "This Experiment-loop turn cannot be resumed or retried because its pre-migration "
@@ -1514,6 +1526,7 @@ def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
 
 __all__ = [
     "ACTIVE_AGENT_TASK_STATUSES",
+    "AGENT_TASK_TRANSITIONS",
     "AgentCommandInvocationRecord",
     "AgentTaskContractRecord",
     "AgentTaskEventRecord",

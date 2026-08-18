@@ -121,6 +121,25 @@ Routes never write a manifest, Patch, branch, or materialized output directly.
 State workspaces own locks, atomic temp-file replacement, and explicit local or
 remote publication.
 
+## Durable agent task lifecycle
+
+Agent task status transitions are one durable contract: `running` may follow
+`queued`; `pausing` may follow `queued` or `running`; and `paused`, `succeeded`,
+`failed`, or `interrupted` may follow any active status (`queued`, `running`, or
+`pausing`). Resume and Retry are child-attempt admissions with their own
+attempt-chain requirements, not transitions of the parent row.
+
+Every status-changing operation observes and updates the task under one write
+transaction. An existing task that refuses a single-task transition keeps its
+status, receipts, retained Patch output, lifecycle notices, and cleanup state,
+and appends one truthful warning refusal event. The human pause request keeps
+its explicit error response and writes no refusal event; bulk restart
+interruption is quiet for terminal rows. A missing task id raises `KeyError`
+without writing any event, receipt, notice, or cleanup. Progress updates on an
+existing terminal task quietly do nothing, while a missing id still fails
+loudly. Completion cleanup, pause/failure receipts, and lifecycle notices occur
+only when their guarded transition applies.
+
 ## Add project and retained research
 
 Add project treats an existing `.research/manifest.toml` as retained RCP

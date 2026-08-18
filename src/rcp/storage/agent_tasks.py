@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from statistics import median
 from typing import Literal
@@ -51,6 +52,7 @@ from rcp.storage.models import (  # noqa: F401
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
     _PROJECT_ID_TABLES,
     ACTIVE_AGENT_TASK_STATUSES,
+    AGENT_TASK_TRANSITIONS,
     SPACE_NAME_MAX_LENGTH,
     AgentCommandInvocationRecord,
     AgentTaskContractRecord,
@@ -116,6 +118,12 @@ from rcp.storage.models import (  # noqa: F401
 # retains the detailed latest result; history entries are concise so task JSON
 # remains below its existing 64 KiB storage boundary.
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
+
+
+@dataclass(frozen=True)
+class _AgentTaskTransitionResult:
+    outcome: Literal["applied", "refused", "missing"]
+    observed_status: AgentTaskStatus | None = None
 
 
 class AgentTaskStoreMixin:
@@ -1946,20 +1954,111 @@ class AgentTaskStoreMixin:
             return max(1.0, float(median(durations))), len(durations)
         return (600.0 if kind == "seed" else 300.0), 0
 
+    @staticmethod
+    def _transition_agent_task(
+        connection: sqlite3.Connection,
+        operation_id: str,
+        target_status: AgentTaskStatus,
+        *,
+        assignments: str = "",
+        parameters: tuple[object, ...] = (),
+    ) -> _AgentTaskTransitionResult:
+        """Apply one guarded status transition and report its database outcome.
+
+        The immediate transaction fences the status observation and guarded
+        update together. Callers keep the same connection for every event,
+        receipt, notice, and cleanup belonging to the result.
+        """
+
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT status FROM graph_runs WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            return _AgentTaskTransitionResult("missing")
+        observed_status: AgentTaskStatus = row["status"]
+        allowed_statuses = tuple(sorted(AGENT_TASK_TRANSITIONS[target_status]))
+        if observed_status not in AGENT_TASK_TRANSITIONS[target_status]:
+            return _AgentTaskTransitionResult("refused", observed_status)
+
+        status_placeholders = ", ".join("?" for _ in allowed_statuses)
+        set_clause = "status = ?"
+        if assignments:
+            set_clause = f"{set_clause}, {assignments}"
+        changed = connection.execute(
+            f"""
+            UPDATE graph_runs
+            SET {set_clause}
+            WHERE operation_id = ? AND status IN ({status_placeholders})
+            """,
+            (target_status, *parameters, operation_id, *allowed_statuses),
+        ).rowcount
+        if changed != 1:
+            return _AgentTaskTransitionResult("refused", observed_status)
+        return _AgentTaskTransitionResult("applied", observed_status)
+
+    @staticmethod
+    def _agent_task_refusal_message(operation: str, status: AgentTaskStatus) -> str:
+        labels = {
+            "start": "Start",
+            "pause": "Pause",
+            "complete": "Completion",
+            "fail": "Failure",
+            "interrupt": "Interruption",
+        }
+        return f"{labels[operation]} refused: this task already {status}."
+
+    @staticmethod
+    def _agent_task_status(
+        connection: sqlite3.Connection,
+        operation_id: str,
+    ) -> AgentTaskStatus | None:
+        row = connection.execute(
+            "SELECT status FROM graph_runs WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        return row["status"] if row is not None else None
+
+    @staticmethod
+    def _require_agent_task_transition(
+        operation_id: str,
+        transition: _AgentTaskTransitionResult,
+    ) -> None:
+        if transition.outcome == "missing":
+            raise KeyError(operation_id)
+
     def mark_agent_task_running(self, operation_id: str) -> None:
         now = self.now()
         with self.connection() as connection:
-            connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = 'running', started_at = ?, updated_at = ?,
-                    last_activity_at = ?, phase = 'preparing',
-                    status_message = 'Preparing agent task.'
-                WHERE operation_id = ? AND status = 'queued'
-                """,
-                (now, now, now, operation_id),
+            transition = self._transition_agent_task(
+                connection,
+                operation_id,
+                "running",
+                assignments=(
+                    "started_at = ?, updated_at = ?, last_activity_at = ?, "
+                    "phase = 'preparing', status_message = 'Preparing agent task.'"
+                ),
+                parameters=(now, now, now),
             )
-        self.record_agent_task_event(operation_id, "Preparing agent task.")
+            self._require_agent_task_transition(operation_id, transition)
+            if transition.outcome == "applied":
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    "Preparing agent task.",
+                    level="info",
+                    created_at=now,
+                )
+            else:
+                assert transition.observed_status is not None
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    self._agent_task_refusal_message("start", transition.observed_status),
+                    level="warning",
+                    created_at=now,
+                )
 
     def update_agent_task_message(
         self,
@@ -1971,7 +2070,11 @@ class AgentTaskStoreMixin:
     ) -> None:
         now = self.now()
         with self.connection() as connection:
-            connection.execute(
+            connection.execute("BEGIN IMMEDIATE")
+            status = self._agent_task_status(connection, operation_id)
+            if status is None:
+                raise KeyError(operation_id)
+            changed = connection.execute(
                 """
                 UPDATE graph_runs
                 SET status_message = ?, updated_at = ?, last_activity_at = ?,
@@ -1979,9 +2082,15 @@ class AgentTaskStoreMixin:
                 WHERE operation_id = ? AND status IN ('running', 'pausing')
                 """,
                 (message, now, now, phase, operation_id),
-            )
-        if event:
-            self.record_agent_task_event(operation_id, message)
+            ).rowcount
+            if changed == 1 and event:
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    message,
+                    level="info",
+                    created_at=now,
+                )
 
     def checkpoint_agent_task(
         self,
@@ -2113,25 +2222,30 @@ class AgentTaskStoreMixin:
     ) -> AgentTaskRecord:
         now = self.now()
         with self.connection() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = 'pausing', updated_at = ?, last_activity_at = ?,
-                    phase = 'pausing', status_message = 'Pausing at the current checkpoint.'
-                WHERE operation_id = ? AND status IN ('queued', 'running')
-                """,
-                (now, now, operation_id),
+            transition = self._transition_agent_task(
+                connection,
+                operation_id,
+                "pausing",
+                assignments=(
+                    "updated_at = ?, last_activity_at = ?, phase = 'pausing', "
+                    "status_message = 'Pausing at the current checkpoint.'"
+                ),
+                parameters=(now, now),
             )
-        if cursor.rowcount == 0:
-            raise ValueError("Only a queued or running operation can be paused.")
-        self.record_agent_task_event(
-            operation_id,
-            (
-                "Pause requested by the human."
-                if requested_by == "human"
-                else "Paused for RCP shutdown or reload."
-            ),
-        )
+            self._require_agent_task_transition(operation_id, transition)
+            if transition.outcome == "refused":
+                raise ValueError("Only a queued or running operation can be paused.")
+            self._insert_agent_task_event(
+                connection,
+                operation_id,
+                (
+                    "Pause requested by the human."
+                    if requested_by == "human"
+                    else "Paused for RCP shutdown or reload."
+                ),
+                level="info",
+                created_at=now,
+            )
         record = self.agent_task(operation_id)
         assert record is not None
         return record
@@ -2149,32 +2263,43 @@ class AgentTaskStoreMixin:
         )
         result_json = self._bounded_result_json(result) if result is not None else None
         with self.connection() as connection:
-            changed = connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = 'paused', updated_at = ?, finished_at = ?,
-                    last_activity_at = ?, phase = 'paused', status_message = ?, error = NULL,
-                    result_json = COALESCE(?, result_json)
-                WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
-                """,
-                (now, now, now, detail, result_json, operation_id),
-            ).rowcount
-            self._insert_agent_task_event(
+            transition = self._transition_agent_task(
                 connection,
                 operation_id,
-                detail,
-                level="warning",
-                created_at=now,
+                "paused",
+                assignments=(
+                    "updated_at = ?, finished_at = ?, last_activity_at = ?, "
+                    "phase = 'paused', status_message = ?, error = NULL, "
+                    "result_json = COALESCE(?, result_json)"
+                ),
+                parameters=(now, now, now, detail, result_json),
             )
-            self._insert_agent_task_receipt(
-                connection,
-                operation_id,
-                "operation_paused",
-                self._bounded_receipt_payload({"status": "paused"}),
-                tier="summary",
-                created_at=now,
-            )
-            if changed == 1:
+            self._require_agent_task_transition(operation_id, transition)
+            if transition.outcome == "refused":
+                assert transition.observed_status is not None
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    self._agent_task_refusal_message("pause", transition.observed_status),
+                    level="warning",
+                    created_at=now,
+                )
+            else:
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    detail,
+                    level="warning",
+                    created_at=now,
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_paused",
+                    self._bounded_receipt_payload({"status": "paused"}),
+                    tier="summary",
+                    created_at=now,
+                )
                 self._insert_auto_research_task_lifecycle_notice(
                     connection,
                     operation_id=operation_id,
@@ -2217,46 +2342,55 @@ class AgentTaskStoreMixin:
         if isinstance(graph_update, dict):
             payload["graph_update_status"] = str(graph_update.get("status") or "none")
         with self.connection() as connection:
-            changed = connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = 'succeeded', updated_at = ?, finished_at = ?,
-                    status_message = ?, error = NULL,
-                    applied_revision = ?, result_json = ?,
-                    phase = 'complete', last_activity_at = ?
-                WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
-                """,
-                (
+            transition = self._transition_agent_task(
+                connection,
+                operation_id,
+                "succeeded",
+                assignments=(
+                    "updated_at = ?, finished_at = ?, status_message = ?, error = NULL, "
+                    "applied_revision = ?, result_json = ?, phase = 'complete', "
+                    "last_activity_at = ?"
+                ),
+                parameters=(
                     now,
                     now,
                     status_message,
                     applied_revision,
                     result_json,
                     now,
-                    operation_id,
                 ),
-            ).rowcount
-            if not graph_rejected:
-                connection.execute(
-                    "DELETE FROM graph_run_outputs WHERE operation_id = ?",
-                    (operation_id,),
+            )
+            self._require_agent_task_transition(operation_id, transition)
+            if transition.outcome == "refused":
+                assert transition.observed_status is not None
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    self._agent_task_refusal_message("complete", transition.observed_status),
+                    level="warning",
+                    created_at=now,
                 )
-            self._insert_agent_task_event(
-                connection,
-                operation_id,
-                message,
-                level="info",
-                created_at=now,
-            )
-            self._insert_agent_task_receipt(
-                connection,
-                operation_id,
-                "operation_completed",
-                self._bounded_receipt_payload(payload),
-                tier="summary",
-                created_at=now,
-            )
-            if changed == 1:
+            else:
+                if not graph_rejected:
+                    connection.execute(
+                        "DELETE FROM graph_run_outputs WHERE operation_id = ?",
+                        (operation_id,),
+                    )
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    message,
+                    level="info",
+                    created_at=now,
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_completed",
+                    self._bounded_receipt_payload(payload),
+                    tier="summary",
+                    created_at=now,
+                )
                 self._insert_auto_research_task_lifecycle_notice(
                     connection,
                     operation_id=operation_id,
@@ -2279,25 +2413,47 @@ class AgentTaskStoreMixin:
         """
         now = self.now()
         detail = " ".join(error.split())[:2000] or "The background agent task failed."
-        self.record_agent_task_event(operation_id, detail, level="error")
-        self.record_agent_task_receipt(
-            operation_id,
-            "operation_failed",
-            {"status": status, "error_length": len(detail)},
-        )
         result_json = self._bounded_result_json(result) if result is not None else None
         with self.connection() as connection:
-            changed = connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = ?, updated_at = ?, finished_at = ?,
-                    status_message = ?, error = ?, phase = ?, last_activity_at = ?,
-                    result_json = COALESCE(?, result_json)
-                WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
-                """,
-                (status, now, now, detail, detail, status, now, result_json, operation_id),
-            ).rowcount
-            if changed == 1:
+            transition = self._transition_agent_task(
+                connection,
+                operation_id,
+                status,
+                assignments=(
+                    "updated_at = ?, finished_at = ?, status_message = ?, error = ?, "
+                    "phase = ?, last_activity_at = ?, result_json = COALESCE(?, result_json)"
+                ),
+                parameters=(now, now, detail, detail, status, now, result_json),
+            )
+            self._require_agent_task_transition(operation_id, transition)
+            if transition.outcome == "refused":
+                assert transition.observed_status is not None
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    self._agent_task_refusal_message(
+                        "interrupt" if status == "interrupted" else "fail",
+                        transition.observed_status,
+                    ),
+                    level="warning",
+                    created_at=now,
+                )
+            else:
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    detail,
+                    level="error",
+                    created_at=now,
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_failed",
+                    self._bounded_receipt_payload({"status": status, "error_length": len(detail)}),
+                    tier="summary",
+                    created_at=now,
+                )
                 self._insert_auto_research_task_lifecycle_notice(
                     connection,
                     operation_id=operation_id,
@@ -2377,15 +2533,17 @@ class AgentTaskStoreMixin:
             placeholders = ",".join("?" for _ in preserved)
             preserve_clause = f" AND operation_id NOT IN ({placeholders})"
             preserve_arguments = tuple(preserved)
+        active_statuses = tuple(sorted(AGENT_TASK_TRANSITIONS["interrupted"]))
+        active_placeholders = ",".join("?" for _ in active_statuses)
+        active_clause = f"status IN ({active_placeholders}){preserve_clause}"
         interrupted: list[str] = []
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             interrupted = [
                 str(row["operation_id"])
                 for row in connection.execute(
-                    "SELECT operation_id FROM graph_runs "
-                    "WHERE status IN ('queued', 'running', 'pausing')"
-                    f"{preserve_clause}",
-                    preserve_arguments,
+                    f"SELECT operation_id FROM graph_runs WHERE {active_clause}",
+                    (*active_statuses, *preserve_arguments),
                 ).fetchall()
             ]
             connection.execute(
@@ -2393,10 +2551,17 @@ class AgentTaskStoreMixin:
                 UPDATE graph_runs
                 SET status = 'interrupted', updated_at = ?, finished_at = ?,
                     status_message = ?, error = ?, phase = 'interrupted', last_activity_at = ?
-                WHERE status IN ('queued', 'running', 'pausing')
-                {preserve_clause}
+                WHERE {active_clause}
                 """,
-                (now, now, detail, detail, now, *preserve_arguments),
+                (
+                    now,
+                    now,
+                    detail,
+                    detail,
+                    now,
+                    *active_statuses,
+                    *preserve_arguments,
+                ),
             )
             for operation_id in interrupted:
                 self._insert_auto_research_task_lifecycle_notice(
@@ -2406,13 +2571,23 @@ class AgentTaskStoreMixin:
                     created_at=now,
                     diagnostic=detail,
                 )
-        for operation_id in interrupted:
-            self.record_agent_task_event(operation_id, detail, level="warning")
-            self.record_agent_task_receipt(
-                operation_id,
-                "operation_interrupted",
-                {"status": "interrupted", "reason": "process_restart"},
-            )
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    detail,
+                    level="warning",
+                    created_at=now,
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_interrupted",
+                    self._bounded_receipt_payload(
+                        {"status": "interrupted", "reason": "process_restart"}
+                    ),
+                    tier="summary",
+                    created_at=now,
+                )
 
     def prune_operational_storage(self, *, now: datetime | None = None) -> dict[str, int]:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so

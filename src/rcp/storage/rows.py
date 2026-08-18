@@ -17,6 +17,7 @@ from rcp.storage.models import (  # noqa: F401
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
     _PROJECT_ID_TABLES,
     ACTIVE_AGENT_TASK_STATUSES,
+    AGENT_TASK_TRANSITIONS,
     SPACE_NAME_MAX_LENGTH,
     AgentCommandInvocationRecord,
     AgentTaskContractRecord,
@@ -181,7 +182,7 @@ class RowMappingMixin:
         stage_ready = not data.get("stage_host") or bool(data.get("stage_root"))
         visible = bool(data.get("visible", True))
         data["visible"] = visible
-        data["can_pause"] = visible and status in {"queued", "running"}
+        data["can_pause"] = visible and status in AGENT_TASK_TRANSITIONS["pausing"]
         data["can_resume"] = (
             visible
             and status in {"paused", "interrupted"}
