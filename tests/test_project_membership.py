@@ -120,6 +120,8 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "experiment_operation_lock",
         "background_tasks",
         "experiment_admission",
+        "launcher",
+        "setup",
     )
     assert services.store is app.state.background_tasks.store
     assert services.catalog is app.state.catalog
@@ -131,6 +133,8 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert services.project_display_cache is not None
     assert services.watcher_delivery is not None
     assert services.experiment_operation_lock is not None
+    assert services.launcher is not None
+    assert services.setup is not None
     assert not hasattr(services, "__dict__")
     with pytest.raises(FrozenInstanceError):
         services.store = services.store

@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager, suppress
 from functools import partial
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from fastapi import (
     APIRouter,
@@ -53,6 +53,8 @@ from rcp.api.experiment_controls import _experiment_control_from_runtime
 from rcp.api.experiments import router as experiments_router
 from rcp.api.history import router as history_router
 from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
+from rcp.api.index import membership_router as index_membership_router
+from rcp.api.index import router as index_router
 from rcp.api.paper import router as paper_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.sync import router as sync_router
@@ -68,11 +70,6 @@ from rcp.background import (
 )
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
-from rcp.core.models import (
-    Experiment,
-    GraphState,
-)
-from rcp.core.transition_models import GraphHeadRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -80,7 +77,7 @@ from rcp.limits import (
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.providers import PROVIDER_IDS, profile_for
+from rcp.providers import profile_for
 from rcp.repository_preview import (
     REPOSITORY_PREVIEW_CSP,
     load_repository_source_for_path,
@@ -130,8 +127,7 @@ from rcp.service import (
     ProjectSettingsRequest,
     RunRequest,
 )
-from rcp.setup import ProjectSetupManager, ProjectSetupRequest
-from rcp.skill_registry import SkillKind, official_registry
+from rcp.setup import ProjectSetupManager
 from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -143,8 +139,6 @@ from rcp.storage import (
     AgentTaskKind,
     AgentUsageSnapshot,
     AppStore,
-    EpisodeRecord,
-    ExperimentLoopRuntime,
     GraphWatcherRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
@@ -211,10 +205,6 @@ class TeamPublicAuthBodyLimit:
             return message
 
         await self.app(scope, replay, send)
-
-
-class ProjectRegisterRequest(BaseModel):
-    locator: str
 
 
 class ProjectInviteRequest(BaseModel):
@@ -756,6 +746,8 @@ def create_app(
         store=store,
         catalog=catalog,
         identity_access=identity_access,
+        launcher=launcher,
+        setup=setup,
         attachment_store=attachment_store,
         watcher_poller=watcher_poller,
         result_view_keep_locks=result_view_keep_lock,
@@ -1137,267 +1129,6 @@ def create_app(
     # rather than trusting that every project route was declared in one place.
     app.state.project_membership_dependency = require_project_membership
 
-    @app.get("/api/projects")
-    def projects(request: Request) -> list[dict[str, object]]:
-        visible = store.member_project_ids(acting_user(request).user_id)
-        return [card for card in catalog.cards() if card["id"] in visible]
-
-    @app.get("/api/episodes")
-    def experiment_episodes(
-        request: Request,
-        mode: Literal["experiment_loop"] = Query(...),
-    ) -> list[dict[str, object]]:
-        # An unfiltered answer would publish research and not just project names.
-        # Start from durable loop parents rather than graph nodes: a branch may
-        # create an Experiment that does not exist on main at all.
-        visible = store.member_project_ids(acting_user(request).user_id)
-        entries: list[dict[str, object]] = []
-        for record in store.projects():
-            if record.project_id not in visible:
-                continue
-            runtimes = store.project_experiment_loop_runtimes(record.project_id)
-            if not runtimes:
-                continue
-            settle_ids = [
-                experiment_id
-                for experiment_id, runtime in runtimes.items()
-                if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
-            ]
-            for experiment_id in settle_ids:
-                runtime = runtimes[experiment_id]
-                episode = (
-                    store.episode(runtime.episode_id) if runtime.episode_id is not None else None
-                )
-                if episode is not None:
-                    store.settle_experiment_loop_stop(
-                        record.project_id,
-                        experiment_id,
-                        episode_id=episode.episode_id,
-                        graph_target=episode.graph_target,
-                    )
-            if settle_ids:
-                runtimes.update(store.experiment_loop_runtimes(record.project_id, settle_ids))
-
-            current: list[tuple[EpisodeRecord, ExperimentLoopRuntime]] = []
-            for control_node_id, runtime in runtimes.items():
-                if runtime.episode_id is None:
-                    continue
-                episode = store.episode(runtime.episode_id)
-                if (
-                    episode is None
-                    or episode.project_id != record.project_id
-                    or episode.mode != mode
-                    or episode.control_node_id != control_node_id
-                ):
-                    raise ValueError(
-                        "Experiment runtime does not identify its exact durable episode."
-                    )
-                current.append((episode, runtime))
-            current.sort(
-                key=lambda item: (item[0].created_at, item[0].episode_id),
-                reverse=True,
-            )
-
-            cache_status, cached = catalog.cached_snapshot_status(record.project_id)
-            if cache_status == "invalid" or (
-                cache_status == "missing" and record.revision is not None
-            ):
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Cached project snapshot is unavailable for {record.project_id}.",
-                )
-            reachable = _cached_project_reachable(cached)
-            if record.reachable is False:
-                reachable = False
-
-            grouped: dict[str, list[tuple[EpisodeRecord, ExperimentLoopRuntime]]] = {}
-            for episode, runtime in current:
-                grouped.setdefault(episode.graph_target.key, []).append((episode, runtime))
-
-            main_service: ProjectService | None = None
-            for group in grouped.values():
-                target = group[0][0].graph_target
-                graph_head: GraphHeadRef | None
-                if target.kind == "main":
-                    # ProjectDisplayCache is deliberately a main-only display snapshot.
-                    # Preserve its graph/runtime publication fence for ordinary loops;
-                    # branch state is always read through its exact history service.
-                    state = _cached_graph_state(cached)
-                    if state is None:
-                        continue
-                    graph_head = None
-                else:
-                    if main_service is None:
-                        main_service = _project_service(catalog, record.project_id)
-                    try:
-                        target_service = (
-                            main_service
-                            if target.kind == "main"
-                            else main_service.for_graph_target(
-                                target,
-                                expected_episode_id=target.branch_id,
-                            )
-                        )
-                        materialization = target_service.history.current_materialization()
-                        state = materialization.state
-                        graph_head = target_service.history.head_ref(materialization)
-                    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
-                        raise HTTPException(status_code=503, detail=str(exc)) from exc
-                    if graph_head.target != target:
-                        raise ValueError(
-                            "Experiment graph projection returned a different target head."
-                        )
-
-                for episode, runtime in group:
-                    node_id = episode.control_node_id
-                    assert node_id is not None
-                    node = state.nodes.get(node_id)
-                    if not isinstance(node, Experiment):
-                        continue
-                    route = store.auto_research_child_experiment(episode.episode_id)
-                    parent_episode_id = (
-                        route.auto_research_episode_id if route is not None else None
-                    )
-                    if target.kind == "branch" and parent_episode_id != target.branch_id:
-                        raise ValueError(
-                            "Branch-target Experiment lost its Auto-research parent identity."
-                        )
-                    serialized_episode = serialize_episode(
-                        store,
-                        record.project_id,
-                        episode,
-                        branch_summary=graph_branch_summary,
-                    ).model_dump(mode="json")
-                    control = _experiment_control_from_runtime(
-                        state,
-                        node.id,
-                        runtime,
-                    ).model_dump(mode="json")
-                    control["episode"] = serialized_episode
-                    entries.append(
-                        {
-                            "project_id": record.project_id,
-                            "project_name": record.name,
-                            "project_reachable": reachable,
-                            "graph_target": target.model_dump(mode="json"),
-                            "graph_head": (
-                                graph_head.model_dump(mode="json")
-                                if graph_head is not None
-                                else None
-                            ),
-                            "parent_episode_id": parent_episode_id,
-                            "node": node.model_dump(mode="json"),
-                            "control": control,
-                            "episode": serialized_episode,
-                        }
-                    )
-        return entries
-
-    @app.get("/api/space/users")
-    def space_users(request: Request) -> list[dict[str, object]]:
-        """Who is enrolled in this space, so Invite can offer them by name.
-
-        Names are not unique, so the control resolves to the durable id.
-        """
-
-        acting_user(request)
-        return [
-            {"user_id": user.user_id, "display_name": user.display_name}
-            for user in store.space_users()
-        ]
-
-    # S122. Deliberately *outside* the membership router: you are not a member
-    # of the project you are being invited to, and Inbox lives inside the
-    # project shell, which is unreachable before membership.
-    @app.get("/api/project-invitations")
-    def project_invitations_for_me(request: Request) -> list[dict[str, object]]:
-        user = acting_user(request)
-        names = {item.user_id: item.display_name for item in store.space_users()}
-        entries = []
-        for invitation in store.pending_project_invitations(user.user_id):
-            record = store.project(invitation.project_id)
-            if record is None:
-                continue
-            entries.append(
-                {
-                    "invitation_id": invitation.invitation_id,
-                    "project_id": invitation.project_id,
-                    "project_name": record.name,
-                    "space_name": store.space_name,
-                    "invited_by": invitation.invited_by,
-                    "invited_by_name": names.get(invitation.invited_by),
-                    "created_at": invitation.created_at,
-                }
-            )
-        return entries
-
-    @app.post("/api/project-invitations/{invitation_id}/{response}")
-    def answer_project_invitation(
-        invitation_id: str,
-        response: Literal["accept", "decline"],
-        request: Request,
-    ) -> dict[str, object]:
-        user = acting_user(request)
-        try:
-            answered = store.answer_project_invitation(
-                invitation_id,
-                invited_user_id=user.user_id,
-                response="accepted" if response == "accept" else "declined",
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Invitation not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return answered.model_dump(mode="json")
-
-    @app.get("/api/providers")
-    def providers(refresh: bool = False) -> list[dict[str, object]]:
-        """The registry probed on this machine, for surfaces with no project yet.
-
-        Project setup picks agent defaults before any manifest exists, so it has
-        no per-machine readiness to read. Remote hosts are reported by preflight.
-        """
-        return [
-            launcher.readiness(provider, refresh=refresh).model_dump(mode="json")
-            for provider in PROVIDER_IDS
-        ]
-
-    @app.post("/api/projects")
-    def register_project(body: ProjectRegisterRequest, request: Request) -> dict[str, object]:
-        # Deliberately not require_patch_capable_identity: creating a project
-        # does not demand a display name, and S01/S112/S116 rely on that.
-        try:
-            record = catalog.register(body.locator, seat_member=acting_user(request).user_id)
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return catalog.card(record.project_id)
-
-    @projects_router.delete("/api/projects/{project_id}")
-    def delete_project(project_id: str) -> dict[str, object]:
-        try:
-            return catalog.delete(project_id).model_dump(mode="json")
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except ValueError as exc:
-            status = 409 if "active agent task" in str(exc) else 422
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
-        except (OSError, RuntimeError, StateUnavailable) as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    @app.post("/api/project-setup/preflight")
-    def preflight_project(body: ProjectSetupRequest) -> dict[str, object]:
-        try:
-            return setup.preflight(body).model_dump(mode="json")
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @app.post("/api/project-setup/create")
-    def create_project(body: ProjectSetupRequest, request: Request) -> dict[str, object]:
-        try:
-            return setup.create(body, seat_member=acting_user(request).user_id)
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
     @projects_router.get("/api/projects/{project_id}")
     async def project(project_id: str) -> dict[str, object]:
         cached = project_display_cache.cached_project_snapshot(project_id)
@@ -1598,65 +1329,14 @@ def create_app(
             )
         return service.clear_rebuildable_caches()
 
-    @app.delete("/api/caches")
-    def clear_all_rebuildable_caches(project_id: str) -> dict[str, object]:
-        if store.has_any_active_agent_task():
-            raise HTTPException(
-                status_code=409,
-                detail="All project caches cannot be cleared while any agent task is active.",
-            )
-        current_service = _project_service(catalog, project_id)
-
-        project_roots = discover_project_cache_roots(app_data)
-        for source_root, slice_root in project_roots:
-            RebuildableCache(
-                source_root,
-                REMOTE_SOURCE_CACHE_LIMITS,
-                layout="files",
-            ).clear()
-            RebuildableCache(
-                slice_root,
-                SESSION_SLICE_CACHE_LIMITS,
-                layout="directories",
-            ).clear()
-        for record in store.projects():
-            service = catalog.loaded_service(record.project_id)
-            if service is not None:
-                service.invalidate_source_index()
-
-        legacy_source_root, legacy_slice_root = legacy_shared_cache_roots(app_data)
-        RebuildableCache(
-            legacy_source_root,
-            REMOTE_SOURCE_CACHE_LIMITS,
-            layout="files",
-        ).clear()
-        RebuildableCache(
-            legacy_slice_root,
-            SESSION_SLICE_CACHE_LIMITS,
-            layout="directories",
-        ).clear()
-        return current_service.indexer.cache_metrics().model_dump(mode="json")
-
     @projects_router.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)
     def agent_usage(project_id: str) -> AgentUsageSnapshot:
         _require_registered_project(catalog, project_id)
         return store.agent_usage_snapshot(project_id)
 
-    @app.get("/api/skills/{kind}/{package_id}")
-    def read_skill_package(kind: str, package_id: str) -> dict[str, object]:
-        """The official package's own text, for the read-only Settings inspector."""
-
-        if kind not in {"skill", "workflow"}:
-            raise HTTPException(status_code=404, detail="Package not found")
-        registry = official_registry()
-        try:
-            package = registry.package(cast(SkillKind, kind), package_id)
-            body = registry.package_body(cast(SkillKind, kind), package_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {**package.catalog_entry(), "body": body}
-
     app.include_router(team_router)
+    app.include_router(index_router)
+    app.include_router(index_membership_router)
     app.include_router(projects_router)
     app.include_router(episode_router)
     app.include_router(experiments_router)
@@ -1713,25 +1393,6 @@ def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRe
         resolved_skill_packages=continuation.resolved_skill_packages,
         watcher_ids=watcher_ids,
     )
-
-
-def _cached_graph_state(snapshot: dict[str, object] | None) -> GraphState | None:
-    if snapshot is None:
-        return None
-    try:
-        return GraphState.model_validate(snapshot["graph"])
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _cached_project_reachable(snapshot: dict[str, object] | None) -> bool | None:
-    if snapshot is None:
-        return None
-    canonical = snapshot.get("canonical_state")
-    if not isinstance(canonical, dict):
-        return None
-    reachable = canonical.get("reachable")
-    return reachable if isinstance(reachable, bool) else None
 
 
 def _experiment_control_node_id(

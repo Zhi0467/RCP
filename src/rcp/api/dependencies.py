@@ -4,12 +4,14 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
+from rcp.agents import AgentLauncher
 from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.service import ProjectService
+from rcp.setup import ProjectSetupManager
 from rcp.storage import AppStore
 from rcp.watchers import WatcherDelivery, WatcherPoller
 
@@ -29,6 +31,8 @@ class ApiServices:
     experiment_operation_lock: KeyedLocks
     background_tasks: BackgroundAgentTasks
     experiment_admission: ExperimentAdmission
+    launcher: AgentLauncher
+    setup: ProjectSetupManager
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -48,6 +52,14 @@ def get_catalog(request: Request) -> ProjectCatalog:
 
 def get_identity_access(request: Request) -> IdentityAccess:
     return _api_services(request).identity_access
+
+
+def get_launcher(request: Request) -> AgentLauncher:
+    return _api_services(request).launcher
+
+
+def get_setup(request: Request) -> ProjectSetupManager:
+    return _api_services(request).setup
 
 
 def get_attachment_store(request: Request) -> ChatAttachmentStore:
@@ -115,11 +127,13 @@ __all__ = [
     "get_background_tasks",
     "get_catalog",
     "get_identity_access",
+    "get_launcher",
     "get_experiment_operation_lock",
     "get_experiment_admission",
     "get_project_service",
     "get_project_display_cache",
     "get_result_view_keep_locks",
+    "get_setup",
     "get_store",
     "get_watcher_delivery",
     "get_watcher_poller",
