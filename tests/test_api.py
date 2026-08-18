@@ -732,7 +732,7 @@ def _graph_update(frames: list[str]) -> dict[str, object] | None:
     return None
 
 
-def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
+def test_project_endpoints(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
 
@@ -745,15 +745,6 @@ def test_project_and_paper_endpoints(manifest, tmp_path) -> None:
     assert project.status_code == 200
     assert project.json()["id"] == project_id
     assert project.json()["project_truth_scope"] == ["repo-a", "repo-b"]
-
-    created = client.post(f"/api/projects/{project_id}/paper/create")
-    assert created.status_code == 200
-    assert created.json()["sync_state"] == "unsynced"
-    removed_conflict_route = client.post(
-        f"/api/projects/{project_id}/paper/conflict",
-        json={"strategy": "use_canonical"},
-    )
-    assert removed_conflict_route.status_code == 405
 
     append_fixture_patch(app.state.service, seed_patch())
     generation = app.state.catalog.reserve_cached_snapshot_generation(project_id)

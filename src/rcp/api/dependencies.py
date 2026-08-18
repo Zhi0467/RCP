@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request
 
 from rcp.api.identity import IdentityAccess
 from rcp.projects import ProjectCatalog
+from rcp.service import ProjectService
 from rcp.storage import AppStore
 
 
@@ -37,6 +38,15 @@ def get_identity_access(request: Request) -> IdentityAccess:
     return _api_services(request).identity_access
 
 
+def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
+    try:
+        return catalog.open(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 def require_project_membership(project_id: str, request: Request) -> str:
     canonical = get_catalog(request).resolve_project_id(project_id)
     member = get_identity_access(request).acting_user(request)
@@ -52,6 +62,7 @@ __all__ = [
     "ApiServices",
     "get_catalog",
     "get_identity_access",
+    "get_project_service",
     "get_store",
     "require_project_membership",
 ]

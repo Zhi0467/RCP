@@ -34,7 +34,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
-from rcp.api.dependencies import ApiServices, require_project_membership
+from rcp.api.dependencies import (
+    ApiServices,
+    require_project_membership,
+)
+from rcp.api.dependencies import (
+    get_project_service as _project_service,
+)
 from rcp.api.episodes import (
     EpisodeMessageBody,
     EpisodeResponse,
@@ -45,6 +51,7 @@ from rcp.api.episodes import (
     serialize_episodes,
 )
 from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess, TrustedPrincipalResolver
+from rcp.api.paper import router as paper_router
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -250,11 +257,6 @@ class TeamPublicAuthBodyLimit:
             return message
 
         await self.app(scope, replay, send)
-
-
-class PaperSaveRequest(BaseModel):
-    content: str
-    base_hash: str | None = None
 
 
 class ProjectRegisterRequest(BaseModel):
@@ -3244,27 +3246,8 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {**package.catalog_entry(), "body": body}
 
-    @projects_router.get("/api/projects/{project_id}/paper")
-    def get_paper(project_id: str):
-        paper = _project_service(catalog, project_id).paper
-        return paper.snapshot().model_dump(mode="json")
-
-    @projects_router.post("/api/projects/{project_id}/paper/create")
-    def create_paper(project_id: str):
-        paper = _project_service(catalog, project_id).paper
-        return paper.create().model_dump(mode="json")
-
-    @projects_router.put("/api/projects/{project_id}/paper")
-    def save_paper(project_id: str, body: PaperSaveRequest):
-        paper = _project_service(catalog, project_id).paper
-        return paper.save(body.content, body.base_hash).model_dump(mode="json")
-
-    @projects_router.get("/api/projects/{project_id}/paper/sessions")
-    def paper_sessions(project_id: str):
-        paper = _project_service(catalog, project_id).paper
-        return [item.model_dump(mode="json") for item in paper.sessions()]
-
     app.include_router(projects_router)
+    app.include_router(paper_router)
 
     web_dist = web_dist_path()
     if web_dist.exists():
@@ -3409,15 +3392,6 @@ def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRe
         resolved_skill_packages=continuation.resolved_skill_packages,
         watcher_ids=watcher_ids,
     )
-
-
-def _project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
-    try:
-        return catalog.open(project_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Project not found") from exc
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _cached_graph_state(snapshot: dict[str, object] | None) -> GraphState | None:
