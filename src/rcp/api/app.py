@@ -96,7 +96,6 @@ from rcp.runs.auto_research_stream import (
     stream_auto_research_worker_run,
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
-from rcp.runs.branch_merge_task import stream_branch_merge_task
 from rcp.runs.episode_reconcile import EpisodeReconciler
 from rcp.runs.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.runs.experiment_loop import (
@@ -105,6 +104,7 @@ from rcp.runs.experiment_loop import (
 )
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.tasks.branch_merge import stream_branch_merge_task
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.graph import stream_graph_run

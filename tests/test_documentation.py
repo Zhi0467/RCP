@@ -48,7 +48,7 @@ REQUIRED_IMPLEMENTATION_FILES = {
     "src/rcp/history/branches.py",
     "src/rcp/runs/branch_merge.py",
     "src/rcp/runs/branch_merge_request.py",
-    "src/rcp/runs/branch_merge_task.py",
+    "src/rcp/runs/tasks/branch_merge.py",
     "src/rcp/runs/transition_event_reconciliation.py",
     "web/src/experimentGuidance.ts",
     "web/src/projectTransition.ts",

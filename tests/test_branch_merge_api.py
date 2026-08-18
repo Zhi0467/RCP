@@ -27,7 +27,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import BranchMergeAlreadyCommitted
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.branch_merge import branch_merge_id
-from rcp.runs.branch_merge_task import _apply_receipt_to_execution
+from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
