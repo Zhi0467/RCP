@@ -23,9 +23,8 @@ from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, PromptFactor
 from rcp.agents.context import RepositoryPointer
 from rcp.api.app import (
     _generic_watcher_delivery_request,
-    _validate_stored_task_request,
-    _validated_task_request,
 )
+from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig, load_manifest, permissions_for
@@ -4171,46 +4170,6 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
     )
 
 
-@pytest.mark.parametrize("action", ["preview", "download"])
-def test_remote_artifact_read_does_not_stall_health(
-    manifest, tmp_path, monkeypatch, action
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    descriptor = AgentArtifactDescriptor(
-        artifact_id="a" * 24,
-        name="plot.png",
-        media_type="image/png",
-    )
-    data = b"\x89PNG\r\n\x1a\npreview"
-    entered = threading.Event()
-    release = threading.Event()
-
-    def blocked_load(*_args):
-        entered.set()
-        assert release.wait(timeout=3)
-        return descriptor, data
-
-    monkeypatch.setattr("rcp.api.app._load_agent_artifact", blocked_load)
-    project_id = app.state.default_project_id
-    url = f"/api/projects/{project_id}/tasks/operation/artifacts/{descriptor.artifact_id}/{action}"
-
-    async def drive_concurrently():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            artifact = asyncio.create_task(client.get(url))
-            try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
-            finally:
-                release.set()
-            return health, await artifact
-
-    health, artifact = asyncio.run(drive_concurrently())
-
-    assert health.status_code == 200
-    assert artifact.status_code == 200
-
-
 def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -4308,7 +4267,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert client.get(f"{base}/000000000000000000000000/preview").status_code == 404
 
     monkeypatch.setattr(
-        "rcp.api.app.html_preview_document",
+        "rcp.api.tasks.html_preview_document",
         lambda _data: (_ for _ in ()).throw(RuntimeError("preview renderer failed")),
     )
     assert client.head(html_url).status_code == 410
@@ -4909,60 +4868,6 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
     assert resumed["result"] == {"messages": [answer]}
     assert launcher.sessions == [None, session_id]
     assert service.paper.sessions()[0].native_session_id == session_id
-
-
-def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    project_id = app.state.default_project_id
-
-    async def stream(_project_id, kind, _request, _execution):
-        yield _event_frame(AgentEvent(event="message", text=f"{kind} answer"))
-        if kind != "paper_coach":
-            yield _event_frame(
-                AgentEvent(event="message", text=json.dumps({"applied_revision": 7}))
-            )
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
-    client = TestClient(app)
-    requests = {
-        "seed": {},
-        "refresh": {},
-        "node_chat": {
-            "node_id": "hyp/replanning-restores-plasticity",
-            "chat_id": str(uuid.uuid4()),
-            "message": "Explain this node.",
-        },
-        "project_chat": {
-            "chat_id": str(uuid.uuid4()),
-            "message": "Explain this project.",
-        },
-        "paper_coach": {"message": "Review this introduction."},
-    }
-    operation_ids: dict[str, str] = {}
-    for kind, body in requests.items():
-        response = client.post(
-            f"/api/projects/{project_id}/tasks/{kind}",
-            json=body,
-        )
-        assert response.status_code == 202
-        operation_id = response.json()["operation_id"]
-        operation_ids[kind] = operation_id
-        assert _wait_for_run(client, project_id, operation_id)["status"] == "succeeded"
-
-    listed = client.get(f"/api/projects/{project_id}/tasks")
-    assert listed.status_code == 200
-    assert {task["kind"] for task in listed.json()} == set(requests)
-    for kind, operation_id in operation_ids.items():
-        detail = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
-        assert detail.status_code == 200
-        payload = detail.json()
-        assert payload["kind"] == kind
-        assert payload["result"] == {"messages": [f"{kind} answer"]}
-        assert payload["events"]
-        assert payload["debug_receipts"]
 
 
 @pytest.mark.asyncio

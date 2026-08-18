@@ -1,0 +1,717 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+import uuid
+from pathlib import Path
+from typing import Annotated, Literal, cast
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+from rcp.api.dependencies import (
+    get_attachment_store,
+    get_background_tasks,
+    get_catalog,
+    get_experiment_admission,
+    get_identity_access,
+    get_project_service,
+    get_result_view_keep_locks,
+    get_store,
+    require_project_membership,
+    require_registered_project,
+)
+from rcp.api.identity import IdentityAccess
+from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
+from rcp.artifacts import (
+    ARTIFACT_MEDIA_TYPES,
+    AgentArtifactDescriptor,
+    descriptor_for,
+    html_preview_document,
+    read_local_regular_file,
+    validate_artifact_bytes,
+)
+from rcp.attachments import ChatAttachmentStore
+from rcp.background import AgentTaskRequest, BackgroundAgentTasks
+from rcp.core.models import Experiment
+from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
+from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
+from rcp.projects import ProjectCatalog
+from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.chat import _logical_chat_turn_operation_id
+from rcp.runs.coach import _resolved_coach_request
+from rcp.runs.task_policy import task_graph_capable
+from rcp.service import CoachRequest, ProjectService, RunRequest
+from rcp.skill_registry import SkillSelection
+from rcp.storage import AgentTaskKind, AppStore
+from rcp.transport import RemoteRunStage, StateUnavailable
+
+router = APIRouter(dependencies=[Depends(require_project_membership)])
+
+CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
+IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
+StoreDependency = Annotated[AppStore, Depends(get_store)]
+AttachmentStoreDependency = Annotated[ChatAttachmentStore, Depends(get_attachment_store)]
+BackgroundTasksDependency = Annotated[BackgroundAgentTasks, Depends(get_background_tasks)]
+ExperimentAdmissionDependency = Annotated[
+    ExperimentAdmission,
+    Depends(get_experiment_admission),
+]
+ResultViewKeepLocksDependency = Annotated[
+    KeyedLocks,
+    Depends(get_result_view_keep_locks),
+]
+
+
+class RetryAgentTaskRequest(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    reasoning: str | None = None
+    run_on: str | None = None
+
+
+@router.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
+def start_agent_task(
+    project_id: str,
+    kind: AgentTaskKind,
+    body: dict[str, object],
+    http_request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    attachment_store: AttachmentStoreDependency,
+    background_tasks: BackgroundTasksDependency,
+    result_view_keep_locks: ResultViewKeepLocksDependency,
+) -> dict[str, object]:
+    if kind in {"auto_research", "branch_merge", "episode_report"}:
+        raise HTTPException(
+            status_code=405,
+            detail="Use the project episode endpoint for Auto-research and branch merge.",
+        )
+    authorized_by = identity_access.require_patch_capable_identity(http_request)
+    service = get_project_service(catalog, project_id)
+    admission_lock: threading.Lock | None = None
+    result_view_stage_host: str | None = None
+    result_view_stage_root: str | None = None
+    try:
+        request = _validated_task_request(service, kind, body)
+        if isinstance(request, RunRequest):
+            if request.result_view is not None and request.result_view.action == "revise":
+                admission_lock = result_view_keep_locks(request.result_view.view_id)
+                admission_lock.acquire()
+            request = _admit_result_view_request(
+                store,
+                service,
+                project_id,
+                kind,
+                request,
+            )
+            if request.result_view is not None and request.result_view.action == "revise":
+                view = store.result_view(request.result_view.view_id)
+                if view is None:
+                    raise ValueError("The result view is unavailable or expired.")
+                result_view_stage_host = view.stage_host or None
+                result_view_stage_root = view.stage_root
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
+            assert request.chat_id is not None
+            if store.has_resumable_paused_chat_task(
+                project_id,
+                kind,
+                request.chat_id,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "This conversation has a paused turn. Resume or retry it before "
+                        "starting a new turn."
+                    ),
+                )
+        operation_id = str(uuid.uuid4())
+        claimed_set: tuple[str, str] | None = None
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
+            supplied = (request.attachment_set_id, request.attachment_client_id)
+            if any(supplied) and not all(supplied):
+                raise ValueError(
+                    "Chat attachments require both attachment_set_id and attachment_client_id."
+                )
+            if request.attachment_set_id and request.attachment_client_id:
+                assert request.chat_id is not None
+                claimed = attachment_store.claim(
+                    project_id=project_id,
+                    chat_id=request.chat_id,
+                    client_id=request.attachment_client_id,
+                    attachment_set_id=request.attachment_set_id,
+                    operation_id=operation_id,
+                )
+                claimed_set = (claimed.attachment_batch_id, operation_id)
+                request = request.model_copy(
+                    update={
+                        "attachment_set_id": None,
+                        "attachment_client_id": None,
+                        "attachment_batch_id": claimed.attachment_batch_id,
+                        "attachments": claimed.attachments,
+                    }
+                )
+        try:
+            record = background_tasks.start(
+                project_id,
+                kind,
+                request,
+                operation_id=operation_id,
+                authorized_by=authorized_by,
+                stage_host=result_view_stage_host,
+                stage_root=result_view_stage_root,
+            )
+        except BaseException:
+            if claimed_set is not None and store.agent_task(operation_id) is None:
+                attachment_store.release(*claimed_set)
+            raise
+    except ValueError as exc:
+        status = 409 if "already running" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        if admission_lock is not None:
+            admission_lock.release()
+    return record.model_dump(mode="json")
+
+
+@router.get("/api/projects/{project_id}/tasks")
+def agent_tasks(
+    project_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> list[dict[str, object]]:
+    require_registered_project(catalog, project_id)
+    return [record.model_dump(mode="json") for record in store.agent_tasks(project_id)]
+
+
+@router.get("/api/projects/{project_id}/tasks/{operation_id}")
+def agent_task(
+    project_id: str,
+    operation_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    require_registered_project(catalog, project_id)
+    record = store.agent_task(operation_id)
+    if record is None or record.project_id != project_id or not record.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    detail = record.model_dump(mode="json")
+    detail["events"] = [
+        event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
+    ]
+    detail["debug_receipts"] = [
+        receipt.model_dump(mode="json") for receipt in store.agent_task_receipts(operation_id)
+    ]
+    detail["contracts"] = [
+        contract.model_dump(mode="json") for contract in store.agent_task_contracts(operation_id)
+    ]
+    return detail
+
+
+@router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
+@router.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
+async def preview_agent_artifact(
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+) -> Response:
+    descriptor, data = await asyncio.to_thread(
+        _load_agent_artifact,
+        store,
+        project_id,
+        operation_id,
+        artifact_id,
+    )
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if descriptor.media_type == "text/html":
+        try:
+            document, csp = html_preview_document(data)
+        except Exception as exc:
+            # Rendering is an optional preview boundary. A malformed document
+            # or renderer defect makes only this attachment unavailable.
+            raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+        headers["Content-Security-Policy"] = csp
+        return Response(
+            b"" if request.method == "HEAD" else document,
+            media_type="text/html",
+            headers=headers,
+        )
+    headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return Response(
+        b"" if request.method == "HEAD" else data,
+        media_type=descriptor.media_type,
+        headers=headers,
+    )
+
+
+@router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
+@router.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
+async def download_agent_artifact(
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+) -> Response:
+    descriptor, data = await asyncio.to_thread(
+        _load_agent_artifact,
+        store,
+        project_id,
+        operation_id,
+        artifact_id,
+    )
+    suffix = Path(descriptor.name).suffix.casefold()
+    fallback = f"artifact{suffix}" if suffix in ARTIFACT_MEDIA_TYPES else "artifact"
+    disposition = (
+        f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(descriptor.name, safe='')}"
+    )
+    return Response(
+        b"" if request.method == "HEAD" else data,
+        media_type=descriptor.media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": disposition,
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
+def pause_agent_task(
+    project_id: str,
+    operation_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    background_tasks: BackgroundTasksDependency,
+) -> dict[str, object]:
+    get_project_service(catalog, project_id)
+    record = store.agent_task(operation_id)
+    if record is None or record.project_id != project_id or not record.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    try:
+        return background_tasks.pause(operation_id).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
+def resume_agent_task(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+    experiment_admission: ExperimentAdmissionDependency,
+    result_view_keep_locks: ResultViewKeepLocksDependency,
+) -> dict[str, object]:
+    previous = store.agent_task(operation_id)
+    if previous is None or previous.project_id != project_id or not previous.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    if previous.kind == "branch_merge":
+        raise HTTPException(
+            status_code=409,
+            detail="Dispatch a new Merge to main task from the episode detail.",
+        )
+    authorized_by = identity_access.require_patch_capable_identity(request)
+    service = get_project_service(catalog, project_id)
+    result_view_resume_lock: threading.Lock | None = None
+    try:
+        if previous.kind not in {"paper_coach", "auto_research"}:
+            stored_request = RunRequest.model_validate(previous.request)
+            if (
+                stored_request.result_view is not None
+                and stored_request.result_view.action == "revise"
+            ):
+                result_view_resume_lock = result_view_keep_locks(stored_request.result_view.view_id)
+                result_view_resume_lock.acquire()
+                _admit_result_view_request(
+                    store,
+                    service,
+                    project_id,
+                    previous.kind,
+                    stored_request,
+                )
+        with experiment_admission(project_id, service, previous.request):
+            skills = _validate_stored_task_request(service, previous.kind, previous.request)
+            return background_tasks.resume(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+            ).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        if result_view_resume_lock is not None:
+            result_view_resume_lock.release()
+
+
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update",
+    status_code=202,
+)
+def repair_agent_task_graph_update(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+    experiment_admission: ExperimentAdmissionDependency,
+) -> dict[str, object]:
+    previous = store.agent_task(operation_id)
+    if previous is None or previous.project_id != project_id or not previous.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    if previous.kind == "branch_merge":
+        raise HTTPException(
+            status_code=409,
+            detail="Dispatch a new Merge to main task from the episode detail.",
+        )
+    authorized_by = (
+        identity_access.require_patch_capable_identity(request)
+        if task_graph_capable(previous.kind, previous.request)
+        else None
+    )
+    service = get_project_service(catalog, project_id)
+    try:
+        with experiment_admission(project_id, service, previous.request):
+            return background_tasks.repair_graph_update(
+                operation_id,
+                authorized_by=authorized_by,
+            ).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Agent task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/retry", status_code=202)
+def retry_agent_task(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    body: RetryAgentTaskRequest | None = None,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+    experiment_admission: ExperimentAdmissionDependency,
+    result_view_keep_locks: ResultViewKeepLocksDependency,
+) -> dict[str, object]:
+    previous = store.agent_task(operation_id)
+    if previous is None or previous.project_id != project_id or not previous.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    if previous.kind == "branch_merge":
+        raise HTTPException(
+            status_code=409,
+            detail="Dispatch a new Merge to main task from the episode detail.",
+        )
+    authorized_by = identity_access.require_patch_capable_identity(request)
+    service = get_project_service(catalog, project_id)
+    result_view_retry_lock: threading.Lock | None = None
+    try:
+        overrides = body.model_dump(exclude_none=True) if body is not None else {}
+        if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
+            raise ValueError("Experiment-loop recovery cannot change its pinned execution machine.")
+        if previous.kind == "auto_research":
+            candidate = AutoResearchRunRequest.model_validate({**previous.request, **overrides})
+        else:
+            request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
+            candidate = request_type.model_validate(
+                {**previous.request, **overrides, "session_id": None}
+            )
+        if (
+            isinstance(candidate, RunRequest)
+            and candidate.result_view is not None
+            and candidate.result_view.action == "revise"
+        ):
+            result_view_retry_lock = result_view_keep_locks(candidate.result_view.view_id)
+            result_view_retry_lock.acquire()
+            _admit_result_view_request(
+                store,
+                service,
+                project_id,
+                previous.kind,
+                candidate,
+            )
+        with experiment_admission(
+            project_id,
+            service,
+            candidate.model_dump(mode="json"),
+        ):
+            skills = _validate_stored_task_request(
+                service,
+                previous.kind,
+                candidate.model_dump(mode="json"),
+            )
+            if previous.kind == "auto_research":
+                _require_auto_research_retry_target_ready(
+                    service,
+                    AutoResearchRunRequest.model_validate(candidate),
+                )
+            return background_tasks.retry(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+                **overrides,
+            ).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        if result_view_retry_lock is not None:
+            result_view_retry_lock.release()
+
+
+def _load_agent_artifact(
+    store: AppStore,
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+) -> tuple[AgentArtifactDescriptor, bytes]:
+    """Resolve an attachment only through its persisted task descriptor and stage."""
+    record = store.agent_task(operation_id)
+    if (
+        record is None
+        or record.project_id != project_id
+        or record.kind not in {"node_chat", "project_chat"}
+    ):
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    artifacts = record.result.get("artifacts") if record.result else None
+    descriptor: AgentArtifactDescriptor | None = None
+    if isinstance(artifacts, list):
+        for raw in artifacts:
+            try:
+                candidate = AgentArtifactDescriptor.model_validate(raw)
+            except (TypeError, ValueError):
+                continue
+            if candidate.artifact_id == artifact_id:
+                descriptor = candidate
+                break
+    if descriptor is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if not record.stage_root:
+        raise HTTPException(status_code=410, detail="Preview unavailable")
+    try:
+        scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
+        expected_descriptor = descriptor_for(scope_id, descriptor.name)
+        if expected_descriptor != descriptor:
+            raise ValueError("artifact descriptor does not match its task scope")
+        if record.stage_host:
+            stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
+            data = stage.read_artifact_bytes(
+                scope_id,
+                descriptor.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+        else:
+            directory = Path(record.stage_root) / "turns" / scope_id / "artifacts"
+            data = read_local_regular_file(
+                directory,
+                descriptor.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+        media_type = validate_artifact_bytes(descriptor.name, data)
+        if media_type != descriptor.media_type:
+            raise ValueError("artifact media type changed")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Preview unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    return descriptor, data
+
+
+def _admit_result_view_request(
+    store: AppStore,
+    service: ProjectService,
+    project_id: str,
+    kind: AgentTaskKind,
+    request: RunRequest,
+) -> RunRequest:
+    intent = request.result_view
+    if intent is None:
+        return request
+    if (
+        kind != "node_chat"
+        or request.chat_scope != "node"
+        or request.mode != "work"
+        or request.trigger != "human"
+        or request.patch_kind != "work"
+        or request.control_node_id is not None
+        or request.watcher_ids
+    ):
+        raise ValueError("Result views require an ordinary node Work turn.")
+    if request.node_id is None or not isinstance(
+        service.history.state().nodes.get(request.node_id),
+        Experiment,
+    ):
+        raise ValueError("Result views require an Experiment node.")
+    if intent.action == "create":
+        return request
+
+    record = store.result_view(intent.view_id)
+    if record is None or record.project_id != project_id:
+        raise ValueError("The result view is unavailable or expired.")
+    if record.kept_filename is not None:
+        raise ValueError("A kept result view cannot be revised.")
+    if record.experiment_id != request.node_id or record.chat_id != request.chat_id:
+        raise ValueError("The result view does not belong to this Experiment conversation.")
+
+    pinned = RunRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "provider": record.provider,
+            "model": record.model,
+            "reasoning": record.reasoning,
+            "run_on": record.run_on,
+            "session_id": record.native_session_id,
+        }
+    )
+    return _resolved_graph_request(service, kind, pinned)
+
+
+def _validated_task_request(
+    service: ProjectService,
+    kind: AgentTaskKind,
+    body: dict[str, object],
+) -> AgentTaskRequest:
+    if kind == "paper_coach":
+        return _resolved_coach_request(service, CoachRequest.model_validate(body))
+
+    request = RunRequest.model_validate(body).model_copy(
+        update={
+            "trigger": "human",
+            "patch_kind": "work",
+            "control_node_id": None,
+            "control_revision": None,
+            "control_episode_id": None,
+            "control_invocation": None,
+            "control_invocation_ceiling": None,
+            "control_decision_bundle": [],
+            "control_completion_criteria": [],
+            "watcher_ids": [],
+            "attachment_batch_id": None,
+            "attachments": [],
+        }
+    )
+    if kind in {"seed", "refresh"}:
+        service.history.require_writable()
+        if request.session_id:
+            raise ValueError(
+                "Seed and refresh sessions can only be resumed from an RCP background "
+                "task checkpoint."
+            )
+        return _resolved_graph_request(service, kind, request)
+
+    chat_scope: Literal["node", "project"] = "node" if kind == "node_chat" else "project"
+    request = request.model_copy(
+        update={
+            "chat_scope": chat_scope,
+            "node_id": request.node_id if chat_scope == "node" else None,
+        }
+    )
+    if not request.message or not request.message.strip() or not request.chat_id:
+        raise ValueError("Chat requires a chat_id and message")
+    if chat_scope == "node":
+        if not request.node_id:
+            raise ValueError("Node chat requires a node_id")
+        if request.node_id not in service.history.state().nodes:
+            raise HTTPException(status_code=404, detail="Node not found")
+    try:
+        uuid.UUID(request.chat_id)
+    except ValueError as exc:
+        raise ValueError("chat_id must be a UUID") from exc
+    request = _resolved_graph_request(service, kind, request)
+    return request
+
+
+def _validate_stored_task_request(
+    service: ProjectService,
+    kind: AgentTaskKind,
+    body: dict[str, object],
+) -> SkillSelection | None:
+    """Validate a stored request and return any package-selection refresh it needs."""
+
+    if kind == "auto_research":
+        auto_research_request = AutoResearchRunRequest.model_validate(body)
+        resolved_auto_research = _resolved_auto_research_request(
+            service,
+            auto_research_request,
+        )
+        return service.resolve_skill_selection(cast(RunRequest, resolved_auto_research))
+    if kind == "paper_coach":
+        resolved_coach = _resolved_coach_request(service, CoachRequest.model_validate(body))
+        return service.resolve_skill_selection(resolved_coach)
+    request = RunRequest.model_validate(body)
+    if kind in {"seed", "refresh"}:
+        service.history.require_writable()
+    resolved_run = _resolved_graph_request(service, kind, request)
+    return service.resolve_skill_selection(resolved_run)
+
+
+def _require_auto_research_retry_target_ready(
+    service: ProjectService,
+    request: AutoResearchRunRequest,
+) -> None:
+    """Recheck the pinned provider target before Retry can allocate a child task."""
+
+    if request.provider is None or request.run_on is None:
+        raise ValueError("Auto-research Retry requires its pinned provider and execution machine.")
+    machine = service.manifest.machine_map.get(request.run_on)
+    if machine is None:
+        raise ValueError(f"unknown execution machine: {request.run_on}")
+    binary = machine.provider_paths.get(request.provider)
+    readiness = service.launcher.readiness(
+        request.provider,
+        host=machine.host,
+        binary=binary,
+        refresh=True,
+    )
+    if readiness.installed and readiness.authenticated:
+        return
+    diagnostic = (
+        readiness.reason or f"{request.provider} is not ready on {request.run_on}"
+    ).strip()
+    if diagnostic.endswith("."):
+        diagnostic = diagnostic[:-1]
+    raise ValueError(
+        f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
+    )
+
+
+__all__ = [
+    "RetryAgentTaskRequest",
+    "agent_task",
+    "agent_tasks",
+    "download_agent_artifact",
+    "pause_agent_task",
+    "preview_agent_artifact",
+    "repair_agent_task_graph_update",
+    "resume_agent_task",
+    "retry_agent_task",
+    "router",
+    "start_agent_task",
+]

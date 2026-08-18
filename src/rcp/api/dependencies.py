@@ -6,7 +6,8 @@ from fastapi import HTTPException, Request
 
 from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore
-from rcp.keyed_locks import KeyedLocks
+from rcp.background import BackgroundAgentTasks
+from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.service import ProjectService
 from rcp.storage import AppStore
@@ -26,6 +27,8 @@ class ApiServices:
     project_display_cache: ProjectDisplayCache
     watcher_delivery: WatcherDelivery
     experiment_operation_lock: KeyedLocks
+    background_tasks: BackgroundAgentTasks
+    experiment_admission: ExperimentAdmission
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -71,6 +74,14 @@ def get_experiment_operation_lock(request: Request) -> KeyedLocks:
     return _api_services(request).experiment_operation_lock
 
 
+def get_background_tasks(request: Request) -> BackgroundAgentTasks:
+    return _api_services(request).background_tasks
+
+
+def get_experiment_admission(request: Request) -> ExperimentAdmission:
+    return _api_services(request).experiment_admission
+
+
 def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
     try:
         return catalog.open(project_id)
@@ -101,9 +112,11 @@ def require_project_membership(project_id: str, request: Request) -> str:
 __all__ = [
     "ApiServices",
     "get_attachment_store",
+    "get_background_tasks",
     "get_catalog",
     "get_identity_access",
     "get_experiment_operation_lock",
+    "get_experiment_admission",
     "get_project_service",
     "get_project_display_cache",
     "get_result_view_keep_locks",

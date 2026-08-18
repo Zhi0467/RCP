@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.api.app import _resolved_graph_request
+from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
 from rcp.runs.experiment_loop import commit_experiment_episode_binding

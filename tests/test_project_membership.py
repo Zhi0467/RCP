@@ -118,9 +118,12 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "project_display_cache",
         "watcher_delivery",
         "experiment_operation_lock",
+        "background_tasks",
+        "experiment_admission",
     )
     assert services.store is app.state.background_tasks.store
     assert services.catalog is app.state.catalog
+    assert services.background_tasks is app.state.background_tasks
     assert services.identity_access is not None
     assert services.attachment_store is not None
     assert services.watcher_poller is app.state.watcher_poller
