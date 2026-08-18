@@ -94,6 +94,7 @@ from rcp.runs.chat import (
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     commit_experiment_episode_binding,
+    commit_experiment_episode_handoff,
     experiment_episode_context_values,
     experiment_exit_problem,
     experiment_graph_result_summary,
@@ -102,6 +103,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_output_name,
     persist_experiment_watchers_idempotently,
     prepare_experiment_episode_context_candidate,
+    prepare_experiment_watcher_records,
     read_experiment_watcher_outputs,
     root_experiment_loop_operation_id,
     stage_chat_experiment_watcher_resources,
@@ -391,6 +393,7 @@ class _SettledWorkDeliverables:
     )
     watch_correction_rounds: int = 0
     loop_watch_empty: bool = False
+    loop_watch_text: str | None = None
     pending_loop_handoff: tuple[object, ...] | None = None
     stop: bool = False
 
@@ -893,6 +896,8 @@ def _work_patch_source_operation_id(
 ) -> str | None:
     if execution is None:
         return None
+    if patch_kind == "experiment_loop" and execution.continuation != "graph_repair":
+        return root_experiment_loop_operation_id(execution)
     return execution.operation_id
 
 
@@ -948,6 +953,7 @@ def _retry_deliverable_is_unchanged(
     filename: str,
     predecessor_digest: str | None,
     current_text: str | None,
+    allow_unchanged: bool = False,
 ) -> bool:
     """Record whether a reused Retry stage still contains its predecessor's output."""
 
@@ -967,11 +973,68 @@ def _retry_deliverable_is_unchanged(
             "predecessor_sha256": predecessor_digest,
             "retry_sha256": current_digest,
             "unchanged": unchanged,
-            "consumed": current_text is not None and not unchanged,
+            "consumed": current_text is not None and (not unchanged or allow_unchanged),
         },
         tier="diagnostic",
     )
-    return unchanged
+    return unchanged and not allow_unchanged
+
+
+def _experiment_loop_retry_handoff_authorized(
+    turn: WorkTurn,
+    watch_text: str | None,
+) -> bool:
+    """Authorize one exact retained loop watcher handoff from an ancestor receipt."""
+
+    execution = turn.execution
+    if (
+        execution is None
+        or execution.continuation != "retry"
+        or turn.request.patch_kind != "experiment_loop"
+        or watch_text is None
+        or not turn.request.control_episode_id
+        or turn.request.control_invocation is None
+    ):
+        return False
+    try:
+        root_id = root_experiment_loop_operation_id(execution)
+        patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
+    except (OSError, StateUnavailable, ValueError):
+        return False
+    patch_digest = (
+        hashlib.sha256(patch_text.encode("utf-8")).hexdigest() if patch_text is not None else None
+    )
+    watch_digest = hashlib.sha256(watch_text.encode("utf-8")).hexdigest()
+    current = execution.store.agent_task(execution.operation_id)
+    if current is None:
+        return False
+
+    matched = False
+    ancestor_id = current.parent_operation_id
+    seen = {current.operation_id}
+    while ancestor_id is not None:
+        if ancestor_id in seen:
+            return False
+        seen.add(ancestor_id)
+        ancestor = execution.store.agent_task(ancestor_id)
+        if ancestor is None:
+            return False
+        if ancestor.request.get("patch_kind") == "experiment_loop":
+            for receipt in execution.store.agent_task_receipts(ancestor.operation_id):
+                if receipt.category != "experiment_loop_handoff_prepared":
+                    continue
+                payload = receipt.payload
+                if (
+                    payload.get("root_operation_id") == root_id
+                    and payload.get("episode_id") == turn.request.control_episode_id
+                    and payload.get("invocation") == turn.request.control_invocation
+                    and payload.get("patch_sha256") == patch_digest
+                    and payload.get("watch_sha256") == watch_digest
+                ):
+                    matched = True
+                    break
+        ancestor_id = ancestor.parent_operation_id
+    return matched
 
 
 def _experiment_maintenance_binding(
@@ -2387,11 +2450,13 @@ def _read_initial_watch_deliverable(
         )
     else:
         failure = None
+    allow_unchanged = _experiment_loop_retry_handoff_authorized(turn, text)
     if _retry_deliverable_is_unchanged(
         turn.execution,
         filename="watch.json",
         predecessor_digest=predecessor_digest,
         current_text=text,
+        allow_unchanged=allow_unchanged,
     ):
         text = None
     if turn.request.patch_kind == "experiment_loop" and text is None and failure is None:
@@ -2575,6 +2640,7 @@ async def _validate_watch_deliverable(
         ordinary_handoff = None
         if turn.request.patch_kind == "experiment_loop":
             experiment_handoff = parse_experiment_watch_json(watch_text)
+            settled.loop_watch_text = watch_text
         else:
             ordinary_handoff = parse_watch_json(watch_text)
         if turn.request.patch_kind == "experiment_loop" and experiment_handoff.is_empty:
@@ -2966,6 +3032,7 @@ async def _settle_watch_deliverable(
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     text = initial.text
     failure = initial.failure
+    settled.loop_watch_text = text if turn.request.patch_kind == "experiment_loop" else None
     if text is None and failure is None:
         return
 
@@ -3153,6 +3220,8 @@ async def _settle_watch_deliverable(
         corrected = _read_corrected_watch_deliverable(turn)
         text = corrected.text
         failure = corrected.failure
+        if turn.request.patch_kind == "experiment_loop":
+            settled.loop_watch_text = text
 
 
 async def _apply_work_turn(
@@ -3429,10 +3498,14 @@ async def _apply_experiment_loop_turn(
             assert corrected.text is not None
             final_patch_text = corrected.text
 
-    accepted_loop_watcher_ids: list[str] = []
-    accepted_loop_stopped_watcher_ids: list[str] = []
+    if (
+        turn.execution is None
+        or prompt_context.episode_context_baseline is None
+        or prompt_context.experiment_control_snapshot is None
+    ):
+        raise ValueError("Experiment-loop handoff lost its durable episode context.")
+    execution = turn.execution
     if settled.pending_loop_handoff is not None:
-        assert turn.execution is not None
         (
             specs,
             check_results,
@@ -3441,51 +3514,55 @@ async def _apply_experiment_loop_turn(
             binding,
             stop_requests,
         ) = settled.pending_loop_handoff
-        try:
-            graph_state = (
-                await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
-            )
-            if graph_conditions:
-                turn.execution.armed_graph_watchers = True
-            armed = await asyncio.to_thread(
-                persist_experiment_watchers_idempotently,
-                turn.execution,
-                specs,
-                check_results,
-                binding,
-                stop_requests,
-                graph_conditions=graph_conditions,
-                graph_state=graph_state,
-                armed_revision=graph_armed_revision,
-            )
-        except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=f"Experiment-loop watcher persistence failed: {exc}",
-                )
-            )
-            applied.stop = True
-            return
-        turn.execution.store.record_agent_task_receipt(
-            root_experiment_loop_operation_id(turn.execution),
-            "watchers_armed",
-            {
-                "watcher_ids": [item.watcher_id for item in armed],
-                "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
-                "count": len(armed),
-                "correction_rounds": settled.watch_correction_rounds,
-            },
+    else:
+        origin_task = execution.store.agent_task(execution.operation_id)
+        if origin_task is None:
+            raise ValueError("The originating Experiment-loop operation is no longer available.")
+        specs = []
+        check_results = []
+        graph_conditions = []
+        graph_armed_revision = None
+        stop_requests = []
+        binding = WatcherBinding(
+            project_id=origin_task.project_id,
+            origin_operation_id=root_experiment_loop_operation_id(execution),
+            origin_task_kind=turn.surface,
+            chat_id=turn.request.chat_id or "",
+            node_id=turn.request.node_id,
+            episode_id=turn.request.control_episode_id,
+            graph_target=origin_task.graph_target,
+            execution_host=turn.execution_host,
+            continuation=_watcher_continuation(turn, staged),
         )
-        accepted_loop_watcher_ids = [item.watcher_id for item in armed]
-        accepted_loop_stopped_watcher_ids = [item.stop_watcher_id for item in stop_requests]
 
-    if (
-        turn.execution is None
-        or prompt_context.episode_context_baseline is None
-        or prompt_context.experiment_control_snapshot is None
-    ):
-        raise ValueError("Experiment-loop handoff lost its durable episode context.")
+    try:
+        graph_state = (
+            await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
+        )
+        prepared = await asyncio.to_thread(
+            prepare_experiment_watcher_records,
+            execution,
+            specs,
+            check_results,
+            binding,
+            graph_conditions=graph_conditions,
+            graph_state=graph_state,
+            armed_revision=graph_armed_revision,
+        )
+        prepared_watcher_ids = [item.watcher_id for item in prepared]
+        prepared_stopped_watcher_ids = [item.stop_watcher_id for item in stop_requests]
+    except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+        yield _sse(
+            AgentEvent(
+                event="error",
+                text=f"Experiment-loop watcher handoff preparation failed: {exc}",
+            )
+        )
+        applied.stop = True
+        return
+
+    accepted_loop_watcher_ids = prepared_watcher_ids
+    accepted_loop_stopped_watcher_ids = prepared_stopped_watcher_ids
     ending_signal = None
     if applied.graph_update.status == "applied" and turn.request.control_node_id:
         semantic_ending = experiment_loop_semantic_ending(
@@ -3513,17 +3590,67 @@ async def _apply_experiment_loop_turn(
                 stopped_watcher_ids=accepted_loop_stopped_watcher_ids,
                 decision_bundle=turn.request.control_decision_bundle,
             )
-    commit_experiment_episode_binding(
-        turn.execution,
-        turn.request,
-        native_session_id=applied.native_session_id,
-        execution_host=turn.execution_host,
-        stage_host=turn.execution.stage_host,
-        stage_root=turn.execution.stage_root,
-        graph_result=experiment_graph_result_summary(applied.graph_update),
-        watcher_ids=accepted_loop_watcher_ids,
-        context_baseline=prompt_context.episode_context_baseline,
-        ending_signal=ending_signal,
+    patch_digest = (
+        hashlib.sha256(final_patch_text.encode("utf-8")).hexdigest()
+        if final_patch_text is not None
+        else None
+    )
+    watch_text = settled.loop_watch_text
+    watch_digest = (
+        hashlib.sha256(watch_text.encode("utf-8")).hexdigest() if watch_text is not None else None
+    )
+    root_id = root_experiment_loop_operation_id(execution)
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "experiment_loop_handoff_prepared",
+        {
+            "episode_id": turn.request.control_episode_id,
+            "invocation": turn.request.control_invocation,
+            "root_operation_id": root_id,
+            "patch_sha256": patch_digest,
+            "watch_sha256": watch_digest,
+            "graph_status": applied.graph_update.status,
+            "applied_revision": applied.graph_update.applied_revision,
+            "watcher_ids": prepared_watcher_ids,
+            "requested_stop_ids": [item.stop_watcher_id for item in stop_requests],
+        },
+    )
+    try:
+        armed = await asyncio.to_thread(
+            commit_experiment_episode_handoff,
+            execution,
+            turn.request,
+            prepared,
+            binding,
+            native_session_id=applied.native_session_id,
+            execution_host=turn.execution_host,
+            stage_host=execution.stage_host,
+            stage_root=execution.stage_root,
+            graph_result=experiment_graph_result_summary(applied.graph_update),
+            context_baseline=prompt_context.episode_context_baseline,
+            stops=stop_requests,
+            ending_signal=ending_signal,
+        )
+    except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+        yield _sse(
+            AgentEvent(
+                event="error",
+                text=f"Experiment-loop watcher handoff failed: {exc}",
+            )
+        )
+        applied.stop = True
+        return
+    if graph_conditions:
+        execution.armed_graph_watchers = True
+    execution.store.record_agent_task_receipt(
+        root_id,
+        "watchers_armed",
+        {
+            "watcher_ids": [item.watcher_id for item in armed],
+            "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
+            "count": len(armed),
+            "correction_rounds": settled.watch_correction_rounds,
+        },
     )
 
 

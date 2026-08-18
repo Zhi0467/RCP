@@ -1276,7 +1276,7 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     assert repaired_episode.context_baseline == rejected_episode.context_baseline
 
 
-def test_experiment_apply_resolves_the_direct_child_binding_not_its_root(
+def test_experiment_apply_attributes_retry_patch_to_its_root(
     manifest,
     tmp_path: Path,
 ) -> None:
@@ -1305,25 +1305,15 @@ def test_experiment_apply_resolves_the_direct_child_binding_not_its_root(
         continuation="retry",
         parent_operation_id=root.operation_id,
     )
-    stored_child = store.agent_task(child.operation_id)
-    assert stored_child is not None and stored_child.dispatch_authority is not None
     real_resolver = service.history.agent_authority_resolver
     assert real_resolver is not None
     resolved_operations: list[str] = []
 
-    def mismatched_child_resolver(project: str, operation_id: str):
+    def root_resolver(project: str, operation_id: str):
         resolved_operations.append(operation_id)
-        resolved = real_resolver(project, operation_id)
-        if operation_id != child.operation_id:
-            return resolved
-        dispatch = resolved.dispatch_authority
-        assert dispatch is not None
-        mismatched_scope = dispatch.scope.model_copy(update={"run_truth_scope": ["repo-b"]})
-        return resolved.model_copy(
-            update={"dispatch_authority": dispatch.model_copy(update={"scope": mismatched_scope})}
-        )
+        return real_resolver(project, operation_id)
 
-    service.history.agent_authority_resolver = mismatched_child_resolver
+    service.history.agent_authority_resolver = root_resolver
     revision_before_apply = service.history.state().revision
     result, failure = _apply_work_patch(
         service,
@@ -1347,10 +1337,164 @@ def test_experiment_apply_resolves_the_direct_child_binding_not_its_root(
         control_decision_bundle=[],
     )
 
-    assert result is None
-    assert failure is not None and "run_truth_scope does not match" in failure.message
-    assert resolved_operations == [child.operation_id]
-    assert service.history.state().revision == revision_before_apply
+    assert failure is None
+    assert result is not None and result.status == "applied"
+    assert resolved_operations == [root.operation_id]
+    assert service.history.state().revision == revision_before_apply + 1
+    committed = service.history.load_patches()[-1]
+    assert committed.source_operation_id == root.operation_id
+
+
+@pytest.mark.asyncio
+async def test_experiment_retry_recovers_after_atomic_handoff_failure(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000097"
+    native_session_id = "provider-session-handoff-recovery"
+    request = _loop_request(
+        episode_id,
+        "chat-handoff-recovery",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    root = _execution(store, project_id, "loop-handoff-root", request)
+    patch_payload = {
+        "summary": "Recorded one bounded Experiment attempt.",
+        "ops": [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": _EXPERIMENT_ID,
+                        "changes": {
+                            "status": "running",
+                            "attempts": [
+                                {
+                                    "id": "handoff-recovery-attempt",
+                                    "sequence": 1,
+                                    "purpose": "Verify atomic watcher recovery.",
+                                    "attempt_kind": "external_run",
+                                    "decision_bundle": [],
+                                    "status": "running",
+                                    "job_refs": ["handoff-recovery-job"],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+        "repositories_read": [],
+        "change_summary": ["Recorded one bounded Experiment attempt."],
+    }
+    real_commit = store.commit_experiment_episode_handoff
+    injected = True
+
+    def fail_once(*args, **kwargs):
+        nonlocal injected
+        if injected:
+            injected = False
+            assert [item for item in service.history.load_patches() if item.source_operation_id]
+            assert store.watchers(project_id) == []
+            episode = store.experiment_episode(episode_id)
+            assert episode is not None and not episode.session_bound
+            raise ValueError("injected compound handoff failure")
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(store, "commit_experiment_episode_handoff", fail_once)
+    root_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=True)
+    root_launcher.patch_payload = patch_payload
+    root_events = await _events(
+        stream_work_run(
+            service,
+            root_launcher,
+            request,
+            data_dir,
+            execution=root,
+        )
+    )
+    assert any("injected compound handoff failure" in (event.text or "") for event in root_events)
+    assert root.stage_root is not None
+    stage = Path(root.stage_root)
+    patch_before = (stage / "patch.json").read_bytes()
+    watch_before = (stage / "watch.json").read_bytes()
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id=native_session_id,
+        stage_root=root.stage_root,
+    )
+    store.fail_agent_task(root.operation_id, "Injected compound handoff failure.")
+
+    retry_request = request.model_copy(update={"session_id": native_session_id})
+    retry = _execution(
+        store,
+        project_id,
+        "loop-handoff-retry",
+        retry_request,
+        continuation="retry",
+        stage_root=root.stage_root,
+        parent_operation_id=root.operation_id,
+    )
+    retry_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
+    retry_events = await _events(
+        stream_work_run(
+            service,
+            retry_launcher,
+            retry_request,
+            data_dir,
+            execution=retry,
+        )
+    )
+
+    assert not [event for event in retry_events if event.event == "error"]
+    assert retry_launcher.sessions == [native_session_id]
+    assert (stage / "patch.json").read_bytes() == patch_before
+    assert (stage / "watch.json").read_bytes() == watch_before
+    loop_patches = [
+        item
+        for item in service.history.load_patches()
+        if item.kind == "experiment_loop" and item.source_operation_id == root.operation_id
+    ]
+    assert len(loop_patches) == 1
+    watchers = store.watchers(project_id)
+    assert len(watchers) == 1
+    assert watchers[0].origin_operation_id == root.operation_id
+    episode = store.experiment_episode(episode_id)
+    assert episode is not None
+    assert episode.last_turn_operation_id == retry.operation_id
+    assert episode.native_session_id == native_session_id
+    prepared = [
+        item
+        for item in store.agent_task_receipts(root.operation_id)
+        if item.category == "experiment_loop_handoff_prepared"
+    ]
+    assert len(prepared) == 1
+    assert prepared[0].payload["patch_sha256"] == hashlib.sha256(patch_before).hexdigest()
+    assert prepared[0].payload["watch_sha256"] == hashlib.sha256(watch_before).hexdigest()
+    assert "watch_text" not in prepared[0].payload
+    retry_comparison = [
+        item
+        for item in store.agent_task_receipts(retry.operation_id)
+        if item.category == "retry_deliverable_comparison"
+        and item.payload.get("filename") == "watch.json"
+    ]
+    assert retry_comparison and retry_comparison[-1].payload["consumed"] is True
+    retry_prepared = [
+        item
+        for item in store.agent_task_receipts(retry.operation_id)
+        if item.category == "experiment_loop_handoff_prepared"
+    ]
+    assert len(retry_prepared) == 1
 
 
 def _store_task(
