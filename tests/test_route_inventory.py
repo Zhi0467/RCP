@@ -115,8 +115,8 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "answer_project_invitation": "src/rcp/api/app.py",
     "cached_project": "src/rcp/api/app.py",
     "cached_project_revision": "src/rcp/api/app.py",
-    "chat": "src/rcp/api/app.py",
-    "chats": "src/rcp/api/app.py",
+    "chat": "src/rcp/api/chats.py",
+    "chats": "src/rcp/api/chats.py",
     "check_watcher_now": "src/rcp/api/app.py",
     "clear_all_rebuildable_caches": "src/rcp/api/app.py",
     "clear_rebuildable_caches": "src/rcp/api/app.py",
@@ -161,7 +161,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "read_skill_package": "src/rcp/api/app.py",
     "reauthorize_episode": "src/rcp/api/app.py",
     "register_project": "src/rcp/api/app.py",
-    "remove_chat_attachment": "src/rcp/api/app.py",
+    "remove_chat_attachment": "src/rcp/api/chats.py",
     "repair_agent_task_graph_update": "src/rcp/api/app.py",
     "resolve_project_provider_path": "src/rcp/api/app.py",
     "result_views": "src/rcp/api/app.py",
@@ -185,7 +185,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "update_identity": "src/rcp/api/app.py",
     "update_project_settings": "src/rcp/api/app.py",
     "update_team_space": "src/rcp/api/app.py",
-    "upload_chat_attachment": "src/rcp/api/app.py",
+    "upload_chat_attachment": "src/rcp/api/chats.py",
 }
 
 

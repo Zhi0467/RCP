@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 from rcp.api.identity import IdentityAccess
+from rcp.attachments import ChatAttachmentStore
 from rcp.projects import ProjectCatalog
 from rcp.service import ProjectService
 from rcp.storage import AppStore
@@ -17,6 +18,7 @@ class ApiServices:
     store: AppStore
     catalog: ProjectCatalog
     identity_access: IdentityAccess
+    attachment_store: ChatAttachmentStore
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -38,6 +40,10 @@ def get_identity_access(request: Request) -> IdentityAccess:
     return _api_services(request).identity_access
 
 
+def get_attachment_store(request: Request) -> ChatAttachmentStore:
+    return _api_services(request).attachment_store
+
+
 def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
     try:
         return catalog.open(project_id)
@@ -45,6 +51,13 @@ def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectServ
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
+    try:
+        catalog.card(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
 
 
 def require_project_membership(project_id: str, request: Request) -> str:
@@ -60,9 +73,11 @@ def require_project_membership(project_id: str, request: Request) -> str:
 
 __all__ = [
     "ApiServices",
+    "get_attachment_store",
     "get_catalog",
     "get_identity_access",
     "get_project_service",
     "get_store",
+    "require_registered_project",
     "require_project_membership",
 ]

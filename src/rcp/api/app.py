@@ -11,19 +11,16 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Literal, cast
 from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
     Depends,
     FastAPI,
-    File,
-    Form,
     HTTPException,
     Query,
     Request,
-    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -34,6 +31,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.api.chats import router as chats_router
 from rcp.api.dependencies import (
     ApiServices,
     require_project_membership,
@@ -41,6 +39,7 @@ from rcp.api.dependencies import (
 from rcp.api.dependencies import (
     get_project_service as _project_service,
 )
+from rcp.api.dependencies import require_registered_project as _require_registered_project
 from rcp.api.episodes import (
     EpisodeMessageBody,
     EpisodeResponse,
@@ -61,7 +60,7 @@ from rcp.artifacts import (
     read_local_regular_file,
     validate_artifact_bytes,
 )
-from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload
+from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
     AgentTaskExecution,
     AgentTaskRequest,
@@ -95,8 +94,6 @@ from rcp.history import PatchRejected, ReplayHalted, RevisionConflict
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
-    CHAT_PAGE_DEFAULT_LIMIT,
-    CHAT_PAGE_MAX_LIMIT,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
@@ -159,8 +156,6 @@ from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_bo
 from rcp.runs.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
-    ChatSummaryPage,
-    ChatTranscript,
     CoachRequest,
     GraphSyncRequest,
     NodeEditConflict,
@@ -374,10 +369,12 @@ def create_app(
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+    attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
     services = ApiServices(
         store=store,
         catalog=catalog,
         identity_access=identity_access,
+        attachment_store=attachment_store,
     )
 
     def ensure_auto_research_graph_target(episode: EpisodeRecord) -> None:
@@ -610,7 +607,6 @@ def create_app(
         return payload
 
     setup = ProjectSetupManager(app_data, catalog, launcher)
-    attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
     default_record = (
         catalog.register(manifest_path, identity_action="adopted") if manifest_path else None
     )
@@ -2152,56 +2148,6 @@ def create_app(
         ).clear()
         return current_service.indexer.cache_metrics().model_dump(mode="json")
 
-    @projects_router.post(
-        "/api/projects/{project_id}/chats/{chat_id}/attachments",
-        response_model=ChatAttachmentUpload,
-    )
-    def upload_chat_attachment(
-        project_id: str,
-        chat_id: str,
-        file: Annotated[UploadFile, File()],
-        client_id: Annotated[str, Form()],
-        attachment_set_id: Annotated[str | None, Form()] = None,
-    ) -> ChatAttachmentUpload:
-        _require_registered_project(catalog, project_id)
-        try:
-            return attachment_store.add(
-                project_id=project_id,
-                chat_id=chat_id,
-                client_id=client_id,
-                filename=file.filename or "",
-                media_type=file.content_type,
-                source=file.file,
-                attachment_set_id=attachment_set_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        finally:
-            file.file.close()
-
-    @projects_router.delete(
-        "/api/projects/{project_id}/chats/{chat_id}/attachments/{attachment_id}",
-    )
-    def remove_chat_attachment(
-        project_id: str,
-        chat_id: str,
-        attachment_id: str,
-        client_id: str,
-        attachment_set_id: str,
-    ) -> dict[str, bool]:
-        _require_registered_project(catalog, project_id)
-        try:
-            attachment_store.remove(
-                project_id=project_id,
-                chat_id=chat_id,
-                client_id=client_id,
-                attachment_set_id=attachment_set_id,
-                attachment_id=attachment_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"removed": True}
-
     @projects_router.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
     def start_agent_task(
         project_id: str,
@@ -2567,36 +2513,6 @@ def create_app(
                     raise HTTPException(status_code=404, detail="Experiment episode not found")
             control = stop_bound_experiment_episode(project_id, episode)
         return control.model_dump(mode="json")
-
-    @projects_router.get(
-        "/api/projects/{project_id}/chats",
-        response_model=ChatSummaryPage,
-    )
-    def chats(
-        project_id: str,
-        offset: int = Query(default=0, ge=0),
-        limit: int = Query(
-            default=CHAT_PAGE_DEFAULT_LIMIT,
-            ge=1,
-            le=CHAT_PAGE_MAX_LIMIT,
-        ),
-    ) -> ChatSummaryPage:
-        service = _project_service(catalog, project_id)
-        return service.chat_summaries(offset=offset, limit=limit)
-
-    @projects_router.get(
-        "/api/projects/{project_id}/chats/{chat_id}",
-        response_model=ChatTranscript,
-    )
-    def chat(project_id: str, chat_id: str) -> ChatTranscript:
-        service = _project_service(catalog, project_id)
-        try:
-            transcript = service.chat_transcript(chat_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if transcript is None:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        return transcript
 
     @projects_router.get(
         "/api/projects/{project_id}/episodes",
@@ -3247,6 +3163,7 @@ def create_app(
         return {**package.catalog_entry(), "body": body}
 
     app.include_router(projects_router)
+    app.include_router(chats_router)
     app.include_router(paper_router)
 
     web_dist = web_dist_path()
@@ -3703,13 +3620,6 @@ def _require_auto_research_retry_target_ready(
     raise ValueError(
         f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
     )
-
-
-def _require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
-    try:
-        catalog.card(project_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Project not found") from exc
 
 
 def _admit_result_view_request(
