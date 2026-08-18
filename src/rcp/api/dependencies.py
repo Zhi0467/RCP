@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request
 
 from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore
+from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.service import ProjectService
 from rcp.storage import AppStore
@@ -21,6 +22,7 @@ class ApiServices:
     identity_access: IdentityAccess
     attachment_store: ChatAttachmentStore
     watcher_poller: WatcherPoller
+    result_view_keep_locks: KeyedLocks
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -48,6 +50,10 @@ def get_attachment_store(request: Request) -> ChatAttachmentStore:
 
 def get_watcher_poller(request: Request) -> WatcherPoller:
     return _api_services(request).watcher_poller
+
+
+def get_result_view_keep_locks(request: Request) -> KeyedLocks:
+    return _api_services(request).result_view_keep_locks
 
 
 def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
@@ -83,6 +89,7 @@ __all__ = [
     "get_catalog",
     "get_identity_access",
     "get_project_service",
+    "get_result_view_keep_locks",
     "get_store",
     "get_watcher_poller",
     "require_registered_project",
