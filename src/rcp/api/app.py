@@ -52,6 +52,7 @@ from rcp.api.episodes import (
 from rcp.api.history import router as history_router
 from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess, TrustedPrincipalResolver
 from rcp.api.paper import router as paper_router
+from rcp.api.watchers import router as watchers_router
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -184,7 +185,6 @@ from rcp.storage import (
     ResultViewRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
-    WatcherClaimConflict,
     normalize_space_name,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
@@ -367,12 +367,6 @@ def create_app(
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
-    services = ApiServices(
-        store=store,
-        catalog=catalog,
-        identity_access=identity_access,
-        attachment_store=attachment_store,
-    )
 
     def ensure_auto_research_graph_target(episode: EpisodeRecord) -> None:
         if (
@@ -1049,6 +1043,13 @@ def create_app(
         store,
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
+    )
+    services = ApiServices(
+        store=store,
+        catalog=catalog,
+        identity_access=identity_access,
+        attachment_store=attachment_store,
+        watcher_poller=watcher_poller,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -2318,43 +2319,6 @@ def create_app(
         _require_registered_project(catalog, project_id)
         return store.agent_usage_snapshot(project_id)
 
-    @projects_router.get("/api/projects/{project_id}/watchers")
-    def project_watchers(project_id: str) -> list[dict[str, object]]:
-        _require_registered_project(catalog, project_id)
-        return [record.model_dump(mode="json") for record in store.watchers(project_id)]
-
-    @projects_router.post("/api/projects/{project_id}/watchers/{watcher_id}/check")
-    def check_watcher_now(project_id: str, watcher_id: str) -> dict[str, object]:
-        _require_registered_project(catalog, project_id)
-        try:
-            watcher = watcher_poller.check_now(project_id, watcher_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Watcher not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return watcher.model_dump(mode="json")
-
-    @projects_router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
-    def stop_watcher(project_id: str, watcher_id: str) -> dict[str, object]:
-        _require_registered_project(catalog, project_id)
-        watcher = store.watcher(watcher_id)
-        if watcher is None or watcher.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Watcher not found")
-        if watcher.continuation.patch_kind == "experiment_loop":
-            raise HTTPException(
-                status_code=409,
-                detail="Use Stop loop to stop an Experiment loop and its watchers gracefully.",
-            )
-        try:
-            stopped = store.stop_watchers(project_id, [watcher_id])
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Watcher not found") from exc
-        except WatcherClaimConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return stopped[0].model_dump(mode="json")
-
     @projects_router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
     def stop_experiment_watchers(project_id: str, node_id: str) -> list[dict[str, object]]:
         """Reject the retired bulk watcher control in favor of graceful Stop loop."""
@@ -3128,6 +3092,7 @@ def create_app(
     app.include_router(chats_router)
     app.include_router(history_router)
     app.include_router(paper_router)
+    app.include_router(watchers_router)
 
     web_dist = web_dist_path()
     if web_dist.exists():

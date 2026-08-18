@@ -9,6 +9,7 @@ from rcp.attachments import ChatAttachmentStore
 from rcp.projects import ProjectCatalog
 from rcp.service import ProjectService
 from rcp.storage import AppStore
+from rcp.watchers import WatcherPoller
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,7 @@ class ApiServices:
     catalog: ProjectCatalog
     identity_access: IdentityAccess
     attachment_store: ChatAttachmentStore
+    watcher_poller: WatcherPoller
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -42,6 +44,10 @@ def get_identity_access(request: Request) -> IdentityAccess:
 
 def get_attachment_store(request: Request) -> ChatAttachmentStore:
     return _api_services(request).attachment_store
+
+
+def get_watcher_poller(request: Request) -> WatcherPoller:
+    return _api_services(request).watcher_poller
 
 
 def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
@@ -78,6 +84,7 @@ __all__ = [
     "get_identity_access",
     "get_project_service",
     "get_store",
+    "get_watcher_poller",
     "require_registered_project",
     "require_project_membership",
 ]
