@@ -34,7 +34,6 @@ from rcp.history import HistoryManager
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.paper import PaperService
 from rcp.runs import auto_research_mail as auto_research_mail_module
-from rcp.runs import auto_research_stream as auto_research_stream_module
 from rcp.runs.auto_research import (
     AutoResearchCommandDispatcher,
     AutoResearchCommandEffectResult,
@@ -49,7 +48,8 @@ from rcp.runs.auto_research_mail import (
     auto_research_mail_delivery,
     parse_auto_research_mail_delivery,
 )
-from rcp.runs.auto_research_stream import (
+from rcp.runs.tasks import auto_research_stream as auto_research_stream_module
+from rcp.runs.tasks.auto_research_stream import (
     _HANDOFFS_CLEARED_RECEIPT,
     _close_worker_mailbox,
     _orchestrator_final_source_effect_id,
@@ -2740,7 +2740,7 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
     service = _service(load_manifest(remote_manifest_path), tmp_path)
     _LocalBackedRemoteStage.base = tmp_path / "remote"
     monkeypatch.setattr(
-        "rcp.runs.auto_research_stream.RemoteRunStage",
+        "rcp.runs.tasks.auto_research_stream.RemoteRunStage",
         _LocalBackedRemoteStage,
     )
     store, _auto_research, _root, worker = _setup_auto_research(
@@ -2813,7 +2813,7 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
         return _stage_command_mailbox(**kwargs)
 
     monkeypatch.setattr(
-        "rcp.runs.auto_research_stream.stage_command_mailbox",
+        "rcp.runs.tasks.auto_research_stream.stage_command_mailbox",
         capture_mailbox,
     )
 

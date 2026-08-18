@@ -27,7 +27,7 @@ from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
 from rcp.runs.auto_research import AutoResearchCommandDispatcher, AutoResearchRunRequest
-from rcp.runs.auto_research_stream import stream_auto_research_worker_run
+from rcp.runs.tasks.auto_research_stream import stream_auto_research_worker_run
 from rcp.service import ProjectService, ProposalDecisionRequest
 from rcp.storage import AppStore
 
