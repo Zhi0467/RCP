@@ -7,11 +7,11 @@
   Experiment-loop recovery are committed. Phase 5's paper, chat, history,
   generic-watcher, result-view, Sync, task, Experiment, episode, team, index,
   project-state, and health routers are committed; `api/app.py` has no route
-  body remaining, so Phase 5 is complete. Phase 6's result-view and Experiment
-  watcher-maintenance and Auto-research child-Work task owners, plus the
+  body remaining, so Phase 5 is complete. Phase 6's result-view, Experiment
+  watcher-maintenance, Auto-research child-Work, and Experiment-loop task owners, plus the
   byte-identical Work, Discuss, paper-Coach, Seed/Refresh Graph, branch-merge,
   episode-report, and Auto-research stream package rehomes are committed and
-  verified; the remaining detailed Phases 6–7 work remains the work order.
+  verified, so Phase 6 is complete. Phase 7 remains the work order.
 - **Originally confirmed:** 2026-08-18. **Phases 0–4 re-review opened and
   closed:** 2026-08-18. **Phases 5–7 re-review closed:** 2026-08-19.
 - **Every grouping in this document was checked against the code**, not inferred
@@ -74,7 +74,9 @@ does not silently amend it.
 | 2026-08-19 | 6 / child cut | A leaf-only move of the fourteen Auto-research child definitions is not a valid checkpoint: the still-embedded staging, prompt, apply/finalize, stream, mailbox, watcher-discard, transcript, and saved-session branches would force `tasks/work.py` to import the child owner, creating the reverse edge the package rehome exists to prevent. The first semantic child checkpoint therefore owns the explicit child entry point and all child-only branches together, even though it is larger than an ordinary file move. App composition selects it from the durable `auto_research_child_work_for_operation(operation_id)` route before ordinary Work; a present route must fail through the child path and may never silently fall back to `stream_work_run`. | Settled dependency direction from the post-rehome call graph; preserve the exact claimed delivery operation, native session/stage, Patch-only graph channel, child reply command, watcher discard, and message-wake transcript behavior. |
 | 2026-08-19 | 6 / child owner | `runs/tasks/auto_research_child_work.py` now owns the fourteen child mail/contract/reply/mailbox definitions and the complete child staging, fresh/Resume/Retry/message-wake prompt, Patch settlement, graph-repair delegation, exact-session launch, watcher rejection/discard, transcript, and finalization path behind `stream_auto_research_child_work_run`. App composition resolves the durable child route before ordinary Work; a real dispatch regression proves an exception from that entry fails the task without invoking `stream_work_run`. The child owner imports only explicit Work mechanics in one direction; `tasks/work.py` has no child lookup or reverse import. Shared Experiment watcher maintenance still receives an empty admitted-resource set so its unchanged-survivor receipts and permission-denied diagnostics remain exact. The explicit split grows the two production owners from the former 4,518-line Work file to 3,802 plus 1,370 lines; that duplication is the confirmed cost of keeping policy explicit without a mode selector. A read-only review found one post-staging prompt-failure mailbox leak; the entry now closes the validator lifecycle on every pre-launch exception, with a focused regression. | Committed as `32bcda8`; 68 focused child/Work/chat/retry/Experiment tests, a 226-test API/background/Auto-research/task-policy/validator set, two final full backend runs, Ruff, exact-new-file hooks, and all-files hooks are green. |
 | 2026-08-19 | 6 / Experiment cut | Experiment task dispatch is determined only by the persisted reconstructed request with `mode="work"` and `patch_kind="experiment_loop"`; app composition selects `stream_experiment_loop_task` before ordinary Work, and the specialized entry point never falls back. Like the child cut, the first valid checkpoint must own prompt context/contracts, Patch/watch read and correction ordering, watcher settlement, Apply/handoff, Experiment repair, and exact continuation-session policy together; moving only `_apply_experiment_loop_turn` would leave policy selection in Work and create the wrong dependency direction. The retained initial Patch is deliberately not ordinarily applied before watch validation: the Experiment owner rereads the final Patch and commits the exact Patch/watcher/session/episode handoff. | Settled from the post-rehome call graph; preserve root-versus-repair Patch attribution, one-correction watcher limit, retained Patch text, saved native session/stage, atomic handoff, and fail-loud dispatch. |
+| 2026-08-19 | 6 / Experiment owner | `runs/tasks/experiment_loop.py` now owns one complete admitted invocation behind `stream_experiment_loop_task`: local/remote staging, fresh/Resume/Retry/watcher-wake contracts, exact continuation-session pinning, retained initial Patch, one watcher-correction round, bounded Patch correction, final Patch reread and Apply, Experiment graph repair, and the atomic watcher/session/episode handoff. App dispatch remains durable child route → Experiment request → ordinary Work, and a real failure regression proves there is no Work fallback. Normal Patch attribution stays at the invocation root while graph repair stays attributed to its repair task; repair updates the existing binding and retains the prior watcher set rather than inventing a second handoff. `tasks/work.py` imports no specialized owner. A Luna-max read-only review found the first split still forwarded `patch_kind` and Experiment control arguments through nominally shared validator/apply plumbing; both owners now hardcode their own Patch kind, the shared event leaf accepts an already-started validator lifecycle, child/Auto-research callers no longer forward dead policy, and loop settlement fields live only in the Experiment owner. The final owners are 2,709 Work lines and 2,437 Experiment lines, a net 1,344 production-line increase over the pre-cut 3,802-line Work owner; the duplication is the explicit cost of distinct prompt, watcher, Apply, repair, and handoff algorithms without a mode selector. | Committed as `ffe7c5c`; focused Experiment/Work/child/Auto-research/API/validator/recovery suites, two successful full backend runs, Ruff, exact-file hooks, and all-files hooks are green. One intervening full run observed a watcher-status race; the exact test and the confirmation full run passed without a code change. |
 | 2026-08-19 | 7 / report sequence | The common episode-report coordinator cannot move cleanly before the neutral engine exposes `launch_admitted(operation_id)`. The current durable wrap-up admission already creates the hidden report task, but `BackgroundAgentTasks.start` rejects `episode_report` and `start_episode_report` still requires private `_workers`, `_controls_lock`, `_require_operation`, and `_spawn_record`; extracting it first would only hide the coupling in a wrapper. Implement the engine launch boundary first, then move `episode_wrapup.py` plus report launch/restart into `runs/episodes/wrapup.py` and invoke startup restart through episode reconciliation. The live pre-Phase-7 file is 4,238 lines and the 70-method class spans 3,928 lines; the earlier 3,916-line figure remains a re-review-baseline measurement, not current size. | Read-only implementation preflight; no production change. This sequencing avoids a private-engine compatibility layer and preserves the handoff's explicit owner boundary. |
+| 2026-08-19 | 7 / launch preflight | `AgentTaskRecord` already persists the request, parent/episode, native session/stage, graph target, write-scope fingerprint, human authorizer, resolved dispatch authority, attempt, and lifecycle state. The one missing admission-time launch datum is the continuation cause: most paths write it only in `operation_created` immediately before thread start, so a crash after task insertion loses it; only Experiment recovery currently writes an atomic `operation_created` receipt with `admission_committed=true`. Do not add a `graph_runs` column or duplicate the row's JSON. First generalize the transactional helper to insert a distinct `operation_admitted` summary receipt with kind, attempt, exact parent id, continuation cause, and `admission_committed=true` in every task-admission transaction, while retaining the old Experiment receipt as a reader fallback and leaving `operation_created` as the post-admission dispatch/event receipt. Then add `launch_admitted(operation_id)` as a separate engine slice that reloads and validates the row, intent, parent, authority, session/stage, episode/target, and dispatch-attempt proof before calling `_spawn_record`; it never calls `_create_and_spawn`. Tighten `_validated_spawn_record` in both parent-presence directions. Missing or malformed intent and an unknown prior dispatch attempt fail before a worker or new receipt; a proven pre-start failure remains retryable. Constructor side effects/startup ordering are a later slice. | Read-only Luna-max preflight; no production change. This corrects the earlier implication that exact launch intent is already universal. The first implementation unit is the storage admission contract, followed by the `background.py` engine method; startup reconciliation and episode extraction stay separate. |
 
 ## Phases 0–4 re-review ledger
 
@@ -301,7 +303,7 @@ authoritative over stale measurements and mechanisms later in the document.
     request, parent, authority, and continuation cause, validates them, and owns
     the in-process dispatch claim and worker start. Episode modules never pass a
     reconstructed request, parent record, or continuation enum across this
-    boundary. Every episode admission persists its exact launch intent in the
+    boundary. Phase 7 makes every episode admission persist its exact launch intent in the
     same transaction as the task so normal launch and crash recovery call the
     same operation.
 12. **`launch_admitted` is idempotent but never reconstructive.** A missing id
@@ -327,11 +329,11 @@ authoritative over stale measurements and mechanisms later in the document.
 
 ### Remaining implementation bookkeeping — not open design
 
-No design decision remains before implementation. Phase 6 still requires an
-exact per-move definition/call ledger, and Phase 7 still requires a branch-level
-ledger when a mixed engine method loses its surface-specific branch. Those are
-review artifacts for applying the settled ownership rules below, not permission
-to choose new modules, profiles, registries, callbacks, or context frameworks.
+No design decision remains before implementation. Phase 6 is complete. Phase 7
+still requires a branch-level ledger when a mixed engine method loses its
+surface-specific branch. That is a review artifact for applying the settled
+ownership rules below, not permission to choose new modules, profiles,
+registries, callbacks, or context frameworks.
 
 ## What this is
 
@@ -1305,6 +1307,43 @@ The Experiment task owner receives `_apply_experiment_loop_turn` and
 `_prepare_work_patch_candidate`, `_apply_work_patch`, and `stream_work_run`.
 The ordinary implementations remain explicit; no extracted helper takes
 `patch_kind` to choose between them.
+
+#### Implemented Experiment-loop task-owner ledger
+
+The final specialized owner has 28 module-level class/function definitions in
+2,437 lines; ordinary `tasks/work.py` has 57 definitions in 2,709 lines. Twenty-one
+private names intentionally exist in both files because they implement different
+policies with the same phase role: staging, prompt composition, Patch/watch read
+and settlement, correction, repair, validation, and Apply. They are not routed
+through a shared discriminator. The Experiment owner imports 24 explicit neutral
+Work mechanics and state records in one direction; Work imports no specialized
+task owner.
+
+The invocation order is preserved exactly:
+
+1. resolve the persisted Work-shaped Experiment request and exact execution
+   machine;
+2. attach or create the conversation stage, start the Experiment validator,
+   clear stale handoffs when allowed, and stage skill/attachment inputs;
+3. stage the Experiment episode context and choose the explicit fresh, Resume,
+   Retry/provider-switch, or watcher-wake contract;
+4. launch with the exact required saved session for checkpoint continuations;
+5. retain the initial Patch without applying it, then read, validate, and at
+   most once correct `watch.json`;
+6. reread the final Patch, run bounded same-session Patch correction if needed,
+   and apply it with invocation-root attribution except for a manual graph
+   repair;
+7. prepare watcher rows, record the bounded handoff receipt, then atomically
+   commit watcher changes plus episode/session binding and any semantic ending;
+8. append the answer/transcript result and emit the final graph result.
+
+The review correction removed the last hidden selector seam. Ordinary Work
+validator/apply helpers now construct only `kind="work"` Patches; the Experiment
+owner constructs only `kind="experiment_loop"` Patches and owns the control
+metadata and completion check. `_stream_work_agent_events` receives the exact
+already-started validator lifecycle and therefore has no Patch kind or control
+arguments. The child-Work mailbox and Auto-research stream callers were updated
+to the narrower ordinary-Work API rather than keeping compatibility arguments.
 
 Before each move, record the moved definitions' inbound callers and outbound
 internal calls in the commit description. That ledger determines the small set
