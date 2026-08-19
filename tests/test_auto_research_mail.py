@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+import rcp.api.app as api_app_module
+import rcp.runs.tasks.auto_research_child_work as child_work_module
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
@@ -28,7 +30,11 @@ from rcp.runs.auto_research_mail import (
     stage_auto_research_mail_delivery,
 )
 from rcp.runs.experiment_loop import experiment_watcher_output_name
-from rcp.runs.tasks.work import _stage_auto_research_child_work_mail, stream_work_run
+from rcp.runs.tasks.auto_research_child_work import (
+    _stage_auto_research_child_work_mail,
+    stream_auto_research_child_work_run,
+)
+from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -53,6 +59,133 @@ from .helpers import (
 from .test_api import ScriptedLauncher, _experiment_fixture_patch
 
 _RUN_TRUTH_SCOPE = ["repo-a"]
+
+
+@pytest.mark.asyncio
+async def test_child_prelaunch_failure_closes_validator_lifecycle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    closed_with: list[BaseException | None] = []
+
+    class Lifecycle:
+        async def close(self, *, primary_error=None):
+            closed_with.append(primary_error)
+
+    turn = SimpleNamespace(validator_lifecycle=Lifecycle())
+
+    async def stage(*_args, **_kwargs):
+        return turn, object(), None
+
+    def fail_prompt(*_args, **_kwargs):
+        raise ValueError("child prompt failed")
+
+    monkeypatch.setattr(child_work_module, "_resolve_work_execution", lambda *_args: object())
+    monkeypatch.setattr(child_work_module, "_stage_auto_research_child_work_turn", stage)
+    monkeypatch.setattr(child_work_module, "_compose_child_prompt", fail_prompt)
+
+    frames = [
+        frame
+        async for frame in child_work_module.stream_auto_research_child_work_run(
+            object(),
+            object(),
+            object(),
+            tmp_path,
+            SimpleNamespace(continuation="fresh"),
+            route=object(),
+        )
+    ]
+
+    assert "child prompt failed" in "".join(frames)
+    assert len(closed_with) == 1
+    assert isinstance(closed_with[0], ValueError)
+
+
+def test_api_dispatches_routed_child_work_without_falling_back_to_ordinary_work(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    owner = store.local_owner
+    assert owner is not None
+    authorizer = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=owner.user_id,
+        display_name=owner.display_name,
+    )
+    child_calls: list[str] = []
+    ordinary_calls: list[str] = []
+
+    async def fake_auto_research(*_args, **_kwargs):
+        yield 'data: {"event":"session","session_id":"root-session"}\n\n'
+        yield 'data: {"event":"done"}\n\n'
+
+    async def child_entry(_service, _launcher, _request, _data_dir, execution, *, route):
+        child_calls.append(route.worker_id)
+        assert execution.operation_id == route.current_operation_id
+        if False:
+            yield ""
+        raise RuntimeError("child entry failed")
+
+    async def ordinary_entry(_service, _launcher, _request, _data_dir, execution):
+        ordinary_calls.append(execution.operation_id)
+        if False:
+            yield ""
+        raise AssertionError("routed child fell back to ordinary Work")
+
+    monkeypatch.setattr(api_app_module, "stream_auto_research_orchestrator_run", fake_auto_research)
+    monkeypatch.setattr(api_app_module, "stream_auto_research_child_work_run", child_entry)
+    monkeypatch.setattr(api_app_module, "stream_work_run", ordinary_entry)
+
+    episode, root = app.state.background_tasks.start_auto_research(
+        project_id,
+        AutoResearchStartRequest(
+            invocation_ceiling=5,
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=_RUN_TRUTH_SCOPE,
+        ),
+        authorized_by=authorizer,
+        graph_base_head=service.history.head_ref(),
+        ensure_graph_target=lambda episode: api_app_module._ensure_auto_research_graph_target(
+            episode,
+            catalog=app.state.catalog,
+        ),
+        episode_id="00000000-0000-4000-8000-0000000004a0",
+        operation_id="00000000-0000-4000-8000-0000000004a1",
+    )
+    root = wait_for_task(store, root.operation_id, expect="succeeded")
+    worker_id = "00000000-0000-4000-8000-0000000004a2"
+    instruction = "Inspect the focused hypothesis and report the bounded evidence."
+    child = app.state.background_tasks.start_auto_research_child_work(
+        episode.episode_id,
+        RunRequest(
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=_RUN_TRUTH_SCOPE,
+            chat_scope="node",
+            node_id="hyp/replanning-restores-plasticity",
+            chat_id=worker_id,
+            message=instruction,
+            mode="work",
+            trigger="orchestrator",
+            patch_kind="work",
+        ),
+        admitted_by_operation_id=root.operation_id,
+        worker_id=worker_id,
+        instruction=instruction,
+        instruction_sha256=hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+    )
+    child = wait_for_task(store, child.operation_id, expect="failed")
+
+    assert child_calls == [worker_id]
+    assert ordinary_calls == []
+    assert child.error is not None and "child entry failed" in child.error
 
 
 class _SessionSequenceLauncher(ScriptedLauncher):
@@ -508,12 +641,16 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
             yield 'data: {"event":"session","session_id":"root-session"}\n\n'
             yield 'data: {"event":"done"}\n\n'
             return
-        async for frame in stream_work_run(
+        route = store.auto_research_child_work_for_operation(execution.operation_id)
+        run = stream_auto_research_child_work_run if route is not None else stream_work_run
+        kwargs = {"route": route} if route is not None else {}
+        async for frame in run(
             service,
             launcher,
             request,
             tmp_path / "data",
             execution=execution,
+            **kwargs,
         ):
             yield frame
 
@@ -775,12 +912,16 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
             yield 'data: {"event":"session","session_id":"root-session"}\n\n'
             yield 'data: {"event":"done"}\n\n'
             return
-        async for frame in stream_work_run(
+        route = store.auto_research_child_work_for_operation(execution.operation_id)
+        run = stream_auto_research_child_work_run if route is not None else stream_work_run
+        kwargs = {"route": route} if route is not None else {}
+        async for frame in run(
             service,
             launcher,
             request,
             tmp_path / "data",
             execution=execution,
+            **kwargs,
         ):
             yield frame
 

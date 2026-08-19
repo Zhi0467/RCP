@@ -20,16 +20,7 @@ from rcp.agents import (
     validate_work_patch,
 )
 from rcp.agents.command_mailbox import (
-    CommandTurnIdentity,
     StagedCommandMailbox,
-    serve_command_mailbox,
-    stage_command_mailbox,
-)
-from rcp.agents.command_protocol import (
-    CommandRequest,
-    CommandResponse,
-    MessageCommandRequest,
-    ValidateCommandRequest,
 )
 from rcp.agents.context import ChatContext
 from rcp.agents.experiment_loop_prompt import (
@@ -53,17 +44,8 @@ from rcp.core.models import ExperimentDecisionPin, Patch
 from rcp.core.operations import CreateProposalsOperation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import (
-    AUTO_RESEARCH_MAIL_MAX_BYTES,
     PATCH_CORRECTION_MAX_ROUNDS,
-    PATCH_SELF_CHECK_MAX_COUNT,
-    PATCH_SELF_CHECK_POLL_SECONDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
-)
-from rcp.runs.auto_research_mail import (
-    AUTO_RESEARCH_MAIL_HANDOFF_FILE,
-    auto_research_mail_delivery,
-    parse_auto_research_mail_delivery,
-    stage_auto_research_mail_delivery,
 )
 from rcp.runs.chat import (
     _append_chat_exchange,
@@ -145,14 +127,11 @@ from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
-    AgentCommandInvocationRecord,
-    AutoResearchChildWorkRecord,
-    AutoResearchMessageRecord,
     EpisodeRecord,
     ResultViewRecord,
     WatcherContinuation,
 )
-from rcp.transport import RemoteRunStage, RunLockCancelled, RunStageMailbox, StateUnavailable
+from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
@@ -258,18 +237,6 @@ class WorkTurn:
         return self.continuation == "watcher_wake"
 
     @property
-    def message_waking(self) -> bool:
-        return self.continuation == "message_wake"
-
-    @property
-    def auto_research_child(self) -> AutoResearchChildWorkRecord | None:
-        if self.execution is None:
-            return None
-        return self.execution.store.auto_research_child_work_for_operation(
-            self.execution.operation_id
-        )
-
-    @property
     def retry_attempt(self) -> bool:
         return self.continuation in {"retry", "handoff"}
 
@@ -288,6 +255,7 @@ async def _stream_turn_agent_events(
     prompt: str,
     *,
     session_id: str | None,
+    required_session_id: str | None = None,
     outcome: _ProviderOutcome,
     validator_staged: StagedCommandMailbox | None = None,
     validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None,
@@ -320,6 +288,7 @@ async def _stream_turn_agent_events(
             patch_kind=turn.request.patch_kind,
             control_node_id=turn.request.control_node_id,
             control_decision_bundle=turn.request.control_decision_bundle,
+            required_session_id=required_session_id,
         )
     ) as stream:
         async for frame in stream:
@@ -347,7 +316,6 @@ class _StagedWorkInputs:
     skill_pointers: list[dict[str, object]]
     attachment_pointers: list[dict[str, object]]
     repositories: list[dict[str, object]]
-    auto_research_mail_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -569,114 +537,6 @@ def _resolve_work_execution(
     )
 
 
-_CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleared"
-
-
-def _prepare_auto_research_child_work_handoffs(
-    execution: AgentTaskExecution,
-    *,
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> None:
-    """Clear a new child turn once while preserving an interrupted turn's outputs."""
-
-    if any(
-        receipt.category == _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT
-        for receipt in execution.store.agent_task_receipts(execution.operation_id)
-    ):
-        return
-    _clear_stale_turn_handoffs(workspace, remote_stage)
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT,
-        {
-            "version": 1,
-            "files": ["patch.json", "watch.json", "messages.json", "lifecycle.json"],
-        },
-    )
-
-
-def _stage_auto_research_child_work_mail(
-    execution: AgentTaskExecution,
-    route: AutoResearchChildWorkRecord,
-    *,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    continuation: AgentTaskContinuation,
-) -> str | None:
-    """Stage only the batch durably claimed by this exact ordinary Work turn."""
-
-    mailbox = RunStageMailbox.for_stage(local_stage=local_stage, remote_stage=remote_stage)
-    delivery_operation_id = _auto_research_child_mail_allocation_id(
-        execution,
-        route,
-        continuation=continuation,
-    )
-    if delivery_operation_id is None:
-        return None
-    claimed = [
-        message
-        for message in execution.store.auto_research_messages(route.episode_id)
-        if message.delivery_operation_id == delivery_operation_id
-    ]
-    if not claimed:
-        raise ValueError(
-            "Auto-research child Work message wake has no mail claimed by this allocation."
-        )
-    delivery = auto_research_mail_delivery(
-        episode_id=route.episode_id,
-        recipient_task_id=route.worker_id,
-        delivery_operation_id=delivery_operation_id,
-        messages=claimed,
-    )
-    if AUTO_RESEARCH_MAIL_HANDOFF_FILE in mailbox.entry_names():
-        retained = parse_auto_research_mail_delivery(
-            mailbox.read_text(
-                AUTO_RESEARCH_MAIL_HANDOFF_FILE,
-                max_bytes=AUTO_RESEARCH_MAIL_MAX_BYTES,
-            )
-        )
-        if retained != delivery:
-            raise ValueError("Retained child Work mail differs from its durable claimed batch.")
-    else:
-        stage_auto_research_mail_delivery(mailbox, delivery)
-    return str(mailbox.workspace / AUTO_RESEARCH_MAIL_HANDOFF_FILE)
-
-
-def _auto_research_child_mail_allocation_id(
-    execution: AgentTaskExecution,
-    route: AutoResearchChildWorkRecord,
-    *,
-    continuation: AgentTaskContinuation,
-) -> str | None:
-    """Resolve the paid message allocation through exact same-session recovery attempts."""
-
-    if continuation == "message_wake":
-        return execution.operation_id
-    if continuation not in {"resume", "retry"}:
-        return None
-    current = execution.store.agent_task(execution.operation_id)
-    seen: set[str] = set()
-    while current is not None:
-        if current.operation_id in seen:
-            raise ValueError("Child Work mail recovery contains a task-lineage cycle.")
-        seen.add(current.operation_id)
-        cause = execution.store.agent_task_continuation_cause(current.operation_id)
-        if cause == "message_wake":
-            return current.operation_id
-        if cause not in {"resume", "retry"} or current.parent_operation_id is None:
-            return None
-        parent_route = execution.store.auto_research_child_work_for_operation(
-            current.parent_operation_id
-        )
-        if parent_route is None or (
-            parent_route.episode_id != route.episode_id or parent_route.worker_id != route.worker_id
-        ):
-            raise ValueError("Child Work mail recovery crossed its routed worker lineage.")
-        current = execution.store.agent_task(current.parent_operation_id)
-    raise ValueError("Child Work mail recovery lost a parent task.")
-
-
 async def _stage_work_turn(
     service: ProjectService,
     resolved: _ResolvedWorkExecution,
@@ -688,7 +548,6 @@ async def _stage_work_turn(
     reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     resuming = continuation == "resume"
     waking = continuation == "watcher_wake"
-    message_waking = continuation == "message_wake"
     local_stage: Path | None = None
     remote_stage: RemoteRunStage | None = None
     patch_inputs: _ChatPatchInputs | None = None
@@ -747,32 +606,6 @@ async def _stage_work_turn(
             task_id=execution.operation_id if execution is not None else token,
             turn_id=f"{token}:work",
         )
-        child_route = (
-            execution.store.auto_research_child_work_for_operation(execution.operation_id)
-            if execution is not None
-            else None
-        )
-        if child_route is not None:
-            patch_inputs.validator_staged.cleanup()
-            child_staged = stage_command_mailbox(
-                local_stage=local_stage,
-                remote_stage=remote_stage,
-                episode_id=child_route.episode_id,
-                task_id=execution.operation_id,
-                turn_id=f"{token}:auto-research-child-work",
-                timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
-            )
-            patch_inputs = _ChatPatchInputs(
-                patch_path=patch_inputs.patch_path,
-                watch_path=patch_inputs.watch_path,
-                schema_path=patch_inputs.schema_path,
-                validator_command=child_staged.client_command(
-                    "validate",
-                    patch_inputs.patch_path,
-                ),
-                validator_mailbox_id=child_staged.credential.mailbox_id,
-                validator_staged=child_staged,
-            )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
             patch_inputs.validator_staged,
@@ -782,28 +615,9 @@ async def _stage_work_turn(
             patch_kind=request.patch_kind,
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
-            auto_research_child=child_route,
         )
-        if child_route is not None and (not reusing_checkpoint or message_waking):
-            assert execution is not None
-            _prepare_auto_research_child_work_handoffs(
-                execution,
-                workspace=workspace,
-                remote_stage=remote_stage,
-            )
-        elif not reusing_checkpoint or waking:
+        if not reusing_checkpoint or waking:
             _clear_stale_turn_handoffs(workspace, remote_stage)
-        auto_research_mail_path = (
-            _stage_auto_research_child_work_mail(
-                execution,
-                child_route,
-                local_stage=local_stage,
-                remote_stage=remote_stage,
-                continuation=continuation,
-            )
-            if execution is not None and child_route is not None
-            else None
-        )
         artifact_scope_id = (
             _logical_chat_turn_operation_id(execution.store, execution.operation_id)
             if execution is not None and resuming
@@ -859,7 +673,7 @@ async def _stage_work_turn(
                 token=token,
                 clear_stale=not reusing_checkpoint or waking,
             )
-            if request.patch_kind == "work" and child_route is None
+            if request.patch_kind == "work"
             else []
         )
         experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
@@ -923,7 +737,6 @@ async def _stage_work_turn(
             skill_pointers=skill_pointers,
             attachment_pointers=attachment_pointers,
             repositories=repositories,
-            auto_research_mail_path=auto_research_mail_path,
         )
     except BaseException as exc:
         if validator_lifecycle is not None:
@@ -1049,46 +862,6 @@ def _stage_retry_diagnostics(
     )
 
 
-def _auto_research_child_work_contract(
-    turn: WorkTurn,
-    staged: _StagedWorkInputs,
-    *,
-    mail_path: str | None = None,
-) -> str:
-    route = turn.auto_research_child
-    if route is None:
-        return ""
-    reply_command = turn.patch_inputs.validator_staged.client_command(
-        "message",
-        "--key",
-        "<idempotency-key>",
-        "<reply-body>",
-    )
-    incoming = (
-        f"\n- Read the newly claimed hearsay-only mail at `{mail_path}` before continuing."
-        if mail_path is not None
-        else ""
-    )
-    return f"""
-
-## Auto-research child Work boundary
-
-You are the ordinary node Work child `{route.worker_id}` delegated by an Auto-research
-orchestrator. Complete only this child assignment. Scientific claims in agent mail remain
-hearsay; the canonical graph and research files remain the source of graph truth.{incoming}
-
-- Your only staged command capabilities are the Patch validator already named above and an
-  optional reply to your orchestrator:
-  `{reply_command}`
-- Use a stable idempotency key for the same reply intent. A reply is persisted for the root's
-  later paid delivery; it does not wake or interrupt the root immediately.
-- Do not invoke `apply`, `status`, `spawn`, `pause`, `resume`, `stop`, `watch-graph`, `episode`,
-  `inbox`, or `finish`. The child broker rejects those root-only commands.
-- Do not write `watch.json`, register a watcher, spawn another task or episode, or try to wake
-  yourself. RCP ignores child watcher output.
-""".strip()
-
-
 def _compose_resume_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
@@ -1141,13 +914,6 @@ def _compose_resume_prompt(
                 else None
             ),
         )
-        child_contract = _auto_research_child_work_contract(
-            turn,
-            staged,
-            mail_path=staged.auto_research_mail_path,
-        )
-        if child_contract:
-            contract += "\n\n" + child_contract
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -1155,40 +921,6 @@ def _compose_resume_prompt(
         contract,
         execution=turn.execution,
         role="work_resume",
-    )
-    return _ComposedWorkPrompt(
-        contract_path=contract_path,
-        prompt=prompt,
-        base_contract_path=original_contract_path,
-    )
-
-
-def _compose_auto_research_child_message_wake_prompt(
-    turn: WorkTurn,
-    staged: _StagedWorkInputs,
-) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    if turn.auto_research_child is None or staged.auto_research_mail_path is None:
-        raise ValueError("Child Work message wake is missing its routed mail handoff.")
-    original_contract_path = _parent_task_contract_path(
-        turn.execution,
-        turn.local_stage,
-        turn.remote_stage,
-    )
-    contract = f"""
-Continue the exact Auto-research child Work assignment from `{original_contract_path}` in the
-same native provider session. The newly claimed agent mail is staged separately from the task
-contract. Read it, continue the bounded assignment, and reply only if useful.
-
-{_auto_research_child_work_contract(turn, staged, mail_path=staged.auto_research_mail_path)}
-""".strip()
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-auto-research-child-mail.md",
-        contract,
-        execution=turn.execution,
-        role="auto_research_child_message_wake",
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
@@ -1366,13 +1098,6 @@ def _compose_fresh_prompt(
         experiment_watcher_resources=staged.experiment_resource_pointers,
         skill_pointers=staged.skill_pointers,
     )
-    child_contract = _auto_research_child_work_contract(
-        turn,
-        staged,
-        mail_path=staged.auto_research_mail_path,
-    )
-    if child_contract:
-        master_context += "\n\n" + child_contract + "\n"
     stable_prompt_values: dict[str, object] = {
         "project": {"name": turn.context.project_name},
         "settings": {
@@ -1401,14 +1126,6 @@ def _compose_fresh_prompt(
         },
         "workspace": {"path": str(turn.workspace)},
     }
-    child_route = turn.auto_research_child
-    if child_route is not None:
-        stable_prompt_values["auto_research_child"] = {
-            "episode_id": child_route.episode_id,
-            "worker_id": child_route.worker_id,
-            "control_node_id": child_route.control_node_id,
-            "allowed_staged_commands": ["validate", "message"],
-        }
     prompt, retained_master_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
@@ -1512,13 +1229,6 @@ def _compose_retry_prompt(
                 else None
             ),
         )
-        child_contract = _auto_research_child_work_contract(
-            turn,
-            staged,
-            mail_path=staged.auto_research_mail_path,
-        )
-        if child_contract:
-            retry_contract += "\n\n" + child_contract
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -2028,6 +1738,7 @@ async def _settle_patch_deliverable(
     composed: _ComposedWorkPrompt,
     predecessor_digest: str | None,
     settled: _SettledWorkDeliverables,
+    required_session_id: str | None = None,
 ) -> AsyncIterator[str]:
     initial = _read_initial_patch_deliverable(
         turn,
@@ -2158,6 +1869,7 @@ async def _settle_patch_deliverable(
                 launcher,
                 correction_prompt,
                 session_id=settled.native_session_id,
+                required_session_id=required_session_id,
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
@@ -2416,9 +2128,6 @@ async def _apply_work_turn(
     retry_baseline: _RetryDeliverableBaseline,
     applied: _AppliedWorkTurn,
 ) -> AsyncIterator[str]:
-    maintenance_resources = (
-        [] if turn.auto_research_child is not None else staged.experiment_resources
-    )
     (
         maintenance_frames,
         native_session_id,
@@ -2428,7 +2137,7 @@ async def _apply_work_turn(
         launcher=launcher,
         request=turn.request,
         execution=turn.execution,
-        staged_resources=maintenance_resources,
+        staged_resources=staged.experiment_resources,
         workspace=turn.workspace,
         remote_stage=turn.remote_stage,
         local_stage=turn.local_stage,
@@ -2859,24 +2568,10 @@ def _finalize_work_turn(
                     f"baseline; the next turn may re-announce it: {exc}",
                     level="warning",
                 )
-    transcript_request = turn.request
-    if (
-        turn.message_waking
-        and turn.auto_research_child is not None
-        and transcript_request.message is None
-    ):
-        transcript_request = transcript_request.model_copy(
-            update={
-                "message": (
-                    "RCP delivered a claimed Auto-research mail batch in the separate "
-                    "messages.json handoff."
-                )
-            }
-        )
     try:
         _append_chat_exchange(
             turn.service,
-            transcript_request,
+            turn.request,
             answer,
             turn.outcome.session_id,
             graph_update.applied_revision,
@@ -2908,6 +2603,7 @@ async def _launch_and_stream_work_turn(
     contract_path: str,
     staged: _StagedWorkInputs,
     wake_episode: EpisodeRecord | None,
+    required_session_id: str | None = None,
 ) -> AsyncIterator[str]:
     try:
         _record_agent_launch_receipt(
@@ -2930,7 +2626,7 @@ async def _launch_and_stream_work_turn(
                     else "resume"
                     if turn.resuming
                     else "message_wake"
-                    if turn.message_waking
+                    if turn.continuation == "message_wake"
                     else "watcher_wake"
                     if turn.waking
                     else "initial"
@@ -2950,6 +2646,7 @@ async def _launch_and_stream_work_turn(
                     launcher,
                     prompt,
                     session_id=turn.request.session_id,
+                    required_session_id=required_session_id,
                     outcome=turn.outcome,
                 )
             ) as stream:
@@ -3074,8 +2771,6 @@ async def stream_work_run(
         wake_episode = prompt_context.wake_episode
         if resuming:
             composed_prompt = _compose_resume_prompt(turn, staged, prompt_context)
-        elif turn.message_waking and turn.auto_research_child is not None:
-            composed_prompt = _compose_auto_research_child_message_wake_prompt(turn, staged)
         elif waking:
             composed_prompt = _compose_wake_prompt(turn, staged, prompt_context)
         else:
@@ -3145,35 +2840,18 @@ async def stream_work_run(
             yield frame
     if settled.stop:
         return
-    if turn.auto_research_child is not None:
-        child_mailbox = RunStageMailbox.for_stage(
-            local_stage=turn.local_stage,
-            remote_stage=turn.remote_stage,
+    async with aclosing(
+        _settle_watch_deliverable(
+            turn,
+            launcher,
+            staged,
+            composed_prompt,
+            retry_watch_digest,
+            settled,
         )
-        child_mailbox.remove("watch.json")
-        if turn.execution is not None:
-            turn.execution.store.record_agent_task_receipt(
-                turn.execution.operation_id,
-                "auto_research_child_watcher_output_discarded",
-                {
-                    "watcher_authority": "none",
-                    "reason": "ordinary Auto-research child Work cannot arm a watcher",
-                },
-                tier="diagnostic",
-            )
-    else:
-        async with aclosing(
-            _settle_watch_deliverable(
-                turn,
-                launcher,
-                staged,
-                composed_prompt,
-                retry_watch_digest,
-                settled,
-            )
-        ) as stream:
-            async for frame in stream:
-                yield frame
+    ) as stream:
+        async for frame in stream:
+            yield frame
     if settled.stop:
         return
     applied = _AppliedWorkTurn(
@@ -3565,388 +3243,6 @@ async def _stream_work_graph_repair(
     yield _sse(AgentEvent(event="done"))
 
 
-def _child_reply_message_id(episode_id: str, idempotency_key: str) -> str:
-    return str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{episode_id}:message:{idempotency_key}",
-        )
-    )
-
-
-def _unused_child_command_id(execution: AgentTaskExecution, preferred: str) -> str:
-    if execution.store.agent_command(preferred) is None:
-        return preferred
-    while True:
-        candidate = uuid.uuid4().hex
-        if execution.store.agent_command(candidate) is None:
-            return candidate
-
-
-def _child_reply_result(
-    message: AutoResearchMessageRecord,
-    *,
-    disposition: Literal["created", "existing"],
-) -> dict[str, object]:
-    return {
-        "message_id": message.message_id,
-        "recipient_task_id": message.recipient_task_id,
-        "delivery_operation_id": message.delivery_operation_id,
-        "delivery": "started" if message.delivery_operation_id is not None else "pending",
-        "graph_authority": "none",
-        "epistemic_status": "hearsay",
-        "disposition": disposition,
-    }
-
-
-def _finish_child_reply_command(
-    execution: AgentTaskExecution,
-    *,
-    command_id: str,
-    request_id: str,
-    status: Literal["ok", "invalid", "unavailable"],
-    message: str,
-    result: dict[str, object] | None = None,
-) -> CommandResponse:
-    payload: dict[str, object] = {"result": result or {}, "diagnostic": message}
-    try:
-        stored = execution.store.finish_agent_command(
-            command_id,
-            status=status,
-            payload=payload,
-            message=message,
-        )
-    except ValueError:
-        stored = execution.store.agent_command(command_id)
-        if stored is None or stored.exited_at is None:
-            raise
-        return _recorded_child_reply_response(stored, request_id=request_id)
-    return CommandResponse(
-        request_id=request_id,
-        status=stored.status or status,
-        message=message,
-        result=result or {},
-    )
-
-
-def _recorded_child_reply_response(
-    invocation: AgentCommandInvocationRecord,
-    *,
-    request_id: str,
-) -> CommandResponse:
-    if invocation.status not in {"ok", "invalid", "unavailable"} or not isinstance(
-        invocation.exit_payload, dict
-    ):
-        raise ValueError("Recorded child Work reply command exit is incomplete.")
-    recorded_result = invocation.exit_payload.get("result")
-    result = dict(recorded_result) if isinstance(recorded_result, dict) else {}
-    diagnostic = invocation.exit_payload.get("diagnostic")
-    message = diagnostic if isinstance(diagnostic, str) else None
-    if invocation.status != "ok" and not message:
-        message = "Recorded child Work reply command did not complete successfully."
-    return CommandResponse(
-        request_id=request_id,
-        status=invocation.status,
-        message=message,
-        result=result,
-    )
-
-
-def _finish_child_reply_with_retry_attempt(
-    execution: AgentTaskExecution,
-    *,
-    command_id: str,
-    retry_command_id: str | None,
-    request_id: str,
-    status: Literal["ok", "invalid", "unavailable"],
-    message: str,
-    result: dict[str, object] | None = None,
-) -> CommandResponse:
-    response = _finish_child_reply_command(
-        execution,
-        command_id=command_id,
-        request_id=request_id,
-        status=status,
-        message=message,
-        result=result,
-    )
-    if retry_command_id is None:
-        return response
-    return _finish_child_reply_command(
-        execution,
-        command_id=retry_command_id,
-        request_id=request_id,
-        status=response.status,
-        message=response.message or message,
-        result=response.result,
-    )
-
-
-def _child_reply_matches(
-    execution: AgentTaskExecution,
-    route: AutoResearchChildWorkRecord,
-    request: MessageCommandRequest,
-    saved: AutoResearchMessageRecord,
-) -> bool:
-    episode = execution.store.episode(route.episode_id)
-    sender_route = (
-        execution.store.auto_research_child_work_for_operation(saved.sender_task_id)
-        if saved.sender_task_id is not None
-        else None
-    )
-    return bool(
-        episode is not None
-        and episode.root_operation_id is not None
-        and sender_route is not None
-        and sender_route.worker_id == route.worker_id
-        and saved.episode_id == route.episode_id
-        and saved.sender_role == "worker"
-        and saved.authorized_by is None
-        and saved.recipient_task_id == episode.root_operation_id
-        and saved.control_node_id == route.control_node_id
-        and saved.body == request.arguments.body
-    )
-
-
-def _dispatch_auto_research_child_reply(
-    execution: AgentTaskExecution,
-    route: AutoResearchChildWorkRecord,
-    request: MessageCommandRequest,
-) -> CommandResponse:
-    """Persist one child-to-root reply without starting a concurrent root turn."""
-
-    episode = execution.store.episode(route.episode_id)
-    if episode is None or episode.mode != "auto_research" or episode.root_operation_id is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="unavailable",
-            message="The Auto-research orchestrator recipient is unavailable.",
-        )
-    if request.arguments.recipient_task_id not in {None, episode.root_operation_id}:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message="This child Work task may reply only to its Auto-research orchestrator.",
-        )
-    if request.idempotency_key is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message="A child Work reply requires an idempotency key.",
-        )
-    start_payload = {
-        "request_id": request.request_id,
-        "arguments": request.arguments.model_dump(mode="json"),
-        "planned_message_id": _child_reply_message_id(
-            route.episode_id,
-            request.idempotency_key,
-        ),
-    }
-    prior = execution.store.agent_command_by_key(route.episode_id, request.idempotency_key)
-    command_id = _unused_child_command_id(execution, request.request_id)
-    retry_command_id: str | None = None
-    if prior is None:
-        try:
-            invocation = execution.store.start_agent_command(
-                operation_id=execution.operation_id,
-                command_id=command_id,
-                episode_id=route.episode_id,
-                verb="message",
-                idempotency_key=request.idempotency_key,
-                payload=start_payload,
-            )
-        except ValueError:
-            raced = execution.store.agent_command_by_key(
-                route.episode_id,
-                request.idempotency_key,
-            )
-            if raced is None:
-                raise
-            invocation = raced
-        if invocation.command_id != command_id:
-            prior = invocation
-    if prior is not None:
-        attempt = execution.store.start_agent_command(
-            operation_id=execution.operation_id,
-            command_id=command_id,
-            episode_id=route.episode_id,
-            verb="message",
-            idempotency_key=None,
-            payload={
-                **start_payload,
-                "idempotency_key": request.idempotency_key,
-                "deduplicates_command_id": prior.command_id,
-            },
-        )
-        prior_route = execution.store.auto_research_child_work_for_operation(prior.operation_id)
-        if (
-            prior.verb != "message"
-            or prior.start_payload.get("arguments") != start_payload["arguments"]
-            or prior.start_payload.get("planned_message_id") != start_payload["planned_message_id"]
-            or prior_route is None
-            or prior_route.worker_id != route.worker_id
-        ):
-            return _finish_child_reply_command(
-                execution,
-                command_id=attempt.command_id,
-                request_id=request.request_id,
-                status="invalid",
-                message=(
-                    "This idempotency key was already used by another actor or with different "
-                    "reply arguments."
-                ),
-            )
-        if prior.exited_at is not None:
-            recorded = _recorded_child_reply_response(prior, request_id=request.request_id)
-            return _finish_child_reply_command(
-                execution,
-                command_id=attempt.command_id,
-                request_id=request.request_id,
-                status=recorded.status,
-                message=recorded.message or "The existing child Work reply was returned.",
-                result=recorded.result,
-            )
-        invocation = prior
-        retry_command_id = attempt.command_id
-
-    planned_message_id = str(start_payload["planned_message_id"])
-    saved = execution.store.auto_research_message(planned_message_id)
-    disposition: Literal["created", "existing"] = "existing"
-    if saved is None:
-        saved = execution.store.record_auto_research_message(
-            AutoResearchMessageRecord(
-                message_id=planned_message_id,
-                episode_id=route.episode_id,
-                sender_role="worker",
-                sender_task_id=execution.operation_id,
-                recipient_task_id=episode.root_operation_id,
-                control_node_id=route.control_node_id,
-                body=request.arguments.body,
-                created_at=execution.store.now(),
-            )
-        )
-        disposition = "created"
-    if not _child_reply_matches(execution, route, request, saved):
-        return _finish_child_reply_with_retry_attempt(
-            execution,
-            command_id=invocation.command_id,
-            retry_command_id=retry_command_id,
-            request_id=request.request_id,
-            status="unavailable",
-            message="The durable child Work reply does not match this command intent.",
-        )
-    return _finish_child_reply_with_retry_attempt(
-        execution,
-        command_id=invocation.command_id,
-        retry_command_id=retry_command_id,
-        request_id=request.request_id,
-        status="ok",
-        message=(
-            "Reply persisted for the Auto-research orchestrator's paid delivery."
-            if saved.delivery_operation_id is not None
-            else "Reply persisted for the Auto-research orchestrator's next paid delivery."
-        ),
-        result=_child_reply_result(saved, disposition=disposition),
-    )
-
-
-async def _serve_auto_research_child_work_mailbox(
-    service: ProjectService,
-    *,
-    staged: StagedCommandMailbox,
-    execution: AgentTaskExecution,
-    route: AutoResearchChildWorkRecord,
-    stop: asyncio.Event,
-    budget: PatchValidationBudget,
-    run_truth_scope: list[str],
-    patch_kind: Literal["work", "experiment_loop"],
-    control_node_id: str | None,
-    control_decision_bundle: list[ExperimentDecisionPin],
-) -> None:
-    async def handle(
-        request: CommandRequest,
-        identity: CommandTurnIdentity,
-    ) -> CommandResponse:
-        if identity.episode_id != route.episode_id or identity.task_id != execution.operation_id:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message="This child Work command credential is bound to another turn.",
-            )
-        if isinstance(request, ValidateCommandRequest):
-            budget.count += 1
-            if budget.count > PATCH_SELF_CHECK_MAX_COUNT:
-                result = PatchValidationResult(
-                    status="unavailable",
-                    messages=["This task has reached its bounded RCP validator self-check limit."],
-                )
-            else:
-                result = await asyncio.to_thread(
-                    _validate_work_patch_live,
-                    service,
-                    request.arguments.patch,
-                    run_truth_scope=run_truth_scope,
-                    patch_kind=patch_kind,
-                    control_node_id=control_node_id,
-                    control_decision_bundle=control_decision_bundle,
-                    source_operation_id=execution.operation_id,
-                )
-            execution.store.record_agent_task_event(
-                execution.operation_id,
-                f"Patch self-check {budget.count}/{PATCH_SELF_CHECK_MAX_COUNT}: {result.status}.",
-                level="info" if result.status == "valid" else "warning",
-            )
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "patch_self_check",
-                {
-                    "count": budget.count,
-                    "limit": PATCH_SELF_CHECK_MAX_COUNT,
-                    **result.model_dump(mode="json"),
-                },
-                tier="diagnostic",
-            )
-            status = {
-                "valid": "ok",
-                "invalid": "invalid",
-                "unavailable": "unavailable",
-            }[result.status]
-            diagnostic = " ".join(message.strip() for message in result.messages if message.strip())
-            return CommandResponse(
-                request_id=request.request_id,
-                status=status,
-                message=(diagnostic[:2_000] or None)
-                if status == "ok"
-                else (diagnostic[:2_000] or f"Patch validation was {result.status}."),
-                result=result.model_dump(mode="json"),
-            )
-        if isinstance(request, MessageCommandRequest):
-            return _dispatch_auto_research_child_reply(execution, route, request)
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message=(
-                "This child Work credential authorizes only Patch validation and a reply to its "
-                "Auto-research orchestrator."
-            ),
-        )
-
-    try:
-        await serve_command_mailbox(
-            staged=staged,
-            handler=handle,
-            stop=stop,
-            poll_seconds=PATCH_SELF_CHECK_POLL_SECONDS,
-            invocation_gate=staged.invocation_gate,
-        )
-    except (OSError, StateUnavailable, ValueError) as exc:
-        execution.store.record_agent_task_event(
-            execution.operation_id,
-            f"Child Work command broker became unavailable: {' '.join(str(exc).split())[:400]}",
-            level="warning",
-        )
-
-
 def _start_work_validator_mailbox(
     service: ProjectService,
     staged: StagedCommandMailbox,
@@ -3957,45 +3253,26 @@ def _start_work_validator_mailbox(
     patch_kind: Literal["work", "experiment_loop"],
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
-    auto_research_child: AutoResearchChildWorkRecord | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     stop = asyncio.Event()
     try:
-        if auto_research_child is not None:
-            if execution is None:
-                raise ValueError("Auto-research child Work command broker requires its task.")
-            task = asyncio.create_task(
-                _serve_auto_research_child_work_mailbox(
+        task = asyncio.create_task(
+            serve_patch_validation_mailbox(
+                staged=staged,
+                execution=execution,
+                validate=lambda text: _validate_work_patch_live(
                     service,
-                    staged=staged,
-                    execution=execution,
-                    route=auto_research_child,
-                    stop=stop,
-                    budget=budget,
+                    text,
                     run_truth_scope=run_truth_scope,
                     patch_kind=patch_kind,
                     control_node_id=control_node_id,
                     control_decision_bundle=control_decision_bundle,
-                )
+                    source_operation_id=_work_patch_source_operation_id(execution, patch_kind),
+                ),
+                stop=stop,
+                budget=budget,
             )
-        else:
-            task = asyncio.create_task(
-                serve_patch_validation_mailbox(
-                    staged=staged,
-                    execution=execution,
-                    validate=lambda text: _validate_work_patch_live(
-                        service,
-                        text,
-                        run_truth_scope=run_truth_scope,
-                        patch_kind=patch_kind,
-                        control_node_id=control_node_id,
-                        control_decision_bundle=control_decision_bundle,
-                        source_operation_id=_work_patch_source_operation_id(execution, patch_kind),
-                    ),
-                    stop=stop,
-                    budget=budget,
-                )
-            )
+        )
     except BaseException:
         with suppress(BaseException):
             staged.cleanup()
@@ -4113,6 +3390,7 @@ async def _stream_work_agent_events(
     patch_kind: Literal["work", "experiment_loop"],
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
+    required_session_id: str | None = None,
 ) -> AsyncIterator[str]:
     lifecycle = validator_lifecycle or _start_work_validator_mailbox(
         service,
@@ -4143,10 +3421,14 @@ async def _stream_work_agent_events(
                 outcome=outcome,
                 binary=binary,
                 invocation_gate=validator_staged.invocation_gate,
-                required_session_id=_required_work_continuation_session_id(
-                    request,
-                    execution,
-                    session_id=session_id,
+                required_session_id=(
+                    required_session_id
+                    if required_session_id is not None
+                    else _required_work_continuation_session_id(
+                        request,
+                        execution,
+                        session_id=session_id,
+                    )
                 ),
             )
         ) as stream:
@@ -4165,13 +3447,15 @@ def _required_work_continuation_session_id(
     *,
     session_id: str | None,
 ) -> str | None:
-    """Pin continuations whose operational result is valid only in the saved session."""
+    """Pin Experiment continuations to their saved native provider session."""
 
-    if execution is None or not execution.reuses_native_checkpoint:
+    if (
+        execution is None
+        or not execution.reuses_native_checkpoint
+        or request.patch_kind != "experiment_loop"
+    ):
         return None
-    child_work = execution.store.auto_research_child_work_for_operation(execution.operation_id)
-    experiment_continuation = request.patch_kind == "experiment_loop"
-    return session_id if child_work is not None or experiment_continuation else None
+    return session_id
 
 
 def _prepare_work_patch_candidate(

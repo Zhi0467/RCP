@@ -29,7 +29,7 @@ from rcp.runs.auto_research_delivery import (
     reconcile_pending_auto_research_mail,
     record_auto_research_message,
 )
-from rcp.runs.tasks.work import _dispatch_auto_research_child_reply
+from rcp.runs.tasks.auto_research_child_work import _dispatch_auto_research_child_reply
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,

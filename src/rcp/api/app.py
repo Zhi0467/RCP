@@ -99,6 +99,7 @@ from rcp.runs.experiment_loop import (
 )
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
 from rcp.runs.tasks.auto_research_stream import (
     stream_auto_research_orchestrator_run,
     stream_auto_research_worker_run,
@@ -460,6 +461,21 @@ def create_app(
         assert isinstance(request, RunRequest)
         if kind in {"node_chat", "project_chat"}:
             if request.mode == "work":
+                child_route = store.auto_research_child_work_for_operation(execution.operation_id)
+                if child_route is not None:
+                    async with aclosing(
+                        stream_auto_research_child_work_run(
+                            service,
+                            launcher,
+                            request,
+                            app_data,
+                            execution,
+                            route=child_route,
+                        )
+                    ) as stream:
+                        async for frame in stream:
+                            yield frame
+                    return
                 async with aclosing(
                     stream_work_run(
                         service,
