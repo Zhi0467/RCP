@@ -8,7 +8,11 @@ from pathlib import Path
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
-from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
+from rcp.runs.auto_research import (
+    AutoResearchRunRequest,
+    AutoResearchStartRequest,
+    settle_auto_research_stop,
+)
 from rcp.runs.auto_research_recovery import (
     AutoResearchOrchestratorTerminalFailure,
     reconcile_auto_research_task_settlement,
@@ -56,9 +60,19 @@ def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root"):
 
 
 def _install_recovery_callback(tasks: BackgroundAgentTasks) -> None:
-    tasks.on_auto_research_task_settled = lambda auto_research, request, execution: (
-        reconcile_auto_research_task_settlement(tasks, auto_research, request, execution)
-    )
+    """Stand in for the app's one settlement callback, Auto-research half only."""
+
+    def settled(_project_id, _kind, request, execution) -> None:
+        if not isinstance(request, AutoResearchRunRequest):
+            return
+        episode = tasks.store.episode(request.episode_id)
+        if episode is None:
+            return
+        if episode.stop_requested_at is not None:
+            episode = settle_auto_research_stop(tasks.store, episode.episode_id) or episode
+        reconcile_auto_research_task_settlement(tasks, episode, request, execution)
+
+    tasks.on_task_settled = settled
 
 
 def _wait_for_recovery(store: AppStore, recovery_id: str):

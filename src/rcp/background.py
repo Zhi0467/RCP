@@ -169,10 +169,6 @@ AgentTaskStreamClosedHook = Callable[
     [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None
 ]
 AgentTaskSettledHook = Callable[[str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None]
-AutoResearchTaskSettledHook = Callable[
-    [EpisodeRecord, AutoResearchRunRequest, AgentTaskExecution],
-    None,
-]
 AutoResearchAdmissionExhaustedHook = Callable[[EpisodeRecord], None]
 
 
@@ -247,7 +243,6 @@ class BackgroundAgentTasks:
         stream: AgentTaskStream,
         on_stream_closed: AgentTaskStreamClosedHook | None = None,
         on_task_settled: AgentTaskSettledHook | None = None,
-        on_auto_research_task_settled: AutoResearchTaskSettledHook | None = None,
         on_auto_research_admission_exhausted: AutoResearchAdmissionExhaustedHook | None = None,
         dispatch_authority_resolver: DispatchAuthorityResolver | None = None,
     ) -> None:
@@ -255,7 +250,6 @@ class BackgroundAgentTasks:
         self.stream = stream
         self.on_stream_closed = on_stream_closed
         self.on_task_settled = on_task_settled
-        self.on_auto_research_task_settled = on_auto_research_task_settled
         self.on_auto_research_admission_exhausted = on_auto_research_admission_exhausted
         self.dispatch_authority_resolver = dispatch_authority_resolver or resolve_dispatch_authority
         self._controls: dict[str, AgentProcessControl] = {}
@@ -3603,26 +3597,6 @@ class BackgroundAgentTasks:
                     self.store.record_agent_task_receipt(
                         execution.operation_id,
                         "task_settled_callback_failed",
-                        {"exception_type": type(exc).__name__},
-                        tier="diagnostic",
-                    )
-        if isinstance(request, AutoResearchRunRequest):
-            episode = self.store.episode(request.episode_id)
-            if episode is None:
-                return
-            if episode.stop_requested_at is not None:
-                settled = settle_auto_research_stop(self.store, episode.episode_id)
-                if settled is not None:
-                    episode = settled
-            if self.on_auto_research_task_settled is None:
-                return
-            try:
-                self.on_auto_research_task_settled(episode, request, execution)
-            except Exception as exc:
-                with suppress(Exception):
-                    self.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "auto_research_task_settled_callback_failed",
                         {"exception_type": type(exc).__name__},
                         tier="diagnostic",
                     )

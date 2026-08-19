@@ -634,7 +634,6 @@ def create_app(
     episode_reconciler = EpisodeReconciler(store, background_tasks, logger=logger)
     reconcile_auto_research_wrapup = episode_reconciler.reconcile_auto_research_wrapup
     reconcile_auto_research_episode = episode_reconciler.reconcile_auto_research_episode
-    reconcile_auto_research_task = episode_reconciler.reconcile_auto_research_task
     reconcile_auto_research_recovery_pass = episode_reconciler.reconcile_auto_research_recovery_pass
     reconcile_experiment_episode = episode_reconciler.reconcile_experiment_episode
 
@@ -683,28 +682,33 @@ def create_app(
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
-        watcher_delivery.evaluate_graph_conditions_after_task(
-            project_id,
-            kind,
-            request,
-            execution,
-        )
-        for episode in store.episodes(project_id):
-            if episode.mode == "auto_research":
-                reconcile_auto_research_children(episode.episode_id)
-                auto_research_experiment_coordinator.reconcile(episode.episode_id)
-                reconcile_pending_auto_research_lifecycle(
-                    background_tasks,
-                    episode_id=episode.episode_id,
-                )
-                reconcile_pending_auto_research_mail(
-                    background_tasks,
-                    episode_id=episode.episode_id,
-                )
+        # `finally`, because the Auto-research half ran even when the generic
+        # half raised while the engine owned both. It keeps its own diagnostic
+        # and still lets the generic failure reach the engine's receipt.
+        try:
+            watcher_delivery.evaluate_graph_conditions_after_task(
+                project_id,
+                kind,
+                request,
+                execution,
+            )
+            for episode in store.episodes(project_id):
+                if episode.mode == "auto_research":
+                    reconcile_auto_research_children(episode.episode_id)
+                    auto_research_experiment_coordinator.reconcile(episode.episode_id)
+                    reconcile_pending_auto_research_lifecycle(
+                        background_tasks,
+                        episode_id=episode.episode_id,
+                    )
+                    reconcile_pending_auto_research_mail(
+                        background_tasks,
+                        episode_id=episode.episode_id,
+                    )
+        finally:
+            if isinstance(request, AutoResearchRunRequest):
+                episode_reconciler.settle_auto_research_task(request, execution)
 
     background_tasks.on_task_settled = after_task_settled
-
-    background_tasks.on_auto_research_task_settled = reconcile_auto_research_task
     background_tasks.on_auto_research_admission_exhausted = lambda episode: (
         reconcile_auto_research_episode(
             episode.episode_id,

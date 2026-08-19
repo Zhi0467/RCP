@@ -932,11 +932,11 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | Guards | `da50c3d` | The two deliberate non-refactors recorded at their code sites. |
 | A | `68c0ba7` | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. A post-change probe over the whole suite reports none. |
 | B1 | `a931f02` | `runs/episodes/` package: `reconcile.py`, `wrapup.py`, and report admission moved off the engine. Pure relocation. |
-| B2 | **blocked** | The ID-only settlement callback cannot preserve behaviour. See "Slice B2 is blocked" below. |
+| B2 | — | One settlement callback, carrying the execution object. The engine no longer knows Auto-research settles differently. |
 | 0 | `44bc556` | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
 | C1 + C2 | — | Branch-merge and watcher admission extracted. One commit: both edit `background.py`, and splitting one file's diff by hunk risks committing a state that does not build. |
 
-### Slice B2 is blocked
+### Slice B2: settled by the human on 2026-08-19
 
 **The ID-only settlement callback cannot preserve behaviour.** `after_task_settled`
 in [api/app.py](../../src/rcp/api/app.py) forwards the `AgentTaskExecution` to
@@ -954,14 +954,20 @@ So an id-only callback either drops the watcher boundary evaluation or requires
 persisting graph state on every settlement. Both change behaviour, which puts
 this on the stop-and-ask list rather than in an implementer's hands.
 
-**The question for the human:** keep the execution object on the settlement
-boundary and treat "operation ID only" as applying to the *episode* settlement
-path that genuinely can reload, or persist enough of the run outcome to make the
-boundary id-only? The first keeps today's behaviour and narrows a settled
-decision; the second honours the decision and adds a durable write per
-settlement. **Recommended: the first** — the decision exists so settlement does
-not depend on a live worker's identity, and the graph state here is a value
-produced by the run, not a handle to it.
+**Decided: keep the execution object.** "Operation ID only" now names the
+*episode* settlement path, which genuinely can reload, and not this boundary. The
+decision exists so settlement does not depend on a live worker's identity;
+`applied_graph_state` is a value the run produced, not a handle to it.
+
+**What B2 became.** The collapse still had a point without the id-only shape: the
+engine knew that Auto-research settles differently. `_task_settled` now calls one
+callback and nothing else. Loading the episode, settling a requested Stop, and
+reconciling the Auto-research task moved to
+`EpisodeReconciler.settle_auto_research_task`, which keeps its own
+`auto_research_task_settled_callback_failed` diagnostic. The app-side handler
+calls it from a `finally`, because the Auto-research half ran even when the
+generic half raised while the engine owned both — dropping that would have been a
+silent behaviour change.
 
 
 ### Ordering summary

@@ -165,6 +165,37 @@ class EpisodeReconciler:
             operation_id=operation_id,
         )
 
+    def settle_auto_research_task(
+        self,
+        auto_request: AutoResearchRunRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        """Own the Auto-research half of task settlement, Stop fence included.
+
+        The engine used to load the episode, settle a requested Stop, and call a
+        second Auto-research-only callback.  Settlement crosses one boundary now,
+        so that sequence lives with the owner instead.  Its failure is recorded
+        under its own diagnostic and never replaces the task verdict.
+        """
+
+        try:
+            episode = self.store.episode(auto_request.episode_id)
+            if episode is None:
+                return
+            if episode.stop_requested_at is not None:
+                settled = settle_auto_research_stop(self.store, episode.episode_id)
+                if settled is not None:
+                    episode = settled
+            self.reconcile_auto_research_task(episode, auto_request, execution)
+        except Exception as exc:
+            with suppress(Exception):
+                self.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "auto_research_task_settled_callback_failed",
+                    {"exception_type": type(exc).__name__},
+                    tier="diagnostic",
+                )
+
     def reconcile_auto_research_task(
         self,
         episode: EpisodeRecord,
