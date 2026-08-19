@@ -936,7 +936,47 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | 0 | `44bc556` | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
 | C1 + C2 | `08af3e7` | Branch-merge and watcher admission extracted. One commit: both edit `background.py`, and splitting one file's diff by hunk risks committing a state that does not build. |
 | C4 | `ce4d5d2` | Experiment recovery extracted. `_skill_update` moved to `runs/task_policy.py` first — importing it back from `background` would have been circular. |
-| C5a | — | Auto-research extracted: **36** methods, not the 32 the plan listed. `_create_and_spawn` untouched; its three wrong-way calls now point at the new module and are C5b's job. |
+| C5a | `eba4c2c` | Auto-research extracted: **36** methods, not the 32 the plan listed. `_create_and_spawn` untouched; its three wrong-way calls now point at the new module and are C5b's job. |
+| C5b | **not done** | Cannot be done without restructuring `_create_and_spawn`, which decision 3 forbids. See below. |
+| D | **not done** | Cannot be done without reordering recovery side effects. See below. |
+
+### C5b and D: measured, and not worth their cost
+
+Both were specified before the extractions existed. With the extractions done, the
+measurement says neither buys what it was meant to buy.
+
+**C5b — Auto-research inserting its own row.** The plan expected the two
+Auto-research parameters to leave `_create_and_spawn` "as a consequence" of C5.
+They cannot. Four sub-cases sit inside that function's Auto-research branch —
+recovery, message wake, watcher wake, and the ordinary insert — and only the two
+wake cases are driven by those parameters. Moving them out means Auto-research
+assembles the task row itself, and the row assembly is the 173 universal lines
+decision 3 exists to keep in one place. The three options are all worse than the
+disease: split `_create_and_spawn` into build-then-insert (decision 3 forbids
+it), copy the row assembly (obviously worse), or leave the parameters. Left.
+
+**D — inverting Resume and Retry at the handlers.** Blocked by side-effect
+ordering. `preflight_experiment_episode_recovery` is not a pure check: before it
+raises it records an episode diagnostic and may settle a requested Stop. The
+engine runs it *after* the "only a paused, interrupted, or failed task can be
+retried" guards. Any inversion either duplicates those guards into each
+job-specific module, or runs the preflight before them — which would write a
+diagnostic and settle a Stop for a task that was never retryable.
+
+It also would not remove Experiment knowledge from the engine. A **graph-repair**
+Experiment retry deliberately falls through the `retry_experiment_loop` branch to
+the generic path, and still needs the preflight. So the preflight call has to
+exist on the generic path either way.
+
+**What this changes about "done".** The first half holds: `BackgroundAgentTasks`
+contains **no job-specific method** — 28 methods, all general engine. The second
+half, "its only reference to job-specific code is the one documented `_run`
+call", is not reachable without one of the trades above. Eleven references
+remain: two in `recover_at_startup` (which is startup orchestration calling its
+owners, the shape the plan wanted), three in `_create_and_spawn`, five in
+`resume`/`retry`, and the documented one in `_run`. **A decision for the human:**
+relax that criterion to "no job-specific method, and every remaining reference is
+a named call into an owner module", or accept one of the trades above.
 
 ### Slice B2: settled by the human on 2026-08-19
 
