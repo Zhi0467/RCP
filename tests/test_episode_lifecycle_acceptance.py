@@ -296,10 +296,12 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
         acceptance_agent=True,
     )
     restarted_store = restarted.state.background_tasks.store
-    interrupted = restarted_store.agent_task(root_operation_id)
-    assert interrupted is not None and interrupted.status == "interrupted"
 
     with TestClient(restarted) as client:
+        # Startup reconciles the abandoned root, not construction, so this is
+        # read inside the lifespan rather than immediately after create_app.
+        interrupted = restarted_store.agent_task(root_operation_id)
+        assert interrupted is not None and interrupted.status == "interrupted"
         retried = client.post(f"/api/projects/{project_id}/tasks/{root_operation_id}/retry")
         assert retried.status_code == 202, retried.text
         retry_operation_id = retried.json()["operation_id"]

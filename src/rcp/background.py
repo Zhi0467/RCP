@@ -280,6 +280,20 @@ class BackgroundAgentTasks:
         self._controls_lock = threading.Lock()
         self._watcher_delivery_lock = threading.Lock()
         self._accepting_watcher_deliveries = True
+
+    def recover_at_startup(self) -> None:
+        """Reconcile work a previous process left behind. Called once, by the lifespan.
+
+        This ran in ``__init__`` until constructing the engine stopped writing to
+        the store.  It stays on this class as a waypoint: when the job-specific
+        owners move out it becomes startup orchestration that calls each owner,
+        and the wrong-way calls below leave with them.
+
+        Errors are deliberately not caught.  A constructor exception used to fail
+        ``create_app``; this must still fail startup rather than open the app over
+        state nobody reconciled.
+        """
+
         preserved_dispatches = self._proven_committed_auto_research_dispatches()
         reserved_roots = self._proven_reserved_auto_research_roots()
         self.store.interrupt_active_agent_tasks(

@@ -186,6 +186,30 @@ async def _done_stream(_project_id, _kind, _request, _execution):
     yield _sse(AgentEvent(event="done"))
 
 
+def test_construction_leaves_recovery_undone_until_startup_asks_for_it(
+    tmp_path: Path,
+) -> None:
+    """Constructing the engine must not write to the store.
+
+    Startup recovery is an explicit call so that constructing this object — which
+    358 sites do, most of them tests — cannot silently interrupt live work.
+    """
+
+    store = _store(tmp_path)
+    task = _admitted_launch_task(store, operation_id="survives-construction")
+    store.mark_agent_task_running(task.operation_id)
+
+    tasks = BackgroundAgentTasks(store, _done_stream)
+
+    untouched = store.agent_task(task.operation_id)
+    assert untouched is not None and untouched.status == "running"
+
+    tasks.recover_at_startup()
+
+    interrupted = store.agent_task(task.operation_id)
+    assert interrupted is not None and interrupted.status == "interrupted"
+
+
 def test_launch_admitted_missing_operation_is_read_only(tmp_path: Path) -> None:
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
@@ -2054,6 +2078,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(tmp_pat
             execution.operation_id
         ),
     )
+    tasks.recover_at_startup()
     finished = wait_for_task(store, hidden.operation_id, expect="succeeded")
 
     assert finished.operation_id == hidden.operation_id
@@ -2105,6 +2130,7 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
             execution.operation_id
         ),
     )
+    tasks.recover_at_startup()
     assert entered.wait(timeout=2)
     duplicate = tasks.start_episode_report("report-episode")
     assert duplicate is not None and duplicate.operation_id == hidden.operation_id

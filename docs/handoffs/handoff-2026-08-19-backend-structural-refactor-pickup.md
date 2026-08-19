@@ -590,24 +590,27 @@ construct the object. A green suite after the change is not evidence on its own 
 a test that silently stopped exercising recovery still passes. The instrumented
 list is the checklist.
 
-**Measurement taken 2026-08-19.** Of the 358 construction sites, exactly **10
-tests** have a constructor that changes the store. Every other site constructs the
+**Measurement taken 2026-08-19, corrected on re-measurement.** Of the 358
+construction sites, exactly **14 tests** have a constructor that changes the
+store. The first pass reported 10 and under-counted; the corrected run hashes the
+sqlite file around the real `__init__` for every test in the suite, and the four
+it had missed are marked **(missed)** below. Every other site constructs the
 object over a store with nothing to recover, so moving recovery out is invisible to
 them. This is the complete checklist for the constructor slice; each name must end
 up either calling the new method explicitly or demonstrably not needing it:
 
 | File | Tests |
 | --- | ---: |
-| `tests/test_experiment_stop.py` | 4 |
+| `tests/test_experiment_stop.py` | 4 (1 missed) |
 | `tests/test_auto_research_stream.py` | 3 |
+| `tests/test_background.py` | 3 (2 missed) |
 | `tests/test_auto_research_experiments.py` | 1 |
-| `tests/test_background.py` | 1 |
 | `tests/test_episode_lifecycle_acceptance.py` | 1 |
+| `tests/test_acceptance_experiment_watchers.py` | 1 (missed) |
 
-Eight of the ten observe an active task being interrupted; four observe a task
-being created by a restart. The measurement makes the explicit-call decision
-clearly correct — a test helper was proposed to avoid churn concentrated in
-`test_background.py`, and that churn turns out to be one test.
+The measurement makes the explicit-call decision clearly correct — a test helper
+was proposed to avoid churn concentrated in `test_background.py`, and that churn
+turns out to be three tests, one of which needs no call at all.
 
 ### 6. The legacy ambiguous queued admission — settled: the case is currently empty
 
@@ -737,22 +740,37 @@ and both are preserved by putting it first —
 **Errors stay loud.** If `recover_at_startup()` raises, startup fails, exactly as a
 constructor exception fails `create_app` today. Do not wrap it in `try/except`.
 
-**The test checklist.** Of 358 construction sites, exactly these **10** have a
+**The test checklist.** Of 358 construction sites, exactly these **14** have a
 constructor that changes the store. Each must end up calling `recover_at_startup()`
 explicitly, or be shown not to need it. No other site is affected.
 
 ```text
-tests/test_auto_research_experiments.py::test_restart_recovers_the_stopped_predecessor_before_starting_its_replacement
-tests/test_auto_research_stream.py::test_orchestrator_clean_retry_binds_replacement_session_in_production_stream[pre-stage]
-tests/test_auto_research_stream.py::test_orchestrator_clean_retry_binds_replacement_session_in_production_stream[saved-stage]
-tests/test_auto_research_stream.py::test_orchestrator_clean_retry_binds_replacement_session_in_production_stream[session-limit]
-tests/test_background.py::test_validated_spawn_record_rejects_both_parent_presence_directions
-tests/test_episode_lifecycle_acceptance.py::test_acceptance_episode_restart_retry_reuses_the_successful_spawn
-tests/test_experiment_stop.py::test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertain
-tests/test_experiment_stop.py::test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence[failed-retry]
-tests/test_experiment_stop.py::test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence[paused-resume]
-tests/test_experiment_stop.py::test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence[running-resume]
+explicit recover_at_startup() call added
+  test_auto_research_experiments.py::test_restart_recovers_the_stopped_predecessor_before_starting_its_replacement
+  test_auto_research_stream.py::test_orchestrator_clean_retry_binds_replacement_session_in_production_stream[pre-stage]
+  test_auto_research_stream.py::test_orchestrator_clean_retry_binds_replacement_session_in_production_stream[saved-stage]
+  test_auto_research_stream.py::test_orchestrator_clean_retry_binds_replacement_session_in_production_stream[session-limit]
+  test_background.py::test_interrupted_hidden_report_restarts_once_and_runner_owns_success        (missed by the first measurement)
+  test_background.py::test_report_runner_terminal_error_is_not_generically_retried_or_resettled   (missed by the first measurement)
+  test_experiment_stop.py::test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertain
+  test_experiment_stop.py::test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence[failed-retry]
+  test_experiment_stop.py::test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence[paused-resume]
+  test_experiment_stop.py::test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence[running-resume]
+  test_experiment_stop.py::test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run  (missed by the first measurement)
+
+assertion moved inside the lifespan instead
+  test_episode_lifecycle_acceptance.py::test_acceptance_episode_restart_retry_reuses_the_successful_spawn
+
+recovers through create_app's lifespan, unchanged
+  test_acceptance_experiment_watchers.py::test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits  (missed by the first measurement)
+
+shown not to need recovery, unchanged
+  test_background.py::test_validated_spawn_record_rejects_both_parent_presence_directions
 ```
+
+The one "shown not to need it" case monkeypatches `store.agent_task` before
+calling `_validated_spawn_record`, so the record it validates never comes from
+the database the constructor used to interrupt.
 
 **Do not use a test helper that constructs and recovers together.** It would rebuild
 the same implicit coupling one layer down. **Do not add a `recover=` constructor
@@ -901,6 +919,15 @@ call. Those are the expected work.
 **Write down what happened.** At each boundary, update this file's slice table with
 the commit hash and anything the slice proved wrong. The next agent reads this file,
 not the diff.
+
+### Slice ledger
+
+Updated at every slice boundary. The next agent reads this, not the diff.
+
+| Slice | Commit | Notes |
+| --- | --- | --- |
+| Guards | `da50c3d` | The two deliberate non-refactors recorded at their code sites. |
+| A | — | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. |
 
 ### Ordering summary
 

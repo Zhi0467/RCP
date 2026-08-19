@@ -1215,6 +1215,7 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
     assert stopped_predecessor.stop_settled_at is None
 
     restarted = BackgroundAgentTasks(store, child_stream)
+    restarted.recover_at_startup()
     restarted_coordinator = AutoResearchExperimentCoordinator(
         store,
         restarted,

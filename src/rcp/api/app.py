@@ -831,6 +831,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # First, before anything else observes the store.  Construction no longer
+        # reconciles the previous process's work, and interruption must still
+        # precede both `reconcile_committed_auto_research_dispatches` (or a task
+        # just relaunched gets interrupted) and `prune_operational_storage`
+        # (which skips tasks still marked active).  Outside the `try` so a
+        # failure here fails startup without running the shutdown path.
+        background_tasks.recover_at_startup()
         startup_maintenance: list[asyncio.Task[None]] = []
         try:
             background_tasks.accept_watcher_notifications()

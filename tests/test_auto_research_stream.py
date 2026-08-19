@@ -1744,6 +1744,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
             yield frame
 
     tasks = BackgroundAgentTasks(store, stream)
+    tasks.recover_at_startup()
     retry = tasks.retry(root.operation_id)
     retry = wait_for_task(store, retry.operation_id, expect="succeeded")
 

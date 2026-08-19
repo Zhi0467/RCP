@@ -441,7 +441,7 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
         observed.set()
         yield _sse(AgentEvent(event="done"))
 
-    BackgroundAgentTasks(loop.store, stream)
+    BackgroundAgentTasks(loop.store, stream).recover_at_startup()
 
     assert observed.wait(timeout=2)
     recoveries = [
@@ -502,7 +502,7 @@ def test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertai
         raise AssertionError("transient remote uncertainty must not launch recovery")
         yield  # pragma: no cover
 
-    BackgroundAgentTasks(loop.store, stream)
+    BackgroundAgentTasks(loop.store, stream).recover_at_startup()
 
     tasks = loop.store.episode_tasks(loop.episode_id)
     assert [task.operation_id for task in tasks] == ["loop-root"]
@@ -1818,7 +1818,7 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
         )
 
     before = loop.loop_task_ids()
-    BackgroundAgentTasks(loop.store, app.state.background_tasks.stream)
+    BackgroundAgentTasks(loop.store, app.state.background_tasks.stream).recover_at_startup()
 
     episode = loop.store.experiment_episode(loop.episode_id)
     assert episode is not None
