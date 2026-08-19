@@ -41,7 +41,7 @@ from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import _logical_chat_turn_operation_id
-from rcp.runs.task_policy import task_graph_capable
+from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -337,7 +337,9 @@ def resume_agent_task(
     result_view_resume_lock: threading.Lock | None = None
     try:
         if previous.kind not in {"paper_coach", "auto_research"}:
-            stored_request = RunRequest.model_validate(previous.request)
+            stored_request = load_stored_request(
+                RunRequest, previous.request, operation_id=previous.operation_id
+            )
             if (
                 stored_request.result_view is not None
                 and stored_request.result_view.action == "revise"
@@ -436,11 +438,17 @@ def retry_agent_task(
         if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
             raise ValueError("Experiment-loop recovery cannot change its pinned execution machine.")
         if previous.kind == "auto_research":
-            candidate = AutoResearchRunRequest.model_validate({**previous.request, **overrides})
+            candidate = load_stored_request(
+                AutoResearchRunRequest,
+                {**previous.request, **overrides},
+                operation_id=previous.operation_id,
+            )
         else:
             request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
-            candidate = request_type.model_validate(
-                {**previous.request, **overrides, "session_id": None}
+            candidate = load_stored_request(
+                request_type,
+                {**previous.request, **overrides, "session_id": None},
+                operation_id=previous.operation_id,
             )
         if (
             isinstance(candidate, RunRequest)

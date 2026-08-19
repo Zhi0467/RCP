@@ -140,6 +140,15 @@ existing terminal task quietly do nothing, while a missing id still fails
 loudly. Completion cleanup, pause/failure receipts, and lifecycle notices occur
 only when their guarded transition applies.
 
+A task request RCP persisted is read back tolerantly. Request models forbid
+unknown fields so a live caller cannot smuggle one past validation, but a stored
+request is RCP's own record of work it already admitted, so a field this build no
+longer declares must not make that task permanently unrecoverable. Reading one
+drops exactly the keys the model no longer declares, logs each drop with the
+operation id, and validates every remaining field as strictly as before. Recovery
+therefore survives a request-schema field being removed; a live request carrying
+an unknown field is still refused.
+
 ## Add project and retained research
 
 Add project treats an existing `.research/manifest.toml` as retained RCP

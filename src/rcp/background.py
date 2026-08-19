@@ -38,7 +38,7 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.experiment_admission import experiment_start_message
-from rcp.runs.task_policy import task_graph_capable
+from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import (
     CoachRequest,
@@ -3136,6 +3136,16 @@ class BackgroundAgentTasks:
                     or stored_episode.control_node_id != request.control_node_id
                 ):
                     raise ValueError("The Experiment task changed its episode parent scope.")
+                if stored_episode.authorized_by is None:
+                    # The episode's own human is the authority for every turn in
+                    # it, so a current human pressing Resume/Retry cannot stand in.
+                    # Episodes created before that snapshot was recorded therefore
+                    # have no recoverable authority; a fresh Run does.
+                    raise ValueError(
+                        "This Experiment-loop turn cannot be resumed or retried because its "
+                        "episode predates the recorded human authorizer. Press Run on the "
+                        "Experiment to start a fresh episode."
+                    )
                 authorized_by = stored_episode.authorized_by
                 task_graph_target = stored_episode.graph_target
             elif parent is not None or request.trigger != "experiment_run":
@@ -4280,15 +4290,13 @@ class BackgroundAgentTasks:
 
     @staticmethod
     def _request_from_record(record: AgentTaskRecord) -> AgentTaskRequest:
-        if record.kind == "paper_coach":
-            return CoachRequest.model_validate(record.request)
-        if record.kind == "auto_research":
-            return AutoResearchRunRequest.model_validate(record.request)
-        if record.kind == "branch_merge":
-            return BranchMergeRunRequest.model_validate(record.request)
-        if record.kind == "episode_report":
-            return EpisodeReportRunRequest.model_validate(record.request)
-        return RunRequest.model_validate(record.request)
+        model: type[AgentTaskRequest] = {
+            "paper_coach": CoachRequest,
+            "auto_research": AutoResearchRunRequest,
+            "branch_merge": BranchMergeRunRequest,
+            "episode_report": EpisodeReportRunRequest,
+        }.get(record.kind, RunRequest)
+        return load_stored_request(model, record.request, operation_id=record.operation_id)
 
     @staticmethod
     def _validate_request_type(kind: AgentTaskKind, request: AgentTaskRequest) -> None:

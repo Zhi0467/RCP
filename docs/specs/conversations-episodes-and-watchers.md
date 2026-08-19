@@ -69,6 +69,12 @@ ending, native-session binding, operational ceiling, Stop state, report state,
 and restart reconciliation. Mode adapters own their distinct admission,
 authority, watcher/child settlement, and compact wrap-up facts.
 
+The parent's recorded human authorizer is the authority for every turn inside the
+episode, so a different current human pressing Resume or Retry cannot stand in for
+it. An episode with no recorded authorizer therefore has no recoverable turn, and
+RCP refuses that recovery by naming the situation and the remaining action — a
+fresh human Run, which starts a new episode and records its own authorizer.
+
 Every episode has exactly one validated native-session binding at a time:
 provider, session id, execution host, exact reusable stage, project, graph
 target, and actor conversation. A human Run always starts a fresh episode and

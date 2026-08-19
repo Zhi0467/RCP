@@ -2143,3 +2143,56 @@ def test_report_request_decode_never_accepts_an_auto_research_task_shape(tmp_pat
     assert decoded.episode_id == "report-episode"
     assert not hasattr(decoded, "role")
     assert not hasattr(decoded, "campaign_id")
+
+
+def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_path: Path) -> None:
+    """A recorded episode authorizer is required, so say what the human can do.
+
+    Regression: an Experiment episode written before the authorizer snapshot
+    existed refused Retry with "A patch-capable agent task requires a human
+    authorizer snapshot." That is true and useless. The episode's own human is
+    the authority for every turn in it, so a current human cannot stand in --
+    but pressing Run starts a fresh episode, and the message must say so.
+    """
+
+    store = _store(tmp_path)
+    stage = tmp_path / "legacy-experiment-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        execution.checkpoint_stage("", str(stage))
+        candidate = "{}"
+        store.record_agent_task_contract(
+            execution.operation_id,
+            "experiment_episode_context_candidate",
+            candidate,
+            hashlib.sha256(candidate.encode()).hexdigest(),
+        )
+        yield _sse(AgentEvent(event="session", session_id="experiment-session"))
+        yield _sse(AgentEvent(event="error", text="Transient provider failure."))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    root = tasks.start(
+        "project",
+        "node_chat",
+        _experiment_request(),
+        operation_id="legacy-experiment-root",
+        authorized_by=fabricated_authorizer("Researcher"),
+    )
+    wait_for_task(store, root.operation_id, expect="failed")
+
+    # Age the episode back to before the authorizer snapshot was recorded.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET authorized_space_id = NULL, authorized_user_id = NULL, "
+            "authorized_display_name = NULL WHERE episode_id = ?",
+            (_EXPERIMENT_EPISODE_ID,),
+        )
+    assert store.episode(_EXPERIMENT_EPISODE_ID).authorized_by is None
+
+    with pytest.raises(ValueError) as refusal:
+        tasks.retry(root.operation_id, authorized_by=fabricated_authorizer("Someone else"))
+    message = str(refusal.value)
+    assert "predates the recorded human authorizer" in message
+    assert "Press Run on the Experiment to start a fresh episode." in message
+    assert store.agent_task(root.operation_id).status == "failed"

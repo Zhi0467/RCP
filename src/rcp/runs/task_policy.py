@@ -1,14 +1,51 @@
 from __future__ import annotations
 
-from pydantic import ValidationError
+import logging
+from collections.abc import Mapping
+from typing import TypeVar
+
+from pydantic import BaseModel, ValidationError
 
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.service import RunRequest
 
+logger = logging.getLogger(__name__)
+
+_StoredRequest = TypeVar("_StoredRequest", bound=BaseModel)
+
 _AUTO_RESEARCH_GRAPH_ROLES = frozenset({"orchestrator", "worker"})
 _CHAT_TASK_KINDS = frozenset({"node_chat", "project_chat"})
 _INGEST_TASK_KINDS = frozenset({"seed", "refresh"})
+
+
+def load_stored_request(
+    model: type[_StoredRequest],
+    stored: Mapping[str, object],
+    *,
+    operation_id: str | None = None,
+) -> _StoredRequest:
+    """Parse one request RCP itself persisted, tolerating fields this build dropped.
+
+    Request models forbid unknown fields so a *live* caller cannot smuggle one
+    past validation.  A stored request is not a live caller: it is RCP's own
+    record of what it already did, and a field removed from the model since it
+    was written must not make that task permanently unrecoverable.  Only keys
+    the model no longer declares are dropped, and each drop is logged, so this
+    stays an observable compatibility read rather than a silent fallback.
+    Every remaining field is validated exactly as strictly as before.
+    """
+
+    unknown = sorted(set(stored) - set(model.model_fields))
+    if not unknown:
+        return model.model_validate(dict(stored))
+    logger.warning(
+        "Dropped %s from a stored %s while reading task %s; this build no longer declares it.",
+        ", ".join(unknown),
+        model.__name__,
+        operation_id or "<unknown>",
+    )
+    return model.model_validate({k: v for k, v in stored.items() if k not in set(unknown)})
 
 
 def task_graph_capable(kind: str, request: object) -> bool:

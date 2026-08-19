@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
+from pydantic import ValidationError
 
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
+from rcp.runs.task_policy import (
+    load_stored_request,
+    task_experiment_episode_id,
+    task_graph_capable,
+)
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest
 
@@ -86,3 +93,51 @@ def test_experiment_episode_id_is_selected_only_for_live_experiment_requests() -
         is None
     )
     assert task_experiment_episode_id(CoachRequest(message="hello")) is None
+
+
+def test_stored_request_keeps_every_declared_field_strict() -> None:
+    """A field the model still declares is validated exactly as before."""
+
+    with pytest.raises(ValidationError):
+        load_stored_request(RunRequest, {"mode": "not-a-mode"})
+
+
+def test_stored_request_drops_only_fields_this_build_removed() -> None:
+    """RCP must stay able to read a task it wrote before a field was deleted.
+
+    Regression: every stored ``auto_research`` request carried an ``ending`` key
+    that the model later dropped, so Retry answered a raw validation dump and
+    the task was permanently unrecoverable.
+    """
+
+    stored = {"episode_id": "episode-1", "role": "orchestrator", "ending": None}
+    request = load_stored_request(AutoResearchRunRequest, stored, operation_id="op-1")
+    assert request.episode_id == "episode-1"
+    assert request.role == "orchestrator"
+    assert not hasattr(request, "ending")
+
+
+def test_dropping_a_stored_field_is_logged_rather_than_silent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The compatibility read stays observable, so drift is visible in the log."""
+
+    with caplog.at_level(logging.WARNING, logger="rcp.runs.task_policy"):
+        load_stored_request(
+            AutoResearchRunRequest,
+            {"episode_id": "episode-1", "role": "orchestrator", "ending": None},
+            operation_id="op-1",
+        )
+    assert any(
+        "ending" in record.getMessage() and "op-1" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_a_live_request_still_cannot_smuggle_an_unknown_field() -> None:
+    """Tolerance is for RCP's own records only; the model itself stays strict."""
+
+    with pytest.raises(ValidationError):
+        AutoResearchRunRequest.model_validate(
+            {"episode_id": "episode-1", "role": "orchestrator", "ending": None}
+        )

@@ -33,11 +33,15 @@ const teamIdentity = {
   },
 };
 
+// Relative to now on purpose. A literal expiry silently turns this into a
+// time bomb: the ledger renders "Expired" once the date passes and the test
+// starts failing on a calendar day rather than on a code change.
+const DAY_MS = 24 * 60 * 60 * 1000;
 const invitation = {
   invitation_id: "invite-a",
   created_by: teamIdentity.user.user_id,
-  created_at: "2026-08-12T00:00:00Z",
-  expires_at: "2026-08-19T00:00:00Z",
+  created_at: new Date(Date.now() - 7 * DAY_MS).toISOString(),
+  expires_at: new Date(Date.now() + 7 * DAY_MS).toISOString(),
   consumed_at: null,
   consumed_by: null,
   failed_attempts: 0,
