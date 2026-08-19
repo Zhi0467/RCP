@@ -127,6 +127,19 @@ The labelled final assistant message is the answer. Provider traces, reasoning,
 tool output, and the Patch verdict remain separate. A rejected Patch does not
 discard an already-produced answer.
 
+Every patch-producing Seed, Refresh, or Work stage carries an RCP-staged Python
+validator client. It exchanges bounded request and response files through the
+writable workspace while RCP polls locally or through the existing SSH run stage,
+prepares the candidate against live current state in process, and records each
+check. Client exit codes distinguish valid, semantically invalid, and validator
+unavailable, so a transport failure can never become a correction loop.
+Validation stages operations in their written order against earlier valid
+operations while retaining whole-patch node and edge lookup for legal forward
+references; it never reorders operations. A validator self-check is not a
+reservation: Apply re-prepares RCP-owned bookkeeping and reruns the same semantic
+validator against current state while holding the canonical append lock, so graph
+movement between response and Apply is not by itself a rejection.
+
 ## Durable task lifecycle
 
 Agent work belongs to the backend, not a browser view. Before execution, RCP
@@ -140,6 +153,16 @@ They retain task mode, graph target, capability, host, stage, and external-effec
 diagnostics. A failed run retains its scratch and Patch text for bounded
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed.
+
+Seed and Refresh repair through a generic correction ladder: rescan the retained
+stage for the Patch, then hand validation errors back to the same live session
+for at most two scratch-only rounds. A reused stage still holds the previous
+attempt's `patch.json`, so RCP fingerprints that file before each correction
+launch and refuses an unchanged one, handing the unchanged-file diagnostic
+forward rather than revalidating the same bytes. A graph-level rejection is never
+retried. Work instead repairs through same-access `work_patch_correction`, which
+retains the original native session and write scope and changes only the
+instruction.
 
 Unrelated tasks may run concurrently. Turns in the same conversation and native
 stage do not overlap. Canonical append remains serialized by the graph target's

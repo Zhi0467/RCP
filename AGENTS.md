@@ -21,20 +21,10 @@ are raised and evidenced but **not decided**. Read it before proposing a change
 to something it covers, and add an entry rather than deciding an open question
 inside an implementation.
 
-In one sentence: a local web app that turns agent-driven research conversations
+In one sentence: a local desktop app that turns agent-driven research conversations
 into one durable research-graph record, a human authority queue, and a
 human-authored paper introduction with a read-only writing coach.
 
-### Current stack — subject to change; verify before relying on it
-
-Read `pyproject.toml` and `web/package.json` for the authoritative versions.
-
-- Python 3.11+ backend (`src/rcp`): FastAPI, Pydantic v2, SQLite, `uv`.
-- React + Vite + Tailwind frontend (`web/`), served from `web/dist` by the same
-  FastAPI app when that directory exists (mounted in [app.py](src/rcp/api/app.py)
-  from the path [web_assets.py](src/rcp/web_assets.py) owns).
-- Agent providers: Codex CLI and Claude Code, launched as subprocesses locally
-  or over SSH.
 
 ## Default working mode
 
@@ -70,56 +60,9 @@ to subagents.**
    behavior changed and archive an implemented, superseded, or abandoned handoff
    when its work closes. Never cite an archived file as current authority.
 
-### Where to cut the fan-out
-
-These boundaries are clean seams; parallel agents rarely collide across them.
-
-| Area | Files | Owns |
-|---|---|---|
-| Graph core | `src/rcp/core/` | models, patch validation, materialization, `research.md` generation |
-| Agent I/O | `src/rcp/agents/` | run context assembly, output schema, prompts, provider launch |
-| Transport | `src/rcp/transport/` | SSH, canonical-state workspace, repo snapshots, remote run stage |
-| Sources | `src/rcp/sources/` | Claude/Codex JSONL discovery, indexing, slicing |
-| History | `src/rcp/history/` | append-only patch log, locking, materialized outputs |
-| Run orchestration | `src/rcp/runs/` | distinct Seed/Refresh, Work, Discuss, graph repair, paper coach, Auto-research, Experiment-loop, episode wrap-up/report, and membership-fence workflows; policy-neutral staging and event plumbing |
-| Service/API | `src/rcp/service.py`, `src/rcp/api/` (`app.py`, `episodes.py`, `identity.py`), `src/rcp/projects.py`, `src/rcp/background.py` | app construction, routes, project catalog, background task lifecycle |
-| Storage | `src/rcp/storage/` | one SQLite file; `AppStore` composed from topic mixins (spaces — including project membership and invitations — projects, result_views, episodes, Auto-research, experiments, watchers, agent_tasks, rows) over `base` |
-| Paper | `src/rcp/paper/` | draft store, canonical introduction, writing sessions |
-| Setup | `src/rcp/setup.py`, `src/rcp/config.py` | manifest rendering, preflight, manifest schema |
-| Providers | `src/rcp/providers.py`, `web/src/providers.ts` | the provider registry: ids, labels, auth probe, model catalog, launch command |
-| Skills | `src/rcp/skill_registry.py`, `src/rcp/skills/` | the official skill/workflow registry: ids, versions, frontmatter dependencies, per-run staging |
-| Web | `web/src/` | React views, components, hooks, API client, types |
-| Desktop | `web/src-tauri/`, `packaging/` | Tauri shell, backend ownership handshake, window lifecycle, PyInstaller sidecar, bundle scripts |
-
-Skill and workflow package folders are non-Python resources, so every packaging
-path must name them explicitly — the wheel force-include in
-[pyproject.toml](pyproject.toml) and the PyInstaller `datas` in
-[rcp_backend.spec](packaging/rcp_backend.spec). `official_registry()` runs on
-project open, so an omitted folder breaks project open in that build only.
-
-Every package with `kind = "skill"` in the official RCP registry is enabled by
-default; official workflows remain opt-in. The package specifications in
-`src/rcp/skill_registry.py` are the single source for both registration and
-defaults, so adding a future official skill there must make it default-on
-without a second allowlist. Preserve an explicit project selection, including
-an explicit empty list, rather than forcing defaults back on after the human
-saves Settings.
-
-`src/rcp/core/models.py`, `src/rcp/config.py`, `src/rcp/providers.py`,
-`src/rcp/skill_registry.py`, `src/rcp/storage/models.py`, and
-`web/src/types.ts` are shared contracts. **Do not parallelize across them** — land the contract change first,
-serially, then fan out the consumers.
-
-### When to stay serial
-
-- Single-file or few-line changes.
-- Any change to `.research/` semantics or the patch envelope — the invariants
-  interact too much to split safely.
-- Anything the user asked to be done a specific way.
-
 ### Integrating work built outside this tree
 
-Another session may be committing to `main` while a long change is being built,
+If you find another session committing to `main` while a long change is being built,
 so an integration must survive drift. Give each parallel worker an APFS clone
 (`cp -c -R`, near-free, and unlike a worktree it carries uncommitted state),
 delete the copied `.venv` before `uv sync` — it holds an editable-install `.pth`
@@ -215,23 +158,7 @@ gitignored; a new `open` or `serve` process builds it before creating the app.
 
 ## Verification
 
-### Baseline — every change
-
-Backend: `uv run pytest` and `uv run ruff check src tests`.
-Web: `npm --prefix web run build` (typechecks) and `npm --prefix web test`.
-
-### Finish every work chunk cleanly
-
-Before reporting any logical chunk of work complete or handing it to the human
-for a commit, run its relevant tests and then `uv run pre-commit run --all-files`.
-If a hook modifies files, review and stage those changes, then rerun the full
-hook suite until it passes. A first formatter pass that changed files is not a
-successful final check.
-
-Before exporting, archiving, or committing a change set, enumerate
-`git ls-files --others --exclude-standard` and account for every intended new
-path in the snapshot. A tracked-only pre-commit or archive is not proof that the
-snapshot is complete.
+Baseline is pre-commit hooks and tyoe checks.
 
 ### Done means the checks and applicable scenario pass
 
@@ -295,276 +222,174 @@ exact steps: the command to run, the URL and view to open, the clicks to make,
 and what correct output looks like versus the symptom that would mean it failed.
 
 Remote/SSH behavior cannot be verified without a reachable host. Never claim a
-remote path works — state that it is untested and why.
+remote path works, reach and exercise it. Otherwise, state that it is untested and why.
 
 State clearly what you verified and what you did not.
 
 ## Invariants
 
-These encode current design/specification decisions. Breaking one silently invalidates the app's
-guarantees — surface the conflict instead of working around it.
+**An invariant is a guarantee whose violation breaks something major, and breaks
+it quietly.** Each one below names what breaks. If you cannot name that, it is a
+design rule or a note, not an invariant — put it in the right section.
+
+The numbers are stable identifiers cited from source comments, tests, and
+acceptance scenarios in more than twenty files. Never renumber one. Suffixed ids
+(`4b`, `10c`) are labels, not an outline; a new invariant gets the next free
+label in its own subject, not a suffix on the nearest topic.
+
+Mechanism belongs in [`docs/specs/`](docs/specs/); state the guarantee here and
+let the spec say how it is achieved.
+
+### Canonical history
 
 1. **Canonical main and graph-branch Patch logs are append-only.** Never edit or
    delete a patch file under `.research/patches/` or a branch Patch namespace.
-   A human Sync is committed as one visible `patches/batch-*` directory; replay
-   ignores its hidden `.batch-*` staging directory until the directory rename.
-   An SSH mirror may discard an unpublished local batch after remote failure,
-   because that mirror is explicitly not canonical history. An uncertain remote
-   commit is quarantined from replay; a confirmed commit remains visible and
-   blocks later canonical work behind derived-file repair rather than inviting
-   a duplicate Sync.
-   Every graph is rematerialized from the log and validated before it can affect
-   current state (`src/rcp/history/manager.py`, `src/rcp/core/materialize.py`).
+   *Breaks:* replay silently produces a different graph, and canonical history is
+   unrecoverable. An SSH mirror may discard an unpublished local batch after
+   remote failure, because that mirror is explicitly not canonical history.
 2. **Materialized files are never hand-edited.** `graph.json`, `research.md`,
    `glossary.json`, `proposals.json`, `coverage.json` are outputs.
-3. **Agents assert or propose; humans hold the protected authority boundary.**
-   Only human UI actions approve gated operations, change project truth
-   membership, authorize a bounded episode, or dispatch a branch merge.
-   Ordinary agents never choose a Decision or set standing. The deliberate
-   exception is the human-authorized Auto-research orchestrator: on its graph
-   branch, and through a human-dispatched merge agent carrying the orchestrator
-   graph profile, it may choose Decisions and judge non-protected node types.
-   No agent may approve a Proposal. A human authority action
-   whose operations cannot distinguish it from an ordinary edit names itself on
-   the patch (`human_action` in [models.py](src/rcp/core/models.py)); validation
-   dispatches on that name. Never infer which action produced a patch from its
-   operation shape — a direct Decision choice and a node edit are both one
-   `update_nodes` on one node, and guessing silently reroutes the other one.
-4. **Agent permission contracts are fixed by capability.** `permissions_for()`
-   in [config.py](src/rcp/config.py) is the semantic contract; the manifest may
-   not widen or narrow it. Discuss has writable conversation scratch but no
-   project or graph authority. Work-like Codex and Claude launches use their
-   supported native unattended exact-root enforcement for the task workspace
-   and RCP-admitted project repositories; dangerous/bypass permission modes are
-   forbidden. Work-originated graph and watcher corrections retain the same
-   native session, capability, project, graph target, and write-scope
-   fingerprint; only their instruction changes. Canonical `.research` is
-   outside every agent write scope. This is cooperative accidental-write
-   containment, not hostile same-account isolation or a read-secrecy claim.
-   Seed, Refresh, and their generic patch correction
-   write only their run scratch. The paper coach has no write or Apply path
-   anywhere. Every launch names its capability outright — `AgentLauncher.stream`
-   and `_command` require it, and there is no boolean shorthand a caller can pass
-   instead.
-4b. **One way to get a patch out of an agent.** There is no write-path mode. The
-   provider is launched with its cwd on a scratch folder and writes `patch.json`
-   there; that file is the only graph-change channel RCP reads. Work may edit
-   only the exact task stage and admitted project repository roots; those edits
-   carry operational authority, not graph authority. Conversations may
-   write optional preview files under the exact RCP-created artifact directory
-   for its turn, but those files are temporary, non-canonical, and carry no
-   graph authority. Never parse a patch out of stdout or a final message, never
-   add a canonical-state write path, and never copy a repository merely to make
-   it readable — off-machine repos are read over SSH from the host and path in
-   the prompt.
-5. **Run context, write scope, and graph target are distinct.** The whole graph
-   and canonical `research.md` for the exact main/branch target enter every
-   graph-agent run; only run-scope repositories enter as raw pointers. Those
-   pointers bound context, while `ProjectWriteScope` independently grants exact
-   Work-like repository roots on the execution machine. Keep both distinctions
-   when touching `src/rcp/agents/context.py` or `src/rcp/agents/write_scope.py`.
-6. **Exactly one canonical state repository**, possibly remote. Writes go
-   through the `StateWorkspace` (lock, publish explicit changed files); never
-   write canonical files directly from a route handler. Auto-research graph
-   branches are namespaces inside this repository, not additional project homes.
+   *Breaks:* the file disagrees with the log, and a human trusts the wrong one.
+6. **Exactly one canonical state repository**, possibly remote. Writes go through
+   the `StateWorkspace`; never write canonical files directly from a route
+   handler. Auto-research graph branches are namespaces inside this repository,
+   not additional project homes.
+   *Breaks:* split-brain canonical state.
 6b. **One synchronous transition manager owns semantic mutation.** Human Sync,
-   agent Apply, branch Apply, and branch merge prepare typed initiating and
-   generated operations to deterministic closure and commit one exact-target
-   revision or nothing. Replay applies recorded expanded operations and never
-   reruns historical rules. Every mutation response replaces graph, control,
-   guidance validity, and head from one final state; the client computes no rule
-   outcome.
+   agent Apply, branch Apply, and branch merge commit one exact-target revision
+   or nothing. Replay applies recorded expanded operations and never reruns
+   historical rules. Every mutation response replaces graph, control, guidance
+   validity, and head from one final state; the client computes no rule outcome.
+   *Breaks:* two mutation paths diverge, and client and server disagree about
+   what a rule did.
 7. **Atomic writes.** Manifest and materialized output writes go through the
    existing temp-file-then-`os.replace` helpers.
+   *Breaks:* a crash mid-write leaves a truncated manifest.
 7b. **Materialization never mutates a contained model in place.** Every change in
-   `_apply_patch` replaces a container slot (`state.nodes[id] = …`) or a whole
-   attribute; nothing reaches into a node, edge, proposal, ambiguity, or
-   coverage object and assigns a field. `_fork_state` in
-   [materialize.py](src/rcp/core/materialize.py) relies on this: it copies only
-   the containers and shares their contents, which is what keeps replay fast.
-   Break the rule and a failed patch silently corrupts the previous revision.
+   `_apply_patch` replaces a container slot or a whole attribute. `_fork_state`
+   in [materialize.py](src/rcp/core/materialize.py) relies on this: it copies
+   only the containers and shares their contents.
+   *Breaks:* a failed patch silently corrupts the **previous** revision.
    `test_patch_failing_part_way_leaks_no_earlier_operation` guards it.
-8. **One RCP process per data directory**, enforced by an `fcntl` lock in
-   [`__main__.py`](src/rcp/__main__.py). Background seed/refresh is
-   server-owned; a live run can be paused, a checkpointed attempt resumed, and a
-   paused/interrupted/failed attempt retried. Remote canonical-state concurrency
-   is also process-owned: `.agent-run.lock` and `.refresh.lock` are regular files
-   held by an OS advisory lock through an SSH holder process. File existence is
-   not ownership; live contention waits rather than failing, and process or
-   connection death releases ownership. Never restore mkdir/rmdir lock ownership
-   or tell the human to remove a lock path. An empty legacy lock directory is
-   reclaimed automatically; a populated directory, symlink, or special entry is
-   preserved and reported because replacing it cannot be proved safe. Remote
-   publication is staged under `.research/.publish/` and applied by the same
-   process holding `.refresh.lock`; never restore a separate unfenced SSH apply
-   after a point-in-time lease check.
-9. **A failed run keeps its scratch folder and its patch text.** The patch is
-   persisted before validation runs, and the folder is deleted only after the
-   patch applies — otherwise it ages out on a retention window. Recovery is
-   automatic (the ladder in
-   [`stream_graph_run`](src/rcp/runs/tasks/graph.py)): rescan the folder for the patch,
-   then hand validation errors back to the same live session for at most two
-   scratch-only rounds. This is the Seed/Refresh generic patch-correction path;
-   Work instead uses same-access `work_patch_correction`. A graph-level rejection
-   is never retried.
-10. **A conversation turn is not an ingest run.** Seed/refresh and conversation
-   turns share the launcher and background lifecycle, nothing else. Discuss and
-   Work assemble chat context
-   (`ContextAssembler.chat_context`); neither loads `cursors.json` or
-   materializes an evidence slice, and they take the canonical append lock only if a
-   Work patch actually needs applying. Discuss receives no patch contract. A
-   Work patch is optional and forbidden from touching coverage or cursors;
-   asking a question and Work with no net graph change spend no revision. Keep
-   the Discuss, Work, and Seed/Refresh policy paths in distinct modules and entry
-   points under [`src/rcp/runs/`](src/rcp/runs/) rather than reintroducing a
-   shared `is_chat` branch. Shared *plumbing* is fine and expected — they call
-   the same launch, receipt, staging, and event-pump helpers. The line is the
-   discriminator: no
-   shared helper may take a `kind`, `is_chat`, `surface`, or equivalent parameter,
-   because anything that must know which surface it serves is policy and belongs
-   in the caller. Leaving some lines duplicated is the correct outcome, not a
-   missed cleanup.
+
+### Human authority
+
+3. **Agents assert or propose; humans hold the protected authority boundary.**
+   Only human UI actions approve gated operations, change project truth
+   membership, authorize a bounded episode, or dispatch a branch merge. No agent
+   may approve a Proposal. The deliberate exception is the human-authorized
+   Auto-research orchestrator on its own graph branch. A human authority action
+   whose operations cannot distinguish it from an ordinary edit names itself on
+   the patch (`human_action` in [models.py](src/rcp/core/models.py)); validation
+   dispatches on that name.
+   *Breaks:* an agent decides something only a human may decide. Never infer
+   which action produced a patch from its operation shape — a Decision choice and
+   a node edit are both one `update_nodes` on one node, so guessing silently
+   reroutes the other one.
+3b. **The protected-type rule.** An agent operation is free unless it touches an
+   existing ResearchQuestion or Hypothesis — those two types are the project's
+   beliefs. This covers update, remove, supersede, merge, and the edges that
+   restructure or retire one. Connecting a node created in the same Patch is not
+   restructuring, and attaching Evidence stays direct because the status change it
+   argues for is gated one layer down. The rule binds **every** agent, including
+   an ordinary Work turn a human is watching. A Proposal carries one declared
+   intent checked against a closed set of shapes, never inferred from how its
+   operations happen to look.
+   *Breaks:* an agent silently rewrites what the project believes.
+4. **Agent permission contracts are fixed by capability.** `permissions_for()` in
+   [config.py](src/rcp/config.py) is the semantic contract; the manifest may not
+   widen or narrow it. Discuss has writable conversation scratch but no project or
+   graph authority. Work-like launches use native unattended exact-root
+   enforcement; dangerous/bypass permission modes are forbidden. Seed, Refresh,
+   and their correction write only their run scratch. The paper coach has no write
+   or Apply path anywhere. Canonical `.research` is outside every agent write
+   scope.
+   *Breaks:* an agent writes where it was never authorized to. This is
+   cooperative accidental-write containment, not hostile isolation or a
+   read-secrecy claim.
+4b. **`patch.json` in the agent's own stage is the only graph-change channel.**
+   Never parse a patch out of stdout or a final message, and never add a
+   canonical-state write path. Work repository edits carry operational authority,
+   not graph authority.
+   *Breaks:* a patch recovered from a stream is silently truncated or interleaved,
+   and a corrupted graph change applies.
+5. **Run context, write scope, and graph target are distinct.** The whole graph
+   and canonical `research.md` for the exact target enter every graph-agent run;
+   run-scope repositories enter only as raw pointers, while `ProjectWriteScope`
+   independently grants exact repository roots.
+   *Breaks:* conflating them grants write access that context alone implied.
 10b. **Work is the only conversation mode with graph authority.** The captured
    per-turn `mode="work"` is the authority; there is no separate
-   `allow_graph_change` gate, and the agent cannot grant itself authority by
+   `allow_graph_change` gate, and an agent cannot grant itself authority by
    writing a file during Discuss. A stray Discuss patch is kept as a receipt and
-   discarded. A Work patch contains semantic operations only; RCP adds patch,
-   Proposal, revision, scope, and lifecycle bookkeeping. An empty patch spends no
-   revision. Never infer mode from the wording of the message.
+   discarded. Never infer mode from the wording of the message.
+   *Breaks:* an unauthorized turn changes the graph.
+10c. **A chat's scratch folder belongs to the conversation, not the turn.** Keyed
+   by stable project identity plus `chat_id` and reused, because a resumed native
+   session must run in the directory it was given. Clear the previous turn's
+   `patch.json` on entry, and let that clearing fail closed — the workspace
+   operations in [run_stage.py](src/rcp/transport/run_stage.py) raise rather than
+   report an unreachable workspace as an empty one.
+   *Breaks:* a surviving `patch.json` is read as this turn's patch and applied
+   under this turn's authorization. Deleting the folder per turn instead breaks
+   multi-turn chat.
+10d. **Discuss and Work never read, index, copy, project, prompt with, validate,
+   or authorize from prior chat transcripts.** A provider session identifier may
+   still continue the provider's own native session. The answer may be appended to
+   chat history for the UI, but that write is never an input to a turn.
+   *Breaks:* unreviewed history becomes agent authority.
 
-   Every patch-producing Seed, Refresh, or Work stage contains an RCP-staged Python validator
-   client. It exchanges
-   bounded request and response files through the writable workspace while RCP
-   polls locally or through the existing SSH run stage, prepares the candidate
-   against live current state in process, and records each check. Client exits
-   distinguish valid, semantically invalid, and validator unavailable so a
-   transport failure cannot become a correction loop. Validation stages
-   operations in their written order against earlier valid operations while
-   retaining whole-patch node and edge lookup for legal forward references; it
-   never reorders operations.
+### Runs and durability
 
-   Apply re-prepares bookkeeping and reruns the same semantic validator against
-   current state while holding the canonical append lock. There is no original
-   context-revision pin or Resume-ancestor walk, and graph movement alone is not
-   a rejection. Work graph and watcher corrections reuse the same native Work
-   session and exact provider-enforced project write scope; only the instruction
-   changes, and they must not repeat completed operational side effects.
-
-   A remote single-patch append uses the patch file as an observable atomic
-   commit point: a confirmed commit succeeds and repairs derived outputs, an
-   absent commit rolls the mirror back, and an unknown commit is quarantined
-   until a canonical refresh proves what happened.
-10c. **A chat's scratch folder belongs to the conversation, not the turn.** It is
-   keyed by stable project identity plus `chat_id` and reused, because a resumed
-   native session must run in the directory it was given — Claude keys its
-   sessions by that directory. Resume attaches only to the persisted stage after
-   its host and exact project/chat path are validated; never recompute or trust a
-   client UUID as the checkpoint. Clear the previous turn's `patch.json` on entry
-   and let the sweepers age the folder out;
-   deleting it per turn breaks multi-turn chat. That clearing fails closed — a
-   survivor would be read as this turn's patch and applied under this turn's
-   authorization — so the workspace list/remove operations in
-   [run_stage.py](src/rcp/transport/run_stage.py) raise instead of reporting an
-   unreachable workspace as an empty one.
-10d. **Chat is not transcript ingestion.** The first ordinary turn of a native chat session sends
-   one master context containing the graph, focused node, exact run-scope repositories, enabled
-   package pointers, and both mode contracts. Seeing both contracts is not cumulative authority:
-   every later ordinary provider resume carries one explicit Discuss or Work marker plus that turn's
-   resolved artifact directory, and only the matching contract is active. RCP names that directory
-   outright rather than sending an identifier for the agent to substitute into a path template. The
-   unchanged human message follows the marker. Unchanged context
-   is not resent; Settings, contract, repository, or package-pointer changes are appended as compact
-   replacement deltas and become the session baseline only after a successful turn. Discuss has
-   those repositories read-only. Work receives the same exact pointers as
-   context, while provider-enforced writes are limited to the exact task
-   workspace and RCP-admitted repository roots; it may return its optional
-   semantic `patch.json`. Discuss and Work never read, index, copy,
-   project, prompt with, validate, or authorize from prior chat transcripts. Discuss has no active
-   Patch channel even though the session master retains the inactive Work contract. A
-   provider continuation/session identifier may still be passed to the provider
-   for its own native session behavior. The answer may be appended to canonical
-   chat history for the UI, but that write is not an input to the turn. Every
-   conversation launches with its scratch workspace writable; canonical state is
-   read-only for Discuss, and direct canonical `.research` writes are
-   prompt-forbidden for Work.
-10f. **Seed/Refresh read provider logs in place.** Seed and Refresh receive the
-   configured provider log roots on their execution machine and the canonical
-   graph's project-level `last_refresh_at` watermark. RCP performs only a bounded
-   existence/readability preflight of those roots. It never parses, indexes,
-   normalizes, slices, hashes, caches, stages, transfers, or projects conversation
-   content, and it never validates agent output against per-log cursors or
-   coverage claims. A source preflight failure is an exact prompt diagnostic and
-   does not block launch. The watermark advances only when a Seed/Refresh patch
-   applies; failed, paused, interrupted, and rejected runs leave it unchanged.
-   It is an overlap-tolerant project timestamp, not an exactly-once record cursor.
-10e. **The answer and preview artifacts are independent.** The labelled final
-   assistant message is the Markdown reply. A turn may also leave supported
-   files as direct regular children of its exact RCP-created artifact directory;
-   RCP never discovers artifacts from provider directives, provider-owned paths,
-   URLs in the answer, nested files, or symlinks. Artifact descriptors may live
-   with the task, but bytes remain only in temporary local or remote scratch.
-   Preview discovery, validation, rendering, expiry, SSH unavailability, and
-   explicit Download failure never change the reply, task verdict, or graph.
-   RCP serves or proxies bounded files on demand and never automatically copies
-   one into canonical state, the chat transcript, or durable app storage. HTML
-   runs in an opaque sandbox: it cannot access or navigate RCP, open popups,
-   submit forms, start downloads, or use ordinary network resource APIs. Because
-   inline JavaScript remains useful, it may still navigate its own isolated
-   child frame and thereby cause a navigation request; never describe this as a
-   zero-network preview.
-   A **result view is not one of these per-turn artifacts.** It lives at one
-   stable `views/<view_id>/` path inside the conversation's own reused workspace
-   (invariant 10c), and a revision is an ordinary Work turn that resumes the same
-   native session and is handed that exact path. Never route a view through a
-   turn's artifact directory, and never copy, link, or switch cwd to reach it.
-   Task Resume/Retry is recovery, not the revision mechanism.
-10g. **One episode parent, one native session, one graceful stop.** Auto-research
-   and bounded Experiment control are two modes of one persisted episode parent;
-   their adapters keep distinct operational policy. Every Auto-research episode
-   is durably bound before launch to one persistent graph-only branch based on
-   one coherent main head; root, child Work/Experiment, watcher, correction,
-   settlement, and report graph paths retain that exact target. Main stays
-   independently writable. Only a human-dispatched, graph-only merge agent may
-   semantically rebase a quiescent branch head onto current main, producing one
-   attributable transition or nothing; repository files are never branched or
-   merged and the graph branch is never discarded. Every bounded episode has
-   exactly one validated native-session binding — provider,
-   session id, execution host, and exact reusable stage — committed only by a
-   mechanically successful joint Patch/watcher handoff. A graph-level rejection
-   is still recorded as that turn's accepted operational result. A human Run
-   always starts a fresh episode and a fresh session; an automatic watcher wake resumes that binding as a new task at
-   the next invocation under the explicit `watcher_wake` continuation cause,
-   never as task Resume. Watcher provenance never selects the session; the newest
-   human-authorized episode does. RCP proves the session and stage before the
-   atomic claim and before spending the invocation: transient unavailability and
-   an incompatible group leave the watchers completed and unnotified, a missing
-   or mismatched binding becomes a durable diagnostic, and nothing ever falls back
-   to a fresh session silently. A wake still clears the previous turn's
-   `patch.json` and `watch.json` under invariant 10c. **Stop loop** is idempotent,
-   durable, and restart-safe: intent is persisted before any unclaimed watcher can
-   win a new claim, the already-authorized turn finishes normally, every existing
-   compatible current/adopted and newly emitted watcher is retained as `stopped`,
-   while incompatible historical groups remain pending; Resume/Retry of that
-   turn can never reenable automatic delivery or fall back to a fresh session.
-   If the exact saved continuation becomes unusable, Stop may durably abandon
-   only recovery of that already-terminal task while preserving its Patch and
-   full history, then settle the episode. Generic Work watcher wakes stay fresh
-   turns. Completion, operational-ceiling exhaustion, unrecoverable failure, and
-   a Proposal/Decision/Blocker human-authority pause fence new admissions and
-   enter one hidden report wrap-up; pressing Stop is the sole ending that skips
-   it. Report generation resumes the exact episode session and stage with only
-   the ending, official `episode-report` skill/output pointers, and a compact
-   immutable mode-produced receipt. It gets at most three provider turns total,
-   consumes and exposes no operational invocation, and terminalizes after a
-   final visible report error without Resume or Retry. The report is required to
-   be inherently visual by skill prompting only; RCP validates safe bounded HTML
-   but never mechanically scores visual form. Reauthorization always creates a
-   new episode and fresh session rather than reopening a reported parent.
+8. **One RCP process per data directory**, enforced by an `fcntl` lock in
+   [`__main__.py`](src/rcp/__main__.py). Remote canonical-state concurrency is
+   likewise process-owned: `.agent-run.lock` and `.refresh.lock` are regular files
+   held by an OS advisory lock through an SSH holder process. File existence is
+   not ownership; live contention waits rather than failing, and process or
+   connection death releases ownership.
+   *Breaks:* two processes write one store, or a stale path is mistaken for a
+   live owner. Never restore mkdir/rmdir lock ownership.
+9. **A failed run keeps its scratch folder and its patch text.** The patch is
+   persisted before validation runs, and the folder is deleted only after the
+   patch applies.
+   *Breaks:* good agent work is discarded over a validation failure and cannot be
+   recovered.
+10. **A conversation turn is not an ingest run.** Seed/Refresh and conversation
+   turns share the launcher and background lifecycle, nothing else. Discuss and
+   Work assemble chat context; neither loads `cursors.json` nor materializes an
+   evidence slice, and they take the canonical append lock only if a Work patch
+   needs applying. Discuss receives no patch contract. A Work patch is forbidden
+   from touching coverage or cursors.
+   *Breaks:* a corrupt ingest cursor kills an ordinary question, or a chat turn
+   silently advances ingestion state.
+10e. **A preview cannot reach RCP.** HTML runs in an opaque sandbox: it cannot
+   access or navigate RCP, open popups, submit forms, start downloads, or use
+   ordinary network resource APIs. RCP never discovers artifacts from provider
+   directives, provider-owned paths, URLs in the answer, nested files, or
+   symlinks, and never automatically copies one into canonical state.
+   *Breaks:* agent-authored HTML acts on the app that renders it. Inline
+   JavaScript may still navigate its own isolated child frame, so never describe
+   this as a zero-network preview.
+10f. **The Seed/Refresh watermark advances only when a patch applies.** Failed,
+   paused, interrupted, and rejected runs leave it unchanged. It is an
+   overlap-tolerant project timestamp, not an exactly-once record cursor.
+   *Breaks:* conversations are silently skipped and never ingested.
+10g. **One episode parent, one validated native-session binding, one graceful
+   stop.** Every bounded episode binds exactly one provider, session id, execution
+   host, and reusable stage, committed only by a mechanically successful joint
+   Patch/watcher handoff. Every Auto-research episode is durably bound before
+   launch to one graph-only branch on one coherent main head, and every path in it
+   retains that exact target; the branch is never discarded and main stays
+   independently writable. **Stop loop** is idempotent, durable, and restart-safe:
+   intent is persisted before any unclaimed watcher can win a new claim.
+   *Breaks:* work silently resumes on a fresh session or the wrong graph, or a
+   stopped loop restarts itself. Nothing ever falls back to a fresh session
+   silently.
 11. **`answer` is the reply; `message` is a trace.** Providers label their final
    assistant message and RCP preserves that label in `AgentEvent`
-   ([launcher.py](src/rcp/agents/launcher.py)). Never treat "the last text the
-   provider emitted" as the answer — for Codex that is usually a tool or
-   reasoning item.
+   ([launcher.py](src/rcp/agents/launcher.py)).
+   *Breaks:* the human is shown a reasoning or tool item instead of the answer —
+   for Codex, the last text emitted usually is one.
 
 ## Conventions
 
@@ -584,598 +409,334 @@ guarantees — surface the conflict instead of working around it.
   (SQLite + caches); override with `RCP_DATA_DIR`. Tests must not touch the real
   data dir — pass an explicit `data_dir`.
 
-## Gotchas
+## Design rules
 
-- **Build `web/dist` before anything Python, including `uv sync`.** It is
-  gitignored, and the wheel force-includes it
-  ([pyproject.toml](pyproject.toml)), so on a fresh clone `uv sync` fails in
-  hatchling with `Forced include not found` before you reach a single test.
-  `uv run pytest` needs it for a second reason:
-  `test_legacy_direct_human_write_endpoints_are_not_exposed` asserts `405` on
-  paths that return `404` when the SPA catch-all is not mounted. So the order on
-  a fresh clone is `npm --prefix web ci && npm --prefix web run build`, then
-  `uv sync`, then pytest — which is what CI does.
-- **`.research/` is excluded from every pre-commit hook.** Patch files are
-  append-only and materialized files are outputs (invariants 1 and 2); a
-  whitespace fixer rewriting one would violate both. Keep the top-level
-  `exclude:` in `.pre-commit-config.yaml` if you add hooks.
-- Read [`docs/design.md`](docs/design.md), the applicable current module in
-  [`docs/specs/`](docs/specs/), and any active scenario the change touches.
-  Ignore archived documents unless the task is explicitly historical.
-- Remote/SSH paths mean a path *on that machine*, always paired with a host.
-- `examples/demo-project/state-repo` is a real fixture project with a
-  multi-revision graph, a pending proposal, and an ambiguity. Running the demo
-  mutates it; treat unexpected diffs there as a signal.
-- `.recovery/` holds salvaged run artifacts, not source. Leave it alone.
+**A design rule is a decision about how the code is arranged.** Break one and
+nothing fails immediately — the code gets worse, or an invariant becomes easier
+to break. That is why these are separate from invariants: they are guardrails,
+not guarantees.
 
-## Human preferences
+Rationale lives in [`docs/decisions/`](docs/decisions/) and in the design
+philosophy inside [`docs/design.md`](docs/design.md) and
+[`docs/specs/`](docs/specs/). State the rule here, not the argument for it.
 
-Recorded from the user; add to this list when they state a preference worth
-carrying forward, and correct an entry when they change their mind.
+### Where code goes
 
-- Implementation is delegated and fanned out; reading, planning, verification,
-  and review stay with the main agent.
-- Agent execution policy belongs in individual run modules while `app.py`
-  remains composition and routes; extract behavior unchanged before cleanup or
-  deduplication.
-- A review is not a handoff: fix important bugs or gaps it finds in the same
-  task, then verify the repaired behavior.
+- **Policy lives in the caller, not in shared plumbing.** Keep Discuss, Work, and
+  Seed/Refresh paths in distinct modules and entry points under
+  [`src/rcp/runs/`](src/rcp/runs/). Shared *plumbing* is fine and expected — they
+  call the same launch, receipt, staging, and event-pump helpers. The line is the
+  discriminator: no shared helper may take a `kind`, `is_chat`, `surface`,
+  `patch_kind`, or equivalent parameter, because anything that must know which
+  surface it serves is policy. Leaving some lines duplicated is the correct
+  outcome, not a missed cleanup.
+- Agent execution policy belongs in individual run modules while `app.py` remains
+  composition. Extract behavior unchanged before cleanup or deduplication.
+- **Permission is code, not configuration.** Agent profiles are constants.
+  Changing what an agent may do requires the governing specification and focused
+  contract checks to change together. Every launch names its capability outright —
+  `AgentLauncher.stream` and `_command` require it, and there is no boolean
+  shorthand a caller can pass instead.
+- **Tunables belong in one central place, not scattered as per-file globals.**
+  Naming a magic number `_MAX_ENTRIES` at the top of the file that uses it is not
+  enough. Limits, timeouts, retention windows, and cache bounds live together.
+  Schema constants are the deliberate exception — slug patterns, node prefixes,
+  field allowlists, and payload caps stay next to the models they constrain,
+  because they are the contract rather than a knob.
+- **Structured deliverables are file-backed.** Anything with a schema that a
+  truncated or interleaved stream would silently corrupt is written to a file and
+  read from that file. Conversational prose is the exception: a chat reply *is*
+  the stream, so capture it from the provider's labelled final assistant message
+  rather than writing it twice.
+- Never copy a repository merely to make it readable — off-machine repos are read
+  over SSH from the host and path in the prompt.
+- **RCP must stay able to read records RCP wrote.** `extra="forbid"` is right for
+  a live caller and wrong for a stored row: a request field removed from a model
+  made every task already holding it unrecoverable. Read a persisted request
+  through `load_stored_request` in
+  [task_policy.py](src/rcp/runs/task_policy.py), which drops only undeclared keys
+  and logs each one. Removing a request field is a data-compatibility change, not
+  a rename.
+- **Code that also runs on a remote host is never hand-transcribed into a string
+  literal.** Two copies of the conversation parser drifted and the untestable one
+  rotted. Ship the module's own source over ssh
+  (`src/rcp/sources/record_parsing.py`).
+- **Prose describing an enforcement boundary drifts from the code enforcing it.**
+  The Work contract claimed no repository allowlist while `providers.py` denied
+  every write outside the resolved roots, so an authorized action came back as an
+  unexplained tool denial. Render the resolved object — `write_scope_section` in
+  [prompts.py](src/rcp/agents/prompts.py) — so prompt and flags read one source.
+- Only the episode report restricts its packages. Orchestrators and workers
+  resolve Settings packages like any other Work agent; if a staging call asserts
+  an exact skill id, check it is the report path before copying it.
+
+### Authority shape
+
+- **Graph branches are one narrow canonical exception, not version control.** Do
+  not generalize them into user branches, Git worktrees, repository rollback,
+  branch discard, branch-to-branch merge, or a conflict viewer. Project
+  duplication or movement uses the canonical nameplate and refusal/transfer
+  semantics, never inferred history reconciliation.
+- **An Auto-research episode is scoped to the project**, not to the question it
+  started from. The budget and the protected-type rule are the brakes; there is no
+  second fence quietly doing that job. A seated worker gets no scope of its own —
+  where it may be seated is bounded, what it may then touch is not.
+- A Work patch is not a universal Proposal. Ordinary legal graph operations apply
+  as asserted agent content; only the narrow gated operations create Proposal
+  records for Inbox.
+- The Auto-research orchestrator is a Work agent and resolves Settings packages
+  like any other. Only the concluding report is narrowed to its one required skill.
+- **Borrow the host's privilege system; do not restate it.** Where an operation
+  needs real authority — installing, backing up, restoring, removing a person —
+  require operating-system privilege rather than inventing an RCP admin role. A
+  rule that reduces to "admins are admins" is circular and should be deleted.
+- Human-readable patch prose is governed at the producer prompt and human-action
+  boundary. Deterministic history rendering resolves ids to titles and derives
+  truthful fallbacks; it never invents scientific causality.
+
+### Talking to agents
+
+- **Agent-facing prose is written, not accreted.** Every contract opens by saying
+  what RCP is and what the agent's role in it is. Say a rule once: a precedence
+  list that restates its own bullets, a section re-listing pointers already given,
+  and a heading rendering "- none" are all noise. Describe RCP's internal
+  enforcement only where the agent can act on it. Name a resolved path rather than
+  an id the agent must substitute into a template.
+- A retry that still holds its native provider session gets a short follow-up
+  naming only what changed — diagnostics, output paths, schema, staged packages.
+  It never rebuilds the task contract, or the agent receives its framing twice.
+  Only a retry in a fresh process rebuilds.
+- Staged skills and workflows reach the agent as one pointer block with id,
+  version, wrapped description, and folder. RCP does not separately mark which
+  package a slash token named; the token is already in the human's message.
+- The official skill/workflow registry is authoritative at launch. A task stores
+  selected ids and every attempt re-resolves them, so upgrading a package
+  deliberately upgrades the next attempt and can never make a task un-retryable.
+- Every agent invocation is durable background work. Closing its launch or chat
+  surface must not cancel it.
+- Nothing versioned is hardcoded into instructions; point at the source of truth.
+
+## Notes
+
+Working habits and local facts. Nothing here breaks if ignored — but the human
+stated it, so follow it.
+
+### How the human wants work done
+
+- Implementation is delegated and fanned out; reading, planning, verification, and
+  review stay with the main agent.
+- A review is not a handoff: fix important bugs or gaps it finds in the same task,
+  then verify the repaired behavior.
 - UI-level verification is expected for features, user-reported bugs, and
   substantial changes — not just green tests.
-- **Durable acceptance before code.** The human's attention goes to product
-  journeys and authority boundaries, not one scenario per defect. Propose and
-  confirm a scenario—including the UI path—before building a new durable
-  cross-module promise. Use focused regression tests for bugs, refactors, and
-  module-local behavior already governed by a current specification or active
-  scenario. A confirmed implementation handoff does not reopen design.
+- **Durable acceptance before code.** Propose and confirm a scenario — including
+  the UI path — before building a new durable cross-module promise. Use focused
+  regression tests for bugs, refactors, and module-local behavior already governed
+  by a current specification or scenario. A confirmed handoff does not reopen
+  design.
 - A scenario is not a unit test wearing a costume. If its assertions are fully
-  determined by one API call, its driver is `pytest` and it should say so. A
-  browser is earned only when the thing that can break lives in the browser.
-- **Staleness is swept, not polled.** End a coding session by checking the
-  `pending` and `blocked-external` scenarios for ones that became runnable or
-  became wrong. Leave `implemented` ones alone unless asked — a code change is
-  what should prompt a re-run, not elapsed time.
-- Server launch commands own singleton replacement and frontend builds; the
-  human should never need to look up or kill an RCP PID manually.
-- **`RCP Dev.app` is kept, always.** It is the desktop surface the human drives,
-  so do not `cargo clean` it away as routine tidying — that deletes
+  determined by one API call, its driver is `pytest`. A browser is earned only when
+  the thing that can break lives in the browser.
+- **Staleness is swept, not polled.** End a session by checking the `pending` and
+  `blocked-external` scenarios for ones that became runnable or became wrong. Leave
+  `implemented` ones alone unless asked.
+- **Verify against the human's real records, not by clicking around.** Copy the
+  data directory, build the app against the copy so the real constructor and
+  startup run, then sweep every real row through the code path in question. That is
+  exhaustive where a UI drive samples.
+- **Measure a refactor's cost and benefit before committing to it, including one
+  already agreed.** Two planned restructurings did not survive measurement in a
+  single session. State the number before the redesign, and say plainly when it
+  reverses an earlier recommendation.
+- **Measure before adding a cache, and before removing one.** A quadratic
+  `model_copy(deep=True)` sat behind a checkpoint cache that existed to hide it;
+  the profile said 98% of replay time was that one line.
+- **Ask plainly; do not answer a question with a pointer.** Put the decision itself
+  in front of the human — self-contained, scoped, readable without opening a file.
+  Name the choice, name what each option costs, and say which one you would take.
+  Design documents are where a decision is *recorded*, never how it is *asked*.
+- **The Git workflow is single-branch: commit directly to `main`.** Do not create a
+  working branch first. Unrelated to RCP's canonical Auto-research graph branches.
+
+### Local facts
+
+- Server launch commands own singleton replacement and frontend builds; the human
+  should never need to look up or kill an RCP PID.
+- **`RCP Dev.app` is kept, always.** It is the desktop surface the human drives, so
+  do not `cargo clean` it away as routine tidying — that deletes
   `web/src-tauri/target/`, the dev bundle included. Shrink the cache through
-  `[profile.dev]` in [Cargo.toml](web/src-tauri/Cargo.toml) instead. Building the
-  *release* bundle is a separate, deliberate drive; "desktop is done" refers to
-  the dev app unless the human says release.
+  `[profile.dev]` in [Cargo.toml](web/src-tauri/Cargo.toml) instead. "Desktop is
+  done" refers to the dev app unless the human says release.
 - **Only the dev bundle is kept in `target/`; the rest is disposable cache.**
-  `target/debug/bundle/` holds `RCP Dev.app`, and it is self-contained — the
-  binary resolves the checkout from a compiled-in `CARGO_MANIFEST_DIR`
-  ([backend.rs](web/src-tauri/src/backend.rs)), so nothing under `target/` is
-  read at runtime. `deps/`, `incremental/`, and `build/` only make the next
-  rebuild fast, and `target/release/` is not used at all while the workflow is
-  dev-app-only. Pruning all four is safe and reclaims several GB:
+  `target/debug/bundle/` holds `RCP Dev.app` and is self-contained — the binary
+  resolves the checkout from a compiled-in `CARGO_MANIFEST_DIR`. Pruning is safe
+  and reclaims several GB, at the cost of one cold compile:
 
   ```sh
   rm -rf web/src-tauri/target/debug/{deps,incremental,build} web/src-tauri/target/release
   ```
 
-  The cost is one cold compile the next time `web/src-tauri/` itself changes.
-  Note `target/debug` is named for the cargo *profile*, not for symbols —
-  `debug = 0` already drops those, and `tauri build --debug` is still required
-  because `debug_assertions` is what selects the checkout backend.
-- The dev app is a thin shell over the checkout, not a copy of it. Under
+- The dev app is a thin shell over the checkout, not a copy. Under
   `debug_assertions` it runs `uv run rcp serve` from the checkout with
-  `--web-assets source` ([backend.rs](web/src-tauri/src/backend.rs)), so Python
-  and web changes are already live in it and need no rebuild. Rebuild only when
-  `web/src-tauri/` itself changed — and then it is required, because the bundle
-  carries the compiled shell. Compare the bundle's mtime against the newest
-  source under `web/src-tauri/` before claiming the desktop is current.
-  `tauri build --debug` is not a diagnostics flag: `debug_assertions` is what
-  selects the checkout backend, source web assets, and dev navigation policy, so
-  `RCP Dev.app` cannot be built without it.
-- Routine RCP development uses the browser workflow and does not run Tauri
-  builds. Run the desktop checks when native behavior changed or for final
-  pre-push/release verification.
-- Nothing versioned should be hardcoded into instructions; point at the source
-  of truth instead.
-- **The Git development workflow is single-branch: commit directly to `main`.**
-  Do not create a working Git branch first or suggest one; a branch-first commit
-  only strands the work and forces a merge. This is unrelated to RCP's canonical
-  Auto-research graph branches. Committing still happens only when the human
-  asks, and pushing still requires an explicit request.
-- **Agent-facing prose is written, not accreted.** Every contract opens by saying
-  what RCP is and what the agent's role in it is, because the name is otherwise
-  unexplained jargon. Say a rule once: a precedence list that restates its own
-  bullets, a section that re-lists pointers already given, and a heading that
-  renders "- none" are all noise. Describe RCP's internal enforcement only where
-  the agent can act on it. Prefer naming a resolved path over sending an id the
-  agent must substitute into a template.
-- A retry that still holds its native provider session gets a short follow-up
-  naming only what changed for that attempt — diagnostics, output paths, schema,
-  staged packages. It never rebuilds the task contract, because the session
-  already holds it and the agent would receive its retry framing twice. Only a
-  retry in a fresh process rebuilds.
-- Staged skills and workflows reach the agent as one pointer block with id,
-  version, wrapped description, and folder. RCP does not separately mark which
-  package a slash token named: the token is already in the human's message.
-- **Tunables belong in one central place, not scattered as per-file globals.**
-  Naming a magic number `_MAX_ENTRIES` at the top of the file that uses it is not
-  enough. Limits, timeouts, retention windows, and cache bounds are configuration
-  and live together. Schema constants are the deliberate exception — slug
-  patterns, node prefixes, field allowlists, and payload caps stay next to the
-  models they constrain, because they are the contract rather than a knob.
-- **Measure before adding a cache, and before removing one.** A quadratic
-  `model_copy(deep=True)` in materialization sat behind a checkpoint cache that
-  existed to hide it; the profile said 98% of replay time was that one line.
-  Profile the real path first — the expensive thing is rarely where the
-  machinery already is.
-- Structured deliverables are file-backed. A patch — anything with a schema that
-  a truncated or interleaved stream would silently corrupt — is written to a file
-  and read from that file, never parsed out of a message stream. Conversational
-  prose is the exception: a chat reply *is* the stream, and making the agent also
-  write it to a file would be two channels for one payload. Capture it from the
-  provider's labelled final assistant message instead.
-- Conversation scratch is writable in both modes. Discuss has no graph contract;
-  Work is the per-turn authorization for operational execution within its exact
-  provider-enforced project write scope and one optional semantic `patch.json`.
-  RCP, not the agent, adds graph bookkeeping. Optional previews stay temporary
-  and provider-agnostic.
-- Discuss and Work are switchable on every node and project conversation.
-  Discuss is plum, Work is dark forest, `Shift+Tab` toggles while the composer is
-  focused, and every sent turn keeps an immutable visible mode label. A resumed
-  task keeps its original mode regardless of the current composer setting.
-- Work is non-interactive and uses provider-native exact project write
-  containment for both providers; Discuss, Seed/Refresh and their generic patch
-  correction, and paper coaching keep narrower profiles. Invariant 4 states the contract and
-  [providers.py](src/rcp/providers.py) owns the per-provider flags that implement
-  it — do not restate either in prose that will drift.
-- A Work patch is not a universal Proposal. Ordinary legal graph operations
-  apply as asserted agent content; only the existing narrow gated operations
-  create Proposal records for Inbox.
-- Invalid Work patches enter bounded same-session `work_patch_correction` with
-  the original Work access. Only the instruction becomes patch-focused;
-  operational work is never repeated merely to repair graph reflection. Apply
-  re-prepares and revalidates live state under the append lock, so graph movement
-  alone cannot turn completed Work into a rejected operational task.
-- HTML previews keep useful inline JavaScript. Their security boundary is
-  isolation from the RCP parent, not literal zero network traffic: a script may
-  navigate only its own sandboxed child frame and cause that navigation request.
-- Context boundaries are named exactly, never approximated by a containing
-  directory: Discuss and Work get the graph/current node and exact run-scope
-  repository pointers, but no provider-root or prior-transcript input. Those
-  pointers bound context, while `ProjectWriteScope` independently binds exact
-  Work writes. Seed and Refresh are
-  the only paths that receive provider-source roots for ingestion. The agent
-  reads those roots in place after the project watermark; RCP never moves the
-  conversation files.
-- Every agent invocation is durable background work. Closing its launch or chat
-  surface must not cancel it; one shared activity and notification design
-  surfaces progress, completion, failure, resume, and retry while the app stays
-  usable.
-- Canonical-state lock recovery belongs to RCP. Dead process-held ownership
-  releases automatically, live contention waits visibly, an empty legacy lock
-  directory is reclaimed rather than reported, and only an entry whose ownership
-  cannot be proved safe is preserved with a concrete diagnostic. The human is
-  never instructed to delete `.research` lock paths.
-- Node wording correction is a literal human edit, not an agent request. Open a
-  direct prose editor, stage it in the project draft, clear the draft standing
-  to asserted, and never start node chat merely to rewrite text. Canonical
-  history changes only when the human presses Sync.
-- A node must be understandable when opened alone: prefer ordinary language,
-  enough context-setting sentences, and inline explanations over terse project
-  jargon. Relation rows should open a focused one-hop DAG view.
-- The Paper editor/coach split is human-resizable, and the editor begins with
-  authored content rather than a redundant canonical-file banner. The authored
-  Markdown switches between Write and Preview in the same pane, using the chat
-  renderer so unsaved text can be read without creating a second document.
-- Agent configuration is owned by Project Settings. Chat and coaching show one
-  non-expandable provider-name box only: no model, reasoning, machine,
-  permission summary, or locked/editable label. Seed/Refresh keeps its explicit
-  launch controls, and chat keeps Raw truth inputs because those select context,
-  not execution configuration. Settings supplies fresh conversation defaults;
-  an existing native conversation retains the profile it last ran with so
-  continuation does not silently move providers or machines.
-- Chat and coaching surfaces never contain sample prompts, slogans,
-  instructional empty-state copy, or textarea placeholder text. An empty
-  conversation is simply empty.
-- **No commentary lines in UI design.** Never place a smaller, muted, or more
-  transparent explanatory line beneath a button, title, large label, card heading,
-  or other primary UI element. Remove such helper subtitles and descriptive
-  microcopy wherever they appear; make the primary wording, hierarchy, shape,
-  color, motion, and control state communicate the design. Keep actual errors,
-  conflicts, required warnings, and accessibility labels explicit. When an item
-  genuinely has more to say, a card carries its name and state and an explicit
-  control opens a read-only inspector — never a caption under the card.
-- The official skill/workflow registry is authoritative at launch; a task's
-  recorded packages are a receipt, not an input. A task stores selected ids, and
-  every attempt — first, retry, or resume — re-resolves them and stages its own
-  bundle, so upgrading a package deliberately upgrades the next attempt and can
-  never make an existing task un-retryable.
-- Selecting packages is `/` or `$` in the composer, and it is keyboard-first:
-  arrows highlight, Enter selects the highlight instead of sending, Escape
-  dismisses. Project Settings holds the defaults; a composer selection applies
-  to that turn only.
-- **Share Margin Dev's visual grammar; do not copy its catalog literally.** RCP
-  uses a restrained paper, sheet, walnut, and oxblood system, warm rules and
-  shadows, compatible typography, and tactile book materials. Project covers
-  share one oxblood base and differ by texture only; never assign decorative
-  colors per card. Semantic accents are reserved for meaningful type or state.
-  RCP keeps its own information architecture and behavior.
-- RCP branding is one unified mark. Never place an initial tile beside the full
-  acronym, which reads as a duplicated letter; the visible logo contains
-  **RCP** exactly once.
-- The project shell is intentionally bare: no RCP wordmark, product logo, or
-  revision label beside the project name. Agent tasks and Refresh are icon-only
-  accessible controls; project chat is **Ask**. The attention destination is
-  **Inbox** with a colored count, and DAG is a subpanel of **Research**, not a
-  primary destination. Group the header semantically: labeled **Sync / Ask**
-  together, then icon-only
-  **History / Refresh** together; do not space all four as unrelated peers.
-  Glossary definitions appear inline where terms are read; Glossary has no
-  navigation destination, and glossary authoring remains an open question.
-- A previously opened project must feel immediate even when canonical state is
-  remote. Render one rebuildable durable display snapshot first, refresh the
-  authoritative state in the background, and keep the cache out of every
-  history, agent, Sync, paper-write, and other authority path. Canonical
-  mutation controls wait for reconciliation, and blocking remote refreshes run
-  off the web event loop.
-- DAG controls include boundary-aware page scroll chaining, brighten/dim-all,
-  fullscreen with visible node details, **Release all pins**, and per-node pin
-  release. Repulsion must visibly affect spacing, and the canvas must leave
-  generous room for manual dragging beyond auto-layout positions. Touchpad
-  pinch zoom stays anchored at the gesture focal point without turning ordinary
-  two-finger scrolling into zoom or disrupting other DAG interactions.
-- The visible projections are **Research** and **Runs**: Research shows
-  question-centered paths with unconnected records separated, while Runs is the
-  operational control surface for Seed/Refresh ingestion and bounded Experiments.
-  Runs carries no page title and is ordered **Running**, **Needs action**,
-  **Completed**, first matching state winning; it nests ingestion retries and
-  keeps row timestamps as real metadata. Generic node chat, project chat, and
-  paper-coach tasks live in the Agent tasks drawer, never in Runs — an
-  Experiment-loop task is the one deliberate exception, because its Patch kind
-  and control node make it research execution. Pressing an Experiment's **Run**
-  navigates to Runs and opens its run detail rather than a floating node-chat
-  window; that detail's only loop-level action is **Stop loop**, while
-  invocation-level Pause/Resume/Retry stay in the Agent task inspector. DAG
-  **Research flow** columns follow semantic stage rather than relation-arrow
-  direction.
-- Node detail is a resizable floating inspection window. Its project-scoped
-  size survives minimize/restore and close/reopen, remains reachable after a
-  viewport change, and closes when the human enters Chats.
-- Human-readable patch prose is governed primarily at the producer prompt and
-  human-action boundary. Deterministic history rendering is a safety net that
-  resolves ids to titles and derives truthful operation fallbacks; it does not
-  invent scientific causality.
-- **Graph branches are one narrow canonical exception, not version control.**
-  Every Auto-research episode owns one append-only graph-only branch inside the
-  canonical state repository, and a human may dispatch its semantic merge to
-  main. Do not generalize it into user branches, Git branches/worktrees,
-  repository rollback, branch discard, branch-to-branch merge, or a conflict
-  viewer. Project duplication or movement still uses the canonical nameplate and
-  refusal/transfer semantics, never inferred history reconciliation.
-- **Ask plainly; do not answer a question with a pointer.** When the human needs
-  to decide something, put the decision itself in front of them — self-contained,
-  scoped, and readable without opening a file. "Confirm S76" and "Q6 leaves four
-  things undecided" are not questions. Name the choice, name what each option
-  costs, and say which one you would take. Design documents are where a decision
-  is *recorded*, never how it is *asked*.
-- The Auto-research orchestrator is a Work agent. It gets the project's Settings-enabled
-  skills and workflows, staged and rendered through the same one pointer block every
-  other contract uses. Only the concluding report is narrowed to its one required skill.
-- **Permission is code, not configuration.** Agent profiles are constants.
-  Changing what an agent may do requires the governing specification and focused
-  contract checks to change together; add an acceptance scenario only when the
-  change creates a durable product promise under step 0.
-- **The protected-type rule.** An agent operation is free unless it touches an
-  existing ResearchQuestion or Hypothesis record — those two types are the
-  project's beliefs. This covers update, remove, supersede, merge, and the edges
-  that restructure or retire one. Attaching Evidence stays direct, because the
-  status change it argues for is already gated one layer down. Connecting a node
-  created in the same Patch is not restructuring.
-- **The rule binds every agent, not only campaign workers**, from the day it
-  lands — including an ordinary Work turn the human started and is watching. One
-  authority regime, and the brake gets exercised on real use before anything runs
-  unattended. Its cost is that the Proposal vocabulary has to widen to say more
-  than one Hypothesis status change, because otherwise the rule leaves an agent
-  no legal move at all.
-- **A Proposal carries one intent, not one operation.** Supersede and merge touch
-  two nodes, so a one-operation limit would make a genuine duplicate hypothesis
-  unsayable. Intent is declared and checked against a closed set of shapes, never
-  inferred from how the operations happen to look — an unchecked relaxation is
-  just a bundle smuggled through.
-- **An Auto-research episode is scoped to the project**, not to the question it
-  started from. The budget and the protected-type rule are the brakes; there is
-  no second fence quietly doing that job. **A seated worker gets no scope of its
-  own** either — where it may be seated is bounded, what it may then touch is
-  not. Accepting that a worker can reach past its seat is the price of not
-  building the second fence.
-- **Auto-research starts from the project header, beside Ask**, because the
-  action is project-wide and belongs where project-wide actions live. Its budget
-  is typed in invocations with observed cost shown beside it: the enforced number
-  stays exact, the legible number stays honest. Its report allocation is hidden
-  from that operational budget. Every non-Stop ending produces the durable visual
-  report; Stop alone means no report.
-- Result views are revised by **acting on the picture** — box a region,
-  underscore items — not by describing it in the composer. A gesture writes a
-  visible draft and never dispatches a turn by itself.
-- **Borrow the host's privilege system; do not restate it.** Where an operation
-  needs real authority — installing, backing up, restoring, removing a person —
-  require operating-system privilege on the machine rather than inventing an RCP
-  admin role. RCP does not tell a lab who may administer its server, and a rule
-  that reduces to "admins are admins" is circular and should be deleted.
+  `--web-assets source`, so Python and web changes are already live and need no
+  rebuild. Rebuild only when `web/src-tauri/` itself changed — and then it is
+  required. `tauri build --debug` is not a diagnostics flag: `debug_assertions` is
+  what selects the checkout backend, source web assets, and dev navigation policy.
+- Routine development uses the browser workflow and does not run Tauri builds. Run
+  the desktop checks when native behavior changed or before a release.
 
-## Repeated failures
+### Environment facts
 
-Condense recurring mistakes here — one line each, cause then correction — so the
-next agent does not rediscover them. Keep it short; delete entries that no
-longer apply.
-
-- `pre-commit run --all-files` means all *tracked* files. A green run over a
-  change that adds new files proves nothing about them, and the human's commit
-  is where the hooks finally see them and fail. Run `pre-commit run --files
-  <owned-paths>` for the exact new files without staging unrelated work. Recurred
-  2026-08-17 on the S123/S124 slice, where a second green check hid it: `ruff
-  check src tests` walks directories and so *does* see untracked files, while the
-  pre-commit `ruff-format` hook does not. All seven files the slice added were
-  unformatted under a clean `ruff check` and a clean `--all-files` run. `ruff
-  format --check src tests packaging` is the cheap direct proof; a green `ruff
-  check` is not evidence about formatting.
-- A copied test helper drifts into three different answers. Ten copies of the
-  same "wait for the task to settle" loop disagreed about which statuses are
-  terminal — `not in {"queued","running"}` treated the transient `"pausing"` as
-  settled, and one named `"stopped"` (not an `AgentTaskStatus` at all) while
-  omitting `"interrupted"`, so that copy could only ever time out on an
-  interrupted task. Poll through `wait_for_task`/`wait_for_task_response` in
-  [helpers.py](tests/helpers.py), which read `ACTIVE_AGENT_TASK_STATUSES` from
-  [storage/models.py](src/rcp/storage/models.py) rather than restating the set
-  (2026-08-12).
-- The same tight-bound mistake resurfaced: the campaign lifecycle acceptance test kept
-  its own hardcoded 20s wait while the shared bound is 60s, so it failed intermittently
-  in full-suite runs and passed every time in isolation. Two sessions diagnosed it as a
-  behavioral flake before anyone read the literal. Grep for `time.monotonic() + <number>`
-  when a test only fails under load (fixed 2026-08-13).
-- Test timeouts are not tuning knobs. The copies above bounded the same wait at
-  2, 4, 5, 60 seconds; the loop returns the moment the task is terminal, so a
-  generous bound costs nothing on success while a tight one invents failures
-  under load. Use the shared `TASK_SETTLE_TIMEOUT`. Third instance found
-  2026-08-15: `test_staged_command_client.py` hardcodes `timeout_seconds=2` in
-  nine places against helpers that poll on a 10s deadline, so it fails only in
-  full-suite runs — still open.
-- `--all-files` also **rewrites files you are not working on**. A docs-only pass
-  reformatted `src/rcp/api/app.py` while another session was mid-edit on it
-  (2026-08-09). When the working tree holds changes that are not yours, scope the
-  run — `pre-commit run --files <paths>` — and stage only your own paths, then
-  `git reset` to leave the human's index as you found it.
-- A test that bypasses the middleware cannot see the middleware refuse. Every
-  project-membership test used `trusted_principal_resolver`, which skips the team
-  JSON/origin checks entirely, so a green suite said nothing about a client
-  sending a bodyless mutation — and the first invitation UI shipped without a
-  body and got `415 team_json_required` from a real server. When a route is
-  reachable through a browser session, cover it through one
-  (2026-08-15).
-- `include_router` on this FastAPI leaves an opaque `_IncludedRouter` in
-  `app.routes` instead of merging routes into it, so a flat walk finds zero
-  project-scoped routes and any test asserting over them passes vacuously.
-  Descend through `original_router` (2026-08-15).
-- **Relaxing a constraint in the create path is not a migration.** `CREATE TABLE
-  IF NOT EXISTS` never alters an existing table, so changing
-  `episode_wrapups.ending` from `NOT NULL` to nullable fixed only fresh
-  databases — every existing one kept the constraint and crashed on open with
-  `NOT NULL constraint failed`. `ON CONFLICT … DO NOTHING` did not save it
-  either: that resolves the *named uniqueness* conflict, and NOT NULL is checked
-  first, so the insert raised even though the row already existed. Rebuild the
-  table in the migration block and assert a migrated store's `PRAGMA table_info`
-  equals a fresh one's (fixed 2026-08-15).
-- `connection.executescript` issues an implicit COMMIT before it runs. The
-  schema block holds one open `BEGIN IMMEDIATE` across every migration, so an
-  `executescript` in the middle of it silently commits the half-finished
-  migration and destroys the all-or-nothing property. Use separate
-  `connection.execute` calls inside that block (2026-08-15).
-- Every test builds a fresh SQLite file, so a green suite says nothing about
-  migration. New watcher columns were declared in the `CREATE TABLE IF NOT
-  EXISTS` *and* indexed in the same `executescript`, which on any existing
-  database ran before `_ensure_column` and crashed every start with "no such
-  column" — 785 passing tests over a store that could not open one real file.
-  Index a new column only in the migration block below the `_ensure_column`
-  calls, and verify a schema change by opening a copy of the real store
-  (fixed 2026-08-07).
-- Sign the bytes, verify the same bytes. The campaign broker HMAC'd the request as the
-  client wrote it, while RCP recomputed the HMAC from `model_dump()` of the *validated*
-  model. `status_in` is sorted during validation, so `watch-graph` was refused as
-  "credential is invalid or expired" whenever the agent wrote its statuses in any order
-  but alphabetical — breaking the orchestrator's only non-polling wait. Any normalizer
-  (strip, sort, dedupe, filled default) reopens this, so verification canonicalizes the
-  raw request text and never a round-tripped model (fixed 2026-08-13).
-- An end-to-end test that exercises only the simplest case proves the least. The one
-  broker round-trip test used `status`, the single verb whose arguments have no
-  normalizing validator, so a 1844-test green suite said nothing about the six mutating
-  verbs. Cover every verb through the real transport, not one representative.
-- Only the episode report restricts its packages. Orchestrators and workers resolve
-  Settings packages like any other Work agent; if a staging call asserts an exact skill
-  id, check it is the report path before copying it.
-- Do not copy commands out of the README without running them. `serve --reload`
-  was documented there while it exited instantly instead of serving (fixed
-  2026-07-28 via the `reload_app` factory).
-- Only one RCP server may own a data directory (`fcntl` lock). `open` reuses its
-  healthy owner and replaces an unavailable one; `serve` gracefully replaces
-  it and waits for the lock, so do not send the human through PID discovery.
-- Do not delete a run's scratch folder on failure. Repeated seed/refresh attempts
-  discarded good agent work over a filename mismatch; the fix (2026-07-28) was to
-  scan the folder, retain it, and correct in-session instead of asking the human
-  to press Retry.
-- A reused graph-run stage still contains the prior attempt's `patch.json`.
-  Fingerprint it before every correction launch and refuse an unchanged file;
-  otherwise a provider that writes nothing can appear to complete successfully.
-  Refusing means handing the unchanged-file diagnostic straight to the next
-  correction, never revalidating the same bytes — revalidation overwrites that
-  diagnostic with the original one and the agent never learns it wrote nothing.
-- A Work validator self-check is not a reservation. Human Sync may move the graph
-  after any response, so Apply must reload current state, re-prepare RCP-owned
-  bookkeeping, and rerun semantic validation under the append lock. Never restore
-  an expected-revision check or Resume-ancestor lookup as a substitute.
-- Whole-patch lookup is not operation reordering. Build lookup indexes for legal
-  node and edge references, but stage each operation against the temporary state
-  produced by earlier valid operations in exactly the order written.
-- "One shared background lifecycle" is not "one shared execution pipeline". Node
-  chat was routed through the ingest path, so a corrupt ingest cursor killed an
-  ordinary question before the provider ever launched. Chat now has its own
-  graph/repository-only context and prompt; Seed/Refresh retain the separate
-  source-ingestion context and deliverable.
-- One unreadable provider root must not kill Seed/Refresh before launch. RCP's
-  metadata-only root preflight reports the exact diagnostic, keeps every
-  configured root in the contract, and leaves the provider to inspect the roots
-  it can reach. It does not inspect or move conversation files as a fallback.
-- `codex exec resume` accepts neither `--sandbox` nor `--cd`. A Work Resume must
-  carry its saved exact project permission profile through the provider's
-  supported `--config` path; it must never fall back to the dangerous bypass
-  flag. Check the subcommand's own `--help` before assuming a flag carries over
-  from `codex exec`.
-- Chat must not be made dependent on source-pointer reachability. A prior chat
-  transcript is UI history only; Discuss and Work never resolve, copy, or validate
-  it as agent input. A provider session id may continue the provider's native
-  session without becoming RCP context.
-- Failing a task discarded the answer it had already produced, so a chat whose
-  graph change was rejected showed an error and no reply. `TaskFailed` carries
-  the partial messages into `fail_agent_task`.
-- A remote PID wrapper built `exec cd <cwd> && <provider>`; the shell returned 0
-  after changing directory without launching the provider, so chat reported no
-  answer. Change directory first, then `exec` the provider.
-- macOS spells `/tmp` as `/private/tmp` after path resolution. Resolve `RCP_DATA_DIR`
-  once in `create_app` so cache roots and loaded manifest paths stay comparable.
-- A `null` model on the wire meant provider default to the client but keep the
-  stored value to the resolver, so switching providers launched the previous
-  provider's model. A provider change now clears an inherited model unless the
-  caller supplies the new one explicitly.
-- History id rescue matched arbitrary `word/word` text and rewrote repository
-  paths, while an inventory-style filter silently dropped authored changes.
-  Substitute only identifiers resolved at that revision and preserve every
-  non-empty legacy sentence; style is governed at the producer boundary.
-- Eager full-history prose replay delayed project entry and then reapplied every
-  accepted patch inside the renderer. Load only the latest summary after project
-  state, load the complete projection when History opens, and collect prose from
-  the existing replay observer rather than adding a second pass or a cache.
-- Pause/resume is parent→child, not one operation id. A test that reuses one id
-  models nothing: read task state across the chain, and exercise resume through
-  `POST …/tasks/{id}/resume` so the child is real. Validate the saved native
-  stage and session provenance, but never walk that lineage to recover a Work
-  patch base revision; Apply always uses live state under the append lock.
-- Claude `--add-dir` is context plumbing, not a Work authority boundary. Work
-  uses unattended `dontAsk` mode plus an RCP-authored strict settings allow-list
-  for the exact task stage and admitted repositories; it never uses the provider
-  bypass mode. Do not put provider-log roots into Discuss or Work context.
-  Seed/Refresh receives configured provider-log roots only under its distinct
-  in-place ingestion contract.
-- Benign shell noise must never become a failure reason. `bash -lic` writes
-  "cannot set terminal process group" on every remote run, so a connection
-  dropped mid-run was reported to the human as a tty error instead of a lost
-  connection. Filter known-harmless stderr before surfacing it, and translate a
-  signalled or 255 exit into what actually happened (fixed 2026-07-30 in
-  `_meaningful_stderr`/`_exit_reason`).
-- `blocked-external` is a claim with an expiry date, not a permanent label. S14
-  and S18 sat blocked on "needs a reachable SSH host" while one was configured
-  and up the whole time, and a "remote path is untested" caveat was written into
-  S24 on the same unchecked assumption. Run the check (`ssh -o BatchMode=yes -o
-  ConnectTimeout=8 <host> true`) before repeating a blocker, and re-check every
-  one of them during the end-of-session sweep (fixed 2026-07-30).
-- What a provider CLI accepts is read from that CLI, never from memory. A
-  hand-typed reasoning list offered `minimal` (rejected by every current Codex
-  model) and omitted `max`/`ultra`, and a working Claude control was deleted on
-  the false belief that `_command` dropped `--effort`. `codex debug models`
-  enumerates models with per-model efforts; `claude --help` documents its own.
-  Provider facts now live only in `src/rcp/providers.py` (fixed 2026-07-30).
-- Code that must also run on a remote host is never hand-transcribed into a
-  string literal. Two copies of the conversation parser drifted — only the remote
-  one guarded a non-dict `payload` — and the copy nobody can test locally is the
-  copy that rots. Put the logic in a stdlib-only module and ship *that file's
-  source* over ssh (`src/rcp/sources/record_parsing.py`).
-- The RCP window loads the backend's own origin, which Tauri treats as a **remote**
-  page, so app commands are ACL-gated: without `AppManifest::commands` in
-  [build.rs](web/src-tauri/build.rs) and the matching `allow-*` entries in
+- **Build `web/dist` before anything Python, including `uv sync`.** It is
+  gitignored and the wheel force-includes it ([pyproject.toml](pyproject.toml)),
+  so on a fresh clone `uv sync` fails in hatchling with `Forced include not found`
+  before you reach a single test. `uv run pytest` needs it for a second reason:
+  `test_legacy_direct_human_write_endpoints_are_not_exposed` asserts `405` on
+  paths that return `404` when the SPA catch-all is not mounted. Fresh-clone order
+  is `npm --prefix web ci && npm --prefix web run build`, then `uv sync`, then
+  pytest — which is what CI does.
+- **`.research/` is excluded from every pre-commit hook.** A whitespace fixer
+  rewriting a patch file would violate invariants 1 and 2. Keep the top-level
+  `exclude:` in `.pre-commit-config.yaml` if you add hooks.
+- Remote/SSH paths mean a path *on that machine*, always paired with a host.
+- `examples/demo-project/state-repo` is a real fixture project with a
+  multi-revision graph, a pending proposal, and an ambiguity. Running the demo
+  mutates it; treat unexpected diffs there as a signal.
+- `.recovery/` holds salvaged run artifacts, not source. Leave it alone.
+- **Tauri treats the backend origin as a remote page**, so app commands are
+  ACL-gated: without `AppManifest::commands` in
+  [build.rs](web/src-tauri/build.rs) and matching `allow-*` entries in
   [capabilities/main.json](web/src-tauri/capabilities/main.json), every `invoke`
-  fails with "not allowed. Plugin not found". Both bundles shipped that way and
-  neither ever opened (fixed 2026-07-31).
-- "The bundle built and the process is running" is not "the window appeared."
-  A window created hidden and shown only by a successful frontend handshake turns
-  any failure into an app that silently does not open, so it now shows itself when
-  the handshake does not arrive, and startup milestones go to stderr. Verify a
-  desktop change by reading those milestones or `lsappinfo front`, not by the
-  process still being alive.
-- The dev app's launch deadline must cover a frontend build. `--web-assets
-  source` rebuilds unconditionally (`prepared_web_assets` has no freshness
-  check), so the checkout backend reports its launch result only after
-  `npm run build` finishes — 17s on a warm tree, over 60s on a busy one. Reusing
-  the packaged 12s `HEALTH_READY_TIMEOUT` meant every cold dev start timed out
-  while every warm one succeeded, which is exactly the shape the cold-start rule
-  below exists to catch (fixed 2026-08-12 via `LAUNCH_RESULT_TIMEOUT`).
-- A desktop launch must be verified **cold**, with nothing on 8421. A warm
-  backend answers instantly and hides every startup ordering bug: the window
-  aimed itself at the backend origin before that origin existed, and the
-  recovery navigation was skipped because the URL had not changed, so a cold
-  start stayed blank forever while every warm relaunch looked perfect
-  (fixed 2026-08-07, S79).
-- Never make remembered UI state depend on a `scroll` event arriving in time. The
-  browser pane runs with `document.hidden`, so rAF never ticks and scroll events
-  never dispatch — a listener-based recorder silently stores nothing there, and in
-  a real browser it is still a race against the click that navigates away. Read
-  the offset synchronously while the outgoing view is mounted (S82). Related pane
-  quirks: a forced `navigate` can collapse the viewport to 0x0, which makes every
-  scroller report `clientHeight === scrollHeight` — call `resize_window` with an
-  explicit width and height before concluding anything about scrolling. And React
-  batches, so a click and the assertion about its result must be separate
+  fails with "not allowed. Plugin not found". Both bundles once shipped that way
+  and neither opened.
+- **Browser-pane quirks that silently invalidate a check.** The pane runs with
+  `document.hidden`, so rAF never ticks and `scroll` events never dispatch — read
+  offsets synchronously while the outgoing view is mounted. A forced `navigate`
+  can collapse the viewport to 0x0, making every scroller report
+  `clientHeight === scrollHeight`; call `resize_window` with explicit dimensions
+  first. React batches, so a click and the assertion about it must be separate
   `javascript_tool` calls.
-- A revision turn must name the view's existing stable path. A second-turn
-  contract that named a fresh per-turn artifact directory and omitted the view
-  file made the provider draw a whole new 657 KB page instead of editing the old
-  one. The agent followed the instruction it was given, so this is an
-  orchestration error and never a native-session limitation — naming the exact
-  path makes the same revision 2.59x faster (2026-08-12, S114).
-- Wait on the condition you assert, not on the signal that precedes it. Two
-  periodic-poll watcher tests waited for the delivery callback to be *invoked* and
-  then asserted `notified`, which is written after that callback returns — so they
-  passed about two runs in three and failed inside the full suite, where the
-  machine is loaded. Put the asserted predicate itself inside `_wait_until`
-  (fixed 2026-08-12).
-- Verify the verification before trusting a red or green result. `pytest | tail`
-  reports *`tail`'s* exit code, so two failing runs looked like clean exits until
-  the output was written to a file and `$?` read directly. `-p no:randomly` was
-  also a no-op the whole time because `pytest-randomly` is not installed, which
-  turned a concurrent edit to `service.py` into a phantom "order-dependent test".
-  Check that a plugin is installed before reasoning about what it did, and never
-  read an exit code through a pipe (2026-08-12). Same shape: BSD `find` rejects
-  `-newermt '30 minutes ago'`, so with stderr suppressed it prints nothing and
-  reads as "no recent edits" — which is how a concurrent session was declared
-  finished while it was still typing. Compare against a reference file made with
-  `touch -t` instead (2026-08-12).
-- A shifting set of failing tests is a changing tree until proven otherwise. Three
-  campaign tests failed in three different combinations across four runs, which
-  looked exactly like load-sensitive races and was diagnosed as one; the real
-  cause was that the runs were not all the same code, and the surviving failure
-  was a deterministic red from an in-flight behavior change. Pin it by running the
-  suspect test in a pristine clone of the exact commit before theorizing about
-  timing (2026-08-12).
-- A test whose fake `stream` callable calls a method that does not exist can
-  still pass. The `AttributeError` becomes the task's `failed` status rather than
-  a test error, so it only surfaces when the run loses the race against
-  `interrupt_active_agent_tasks`. `check_pause()` was invented by one campaign
-  test and passed ~2 runs in 3; the real idiom is
-  `execution.control.pause_requested.is_set()` (fixed 2026-08-12).
-- A contract that *describes* an enforcement boundary drifts from the code that enforces it. The
-  Work contract claimed RCP imposes no repository allowlist while `providers.py` denied every write
-  outside the resolved roots, so a contract-authorized action came back as an unexplained tool
-  denial and the agent could only answer it by guessing at other commands. Render the resolved
-  `ProjectWriteScope` (`write_scope_section` in [prompts.py](src/rcp/agents/prompts.py)) so the
-  prompt and the provider flags read the same object. Applies to any policy stated in prose next to
-  code that enforces it (fixed 2026-08-18).
+
+### Mistakes made more than once
+
+Cause, then correction. Delete an entry once the structure that allowed it is gone.
+
+- **Verify the verification before believing red or green.** `pytest | tail`
+  reports *`tail`'s* exit code, so failing runs read as clean — write output to a
+  file and read `$?`. `-p no:randomly` was a no-op for months because
+  `pytest-randomly` is not installed. BSD `find` rejects `-newermt '30 minutes
+  ago'` and prints nothing with stderr suppressed, which reads as "no recent
+  edits" (2026-08-12).
+- **A shifting set of failures is a changing tree until proven otherwise.** Three
+  tests failing in three combinations across four runs looked like a load race;
+  the runs were simply not the same code. Re-run the suspect test in a pristine
+  clone of the exact commit before theorizing about timing (2026-08-12).
+- **`pre-commit run --all-files` means all *tracked* files**, and it rewrites
+  files you are not working on. A green run proves nothing about files a change
+  adds, and `ruff check` hides this because it walks directories and does see
+  untracked files. Use `ruff format --check`, and `pre-commit run --files <paths>`
+  for exact new files or when the tree holds someone else's changes (recurred
+  2026-08-17).
+- **Tests that pass while proving nothing.** A test bypassing the middleware
+  cannot see the middleware refuse — every membership test used
+  `trusted_principal_resolver`, so the first invitation UI shipped and got `415`
+  from a real server. A fake `stream` calling a nonexistent method still passes,
+  because the `AttributeError` becomes the task's `failed` status. `include_router`
+  leaves an opaque `_IncludedRouter` in `app.routes`, so a flat walk finds zero
+  routes and asserts vacuously — descend through `original_router`. And covering
+  one representative verb proved nothing about the six that normalize their
+  arguments (2026-08-12, 2026-08-15).
+- **Test timeouts are not tuning knobs, and copied waits drift.** Ten copies of
+  one settle-loop disagreed about which statuses are terminal and bounded the same
+  wait at 2, 4, 5, and 60 seconds; tight bounds invent failures under load while a
+  generous one costs nothing. Use `wait_for_task`/`wait_for_task_response` in
+  [helpers.py](tests/helpers.py) and the shared `TASK_SETTLE_TIMEOUT`. Grep for
+  `time.monotonic() + <number>` when a test fails only under load. **Still open:**
+  `test_staged_command_client.py` hardcodes `timeout_seconds=2` in nine places
+  (three instances, latest 2026-08-15).
+- **Wait on the condition you assert, not the signal before it.** Two watcher
+  tests waited for the delivery callback to be invoked and then asserted
+  `notified`, which is written after it returns. Put the asserted predicate inside
+  `_wait_until` (2026-08-12).
+- **A literal date is a time bomb.** `teamEnrollment.test.mjs` pinned an
+  `expires_at` and asserted "Available"; on that date the ledger correctly read
+  "Expired" and the suite went red on the calendar rather than on a code change.
+  Derive fixtures from `Date.now()` (2026-08-19).
+- **Every test builds a fresh SQLite file, so a green suite says nothing about
+  migration.** Relaxing a constraint in the create path is not a migration —
+  `CREATE TABLE IF NOT EXISTS` never alters an existing table, and `ON CONFLICT …
+  DO NOTHING` does not help because NOT NULL is checked first. New columns
+  declared in the create block *and* indexed in the same `executescript` ran
+  before `_ensure_column` and crashed every start, with 785 tests passing over a
+  store that could not open one real file. `connection.executescript` also issues
+  an implicit COMMIT, destroying the surrounding `BEGIN IMMEDIATE`. Verify by
+  opening a copy of the real store and comparing `PRAGMA table_info`
+  (2026-08-07, 2026-08-15).
+- **Sign the bytes, verify the same bytes.** The broker HMAC'd the request as
+  written but recomputed it from `model_dump()` of the validated model, and
+  `status_in` is sorted during validation — so the orchestrator's only non-polling
+  wait was refused unless the agent wrote its statuses alphabetically. Any
+  normalizer reopens this; canonicalize the raw request text (2026-08-13).
+- **What a provider CLI accepts is read from that CLI.** A hand-typed reasoning
+  list offered `minimal` (rejected by every current Codex model) and omitted
+  `max`/`ultra`. `codex exec resume` accepts neither `--sandbox` nor `--cd`, so a
+  Work Resume carries its profile through `--config` — check the subcommand's own
+  `--help` rather than assuming a flag carries over (2026-07-30).
+- **`blocked-external` is a claim with an expiry date.** Two scenarios sat blocked
+  on "needs a reachable SSH host" while one was configured and up the whole time.
+  Run the check before repeating a blocker (2026-07-30).
+- **A desktop launch must be verified cold**, with nothing on 8421. A warm backend
+  answers instantly and hides every startup ordering bug — the window once aimed
+  at the backend origin before it existed and stayed blank forever, while every
+  warm relaunch looked perfect. "The bundle built and the process is running" is
+  not "the window appeared": read the startup milestones on stderr or
+  `lsappinfo front` (2026-08-07, 2026-08-12).
+- **Name the exact path a turn must edit.** A revision contract that named a fresh
+  per-turn artifact directory and omitted the view file made the provider redraw a
+  657 KB page instead of editing it. The agent followed what it was given, so this
+  is an orchestration error, never a native-session limit (2026-08-12, S114).
+- **A reused graph-run stage still holds the prior attempt's `patch.json`.**
+  Fingerprint it before every correction launch and refuse an unchanged file, or a
+  provider that wrote nothing appears to succeed. Hand the unchanged-file
+  diagnostic forward; revalidating the same bytes overwrites it.
 
 ## Maintaining this file
 
-Treat `AGENTS.md` as evolving, not fixed. During or at the end of a task, update
-it when any of these happen:
+Treat `AGENTS.md` as evolving, not fixed — but write to it under this structure,
+and write concisely. It grew to twice this length by appending, and the cost was
+real: a 458-word entry filed under the wrong number, rules stated three times in
+three sections, and forty-eight "repeated failures" of which a third could no
+longer occur.
+
+**Decide which section a new line belongs to by asking what happens if it is
+violated.**
+
+| Section | Test | Shape |
+| --- | --- | --- |
+| **Invariants** | Something major breaks, and breaks quietly | State the guarantee, then name what breaks. Name the guarding test if there is one. Invariant `7b` is the model — 75 words. |
+| **Design rules** | Nothing fails now, but the code gets worse or an invariant becomes easier to break | State the rule, not the argument for it. |
+| **Notes** | Nothing breaks — a working habit, a local fact, or a mistake made twice | One or two sentences. Date a repeated mistake. |
+
+There are three sections and no others. If a line fails all three tests, it does
+not belong in this file.
+
+**What belongs elsewhere.** Behavior belongs in [`docs/specs/`](docs/specs/);
+interface and visual decisions belong in
+[`docs/specs/interface-and-visual-design.md`](docs/specs/interface-and-visual-design.md);
+rationale belongs in [`docs/decisions/`](docs/decisions/); unfinished work belongs
+in [`docs/handoffs/`](docs/handoffs/). Do not restate any of it here — a rule
+stated in two places drifts, and the copy nobody edits is the one that gets read.
+
+**Update it when:**
 
 - a pointer went stale (a path moved, a command changed, a version bumped),
 - a rule turned out to be wrong or too rigid in practice,
-- the user stated a preference → add it under "Human preferences",
-- you hit the same failure a second time → condense it under "Repeated
-  failures",
+- the human stated something → file it by the test above,
+- you hit the same failure a second time → condense it under Notes, with a date,
 - a new module boundary appeared → add it to the fan-out table.
 
-Rules: keep edits small and specific; delete anything no longer true rather than
-appending a caveat; never hardcode a version, count, or line number that will
-drift — point at the file that owns it. Mention in your response what you
+**Rules.** Keep edits small and specific. Delete what is no longer true rather
+than appending a caveat. Never hardcode a version, count, or line number that
+will drift — point at the file that owns it. Never renumber an invariant; the ids
+are cited from source, tests, and scenarios. Mention in your response what you
 changed here and why.

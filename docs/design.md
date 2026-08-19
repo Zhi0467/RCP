@@ -145,6 +145,9 @@ winner by timestamp or silently implement around it.
 - [Paper, artifacts, and result views](specs/paper-artifacts-and-result-views.md)
   — human paper authorship, read-only coaching, previews, reports, result views,
   and repository-file reading.
+- [Interface and visual design](specs/interface-and-visual-design.md) — the
+  visual grammar, project shell, Research and Runs projections, node detail, DAG
+  controls, composer, and the no-commentary-lines rule.
 
 ## Current exclusions
 
